@@ -1,0 +1,18 @@
+[package]
+name = "apex-graph"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+apex-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
