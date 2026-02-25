@@ -112,9 +112,12 @@ for i in range(n):
     print(f'    GPU {i}: {name} ({mem:.0f} GB)')
 print(f'  TF32 matmul: {torch.backends.cuda.matmul.allow_tf32}')
 
-import flash_attn
-from flash_attn.flash_attn_interface import flash_attn_func
-print(f'  ✓ Flash Attention 2 v{flash_attn.__version__} — CUDA kernels OK')
+try:
+    import flash_attn
+    from flash_attn.flash_attn_interface import flash_attn_func
+    print(f'  ✓ Flash Attention 2 v{flash_attn.__version__} — CUDA kernels OK')
+except Exception:
+    print('  ⚠ flash-attn not available — using SDPA fallback')
 
 try:
     from causal_conv1d import causal_conv1d_fn
@@ -166,7 +169,7 @@ step_done "Eval data validated"
 
 if [ "$SKIP_DAPT" = "0" ]; then
     step_start "[4/9] Phase 1: Domain-Adaptive Pre-Training (8×5090)"
-    log "  Effective batch: 2×8×4 = 64 | seq_len: 4096 | epochs: 3 | flash_attn2 | ZeRO-3"
+    log "  Effective batch: 1×8×8 = 64 | seq_len: 4096 | epochs: 1 | QLoRA 4-bit NF4 | DDP"
     accelerate launch \
         --config_file training/configs/accelerate_8gpu.yaml \
         training/train_phase1_dapt.py 2>&1 | tee -a "$LOGFILE"
@@ -178,10 +181,16 @@ fi
 # ── Step 5: Phase 2 SFT ───────────────────────────────────────────────────
 
 if [ "$SKIP_SFT" = "0" ]; then
-    step_start "[5/9] Phase 2: Supervised Fine-Tuning (8×5090)"
-    log "  Effective batch: 1×8×8 = 64 | seq_len: 8192 | epochs: 5 | flash_attn2 + NEFTune | ZeRO-3"
+    # Pre-merge Phase 1 adapter into base model (single-process, CPU)
+    # This avoids OOM when ZeRO-3 tries to move the full 30B model to GPU
+    step_start "[5a/9] Pre-merge Phase 1 adapter"
+    python3 training/pre_merge_phase1.py 2>&1 | tee -a "$LOGFILE"
+    step_done "Phase 1 adapter merge complete"
+
+    step_start "[5b/9] Phase 2: Supervised Fine-Tuning (8×5090)"
+    log "  Effective batch: 1×8×8 = 64 | seq_len: 2048 | epochs: 3 | SDPA + NEFTune | FSDP FULL_SHARD"
     accelerate launch \
-        --config_file training/configs/accelerate_8gpu.yaml \
+        --config_file training/configs/accelerate_fsdp_8gpu.yaml \
         training/train_phase2_sft.py 2>&1 | tee -a "$LOGFILE"
     step_done "Phase 2 SFT complete"
 else

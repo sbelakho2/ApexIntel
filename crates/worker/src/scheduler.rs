@@ -122,11 +122,18 @@ impl IsoWeekday {
 pub enum JobKind {
     CrawlCycle,
     PatternMining,
+    HypothesisGeneration,
     PoiRefresh,
     PromotionBoard,
     RecipeDeprecation,
     StrategyMemo,
     FeatureDriftCheck,
+    /// Adaptive source scoring — ranks crawl sources by yield and novelty.
+    SourceScoring,
+    /// Cross-domain signal combination mining — discovers synergistic multi-signal patterns.
+    CrossDomainMining,
+    /// Outcome tracking — matches predictions against observed outcomes.
+    OutcomeTracking,
     Custom(String),
 }
 
@@ -135,11 +142,15 @@ impl JobKind {
         match self {
             Self::CrawlCycle => "crawl_cycle",
             Self::PatternMining => "pattern_mining",
+            Self::HypothesisGeneration => "hypothesis_generation",
             Self::PoiRefresh => "poi_refresh",
             Self::PromotionBoard => "promotion_board",
             Self::RecipeDeprecation => "recipe_deprecation",
             Self::StrategyMemo => "strategy_memo",
             Self::FeatureDriftCheck => "feature_drift_check",
+            Self::SourceScoring => "source_scoring",
+            Self::CrossDomainMining => "cross_domain_mining",
+            Self::OutcomeTracking => "outcome_tracking",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -827,6 +838,16 @@ pub fn default_scheduler() -> Scheduler {
         .with_timeout(7200), // 2 h
     );
 
+    // Hypothesis generation runs after mining (02:30 UTC) — calls LLM
+    s.register(
+        JobDef::new(
+            JobKind::HypothesisGeneration,
+            Schedule::DailyAt { hour: 2, minute: 30 },
+        )
+        .with_jitter(60) // +1 min
+        .with_timeout(7200), // 2 h — LLM inference can be slow
+    );
+
     s.register(
         JobDef::new(
             JobKind::PoiRefresh,
@@ -882,6 +903,50 @@ pub fn default_scheduler() -> Scheduler {
             },
         )
         .with_jitter(240)
+        .with_timeout(1800),
+    );
+
+    // ── Self-improvement loop (weekly, Mon 09:00–11:00 UTC) ──
+
+    // Source scoring: re-rank crawl sources by yield, freshness, novelty.
+    s.register(
+        JobDef::new(
+            JobKind::SourceScoring,
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Mon,
+                hour: 9,
+                minute: 0,
+            },
+        )
+        .with_jitter(0)
+        .with_timeout(1800), // 30 min
+    );
+
+    // Cross-domain combination mining: discover synergistic multi-signal patterns.
+    s.register(
+        JobDef::new(
+            JobKind::CrossDomainMining,
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Mon,
+                hour: 10,
+                minute: 0,
+            },
+        )
+        .with_jitter(120)
+        .with_timeout(3600), // 1 h — combinatorial search
+    );
+
+    // Outcome tracking: match predictions against observed outcomes, update accuracy.
+    s.register(
+        JobDef::new(
+            JobKind::OutcomeTracking,
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Mon,
+                hour: 11,
+                minute: 0,
+            },
+        )
+        .with_jitter(60)
         .with_timeout(1800),
     );
 
@@ -1347,7 +1412,7 @@ mod tests {
         sched.record_run(run);
 
         let summary = sched.status_summary();
-        assert!(summary.len() >= 7); // 7 default jobs
+        assert!(summary.len() >= 11); // 11 default jobs
         let crawl_summary = summary.iter().find(|s| s.kind == JobKind::CrawlCycle).unwrap();
         assert!(crawl_summary.enabled);
         assert!(crawl_summary.last_run.is_some());
@@ -1356,14 +1421,18 @@ mod tests {
     #[test]
     fn test_default_scheduler_job_count() {
         let s = default_scheduler();
-        assert_eq!(s.jobs.len(), 7);
+        assert_eq!(s.jobs.len(), 11);
         assert!(s.jobs.contains_key("crawl_cycle"));
         assert!(s.jobs.contains_key("pattern_mining"));
+        assert!(s.jobs.contains_key("hypothesis_generation"));
         assert!(s.jobs.contains_key("poi_refresh"));
         assert!(s.jobs.contains_key("promotion_board"));
         assert!(s.jobs.contains_key("strategy_memo"));
         assert!(s.jobs.contains_key("recipe_deprecation"));
         assert!(s.jobs.contains_key("feature_drift_check"));
+        assert!(s.jobs.contains_key("source_scoring"));
+        assert!(s.jobs.contains_key("cross_domain_mining"));
+        assert!(s.jobs.contains_key("outcome_tracking"));
     }
 
     #[test]

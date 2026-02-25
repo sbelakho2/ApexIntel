@@ -221,7 +221,13 @@ fn extract_body_text(doc: &Html) -> String {
                 }
             }
             let text = parts.join(" ");
-            normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&text))
+            let normalized = normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&text));
+            if normalized.is_empty() {
+                let fallback = doc.root_element().text().collect::<Vec<_>>().join(" ");
+                normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&fallback))
+            } else {
+                normalized
+            }
         }
         None => {
             let text: String = doc.root_element().text().collect::<Vec<_>>().join(" ");

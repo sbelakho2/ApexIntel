@@ -397,12 +397,12 @@ export function PostureCheck({
 
 export function PriorityBadge({ priority }: { priority: "A" | "B" | "C" | "P1" | "P2" | "P3" }) {
   const styles: Record<string, string> = {
-    A: "bg-red-500 text-white",
+    A: "bg-red-500 text-black",
     B: "bg-yellow-500 text-black",
-    C: "bg-blue-400 text-white",
-    P1: "bg-red-500 text-white",
+    C: "bg-blue-400 text-black",
+    P1: "bg-red-500 text-black",
     P2: "bg-yellow-500 text-black",
-    P3: "bg-blue-400 text-white",
+    P3: "bg-blue-400 text-black",
   };
   return (
     <span className={`inline-flex h-5 w-5 items-center justify-center rounded-sm text-[10px] font-black ${styles[priority]}`}>

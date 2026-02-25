@@ -4,52 +4,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-/// Role families for POI classification.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum RoleFamily {
-    Procurement,
-    SupplierQuality,
-    Engineering,
-    Operations,
-    Security,
-    Executive,
-    Government,
-    FreeZoneAuthority,
-    PortLogistics,
-    CertificationBody,
-    IndustryAssociation,
-    Distributor,
-    Finance,
-    Legal,
-    Military,
-    Intelligence,
-    Other(String),
-}
-
-impl RoleFamily {
-    /// Canonical lower_snake_case label for stable string formatting.
-    pub fn canonical_label(&self) -> String {
-        match self {
-            RoleFamily::Procurement => "procurement".to_string(),
-            RoleFamily::SupplierQuality => "supplier_quality".to_string(),
-            RoleFamily::Engineering => "engineering".to_string(),
-            RoleFamily::Operations => "operations".to_string(),
-            RoleFamily::Security => "security".to_string(),
-            RoleFamily::Executive => "executive".to_string(),
-            RoleFamily::Government => "government".to_string(),
-            RoleFamily::FreeZoneAuthority => "free_zone_authority".to_string(),
-            RoleFamily::PortLogistics => "port_logistics".to_string(),
-            RoleFamily::CertificationBody => "certification_body".to_string(),
-            RoleFamily::IndustryAssociation => "industry_association".to_string(),
-            RoleFamily::Distributor => "distributor".to_string(),
-            RoleFamily::Finance => "finance".to_string(),
-            RoleFamily::Legal => "legal".to_string(),
-            RoleFamily::Military => "military".to_string(),
-            RoleFamily::Intelligence => "intelligence".to_string(),
-            RoleFamily::Other(v) => v.trim().to_ascii_lowercase().replace(' ', "_"),
-        }
-    }
-}
+// Re-export the canonical RoleFamily from core — no longer defined locally.
+pub use apex_core::entities::RoleFamily;
 
 /// Decision style inferred from artifacts and behavior.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

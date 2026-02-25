@@ -190,18 +190,35 @@ impl Site {
 ///
 /// Used by the engagement module to select appropriate outreach templates
 /// and by the features module to compute `role_seniority_score`.
+///
+/// This is the **canonical** role-family enum shared across all crates.
+/// The POI crate re-exports this type rather than defining its own.
+///
 /// `Other(String)` preserves unrecognised categories from external sources.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum RoleFamily {
     Procurement,
     Quality,
+    /// Supplier quality — more specific than `Quality` for SQE roles.
+    SupplierQuality,
     Engineering,
     Operations,
     Security,
     Executive,
     Government,
+    /// Free-zone authority officials (TFZ, TMSA, etc.).
+    FreeZoneAuthority,
     Logistics,
+    /// Port / logistics authority roles (Tanger-Med, etc.).
+    PortLogistics,
+    /// Certification body auditors (UL, TÜV, etc.).
+    CertificationBody,
+    /// Industry association representatives (IPC, SMTA, etc.).
+    IndustryAssociation,
+    /// Component / module distributors.
+    Distributor,
     Finance,
+    Legal,
     Military,
     Intelligence,
     Other(String),
@@ -212,16 +229,32 @@ impl RoleFamily {
         match self {
             Self::Procurement => "procurement",
             Self::Quality => "quality",
+            Self::SupplierQuality => "supplier_quality",
             Self::Engineering => "engineering",
             Self::Operations => "operations",
             Self::Security => "security",
             Self::Executive => "executive",
             Self::Government => "government",
+            Self::FreeZoneAuthority => "free_zone_authority",
             Self::Logistics => "logistics",
+            Self::PortLogistics => "port_logistics",
+            Self::CertificationBody => "certification_body",
+            Self::IndustryAssociation => "industry_association",
+            Self::Distributor => "distributor",
             Self::Finance => "finance",
+            Self::Legal => "legal",
             Self::Military => "military",
             Self::Intelligence => "intelligence",
             Self::Other(s) => s.as_str(),
+        }
+    }
+
+    /// Canonical lower_snake_case label — identical to `as_str` for named
+    /// variants, normalised for `Other`.
+    pub fn canonical_label(&self) -> String {
+        match self {
+            Self::Other(v) => v.trim().to_ascii_lowercase().replace(' ', "_"),
+            other => other.as_str().to_string(),
         }
     }
 
@@ -229,13 +262,20 @@ impl RoleFamily {
         match s {
             "procurement" => Self::Procurement,
             "quality" => Self::Quality,
+            "supplier_quality" => Self::SupplierQuality,
             "engineering" => Self::Engineering,
             "operations" => Self::Operations,
             "security" => Self::Security,
             "executive" => Self::Executive,
             "government" => Self::Government,
+            "free_zone_authority" => Self::FreeZoneAuthority,
             "logistics" => Self::Logistics,
+            "port_logistics" => Self::PortLogistics,
+            "certification_body" => Self::CertificationBody,
+            "industry_association" => Self::IndustryAssociation,
+            "distributor" => Self::Distributor,
             "finance" => Self::Finance,
+            "legal" => Self::Legal,
             "military" => Self::Military,
             "intelligence" => Self::Intelligence,
             other => Self::Other(other.to_string()),
@@ -1092,13 +1132,25 @@ mod tests {
     #[test]
     fn test_role_family_other_variant_roundtrip() {
         // Unrecognised strings must produce Other(s) and survive as_str
-        let rf = RoleFamily::from_str("legal");
-        assert_eq!(rf, RoleFamily::Other("legal".to_string()));
-        assert_eq!(rf.as_str(), "legal");
+        let rf = RoleFamily::from_str("custom_role");
+        assert_eq!(rf, RoleFamily::Other("custom_role".to_string()));
+        assert_eq!(rf.as_str(), "custom_role");
+
+        // "legal" is now a named variant (unified with POI crate)
+        assert_eq!(RoleFamily::from_str("legal"), RoleFamily::Legal);
+        assert_eq!(RoleFamily::Legal.as_str(), "legal");
 
         // Known variants must NOT become Other
         assert_ne!(RoleFamily::from_str("finance"), RoleFamily::Other("finance".to_string()));
         assert_eq!(RoleFamily::Finance.as_str(), "finance");
+
+        // New POI-originated variants
+        assert_eq!(RoleFamily::from_str("supplier_quality"), RoleFamily::SupplierQuality);
+        assert_eq!(RoleFamily::from_str("free_zone_authority"), RoleFamily::FreeZoneAuthority);
+        assert_eq!(RoleFamily::from_str("port_logistics"), RoleFamily::PortLogistics);
+        assert_eq!(RoleFamily::from_str("certification_body"), RoleFamily::CertificationBody);
+        assert_eq!(RoleFamily::from_str("industry_association"), RoleFamily::IndustryAssociation);
+        assert_eq!(RoleFamily::from_str("distributor"), RoleFamily::Distributor);
     }
 
     #[test]

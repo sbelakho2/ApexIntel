@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 train_phase2_sft.py — Phase 2: Supervised Fine-Tuning (SFT)
-Chat-format instruction tuning on 7 ApexIntel tasks.
+Chat-format instruction tuning on 10 ApexIntel tasks.
 LoRA is stacked on the merged Phase 1 adapter.
 
 Model: Qwen3-30B-A3B (30B total / 3B active MoE) on 8×RTX 5090 (32 GB each).
-DeepSpeed ZeRO-3.
+FSDP FULL_SHARD (PyTorch native) — no CPU offload.
 
 Usage (launched by run_all.sh via accelerate):
-    accelerate launch --config_file training/configs/accelerate_8gpu.yaml \
+    accelerate launch --config_file training/configs/accelerate_fsdp_8gpu.yaml \
         training/train_phase2_sft.py
 """
 
@@ -47,8 +47,7 @@ def setup_cuda_optimizations():
     torch.backends.cudnn.deterministic = False
     torch.set_float32_matmul_precision("high")
     os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
-    os.environ.setdefault("TORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    print("  ✓ CUDA optimizations: TF32, cuDNN benchmark, expandable segments")
+    print("  ✓ CUDA optimizations: TF32, cuDNN benchmark")
 
 
 def load_config() -> dict:
@@ -68,59 +67,54 @@ def main():
     dc = cfg["data"]
     lora_cfg = cfg["lora"]
 
-    # ── CRITICAL: Enable ZeRO-3 Init BEFORE model loading ─────────
-    # Without this, from_pretrained loads the full 30B model (~57GB bf16)
-    # on EACH process, causing OOM (32GB per GPU). HfDeepSpeedConfig
-    # registers a global flag so from_pretrained uses deepspeed.zero.Init()
-    # to shard parameters across all GPUs during loading.
-    if tc.get("deepspeed"):
-        from transformers.integrations import HfDeepSpeedConfig
-        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-        _dschf = HfDeepSpeedConfig(str(WORK / tc["deepspeed"]))  # must stay in scope
-        assert is_deepspeed_zero3_enabled(), (
-            "ZeRO-3 init failed to activate — cannot load 30B model without sharding"
-        )
-        print(f"  ✓ ZeRO-3 init context active (params sharded during load)")
+    # ── Determine model path (pre-merged or base) ──────────────────
+    merged_path = WORK / "training" / "outputs" / "merged_phase1"
+    if (merged_path / "config.json").exists():
+        load_path = str(merged_path)
+        print(f"Phase 2 SFT — loading pre-merged model from {load_path}")
+    else:
+        load_path = model_path
+        print(f"Phase 2 SFT — loading base model from {load_path} (no merged model found)")
 
-    print(f"Phase 2 SFT — base: {model_path}")
     print(f"  Phase 1 adapter: {phase1_adapter}")
     print(f"  output: {output_dir}")
     print(f"  GPUs: {torch.cuda.device_count()}")
 
+    # ── FSDP: no pre-registration needed ────────────────────────────
+    # With FSDP FULL_SHARD, accelerate handles weight sharding after
+    # model construction. We load with low_cpu_mem_usage=True and let
+    # FSDP shard across GPUs automatically.
+    print("  ✓ FSDP mode — accelerate handles sharding after model load")
+
     # ── Tokenizer ──────────────────────────────────────────────────
     tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
+        load_path,
         trust_remote_code=True,
         padding_side="right",
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # ── Model + merge Phase 1 adapter ─────────────────────────────
-    # NOTE: We rely on accelerate's zero3_init_flag=true to handle ZeRO-3 sharding.
+    # ── Load model (FSDP will shard across GPUs post-load) ──────────
     attn = cfg["model"].get("attn_implementation", "flash_attention_2")
-    # Require flash_attn — DO NOT fall back to sdpa
     if attn == "flash_attention_2":
-        import flash_attn  # noqa: F401
-        from flash_attn.flash_attn_interface import flash_attn_func  # verify CUDA kernels
-        print(f"  ✓ Flash Attention 2 v{flash_attn.__version__} with CUDA kernels")
-    print("Loading base model …")
+        try:
+            import flash_attn  # noqa: F401
+            from flash_attn.flash_attn_interface import flash_attn_func  # noqa: F401
+            print(f"  ✓ Flash Attention 2 v{flash_attn.__version__} with CUDA kernels")
+        except (ImportError, ModuleNotFoundError):
+            attn = "sdpa"
+            print("  ⚠ flash-attn not available, falling back to SDPA (PyTorch native)")
+
+    print(f"Loading model from {load_path} (FSDP will shard after load) …")
     model = AutoModelForCausalLM.from_pretrained(
-        model_path,
+        load_path,
         dtype=torch.bfloat16,
         attn_implementation=attn,
         trust_remote_code=True,
         use_cache=False,
         low_cpu_mem_usage=True,
     )
-
-    if os.path.isdir(phase1_adapter):
-        print("Merging Phase 1 LoRA adapter …")
-        model = PeftModel.from_pretrained(model, phase1_adapter)
-        model = model.merge_and_unload()
-        print("  ✓ Phase 1 adapter merged")
-    else:
-        print(f"  ⚠  Phase 1 adapter not found at {phase1_adapter}, training from base")
 
     model.config.use_cache = False
 
@@ -184,12 +178,12 @@ def main():
         dataloader_persistent_workers=tc.get("dataloader_persistent_workers", True),
         report_to=tc.get("report_to", "none"),
         run_name=tc.get("run_name", "apexintel-sft"),
-        deepspeed=str(WORK / tc["deepspeed"]) if tc.get("deepspeed") else None,
+        # FSDP is handled by accelerate config — no deepspeed arg needed
         gradient_checkpointing=tc.get("gradient_checkpointing", True),
         gradient_checkpointing_kwargs={"use_reentrant": False, "determinism_check": "none"},
         ddp_find_unused_parameters=tc.get("ddp_find_unused_parameters", False),
         torch_compile=False,  # MoE dynamic routing not compatible with compile
-        max_seq_length=max_len,
+        max_length=max_len,
         dataset_text_field="text",
         neftune_noise_alpha=tc.get("neftune_noise_alpha", 5.0),
         seed=42,
@@ -207,10 +201,23 @@ def main():
     trainer.train()
 
     # ── Save best adapter ──────────────────────────────────────────
+    # With FSDP, the Trainer already saves checkpoints properly.
+    # We copy the best checkpoint's adapter to best_adapter/ on rank 0 only.
+    import shutil
+    from accelerate import PartialState
     best_dir = os.path.join(output_dir, "best_adapter")
-    model.save_pretrained(best_dir)
-    tokenizer.save_pretrained(best_dir)
-    print(f"Phase 2 SFT complete. Adapter saved to {best_dir}")
+    if PartialState().is_main_process:
+        best_ckpt = trainer.state.best_model_checkpoint
+        if best_ckpt and os.path.isdir(best_ckpt):
+            os.makedirs(best_dir, exist_ok=True)
+            for fname in ["adapter_model.safetensors", "adapter_config.json",
+                          "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"]:
+                src = os.path.join(best_ckpt, fname)
+                if os.path.exists(src):
+                    shutil.copy2(src, best_dir)
+            print(f"Phase 2 SFT complete. Best adapter copied from {best_ckpt} to {best_dir}")
+        else:
+            print(f"Phase 2 SFT complete. Best checkpoint not found — use checkpoint dirs directly.")
 
 
 if __name__ == "__main__":

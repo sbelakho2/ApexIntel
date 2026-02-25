@@ -294,9 +294,13 @@ fn parse_f64_env(key: &str, default: f64) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn test_require_env_missing() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         // Ensure a key that doesn't exist returns config error
         std::env::remove_var("__APEX_TEST_MISSING__");
         let res = require_env("__APEX_TEST_MISSING__");
@@ -307,6 +311,7 @@ mod tests {
 
     #[test]
     fn test_require_env_present() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("__APEX_TEST_PRESENT__", "hello");
         let res = require_env("__APEX_TEST_PRESENT__");
         assert_eq!(res.unwrap(), "hello");
@@ -315,6 +320,7 @@ mod tests {
 
     #[test]
     fn test_opt_env() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("__APEX_OPT_MISS__");
         assert!(opt_env("__APEX_OPT_MISS__").is_none());
 
@@ -325,6 +331,7 @@ mod tests {
 
     #[test]
     fn test_env_or_default() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::remove_var("__APEX_DEFAULT__");
         assert_eq!(env_or("__APEX_DEFAULT__", "fallback"), "fallback");
 
@@ -335,6 +342,7 @@ mod tests {
 
     #[test]
     fn test_from_env_missing_database_url() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         // Test that require_env fails for a missing variable.
         // We cannot safely unset DATABASE_URL in parallel tests,
         // so we verify the mechanism with a variable that's never set.
@@ -344,6 +352,7 @@ mod tests {
 
     #[test]
     fn test_from_env_with_database_url() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("DATABASE_URL", "postgres://test:test@localhost/test");
         let cfg = AppConfig::from_env().unwrap();
         assert_eq!(cfg.database_url, "postgres://test:test@localhost/test");
@@ -355,6 +364,7 @@ mod tests {
 
     #[test]
     fn test_deprecated_env_key_warnings_detects_old_keys() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("DB_URL", "postgres://old-style");
         std::env::set_var("NIGHTLY_HOUR", "3");
 
@@ -369,6 +379,7 @@ mod tests {
     // B291: AppConfig::validate
     #[test]
     fn test_app_config_valid_production_config_passes() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("DATABASE_URL", "postgres://user:pass@db.example.com/apex");
         let cfg = AppConfig::from_env().unwrap();
         assert!(
@@ -380,6 +391,7 @@ mod tests {
 
     #[test]
     fn test_app_config_empty_database_url_is_invalid() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         // Construct a config directly to bypass require_env
         std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
         let mut cfg = AppConfig::from_env().unwrap();
@@ -391,6 +403,7 @@ mod tests {
 
     #[test]
     fn test_app_config_crawl_interval_below_60_is_invalid() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
         let mut cfg = AppConfig::from_env().unwrap();
         cfg.crawl_interval_secs = 30;
@@ -401,6 +414,7 @@ mod tests {
 
     #[test]
     fn test_app_config_rps_zero_is_invalid() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
         let mut cfg = AppConfig::from_env().unwrap();
         cfg.default_requests_per_second = 0.0;
@@ -411,6 +425,7 @@ mod tests {
 
     #[test]
     fn test_app_config_multiple_invalid_fields_all_reported() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
         std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
         let mut cfg = AppConfig::from_env().unwrap();
         cfg.database_url = String::new();

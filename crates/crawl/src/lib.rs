@@ -6,3 +6,4 @@ pub mod change_detection;
 pub mod robots;
 pub mod metrics;
 pub mod errors;
+pub mod source_scoring;

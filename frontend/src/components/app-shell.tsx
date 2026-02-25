@@ -144,7 +144,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex">
         {/* Desktop sidebar */}
         <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-border lg:bg-card" aria-label="Main navigation">
-          <div className="px-4 py-5 border-b border-border">
+          <div className="min-h-16 border-b border-border px-4 flex flex-col justify-center">
             <p className="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
             <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">OSINT Intelligence Platform</p>
           </div>
@@ -163,30 +163,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         )}
 
         {/* Mobile sidebar drawer */}
-        <aside
-          className={`fixed inset-y-0 left-0 z-50 w-64 flex-col border-r border-border bg-card transition-transform duration-200 lg:hidden ${
-            mobileOpen ? "flex translate-x-0" : "flex -translate-x-full"
-          }`}
-          aria-label="Mobile navigation"
-        >
-          <div className="flex items-center justify-between px-4 py-5 border-b border-border">
-            <div>
-              <p className="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
-              <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">OSINT Intelligence Platform</p>
+        {mobileOpen && (
+          <aside
+            className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-card transition-transform duration-200 lg:hidden"
+            aria-label="Mobile navigation"
+          >
+            <div className="flex items-center justify-between px-4 py-5 border-b border-border">
+              <div>
+                <p className="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">OSINT Intelligence Platform</p>
+              </div>
+              <button
+                ref={mobileCloseRef}
+                onClick={closeMobile}
+                className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+                aria-label="Close navigation"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
             </div>
-            <button
-              ref={mobileCloseRef}
-              onClick={closeMobile}
-              className="rounded-sm p-1 text-muted-foreground hover:text-foreground"
-              aria-label="Close navigation"
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-          <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-            <NavLinks pathname={pathname} onNavigate={closeMobile} />
-          </nav>
-        </aside>
+            <nav className="flex-1 overflow-y-auto p-3 space-y-1">
+              <NavLinks pathname={pathname} onNavigate={closeMobile} />
+            </nav>
+          </aside>
+        )}
 
         <main id="main-content" className="flex-1 min-w-0 pb-8 md:pb-10" tabIndex={-1}>
           {isOffline && (
@@ -194,13 +194,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Offline: showing cached or local data only
             </div>
           )}
-          <header className="sticky top-0 z-20 border-b border-border bg-background/95">
-            <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
-              <div className="flex items-center justify-between gap-2">
+          <header className="sticky top-0 z-20 bg-background/95">
+            <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+              <div className="min-h-16 border-b border-border flex items-center justify-between gap-2">
                 <div className="flex items-center gap-3">
                   <button
                     onClick={() => setMobileOpen(true)}
-                    className="rounded-sm p-1 text-muted-foreground hover:text-foreground lg:hidden"
+                    className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-sm text-muted-foreground hover:text-foreground lg:hidden"
                     aria-label="Open navigation"
                   >
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -214,7 +214,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <nav aria-label="Breadcrumb" className="mt-2 overflow-x-auto">
                   <ol className="flex min-w-max items-center gap-1 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
                     <li>
-                      <Link href="/" className="hover:text-foreground">
+                      <Link href="/" className="inline-flex min-h-8 items-center px-1 hover:text-foreground">
                         Overview
                       </Link>
                     </li>
@@ -224,7 +224,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         <a
                           href={crumb.href}
                           aria-current={crumb.href === pathname ? "page" : undefined}
-                          className={crumb.href === pathname ? "text-foreground" : "hover:text-foreground"}
+                          className={`inline-flex min-h-8 items-center px-1 ${crumb.href === pathname ? "text-foreground" : "hover:text-foreground"}`}
                         >
                           {crumb.label}
                         </a>

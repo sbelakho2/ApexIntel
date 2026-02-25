@@ -84,6 +84,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "apex-core",
+ "apex-llm",
  "apex-store",
  "axum",
  "chrono",
@@ -183,12 +184,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "apex-core",
+ "apex-llm",
  "apex-stats",
+ "async-trait",
  "chrono",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -303,6 +307,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "apex-core",
+ "apex-learning",
+ "apex-llm",
+ "async-trait",
  "chrono",
  "dotenvy",
  "serde",

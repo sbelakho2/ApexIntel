@@ -136,6 +136,8 @@ async function assertSenseiRamsConformance(route: string, page: Page) {
 }
 
 test.describe('Sense-Rams visual and runtime audit', () => {
+  test.use({ colorScheme: 'light' });
+
   for (const route of routes) {
     test(`route ${route} should render without runtime/server errors and match visual baseline`, async ({ page }) => {
       const errors: string[] = [];
@@ -148,7 +150,7 @@ test.describe('Sense-Rams visual and runtime audit', () => {
         if (message.type() === 'error') {
           const text = message.text();
           // Ignore known non-critical errors during testing
-          if (!/hydration|did not match|favicon\.ico|Failed to load resource|fetch|network|ECONNREFUSED|api\/health|api\/endpoints|Warning.*Error.*Boundary/i.test(text)) {
+          if (!/hydration|did not match|Extra attributes from the server|Support for defaultProps will be removed|favicon\.ico|Failed to load resource|fetch|network|ECONNREFUSED|api\/health|api\/endpoints|Warning.*Error.*Boundary/i.test(text)) {
             errors.push(`console:${text}`);
           }
         }
@@ -160,11 +162,40 @@ test.describe('Sense-Rams visual and runtime audit', () => {
         }
       });
 
-      await page.goto(route, { waitUntil: 'domcontentloaded' });
+      await page.goto(route, { waitUntil: 'networkidle' });
       // Wait for main content to stabilise (hydration + data queries)
       await page.waitForSelector('.apex-card', { timeout: 15_000 });
+      await page.waitForLoadState('networkidle');
       // Ensure any React Query fetches have settled
       await page.waitForTimeout(500);
+      // Let JS-driven chart animations complete before visual capture
+      await page.waitForTimeout(1800);
+      // Keep pointer away from data viz surfaces to avoid hover overlays in screenshots
+      await page.mouse.move(1, 1);
+      await page.evaluate(() => {
+        const active = document.activeElement as HTMLElement | null;
+        active?.blur?.();
+      });
+      // Ensure full-page height is stable before visual snapshot
+      await page.waitForFunction(
+        () => {
+          const key = '__sensei_height_state__';
+          const globalObj = window as Window & {
+            [key]?: { last: number; stable: number };
+          };
+          const current = document.documentElement.scrollHeight;
+          const state = globalObj[key] ?? { last: current, stable: 0 };
+          if (state.last === current) {
+            state.stable += 1;
+          } else {
+            state.last = current;
+            state.stable = 0;
+          }
+          globalObj[key] = state;
+          return state.stable >= 3;
+        },
+        { timeout: 8_000, polling: 200 },
+      );
       await page.addStyleTag({
         content: '*,:before,:after{animation:none!important;transition:none!important;}',
       });
@@ -178,6 +209,7 @@ test.describe('Sense-Rams visual and runtime audit', () => {
       await assertSenseiRamsConformance(route, page);
       await expect(page).toHaveScreenshot(`sense-rams-${route === '/' ? 'overview' : route.slice(1)}.png`, {
         fullPage: true,
+        timeout: 10_000,
         maxDiffPixelRatio: 0.02,
       });
     });

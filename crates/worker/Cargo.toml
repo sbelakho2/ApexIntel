@@ -3,8 +3,25 @@ name = "apex-worker"
 version = "0.1.0"
 edition = "2021"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature flags
+#
+# `llm` — enables the LLM-powered hypothesis generation stage in the nightly
+#   pipeline.  When active, the worker can call the `apex_learning::generate`
+#   module to produce recipe hypotheses from mined pattern candidates.
+#
+# Usage:
+#   cargo build -p apex-worker --features llm
+#   cargo test  -p apex-worker --features llm
+# ─────────────────────────────────────────────────────────────────────────────
+[features]
+default = []
+llm = ["apex-llm", "apex-learning"]
+
 [dependencies]
 apex-core = { path = "../core" }
+apex-llm = { path = "../llm", optional = true }
+apex-learning = { path = "../learning", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 chrono = { workspace = true }
@@ -12,6 +29,7 @@ uuid = { workspace = true, features = ["v4"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }

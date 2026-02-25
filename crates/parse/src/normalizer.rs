@@ -4,6 +4,13 @@ use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
 static RE_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static RE_SCRIPT_STYLE_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?is)<(script|style)[^>]*>.*?</(script|style)>")
+        .size_limit(1_000_000)
+        .dfa_size_limit(1_000_000)
+        .build()
+        .unwrap()
+});
 static RE_HTML_TAG: LazyLock<Regex> = LazyLock::new(|| {
     RegexBuilder::new(r"<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[^>]+>")
         .size_limit(1_000_000)
@@ -42,12 +49,23 @@ static RE_BOILERPLATE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 
 /// Normalize whitespace: collapse runs of whitespace into single spaces, trim.
 pub fn normalize_whitespace(text: &str) -> String {
-    RE_WHITESPACE.replace_all(text.trim(), " ").to_string()
+    let cleaned: String = text
+        .chars()
+        .map(|c| {
+            if c == '\u{0000}' || c == '\u{FEFF}' || c == '\u{200B}' || c == '\u{200C}' || c == '\u{200D}' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    RE_WHITESPACE.replace_all(cleaned.trim(), " ").to_string()
 }
 
 /// Strip HTML tags from text content.
 pub fn strip_html_tags(html: &str) -> String {
-    RE_HTML_TAG.replace_all(html, "").to_string()
+    let without_script_style = RE_SCRIPT_STYLE_BLOCK.replace_all(html, " ");
+    RE_HTML_TAG.replace_all(&without_script_style, "").to_string()
 }
 
 /// Normalize Unicode characters: NFC normalization + collapse whitespace.
@@ -70,12 +88,21 @@ pub fn strip_diacritics(text: &str) -> String {
 /// Parse a locale-tolerant number string into f64.
 /// Handles commas as thousand separators or decimal separators.
 pub fn parse_number(text: &str) -> Option<f64> {
-    let mut s = text.trim().replace('\u{00a0}', "").replace(' ', "");
+    let mut s = text
+        .trim()
+        .replace('\u{00a0}', "")
+        .replace(' ', "")
+        .replace('\'', "");
     if s.is_empty() {
         return None;
     }
+    if s.eq_ignore_ascii_case("nan") || s.eq_ignore_ascii_case("inf") || s.eq_ignore_ascii_case("infinity") || s == "∞" {
+        return None;
+    }
+
     let has_comma = s.contains(',');
     let has_dot = s.contains('.');
+
     if has_comma && has_dot {
         let last_comma = s.rfind(',');
         let last_dot = s.rfind('.');
@@ -88,10 +115,36 @@ pub fn parse_number(text: &str) -> Option<f64> {
             }
         }
     } else if has_comma {
-        s = s.replacen(',', ".", 1);
-        s = s.replace(',', "");
+        let comma_count = s.matches(',').count();
+        if comma_count > 1 {
+            // Thousand-group separators (including Indian grouping): 1,23,456 -> 123456
+            s = s.replace(',', "");
+        } else if let Some(pos) = s.find(',') {
+            let digits_after = s.len().saturating_sub(pos + 1);
+            if digits_after == 3 {
+                // Likely thousands separator: 12,345
+                s = s.replace(',', "");
+            } else {
+                // Likely decimal separator: 1234,56
+                s = s.replacen(',', ".", 1);
+            }
+        }
     }
-    s.parse::<f64>().ok()
+
+    if s.is_empty() || s.chars().all(|c| c == '.' || c == '-' || c == '+') {
+        return None;
+    }
+
+    if !s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+') {
+        return None;
+    }
+
+    let parsed = s.parse::<f64>().ok()?;
+    if parsed.is_finite() {
+        Some(parsed)
+    } else {
+        None
+    }
 }
 
 /// Validate a date string against common formats.
@@ -115,6 +168,33 @@ pub fn is_valid_date(text: &str) -> bool {
 
 /// Validate a date range string by checking for at least one valid date token.
 pub fn is_valid_date_range(text: &str) -> bool {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return false;
+    }
+
+    // Explicit support for common range forms such as:
+    // - January 15-17, 2025
+    // - 15-17 March 2025
+    if Regex::new(r"(?i)^(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\s*[-–]\s*\d{1,2},?\s+\d{4}$")
+        .unwrap()
+        .is_match(raw)
+    {
+        return true;
+    }
+    if Regex::new(r"(?i)^\d{1,2}\s*[-–]\s*\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}$")
+        .unwrap()
+        .is_match(raw)
+    {
+        return true;
+    }
+    if Regex::new(r"^\d{4}[-/]\d{2}[-/]\d{2}\s*(?:to|[-–])\s*\d{4}[-/]\d{2}[-/]\d{2}$")
+        .unwrap()
+        .is_match(raw)
+    {
+        return true;
+    }
+
     let tokens: Vec<&str> = text
         .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
         .collect();
@@ -193,8 +273,17 @@ pub fn dedup_preserving_order(items: Vec<String>) -> Vec<String> {
 
 /// Check if text is only scripts/styles with no real content (B106).
 pub fn is_only_scripts_or_styles(html: &str) -> bool {
-    let stripped = strip_html_tags(html);
-    let cleaned = normalize_whitespace(&stripped);
+    let body_slice = if let Ok(re_body) = Regex::new(r"(?is)<body[^>]*>(.*?)</body>") {
+        re_body
+            .captures(html)
+            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+            .unwrap_or_else(|| html.to_string())
+    } else {
+        html.to_string()
+    };
+    let without_scripts = RE_SCRIPT_STYLE_BLOCK.replace_all(&body_slice, " ");
+    let without_tags = RE_HTML_TAG.replace_all(&without_scripts, " ");
+    let cleaned = normalize_whitespace(&without_tags);
     cleaned.is_empty() || cleaned.chars().all(|c| c.is_whitespace())
 }
 

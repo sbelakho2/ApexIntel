@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::normalizer;
@@ -13,22 +13,12 @@ static PERSON_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"([A-Z][a-z\u{00e0}-\u{00ff}]+(?:[\s-]+(?:[a-z\u{00e0}-\u{00ff}]{1,4}\s+)*[A-Z][a-z\u{00e0}-\u{00ff}]+){1,4})\s*[-\u{2013}]\s*((?:CEO|CTO|COO|CFO|VP|Director|Manager|Head|President|Chairman|Engineer|Founder|Partner)[\w\s]*?)(?:\s*,\s*(.+?))?(?:\.|$|\n)",
     ]
     .iter()
-    .map(|p| {
-        RegexBuilder::new(p)
-            .size_limit(200_000)
-            .dfa_size_limit(200_000)
-            .build()
-            .unwrap()
-    })
+    .map(|p| Regex::new(p).unwrap())
     .collect()
 });
 
 static RE_LINKEDIN: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(r"https?://(?:www\.)?linkedin\.com/in/([\w-]+)")
-        .size_limit(50_000)
-        .dfa_size_limit(50_000)
-        .build()
-        .unwrap()
+    Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([\w-]+)").unwrap()
 });
 
 /// Extracted person of interest from a web page.

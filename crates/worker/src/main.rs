@@ -5,6 +5,10 @@ use apex_worker::nightly::{
     CrawlStageResult, DriftCheckStageResult, MiningStageResult,
     PoiRefreshStageResult,
 };
+#[cfg(feature = "llm")]
+use apex_worker::nightly::{
+    process_hypothesis_generation_stage, HypothesisGenerationStageResult,
+};
 use apex_worker::scheduler::{default_scheduler, JobKind, JobRun, Scheduler};
 use apex_worker::weekly::{
     run_weekly_pipeline, DeprecationPolicy, MemoInputs, PromotionPolicy, ProductionRecipe,
@@ -178,6 +182,48 @@ async fn execute_job(kind: &JobKind) -> JobRun {
             }
             run
         }
+        JobKind::HypothesisGeneration => {
+            let mut run = JobRun::new(kind.clone());
+            run.start();
+            // Hypothesis generation requires the `llm` feature.
+            // When disabled, skip gracefully.
+            #[cfg(feature = "llm")]
+            {
+                match load_nightly_inputs().await {
+                    Ok(inputs) => {
+                        let stage = process_hypothesis_generation_stage(
+                            &HypothesisGenerationStageResult {
+                                candidates_submitted: inputs.mining.candidates_passed_gates,
+                                hypotheses_generated: inputs.mining.hypotheses_generated,
+                                hypotheses_failed: inputs.mining.candidates_passed_gates
+                                    .saturating_sub(inputs.mining.hypotheses_generated),
+                                recipes_staged: inputs.mining.recipes_staged,
+                                errors: vec![],
+                            },
+                        );
+                        match stage.run.status {
+                            apex_worker::scheduler::JobStatus::Succeeded { .. } => {
+                                run.succeed(stage.items, &format!("hypothesis gen completed: {}", stage.run.notes));
+                            }
+                            apex_worker::scheduler::JobStatus::Failed { .. } => {
+                                run.fail(&format!("hypothesis gen failed: {}", stage.run.notes));
+                            }
+                            _ => {
+                                run.skip(&format!("hypothesis gen not terminal: {}", stage.run.notes));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        run.skip(&format!("nightly inputs unavailable: {}", err));
+                    }
+                }
+            }
+            #[cfg(not(feature = "llm"))]
+            {
+                run.skip("hypothesis generation requires the `llm` feature");
+            }
+            run
+        }
         JobKind::PoiRefresh => {
             let mut run = JobRun::new(kind.clone());
             run.start();
@@ -267,6 +313,28 @@ async fn execute_job(kind: &JobKind) -> JobRun {
                     run.skip(&format!("weekly inputs unavailable: {}", err));
                 }
             }
+            run
+        }
+        JobKind::SourceScoring => {
+            let mut run = JobRun::new(kind.clone());
+            run.start();
+            // Source scoring runs as part of the weekly self-improvement loop.
+            // In production, the caller injects telemetry data from the store.
+            run.skip("source scoring: awaiting telemetry injection from store layer");
+            run
+        }
+        JobKind::CrossDomainMining => {
+            let mut run = JobRun::new(kind.clone());
+            run.start();
+            // Cross-domain mining runs as part of the weekly self-improvement loop.
+            run.skip("cross-domain mining: awaiting observation data injection from store layer");
+            run
+        }
+        JobKind::OutcomeTracking => {
+            let mut run = JobRun::new(kind.clone());
+            run.start();
+            // Outcome tracking runs as part of the weekly self-improvement loop.
+            run.skip("outcome tracking: awaiting prediction/outcome data injection from store layer");
             run
         }
         JobKind::Custom(name) => {

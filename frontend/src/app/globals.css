@@ -81,7 +81,8 @@
     --space-12: 48px;
   }
 
-  .dark {
+  :root.dark,
+  :root[data-theme='dark'] {
     --background: 12 14 16;
     --foreground: 244 246 250;
     --card: 22 25 28;
@@ -120,6 +121,11 @@
     --rams-line: #404040;
     --rams-muted: #666666;
     --rams-foreground: #F2F2F2;
+
+    --success: 74 222 128;
+    --warning: 250 204 21;
+    --danger: 248 113 113;
+    --info: 125 211 252;
   }
 }
 
@@ -215,6 +221,45 @@
     .data-table td {
       border-width: 2px;
     }
+  }
+
+  @media (pointer: coarse) {
+    button,
+    input:not([type='checkbox']):not([type='radio']),
+    select,
+    textarea {
+      min-height: 36px;
+    }
+  }
+
+  :root.dark .text-green-600,
+  :root.dark .text-green-700,
+  :root[data-theme='dark'] .text-green-600,
+  :root[data-theme='dark'] .text-green-700 {
+    @apply text-success;
+  }
+
+  :root.dark .text-red-500,
+  :root.dark .text-red-600,
+  :root[data-theme='dark'] .text-red-500,
+  :root[data-theme='dark'] .text-red-600 {
+    @apply text-error;
+  }
+
+  :root.dark .text-orange-600,
+  :root.dark .text-yellow-700,
+  :root[data-theme='dark'] .text-orange-600,
+  :root[data-theme='dark'] .text-yellow-700 {
+    @apply text-warning;
+  }
+
+  :root.dark .text-blue-400,
+  :root.dark .text-blue-500,
+  :root.dark .text-blue-600,
+  :root[data-theme='dark'] .text-blue-400,
+  :root[data-theme='dark'] .text-blue-500,
+  :root[data-theme='dark'] .text-blue-600 {
+    @apply text-info;
   }
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }

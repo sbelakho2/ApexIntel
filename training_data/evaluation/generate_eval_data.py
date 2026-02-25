@@ -7,6 +7,11 @@ Produces (default counts):
 - poi_synthesis_eval.jsonl (120 examples)
 - memo_quality_eval.jsonl (60 examples)
 - entity_extraction_eval.jsonl (250 examples)
+- competitive_analysis_eval.jsonl (50 examples)
+- company_dossier_eval.jsonl (50 examples)
+- warning_generation_eval.jsonl (50 examples)
+- supply_chain_risk_eval.jsonl (50 examples)
+- compliance_eval.jsonl (30 examples)
 - regression_tests.jsonl (12 golden examples)
 - adversarial_tests.jsonl (5 edge cases)
 - multilingual_golden.jsonl (7 language-specific examples)
@@ -213,7 +218,211 @@ def gen_entity_extraction_eval(count: int):
     write_jsonl(os.path.join(DEST, "entity_extraction_eval.jsonl"), examples)
 
 
-# ── 5. Regression Tests (12 golden examples) ──────────────────────────────
+# ── 5. Competitive Analysis Eval (50) ──────────────────────────────────────
+def gen_competitive_analysis_eval(count: int = 50):
+    examples = []
+    for i in range(count):
+        starz = random.choice(COMPANIES[:5])
+        competitor = random.choice(COMPANIES[5:])
+        starz_caps = random.sample(CAPABILITIES, random.randint(3, 6))
+        comp_caps = random.sample(CAPABILITIES, random.randint(3, 6))
+        starz_certs = random.sample(["ISO 9001", "IATF 16949", "AS9100D", "ISO 13485"], random.randint(2, 4))
+        comp_certs = random.sample(["ISO 9001", "IATF 16949", "AS9100D", "ISO 13485", "NADCAP"], random.randint(2, 4))
+
+        starz_profile = {
+            "name": starz, "capabilities": starz_caps, "certifications": starz_certs,
+            "employees": random.choice([200, 500, 1000]), "regions_served": random.sample(REGIONS, 3),
+        }
+        comp_profile = {
+            "name": competitor, "capabilities": comp_caps, "certifications": comp_certs,
+            "employees": random.choice([5000, 10000, 50000]), "regions_served": random.sample(REGIONS, 5),
+        }
+
+        examples.append({
+            "id": uid(),
+            "eval_type": "competitive_analysis",
+            "input": {
+                "system": "You are comparing capabilities of two EMS companies. Produce a structured competitive analysis JSON.",
+                "user": f"Starz profile:\n{json.dumps(starz_profile)}\n\nCompetitor profile:\n{json.dumps(comp_profile)}",
+            },
+            "expected_schema": {
+                "required_fields": ["capability_comparison", "certification_comparison", "scale_comparison", "advantages", "gaps", "recommendations"],
+            },
+            "scoring": {
+                "schema_compliance": {"weight": 0.25, "description": "All required fields present"},
+                "grounding": {"weight": 0.25, "description": "Analysis based solely on provided data"},
+                "actionability": {"weight": 0.25, "description": "Recommendations are concrete"},
+                "no_hallucination": {"weight": 0.25, "description": "No fabricated data points"},
+            }
+        })
+    write_jsonl(os.path.join(DEST, "competitive_analysis_eval.jsonl"), examples)
+
+
+# ── 6. Company Dossier Eval (50) ───────────────────────────────────────────
+def gen_company_dossier_eval(count: int = 50):
+    examples = []
+    for i in range(count):
+        company = random.choice(COMPANIES)
+        caps = random.sample(CAPABILITIES, random.randint(4, 8))
+        certs = random.sample(["ISO 9001:2015", "IATF 16949", "AS9100D", "ISO 13485", "ISO 27001", "NADCAP"], random.randint(2, 5))
+        region = random.choice(REGIONS)
+        recent_events = random.sample([
+            "New plant expansion announced", "CEO change", "Revenue beat estimates",
+            "Major defense contract win", "Acquisition of competitor", "Layoffs (5%)",
+            "New ISO 27001 certification", "Supply chain disruption reported",
+        ], random.randint(2, 4))
+
+        entity_data = {
+            "name": company, "country": region, "type": "Ems",
+            "capabilities": caps, "certifications": certs,
+            "employees": random.choice([500, 2500, 10000, 50000]),
+            "revenue_usd": random.choice([50_000_000, 500_000_000, 5_000_000_000]),
+            "recent_events": recent_events,
+        }
+
+        examples.append({
+            "id": uid(),
+            "eval_type": "company_dossier",
+            "input": {
+                "system": "You are generating a company intelligence dossier for an EMS competitive intelligence platform.",
+                "user": f"Entity data:\n{json.dumps(entity_data)}",
+            },
+            "expected_schema": {
+                "required_fields": ["profile_section", "capability_assessment", "certification_analysis", "risk_assessment", "opportunity_analysis", "competitive_position"],
+            },
+            "scoring": {
+                "completeness": {"weight": 0.25, "description": "All dossier sections present"},
+                "grounding": {"weight": 0.25, "description": "Analysis based solely on provided entity data"},
+                "risk_calibration": {"weight": 0.25, "description": "Risk labels appropriate to data"},
+                "actionability": {"weight": 0.25, "description": "Opportunities are concrete and realistic"},
+            }
+        })
+    write_jsonl(os.path.join(DEST, "company_dossier_eval.jsonl"), examples)
+
+
+# ── 7. Warning Generation Eval (50) ───────────────────────────────────────
+def gen_warning_eval(count: int = 50):
+    WARNING_TYPES = [
+        ("Outsourcing Window", "business", "4h", ["JobPost", "WebChange"]),
+        ("Competitor Move", "business", "12h", ["WebChange", "CertificationUpdate", "JobPost"]),
+        ("Supply Chain Shock", "business", "2h", ["PortMetric", "CommodityPrice"]),
+        ("Margin Regime Shift", "business", "6h", ["CommodityPrice", "FxRate"]),
+        ("Regulatory Shock", "business", "4h", ["CompetitorEvent"]),
+        ("Brand Impersonation", "security", "1h", ["DnsPosture", "NewDomain"]),
+        ("DNS Posture Drift", "security", "2h", ["DnsPosture"]),
+        ("Third-party Compromise", "security", "1h", ["VulnNotice", "CompetitorEvent"]),
+        ("Phishing Campaign", "security", "1h", ["NewDomain", "DnsPosture"]),
+        ("KEV Relevance", "security", "4h", ["VulnNotice"]),
+    ]
+    examples = []
+    for i in range(count):
+        wtype = random.choice(WARNING_TYPES)
+        company = random.choice(COMPANIES)
+        region = random.choice(REGIONS)
+        triggers = [{"observation_type": obs, "value": f"Anomaly detected for {company}", "timestamp": "2025-01-15T10:00:00Z"} for obs in wtype[3]]
+
+        examples.append({
+            "id": uid(),
+            "eval_type": "warning_generation",
+            "input": {
+                "system": "You are generating real-time intelligence warnings for an EMS competitive intelligence platform.",
+                "user": f"Warning type: {wtype[0]}\nCategory: {wtype[1]}\nSLA: {wtype[2]}\nEntity: {company}\nRegion: {region}\nTrigger signals:\n{json.dumps(triggers)}",
+            },
+            "expected_schema": {
+                "required_fields": ["warning_type", "severity", "affected_entity", "narrative", "recommended_actions"],
+                "severity_enum": ["critical", "warning", "info"],
+            },
+            "scoring": {
+                "schema_compliance": {"weight": 0.2, "description": "All required fields present"},
+                "severity_calibration": {"weight": 0.2, "description": "Severity is appropriate for the warning type"},
+                "narrative_quality": {"weight": 0.2, "description": "Narrative is specific and grounded in signals"},
+                "action_specificity": {"weight": 0.2, "description": "Actions are concrete and time-bound"},
+                "no_hallucination": {"weight": 0.2, "description": "Only references provided signals"},
+            }
+        })
+    write_jsonl(os.path.join(DEST, "warning_generation_eval.jsonl"), examples)
+
+
+# ── 8. Supply Chain Risk Eval (50) ─────────────────────────────────────────
+def gen_supply_chain_risk_eval(count: int = 50):
+    DISRUPTIONS = [
+        ("Semiconductor fab fire reduces global MOSFET supply by 30%", ["BSS138", "2N7002", "IRFZ44N"], "critical"),
+        ("Suez Canal blockage halts East-West shipping for 2 weeks", ["all imported components"], "critical"),
+        ("US entity list expansion bans exports to 3 Chinese EMS companies", ["MCUs", "FPGAs", "radar ICs"], "high"),
+        ("Typhoon shuts down Kaohsiung port for 5 days", ["TSMC wafers", "ASE packages"], "high"),
+        ("MLCC shortage as Murata allocates 80% to automotive", ["0402 capacitors", "0201 capacitors"], "medium"),
+        ("Copper price surges 40% in 3 months", ["PCB raw material", "wire harness copper"], "medium"),
+        ("Taiwan Strait tensions increase shipping insurance premiums 300%", ["all Taiwan-sourced semiconductors"], "high"),
+        ("Key resistor supplier declares force majeure", ["thick film resistors", "precision resistors"], "medium"),
+    ]
+    examples = []
+    for i in range(count):
+        disruption = random.choice(DISRUPTIONS)
+        company = random.choice(COMPANIES)
+
+        examples.append({
+            "id": uid(),
+            "eval_type": "supply_chain_risk",
+            "input": {
+                "system": "Analyze the supply chain risk. Return JSON with: risk_summary, affected_components, severity, impact_assessment, mitigation_options, timeline, alternative_suppliers.",
+                "user": f"Disruption: {disruption[0]}\nAffected entity: {company}\nAffected components: {disruption[1]}\nOur dependency: {random.randint(100, 500)}K units/month from affected source.",
+            },
+            "expected_schema": {
+                "required_fields": ["risk_summary", "affected_components", "severity", "mitigation_options"],
+                "severity_enum": ["critical", "high", "medium", "low"],
+            },
+            "expected_severity": disruption[2],
+            "scoring": {
+                "severity_accuracy": {"weight": 0.2, "description": "Severity matches expected level"},
+                "mitigation_quality": {"weight": 0.3, "description": "Mitigations are specific and actionable"},
+                "timeline_realism": {"weight": 0.2, "description": "Timeline estimates are industry-realistic"},
+                "alternative_suppliers": {"weight": 0.15, "description": "Suggests real/plausible alternatives"},
+                "no_hallucination": {"weight": 0.15, "description": "No fabricated supplier names or data"},
+            }
+        })
+    write_jsonl(os.path.join(DEST, "supply_chain_risk_eval.jsonl"), examples)
+
+
+# ── 9. Compliance/Sanctions Eval (30) ──────────────────────────────────────
+def gen_compliance_eval(count: int = 30):
+    SCENARIOS = [
+        ("Order from entity recently added to OFAC SDN list", ["OFAC SDN", "EAR"], "critical"),
+        ("Dual-use electronic components destined for military end-user in sanctioned country", ["EAR", "Wassenaar Arrangement"], "critical"),
+        ("Newly incorporated intermediary company placing large first order", ["KYC/AML", "Red flag indicators"], "high"),
+        ("Re-export of US-origin technology components to China via Singapore hub", ["EAR re-export rules", "Entity List"], "high"),
+        ("Customer requests removal of country-of-origin markings", ["Export control", "Anti-circumvention"], "high"),
+        ("Supplier located in Xinjiang Uyghur Autonomous Region", ["UFLPA", "Forced labor"], "critical"),
+        ("End customer is a military research institute", ["ITAR", "EAR military end-use"], "critical"),
+        ("Unusually routed payment through non-standard banking channels", ["AML", "OFAC sanctions"], "high"),
+    ]
+    examples = []
+    for i in range(count):
+        scenario = random.choice(SCENARIOS)
+        company = random.choice(COMPANIES)
+
+        examples.append({
+            "id": uid(),
+            "eval_type": "compliance",
+            "input": {
+                "system": "Assess trade compliance risk. Return JSON with: risk_level, entities_of_concern, applicable_regulations, red_flags, recommended_actions.",
+                "user": f"Scenario: {scenario[0]}\nEntity involved: {company}\nTransaction value: ${random.randint(50, 5000)}K",
+            },
+            "expected_schema": {
+                "required_fields": ["risk_level", "entities_of_concern", "applicable_regulations", "red_flags", "recommended_actions"],
+                "risk_level_enum": ["critical", "high", "medium", "low"],
+            },
+            "expected_risk_level": scenario[2],
+            "scoring": {
+                "risk_accuracy": {"weight": 0.25, "description": "Risk level matches expected"},
+                "regulation_coverage": {"weight": 0.25, "description": "Cites relevant regulations"},
+                "red_flag_detection": {"weight": 0.25, "description": "Identifies key red flags"},
+                "action_quality": {"weight": 0.25, "description": "Actions are legally sound and specific"},
+            }
+        })
+    write_jsonl(os.path.join(DEST, "compliance_eval.jsonl"), examples)
+
+
+# ── 10. Regression Tests (12 golden examples) ──────────────────────────────
 def gen_regression_tests():
     tests = [
         {
@@ -436,6 +645,11 @@ def main():
     gen_poi_eval(args.poi_count)
     gen_memo_eval(args.memo_count)
     gen_entity_extraction_eval(args.entity_count)
+    gen_competitive_analysis_eval()
+    gen_company_dossier_eval()
+    gen_warning_eval()
+    gen_supply_chain_risk_eval()
+    gen_compliance_eval()
     gen_regression_tests()
     gen_adversarial_tests()
     gen_multilingual_golden()

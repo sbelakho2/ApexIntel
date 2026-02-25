@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Generate instruction fine-tuning examples for ApexIntel LLM training.
-Produces JSONL files for all 7 task types per IMPLEMENTATION.md Section 8.0.2 Phase 2.
+Produces JSONL files for all 10 task types per IMPLEMENTATION.md Section 8.0.2 Phase 2.
 
-Total: 2,700 examples
+Total: 3,200 examples
 - recipe_hypothesis_generation: 500
 - poi_synthesis: 300
 - weekly_memo_generation: 100
@@ -11,6 +11,9 @@ Total: 2,700 examples
 - narrative_rendering: 500
 - entity_extraction: 1000
 - competitive_analysis: 100
+- warning_generation: 200
+- supply_chain_risk: 200
+- compliance_check: 100
 """
 import json
 import os
@@ -19,7 +22,7 @@ import uuid
 from datetime import datetime, timedelta
 
 random.seed(42)
-DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instruction_tuning")
+DEST = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(DEST, exist_ok=True)
 
 # ── Domain Data ─────────────────────────────────────────────────────────────
@@ -1011,6 +1014,375 @@ def gen_competitive_analysis(n=100):
     return examples
 
 
+# ── Task 8: Warning Generation (200 examples) ─────────────────────────────
+
+WARNING_TYPES_BUSINESS = [
+    ("Outsourcing Window", "business",
+     "A temporary window where an OEM is actively evaluating new EMS partners due to capacity constraints, contract expiry, or strategic reshoring.",
+     ["TenderPosted", "JobPost", "WebChange"],
+     ["Monitor tender deadline and submit proposal within SLA", "Prepare capability deck for target vertical", "Alert BD team for immediate outreach"]),
+    ("Competitor Move", "business",
+     "A competitor has announced or signaled a strategic move such as new facility, acquisition, capability expansion, or major contract win.",
+     ["WebChange", "CompetitorEvent", "PatentPublished"],
+     ["Assess impact on shared target accounts", "Evaluate capability gap created", "Brief executive team on competitive implications"]),
+    ("Supply Chain Shock", "business",
+     "A sudden disruption in the supply chain — port closure, component shortage, logistics bottleneck — affecting EMS operations or customers.",
+     ["PortMetric", "CommodityPrice", "VulnNotice"],
+     ["Activate alternate supplier contacts", "Quantify inventory buffer for affected components", "Notify affected OEM customers proactively"]),
+    ("Margin Regime Shift", "business",
+     "Material cost or FX movements have shifted the margin profile for a product line or customer segment beyond tolerance thresholds.",
+     ["CommodityPrice", "FxRate", "ProcurementSignal"],
+     ["Recalculate BOM cost for affected programs", "Evaluate price adjustment clause activation", "Review hedging positions"]),
+    ("Regulatory Shock", "business",
+     "A new regulation, tariff, or trade policy change that impacts manufacturing operations, market access, or compliance posture.",
+     ["WebChange", "ProcurementSignal", "CertificationUpdate"],
+     ["Map affected product lines and customers", "Engage legal/compliance team for impact assessment", "Prepare customer advisory communication"]),
+]
+
+WARNING_TYPES_SECURITY = [
+    ("Brand Impersonation", "security",
+     "A newly registered domain or social media profile is impersonating the company's brand, potentially for phishing or fraud.",
+     ["NewDomain", "DnsPosture", "WebChange"],
+     ["Initiate domain takedown request", "Alert customers about impersonation", "Scan for related phishing infrastructure"]),
+    ("DNS Posture Drift", "security",
+     "Unexpected changes in DNS configuration — missing SPF/DKIM/DMARC records, new subdomains, or certificate anomalies.",
+     ["DnsPosture", "NewDomain", "VulnNotice"],
+     ["Verify DNS change with IT operations", "Check for unauthorized subdomain delegation", "Validate email authentication records"]),
+    ("Third-party Compromise", "security",
+     "A vendor, partner, or service provider in the supply chain has disclosed a security incident or shows indicators of compromise.",
+     ["VulnNotice", "WebChange", "DnsPosture"],
+     ["Assess data exposure scope for shared systems", "Activate vendor incident response playbook", "Review access controls for affected integrations"]),
+    ("Phishing Campaign", "security",
+     "Indicators suggest an active phishing campaign targeting the company or its employees — look-alike domains, credential harvesting pages, or spear-phishing patterns.",
+     ["NewDomain", "DnsPosture", "PersonMention"],
+     ["Push security awareness alert to all employees", "Block identified IOCs at email gateway", "Report to national CERT"]),
+    ("KEV Relevance", "security",
+     "A vulnerability from the CISA Known Exploited Vulnerabilities catalog affects software or firmware used in the company's manufacturing infrastructure.",
+     ["VulnNotice", "WebChange", "CertificationUpdate"],
+     ["Inventory affected systems across all sites", "Apply vendor patch or mitigate within CISA deadline", "Validate remediation and report to CISO"]),
+]
+
+ALL_WARNING_TYPES = WARNING_TYPES_BUSINESS + WARNING_TYPES_SECURITY
+
+
+def gen_warning_generation(n=200):
+    examples = []
+    sla_options = ["1h", "4h", "24h", "48h", "72h"]
+
+    for i in range(n):
+        wtype, category, description, obs_types, actions = random.choice(ALL_WARNING_TYPES)
+        company = rand_company(EMS_COMPANIES + OEM_COMPANIES)
+        severity = random.choice(SEVERITIES)
+        ts_base = rand_date()
+
+        num_signals = random.randint(2, 5)
+        trigger_signals = []
+        for s in range(num_signals):
+            obs = random.choice(obs_types + random.sample(OBSERVATION_TYPES, 1))
+            trigger_signals.append({
+                "signal_id": uid(),
+                "observation_type": obs,
+                "value": random.choice([
+                    f"{random.choice(['Detected', 'Observed', 'Flagged'])}: {random.choice(CAPABILITIES[:10])} change at {company[0]}",
+                    f"{random.choice(['Port dwell time', 'Component lead time', 'Price index', 'Domain registration', 'CVE count'])} {random.choice(['exceeded threshold', 'anomaly detected', 'spike observed', 'drift identified'])}",
+                    f"{random.choice(['New tender', 'Contract expiry', 'Certification lapse', 'Hiring surge', 'Web update'])} for {company[0]}",
+                ]),
+                "timestamp": rand_date(),
+                "confidence": round(random.uniform(0.6, 0.99), 2),
+            })
+
+        sla = random.choice(sla_options) if severity == "critical" else random.choice(sla_options[2:])
+
+        warning_output = {
+            "warning_id": uid(),
+            "warning_type": wtype,
+            "category": category,
+            "severity": severity,
+            "generated_at": ts_base,
+            "affected_entity": {
+                "name": company[0],
+                "ticker": company[1],
+                "country": company[2],
+                "company_type": company[3],
+            },
+            "trigger_signals": trigger_signals,
+            "sla": sla,
+            "narrative": (
+                f"{wtype} warning for {company[0]} ({REGION_LABELS.get(company[2], company[2])}). "
+                f"{description} "
+                f"Based on {num_signals} correlated signals detected between "
+                f"{trigger_signals[0]['timestamp'][:10]} and {trigger_signals[-1]['timestamp'][:10]}. "
+                f"Severity assessed as {severity} with SLA of {sla}. "
+                f"Immediate action required: {actions[0].lower()}."
+            ),
+            "recommended_actions": actions + [f"Escalate to {random.choice(ROLE_FAMILIES)} team if unresolved within SLA"],
+            "related_industries": random.sample(INDUSTRIES, random.randint(1, 3)),
+        }
+
+        system = (
+            "You are generating real-time intelligence warnings for an EMS competitive intelligence platform. "
+            "Given trigger signals, produce a structured warning with severity assessment, affected entities, "
+            "and recommended actions. Ground all analysis in the provided signals."
+        )
+        user = (
+            f"Warning type: {wtype}\n"
+            f"Category: {category}\n"
+            f"Affected entity: {company[0]} ({company[1]}, {REGION_LABELS.get(company[2], company[2])})\n\n"
+            f"Trigger signals:\n{json.dumps(trigger_signals, ensure_ascii=False, indent=2)}"
+        )
+        assistant = json.dumps(warning_output, ensure_ascii=False, indent=2)
+
+        examples.append({"messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": assistant},
+        ]})
+
+    jsonl_write(os.path.join(DEST, "warning_generation.jsonl"), examples)
+    return examples
+
+
+# ── Task 9: Supply Chain Risk Analysis (200 examples) ─────────────────────
+
+DISRUPTION_SCENARIOS = [
+    ("Fab fire", "A major fabrication facility fire has disrupted production of {component} used by {company}.",
+     ["wafer supply", "IC packaging", "substrate production", "photomask fabrication"]),
+    ("Port closure", "The port of {port} has been closed due to {cause}, impacting component shipments to {region}.",
+     ["PCB laminates", "passive components", "semiconductor packages", "connector assemblies"]),
+    ("Sanctions expansion", "New sanctions targeting {country} restrict export of {component} to entities in {region}.",
+     ["advanced semiconductors", "EDA software licenses", "lithography equipment", "specialty chemicals"]),
+    ("Natural disaster", "A {disaster} in {region} has damaged infrastructure critical to {component} production.",
+     ["MLCC capacitors", "crystal oscillators", "power management ICs", "memory modules"]),
+    ("Component shortage", "Global shortage of {component} has extended lead times from {lead_from} to {lead_to} weeks.",
+     ["automotive-grade MCUs", "power MOSFETs", "analog ICs", "RF front-end modules"]),
+    ("Geopolitical tension", "Escalating tensions between {country_a} and {country_b} threaten {component} supply routes through {region}.",
+     ["rare earth materials", "advanced packaging substrates", "high-purity silicon", "gallium and germanium"]),
+]
+
+
+def gen_supply_chain_risk(n=200):
+    examples = []
+    ports = ["Shanghai", "Shenzhen", "Busan", "Singapore", "Rotterdam", "Hamburg", "Los Angeles", "Kaohsiung", "Rades (Tunis)", "Haifa"]
+    causes = ["typhoon damage", "labor strike", "security incident", "infrastructure failure", "pandemic restrictions"]
+    disasters = ["earthquake", "typhoon", "flooding", "volcanic eruption", "tsunami"]
+    countries_tension = [("US", "China"), ("China", "Taiwan"), ("Japan", "South Korea"), ("Russia", "EU"), ("India", "China")]
+
+    for i in range(n):
+        scenario_template = random.choice(DISRUPTION_SCENARIOS)
+        scenario_type, desc_template, components = scenario_template
+        company = rand_company(EMS_COMPANIES + OEM_COMPANIES)
+        component = random.choice(components)
+        region = random.choice(list(REGION_LABELS.values()))
+        port = random.choice(ports)
+        cause = random.choice(causes)
+        disaster = random.choice(disasters)
+        country_a, country_b = random.choice(countries_tension)
+
+        description = desc_template.format(
+            component=component, company=company[0], port=port, cause=cause,
+            region=region, disaster=disaster, country=random.choice([country_a, country_b]),
+            country_a=country_a, country_b=country_b,
+            lead_from=random.randint(8, 16), lead_to=random.randint(26, 52),
+        )
+
+        severity = random.choice(["critical", "high", "medium", "low"])
+        num_components = random.randint(2, 6)
+        affected_components = random.sample([
+            component,
+            random.choice(CAPABILITIES[:15]),
+            f"{random.choice(['PCB', 'IC', 'MLCC', 'MOSFET', 'MCU', 'FPGA', 'SoC'])} — {random.choice(['automotive', 'industrial', 'defense', 'medical'])} grade",
+            f"{random.choice(['Tier-1', 'Tier-2', 'Tier-3'])} supplier dependency",
+            f"{random.choice(['Single-source', 'Dual-source', 'Multi-source'])} component",
+            f"Lead time sensitive: {random.choice(['connectors', 'capacitors', 'resistors', 'inductors', 'transformers'])}",
+        ], min(num_components, 6))
+
+        alt_suppliers = [
+            {"name": rand_company(EMS_COMPANIES)[0], "country": random.choice(list(REGION_LABELS.values())),
+             "lead_time_weeks": random.randint(4, 20), "qualification_status": random.choice(["Qualified", "Under evaluation", "Not qualified"])}
+            for _ in range(random.randint(2, 4))
+        ]
+
+        risk_output = {
+            "risk_id": uid(),
+            "scenario_type": scenario_type,
+            "generated_at": rand_date(),
+            "risk_summary": f"{scenario_type} scenario: {description}",
+            "affected_components": affected_components,
+            "severity": severity,
+            "impact_assessment": {
+                "affected_programs": random.randint(1, 12),
+                "estimated_revenue_at_risk_usd": random.choice([500_000, 1_000_000, 5_000_000, 10_000_000, 50_000_000]),
+                "customer_impact": random.choice(["Delivery delay 2-4 weeks", "Partial shipment possible", "Full production halt", "Quality risk — alternate part not fully qualified"]),
+                "probability": round(random.uniform(0.2, 0.95), 2),
+            },
+            "mitigation_options": [
+                f"Activate safety stock ({random.randint(2, 12)} weeks buffer available)",
+                f"Engage alternate supplier: {alt_suppliers[0]['name']} ({alt_suppliers[0]['country']})",
+                f"Negotiate expedited shipping via {random.choice(['air freight', 'express sea', 'rail corridor'])}",
+                f"Engineering change: qualify {random.choice(['drop-in replacement', 'functional equivalent', 'redesigned module'])}",
+                f"Customer communication: propose {random.choice(['revised timeline', 'partial delivery', 'design modification'])}",
+            ],
+            "timeline": {
+                "detection_date": rand_date()[:10],
+                "impact_start_estimate": rand_date()[:10],
+                "resolution_target": rand_date()[:10],
+                "review_cadence": random.choice(["Daily", "Weekly", "Bi-weekly"]),
+            },
+            "alternative_suppliers": alt_suppliers,
+            "related_industries": random.sample(INDUSTRIES, random.randint(1, 4)),
+        }
+
+        system = (
+            "Analyze the supply chain risk described below. Return valid JSON with keys: "
+            "risk_summary, affected_components, severity, impact_assessment, mitigation_options, "
+            "timeline, alternative_suppliers."
+        )
+        user = (
+            f"Scenario: {scenario_type}\n"
+            f"Description: {description}\n"
+            f"Affected company: {company[0]} ({company[1]}, {REGION_LABELS.get(company[2], company[2])})\n"
+            f"Primary component: {component}\n"
+            f"Severity estimate: {severity}"
+        )
+        assistant = json.dumps(risk_output, ensure_ascii=False, indent=2)
+
+        examples.append({"messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": assistant},
+        ]})
+
+    jsonl_write(os.path.join(DEST, "supply_chain_risk.jsonl"), examples)
+    return examples
+
+
+# ── Task 10: Compliance / Sanctions Assessment (100 examples) ──────────────
+
+COMPLIANCE_SCENARIOS = [
+    ("OFAC SDN match", "A potential match has been found on the OFAC Specially Designated Nationals list for {entity} involved in a transaction with {company}."),
+    ("EU sanctions screening", "EU consolidated sanctions list screening flagged {entity} as a potential match during onboarding for {company}."),
+    ("Entity List restriction", "The US Entity List restricts exports of {technology} to {entity}, which has been identified as a potential customer of {company}."),
+    ("Dual-use classification", "Components manufactured by {company} — {technology} — may fall under dual-use export control regulations (EU Regulation 2021/821) when shipped to {country}."),
+    ("Suspicious intermediary", "The intermediary {intermediary} routing orders to {country} for {company} shows patterns consistent with diversion risk: mismatched end-user declarations, unusual shipping routes."),
+    ("Military end-use concern", "Transaction involving {technology} destined for {country} raises military end-use (MEU) concerns under EAR §744.21 due to end-user {entity}."),
+    ("UN Panel of Experts flag", "A UN Panel of Experts report references {entity} in connection with illicit procurement networks for {technology} in {country}."),
+    ("Re-export compliance", "US-origin {technology} components in {company}'s assembly are subject to re-export controls when the final product ships to {country}."),
+]
+
+
+def gen_compliance_check(n=100):
+    examples = []
+    sanctioned_entities = [
+        "Huawei Technologies Co.", "SMIC (Semiconductor Manufacturing International Corp)",
+        "Hikvision", "IRISL Group", "Rostec Corporation", "Norinco Group",
+        "Syrian Scientific Studies and Research Center", "Korea Mining Development Trading Corporation",
+        "Rosoboronexport", "Corad Technology (front company)",
+    ]
+    intermediaries = [
+        "Global Trade Solutions FZE (Dubai)", "Orient Star Shipping Ltd (Hong Kong)",
+        "Eurasia Components GmbH (Hamburg)", "Pacific Gateway Trading (Singapore)",
+        "Silk Route Logistics (Istanbul)", "Meridian Tech Supplies (Shenzhen)",
+    ]
+    controlled_tech = [
+        "FPGA devices (Xilinx Kintex-series)", "high-performance ADCs (>200 MSPS)",
+        "radiation-hardened ICs", "inertial navigation modules", "thermal imaging sensors",
+        "ECCN 3A001 semiconductors", "ECCN 5A002 encryption modules",
+        "GaN power amplifiers", "space-qualified components", "advanced PCB laminates (Rogers RO4000)",
+    ]
+    restricted_countries = ["Iran", "North Korea", "Syria", "Russia", "Belarus", "Myanmar", "Cuba", "Venezuela"]
+    regulations = [
+        "OFAC SDN List (31 CFR Part 544)", "EU Council Regulation 269/2014",
+        "US Entity List (15 CFR Part 744 Supplement 4)", "EU Dual-Use Regulation 2021/821",
+        "UK Sanctions and Anti-Money Laundering Act 2018", "UN Security Council Resolutions",
+        "EAR §744.21 Military End-Use", "ITAR (22 CFR Parts 120-130)",
+        "EU Common Military List", "Wassenaar Arrangement control lists",
+    ]
+
+    for i in range(n):
+        scenario_template = random.choice(COMPLIANCE_SCENARIOS)
+        scenario_type, desc_template = scenario_template
+        company = rand_company(EMS_COMPANIES)
+        entity = random.choice(sanctioned_entities)
+        intermediary = random.choice(intermediaries)
+        technology = random.choice(controlled_tech)
+        country = random.choice(restricted_countries)
+
+        description = desc_template.format(
+            entity=entity, company=company[0], technology=technology,
+            country=country, intermediary=intermediary,
+        )
+
+        risk_level = random.choice(["critical", "high", "medium", "low"])
+        num_red_flags = random.randint(2, 5)
+        red_flags = random.sample([
+            f"Entity name match ({round(random.uniform(0.75, 0.99), 2)} similarity) against {random.choice(regulations[:4])}",
+            f"Destination country {country} is subject to comprehensive sanctions",
+            f"End-user {entity} appears on denied persons/entity screening lists",
+            f"Technology {technology} is controlled under {random.choice(regulations[3:6])}",
+            f"Intermediary {intermediary.split('(')[0].strip()} flagged in prior investigations",
+            f"Shipping route inconsistent with declared end-use location",
+            f"No valid end-user certificate (EUC) provided",
+            f"Transaction value ({random.choice(['$50K', '$250K', '$1.2M', '$3.5M'])}) unusual for stated purpose",
+            f"Rush order with payment via third-country bank",
+        ], min(num_red_flags, 9))
+
+        applicable_regs = random.sample(regulations, random.randint(2, 5))
+
+        compliance_output = {
+            "assessment_id": uid(),
+            "scenario_type": scenario_type,
+            "generated_at": rand_date(),
+            "risk_level": risk_level,
+            "entities_of_concern": [
+                {"name": entity, "role": "end-user/consignee", "match_score": round(random.uniform(0.7, 1.0), 2),
+                 "list_source": random.choice(regulations[:4])},
+            ] + ([{
+                "name": intermediary.split("(")[0].strip(), "role": "intermediary",
+                "match_score": round(random.uniform(0.5, 0.85), 2),
+                "list_source": "Internal watchlist",
+            }] if "intermediary" in scenario_type.lower() or random.random() > 0.5 else []),
+            "applicable_regulations": applicable_regs,
+            "red_flags": red_flags,
+            "recommended_actions": [
+                f"{'BLOCK transaction immediately' if risk_level == 'critical' else 'Escalate to compliance officer for review'}",
+                f"File {random.choice(['SAR', 'voluntary self-disclosure', 'license exception request'])} if applicable",
+                f"Request enhanced due diligence on {entity}",
+                f"Verify end-user certificate and stated end-use for {technology}",
+                f"Consult external counsel on {applicable_regs[0]} applicability",
+                f"Document decision in compliance audit trail (ref: {uid()[:8]})",
+            ],
+            "narrative": (
+                f"{scenario_type}: {description} "
+                f"Risk level assessed as {risk_level} based on {len(red_flags)} red flags identified. "
+                f"Applicable regulations include {', '.join(applicable_regs[:3])}. "
+                f"{'Immediate transaction block recommended.' if risk_level in ('critical', 'high') else 'Enhanced due diligence recommended before proceeding.'}"
+            ),
+        }
+
+        system = (
+            "Assess the trade compliance risk for the described scenario. Return valid JSON with keys: "
+            "risk_level, entities_of_concern, applicable_regulations, red_flags, recommended_actions."
+        )
+        user = (
+            f"Scenario: {scenario_type}\n"
+            f"Description: {description}\n"
+            f"Company: {company[0]} ({company[1]}, {REGION_LABELS.get(company[2], company[2])})\n"
+            f"Entity of concern: {entity}\n"
+            f"Technology: {technology}\n"
+            f"Destination: {country}"
+        )
+        assistant = json.dumps(compliance_output, ensure_ascii=False, indent=2)
+
+        examples.append({"messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": assistant},
+        ]})
+
+    jsonl_write(os.path.join(DEST, "compliance_check.jsonl"), examples)
+    return examples
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1025,6 +1397,9 @@ def main():
         ("narrative_rendering", gen_narrative_rendering, 500),
         ("entity_extraction", gen_entity_extraction, 1000),
         ("competitive_analysis", gen_competitive_analysis, 100),
+        ("warning_generation", gen_warning_generation, 200),
+        ("supply_chain_risk", gen_supply_chain_risk, 200),
+        ("compliance_check", gen_compliance_check, 100),
     ]:
         print(f"\n--- {name} ({count} examples) ---")
         examples = gen_fn(count)

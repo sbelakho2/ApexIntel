@@ -170,6 +170,51 @@ impl DriftCheckStageResult {
     }
 }
 
+/// Data captured during the LLM-backed hypothesis generation stage.
+///
+/// This stage takes the candidates that passed statistical gates from Mining
+/// and sends them through the LLM to produce structured recipe hypotheses.
+/// Requires the `llm` feature flag; when disabled, this stage is automatically
+/// skipped in the pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypothesisGenerationStageResult {
+    /// Number of candidates that were submitted to the LLM.
+    pub candidates_submitted: u64,
+    /// Number of hypotheses successfully generated and validated.
+    pub hypotheses_generated: u64,
+    /// Number of hypotheses that failed LLM generation or validation.
+    pub hypotheses_failed: u64,
+    /// Number of generated hypotheses staged as candidate recipes.
+    pub recipes_staged: u64,
+    pub errors: Vec<String>,
+}
+
+impl HypothesisGenerationStageResult {
+    /// Validate funnel monotonicity (B245).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.hypotheses_generated > self.candidates_submitted {
+            return Err(format!(
+                "hypotheses_generated ({}) > candidates_submitted ({})",
+                self.hypotheses_generated, self.candidates_submitted
+            ));
+        }
+        let total_outcomes = self.hypotheses_generated + self.hypotheses_failed;
+        if total_outcomes > self.candidates_submitted {
+            return Err(format!(
+                "hypotheses_generated ({}) + hypotheses_failed ({}) > candidates_submitted ({})",
+                self.hypotheses_generated, self.hypotheses_failed, self.candidates_submitted
+            ));
+        }
+        if self.recipes_staged > self.hypotheses_generated {
+            return Err(format!(
+                "recipes_staged ({}) > hypotheses_generated ({})",
+                self.recipes_staged, self.hypotheses_generated
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ────────────────────────────────────────────
 // Nightly pipeline
 // ────────────────────────────────────────────
@@ -178,11 +223,19 @@ impl DriftCheckStageResult {
 ///
 /// Used as a discriminant in [`StageOutcome`] and as the argument to
 /// [`should_proceed`] to query whether a stage's prerequisites are met.
-/// Stages run in their `all()` order: Crawl → Mining → PoiRefresh → DriftCheck.
+/// Stages run in their `all()` order:
+///   Crawl → Mining → HypothesisGeneration → PoiRefresh → DriftCheck.
+///
+/// `HypothesisGeneration` is gated behind the `llm` feature flag.
+/// When the feature is disabled, the stage is skipped automatically and
+/// the pipeline falls back to the 4-stage sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NightlyStage {
     Crawl,
     Mining,
+    /// LLM-backed hypothesis generation from mined pattern candidates.
+    /// Requires the `llm` feature flag.
+    HypothesisGeneration,
     PoiRefresh,
     DriftCheck,
 }
@@ -192,6 +245,7 @@ impl NightlyStage {
         &[
             NightlyStage::Crawl,
             NightlyStage::Mining,
+            NightlyStage::HypothesisGeneration,
             NightlyStage::PoiRefresh,
             NightlyStage::DriftCheck,
         ]
@@ -201,6 +255,7 @@ impl NightlyStage {
         match self {
             Self::Crawl => "crawl",
             Self::Mining => "mining",
+            Self::HypothesisGeneration => "hypothesis_generation",
             Self::PoiRefresh => "poi_refresh",
             Self::DriftCheck => "drift_check",
         }
@@ -210,6 +265,7 @@ impl NightlyStage {
         match self {
             Self::Crawl => JobKind::CrawlCycle,
             Self::Mining => JobKind::PatternMining,
+            Self::HypothesisGeneration => JobKind::HypothesisGeneration,
             Self::PoiRefresh => JobKind::PoiRefresh,
             Self::DriftCheck => JobKind::FeatureDriftCheck,
         }
@@ -482,15 +538,54 @@ pub fn process_drift_stage(result: &DriftCheckStageResult) -> StageOutcome {
     }
 }
 
+/// Process hypothesis-generation stage result into a StageOutcome.
+pub fn process_hypothesis_generation_stage(result: &HypothesisGenerationStageResult) -> StageOutcome {
+    let mut run = JobRun::new(JobKind::HypothesisGeneration);
+    run.start();
+
+    let items = result.recipes_staged;
+    let error_count = result.errors.len() as u64;
+
+    if result.candidates_submitted == 0 {
+        run.skip("no candidates to generate hypotheses for");
+    } else if result.hypotheses_generated == 0 && !result.errors.is_empty() {
+        run.fail(&format!(
+            "all hypothesis generations failed: {}",
+            result.errors.join("; ")
+        ));
+    } else {
+        let msg = format!(
+            "{} submitted → {} generated, {} failed → {} staged",
+            result.candidates_submitted,
+            result.hypotheses_generated,
+            result.hypotheses_failed,
+            result.recipes_staged
+        );
+        run.succeed(items, &msg);
+    }
+
+    StageOutcome {
+        stage: NightlyStage::HypothesisGeneration,
+        run,
+        items,
+        error_count,
+    }
+}
+
 /// Run the full nightly pipeline from pre-computed stage results.
 /// This is the pure orchestration function — no I/O.
 ///
+/// The `hypothesis` parameter is optional: when the `llm` feature is disabled
+/// (or no candidates passed mining), pass `None` and the stage will be recorded
+/// as Skipped.
+///
 /// Emits structured tracing events at each stage boundary with batch-size
 /// and error-count fields to enable downstream alerting and dashboards (B285).
-#[tracing::instrument(skip(crawl, mining, poi, drift))]
+#[tracing::instrument(skip(crawl, mining, hypothesis, poi, drift))]
 pub fn run_nightly_pipeline(
     crawl: &CrawlStageResult,
     mining: &MiningStageResult,
+    hypothesis: Option<&HypothesisGenerationStageResult>,
     poi: &PoiRefreshStageResult,
     drift: &DriftCheckStageResult,
 ) -> NightlyReport {
@@ -536,7 +631,37 @@ pub fn run_nightly_pipeline(
     );
     report.add_stage(mining_outcome);
 
-    // ── Stage 3: POI Refresh ──
+    // ── Stage 3: Hypothesis Generation (LLM) ──
+    if let Some(hyp) = hypothesis {
+        tracing::info!(
+            stage = "hypothesis_generation",
+            candidates_submitted = hyp.candidates_submitted,
+            hypotheses_generated = hyp.hypotheses_generated,
+            hypotheses_failed = hyp.hypotheses_failed,
+            recipes_staged = hyp.recipes_staged,
+            error_count = hyp.errors.len(),
+            "nightly_stage_begin"
+        );
+        let hyp_outcome = process_hypothesis_generation_stage(hyp);
+        tracing::info!(
+            stage = "hypothesis_generation",
+            items = hyp_outcome.items,
+            error_count = hyp_outcome.error_count,
+            status = ?hyp_outcome.run.status,
+            "nightly_stage_complete"
+        );
+        report.add_stage(hyp_outcome);
+    } else {
+        // LLM feature disabled — omit stage from report entirely.
+        // This preserves backward-compatible overall_success semantics
+        // (a 4-stage pipeline without LLM behaves identically to before).
+        tracing::debug!(
+            stage = "hypothesis_generation",
+            "skipped: hypothesis generation not available (llm feature disabled)"
+        );
+    }
+
+    // ── Stage 4: POI Refresh ──
     tracing::info!(
         stage = "poi_refresh",
         profiles_scanned = poi.profiles_scanned,
@@ -556,7 +681,7 @@ pub fn run_nightly_pipeline(
     );
     report.add_stage(poi_outcome);
 
-    // ── Stage 4: Feature Drift ──
+    // ── Stage 5: Feature Drift ──
     tracing::info!(
         stage = "drift_check",
         features_checked = drift.features_checked,
@@ -596,7 +721,8 @@ pub fn run_nightly_pipeline(
 }
 
 /// Decide whether the pipeline should proceed to the next stage given previous failures.
-/// Policy: crawl failure blocks mining (no fresh data), but POI and drift are independent.
+/// Policy: crawl failure blocks mining (no fresh data), mining failure blocks
+/// hypothesis generation, but POI and drift are independent.
 pub fn should_proceed(report: &NightlyReport, next_stage: NightlyStage) -> bool {
     match next_stage {
         NightlyStage::Crawl => true,
@@ -606,6 +732,13 @@ pub fn should_proceed(report: &NightlyReport, next_stage: NightlyStage) -> bool 
                 .stages
                 .iter()
                 .any(|s| s.stage == NightlyStage::Crawl && matches!(s.run.status, JobStatus::Succeeded { .. }))
+        }
+        NightlyStage::HypothesisGeneration => {
+            // Hypothesis generation needs mining candidates
+            report
+                .stages
+                .iter()
+                .any(|s| s.stage == NightlyStage::Mining && matches!(s.run.status, JobStatus::Succeeded { .. }))
         }
         NightlyStage::PoiRefresh => true, // independent
         NightlyStage::DriftCheck => true,  // independent
@@ -887,9 +1020,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         assert!(report.overall_success);
         assert_eq!(report.stage_count(), 4);
         assert_eq!(report.succeeded_stages(), 4);
@@ -902,9 +1036,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &failed_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         assert!(!report.overall_success);
         assert_eq!(report.failed_stages().len(), 1);
         assert_eq!(report.failed_stages()[0].stage, NightlyStage::Crawl);
@@ -915,9 +1050,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &empty_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         // Skipped is not a success
         assert!(!report.overall_success);
         assert_eq!(report.succeeded_stages(), 3);
@@ -928,9 +1064,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &failed_crawl(),
             &failed_mining(),
+            None,
             &empty_poi(),
             &empty_drift(),
-        );
+            );
         assert!(!report.overall_success);
         assert_eq!(report.failed_stages().len(), 2);
     }
@@ -940,9 +1077,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         let summary = report.summary();
         assert!(summary.contains("SUCCESS"));
         assert!(summary.contains("4/4"));
@@ -953,9 +1091,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &failed_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         let summary = report.summary();
         assert!(summary.contains("PARTIAL FAILURE"));
         assert!(summary.contains("3/4"));
@@ -1003,9 +1142,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         assert!((pipeline_health(&report) - 1.0).abs() < 0.01);
     }
 
@@ -1014,6 +1154,7 @@ mod tests {
         let report = run_nightly_pipeline(
             &failed_crawl(),
             &failed_mining(),
+            None,
             &PoiRefreshStageResult {
                 profiles_scanned: 10,
                 profiles_updated: 0,
@@ -1037,6 +1178,7 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &empty_mining(), // skipped
+            None,
             &good_poi(),
             &good_drift(),
         );
@@ -1055,9 +1197,9 @@ mod tests {
     #[test]
     fn test_nightly_stage_all() {
         let stages = NightlyStage::all();
-        assert_eq!(stages.len(), 4);
+        assert_eq!(stages.len(), 5);
         assert_eq!(stages[0], NightlyStage::Crawl);
-        assert_eq!(stages[3], NightlyStage::DriftCheck);
+        assert_eq!(stages[4], NightlyStage::DriftCheck);
     }
 
     #[test]
@@ -1086,9 +1228,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         // crawl: 320+15=335, mining: 3, poi: 12+3=15, drift: 40
         assert_eq!(report.total_items(), 335 + 3 + 15 + 40);
     }
@@ -1098,6 +1241,7 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(), // 2 errors
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
         );
@@ -1118,9 +1262,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         let json = serde_json::to_string(&report).unwrap();
         let back: NightlyReport = serde_json::from_str(&json).unwrap();
         assert_eq!(back.stage_count(), 4);
@@ -1135,6 +1280,7 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &empty_mining(), // skipped
+            None,
             &good_poi(),
             &good_drift(),
         );
@@ -1153,9 +1299,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &good_mining(),
+            None,
             &good_poi(),
             &good_drift(),
-        );
+            );
         let summary = report.summary();
         assert!(!summary.contains("skipped"), "no skipped text when all succeed: {}", summary);
     }
@@ -1165,6 +1312,7 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &empty_mining(), // skipped
+            None,
             &empty_poi(),    // skipped
             &good_drift(),
         );
@@ -1271,7 +1419,7 @@ mod tests {
     /// accidental renames, removed fields, or serde attribute changes.
     #[test]
     fn golden_nightly_report_json_has_required_keys() {
-        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), &good_poi(), &good_drift());
+        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), None, &good_poi(), &good_drift());
         let json = serde_json::to_string(&report).expect("nightly report must serialize");
 
         // Top-level fields
@@ -1283,7 +1431,7 @@ mod tests {
 
     #[test]
     fn golden_nightly_report_roundtrips_losslessly() {
-        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), &good_poi(), &good_drift());
+        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), None, &good_poi(), &good_drift());
         let json = serde_json::to_string(&report).expect("serialize");
         let back: NightlyReport = serde_json::from_str(&json).expect("deserialize");
         // Key invariants preserved through round-trip
@@ -1295,7 +1443,7 @@ mod tests {
 
     #[test]
     fn golden_nightly_stage_outcomes_have_run_fields() {
-        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), &good_poi(), &good_drift());
+        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), None, &good_poi(), &good_drift());
         let json = serde_json::to_string(&report).expect("serialize");
         // Each stage outcome must have run with run_id
         assert!(json.contains("\"run_id\""), "missing run_id in stage outomes");
@@ -1308,9 +1456,10 @@ mod tests {
         let report = run_nightly_pipeline(
             &failed_crawl(),
             &empty_mining(),
+            None,
             &good_poi(),
             &empty_drift(),
-        );
+            );
         assert!(!report.overall_success);
         let json = serde_json::to_string(&report).expect("failed report must still serialize");
         let back: NightlyReport = serde_json::from_str(&json).expect("failed report must deserialize");
@@ -1329,10 +1478,11 @@ mod tests {
 
     #[test]
     fn golden_stage_count_equals_four() {
-        // There are exactly 4 pipeline stages — any change should break this
-        // to force a conscious update to the golden test.
-        assert_eq!(NightlyStage::all().len(), 4);
-        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), &good_poi(), &good_drift());
+        // NightlyStage::all() has 5 stages (includes HypothesisGeneration),
+        // but the pipeline report only contains 4 when hypothesis is None.
+        assert_eq!(NightlyStage::all().len(), 5);
+        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), None, &good_poi(), &good_drift());
+        // hypothesis=None → stage is omitted from report → 4 entries
         assert_eq!(report.stages.len(), 4);
         let json = serde_json::to_string(&report).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1377,7 +1527,7 @@ mod tests {
             errors: vec![],
         };
 
-        let report = run_nightly_pipeline(&crawl, &mining, &poi, &drift);
+        let report = run_nightly_pipeline(&crawl, &mining, None, &poi, &drift);
         assert!(report.overall_success);
         assert_eq!(report.total_errors(), 5); // only crawl had errors
         // Items: crawl=(400+50)=450, mining=5 (recipes_staged), poi=(20+4)=24, drift=80
@@ -1413,6 +1563,7 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &empty_mining(), // skipped
+            None,
             &poi_failure,    // fail
             &good_drift(),
         );
@@ -1426,7 +1577,7 @@ mod tests {
 
     #[test]
     fn e2e_run_ids_are_unique_across_all_stages() {
-        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), &good_poi(), &good_drift());
+        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), None, &good_poi(), &good_drift());
         let ids: Vec<&str> = report.stages.iter().map(|s| s.run.run_id.as_str()).collect();
         let unique: std::collections::HashSet<&str> = ids.iter().cloned().collect();
         assert_eq!(ids.len(), unique.len(), "all stage run_ids must be unique");
@@ -1434,7 +1585,7 @@ mod tests {
 
     #[test]
     fn e2e_finished_at_is_set_after_pipeline_completes() {
-        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), &good_poi(), &good_drift());
+        let report = run_nightly_pipeline(&good_crawl(), &good_mining(), None, &good_poi(), &good_drift());
         assert!(
             report.finished_at.is_some(),
             "finished_at must be set after pipeline completes"
@@ -1451,6 +1602,7 @@ mod tests {
         let report = run_nightly_pipeline(
             &good_crawl(),
             &empty_mining(), // skipped
+            None,
             &empty_poi(),    // skipped
             &empty_drift(),  // skipped
         );
@@ -1470,7 +1622,7 @@ mod tests {
             bytes_fetched: 0,
             errors: (0..1000).map(|i| format!("timeout on source {i}")).collect(),
         };
-        let report = run_nightly_pipeline(&crawl, &good_mining(), &good_poi(), &good_drift());
+        let report = run_nightly_pipeline(&crawl, &good_mining(), None, &good_poi(), &good_drift());
         assert!(!report.overall_success);
         assert_eq!(report.failed_stages().len(), 1);
         assert_eq!(report.failed_stages()[0].stage, NightlyStage::Crawl);

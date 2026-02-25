@@ -1,0 +1,106 @@
+{
+  "timestamp": "2026-02-25T16:57:32",
+  "model": "/workspace/ApexIntel/training/outputs/merged_phase1",
+  "adapter": "/workspace/ApexIntel/training/outputs/phase2_sft/best_adapter",
+  "total_tests": 10,
+  "passed": 9,
+  "failed": 1,
+  "pass_rate": 90.0,
+  "threshold": 0.75,
+  "ready": true,
+  "elapsed_seconds": 232.7,
+  "results": [
+    {
+      "id": "ner-01",
+      "category": "Entity Extraction",
+      "passed": true,
+      "failures": [],
+      "output_length": 888,
+      "json_valid": true,
+      "generation_time_s": 16.1
+    },
+    {
+      "id": "poi-01",
+      "category": "POI Synthesis",
+      "passed": false,
+      "failures": [
+        "JSON parse failed: no valid JSON found in response"
+      ],
+      "output_length": 804,
+      "json_valid": false,
+      "generation_time_s": 12.6
+    },
+    {
+      "id": "recipe-01",
+      "category": "Insight Recipe",
+      "passed": true,
+      "failures": [],
+      "output_length": 941,
+      "json_valid": true,
+      "generation_time_s": 11.1
+    },
+    {
+      "id": "memo-01",
+      "category": "Strategy Memo",
+      "passed": true,
+      "failures": [],
+      "output_length": 2545,
+      "json_valid": true,
+      "generation_time_s": 29.2
+    },
+    {
+      "id": "supply-01",
+      "category": "Supply Chain Analysis",
+      "passed": true,
+      "failures": [],
+      "output_length": 1568,
+      "json_valid": true,
+      "generation_time_s": 25.7
+    },
+    {
+      "id": "compliance-01",
+      "category": "Compliance",
+      "passed": true,
+      "failures": [],
+      "output_length": 1543,
+      "json_valid": true,
+      "generation_time_s": 21.9
+    },
+    {
+      "id": "multi-01",
+      "category": "Multilingual",
+      "passed": true,
+      "failures": [],
+      "output_length": 512,
+      "json_valid": true,
+      "generation_time_s": 9.2
+    },
+    {
+      "id": "reasoning-01",
+      "category": "Reasoning",
+      "passed": true,
+      "failures": [],
+      "output_length": 1514,
+      "json_valid": true,
+      "generation_time_s": 21.4
+    },
+    {
+      "id": "warning-01",
+      "category": "Warning Generation",
+      "passed": true,
+      "failures": [],
+      "output_length": 1618,
+      "json_valid": true,
+      "generation_time_s": 20.7
+    },
+    {
+      "id": "dossier-01",
+      "category": "Company Dossier",
+      "passed": true,
+      "failures": [],
+      "output_length": 3939,
+      "json_valid": true,
+      "generation_time_s": 64.9
+    }
+  ]
+}

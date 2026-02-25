@@ -4,8 +4,8 @@ llm_stress_test.py — Post-training LLM quality verification.
 
 Runs a curated set of domain-specific prompts against the trained model to verify
 it has learned the core ApexIntel tasks: entity extraction, POI synthesis,
-insight recipe generation, memo writing, supply chain analysis, and
-multilingual understanding.
+insight recipe generation, memo writing, supply chain analysis, sanctions/compliance,
+multilingual understanding, warning generation, and company dossier synthesis.
 
 Unlike eval_harness.py (which runs 500+ automated JSONL scenarios), this script
 tests a small number of hand-crafted prompts with strict quality gates. All must
@@ -211,6 +211,65 @@ STRESS_TESTS: List[Dict[str, Any]] = [
             "min_length": 300,
         },
     },
+    # ── 9. Warning Generation ─────────────────────────────────────
+    {
+        "id": "warning-01",
+        "category": "Warning Generation",
+        "system": (
+            "You are an early-warning system for an EMS competitive intelligence platform. "
+            "Analyze the signals below and generate a structured warning. Return valid JSON "
+            "with keys: warning_type, severity (critical/warning/info), title, summary, "
+            "affected_entities, evidence, recommended_actions, confidence."
+        ),
+        "user": (
+            "Multiple signals detected over the past 48 hours:\n"
+            "1. DNS monitoring: 3 new domains registered matching patterns 'flex-ltd-portal.com', "
+            "'flexltd-login.net', 'flex-supplier-hub.org' — all using Let's Encrypt certs and "
+            "Cloudflare proxying, registered via Namecheap with privacy guard.\n"
+            "2. Dark web scan: Paste on a known threat actor forum mentions 'fresh EMS supplier "
+            "portal credentials' with a sample showing @flex.com email addresses.\n"
+            "3. Flex Ltd's actual supplier portal at supplier.flex.com had a TLS certificate "
+            "renewal 2 days ago (routine), but one of the fake domains copied the new cert fingerprint.\n\n"
+            "Generate appropriate warnings covering both Brand Impersonation and Phishing Campaign aspects."
+        ),
+        "checks": {
+            "json_valid": True,
+            "required_fields": ["warning_type", "severity", "title", "summary", "evidence", "recommended_actions"],
+            "must_contain_any": ["impersonation", "phishing", "brand", "domain", "Flex"],
+            "severity_in": ["critical", "warning"],
+        },
+    },
+    # ── 10. Company Dossier Synthesis ─────────────────────────────
+    {
+        "id": "dossier-01",
+        "category": "Company Dossier",
+        "system": (
+            "You are compiling a comprehensive company dossier for an EMS competitive intelligence "
+            "platform. Return valid JSON with keys: company_name, hq_location, revenue_estimate, "
+            "key_people, facilities, capabilities, certifications, recent_developments, "
+            "competitive_position, risk_factors."
+        ),
+        "user": (
+            "Compile a dossier on Pegatron Corporation based on these signals:\n"
+            "- Q3 2024 revenue: NT$362B (~$11.2B USD), down 8% YoY\n"
+            "- Chairman T.H. Tung announced a new $500M factory in Batam, Indonesia for server assembly\n"
+            "- 12 new job postings for AI server thermal engineers in Taipei\n"
+            "- Recently obtained ITAR facility clearance at their Milpitas, CA site\n"
+            "- Lost a major Apple MacBook assembly contract to Luxshare Precision\n"
+            "- Filed 7 patents related to liquid cooling for GPU servers in past 6 months\n"
+            "- Competitor Wistron merged with Inventec's server division\n"
+            "- Supply chain data shows increased procurement of Nvidia HGX baseboard components"
+        ),
+        "checks": {
+            "json_valid": True,
+            "required_fields": [
+                "company_name", "key_people", "facilities", "capabilities",
+                "recent_developments", "competitive_position", "risk_factors",
+            ],
+            "must_contain_any": ["Pegatron", "server", "AI", "Batam", "Apple"],
+            "min_length": 600,
+        },
+    },
 ]
 
 
@@ -363,11 +422,19 @@ def load_model(model_dir: str, adapter_path: str | None = None):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Detect best attention implementation
+    attn = "flash_attention_2"
+    try:
+        import flash_attn  # noqa: F401
+    except (ImportError, ModuleNotFoundError):
+        attn = "sdpa"
+        print("  flash-attn not available, using SDPA")
+
     model = AutoModelForCausalLM.from_pretrained(
         model_dir,
         torch_dtype=torch.bfloat16,
-        device_map="cuda:0",
-        attn_implementation="flash_attention_2",
+        device_map="auto",
+        attn_implementation=attn,
         trust_remote_code=True,
     )
 
@@ -407,7 +474,11 @@ def generate(model, tokenizer, system: str, user: str, max_new_tokens: int) -> s
 
 def main():
     parser = argparse.ArgumentParser(description="ApexIntel LLM stress test — post-training quality verification")
-    parser.add_argument("--model-dir", default=str(WORK / "models" / "base"))
+    # Prefer merged Phase 1 model if available (has Phase 1 adapter already baked in)
+    default_model = str(WORK / "training" / "outputs" / "merged_phase1")
+    if not os.path.isdir(default_model):
+        default_model = str(WORK / "models" / "base")
+    parser.add_argument("--model-dir", default=default_model)
     parser.add_argument(
         "--adapter",
         default=str(WORK / "training" / "outputs" / "phase2_sft" / "best_adapter"),

@@ -22,6 +22,13 @@ pub mod backtest;
 // `negative_control` — synthetic null-signal back-tests for FPR calibration.
 //   The statistical methodology is under active refinement and is not yet
 //   suitable for fully-automated promotion decisions without human review.
+//
+// `feedback` — meta-learning from the system's own promotion/deprecation
+//   history: source yield scoring, observation-type value ranking, recipe
+//   trait extraction, and cross-domain synergy scoring.
+//
+// `cross_domain` — cross-domain signal combination mining that discovers
+//   interaction effects between signals from different ObservationType domains.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// LLM prompt template generation from mined pattern candidates.
@@ -30,8 +37,29 @@ pub mod backtest;
 #[cfg(feature = "experimental")]
 pub mod hypothesis;
 
+/// LLM-backed hypothesis generation — connects pattern candidates to
+/// the LLM client via the hypothesis prompt builders.
+///
+/// Enable with `--features experimental`.
+#[cfg(feature = "experimental")]
+pub mod generate;
+
 /// Negative-control back-tests to calibrate false-positive rates.
 ///
 /// Enable with `--features experimental`.
 #[cfg(feature = "experimental")]
 pub mod negative_control;
+
+/// Self-improving feedback loop — meta-learning from promotion/deprecation
+/// history, source yield scoring, observation-type value ranking.
+///
+/// Enable with `--features experimental`.
+#[cfg(feature = "experimental")]
+pub mod feedback;
+
+/// Cross-domain signal combination mining — discovers synergistic
+/// multi-signal interaction effects across ObservationType domains.
+///
+/// Enable with `--features experimental`.
+#[cfg(feature = "experimental")]
+pub mod cross_domain;

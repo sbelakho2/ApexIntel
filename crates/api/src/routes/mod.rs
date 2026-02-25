@@ -11,6 +11,7 @@ pub mod companies;
 pub mod dossiers;
 pub mod graph;
 pub mod insights;
+pub mod llm;
 pub mod persons;
 pub mod recipes;
 pub mod search;
