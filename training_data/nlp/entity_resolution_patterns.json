@@ -1,0 +1,84 @@
+{
+  "description": "Entity resolution training patterns — name variations, transliterations, abbreviations used in entity_resolution.rs",
+  "version": "1.0",
+  "company_name_variations": {
+    "description": "Common company name transformation patterns for entity resolution scoring",
+    "transformations": [
+      {"type": "legal_suffix_removal", "examples": [["Foxconn Technology Group", "Foxconn"], ["Jabil Inc.", "Jabil"], ["Celestica Inc", "Celestica"]]},
+      {"type": "dba_alias", "examples": [["Hon Hai Precision Industry Co., Ltd.", "Foxconn"], ["Flextronics International Ltd.", "Flex"]]},
+      {"type": "parent_subsidiary", "examples": [["Foxconn Industrial Internet", "Foxconn / Hon Hai"], ["Jabil Circuit Healthcare", "Jabil Healthcare"]]},
+      {"type": "abbreviation", "examples": [["Taiwan Semiconductor Manufacturing Company", "TSMC"], ["Samsung Electronics Co.", "SEC"], ["International Business Machines", "IBM"]]},
+      {"type": "transliteration_ar_en", "examples": [
+        ["شركة كوفيكاب", "Coficab"],
+        ["مجموعة العلومي", "Elloumi Group"],
+        ["الشركة التونسية للكهرباء والغاز", "STEG"],
+        ["اكتيا", "Actia"],
+        ["لاكروا", "LACROIX"]
+      ]},
+      {"type": "transliteration_he_en", "examples": [
+        ["אלביט מערכות", "Elbit Systems"],
+        ["רפאל מערכות לחימה מתקדמות", "Rafael Advanced Defense Systems"],
+        ["התעשייה האווירית לישראל", "Israel Aerospace Industries"]
+      ]},
+      {"type": "transliteration_zh_en", "examples": [
+        ["富士康", "Foxconn"],
+        ["华为", "Huawei"],
+        ["比亚迪", "BYD"],
+        ["中芯国际", "SMIC"],
+        ["台积电", "TSMC"]
+      ]},
+      {"type": "transliteration_ja_en", "examples": [
+        ["ソニー", "Sony"],
+        ["パナソニック", "Panasonic"],
+        ["村田製作所", "Murata"],
+        ["京セラ", "Kyocera"],
+        ["TDK株式会社", "TDK"]
+      ]},
+      {"type": "transliteration_ko_en", "examples": [
+        ["삼성전자", "Samsung Electronics"],
+        ["LG전자", "LG Electronics"],
+        ["현대자동차", "Hyundai Motor"],
+        ["SK하이닉스", "SK Hynix"]
+      ]}
+    ]
+  },
+  "address_normalization": {
+    "description": "Address component normalization rules for deduplication",
+    "street_type_abbreviations": {
+      "en": {"Street": "St", "Avenue": "Ave", "Boulevard": "Blvd", "Drive": "Dr", "Road": "Rd", "Lane": "Ln", "Court": "Ct", "Place": "Pl", "Highway": "Hwy", "Suite": "Ste", "Building": "Bldg", "Floor": "Fl"},
+      "fr": {"Rue": "R", "Avenue": "Av", "Boulevard": "Bd", "Place": "Pl", "Route": "Rte", "Chemin": "Ch", "Impasse": "Imp", "Zone Industrielle": "ZI", "Zone d'Activité": "ZA"},
+      "ar": {"شارع": "ش", "طريق": "ط", "نهج": "نهج", "حي": "حي", "المنطقة الصناعية": "م.ص"}
+    }
+  },
+  "person_name_disambiguation": {
+    "description": "Common patterns for person name entity resolution",
+    "rules": [
+      {"pattern": "First Last == F. Last", "weight": 0.85},
+      {"pattern": "First Middle Last == First Last", "weight": 0.9},
+      {"pattern": "First Last == Last, First", "weight": 1.0},
+      {"pattern": "Dr. First Last == First Last", "weight": 0.95},
+      {"pattern": "Arabic patronymic: محمد بن علي == Mohammed bin Ali", "weight": 0.9},
+      {"pattern": "Hebrew: דוד כהן == David Cohen", "weight": 0.85},
+      {"pattern": "Chinese: 张三 == Zhang San", "weight": 0.8},
+      {"pattern": "Japanese: 田中太郎 == Tanaka Taro", "weight": 0.8},
+      {"pattern": "Korean: 김민수 == Kim Minsu", "weight": 0.8}
+    ]
+  },
+  "similarity_thresholds": {
+    "description": "Recommended similarity thresholds for entity resolution in graph crate",
+    "string_similarity": {
+      "exact_match": 1.0,
+      "near_match": 0.95,
+      "likely_match": 0.85,
+      "possible_match": 0.7,
+      "unlikely_match": 0.5
+    },
+    "entity_merge_thresholds": {
+      "company": 0.85,
+      "person": 0.9,
+      "location": 0.8,
+      "product": 0.9,
+      "event": 0.95
+    }
+  }
+}

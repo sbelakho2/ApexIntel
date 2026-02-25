@@ -35,7 +35,9 @@ impl BucketSize {
 pub fn time_bucket(ts: DateTime<Utc>, bucket: BucketSize) -> i64 {
     let epoch = ts.timestamp();
     let bucket_secs = bucket.days() * 86400;
-    (epoch / bucket_secs) * bucket_secs
+    // Use div_euclid so pre-Unix-epoch timestamps bucket correctly
+    // (Rust integer division truncates toward zero, collapsing negatives into bucket 0).
+    epoch.div_euclid(bucket_secs) * bucket_secs
 }
 
 /// Accumulator for building feature rows from raw observations.

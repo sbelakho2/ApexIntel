@@ -1,0 +1,67 @@
+# ──────────────────────────────────────────────────
+# Phase 1: Domain-Adaptive Pre-Training (DAPT)
+# Causal LM on EMS / manufacturing domain corpus
+# 8×RTX 5090 (32 GB each) — DeepSpeed ZeRO-3
+# ──────────────────────────────────────────────────
+phase: 1
+name: dapt_ems_domain
+
+model:
+  name_or_path: ./models/base          # Qwen3-30B-A3B
+  torch_dtype: bfloat16
+  attn_implementation: flash_attention_2   # falls back to sdpa if unavail
+
+lora:
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  task_type: CAUSAL_LM
+  bias: none
+
+training:
+  output_dir: ./training/outputs/phase1_dapt
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8       # effective batch = 1×8×8 = 64
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  max_grad_norm: 1.0
+  bf16: true
+  logging_steps: 5
+  save_strategy: steps
+  save_steps: 200
+  save_total_limit: 2
+  eval_strategy: steps
+  eval_steps: 200
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  dataloader_num_workers: 8
+  dataloader_pin_memory: true
+  dataloader_prefetch_factor: 4
+  dataloader_persistent_workers: true
+  max_seq_length: 2048
+  report_to: none
+  run_name: apexintel-dapt-phase1
+  deepspeed: ./training/configs/ds_zero3_5090.json
+  gradient_checkpointing: true
+  ddp_find_unused_parameters: false
+
+data:
+  # All corpus files are merged into one arrow dataset by prepare_data.py
+  train_file: ./training/data/dapt_train.jsonl
+  eval_file: ./training/data/dapt_eval.jsonl
+  text_field: text
+  max_seq_length: 4096
+  packing: true                        # pack short docs into full context windows

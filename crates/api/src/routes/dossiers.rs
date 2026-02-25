@@ -1,7 +1,9 @@
 //! Dossiers route — request/response types for company and person dossier endpoints.
 
+use apex_core::validation::validate_uuid;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // ────────────────────────────────────────────
 // Response types
@@ -207,7 +209,8 @@ pub fn avg_source_reliability(sections: &[DossierSection]) -> f64 {
 
 /// Validate a dossier ID (company or person).
 pub fn validate_dossier_id(id: &str) -> Result<uuid::Uuid, String> {
-    uuid::Uuid::parse_str(id).map_err(|_| format!("Invalid dossier ID: '{}'", id))
+    validate_uuid(id, "dossier_id").map_err(|e| e.to_string())?;
+    uuid::Uuid::parse_str(id.trim()).map_err(|_| format!("Invalid dossier ID: '{}'", id))
 }
 
 #[cfg(test)]

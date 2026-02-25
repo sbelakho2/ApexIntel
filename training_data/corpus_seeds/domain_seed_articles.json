@@ -1,0 +1,102 @@
+[
+  {
+    "id": "ems-seed-001",
+    "type": "ems_industry_article",
+    "language": "en",
+    "source": "ems-now.com",
+    "title": "Global EMS Market to Reach $750B by 2028, Driven by EV and 5G Demand",
+    "text": "The global Electronics Manufacturing Services (EMS) market is projected to reach $750 billion by 2028, growing at a CAGR of 7.2% from 2023, according to a new report from Market Research Future. Key growth drivers include the rapid expansion of electric vehicle (EV) production, 5G infrastructure deployment, and the ongoing trend of OEMs outsourcing manufacturing operations. The automotive segment is expected to witness the highest growth rate at 9.1% CAGR, as traditional automakers accelerate their EV transitions and require specialized PCBA capabilities including high-power electronics, battery management systems (BMS), and advanced driver-assistance systems (ADAS). Asia-Pacific continues to dominate with a 45% market share, though nearshoring trends are boosting manufacturing in North Africa, Eastern Europe, and Mexico. Industry leaders including Foxconn, Jabil, and Flex are investing heavily in smart factory initiatives, incorporating Industry 4.0 technologies such as digital twins, AI-powered inspection, and automated material handling. The report also notes growing demand for high-reliability manufacturing services meeting IPC Class 3 and aerospace (AS9100D) standards, driven by defense spending increases across NATO countries and emerging markets.",
+    "date": "2024-03-15",
+    "keywords": ["EMS market", "EV", "5G", "PCBA", "nearshoring", "Industry 4.0"]
+  },
+  {
+    "id": "ems-seed-002",
+    "type": "competitor_capability_page",
+    "language": "en",
+    "source": "flex.com",
+    "title": "Flex Manufacturing Capabilities Overview",
+    "text": "Flex delivers comprehensive electronics manufacturing services across our global network of over 100 facilities in 30 countries. Our capabilities span the full product lifecycle from design and engineering through volume manufacturing and aftermarket services. Core Manufacturing Services: Surface Mount Technology (SMT) Assembly — high-speed placement up to 200,000 CPH with 01005 component capability. Through-Hole Assembly (THT) — automated insertion and selective/wave soldering. Advanced Packaging — System-in-Package (SiP), Package-on-Package (PoP), and flip chip assembly. Box Build & System Integration — complete electromechanical assembly including cable harness, thermal management, and firmware programming. PCB Fabrication — rigid, flex, and rigid-flex up to 40 layers, HDI with any-layer via capability, metal core, and RF/microwave substrates. Testing & Inspection: In-Circuit Test (ICT), Flying Probe, Functional Test, Boundary Scan, X-Ray (2D/3D CT), AOI, SPI. Certifications: ISO 9001:2015, IATF 16949:2016, AS9100D, ISO 13485:2016, ISO 14001:2015, ISO 45001:2018, NADCAP, IPC-A-610 Class 3, J-STD-001 Class 3, ISO 27001:2022, SOC 2 Type II.",
+    "date": "2024-01-01",
+    "keywords": ["Flex", "SMT", "capability", "certification", "manufacturing services"]
+  },
+  {
+    "id": "ems-seed-003",
+    "type": "north_africa_business",
+    "language": "fr",
+    "source": "leaders.com.tn",
+    "title": "La zone franche de Bizerte attire de nouveaux investisseurs en électronique",
+    "text": "La zone franche d'activités économiques de Bizerte poursuit son expansion avec l'arrivée de trois nouveaux investisseurs dans le secteur de l'assemblage électronique. Les entreprises, dont deux sont d'origine européenne et une japonaise, prévoient de créer plus de 1 500 emplois dans les trois prochaines années. Le directeur général de la zone, M. Slim Ben Fredj, a déclaré que ces investissements portent la valeur totale des IDE dans la zone à plus de 500 millions de dinars tunisiens. Les nouvelles unités de production seront spécialisées dans l'assemblage CMS (Composants Montés en Surface), le test fonctionnel, et la fabrication de faisceaux de câbles pour l'industrie automobile. Les investisseurs ont été attirés par la proximité géographique avec l'Europe, la disponibilité d'une main-d'œuvre qualifiée formée par les universités tunisiennes (ESPRIT, INSAT, ENIT), et les avantages fiscaux offerts par le code d'investissement tunisien. La Tunisie se positionne ainsi comme une alternative crédible aux sites de production en Asie pour les OEM européens cherchant à diversifier leurs chaînes d'approvisionnement.",
+    "date": "2024-06-20",
+    "keywords": ["zone franche", "Bizerte", "assemblage électronique", "CMS", "investissement", "Tunisie"]
+  },
+  {
+    "id": "ems-seed-004",
+    "type": "israel_defense_procurement",
+    "language": "he",
+    "source": "israeldefense.co.il",
+    "title": "משרד הביטחון מפרסם מכרז לייצור מערכות אלקטרוניקה למערכת כיפת ברזל",
+    "text": "משרד הביטחון פרסם מכרז חדש לייצור כרטיסים אלקטרוניים ומערכות חשמל עבור מערכת ההגנה האווירית כיפת ברזל. המכרז, בהיקף של כ-200 מיליון שקלים, מיועד לחברות ייצור אלקטרוני (EMS) בעלות הסמכת AS9100D ו-NADCAP, עם ניסיון מוכח בייצור מוצרי ביטחון ברמת אמינות גבוהה. הדרישות כוללות יכולת הרכבת רכיבים SMT ו-BGA על כרטיסים מודפסים (PCB) רב-שכבתיים, ציפוי קונפורמלי, ובדיקת אקס-ריי. ההפקדה האחרונה להגשת הצעות היא 31 בדצמבר 2024. אגף הרכש של משרד הביטחון (SIBAT) מעודד שיתופי פעולה בין חברות ישראליות לבין ספקים בינלאומיים בעלי יכולות משלימות. איש הקשר: תא\"ל (מיל') יוסי ברק, ראש ענף רכש אלקטרוניקה.",
+    "date": "2024-09-01",
+    "keywords": ["מכרז", "כיפת ברזל", "אלקטרוניקה", "ביטחון", "EMS", "SMT", "SIBAT"]
+  },
+  {
+    "id": "ems-seed-005",
+    "type": "china_electronics_industry",
+    "language": "zh",
+    "source": "eet-china.com",
+    "title": "中国电子制造服务行业2024年现状与展望",
+    "text": "2024年中国电子制造服务（EMS）行业继续保持强劲增长势头，预计全年行业规模将突破2万亿元人民币。在国家\"双循环\"战略和\"中国制造2025\"政策推动下，国内EMS企业在技术水平和产业规模上都取得了显著进步。立讯精密（002475.SZ）、歌尔股份（002241.SZ）、比亚迪电子（00285.HK）等龙头企业在全球竞争中的地位持续提升。行业主要增长动力包括：5G基站及终端设备制造、新能源汽车电子（BMS、ADAS、车载信息娱乐系统）、服务器及数据中心设备、以及消费电子产品。值得关注的是，随着中美科技博弈持续，国内EMS企业在高端PCB制造（HDI、IC载板、高频高速板）和先进封装（SiP、FC-BGA）领域加速技术突破。同时，东南亚产能布局（越南、印度、印尼）成为行业新趋势，以应对地缘政治风险和客户多元化供应链需求。行业面临的主要挑战包括：核心设备和材料的国产替代进度、高端人才短缺、以及国际认证体系（如IATF 16949、AS9100D）的对接。",
+    "date": "2024-04-10",
+    "keywords": ["EMS", "中国制造2025", "5G", "新能源汽车", "PCB", "先进封装", "供应链"]
+  },
+  {
+    "id": "ems-seed-006",
+    "type": "tender_document",
+    "language": "fr",
+    "source": "ted.europa.eu",
+    "title": "Appel d'offres: Services d'assemblage électronique pour la Direction Générale de l'Armement",
+    "text": "AVIS DE MARCHÉ — Services — Directive 2014/24/UE\n\nSection I: Pouvoir adjudicateur\nNom: Direction Générale de l'Armement (DGA)\nAdresse: 60 boulevard du Général Martial Valin, 75015 Paris, France\n\nSection II: Objet\nIntitulé: Prestations d'assemblage de cartes électroniques et d'intégration de systèmes pour des programmes de défense\nDescription: Le présent marché porte sur la fabrication et l'assemblage de cartes électroniques complexes (multicouches, HDI, RF), l'intégration de sous-systèmes électroniques, les tests fonctionnels et environnementaux (vibration, choc thermique, EMC), et le maintien en condition opérationnelle (MCO). Les prestations concernent des équipements électroniques embarqués dans des systèmes d'armes, de communication, et de surveillance.\n\nExigences:\n- Certification AS9100D (obligatoire)\n- IPC-A-610 Classe 3 (obligatoire)\n- J-STD-001 Classe 3 (obligatoire)\n- NADCAP (souhaité)\n- Habilitation de sécurité de niveau Confidentiel Défense\n- Capacité de production SMT à haute cadence (>50K CPH)\n- Inspection rayons X 3D/CT\n\nValeur estimée: 45 000 000 EUR\nDurée: 48 mois\nDate limite de réception des offres: 28/02/2025\n\nContact: Col. Philippe Lefèvre, Chef de la section marchés électronique\nTéléphone: +33 1 45 52 XX XX\nCourriel: philippe.lefevre@dga.defense.gouv.fr",
+    "date": "2024-11-15",
+    "keywords": ["DGA", "défense", "assemblage électronique", "AS9100D", "IPC Classe 3", "marché public"]
+  },
+  {
+    "id": "ems-seed-007",
+    "type": "arabic_business_article",
+    "language": "ar",
+    "source": "webmanagercenter.com",
+    "title": "شركة أول سيركوتس التونسية تفوز بعقد جديد مع شركة تاليس الفرنسية",
+    "text": "أعلنت شركة أول سيركوتس (All Circuits)، المتمركزة في منطقة مجاز الباب بولاية باجة، عن توقيع عقد جديد مع مجموعة تاليس الفرنسية (Thales Group) لتصنيع كرتات إلكترونية متقدمة لصالح قطاع الطيران والدفاع. يمتد العقد، الذي تبلغ قيمته حوالي 15 مليون يورو على مدار ثلاث سنوات، ليشمل تجميع الدوائر المطبوعة (PCB) متعددة الطبقات، والتجميع السطحي (SMT)، واختبارات الفحص الوظيفي والبيئي. صرح السيد كمال الشريف، المدير العام لأول سيركوتس، أن هذا العقد يؤكد مكانة تونس كقاعدة صناعية تنافسية لقطاع الإلكترونيات الدفاعية في منطقة البحر الأبيض المتوسط. وأضاف أن الشركة استثمرت مؤخراً 5 ملايين دينار تونسي في تحديث خطوط الإنتاج وتوسيع قدرات التجميع عالي الكثافة (HDI). تمتلك الشركة شهادات ISO 9001:2015 و AS9100D و IPC-A-610 الفئة 3. يعمل في الشركة أكثر من 1200 موظف، بينهم 200 مهندس وتقني مؤهل.",
+    "date": "2024-07-22",
+    "keywords": ["أول سيركوتس", "تاليس", "إلكترونيات", "دفاع", "تونس", "SMT", "PCB"]
+  },
+  {
+    "id": "ems-seed-008",
+    "type": "korean_electronics_news",
+    "language": "ko",
+    "source": "etnews.com",
+    "title": "삼성전기, 차세대 MLCC 생산 능력 대폭 확대",
+    "text": "삼성전기가 부산 사업장에 약 3조 원을 투자해 차세대 적층세라믹콘덴서(MLCC) 생산 설비를 대폭 확충한다. 이번 투자는 전기차(EV) 및 5G 통신장비에 필요한 고용량·고내압 MLCC 수요 급증에 대응하기 위한 것이다. 정철동 대표이사는 \"자동차 전장화와 AI 서버 확산에 따라 고사양 수동부품 수요가 폭발적으로 증가하고 있다\"며 \"이번 투자로 글로벌 MLCC 시장에서의 기술 리더십을 더욱 공고히 할 것\"이라고 밝혔다. 삼성전기의 부산 공장은 ISO 9001, IATF 16949, AEC-Q200 인증을 보유하고 있으며, 0201 사이즈 이하의 초소형 MLCC와 150μm 이하 박막 MLCC 양산 기술을 확보하고 있다. 업계 전문가들은 이번 투자가 무라타(Murata), TDK 등 일본 경쟁사와의 기술 격차를 줄이는 데 기여할 것으로 전망했다.",
+    "date": "2024-05-30",
+    "keywords": ["삼성전기", "MLCC", "전기차", "5G", "수동부품", "IATF 16949"]
+  },
+  {
+    "id": "ems-seed-009",
+    "type": "japanese_manufacturing_news",
+    "language": "ja",
+    "source": "nikkei.com",
+    "title": "村田製作所、滋賀県に新工場建設へ　EV向け部品生産を強化",
+    "text": "村田製作所は滋賀県野洲市に新たな製造拠点を建設し、電気自動車（EV）向け電子部品の生産能力を大幅に拡大すると発表した。投資額は約800億円で、2026年の稼働を目指す。新工場ではEV用パワーモジュール基板、車載用MLCC（積層セラミックコンデンサ）、およびバッテリーマネジメントシステム（BMS）用センサーモジュールの生産を行う。中島規巨社長は「カーボンニュートラル実現に向けた自動車の電動化は不可逆的なトレンドであり、当社の高信頼性電子部品への需要は今後も拡大する」と述べた。同社は自動車品質規格IATF 16949、航空宇宙規格AS9100D、医療機器規格ISO 13485の認証を取得しており、高い品質管理水準を維持している。また、SMT実装技術においてはIPC-A-610クラス3に準拠した製造プロセスを採用し、5Gインフラ向けの高周波モジュールの量産も開始している。",
+    "date": "2024-08-15",
+    "keywords": ["村田製作所", "EV", "MLCC", "パワーモジュール", "IATF 16949", "滋賀"]
+  },
+  {
+    "id": "ems-seed-010",
+    "type": "supply_chain_analysis",
+    "language": "en",
+    "source": "mckinsey.com",
+    "title": "EMS Supply Chain Resilience: Lessons from the Great Semiconductor Shortage",
+    "text": "The semiconductor shortage of 2020-2023 exposed critical vulnerabilities in electronics manufacturing supply chains worldwide. Our analysis of 150 EMS companies across 15 countries reveals five key lessons for building resilience. First, geographic concentration risk: 73% of EMS capacity for automotive-grade components was concentrated in just three countries (China, Taiwan, South Korea), making the industry vulnerable to regional disruptions. Companies that had diversified manufacturing footprints across at least three regions recovered production levels 40% faster. Second, inventory strategy transformation: the just-in-time model that dominated pre-pandemic proved brittle. Leading EMS companies now maintain 60-90 days of strategic buffer stock for critical components, up from 14-21 days. Third, supplier visibility: companies with real-time visibility into their tier-2 and tier-3 suppliers (only 23% of surveyed companies) were able to identify and mitigate shortages an average of 45 days earlier. Fourth, certification as competitive advantage: EMS companies with automotive (IATF 16949), aerospace (AS9100D), and medical (ISO 13485) certifications captured 35% more new business during the recovery period, as OEMs prioritized qualified suppliers. Fifth, digital twin adoption: 18% of leading EMS companies deployed digital twin technology for manufacturing processes, reducing NPI time by 30% and enabling rapid capacity reallocation between product lines.",
+    "date": "2024-02-28",
+    "keywords": ["supply chain resilience", "semiconductor shortage", "EMS", "nearshoring", "digital twin", "inventory management"]
+  }
+]

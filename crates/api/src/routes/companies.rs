@@ -2,6 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use apex_core::validation::clamp_ratio;
+
+use super::warnings::SortDirection;
 
 // ────────────────────────────────────────────
 // Request types
@@ -9,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// Query parameters for listing companies.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListCompaniesQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
@@ -16,9 +20,11 @@ pub struct ListCompaniesQuery {
     pub search: Option<String>,
     pub is_competitor: Option<bool>,
     pub sort_by: Option<CompanySortField>,
+    pub sort_dir: Option<SortDirection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum CompanySortField {
     Name,
     Region,
@@ -168,12 +174,9 @@ pub fn rank_changes(changes: &mut [CompetitorChange]) {
 pub fn threat_summary(companies: &[CompanyListItem]) -> CompetitorSummary {
     let competitors: Vec<_> = companies.iter().filter(|c| c.is_competitor).collect();
     let total = competitors.len();
-    let avg_threat = if total > 0 {
-        competitors
-            .iter()
-            .filter_map(|c| c.threat_score)
-            .sum::<f64>()
-            / total as f64
+    let scored: Vec<f64> = competitors.iter().filter_map(|c| c.threat_score).collect();
+    let avg_threat = if !scored.is_empty() {
+        clamp_ratio(scored.iter().sum::<f64>() / scored.len() as f64)
     } else {
         0.0
     };

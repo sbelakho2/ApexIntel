@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use apex_core::validation::clamp_ratio;
 
 // ────────────────────────────────────────────
 // Request types
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Query parameters for listing insights.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListInsightsQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
@@ -35,6 +37,7 @@ pub struct InsightResponse {
     pub entity_ids: Vec<String>,
     pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Weekly strategy memo response.
@@ -83,8 +86,9 @@ pub fn rank_insights(insights: &mut [InsightResponse]) {
 
 fn insight_score(insight: &InsightResponse, now: &DateTime<Utc>) -> f64 {
     let age_hours = (*now - insight.created_at).num_hours().max(1) as f64;
-    let recency = 1.0 / (1.0 + (age_hours / 24.0).ln().max(0.0));
-    insight.confidence * recency
+    // Linear decay: insights <24h old get varying recency instead of all scoring 1.0
+    let recency = 1.0 / (1.0 + age_hours / 24.0);
+    clamp_ratio(insight.confidence * recency)
 }
 
 /// Group insights by region.
@@ -132,6 +136,7 @@ mod tests {
     use super::*;
 
     fn make_insight(region: &str, confidence: f64, hours_ago: i64, tags: Vec<&str>) -> InsightResponse {
+        let ts = Utc::now() - chrono::Duration::hours(hours_ago);
         InsightResponse {
             id: uuid::Uuid::new_v4().to_string(),
             title: format!("Insight in {}", region),
@@ -142,7 +147,8 @@ mod tests {
             evidence_urls: vec![],
             entity_ids: vec![],
             tags: tags.into_iter().map(|t| t.to_string()).collect(),
-            created_at: Utc::now() - chrono::Duration::hours(hours_ago),
+            created_at: ts,
+            updated_at: ts,
         }
     }
 

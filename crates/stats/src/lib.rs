@@ -7,3 +7,4 @@ pub mod hazard;
 pub mod bayesian;
 pub mod graph_risk;
 pub mod fdr;
+pub mod utils;

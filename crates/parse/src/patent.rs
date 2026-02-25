@@ -1,8 +1,67 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::normalizer;
+use apex_core::validation::normalize_url;
+
+static RE_PATENT_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b((?:US|EP|WO|CN|JP|KR|TN|MA|IL|FR|DE)\s*\d[\d/]+(?:\s*[AB]\d?)?)\b")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_APPLICANT: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:applicant|déposant|assignee|titulaire)[:\s]+([^\n.;]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_INVENTORS: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:inventor|inventeur)[s]?[:\s]+([^\n]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_IPC_CODES: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b([A-H]\d{2}[A-Z]\s*\d{1,4}/\d{2,4})\b")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_FILING_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:filing date|date de d\u00e9p\u00f4t|fecha de presentaci\u00f3n)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_PUBLICATION_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:publication date|date de publication)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_ABSTRACT: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:abstract|résumé|abrégé)[:\s]+([\s\S]{10,500}?)(?:\n\n|\z)")
+        .size_limit(1_000_000) // larger limit needed for [\s\S] alternation
+        .dfa_size_limit(1_000_000)
+        .build()
+        .unwrap()
+});
 
 /// Extracted patent information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,13 +92,19 @@ pub fn extract_patent(
     let applicant = extract_applicant(body_text)
         .unwrap_or_default();
     let inventors = extract_inventors(body_text);
-    let filing_date = extract_date_field(body_text, "filing date|date de dépôt|fecha de presentación");
-    let publication_date = extract_date_field(body_text, "publication date|date de publication");
+    let filing_date = RE_FILING_DATE.captures(body_text)
+        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .filter(|raw| normalizer::is_valid_date(raw));
+    let publication_date = RE_PUBLICATION_DATE.captures(body_text)
+        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .filter(|raw| normalizer::is_valid_date(raw));
     let ipc_codes = extract_ipc_codes(body_text);
     let abstract_text = extract_abstract(body_text);
 
     let ems_kws = crate::multilingual::ems_keywords("en");
     let keywords = crate::multilingual::contains_keywords(body_text, &ems_kws);
+
+    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
 
     PatentExtract {
         patent_number,
@@ -50,7 +115,7 @@ pub fn extract_patent(
         publication_date,
         ipc_codes,
         abstract_text,
-        url: url.to_string(),
+        url: normalized_url,
         jurisdiction: jurisdiction.to_string(),
         keywords,
         extracted_at: Utc::now(),
@@ -59,68 +124,41 @@ pub fn extract_patent(
 
 fn extract_patent_number(text: &str) -> Option<String> {
     // Patterns: US12345678, EP1234567, WO2024/123456, TN2024001, MA12345
-    let re = Regex::new(r"\b((?:US|EP|WO|CN|JP|KR|TN|MA|IL|FR|DE)\s*\d[\d/]+(?:\s*[AB]\d?)?)\b").ok()?;
-    re.captures(text)
+    RE_PATENT_NUMBER.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_applicant(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:applicant|déposant|assignee|titulaire)[:\s]+([^\n.;]+)").ok()?;
-    re.captures(text)
+    RE_APPLICANT.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_inventors(text: &str) -> Vec<String> {
-    let re = Regex::new(r"(?i)(?:inventor|inventeur)[s]?[:\s]+([^\n]+)")
-        .ok();
-    match re {
-        Some(re) => {
-            if let Some(caps) = re.captures(text) {
-                let list = caps.get(1).unwrap().as_str();
-                list.split(&[',', ';'][..])
-                    .map(|s| normalizer::normalize_whitespace(s))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            } else {
-                vec![]
-            }
-        }
-        None => vec![],
+    if let Some(caps) = RE_INVENTORS.captures(text) {
+        let list = caps.get(1).unwrap().as_str();
+        list.split(&[',', ';'][..])
+            .map(|s| normalizer::normalize_whitespace(s))
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        vec![]
     }
 }
 
-fn extract_date_field(text: &str, label_pattern: &str) -> Option<String> {
-    let pattern = format!(r"(?i)(?:{})[:\s]+(\d{{4}}[-/]\d{{2}}[-/]\d{{2}}|\d{{2}}[-/]\d{{2}}[-/]\d{{4}})", label_pattern);
-    let re = Regex::new(&pattern).ok()?;
-    re.captures(text)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
-}
 
 fn extract_ipc_codes(text: &str) -> Vec<String> {
     // IPC codes like H05K 3/46, B23K 1/00
-    let re = Regex::new(r"\b([A-H]\d{2}[A-Z]\s*\d{1,4}/\d{2,4})\b")
-        .ok();
-    match re {
-        Some(re) => re
-            .find_iter(text)
-            .map(|m| normalizer::normalize_whitespace(m.as_str()))
-            .collect(),
-        None => vec![],
-    }
+    RE_IPC_CODES
+        .find_iter(text)
+        .map(|m| normalizer::normalize_whitespace(m.as_str()))
+        .collect()
 }
 
 fn extract_abstract(text: &str) -> String {
-    let re = Regex::new(r"(?i)(?:abstract|résumé|abrégé)[:\s]+([\s\S]{10,500}?)(?:\n\n|\z)")
-        .ok();
-    match re {
-        Some(re) => {
-            if let Some(caps) = re.captures(text) {
-                normalizer::normalize_whitespace(caps.get(1).unwrap().as_str())
-            } else {
-                normalizer::truncate(text, 300)
-            }
-        }
-        None => normalizer::truncate(text, 300),
+    if let Some(caps) = RE_ABSTRACT.captures(text) {
+        normalizer::normalize_whitespace(caps.get(1).unwrap().as_str())
+    } else {
+        normalizer::truncate(text, 300)
     }
 }
 
@@ -189,7 +227,8 @@ mod tests {
     #[test]
     fn test_extract_filing_date() {
         let text = "Filing date: 2024-03-15. Publication date: 2024-09-15.";
-        let date = extract_date_field(text, "filing date|date de dépôt");
+        let date = RE_FILING_DATE.captures(text)
+            .map(|c| c.get(1).unwrap().as_str().to_string());
         assert_eq!(date, Some("2024-03-15".to_string()));
     }
 

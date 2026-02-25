@@ -1,0 +1,222 @@
+[
+  {
+    "name": "IPC APEX EXPO",
+    "frequency": "annual",
+    "typical_month": "January",
+    "location": "San Diego, CA, USA",
+    "sector": ["electronics_manufacturing", "pcb", "assembly", "ems"],
+    "organizer": "IPC – Association Connecting Electronics Industries",
+    "url": "https://www.ipcapexexpo.org",
+    "relevance": "P0",
+    "description": "Premier electronics manufacturing trade show. Technical sessions on PCB fabrication, assembly, soldering, reliability. Key networking for EMS/OEM relationships."
+  },
+  {
+    "name": "Electronica",
+    "frequency": "biennial",
+    "typical_month": "November",
+    "location": "Munich, Germany",
+    "sector": ["electronics", "semiconductors", "passive_components", "connectors", "ems"],
+    "organizer": "Messe München",
+    "url": "https://electronica.de",
+    "relevance": "P0",
+    "description": "World's largest electronics trade fair. 80,000+ visitors, 3,000+ exhibitors. Core event for component sourcing, supplier discovery, and technology trends."
+  },
+  {
+    "name": "Productronica",
+    "frequency": "biennial",
+    "typical_month": "November",
+    "location": "Munich, Germany",
+    "sector": ["electronics_manufacturing", "smt", "test", "inspection", "pcb"],
+    "organizer": "Messe München",
+    "url": "https://productronica.com",
+    "relevance": "P0",
+    "description": "World's leading trade fair for electronics development and manufacturing. Focus on SMT, soldering, coating, test/inspection equipment."
+  },
+  {
+    "name": "PCIM Europe",
+    "frequency": "annual",
+    "typical_month": "May",
+    "location": "Nuremberg, Germany",
+    "sector": ["power_electronics", "drives", "renewable_energy", "ev"],
+    "organizer": "Mesago Messe Frankfurt",
+    "url": "https://pcim.mesago.com",
+    "relevance": "P1",
+    "description": "International exhibition for power electronics, intelligent motion, renewable energy, and energy management."
+  },
+  {
+    "name": "SMTconnect",
+    "frequency": "annual",
+    "typical_month": "June",
+    "location": "Nuremberg, Germany",
+    "sector": ["smt", "electronics_manufacturing", "assembly", "test"],
+    "organizer": "Mesago Messe Frankfurt",
+    "url": "https://smtconnect.com",
+    "relevance": "P1",
+    "description": "System integration in micro electronics. Focus on SMT assembly, interconnection technology, and test."
+  },
+  {
+    "name": "Embedded World",
+    "frequency": "annual",
+    "typical_month": "March",
+    "location": "Nuremberg, Germany",
+    "sector": ["embedded_systems", "iot", "edge_computing", "automotive_electronics"],
+    "organizer": "NürnbergMesse",
+    "url": "https://www.embedded-world.de",
+    "relevance": "P1",
+    "description": "World's largest exhibition for embedded systems. Key for automotive, industrial IoT, and edge computing opportunities."
+  },
+  {
+    "name": "NEPCON Japan",
+    "frequency": "annual",
+    "typical_month": "January",
+    "location": "Tokyo, Japan",
+    "sector": ["electronics_manufacturing", "smt", "pcb", "test"],
+    "organizer": "Reed Exhibitions Japan",
+    "url": "https://www.nepconjapan.jp",
+    "relevance": "P1",
+    "description": "Japan's largest electronics manufacturing exhibition. 2,000+ exhibitors covering SMT, PCBA, testing, materials."
+  },
+  {
+    "name": "SEMICON West",
+    "frequency": "annual",
+    "typical_month": "July",
+    "location": "San Francisco, CA, USA",
+    "sector": ["semiconductors", "fab_equipment", "materials", "advanced_packaging"],
+    "organizer": "SEMI",
+    "url": "https://www.semiconwest.org",
+    "relevance": "P1",
+    "description": "Flagship semiconductor equipment and materials exposition. Intelligence on chip manufacturing, advanced packaging, supply chain."
+  },
+  {
+    "name": "SEMICON Europa",
+    "frequency": "annual",
+    "typical_month": "November",
+    "location": "Munich, Germany",
+    "sector": ["semiconductors", "mems", "power_electronics", "photonics"],
+    "organizer": "SEMI",
+    "url": "https://www.semiconeuropa.org",
+    "relevance": "P2",
+    "description": "European semiconductor industry event. Co-located with Electronica/Productronica in alternating years."
+  },
+  {
+    "name": "Hannover Messe",
+    "frequency": "annual",
+    "typical_month": "April",
+    "location": "Hannover, Germany",
+    "sector": ["industrial_automation", "robotics", "energy", "digital_factory"],
+    "organizer": "Deutsche Messe",
+    "url": "https://www.hannovermesse.de",
+    "relevance": "P2",
+    "description": "World's largest industrial technology fair. 200,000+ visitors. Key for Industry 4.0, automation, and smart manufacturing intelligence."
+  },
+  {
+    "name": "Automechanika",
+    "frequency": "biennial",
+    "typical_month": "September",
+    "location": "Frankfurt, Germany",
+    "sector": ["automotive_aftermarket", "parts", "electronics", "diagnostics"],
+    "organizer": "Messe Frankfurt",
+    "url": "https://automechanika.messefrankfurt.com",
+    "relevance": "P2",
+    "description": "World's leading trade fair for the automotive service industry. Key for automotive electronics and component suppliers."
+  },
+  {
+    "name": "SPS – Smart Production Solutions",
+    "frequency": "annual",
+    "typical_month": "November",
+    "location": "Nuremberg, Germany",
+    "sector": ["industrial_automation", "plc", "drives", "sensors", "industrial_software"],
+    "organizer": "Mesago Messe Frankfurt",
+    "url": "https://sps.mesago.com",
+    "relevance": "P2",
+    "description": "Europe's leading automation trade fair. Focus on electrical automation, drives, sensors, control, and Industry 4.0."
+  },
+  {
+    "name": "AERODEF Manufacturing",
+    "frequency": "annual",
+    "typical_month": "March",
+    "location": "Various US cities",
+    "sector": ["aerospace", "defense", "manufacturing", "composites"],
+    "organizer": "SME",
+    "url": "https://aerodefevent.com",
+    "relevance": "P2",
+    "description": "Aerospace and defense manufacturing event. Key for ITAR/AS9100-related business intelligence."
+  },
+  {
+    "name": "SIEL Morocco",
+    "frequency": "annual",
+    "typical_month": "November",
+    "location": "Casablanca, Morocco",
+    "sector": ["electrical", "electronics", "renewable_energy", "lighting"],
+    "organizer": "FENELEC / Reed Expositions",
+    "url": "https://sfrm.ma",
+    "relevance": "P1",
+    "description": "Morocco's international exhibition for electrical, electronics, and renewable energy. Key regional event for North Africa market intelligence."
+  },
+  {
+    "name": "Tunisia Investment Forum",
+    "frequency": "annual",
+    "typical_month": "June",
+    "location": "Tunis, Tunisia",
+    "sector": ["investment", "manufacturing", "offshoring", "electronics"],
+    "organizer": "FIPA Tunisia",
+    "url": "https://www.investintunisia.tn",
+    "relevance": "P1",
+    "description": "Investment forum for Tunisia's manufacturing and offshoring sectors. Key for competitor intelligence and FDI trends."
+  },
+  {
+    "name": "International Defense Exhibition (IDEX)",
+    "frequency": "biennial",
+    "typical_month": "February",
+    "location": "Abu Dhabi, UAE",
+    "sector": ["defense", "security", "military_electronics"],
+    "organizer": "ADNEC Group",
+    "url": "https://www.idexuae.ae",
+    "relevance": "P2",
+    "description": "MENA region's largest defense exhibition. Relevant for defense electronics supply chain intelligence."
+  },
+  {
+    "name": "ISA CISS (Israel Subcontracting Show)",
+    "frequency": "annual",
+    "typical_month": "November",
+    "location": "Tel Aviv, Israel",
+    "sector": ["subcontracting", "electronics", "manufacturing", "defense"],
+    "organizer": "Stier Group",
+    "url": "https://www.isafairs.co.il",
+    "relevance": "P1",
+    "description": "Israel's key subcontracting show. Critical for Israeli defense/hi-tech supplier ecosystem intelligence."
+  },
+  {
+    "name": "IATF International Automotive Task Force Conference",
+    "frequency": "annual",
+    "typical_month": "September",
+    "location": "Various",
+    "sector": ["automotive", "quality", "iatf16949"],
+    "organizer": "IATF",
+    "url": "https://www.iatfglobaloversight.org",
+    "relevance": "P1",
+    "description": "Focused on IATF 16949 quality management. Intelligence on certification trends, audit changes, and OEM requirements."
+  },
+  {
+    "name": "IPC Works Asia",
+    "frequency": "annual",
+    "typical_month": "October",
+    "location": "Various Asian cities",
+    "sector": ["electronics_manufacturing", "pcb", "assembly"],
+    "organizer": "IPC",
+    "url": "https://ipcworksasia.ipc.org",
+    "relevance": "P2",
+    "description": "IPC's Asian electronics manufacturing event. Standards updates, technical sessions, and supply chain networking."
+  },
+  {
+    "name": "Global Industrie Paris",
+    "frequency": "annual",
+    "typical_month": "March",
+    "location": "Paris, France",
+    "sector": ["industrial", "manufacturing", "subcontracting", "additive"],
+    "organizer": "GL events Exhibitions",
+    "url": "https://global-industrie.com",
+    "relevance": "P2",
+    "description": "France's largest industrial trade show. Combines former Midest (subcontracting) and Smart Industries events."
+  }
+]

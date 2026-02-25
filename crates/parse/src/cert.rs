@@ -1,8 +1,85 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::normalizer;
+use apex_core::validation::normalize_url;
+
+static CERT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?i)(ISO\s*\d{4,5}(?::\d{4})?)",
+        r"(?i)(IATF\s*16949(?::\d{4})?)",
+        r"(?i)(AS\s*9100\w?)",
+        r"(?i)(Nadcap(?:\s+Electronics)?)",
+        r"(?i)(IEC\s*61340(?:[-\s]\d+[-\s]\d+)?)",
+        r"(?i)(IPC[-\s]*A[-\s]*610\w?)",
+        r"(?i)(IPC\s*J[-\s]*STD[-\s]*001\w?)",
+        r"(?i)\b(UL\s*\d*)\b",
+        r"(?i)\b(CE)\b(?:\s*mark)?",
+        r"(?i)\b(RoHS)\b",
+        r"(?i)\b(REACH)\b",
+        r"(?i)\b(ITAR)\b",
+    ]
+    .iter()
+    .map(|p| {
+        RegexBuilder::new(p)
+            .size_limit(200_000)
+            .dfa_size_limit(200_000)
+            .build()
+            .unwrap()
+    })
+    .collect()
+});
+
+static RE_HOLDER: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:holder|certified company|organisation|company name)[:\s]+([^\n.;]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_CERT_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:certificate|cert\.?\s*(?:no|#|number))[:\s]*([A-Z0-9][\w\-/]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_ISSUER: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:issued by|certifying body|issuer|organisme)[:\s]+([^\n.;]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_ISSUE_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:issue date|date of issue|valid from)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2})")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_EXPIRY_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:expiry|expiration|valid until|valid to)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2})")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_SCOPE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:scope|champ d'application)[:\s]+([^\n]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
 
 /// Known certification standards relevant to EMS.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,17 +107,17 @@ pub enum CertStandard {
 impl CertStandard {
     pub fn from_text(text: &str) -> Self {
         let t = text.to_uppercase().replace([' ', '-'], "");
-        if t.contains("9001") { return CertStandard::Iso9001; }
-        if t.contains("14001") { return CertStandard::Iso14001; }
-        if t.contains("13485") { return CertStandard::Iso13485; }
-        if t.contains("45001") { return CertStandard::Iso45001; }
+        if t.contains("ISO9001") { return CertStandard::Iso9001; }
+        if t.contains("ISO14001") { return CertStandard::Iso14001; }
+        if t.contains("ISO13485") { return CertStandard::Iso13485; }
+        if t.contains("ISO45001") { return CertStandard::Iso45001; }
         if t.contains("IATF16949") || t.contains("16949") { return CertStandard::Iatf16949; }
-        if t.contains("AS9100") || t.contains("9100") { return CertStandard::As9100; }
+        if t.contains("AS9100") { return CertStandard::As9100; }
         if t.contains("NADCAPELECTRONICS") { return CertStandard::NadcapElectronics; }
         if t.contains("NADCAP") { return CertStandard::Nadcap; }
         if t.contains("61340") { return CertStandard::Iec61340; }
         if t.contains("IPCA610") || t.contains("A610") { return CertStandard::IpcA610; }
-        if t.contains("JSTD001") || t.contains("JSTD001") { return CertStandard::IpcJ_Std_001; }
+        if t.contains("JSTD001") { return CertStandard::IpcJ_Std_001; }
         if t.contains("ITAR") { return CertStandard::Itar; }
         if t == "UL" || t.contains("UL94") || t.contains("ULCERTIF") { return CertStandard::Ul; }
         if t == "CE" || t.contains("CEMARK") { return CertStandard::Ce; }
@@ -98,57 +175,41 @@ pub enum CertExtractionStatus {
 
 /// Extract all certification mentions from page text.
 pub fn extract_certifications(body_text: &str, url: &str) -> Vec<CertExtract> {
-    let cert_patterns = [
-        r"(?i)(ISO\s*\d{4,5}(?::\d{4})?)",
-        r"(?i)(IATF\s*16949(?::\d{4})?)",
-        r"(?i)(AS\s*9100\w?)",
-        r"(?i)(Nadcap(?:\s+Electronics)?)",
-        r"(?i)(IEC\s*61340(?:[-\s]\d+[-\s]\d+)?)",
-        r"(?i)(IPC[-\s]*A[-\s]*610\w?)",
-        r"(?i)(IPC\s*J[-\s]*STD[-\s]*001\w?)",
-        r"(?i)(UL\s*\d*)",
-        r"(?i)\b(CE)\b(?:\s*mark)?",
-        r"(?i)\b(RoHS)\b",
-        r"(?i)\b(REACH)\b",
-        r"(?i)\b(ITAR)\b",
-    ];
-
+    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
     let holder = extract_holder(body_text);
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for pattern in &cert_patterns {
-        if let Ok(re) = Regex::new(pattern) {
-            for caps in re.captures_iter(body_text) {
-                let raw = caps.get(1).unwrap().as_str();
-                let standard = CertStandard::from_text(raw);
-                let name = standard.display_name().to_string();
+    for re in CERT_PATTERNS.iter() {
+        for caps in re.captures_iter(body_text) {
+            let raw = caps.get(1).unwrap().as_str();
+            let standard = CertStandard::from_text(raw);
+            let name = standard.display_name().to_string();
 
-                if seen.contains(&name) {
-                    continue;
-                }
-                seen.insert(name.clone());
-
-                let cert_number = extract_cert_number_near(body_text, caps.get(0).unwrap().end());
-                let issuer = extract_issuer(body_text);
-                let (issue_date, expiry_date) = extract_cert_dates(body_text);
-                let scope = extract_scope(body_text);
-                let status = detect_cert_status(body_text);
-
-                results.push(CertExtract {
-                    standard: normalizer::normalize_whitespace(raw),
-                    parsed_standard: standard,
-                    holder: holder.clone(),
-                    certificate_number: cert_number,
-                    issuer,
-                    issue_date,
-                    expiry_date,
-                    scope,
-                    status,
-                    url: url.to_string(),
-                    extracted_at: Utc::now(),
-                });
+            if seen.contains(&name) {
+                continue;
             }
+            seen.insert(name.clone());
+
+            let cert_number = extract_cert_number_near(body_text, caps.get(0).unwrap().end());
+            let issuer = extract_issuer(body_text);
+            let (issue_date, expiry_date) = extract_cert_dates(body_text);
+            let scope = extract_scope(body_text);
+            let status = detect_cert_status(body_text);
+
+            results.push(CertExtract {
+                standard: normalizer::normalize_whitespace(raw),
+                parsed_standard: standard,
+                holder: holder.clone(),
+                certificate_number: cert_number,
+                issuer,
+                issue_date,
+                expiry_date,
+                scope,
+                status,
+                url: normalized_url.clone(),
+                extracted_at: Utc::now(),
+            });
         }
     }
 
@@ -156,41 +217,34 @@ pub fn extract_certifications(body_text: &str, url: &str) -> Vec<CertExtract> {
 }
 
 fn extract_holder(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:holder|certified company|organisation|company name)[:\s]+([^\n.;]+)").ok()?;
-    re.captures(text)
+    RE_HOLDER.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_cert_number_near(text: &str, offset: usize) -> Option<String> {
     let remaining = &text[offset..];
-    let re = Regex::new(r"(?i)(?:certificate|cert\.?\s*(?:no|#|number))[:\s]*([A-Z0-9][\w\-/]+)").ok()?;
-    re.captures(remaining)
+    RE_CERT_NUMBER.captures(remaining)
         .map(|c| c.get(1).unwrap().as_str().to_string())
 }
 
 fn extract_issuer(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:issued by|certifying body|issuer|organisme)[:\s]+([^\n.;]+)").ok()?;
-    re.captures(text)
+    RE_ISSUER.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_cert_dates(text: &str) -> (Option<String>, Option<String>) {
-    let issue_re = Regex::new(r"(?i)(?:issue date|date of issue|valid from)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2})").ok();
-    let expiry_re = Regex::new(r"(?i)(?:expiry|expiration|valid until|valid to)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2})").ok();
-
-    let issue = issue_re.and_then(|re| {
-        re.captures(text).map(|c| c.get(1).unwrap().as_str().to_string())
-    });
-    let expiry = expiry_re.and_then(|re| {
-        re.captures(text).map(|c| c.get(1).unwrap().as_str().to_string())
-    });
+    let issue = RE_ISSUE_DATE.captures(text)
+        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .filter(|raw| normalizer::is_valid_date(raw));
+    let expiry = RE_EXPIRY_DATE.captures(text)
+        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .filter(|raw| normalizer::is_valid_date(raw));
 
     (issue, expiry)
 }
 
 fn extract_scope(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:scope|champ d'application)[:\s]+([^\n]+)").ok()?;
-    re.captures(text)
+    RE_SCOPE.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 

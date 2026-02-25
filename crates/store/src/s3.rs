@@ -32,13 +32,21 @@ impl ObjectStore {
     pub async fn ensure_bucket(&self) -> Result<()> {
         match self.client.head_bucket().bucket(&self.bucket).send().await {
             Ok(_) => Ok(()),
-            Err(_) => {
-                self.client
-                    .create_bucket()
-                    .bucket(&self.bucket)
-                    .send()
-                    .await?;
-                Ok(())
+            Err(err) => {
+                // Only create if the bucket doesn't exist; propagate other errors
+                let is_not_found = err
+                    .as_service_error()
+                    .map_or(false, |se| se.is_not_found());
+                if is_not_found {
+                    self.client
+                        .create_bucket()
+                        .bucket(&self.bucket)
+                        .send()
+                        .await?;
+                    Ok(())
+                } else {
+                    Err(err.into())
+                }
             }
         }
     }
@@ -108,7 +116,16 @@ impl ObjectStore {
             .await
         {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(err) => {
+                let is_not_found = err
+                    .as_service_error()
+                    .map_or(false, |se| se.is_not_found());
+                if is_not_found {
+                    Ok(false)
+                } else {
+                    Err(err.into())
+                }
+            }
         }
     }
 
@@ -123,21 +140,39 @@ impl ObjectStore {
         Ok(())
     }
 
-    /// List keys under a prefix.
+    /// List keys under a prefix (handles S3 pagination).
     pub async fn list_keys(&self, prefix: &str) -> Result<Vec<String>> {
-        let resp = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(prefix)
-            .send()
-            .await?;
+        let mut keys = Vec::new();
+        let mut continuation_token: Option<String> = None;
 
-        let keys: Vec<String> = resp
-            .contents()
-            .iter()
-            .filter_map(|obj| obj.key().map(String::from))
-            .collect();
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix);
+
+            if let Some(token) = &continuation_token {
+                req = req.continuation_token(token);
+            }
+
+            let resp = req.send().await?;
+
+            for obj in resp.contents() {
+                if let Some(key) = obj.key() {
+                    keys.push(key.to_string());
+                }
+            }
+
+            if resp.is_truncated() == Some(true) {
+                continuation_token = resp.next_continuation_token().map(String::from);
+                if continuation_token.is_none() {
+                    break; // safety: no token means no more pages
+                }
+            } else {
+                break;
+            }
+        }
 
         Ok(keys)
     }

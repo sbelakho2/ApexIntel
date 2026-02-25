@@ -7,6 +7,10 @@ use uuid::Uuid;
 // Company
 // ────────────────────────────────────────────
 
+/// Broad classification of a company in the supply-chain graph.
+///
+/// `Other(String)` admits arbitrary strings from external data sources;
+/// use `as_str`/`from_str` for lossless round-trips.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CompanyType {
     Oem,
@@ -47,6 +51,11 @@ impl CompanyType {
     }
 }
 
+/// A company node in the ApexIntel supply-chain knowledge graph.
+///
+/// Score fields (`risk_score`, `threat_score`, `overlap_score`,
+/// `strategic_relevance`) are real-valued in `[0, 1]` and recomputed
+/// by the graph-risk module each nightly run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Company {
     pub id: Uuid,
@@ -97,6 +106,9 @@ impl Company {
 // Site
 // ────────────────────────────────────────────
 
+/// Physical facility type for a [`Site`] belonging to a [`Company`].
+///
+/// `Other(String)` admits values from external data feeds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SiteType {
     Plant,
@@ -120,6 +132,10 @@ impl SiteType {
     }
 }
 
+/// A physical site (factory, warehouse, R&D lab, etc.) linked to a [`Company`].
+///
+/// Optional geo fields (`lat`, `lon`) enable distance-based risk queries.
+/// `free_zone` carries the economic zone designation where applicable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Site {
     pub id: Uuid,
@@ -170,6 +186,11 @@ impl Site {
 // Person (POI)
 // ────────────────────────────────────────────
 
+/// High-level function a Person-of-Interest (POI) serves in their organisation.
+///
+/// Used by the engagement module to select appropriate outreach templates
+/// and by the features module to compute `role_seniority_score`.
+/// `Other(String)` preserves unrecognised categories from external sources.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RoleFamily {
     Procurement,
@@ -222,6 +243,12 @@ impl RoleFamily {
     }
 }
 
+/// Six-dimensional vector describing a person's (or organisation's) stated
+/// and inferred decision-making priorities.
+///
+/// Values are real-valued weights in `[0, 1]`; they need not sum to 1.
+/// [`PriorityVector::dominant`] returns the name of the highest-weighted
+/// dimension, with `"cost"` as the tiebreaker.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PriorityVector {
     pub cost: f64,
@@ -244,7 +271,12 @@ impl PriorityVector {
         ];
         let mut best = pairs[0];
         for &pair in &pairs[1..] {
-            if pair.1 > best.1 {
+            // Use partial_cmp so that NaN never silently wins the comparison.
+            // If best is NaN, any finite value replaces it; if pair is NaN it
+            // is skipped (Greater never matches).
+            if matches!(pair.1.partial_cmp(&best.1), Some(std::cmp::Ordering::Greater))
+                || best.1.is_nan()
+            {
                 best = pair;
             }
         }
@@ -252,6 +284,11 @@ impl PriorityVector {
     }
 }
 
+/// A Person-of-Interest (POI) — a key decision maker tracked by ApexIntel.
+///
+/// Linked to a [`Company`] via the graph layer.  Score fields
+/// (`pain_index`, `influence_score`) are recomputed by the POI-refresh
+/// stage of the nightly pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Person {
     pub id: Uuid,
@@ -331,6 +368,10 @@ impl Person {
 // POI Artifact
 // ────────────────────────────────────────────
 
+/// The type of digital artifact linked to a [`Person`].
+///
+/// Used to weight evidence in [`compute_priority_vector`](crate::features::compute_priority_vector)
+/// and to build the `ArtifactSummarySection` in a POI dossier.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ArtifactType {
     PressQuote,
@@ -362,6 +403,10 @@ impl ArtifactType {
     }
 }
 
+/// A digital artifact (patent, publication, talk, etc.) associated with a POI.
+///
+/// `url` is the canonical source; `published_at` drives freshness scoring
+/// in [`compute_pain_index`](crate::features::compute_pain_index).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoiArtifact {
     pub id: Uuid,
@@ -412,6 +457,10 @@ impl PoiArtifact {
 // Observation (time-stamped atomic fact)
 // ────────────────────────────────────────────
 
+/// Discriminant for the type of real-world signal captured in an [`Observation`].
+///
+/// Determines how downstream modules interpret `payload` and which recipes
+/// are eligible to fire on this observation.  Hash-safe for use as a map key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ObservationType {
     JobPost,
@@ -477,6 +526,12 @@ impl ObservationType {
     }
 }
 
+/// A single real-world signal captured during the crawl stage.
+///
+/// `payload` holds the raw extracted data (e.g. job-post fields, price tick).
+/// `source_metadata` carries provenance info (URL, fetch timestamp, extractor
+/// version) for auditability.  `confidence` defaults to 1.0 for direct crawls
+/// and decreases for inferred/interpolated observations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     pub id: Uuid,
@@ -515,6 +570,11 @@ impl Observation {
 // Graph Edge
 // ────────────────────────────────────────────
 
+/// The semantic relationship type for a directed edge in the supply-chain graph.
+///
+/// Used by the graph-risk module's propagation and PageRank algorithms.
+/// Add new variants to `as_str`/`from_str` in tandem to preserve
+/// serde round-trips.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EdgeType {
     CompanySite,
@@ -550,6 +610,11 @@ impl EdgeType {
     }
 }
 
+/// A directed weighted edge in the supply-chain knowledge graph.
+///
+/// `source_id` → `target_id` with `weight` in `(0, ∞)` (defaults to 1.0).
+/// Both `source_type` and `target_type` are free-form strings matching the
+/// entity type labels used by [`AdjacencyGraph`](apex_graph::AdjacencyGraph).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEdge {
     pub id: Uuid,
@@ -596,6 +661,7 @@ impl GraphEdge {
 // Certification
 // ────────────────────────────────────────────
 
+/// Lifecycle status of a quality or compliance [`Certification`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CertStatus {
     Active,
@@ -615,6 +681,10 @@ impl CertStatus {
     }
 }
 
+/// A quality or compliance certification held by a [`Company`].
+///
+/// `is_valid()` returns `true` only when `status == Active` AND either
+/// `valid_until` is `None` (no expiry recorded) or is a future date.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Certification {
     pub id: Uuid,
@@ -670,6 +740,11 @@ impl Certification {
 // Logistics Node
 // ────────────────────────────────────────────
 
+/// A logistics node (port, hub, airport, rail terminal) in the supply-chain graph.
+///
+/// `node_type` is a free-form string; common values are `"port"`, `"airport"`,
+/// `"rail_hub"`, `"ftz"` (free-trade zone).  Linked to companies and sites via
+/// [`GraphEdge`] entries in the adjacency graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogisticsNode {
     pub id: Uuid,
@@ -699,6 +774,12 @@ impl LogisticsNode {
 // Capability
 // ────────────────────────────────────────────
 
+/// Evidence quality grade for a [`Capability`] claim.
+///
+/// `A` = confirmed by audited cert or direct inspection.
+/// `B` = supported by multiple secondary sources.
+/// `C` = inferred from job posts or indirect signals.
+/// `D` = unverified / single-source claim.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ProofGrade {
     A, // cert/registry
@@ -718,6 +799,10 @@ impl ProofGrade {
     }
 }
 
+/// A specific manufacturing or service capability claimed and graded for a [`Company`].
+///
+/// `capability` is a short slug, e.g. `"SMT"`, `"die_casting"`, `"painting"`.
+/// `proof_grade` reflects how well the claim is evidenced.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capability {
     pub id: Uuid,
@@ -756,6 +841,12 @@ impl Capability {
 // Feature Store Row
 // ────────────────────────────────────────────
 
+/// A time-bucketed feature vector for an entity, used as ML model input.
+///
+/// Rows are keyed by `(entity_id, entity_type, time_bucket)` where
+/// `time_bucket` is the Unix epoch of the bucket start divided by
+/// `bucket_size_days * 86_400`.  `signal_counts` holds raw event counts
+/// keyed by signal name; numeric feature slots are stored separately.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureRow {
     pub entity_id: String,
@@ -977,6 +1068,50 @@ mod tests {
         assert_eq!(fr.bucket_size_days, 7);
         assert!(fr.signal_counts.is_empty());
         assert!(fr.poi_pain_index.is_none());
+    }
+
+    // ── B270: SiteType / RoleFamily::Other uncovered branches ─────────────
+
+    #[test]
+    fn test_site_type_as_str_all_variants() {
+        let cases = [
+            (SiteType::Plant, "plant"),
+            (SiteType::Warehouse, "warehouse"),
+            (SiteType::Office, "office"),
+            (SiteType::Lab, "lab"),
+            (SiteType::Hq, "hq"),
+        ];
+        for (variant, expected) in &cases {
+            assert_eq!(variant.as_str(), *expected, "SiteType::{:?} should be {expected}", variant);
+        }
+        // Other variant returns the inner string verbatim
+        let custom = SiteType::Other("depot".to_string());
+        assert_eq!(custom.as_str(), "depot");
+    }
+
+    #[test]
+    fn test_role_family_other_variant_roundtrip() {
+        // Unrecognised strings must produce Other(s) and survive as_str
+        let rf = RoleFamily::from_str("legal");
+        assert_eq!(rf, RoleFamily::Other("legal".to_string()));
+        assert_eq!(rf.as_str(), "legal");
+
+        // Known variants must NOT become Other
+        assert_ne!(RoleFamily::from_str("finance"), RoleFamily::Other("finance".to_string()));
+        assert_eq!(RoleFamily::Finance.as_str(), "finance");
+    }
+
+    #[test]
+    fn test_priority_vector_all_fields_matter_for_dominant() {
+        // Security highest
+        let pv = PriorityVector { cost: 0.1, quality: 0.2, speed: 0.3, resilience: 0.4, compliance: 0.5, security: 0.9 };
+        assert_eq!(pv.dominant(), "security");
+        // Cost highest (explicitly)
+        let pv2 = PriorityVector { cost: 1.0, quality: 0.0, speed: 0.0, resilience: 0.0, compliance: 0.0, security: 0.0 };
+        assert_eq!(pv2.dominant(), "cost");
+        // Exact tie: first encountered (cost) wins
+        let pv3 = PriorityVector::default(); // all zero
+        assert_eq!(pv3.dominant(), "cost");
     }
 
     #[test]

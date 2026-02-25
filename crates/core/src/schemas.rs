@@ -139,13 +139,13 @@ impl Recipe {
     /// Validate recipe has required fields.
     pub fn validate(&self) -> Result<()> {
         if self.code.is_empty() {
-            return Err(ApexError::Validation("recipe code cannot be empty".into()));
+            return Err(ApexError::validation("recipe code cannot be empty"));
         }
         if self.name.is_empty() {
-            return Err(ApexError::Validation("recipe name cannot be empty".into()));
+            return Err(ApexError::validation("recipe name cannot be empty"));
         }
         if self.signals.is_empty() {
-            return Err(ApexError::Validation("recipe must have at least one signal".into()));
+            return Err(ApexError::validation("recipe must have at least one signal"));
         }
         Ok(())
     }
@@ -155,7 +155,7 @@ impl Recipe {
         if total == 0 {
             return 1.0;
         }
-        let true_positives = total - self.false_positive_count;
+        let true_positives = total.saturating_sub(self.false_positive_count);
         true_positives as f64 / total as f64
     }
 }

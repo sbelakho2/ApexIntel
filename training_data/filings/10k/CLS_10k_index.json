@@ -1,0 +1,85 @@
+{
+  "company": "Celestica Inc",
+  "ticker": "CLS",
+  "cik": "0001061219",
+  "filings": [
+    {
+      "date": "2025-02-28",
+      "accession": "0001061219-25-000006",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121925000006/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2024-02-28",
+      "accession": "0001061219-24-000006",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121924000006/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2023-02-28",
+      "accession": "0001061219-23-000006",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121923000006/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2022-02-28",
+      "accession": "0001061219-22-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121922000008/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2021-03-01",
+      "accession": "0001061219-21-000009",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121921000009/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2020-02-28",
+      "accession": "0001061219-20-000014",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121920000014/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2019-03-01",
+      "accession": "0001061219-19-000007",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121919000007/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2018-02-28",
+      "accession": "0001061219-18-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121918000008/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2017-02-24",
+      "accession": "0001061219-17-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121917000008/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2016-02-26",
+      "accession": "0001061219-16-000058",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121916000058/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2015-03-02",
+      "accession": "0001061219-15-000007",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121915000007/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2014-03-03",
+      "accession": "0001140361-14-010442",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000114036114010442/form10k.htm",
+      "document": "form10k.htm"
+    },
+    {
+      "date": "2013-03-01",
+      "accession": "0001061219-13-000011",
+      "url": "https://www.sec.gov/Archives/edgar/data/1061219/000106121913000011/epdform10k_123112.htm",
+      "document": "epdform10k_123112.htm"
+    }
+  ]
+}

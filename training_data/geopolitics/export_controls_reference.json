@@ -1,0 +1,100 @@
+{
+  "description": "Export control regimes and dual-use classification reference for compliance checking in the sanctions/compliance engine",
+  "version": "1.0",
+  "wassenaar_arrangement": {
+    "description": "Wassenaar Arrangement on Export Controls for Conventional Arms and Dual-Use Goods and Technologies",
+    "participating_states": 42,
+    "categories": [
+      {"cat": 1, "title": "Special Materials and Related Equipment", "subcategories": ["1A (Systems, Equipment)", "1B (Test, Inspection, Production Equipment)", "1C (Materials)", "1D (Software)", "1E (Technology)"], "ems_relevance": "medium", "examples": ["Composite materials", "Superalloys", "Maraging steels"]},
+      {"cat": 2, "title": "Materials Processing", "subcategories": ["2A-2E"], "ems_relevance": "low"},
+      {"cat": 3, "title": "Electronics", "subcategories": ["3A (Electronic Components)", "3B (Electronic Test Equipment)", "3C (Materials for Electronics)", "3D (Software)", "3E (Technology)"], "ems_relevance": "critical", "examples": ["High-speed ADC/DAC", "Microwave transistors", "Space-qualified ICs", "Rad-hard components", "Signal analyzers >40 GHz", "Cryptographic ICs"]},
+      {"cat": 4, "title": "Computers", "subcategories": ["4A (Computer Systems)", "4D (Software)", "4E (Technology)"], "ems_relevance": "medium", "examples": ["High-performance computers above APP threshold", "Quantum computing hardware"]},
+      {"cat": 5, "title": "Telecommunications and Information Security", "subcategories": ["5A Part 1 (Telecom)", "5A Part 2 (Information Security)", "5B", "5D", "5E"], "ems_relevance": "high", "examples": ["Encryption hardware", "Lawful intercept equipment", "Jamming equipment", "5G core network equipment"]},
+      {"cat": 6, "title": "Sensors and Lasers", "subcategories": ["6A-6E"], "ems_relevance": "high", "examples": ["Infrared detectors", "Image intensifiers", "High-power lasers", "LIDAR systems", "Thermal cameras"]},
+      {"cat": 7, "title": "Navigation and Avionics", "subcategories": ["7A-7E"], "ems_relevance": "medium", "examples": ["INS systems", "GNSS receivers with anti-jamming", "Radar altimeters"]},
+      {"cat": 8, "title": "Marine", "subcategories": ["8A-8E"], "ems_relevance": "low"},
+      {"cat": 9, "title": "Aerospace and Propulsion", "subcategories": ["9A-9E"], "ems_relevance": "low", "examples": ["UAV engines", "Turbine blades"]}
+    ],
+    "key_thresholds_electronics": {
+      "adc_resolution_speed": "≥ 12-bit at ≥ 400 MSPS is controlled",
+      "fpga_gate_count": "High gate-count FPGAs with space/military qualification",
+      "frequency_synthesizer": "Fractional-N with ≤ 1 µs switching and sub-Hz resolution",
+      "encryption": "Any non-mass-market cryptographic functionality"
+    }
+  },
+  "eu_dual_use_regulation": {
+    "description": "EU Regulation 2021/821 (recast) — EU dual-use export control",
+    "annex_i_categories": "Same as Wassenaar (1-9) + additional EU controls",
+    "cyber_surveillance": {
+      "description": "EU added controls on cyber-surveillance items (2021 recast)",
+      "controlled_items": ["Intrusion software", "IP network surveillance systems", "Lawful interception equipment", "Deep packet inspection for surveillance"],
+      "human_rights_assessment": "Required before export to certain destinations"
+    },
+    "catch_all_clause": {
+      "article": "Article 4",
+      "description": "Member states can control unlisted items if exporter knows/is informed they may be used for WMD, military end-use in embargoed countries, or cyber-surveillance"
+    }
+  },
+  "us_export_controls": {
+    "ear": {
+      "description": "Export Administration Regulations — administered by BIS (Bureau of Industry and Security)",
+      "ccl_categories": [
+        {"cat": 0, "title": "Nuclear Materials, Facilities, Equipment"},
+        {"cat": 1, "title": "Materials, Chemicals, Microorganisms, Toxins"},
+        {"cat": 2, "title": "Materials Processing"},
+        {"cat": 3, "title": "Electronics Design and Production", "ems_relevance": "critical"},
+        {"cat": 4, "title": "Computers"},
+        {"cat": 5, "title": "Telecommunications and Information Security", "ems_relevance": "high"},
+        {"cat": 6, "title": "Sensors and Lasers"},
+        {"cat": 7, "title": "Navigation and Avionics"},
+        {"cat": 8, "title": "Marine"},
+        {"cat": 9, "title": "Propulsion Systems"}
+      ],
+      "license_exceptions": ["LVS (Low Value Shipment)", "TMP (Temporary Exports)", "RPL (Replacement Parts)", "GOV (Government)", "TSR (Technology/Software under restriction)", "ENC (Encryption)", "CIV (Civil End Users)"],
+      "entity_list_url": "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/entity-list",
+      "denied_persons_url": "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/denied-persons-list",
+      "unverified_list_url": "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/unverified-list"
+    },
+    "itar": {
+      "description": "International Traffic in Arms Regulations — administered by DDTC (State Dept)",
+      "usml_categories_relevant": [
+        {"cat": "XI", "title": "Military Electronics", "description": "Electronic equipment specifically designed for military use: C4ISR, EW, radar, sonar, IFF, cryptographic, guidance", "ems_relevance": "critical"},
+        {"cat": "XII", "title": "Fire Control, Range Finder, Optical and Guidance Equipment", "ems_relevance": "high"},
+        {"cat": "XIII", "title": "Materials and Miscellaneous Articles", "ems_relevance": "medium"},
+        {"cat": "XV", "title": "Spacecraft and Related Articles", "ems_relevance": "medium"}
+      ],
+      "registration": "Any US person engaged in manufacturing or exporting defense articles must register with DDTC",
+      "technical_assistance_agreement": "TAA required for sharing technical data with foreign persons"
+    }
+  },
+  "country_risk_tiers": {
+    "description": "Country risk classification for export control purposes (simplified for key markets)",
+    "countries": [
+      {"iso2": "TN", "country": "Tunisia", "us_ear_group": "B", "eu_status": "Association Agreement partner", "sanctions_regimes": [], "export_control_risk": "low-medium", "notes": "No comprehensive sanctions; NATO MNNA"},
+      {"iso2": "MA", "country": "Morocco", "us_ear_group": "B", "eu_status": "Association Agreement partner", "sanctions_regimes": [], "export_control_risk": "low", "notes": "NATO MNNA; stable partner"},
+      {"iso2": "IL", "country": "Israel", "us_ear_group": "A:1", "eu_status": "Association Agreement partner", "sanctions_regimes": [], "export_control_risk": "low", "notes": "Close defense partner; some BDS-related restrictions in certain jurisdictions"},
+      {"iso2": "CN", "country": "China", "us_ear_group": "D:1", "eu_status": "No FTA", "sanctions_regimes": ["US Entity List (selective)", "US military end-user restrictions"], "export_control_risk": "high", "notes": "Major export control concern; CHIPS Act restrictions; Entity List additions ongoing"},
+      {"iso2": "JP", "country": "Japan", "us_ear_group": "A:1", "eu_status": "EPA partner", "sanctions_regimes": [], "export_control_risk": "very low"},
+      {"iso2": "KR", "country": "South Korea", "us_ear_group": "A:1", "eu_status": "FTA partner", "sanctions_regimes": [], "export_control_risk": "very low"},
+      {"iso2": "DE", "country": "Germany", "us_ear_group": "A:1", "eu_status": "EU member", "sanctions_regimes": [], "export_control_risk": "very low"},
+      {"iso2": "FR", "country": "France", "us_ear_group": "A:1", "eu_status": "EU member", "sanctions_regimes": [], "export_control_risk": "very low"},
+      {"iso2": "US", "country": "United States", "us_ear_group": "N/A", "eu_status": "No FTA (TTIP stalled)", "sanctions_regimes": [], "export_control_risk": "very low"},
+      {"iso2": "SG", "country": "Singapore", "us_ear_group": "A:1", "eu_status": "FTA partner", "sanctions_regimes": [], "export_control_risk": "very low"},
+      {"iso2": "CA", "country": "Canada", "us_ear_group": "A:1", "eu_status": "CETA partner", "sanctions_regimes": [], "export_control_risk": "very low"},
+      {"iso2": "RU", "country": "Russia", "us_ear_group": "D:1,D:2", "eu_status": "Comprehensive sanctions", "sanctions_regimes": ["US SDN/SSI", "EU restrictive measures", "UK sanctions"], "export_control_risk": "critical", "notes": "Near-total technology embargo since 2022"},
+      {"iso2": "IR", "country": "Iran", "us_ear_group": "E:1", "eu_status": "Comprehensive sanctions", "sanctions_regimes": ["US comprehensive", "EU restrictive", "UN JCPOA"], "export_control_risk": "critical"},
+      {"iso2": "KP", "country": "North Korea", "us_ear_group": "E:1", "eu_status": "Comprehensive sanctions", "sanctions_regimes": ["US comprehensive", "EU comprehensive", "UN comprehensive"], "export_control_risk": "critical"},
+      {"iso2": "SY", "country": "Syria", "us_ear_group": "E:1", "eu_status": "Comprehensive sanctions", "sanctions_regimes": ["US comprehensive", "EU comprehensive"], "export_control_risk": "critical"}
+    ]
+  },
+  "fragile_states_indicators": {
+    "description": "Key indicators from Fund for Peace Fragile States Index methodology",
+    "indicator_categories": [
+      {"category": "Cohesion", "indicators": ["C1: Security Apparatus", "C2: Factionalized Elites", "C3: Group Grievance"]},
+      {"category": "Economic", "indicators": ["E1: Economic Decline", "E2: Uneven Economic Development", "E3: Human Flight and Brain Drain"]},
+      {"category": "Political", "indicators": ["P1: State Legitimacy", "P2: Public Services", "P3: Human Rights and Rule of Law"]},
+      {"category": "Social", "indicators": ["S1: Demographic Pressures", "S2: Refugees and IDPs", "S3: External Intervention"]}
+    ],
+    "scoring": "0-10 per indicator, 0-120 total. Higher = more fragile. Categories: Alert (90+), Warning (60-89.9), Stable (30-59.9), Sustainable (<30)"
+  }
+}

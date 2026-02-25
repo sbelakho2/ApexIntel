@@ -1,9 +1,20 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use apex_core::entities::RoleFamily;
 use crate::normalizer;
+use apex_core::validation::normalize_url;
+
+static RE_JOB_LOCATION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:location|lieu|ville|city|based in)[:\s]+([A-Za-z\u{00c0}-\u{00ff}\s,]+)").unwrap()
+});
+
+static RE_SALARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:salary|compensation|r\u{00e9}mun\u{00e9}ration)[:\s]*([^\n.]+)").unwrap()
+});
 
 /// Extracted job posting data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,10 +160,8 @@ pub fn classify_role_family(title: &str) -> RoleFamily {
 pub fn detect_seniority(title: &str) -> Seniority {
     let lower = title.to_lowercase();
 
-    // Check director before C-level because "director" contains "cto" as substring
-    if lower.contains("director") || lower.contains("directeur") {
-        return Seniority::Director;
-    }
+    // C-level must be checked before Director: a title like "Director and CTO"
+    // should classify as CLevel (higher seniority).
     if lower.contains("chief") || lower == "ceo" || lower == "cfo"
         || lower == "cto" || lower == "coo" || lower == "cpo"
         || lower.starts_with("ceo ") || lower.starts_with("cfo ")
@@ -163,7 +172,13 @@ pub fn detect_seniority(title: &str) -> Seniority {
     {
         return Seniority::CLevel;
     }
-    if lower.contains("vice president") || lower.contains("vp ") || lower.starts_with("vp") {
+    if lower.contains("director") || lower.contains("directeur") {
+        return Seniority::Director;
+    }
+    if lower.contains("vice president") || lower.contains("vp ") || lower == "vp"
+        || lower.starts_with("vp ") || lower.starts_with("vp-") || lower.starts_with("vp,")
+        || lower.contains(" vp,") || lower.ends_with(" vp")
+    {
         return Seniority::VP;
     }
     if lower.contains("lead") || lower.contains("principal") || lower.contains("head of") {
@@ -187,18 +202,20 @@ pub fn extract_job_posting(
     title: &str,
     source_url: &str,
 ) -> JobPosting {
+    let normalized_body = normalizer::normalize_whitespace(body_text);
     let role_family = classify_role_family(title);
     let seniority = detect_seniority(title);
 
     // Extract location patterns
-    let location = extract_location(body_text);
-    let salary_range = extract_salary(body_text);
+    let location = extract_location(&normalized_body);
+    let salary_range = extract_salary(&normalized_body);
 
     // Keyword extraction
     let ems_kws = crate::multilingual::ems_keywords("en");
     let cert_kws = crate::multilingual::certification_keywords("en");
     let all_kws: Vec<&str> = ems_kws.into_iter().chain(cert_kws.into_iter()).collect();
-    let keywords = crate::multilingual::contains_keywords(body_text, &all_kws);
+    let keywords = crate::multilingual::contains_keywords(&normalized_body, &all_kws);
+    let normalized_url = normalize_url(source_url).unwrap_or_else(|| source_url.to_string());
 
     JobPosting {
         title: normalizer::normalize_whitespace(title),
@@ -208,20 +225,18 @@ pub fn extract_job_posting(
         seniority,
         salary_range,
         keywords,
-        source_url: source_url.to_string(),
+        source_url: normalized_url,
         extracted_at: Utc::now(),
     }
 }
 
 fn extract_location(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:location|lieu|ville|city|based in)[:\s]+([A-Za-zÀ-ÿ\s,]+)").ok()?;
-    re.captures(text)
+    RE_JOB_LOCATION.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_salary(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:salary|compensation|rémunération)[:\s]*([^\n.]+)").ok()?;
-    re.captures(text)
+    RE_SALARY.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 

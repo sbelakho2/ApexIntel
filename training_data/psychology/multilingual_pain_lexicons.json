@@ -1,0 +1,77 @@
+{
+  "description": "Multilingual pain/distress keyword lexicons for POI pain_index computation. Extends the 13 keywords currently in features.rs to comprehensive domain-specific coverage.",
+  "languages": {
+    "en": {
+      "supply_chain_pain": ["delay", "shortage", "stockout", "backlog", "bottleneck", "disruption", "constraint", "allocation", "lead time", "expedite", "force majeure"],
+      "quality_pain": ["defect", "failure", "reject", "scrap", "rework", "recall", "non-conformance", "NCR", "escape", "field return", "warranty claim", "zero defect pressure"],
+      "cost_pain": ["cost overrun", "budget cut", "price increase", "margin pressure", "raw material cost", "should-cost", "VA/VE", "cost reduction target"],
+      "compliance_pain": ["audit finding", "non-compliance", "corrective action", "CAPA", "regulatory", "sanction", "penalty", "certification loss", "suspension"],
+      "security_pain": ["breach", "cyber attack", "ransomware", "data leak", "phishing", "vulnerability", "incident", "impersonation"],
+      "competitive_pain": ["competitor advantage", "market share loss", "displaced", "second source", "dual source mandate", "panel reduction"],
+      "operational_pain": ["capacity constraint", "equipment failure", "downtime", "overtime", "attrition", "turnover", "hiring freeze", "labor shortage"]
+    },
+    "fr": {
+      "supply_chain_pain": ["retard", "pénurie", "rupture de stock", "arriéré", "goulot", "perturbation", "contrainte", "allocation", "délai", "approvisionnement"],
+      "quality_pain": ["défaut", "panne", "rejet", "rebut", "reprise", "rappel", "non-conformité", "écart", "retour client"],
+      "cost_pain": ["dépassement de coût", "réduction budgétaire", "hausse des prix", "pression sur les marges", "coût matière", "réduction des coûts"],
+      "compliance_pain": ["constatation d'audit", "non-conformité", "action corrective", "réglementaire", "sanction", "pénalité", "perte de certification"],
+      "security_pain": ["faille", "cyberattaque", "rançongiciel", "fuite de données", "hameçonnage", "vulnérabilité", "incident"],
+      "competitive_pain": ["avantage concurrentiel", "perte de marché", "désélection", "second source", "double source"],
+      "operational_pain": ["contrainte de capacité", "panne équipement", "arrêt", "heures sup", "turnover", "gel des embauches"]
+    },
+    "ar": {
+      "supply_chain_pain": ["تأخير", "نقص", "نفاد المخزون", "تراكم", "اختناق", "تعطيل", "قيد", "تخصيص", "مهلة التسليم"],
+      "quality_pain": ["عيب", "فشل", "رفض", "خردة", "إعادة عمل", "استدعاء", "عدم مطابقة", "إرجاع من الميدان"],
+      "cost_pain": ["تجاوز التكلفة", "خفض الميزانية", "ارتفاع الأسعار", "ضغط الهوامش", "تكلفة المواد الخام", "هدف خفض التكلفة"],
+      "compliance_pain": ["ملاحظات تدقيق", "عدم امتثال", "إجراء تصحيحي", "تنظيمي", "عقوبة", "فقدان الشهادة"],
+      "security_pain": ["اختراق", "هجوم سيبراني", "فدية", "تسريب بيانات", "تصيد", "ثغرة", "حادث"],
+      "competitive_pain": ["ميزة تنافسية", "خسارة حصة السوق", "إزاحة", "مصدر ثانوي"],
+      "operational_pain": ["قيد الطاقة", "عطل المعدات", "توقف", "عمل إضافي", "استنزاف", "تجميد التوظيف"]
+    },
+    "de": {
+      "supply_chain_pain": ["Verzögerung", "Engpass", "Mangel", "Lieferengpass", "Rückstand", "Störung", "Lieferzeit"],
+      "quality_pain": ["Fehler", "Ausfall", "Ausschuss", "Nacharbeit", "Rückruf", "Nichtkonformität", "Reklamation"],
+      "cost_pain": ["Kostenüberschreitung", "Budgetkürzung", "Preiserhöhung", "Margendruck", "Rohstoffkosten"],
+      "compliance_pain": ["Auditfeststellung", "Nichteinhaltung", "Korrekturmaßnahme", "regulatorisch", "Sanktion", "Zertifizierungsverlust"],
+      "security_pain": ["Sicherheitslücke", "Cyberangriff", "Datenleck", "Phishing", "Schwachstelle"],
+      "competitive_pain": ["Wettbewerbsvorteil", "Marktanteilsverlust", "Zweitlieferant"],
+      "operational_pain": ["Kapazitätsengpass", "Maschinenausfall", "Stillstand", "Mehrarbeit", "Fachkräftemangel"]
+    },
+    "he": {
+      "supply_chain_pain": ["עיכוב", "מחסור", "חוסר במלאי", "צוואר בקבוק", "הפרעה", "זמן אספקה"],
+      "quality_pain": ["פגם", "כשל", "פסילה", "גרוטאות", "עיבוד חוזר", "אי התאמה"],
+      "cost_pain": ["חריגה תקציבית", "קיצוץ", "העלאת מחירים", "לחץ על שולי רווח"],
+      "compliance_pain": ["ממצאי ביקורת", "אי ציות", "פעולה מתקנת", "רגולטורי", "סנקציה"],
+      "security_pain": ["פריצה", "מתקפת סייבר", "דליפת מידע", "פישינג", "פגיעות"],
+      "competitive_pain": ["יתרון תחרותי", "אובדן נתח שוק"],
+      "operational_pain": ["מגבלת קיבולת", "תקלת ציוד", "השבתה", "שחיקה"]
+    },
+    "zh": {
+      "supply_chain_pain": ["延迟", "短缺", "缺货", "积压", "瓶颈", "中断", "交货期", "紧急采购"],
+      "quality_pain": ["缺陷", "故障", "报废", "返工", "召回", "不合格", "退货"],
+      "cost_pain": ["成本超支", "预算削减", "涨价", "利润压力", "原材料成本", "降本"],
+      "compliance_pain": ["审计发现", "不合规", "纠正措施", "监管", "制裁", "认证丢失"],
+      "security_pain": ["漏洞", "网络攻击", "勒索软件", "数据泄露", "钓鱼", "安全事件"],
+      "competitive_pain": ["竞争优势", "市场份额下降", "替代供应商", "双源"],
+      "operational_pain": ["产能约束", "设备故障", "停机", "加班", "人才流失", "招聘冻结"]
+    },
+    "ja": {
+      "supply_chain_pain": ["遅延", "不足", "欠品", "ボトルネック", "途絶", "納期", "緊急手配"],
+      "quality_pain": ["不良", "故障", "廃棄", "手直し", "リコール", "不適合", "返品"],
+      "cost_pain": ["コスト超過", "予算削減", "値上げ", "利益圧迫", "原材料コスト", "コスト削減"],
+      "compliance_pain": ["監査指摘", "不適合", "是正措置", "規制", "制裁", "認証失効"],
+      "security_pain": ["脆弱性", "サイバー攻撃", "ランサムウェア", "情報漏洩", "フィッシング"],
+      "competitive_pain": ["競争優位", "シェア低下", "代替サプライヤー"],
+      "operational_pain": ["キャパシティ制約", "設備故障", "ダウンタイム", "残業", "人材流出"]
+    },
+    "ko": {
+      "supply_chain_pain": ["지연", "부족", "품절", "병목", "중단", "납기", "긴급 조달"],
+      "quality_pain": ["결함", "고장", "폐기", "재작업", "리콜", "부적합", "반품"],
+      "cost_pain": ["비용초과", "예산삭감", "가격인상", "마진압박", "원자재비용", "원가절감"],
+      "compliance_pain": ["감사지적", "비준수", "시정조치", "규제", "제재", "인증상실"],
+      "security_pain": ["취약점", "사이버공격", "랜섬웨어", "정보유출", "피싱"],
+      "competitive_pain": ["경쟁우위", "시장점유율하락", "대체공급업체"],
+      "operational_pain": ["생산능력제약", "설비고장", "다운타임", "초과근무", "인력유출"]
+    }
+  }
+}

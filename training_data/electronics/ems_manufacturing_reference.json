@@ -1,0 +1,153 @@
+{
+  "ems_capabilities_taxonomy": {
+    "description": "Complete taxonomy of EMS/PCBA manufacturing capabilities for capability matching and scoring",
+    "categories": {
+      "pcb_assembly": {
+        "smt": {
+          "description": "Surface Mount Technology",
+          "sub_capabilities": [
+            {"name": "fine_pitch_smt", "description": "Components with ≤0.4mm pitch (QFP, TQFP)", "equipment": ["Pick-and-place (e.g., Fuji NXT III, Yamaha YSM40R, ASM SIPLACE SX)"], "ipc_class": ["Class 2", "Class 3"]},
+            {"name": "ultra_fine_pitch", "description": "Components with ≤0.3mm pitch (BGA, CSP, WLP)", "equipment": ["High-accuracy P&P with vision alignment"], "ipc_class": ["Class 3"]},
+            {"name": "0201_01005_placement", "description": "Placement of 0201 (0.6×0.3mm) and 01005 (0.4×0.2mm) chips", "equipment": ["Laser alignment P&P"], "ipc_class": ["Class 3"]},
+            {"name": "mixed_technology", "description": "Combined SMT + through-hole on same board", "equipment": ["Selective soldering, wave solder, P&P"], "ipc_class": ["Class 2", "Class 3"]},
+            {"name": "double_sided_reflow", "description": "SMT on both sides of PCB", "equipment": ["Dual-pass reflow oven"], "ipc_class": ["Class 2", "Class 3"]},
+            {"name": "package_on_package", "description": "PoP stacking (common in mobile/IoT)", "equipment": ["Precision dip flux, placement accuracy <25µm"], "ipc_class": ["Class 3"]}
+          ]
+        },
+        "tht": {
+          "description": "Through-Hole Technology",
+          "sub_capabilities": [
+            {"name": "wave_soldering", "description": "Bulk through-hole soldering", "equipment": ["Wave solder machine (e.g., ERSA Powerflow, Vitronics Soltec)"]},
+            {"name": "selective_soldering", "description": "Targeted through-hole soldering avoiding SMT", "equipment": ["Selective solder (e.g., ERSA Versaflow, Pillarhouse Jade)"]},
+            {"name": "hand_soldering", "description": "Manual through-hole and rework", "equipment": ["Soldering stations (e.g., JBC, Weller, Metcal)"], "certification": "IPC J-STD-001 certified operators"},
+            {"name": "press_fit", "description": "Solderless press-fit connectors", "equipment": ["Press-fit machine, force monitoring"]}
+          ]
+        },
+        "bga_csp": {
+          "description": "Ball Grid Array and Chip Scale Package",
+          "sub_capabilities": [
+            {"name": "bga_placement", "description": "Standard BGA (pitch ≥0.8mm)", "equipment": ["Vision-guided P&P"]},
+            {"name": "micro_bga", "description": "µBGA/CSP with pitch 0.4-0.5mm", "equipment": ["High-accuracy P&P, X-ray inspection"]},
+            {"name": "bga_rework", "description": "BGA removal and replacement", "equipment": ["BGA rework station (e.g., Finetech, ERSA IR/PL, Dage)"]},
+            {"name": "x_ray_inspection", "description": "Hidden solder joint verification", "equipment": ["2D/3D X-ray (e.g., Nikon, Nordson DAGE, Yxlon, VJ Technologies)"]}
+          ]
+        }
+      },
+      "testing": {
+        "ict": {"description": "In-Circuit Test — electrical probing of populated PCB", "equipment": ["Keysight i3070, Teradyne TestStation, SPEA, Takaya flying probe"]},
+        "fct": {"description": "Functional Circuit Test — validates board-level function", "equipment": ["Custom test fixtures, NI PXI/VXI, LabVIEW"]},
+        "flying_probe": {"description": "Fixtureless electrical test", "equipment": ["Takaya APT-9411, SPEA 4080, Seica Pilot V8"]},
+        "boundary_scan": {"description": "JTAG boundary scan test per IEEE 1149.1", "equipment": ["JTAG Technologies, Corelis, Goepel"]},
+        "aoi": {"description": "Automated Optical Inspection — solder joint and placement verification", "equipment": ["Koh Young 3D SPI, CyberOptics, Mirtec, Omron"]},
+        "spi": {"description": "Solder Paste Inspection — pre-reflow paste volume/height", "equipment": ["Koh Young KY8030, CyberOptics SE500"]},
+        "burn_in": {"description": "Accelerated life testing at elevated temperature", "equipment": ["Burn-in ovens, environmental chambers"]},
+        "esd_testing": {"description": "Electrostatic discharge susceptibility per IEC 61340", "equipment": ["ESD test stations, CDM/HBM/MM generators"]},
+        "hipot": {"description": "High-potential dielectric withstand test", "equipment": ["Hipot testers (e.g., Vitrek, Associated Research)"]}
+      },
+      "coating_potting": {
+        "conformal_coating": {"description": "Protective coating for harsh environments", "types": ["Acrylic (AR)", "Silicone (SR)", "Urethane (UR)", "Epoxy (ER)", "Parylene (XY)"], "standards": ["IPC-CC-830B"]},
+        "potting_encapsulation": {"description": "Full encapsulation in resin/epoxy", "applications": ["Automotive ECU", "Defense electronics", "Outdoor equipment"]},
+        "underfill": {"description": "BGA/CSP underfill for thermal cycling reliability", "types": ["Capillary underfill", "Non-flow underfill"]}
+      },
+      "mechanical_assembly": {
+        "box_build": {"description": "Complete system integration — PCB + enclosure + wiring + test", "scope": ["Electro-mechanical assembly", "Cable/wire harness integration", "Final system test"]},
+        "cable_harness": {"description": "Cable and wire harness manufacturing", "standards": ["IPC/WHMA-A-620"], "equipment": ["Cut-strip-crimp machines, wire strippers, continuity testers"]},
+        "die_cut_gaskets": {"description": "EMI shielding and sealing gaskets", "applications": ["RF shielding", "IP-rated enclosures"]}
+      },
+      "advanced_processes": {
+        "flip_chip": {"description": "Die-level flip chip bonding", "equipment": ["Thermocompression bonder, mass reflow"], "ipc_class": ["Class 3"]},
+        "wire_bonding": {"description": "Gold/aluminum wire bonding for die attach", "equipment": ["K&S, ASM Pacific wire bonders"]},
+        "die_attach": {"description": "Semiconductor die mounting to substrate", "equipment": ["Die bonders, epoxy dispensers"]},
+        "thick_film_hybrid": {"description": "Thick-film resistor/conductor printing on ceramic", "applications": ["Military", "Aerospace", "Medical implants"]},
+        "rf_microwave": {"description": "RF/Microwave assembly on Rogers/PTFE substrates", "frequency_range": "1-77 GHz", "applications": ["5G", "Radar", "Satellite"]}
+      }
+    }
+  },
+  "ems_company_gazetteer": {
+    "description": "Top 50 EMS companies globally — extends the 14-company list in press.rs",
+    "companies": [
+      {"name": "Foxconn (Hon Hai)", "hq_country": "TW", "revenue_usd_b": 215.0, "employees": 800000, "type": "EMS", "specialties": ["consumer_electronics", "server", "connector"]},
+      {"name": "Pegatron", "hq_country": "TW", "revenue_usd_b": 47.0, "employees": 200000, "type": "EMS", "specialties": ["consumer_electronics", "computing"]},
+      {"name": "Wistron", "hq_country": "TW", "revenue_usd_b": 30.0, "employees": 80000, "type": "EMS", "specialties": ["computing", "server", "ict"]},
+      {"name": "Jabil", "hq_country": "US", "revenue_usd_b": 35.0, "employees": 260000, "type": "EMS", "specialties": ["healthcare", "automotive", "industrial", "defense"]},
+      {"name": "Flex", "hq_country": "SG", "revenue_usd_b": 26.0, "employees": 170000, "type": "EMS", "specialties": ["automotive", "industrial", "healthcare", "cloud"]},
+      {"name": "Celestica", "hq_country": "CA", "revenue_usd_b": 8.0, "employees": 27000, "type": "EMS", "specialties": ["aerospace_defense", "enterprise", "healthtech"]},
+      {"name": "Sanmina", "hq_country": "US", "revenue_usd_b": 7.5, "employees": 34000, "type": "EMS", "specialties": ["defense", "medical", "industrial", "optical"]},
+      {"name": "Benchmark Electronics", "hq_country": "US", "revenue_usd_b": 2.8, "employees": 12000, "type": "EMS", "specialties": ["semiconductor_capital", "medical", "aerospace_defense"]},
+      {"name": "Plexus", "hq_country": "US", "revenue_usd_b": 4.2, "employees": 22000, "type": "EMS", "specialties": ["healthcare_life_sciences", "industrial", "aerospace_defense"]},
+      {"name": "Venture Corporation", "hq_country": "SG", "revenue_usd_b": 3.5, "employees": 12000, "type": "EMS", "specialties": ["test_measurement", "medical", "networking"]},
+      {"name": "Compal Electronics", "hq_country": "TW", "revenue_usd_b": 32.0, "employees": 75000, "type": "ODM", "specialties": ["notebook", "tablet", "smart_devices"]},
+      {"name": "Quanta Computer", "hq_country": "TW", "revenue_usd_b": 40.0, "employees": 90000, "type": "ODM", "specialties": ["notebook", "server", "cloud_computing"]},
+      {"name": "USI (Universal Scientific Industrial)", "hq_country": "TW", "revenue_usd_b": 6.5, "employees": 35000, "type": "EMS", "specialties": ["sip_module", "automotive", "industrial"]},
+      {"name": "Fabrinet", "hq_country": "KY", "revenue_usd_b": 2.7, "employees": 15000, "type": "EMS", "specialties": ["optical", "photonics", "laser", "sensor"]},
+      {"name": "Key Tronic", "hq_country": "US", "revenue_usd_b": 0.55, "employees": 4500, "type": "EMS", "specialties": ["industrial", "medical", "defense"]},
+      {"name": "Kimball Electronics", "hq_country": "US", "revenue_usd_b": 1.7, "employees": 8000, "type": "EMS", "specialties": ["automotive", "medical", "industrial"]},
+      {"name": "Creation Technologies", "hq_country": "CA", "revenue_usd_b": 0.5, "employees": 2500, "type": "EMS", "specialties": ["medical", "industrial", "defense"]},
+      {"name": "LACROIX Electronics", "hq_country": "FR", "revenue_usd_b": 0.5, "employees": 5000, "type": "EMS", "specialties": ["automotive", "industrial", "defense"], "sites_tn": true},
+      {"name": "Asteelflash (now USI)", "hq_country": "FR", "revenue_usd_b": 0.7, "employees": 6000, "type": "EMS", "specialties": ["automotive", "industrial", "iot"], "sites_tn": true, "sites_ma": true},
+      {"name": "Actia Group", "hq_country": "FR", "revenue_usd_b": 0.55, "employees": 4000, "type": "EMS/OEM", "specialties": ["automotive_electronics", "telematics", "defense"], "sites_tn": true},
+      {"name": "Lear Corporation", "hq_country": "US", "revenue_usd_b": 23.0, "employees": 165000, "type": "Tier1", "specialties": ["automotive_electrical", "seating", "e-systems"], "sites_tn": true, "sites_ma": true},
+      {"name": "Aptiv (formerly Delphi)", "hq_country": "IE", "revenue_usd_b": 20.0, "employees": 200000, "type": "Tier1", "specialties": ["automotive_electrical", "ADAS", "connectors"], "sites_tn": true, "sites_ma": true},
+      {"name": "Yazaki", "hq_country": "JP", "revenue_usd_b": 14.0, "employees": 240000, "type": "Tier1", "specialties": ["wire_harness", "automotive_electrical"], "sites_tn": true, "sites_ma": true},
+      {"name": "Sumitomo Electric", "hq_country": "JP", "revenue_usd_b": 28.0, "employees": 280000, "type": "Tier1", "specialties": ["wire_harness", "optical_fiber", "power_cables"], "sites_tn": true, "sites_ma": true},
+      {"name": "Leoni", "hq_country": "DE", "revenue_usd_b": 5.5, "employees": 95000, "type": "Tier1", "specialties": ["wire_harness", "cable_systems"], "sites_tn": true, "sites_ma": true},
+      {"name": "Coficab (Elloumi Group)", "hq_country": "TN", "revenue_usd_b": 2.0, "employees": 12000, "type": "Tier1", "specialties": ["automotive_cable", "wire_harness"], "sites_tn": true, "sites_ma": true},
+      {"name": "Elbit Systems", "hq_country": "IL", "revenue_usd_b": 6.0, "employees": 20000, "type": "OEM", "specialties": ["defense_electronics", "uas", "ew", "c4i"]},
+      {"name": "Rafael Advanced Defense", "hq_country": "IL", "revenue_usd_b": 3.5, "employees": 9000, "type": "OEM", "specialties": ["defense_electronics", "missiles", "armor"]},
+      {"name": "Israel Aerospace Industries", "hq_country": "IL", "revenue_usd_b": 5.0, "employees": 16000, "type": "OEM", "specialties": ["aerospace", "defense", "satellite", "uas"]},
+      {"name": "Starz Electronics", "hq_country": "TN", "revenue_usd_b": null, "employees": null, "type": "EMS", "specialties": ["pcba", "box_build", "cable_harness", "testing"], "sites_tn": true, "notes": "ApexIntel operator"}
+    ]
+  },
+  "rohs_restricted_substances": {
+    "description": "RoHS 3 (EU 2015/863) restricted substances with maximum concentration values",
+    "substances": [
+      {"name": "Lead (Pb)", "cas": "7439-92-1", "max_concentration_ppm": 1000, "exemptions": "High-melting-point solder (>85% Pb), certain alloys"},
+      {"name": "Mercury (Hg)", "cas": "7439-97-6", "max_concentration_ppm": 1000, "exemptions": "Certain lamps"},
+      {"name": "Cadmium (Cd)", "cas": "7440-43-9", "max_concentration_ppm": 100, "exemptions": "Certain contacts, optical glass"},
+      {"name": "Hexavalent Chromium (Cr6+)", "cas": "18540-29-9", "max_concentration_ppm": 1000, "exemptions": "Certain corrosion coatings"},
+      {"name": "PBB (Polybrominated Biphenyls)", "cas": "59536-65-1", "max_concentration_ppm": 1000, "exemptions": "None"},
+      {"name": "PBDE (Polybrominated Diphenyl Ethers)", "cas": "various", "max_concentration_ppm": 1000, "exemptions": "None"},
+      {"name": "DEHP (Bis(2-ethylhexyl) phthalate)", "cas": "117-81-7", "max_concentration_ppm": 1000, "exemptions": "None", "added": "RoHS 3"},
+      {"name": "BBP (Benzyl butyl phthalate)", "cas": "85-68-7", "max_concentration_ppm": 1000, "exemptions": "None", "added": "RoHS 3"},
+      {"name": "DBP (Dibutyl phthalate)", "cas": "84-74-2", "max_concentration_ppm": 1000, "exemptions": "None", "added": "RoHS 3"},
+      {"name": "DIBP (Diisobutyl phthalate)", "cas": "84-69-5", "max_concentration_ppm": 1000, "exemptions": "None", "added": "RoHS 3"}
+    ]
+  },
+  "solder_alloy_reference": {
+    "description": "Common solder alloys used in electronics manufacturing",
+    "alloys": [
+      {"name": "SAC305", "composition": "96.5% Sn, 3.0% Ag, 0.5% Cu", "melting_range_c": "217-220", "type": "lead_free", "applications": ["General SMT", "Wave"], "ipa_compliant": true},
+      {"name": "SAC387", "composition": "95.5% Sn, 3.8% Ag, 0.7% Cu", "melting_range_c": "217-220", "type": "lead_free", "applications": ["BGA balls", "High-reliability"], "ipa_compliant": true},
+      {"name": "Sn63Pb37", "composition": "63% Sn, 37% Pb", "melting_range_c": "183", "type": "leaded", "applications": ["Aerospace", "Defense", "RoHS-exempt"], "ipa_compliant": false},
+      {"name": "Sn62Pb36Ag2", "composition": "62% Sn, 36% Pb, 2% Ag", "melting_range_c": "179", "type": "leaded", "applications": ["High-reliability leaded"], "ipa_compliant": false},
+      {"name": "SAC105", "composition": "98.5% Sn, 1.0% Ag, 0.5% Cu", "melting_range_c": "217-227", "type": "lead_free", "applications": ["BGA balls, drop-shock resistant"], "ipa_compliant": true},
+      {"name": "SnBi (Sn42Bi58)", "composition": "42% Sn, 58% Bi", "melting_range_c": "138", "type": "lead_free_low_temp", "applications": ["Low-temperature assembly", "Temperature-sensitive components"], "ipa_compliant": true},
+      {"name": "SnCu (Sn99.3Cu0.7)", "composition": "99.3% Sn, 0.7% Cu", "melting_range_c": "227", "type": "lead_free", "applications": ["Wave soldering"], "ipa_compliant": true}
+    ]
+  },
+  "pcb_laminate_properties": {
+    "description": "Common PCB laminate materials and their key properties",
+    "laminates": [
+      {"name": "FR-4 Standard", "tg_c": 135, "td_c": 310, "dk_1ghz": 4.4, "df_1ghz": 0.02, "cte_z_ppm": 60, "applications": ["General electronics", "Consumer", "Industrial"]},
+      {"name": "FR-4 Mid-Tg", "tg_c": 150, "td_c": 325, "dk_1ghz": 4.35, "df_1ghz": 0.019, "cte_z_ppm": 50, "applications": ["Automotive", "Lead-free assembly"]},
+      {"name": "FR-4 High-Tg", "tg_c": 170, "td_c": 340, "dk_1ghz": 4.3, "df_1ghz": 0.018, "cte_z_ppm": 45, "applications": ["Automotive", "Server", "Industrial"]},
+      {"name": "Isola 370HR", "tg_c": 180, "td_c": 340, "dk_1ghz": 4.04, "df_1ghz": 0.015, "cte_z_ppm": 42, "applications": ["High-reliability", "Automotive", "Aerospace"]},
+      {"name": "Megtron 6 (Panasonic)", "tg_c": 185, "td_c": 405, "dk_1ghz": 3.4, "df_1ghz": 0.004, "cte_z_ppm": 25, "applications": ["High-speed digital", "5G", "Server"]},
+      {"name": "Rogers RO4003C", "tg_c": null, "td_c": 500, "dk_10ghz": 3.38, "df_10ghz": 0.0027, "cte_z_ppm": 46, "applications": ["RF/Microwave", "5G antenna", "Radar"]},
+      {"name": "Rogers RO4350B", "tg_c": null, "td_c": 500, "dk_10ghz": 3.48, "df_10ghz": 0.0037, "cte_z_ppm": 32, "applications": ["RF/Microwave", "Automotive radar"]},
+      {"name": "Polyimide (Kapton)", "tg_c": 260, "td_c": 400, "dk_1ghz": 3.5, "df_1ghz": 0.008, "cte_z_ppm": 20, "applications": ["Flex circuits", "Aerospace", "Military"]},
+      {"name": "Isola IS680", "tg_c": 200, "td_c": 360, "dk_1ghz": 3.6, "df_1ghz": 0.008, "cte_z_ppm": 35, "applications": ["High-speed", "Backplane", "Server"]}
+    ]
+  },
+  "conflict_minerals_3tg": {
+    "description": "Conflict minerals (3TG) reference per Dodd-Frank Section 1502 and EU Conflict Minerals Regulation",
+    "minerals": [
+      {"name": "Tin (Sn)", "symbol": "Sn", "primary_use_ems": "Solder alloys, tin plating", "source_concern": ["DRC", "Rwanda", "Great Lakes Region"], "price_indicator": "LME Tin"},
+      {"name": "Tantalum (Ta)", "symbol": "Ta", "primary_use_ems": "Tantalum capacitors", "source_concern": ["DRC", "Rwanda"], "price_indicator": "Minor Metals Trade Association"},
+      {"name": "Tungsten (W)", "symbol": "W", "primary_use_ems": "Contacts, weights, thermal management", "source_concern": ["DRC", "Rwanda"], "price_indicator": "APT (Ammonium Paratungstate) price"},
+      {"name": "Gold (Au)", "symbol": "Au", "primary_use_ems": "Connector plating, wire bonding, BGA spheres", "source_concern": ["DRC", "East Africa"], "price_indicator": "LBMA Gold Price"}
+    ],
+    "compliance_frameworks": ["OECD Due Diligence Guidance", "RMI (Responsible Minerals Initiative)", "IPC-1755 (Conflict Minerals Data Exchange)", "EU Regulation 2017/821"],
+    "rmap_conformant_smelters_url": "https://www.responsiblemineralsinitiative.org/responsible-minerals-assurance-process/"
+  }
+}

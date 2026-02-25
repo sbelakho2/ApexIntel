@@ -11,6 +11,8 @@ use crate::miner::{
 };
 use serde::{Deserialize, Serialize};
 
+const STORED_METRIC_DECIMALS: f64 = 1_000_000.0;
+
 // ────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────
@@ -36,6 +38,26 @@ impl Default for BacktestConfig {
             window_days: 30,
             min_tp_per_fold: 1,
         }
+    }
+}
+
+impl BacktestConfig {
+    /// Validate configuration values (B224).
+    pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.folds == 0 {
+            issues.push("folds must be > 0".to_string());
+        }
+        if !(0.0..=1.0).contains(&self.initial_train_fraction) {
+            issues.push(format!(
+                "initial_train_fraction must be 0.0..=1.0, got {}",
+                self.initial_train_fraction
+            ));
+        }
+        if self.window_days <= 0 {
+            issues.push(format!("window_days must be > 0, got {}", self.window_days));
+        }
+        issues
     }
 }
 
@@ -152,6 +174,34 @@ fn filter_events(events: &[EventRecord], start: i64, end: i64) -> Vec<EventRecor
         .collect()
 }
 
+fn normalize_stored_metric(value: f64) -> f64 {
+    if !value.is_finite() {
+        return 0.0;
+    }
+    (value * STORED_METRIC_DECIMALS).round() / STORED_METRIC_DECIMALS
+}
+
+fn validate_fold_window(
+    prev_test_end: Option<i64>,
+    train_start: i64,
+    train_end: i64,
+    test_start: i64,
+    test_end: i64,
+) -> bool {
+    if train_end < train_start || test_end <= test_start {
+        return false;
+    }
+    if train_end > test_start {
+        return false;
+    }
+    if let Some(prev_end) = prev_test_end {
+        if test_start < prev_end {
+            return false;
+        }
+    }
+    true
+}
+
 /// Evaluate a candidate on a test fold: build contingency from test data,
 /// and derive a confusion matrix.
 ///
@@ -236,7 +286,26 @@ pub fn walk_forward_backtest(
         let train_start = min_ts;
         let train_end = initial_train_end + i as i64 * fold_size;
         let test_start = train_end;
-        let test_end = test_start + fold_size;
+        // Last fold extends to max_ts+1 to capture all trailing events
+        // that integer division truncation would otherwise drop.
+        let test_end = if i == config.folds - 1 {
+            max_ts + 1
+        } else {
+            test_start + fold_size
+        };
+
+        let prev_test_end = fold_results.last().map(|f: &FoldResult| f.test_end);
+        if !validate_fold_window(prev_test_end, train_start, train_end, test_start, test_end) {
+            tracing::warn!(
+                fold = i,
+                train_start,
+                train_end,
+                test_start,
+                test_end,
+                "backtest invalid fold window or overlap detected"
+            );
+            return None;
+        }
 
         let train_outcomes = filter_events(outcomes, train_start, train_end);
         let train_signals = filter_events(signals, train_start, train_end);
@@ -260,9 +329,27 @@ pub fn walk_forward_backtest(
             config.window_days,
         );
 
-        let precision = confusion.precision();
-        let recall = confusion.recall();
-        let f1 = confusion.f1();
+        // Include low-data folds in count (as unfound) to avoid inflating pass rate
+        if confusion.tp < config.min_tp_per_fold {
+            tracing::warn!(fold = i, tp = confusion.tp, "backtest fold has insufficient TP, skipping"); // B230
+            fold_results.push(FoldResult {
+                fold_index: i,
+                train_start,
+                train_end,
+                test_start,
+                test_end,
+                confusion,
+                precision: 0.0,
+                recall: 0.0,
+                f1: 0.0,
+                pattern_found: false,
+            });
+            continue;
+        }
+
+        let precision = normalize_stored_metric(confusion.precision());
+        let recall = normalize_stored_metric(confusion.recall());
+        let f1 = normalize_stored_metric(confusion.f1());
 
         aggregate.merge(&confusion);
 
@@ -280,16 +367,29 @@ pub fn walk_forward_backtest(
         });
     }
 
-    let agg_precision = aggregate.precision();
-    let agg_recall = aggregate.recall();
-    let agg_f1 = aggregate.f1();
+    let agg_precision = normalize_stored_metric(aggregate.precision());
+    let agg_recall = normalize_stored_metric(aggregate.recall());
+    let agg_f1 = normalize_stored_metric(aggregate.f1());
 
     // Pass criteria: aggregate precision ≥ 0.5 AND recall ≥ 0.3 AND
     // pattern re-discovered in ≥ half of folds.
     let folds_with_pattern = fold_results.iter().filter(|f| f.pattern_found).count();
-    let passed = agg_precision >= 0.5
+    let valid_fold_count = fold_results.len();
+    let passed = valid_fold_count > 0
+        && agg_precision >= 0.5
         && agg_recall >= 0.3
-        && folds_with_pattern * 2 >= config.folds;
+        && folds_with_pattern * 2 >= valid_fold_count;
+
+    // B230: log aggregate result
+    tracing::info!(
+        outcome = %candidate.outcome,
+        signal = ?candidate.signals.first(),
+        agg_precision,
+        agg_recall,
+        agg_f1,
+        passed,
+        "walk-forward backtest completed"
+    );
 
     Some(BacktestResult {
         outcome: candidate.outcome.clone(),
@@ -673,6 +773,21 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_fold_window_rejects_overlap() {
+        assert!(!validate_fold_window(Some(200), 0, 100, 150, 250));
+        assert!(!validate_fold_window(None, 100, 90, 90, 120));
+        assert!(!validate_fold_window(None, 0, 110, 100, 120));
+        assert!(validate_fold_window(Some(200), 0, 100, 200, 250));
+    }
+
+    #[test]
+    fn test_normalize_stored_metric_rounds_to_six_decimals() {
+        assert_eq!(normalize_stored_metric(0.123456789), 0.123457);
+        assert_eq!(normalize_stored_metric(0.1234561), 0.123456);
+        assert_eq!(normalize_stored_metric(f64::NAN), 0.0);
+    }
+
+    #[test]
     fn test_walk_forward_with_strong_pattern() {
         // Create strong predictive pattern: every entity with signal on day X
         // has outcome on day X+1.  Some entities have no signal and no outcome.
@@ -808,5 +923,76 @@ mod tests {
         assert_eq!(parsed.fp, 5);
         assert_eq!(parsed.fn_, 3);
         assert_eq!(parsed.tn, 82);
+    }
+
+    // ── B223: pattern_emerges with small total counts ──────
+    #[test]
+    fn test_pattern_emerges_very_small_data() {
+        // Only 3 entities → total < 10 → should return false
+        let outcomes = make_events(&[("A", &[1]), ("B", &[2])]);
+        let signals = make_events(&[("A", &[1]), ("C", &[3])]);
+        assert!(!pattern_emerges(&outcomes, &signals, 0, 5, 1.5));
+    }
+
+    // ── B224: BacktestConfig validation ──────────
+    #[test]
+    fn test_backtest_config_validate_valid() {
+        let cfg = BacktestConfig::default();
+        assert!(cfg.validate().is_empty());
+    }
+
+    #[test]
+    fn test_backtest_config_validate_zero_folds() {
+        let cfg = BacktestConfig { folds: 0, ..Default::default() };
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("folds")));
+    }
+
+    #[test]
+    fn test_backtest_config_validate_bad_fraction() {
+        let cfg = BacktestConfig {
+            initial_train_fraction: 1.5,
+            ..Default::default()
+        };
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("initial_train_fraction")));
+    }
+
+    #[test]
+    fn test_backtest_config_validate_bad_window() {
+        let cfg = BacktestConfig {
+            window_days: -1,
+            ..Default::default()
+        };
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("window_days")));
+    }
+
+    // ── B225: walk_forward_backtest with uneven fold sizes ──────
+    #[test]
+    fn test_walk_forward_uneven_folds() {
+        // 7 folds from data that doesn't divide evenly
+        let mut outcomes = Vec::new();
+        let mut signals = Vec::new();
+        for i in 0..100 {
+            let eid = format!("E{}", i % 12);
+            signals.push((eid.clone(), i as i64 * 86400));
+            outcomes.push((eid, (i + 1) as i64 * 86400));
+        }
+        let candidate = sample_candidate();
+        let config = BacktestConfig {
+            folds: 7, // 7 doesn't divide evenly
+            initial_train_fraction: 0.3,
+            window_days: 5,
+            min_tp_per_fold: 0,
+        };
+        let miner = MinerConfig::default();
+        let result = walk_forward_backtest(&candidate, &outcomes, &signals, &config, &miner);
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.fold_results.len(), 7);
+        // Last fold should cover all remaining data
+        let last = r.fold_results.last().unwrap();
+        assert!(last.test_end > last.test_start);
     }
 }

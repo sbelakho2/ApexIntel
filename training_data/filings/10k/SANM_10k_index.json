@@ -1,0 +1,103 @@
+{
+  "company": "Sanmina Corp",
+  "ticker": "SANM",
+  "cik": "0000897723",
+  "filings": [
+    {
+      "date": "2025-11-13",
+      "accession": "0000897723-25-000042",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772325000042/sanm-20250927.htm",
+      "document": "sanm-20250927.htm"
+    },
+    {
+      "date": "2024-11-27",
+      "accession": "0000897723-24-000056",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772324000056/sanm-20240928.htm",
+      "document": "sanm-20240928.htm"
+    },
+    {
+      "date": "2023-11-16",
+      "accession": "0000897723-23-000028",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772323000028/sanm-20230930.htm",
+      "document": "sanm-20230930.htm"
+    },
+    {
+      "date": "2022-11-10",
+      "accession": "0000897723-22-000029",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772322000029/sanm-20221001.htm",
+      "document": "sanm-20221001.htm"
+    },
+    {
+      "date": "2021-11-12",
+      "accession": "0000897723-21-000028",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772321000028/sanm-20211002.htm",
+      "document": "sanm-20211002.htm"
+    },
+    {
+      "date": "2020-11-13",
+      "accession": "0000897723-20-000034",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772320000034/sanm-20201003.htm",
+      "document": "sanm-20201003.htm"
+    },
+    {
+      "date": "2019-11-08",
+      "accession": "0000897723-19-000034",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772319000034/sanmina10-ksep282019.htm",
+      "document": "sanmina10-ksep282019.htm"
+    },
+    {
+      "date": "2018-11-15",
+      "accession": "0000897723-18-000031",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772318000031/sanmina10-k_sep292018.htm",
+      "document": "sanmina10-k_sep292018.htm"
+    },
+    {
+      "date": "2017-11-13",
+      "accession": "0000897723-17-000029",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772317000029/sanmina10-k_sep302017.htm",
+      "document": "sanmina10-k_sep302017.htm"
+    },
+    {
+      "date": "2016-11-18",
+      "accession": "0000897723-16-000049",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772316000049/sanmina10-k_oct12016.htm",
+      "document": "sanmina10-k_oct12016.htm"
+    },
+    {
+      "date": "2015-11-19",
+      "accession": "0000897723-15-000026",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772315000026/sanmina10-k_oct32015.htm",
+      "document": "sanmina10-k_oct32015.htm"
+    },
+    {
+      "date": "2014-11-13",
+      "accession": "0000897723-14-000022",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772314000022/sanmina10-k_sept272014.htm",
+      "document": "sanmina10-k_sept272014.htm"
+    },
+    {
+      "date": "2013-11-27",
+      "accession": "0000897723-13-000023",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772313000023/sanmina10-k.htm",
+      "document": "sanmina10-k.htm"
+    },
+    {
+      "date": "2012-11-21",
+      "accession": "0000897723-12-000027",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772312000027/sanmina10-k_sept292012.htm",
+      "document": "sanmina10-k_sept292012.htm"
+    },
+    {
+      "date": "2011-11-22",
+      "accession": "0000897723-11-000023",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772311000023/sanminasci10k.htm",
+      "document": "sanminasci10k.htm"
+    },
+    {
+      "date": "2010-11-24",
+      "accession": "0000897723-10-000011",
+      "url": "https://www.sec.gov/Archives/edgar/data/897723/000089772310000011/sanminasci10k.htm",
+      "document": "sanminasci10k.htm"
+    }
+  ]
+}

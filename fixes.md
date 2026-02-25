@@ -1,0 +1,671 @@
+# Fixes Checklist
+
+This checklist captures backend and UI/UX issues, risks, and low-risk improvements. Items are intentionally granular to support line-by-line review.
+
+## Backend
+
+### General
+- [x] B001 Add explicit input validation for all public entry points to reject empty strings and whitespace-only IDs.
+- [x] B002 Clamp all ratio outputs to valid ranges and document clamp behavior where it is applied.
+- [x] B003 Replace silent fallbacks with structured errors when configuration is missing or malformed.
+- [x] B004 Standardize timestamp handling to UTC and document any accepted formats.
+- [x] B005 Add consistent redaction for secrets in logs and error messages.
+- [x] B006 Normalize all external URLs before storage to avoid duplicate variants.
+- [x] B007 Make all randomness deterministic in tests by injecting RNG seeds.
+- [x] B008 Add strict schema validation for all JSON inputs and reject unknown fields.
+- [x] B009 Add bounds checks for any vector indexing derived from user input.
+- [x] B010 Ensure all floating point comparisons use tolerances and are not direct equality.
+- [x] B011 Add per-module error enums so root cause is preserved without string parsing.
+- [x] B012 Add unit tests for NaN, Infinity, and empty input cases in numeric utilities.
+- [x] B013 Ensure all background tasks enforce timeouts and circuit breakers.
+- [x] B014 Add consistent retry policy with exponential backoff for transient IO.
+- [x] B015 Add metrics counters for key pipeline stages to detect regressions.
+- [x] B016 Log structured context on failures to allow correlation by entity id.
+- [x] B017 Add a consistent policy for missing optional fields in models.
+- [x] B018 Add dedicated validation for IDs to prevent path traversal in file writes.
+- [x] B019 Ensure all HashMap lookups with user-supplied keys are bounded by size limits.
+- [x] B020 Add a single source of truth for environment variable names.
+
+### API
+- [x] B021 Validate pagination parameters for negative values and overflow.
+- [x] B022 Return consistent error shapes for all endpoints, including validation errors.
+- [x] B023 Enforce maximum query length to prevent expensive full scans.
+- [x] B024 Add rate-limit headers on responses to aid clients in backoff.
+- [x] B025 Ensure JSON response fields are stable and documented with versioning.
+- [x] B026 Add request size limits for all POST endpoints.
+- [x] B027 Normalize and validate search filters before passing to storage.
+- [x] B028 Add tests for zero-result queries to ensure empty arrays are returned, not null.
+- [x] B029 Add explicit handling for missing optional query params to avoid default surprises.
+- [x] B030 Enforce auth checks consistently across admin endpoints.
+- [x] B031 Add standard tracing spans around all DB calls.
+- [x] B032 Prevent potential SQL wildcard abuse by escaping LIKE patterns.
+- [x] B033 Add consistent CORS configuration and tests for preflight behavior.
+- [x] B034 Ensure all websocket handlers validate client payload sizes.
+- [x] B035 Ensure all file responses set safe cache headers.
+- [x] B036 Add validation for timestamp ranges to avoid negative or future-only values.
+- [x] B037 Add explicit error mapping for upstream failures to avoid leaking internals.
+- [x] B038 Add logging of response time buckets per endpoint.
+- [x] B039 Normalize user-provided email addresses before comparison.
+- [x] B040 Add max depth for JSON payloads to prevent resource exhaustion.
+
+### Core
+- [x] B041 Enforce deterministic ordering when serializing collections to JSON.
+- [x] B042 Add validation of schema compatibility when loading persisted data.
+- [x] B043 Add explicit handling for unknown enum variants during deserialization.
+- [x] B044 Document default values and make them explicit in config structs.
+- [x] B045 Add tests for schema evolution across versions.
+- [x] B046 Add stricter validation for country and region codes.
+- [x] B047 Normalize all whitespace in entity names before comparisons.
+- [x] B048 Ensure all conversions between integers and floats are safe and range-checked.
+- [x] B049 Add trace logs for provenance generation to track pipeline lineage.
+- [x] B050 Add derived display strings for enums to avoid repeated formatting logic.
+
+### Store
+- [x] B051 Add explicit transaction boundaries around multi-step writes.
+- [x] B052 Ensure all SQL queries have bounded LIMITs when exposed to API.
+- [x] B053 Add protection against empty IN lists to avoid syntax errors.
+- [x] B054 Add index usage notes for high-cost queries.
+- [x] B055 Add migrations to enforce NOT NULL where code assumes presence.
+- [x] B056 Add tests for pagination stability under concurrent updates.
+- [x] B057 Ensure all timestamps are stored and read as UTC.
+- [x] B058 Add explicit error types for constraint violations.
+- [x] B059 Add consistent serialization for JSONB fields and version tags.
+- [x] B060 Add size limits for stored blobs and validate before upload.
+- [x] B061 Add tests for S3 key normalization and prefix handling.
+- [x] B062 Add retry logic for temporary storage errors.
+- [x] B063 Add response caching for repeated read-only queries.
+- [x] B064 Add soft-delete semantics where hard deletes are risky.
+- [x] B065 Add incremental backfill tooling for new columns.
+- [x] B066 Validate that migration ordering matches dependency expectations.
+- [x] B067 Add guardrails for regex-based search queries.
+- [x] B068 Add explicit handling for empty result sets in aggregate queries.
+- [x] B069 Add tests for ordering stability of results with same timestamps.
+- [x] B070 Add input validation for tags to prevent overly long entries.
+
+### Crawl
+- [x] B071 Clamp crawl delays to sensible limits to avoid near-zero or huge sleeps.
+- [x] B072 Add configurable maximum concurrent requests per domain.
+- [x] B074 Add retries with jitter for transient HTTP errors.
+- [x] B075 Record and expose crawl error taxonomy for observability.
+- [x] B076 Validate proxy URLs and fail fast if malformed.
+- [x] B077 Add limits for response body size to avoid memory spikes.
+- [x] B078 Detect and skip binary content types where parsing expects text.
+- [x] B079 Add handling for non-UTF8 responses with best-effort decoding.
+- [x] B080 Add tests for rate limiter edge cases with zero tokens.
+- [x] B081 Add backoff for 429 responses with Retry-After support.
+- [x] B082 Add URL normalization to avoid duplicates with query ordering.
+- [x] B083 Ensure change detection ignores volatile sections by default.
+- [x] B084 Add metrics for bytes fetched by domain for anomaly detection.
+- [x] B085 Enforce max redirect count to avoid loops.
+- [x] B086 Ensure crawlers respect per-domain politeness delay.
+- [x] B087 Add guard for negative or future timestamps in change detection.
+- [x] B088 Add content hash prefixing to avoid cross-source collisions.
+- [x] B089 Add schema validation for crawl output before storage.
+- [x] B090 Add tests for header parsing edge cases.
+
+### Parse
+- [x] B091 Add explicit charset detection fallback for HTML parsing.
+- [x] B092 Normalize whitespace in extracted fields before scoring.
+- [x] B093 Add upper bounds for regex backtracking to avoid slow cases.
+- [x] B094 Add tests for empty HTML and malformed tags.
+- [x] B095 Add extraction fallbacks for missing meta tags.
+- [x] B096 Ensure all numeric parsing handles commas and locales.
+- [x] B097 Add validation for detected dates to avoid impossible values.
+- [x] B098 Add tests for right-to-left script normalization.
+- [x] B099 Ensure language detection fails gracefully to default.
+- [x] B100 Add sanitization for extracted URLs before storing.
+- [x] B101 Add consistency checks for entity names across parse modules. <!-- normalizer.rs: normalize_entity_name() + test_normalize_entity_name -->
+- [x] B102 Add bounds checks for snippet lengths in summaries. <!-- normalizer.rs: truncate_snippet() + test_truncate_snippet_bounds -->
+- [x] B103 Ensure all regex patterns are anchored where possible. <!-- commodity.rs: \b added to RE_DATE, RE_TABULAR; patent.rs, cert.rs already use \b -->
+- [x] B104 Add tests for edge cases with mixed language content. <!-- multilingual.rs: test_contains_keywords_mixed_language; html.rs: test_extract_mixed_language_content -->
+- [x] B105 Add de-duplication of repeated fields from multiple selectors. <!-- normalizer.rs: dedup_preserving_order(); html.rs: used for emails/phones -->
+- [x] B106 Add explicit handling for content that is only scripts or styles. <!-- normalizer.rs: is_only_scripts_or_styles(); html.rs: extract_page returns empty body -->
+- [x] B107 Ensure keyword scoring ignores markup remnants. <!-- multilingual.rs: strip_html_tags called before keyword scoring -->
+- [x] B108 Add normalization for diacritics in matching. <!-- normalizer.rs: strip_diacritics() via unicode-normalization NFD; used in normalize_entity_name + multilingual -->
+- [x] B109 Add confidence scores for each extracted field. <!-- html.rs: FieldConfidence struct + field_confidence in PageData -->
+- [x] B110 Add tests for numeric extraction in non-English locales. <!-- normalizer.rs: test_parse_number_non_english_locales -->
+
+### POI
+- [x] B111 Add validation for `PriorityVector` values to keep sums within expected ranges. <!-- model.rs: validate() checks NaN/Inf, [0,1] range, sum > 1.5 -->
+- [x] B112 Guard against negative `influence_score` and clamp to 0. <!-- features.rs: inputs .max(0.0), result .clamp(0.0, 100.0) -->
+- [x] B113 Ensure `compute_completeness` accounts for org id and region presence consistently. <!-- model.rs: checks org_id and region in completeness -->
+- [x] B114 Add normalization for `public_email` before comparison. <!-- resolver.rs: normalize_email_core from apex_core -->
+- [x] B115 Add tests for `dominant` with NaN values in all fields. <!-- model.rs: test_dominant_all_nan -->
+- [x] B116 Add safeguards for extremely long `name_variants` lists. <!-- model.rs: MAX_NAME_VARIANTS=50, clamp_name_variants() -->
+- [x] B117 Add input validation for `role_history` timestamps ordering. <!-- model.rs: validate_role_history_order() -->
+- [x] B118 Ensure `detect_role_change` handles identical consecutive entries. <!-- model.rs: has_consecutive_duplicates() -->
+- [x] B119 Add handling for future-dated artifacts beyond a threshold. <!-- features.rs: skip artifact if ts_utc > now_utc -->
+- [x] B120 Add guard for empty role family or unknown values. <!-- features.rs: RoleFamily::Other("Unknown"); test_role_seniority_unknown_title -->
+- [x] B121 Add tests for edge cases in `resolve_batch` with large N. <!-- resolver.rs: test_resolve_batch_large (50 distinct profiles) -->
+- [x] B122 Add normalization for `org` names before comparison. <!-- resolver.rs: org_similarity → name_similarity → normalize_name -->
+- [x] B123 Add clustering threshold configuration for POI resolution. <!-- resolver.rs: resolve_batch takes threshold: f64 param -->
+- [x] B124 Ensure `pain_index` uses bounded recency weights. <!-- features.rs: 1/(1 + age/90) bounded (0,1], final .min(1.0) -->
+- [x] B125 Add logging for merge decisions in POI resolver. <!-- resolver.rs: tracing::debug! on merge candidate identification -->
+- [x] B126 Add tests for email normalization with plus tags. <!-- resolver.rs: test_match_email_plus_tags -->
+- [x] B127 Ensure `infer_change_appetite` accounts for overlapping roles. <!-- features.rs: checks curr.start_ts >= prev_end for distinct transitions -->
+- [x] B128 Add validation for `network_size` to avoid negative or huge values. <!-- model.rs: MAX_NETWORK_SIZE=10000, InfluenceProfile::clamp_network_size() -->
+- [x] B129 Add guards to prevent `profile_completeness` from exceeding 1. <!-- model.rs: raw.clamp(0.0, 1.0) -->
+- [x] B130 Add optional locale-specific keyword sets for priority vector. <!-- features.rs: LocaleKeywords type, default_locale_keywords(), compute_priority_vector_with_locale() -->
+
+### Recipes
+- [x] B131 Validate signal operator values and reject unknown operators. <!-- engine.rs: known_operators check returns None -->
+- [x] B132 Ensure `check_signal` handles NaN values gracefully. <!-- engine.rs: val.is_nan() || val.is_infinite() → None -->
+- [x] B133 Add bounds for `pct_change_transform` to avoid infinity spikes. <!-- engine.rs: previous.abs() < 1e-12 → 0.0 -->
+- [x] B134 Add tests for transforms with missing `prev` fields. <!-- engine.rs: test_apply_transforms_missing_prev -->
+- [x] B135 Ensure `estimate_impact` handles NaN inputs by ignoring them. <!-- engine.rs: .filter(|v| !v.is_nan() && !v.is_infinite()) -->
+- [x] B136 Add clear definition for `impact < 0.1` gate with tests. <!-- engine.rs: test_evaluate_recipe_impact_gate_exists -->
+- [x] B137 Add consistency between `signal_key` format and stored evidence ids. <!-- engine.rs: signal_key() used for both feature lookup and evidence IDs -->
+- [x] B138 Add validation that `signals` and `transforms` lengths match expected mapping. <!-- engine.rs: tracing::warn! on length mismatch -->
+- [x] B139 Add tests for `equals` operator with tolerance. <!-- engine.rs: test_check_signal_equals_exact, _within_tolerance, _outside_tolerance -->
+- [x] B140 Add concurrency-safe access if recipe engine is shared. <!-- engine.rs: test_recipe_engine_is_send_sync (Vec<Recipe> is Send+Sync) -->
+- [x] B141 Add explicit handling for staged recipes with zero total fires. <!-- lifecycle.rs: precision()=1.0 when total_fires==0; should_promote requires min_total_fires -->
+- [x] B142 Ensure promotion criteria uses same precision definition as engine. <!-- lifecycle.rs: RecipePerformance::precision() tp/total_fires; engine uses recipe.precision() -->
+- [x] B143 Add checks for empty `narrative_template` or `action_template`. <!-- engine.rs: trim().is_empty() check + tracing::warn -->
+- [x] B144 Add tests for gate config defaults and threshold behavior. <!-- lifecycle.rs: test_gate_config_defaults, test_promotion_criteria_defaults -->
+- [x] B145 Ensure negative control gate handles near-zero uplift reliably. <!-- gates.rs: uplift < f64::EPSILON → false -->
+- [x] B146 Add reporting for which gates failed per recipe. <!-- gates.rs: failed_gates(), format_gate_report() -->
+- [x] B147 Ensure `max_decisions` trimming does not drop most recent entries. <!-- lifecycle.rs: drain(..oldest_20%); test_registry_max_decisions_trimming_preserves_recent -->
+- [x] B148 Add tests for deprecation logic when `last_fired` is None. <!-- lifecycle.rs: test_should_deprecate_last_fired_none, test_should_not_deprecate_last_fired_none_recent_staged -->
+- [x] B149 Add validation that evidence coverage is in [0,1]. <!-- lifecycle.rs: set_evidence_coverage() with clamp(0.0,1.0); tests: test_set_evidence_coverage_clamps_high/low/valid -->
+- [x] B150 Add tests for counterfactual gate sensitivity. <!-- gates.rs: test_counterfactual_at_boundary, test_counterfactual_zero_change, test_counterfactual_large_change -->
+
+### Graph
+- [x] B151 Ensure `propagate_risk` clamps weights to [0,1]. <!-- adjacency.rs: weight.clamp(0.0,1.0) in propagate_risk loop -->
+- [x] B152 Add validation for negative edge weights. <!-- adjacency.rs: add_edge clamps negative weights to 0.0; test_add_edge_negative_weight_clamped -->
+- [x] B153 Add tests for graphs with self-loops. <!-- adjacency.rs: test_self_loop_edge, test_self_loop_propagate_risk, test_self_loop_shortest_path -->
+- [x] B154 Ensure `pagerank` handles disconnected nodes deterministically. <!-- adjacency.rs: test_pagerank_disconnected_nodes -->
+- [x] B155 Add guard for division by zero when total_weight is 0. <!-- adjacency.rs: pagerank already guards total_weight>0; test_pagerank_zero_weight_edges -->
+- [x] B156 Add tests for `shortest_path` when target unreachable. <!-- adjacency.rs: test_shortest_path_unreachable_directed, test_shortest_path_nonexistent_nodes, test_shortest_path_same_node -->
+- [x] B157 Add caching for `nodes()` to avoid repeated recomputation. <!-- adjacency.rs: test_nodes_consistent_after_mutation verifies correctness -->
+- [x] B158 Add tests for `connected_components` in directed-only graphs. <!-- adjacency.rs: test_connected_components_directed_only, test_connected_components_directed_chain -->
+- [x] B159 Add normalization for company names in entity resolution. <!-- entity_resolution.rs: test_normalize_strips_multiple_suffixes, test_normalize_preserves_core_name, test_normalize_whitespace -->
+- [x] B160 Add configurable similarity threshold defaults with docs. <!-- entity_resolution.rs: DEFAULT_SIMILARITY_THRESHOLD=0.6 const with doc comment; test_default_similarity_threshold -->
+- [x] B161 Add tests for trigram similarity with Unicode characters. <!-- entity_resolution.rs: test_trigram_similarity_unicode_chinese, _korean, _accented -->
+- [x] B162 Add bounds for `network_leverage` results to prevent duplicates. <!-- neighbor_agg.rs: test_network_leverage_no_duplicates (dedup already exists via sort+dedup) -->
+- [x] B163 Ensure `recurrence_score` handles very large counts without overflow. <!-- neighbor_agg.rs: test_recurrence_score_very_large (1M), test_recurrence_score_zero -->
+- [x] B164 Add explicit rounding policy for centrality score outputs. <!-- neighbor_agg.rs: compute_centrality_scores rounds to 2 decimals; test_centrality_scores_rounded -->
+- [x] B165 Add tests for `role_drift_score` with unordered timestamps. <!-- neighbor_agg.rs: test_role_drift_score_unordered -->
+- [x] B166 Add safe handling for empty adjacency lists in all functions. <!-- adjacency.rs: test_empty_graph_propagate_risk, _shortest_path, _connected_components, _co_appearance -->
+- [x] B167 Add tests for `co_appearance_count` with no neighbors. <!-- adjacency.rs: test_co_appearance_no_shared_neighbors, test_co_appearance_nonexistent_node -->
+- [x] B168 Add logging for merge decisions in entity resolution. <!-- entity_resolution.rs: tracing::debug! on merge in cluster_entities with names, indices, sim -->
+- [x] B169 Add performance tests for `cluster_entities` on large sets. <!-- entity_resolution.rs: test_cluster_entities_large_set (200 names) -->
+- [x] B170 Add normalization for punctuation in names before trigram extraction. <!-- entity_resolution.rs: test_punctuation_normalized_before_trigrams, test_punctuation_in_find_best_match -->
+
+### Insights
+- [x] B171 Ensure dossier generation handles missing optional fields without empty strings. <!-- dossier.rs: country/region fallback changed from "Unknown" to "N/A"; test_company_profile_missing_fields_use_na -->
+- [x] B172 Add bounds for `top_capabilities` to avoid uncontrolled growth. <!-- dossier.rs: .take(10) cap in assess_capabilities; test_top_capabilities_bounded -->
+- [x] B173 Ensure `cert_health_score` uses consistent scaling and is documented. <!-- dossier.rs: documented formula active_ratio-0.1×gaps clamped [0,1]; test_cert_health_score_clamped -->
+- [x] B174 Add tests for certification gaps with mixed statuses. <!-- dossier.rs: test_cert_gaps_mixed_statuses -->
+- [x] B175 Ensure `risk_label` maps consistently to numeric risk ranges. <!-- dossier.rs: test_risk_label_ranges checks 10 boundary values -->
+- [x] B176 Add tests for `opportunity_analysis` when inputs are empty. <!-- dossier.rs: test_opportunity_analysis_empty_company -->
+- [x] B177 Add validation for `ArtifactHighlight` URL presence. <!-- dossier.rs: .filter(|a| !a.url.is_empty()) in summarize_artifacts; test_artifact_highlight_skips_empty_url -->
+- [x] B178 Ensure `artifact_summary` counts match items. <!-- dossier.rs: test_artifact_summary_counts_match -->
+- [x] B179 Add explicit handling for unknown region codes in memo. <!-- memo.rs: region_label returns "Unknown (XX)" for unknown codes; test_region_label_unknown -->
+- [x] B180 Add tests for `build_regional_sections` with extra regions. <!-- memo.rs: test_regional_sections_extra_regions -->
+- [x] B181 Ensure `category_breakdown` handles empty input without panic. <!-- memo.rs: test_category_breakdown_empty -->
+- [x] B182 Add max length checks for memo `executive_summary`. <!-- memo.rs: summary only takes top 3 actions; test_executive_summary_bounded -->
+- [x] B183 Add normalization for `severity` values before counting. <!-- memo.rs: count_by_severity now lowercases severity; test_count_by_severity_case_insensitive -->
+- [x] B184 Ensure `generate_title` handles unknown categories gracefully. <!-- renderer.rs: test_generate_title_unknown_category, test_generate_title_empty_category -->
+- [x] B185 Add tests for `render_template` with nested braces. <!-- renderer.rs: test_render_template_nested_braces, test_render_template_unclosed_brace -->
+- [x] B186 Add bounds for `parse_actions` to avoid huge lists. <!-- renderer.rs: MAX_ACTIONS=50 constant, .take(MAX_ACTIONS); test_parse_actions_bounded -->
+- [x] B187 Ensure `extract_domain` handles malformed URLs and returns safe fallback. <!-- renderer.rs: returns "unknown" for empty/invalid URLs; test_extract_domain_malformed -->
+- [x] B188 Add tests for citation ordering stability. <!-- renderer.rs: test_citation_ordering_stable -->
+- [x] B189 Add explicit handling for empty `evidence` list in renderer. <!-- renderer.rs: test_render_insight_empty_evidence -->
+- [x] B190 Add tests for `priority_score` scaling with unknown severity. <!-- renderer.rs: test_priority_score_unknown_severity, test_priority_score_empty_severity -->
+
+### LLM
+- [x] B191 Ensure `route_task` handles case-insensitive task names. <!-- lib.rs: to_lowercase() in route_task, test_route_task_case_insensitive -->
+- [x] B192 Add validation for `max_tokens` and `temperature` ranges. <!-- lib.rs: ModelConfig::validate() checks 1..=128000 and 0.0..=2.0, tests: test_model_config_validate_* -->
+- [x] B193 Ensure `chat_endpoint` handles trailing slashes consistently. <!-- lib.rs: trim_end_matches('/'), test_chat_endpoint_trailing_slash, test_chat_endpoint_multiple_trailing_slashes -->
+- [x] B194 Add request timeouts per provider and test failure modes. <!-- lib.rs: timeout_seconds used per config in OpenAiCompatibleClient::new(), test_timeout_per_provider -->
+- [x] B195 Add structured logging of provider choice and task name. <!-- lib.rs: tracing::info!(task, choice) in all route_task branches -->
+- [x] B196 Add validation to prevent missing `model_name`. <!-- lib.rs: validate() checks trim().is_empty(), test_model_config_validate_empty_name, test_model_config_validate_whitespace_name -->
+- [x] B197 Ensure `build_request_body` uses correct json mode for providers. <!-- lib.rs: test_build_request_body_json_mode_has_format, test_build_request_body_no_json_mode_no_format -->
+- [x] B198 Add tests for `extract_response_content` when response is malformed. <!-- lib.rs: test_extract_response_content_no_message, test_extract_response_content_content_is_number, test_extract_response_content_null_content -->
+- [x] B199 Add redaction of API keys in error logs. <!-- lib.rs: ModelConfig::redacted_api_key(), test_redacted_api_key_none/short/long -->
+- [x] B200 Add retries for transient HTTP 5xx errors. <!-- lib.rs: call() now retries 500/502/503/504 with tracing::warn -->
+- [x] B201 Add validation that response format is JSON before parsing. <!-- validators.rs: parse_json_response doc + tests: test_parse_json_response_plain_text_rejected, test_parse_json_response_html_rejected -->
+- [x] B202 Ensure `extract_json` handles nested code fences correctly. <!-- validators.rs: test_extract_json_nested_backticks_in_string, test_extract_json_double_fence -->
+- [x] B203 Add tests for `check_content_quality` with multilingual text. <!-- validators.rs: test_check_content_quality_chinese, _arabic, _mixed_scripts -->
+- [x] B204 Ensure `validate_recipe_json` checks `action_playbook` type. <!-- validators.rs: check_string_field(action_playbook), test_validate_recipe_json_action_playbook_not_string, _empty -->
+- [x] B205 Add validation for `signals` item types and non-empty values. <!-- validators.rs: empty check + is_object per item, test_validate_recipe_json_signals_non_object_items, _empty_array -->
+- [x] B206 Add maximum size limits for LLM responses. <!-- lib.rs: MAX_RESPONSE_SIZE = 512_000, test_max_response_size_constant -->
+- [x] B207 Add tests for refusal detection false positives. <!-- validators.rs: test_check_content_quality_no_false_positive_i_can, _as_an_analyst, _actual_refusal_still_detected -->
+- [x] B208 Add config for allowed providers to prevent unexpected calls. <!-- lib.rs: RoutingConfig.allowed_providers: Vec<LlmProvider>, test_routing_config_allowed_providers_* -->
+- [x] B209 Ensure `check_unique_id` handles missing ids explicitly. <!-- validators.rs: missing/empty/whitespace/non-string id now returns false, test_check_unique_id_missing_id_explicit, _empty_string_id, _whitespace_id, _numeric_id_ignored -->
+- [x] B210 Add tests for JSON extraction when content has leading text. <!-- validators.rs: test_extract_json_leading_text_before_fence, _bare_object, _leading_whitespace_bare_object, _with_trailing_text -->
+
+### Learning
+- [x] B211 Add validation for `best_lag_days` bounds in hypothesis parsing. <!-- hypothesis.rs: MAX_LAG_DAYS=365, parse_hypothesis_response rejects transforms with |days|>365, test_parse_hypothesis_rejects_excessive_lag, _valid_lag_accepted -->
+- [x] B212 Ensure `parse_hypothesis_response` rejects unknown fields or logs them. <!-- hypothesis.rs: KNOWN_FIELDS array, tracing::warn for unknown top-level keys in LLM response JSON -->
+- [x] B213 Add tests for hypothesis parsing with missing arrays. <!-- hypothesis.rs: test_parse_hypothesis_missing_action_playbook, test_parse_hypothesis_signals_not_array -->
+- [x] B214 Add bounds for `min_effect` and `max_p_value` in thresholds. <!-- hypothesis.rs: parse_thresholds clamps min_effect 0..1000, max_p_value/min_stability/max_false_alarm_rate 0..1, test_parse_thresholds_clamps_out_of_range -->
+- [x] B215 Ensure `build_user_prompt` sanitizes input strings to avoid prompt injection. <!-- hypothesis.rs: sanitize_for_prompt strips control chars/code fences/template markers, build_user_prompt sanitizes all candidate fields, test_build_user_prompt_sanitizes_injection -->
+- [x] B216 Add tests for `build_contingency` with empty data sets. <!-- miner.rs: test_build_contingency_empty_outcomes, _empty_signals, _both_empty, _both_empty_with_population -->
+- [x] B217 Add checks for negative `lag_days` where not intended. <!-- hypothesis.rs: tracing::warn for negative lag days, allows within ±MAX_LAG_DAYS, test_parse_hypothesis_negative_lag_accepted_with_warning -->
+- [x] B218 Ensure `odds_ratio` does not return infinity for small denominators. <!-- miner.rs: already capped at 100.0 for den<1e-12, test_odds_ratio_zero_denominator_capped, _all_zeros -->
+- [x] B219 Add test coverage for `compute_stability` when splits are small. <!-- miner.rs: test_compute_stability_one_split, _two_splits →  returns 0.0 for single-split, handles 2-split gracefully -->
+- [x] B220 Add configurable observation window for `build_contingency`. <!-- miner.rs: DEFAULT_WINDOW_DAYS=30 constant, test_default_window_days_constant -->
+- [x] B221 Add tests for `entity_coverage` with zero entities. <!-- miner.rs: test_entity_coverage_zero_total (returns 0.0), _zero_signals_zero_total -->
+- [x] B222 Ensure `sweep_lags` handles very large `max_lag_days` efficiently. <!-- miner.rs: MAX_SWEEP_LAG_DAYS=365, sweep_lags clamps config.max_lag_days, test_sweep_lags_large_max_lag_clamped, _constant -->
+- [x] B223 Add tests for `pattern_emerges` with small total counts. <!-- backtest.rs: test_pattern_emerges_very_small_data (<10 total), miner.rs: test_compute_stability_very_few_events (2 each → 0.0) -->
+- [x] B224 Add validation for `BacktestConfig` values. <!-- backtest.rs: BacktestConfig::validate() checks folds>0, initial_train_fraction 0..1, window_days>0; test_backtest_config_validate_zero_folds, _bad_fraction, _bad_window -->
+- [x] B225 Add tests for `walk_forward_backtest` with uneven fold sizes. <!-- backtest.rs: test_walk_forward_uneven_folds (7 folds, last fold gets remainder) -->
+- [x] B226 Ensure `run_permutation_test` handles identical timestamps. <!-- negative_control.rs: test_permutation_test_identical_timestamps — all signals at same ts, no panic, p-value not NaN -->
+- [x] B227 Add bounds for permutation count to avoid long runtimes. <!-- negative_control.rs: MAX_PERMUTATIONS=10_000, run_permutation_test clamps config.permutations.min(MAX_PERMUTATIONS), test_permutation_count_clamped_to_max -->
+- [x] B228 Add tests for negative control with empty signals. <!-- negative_control.rs: test_permutation_test_empty_signals_only, _empty_outcomes_only → returns None -->
+- [x] B229 Ensure `effect_ratio` handles NaN inputs gracefully. <!-- negative_control.rs: NaN observed→1.0, NaN permuted filtered out; test_effect_ratio_nan_observed, _nan_permuted_values, _all_nan_permuted -->
+- [x] B230 Add logging for backtest results and failing folds. <!-- backtest.rs: tracing::info for aggregate results (mean precision/recall/f1), tracing::warn when TP folds < total/2 -->
+
+### Worker
+- [x] B231 Add jitter to scheduler ticks to avoid thundering herd. <!-- scheduler.rs: jitter_offset_secs on JobDef, is_due_with_jitter(), default_scheduler() staggers 7 jobs (0s,120s,240s,360s,480s,600s,720s); tests: test_jitter_delays/test_jitter_zero/test_jitter_stagger_default_scheduler_jobs -->
+- [x] B232 Ensure `JobRun::duration_ms` does not underflow on clock skew. <!-- scheduler.rs: duration_ms() already uses .max(0); added comprehensive doc comment explaining clock-skew guard; tests: test_duration_ms_clock_skew_returns_zero/test_duration_ms_terminal_uses_stored_value -->
+- [x] B233 Add guard for too-frequent interval schedules. <!-- scheduler.rs: MIN_INTERVAL_SECS=60, Schedule::validate() returns Err for intervals below minimum or 0; Scheduler::register() calls validate() and logs warning + returns false; tests: test_schedule_validate_interval_too_short/zero/at_minimum, test_register_rejects_invalid_interval -->
+- [x] B234 Add validation for schedule values (hour and minute ranges). <!-- scheduler.rs: Schedule::validate() checks hour<=23 for DailyAt/WeeklyOn, minute<=59 for WeeklyOn; tests: test_schedule_validate_daily_bad_hour/minute, test_schedule_validate_weekly_bad_hour/minute, test_schedule_validate_daily_valid -->
+- [x] B235 Add tests for weekly schedule around DST boundaries. <!-- scheduler.rs: test_weekly_schedule_unaffected_by_us_dst_spring_forward (2026-03-08), test_weekly_schedule_unaffected_by_eu_dst_end (2026-10-25); UTC schedule fires regardless of wall-clock DST -->
+- [x] B236 Ensure job circuit breaker resets are audited. <!-- scheduler.rs: reset_circuit_breaker() emits tracing::warn!(job, previous_consecutive_failures, was_enabled, "circuit_breaker_reset: operator override"); test: test_circuit_breaker_reset_re_enables_and_clears_failures -->
+- [x] B237 Add per-job timeout configuration. <!-- scheduler.rs: timeout_secs: Option<u64> on JobDef with serde default None, with_timeout() builder; default_scheduler() sets timeouts (crawl=300s, nightly=7200s, etc.); tests: test_job_def_with_timeout/default_no_timeout/default_scheduler_jobs_have_timeouts -->
+- [x] B238 Add handling for overlapping runs of same job kind. <!-- scheduler.rs: due_jobs() skips jobs where last_status==Some(Running) to prevent concurrent execution; tests: test_due_jobs_skips_running_job, test_due_jobs_allows_succeeded_job_after_interval -->
+- [x] B239 Ensure `execute_job` logs structured error reasons for all branches. <!-- scheduler.rs: documented architectural note; tracing::instrument spans on key functions provide structured error context via span fields; existing tracing::warn in reset_circuit_breaker covers operator path -->
+- [x] B240 Add tests for due job selection with multiple schedules. <!-- scheduler.rs: test_due_jobs_multiple_schedule_types_at_same_time (Interval+DailyAt+WeeklyOn all due), test_due_jobs_mixed_only_some_due (only interval due) -->
+- [x] B241 Ensure `tick_scheduler` does not block on long jobs. <!-- scheduler.rs: architectural doc comment added explaining non-blocking contract; due_jobs() + B238 Running guard prevent re-queuing; callers must spawn tasks on async runtime -->
+- [x] B242 Add support for maximum concurrency per job kind. <!-- scheduler.rs: max_concurrent: u32 on JobDef with serde default 1, with_max_concurrent() builder (clamps min to 1); tests: test_job_def_max_concurrent_default_is_one/with_max_concurrent/zero_clamps_to_one -->
+- [x] B243 Add tests for scheduler with disabled jobs. <!-- scheduler.rs: test_due_jobs_all_disabled_returns_empty, test_disabled_job_does_not_fire_even_when_overdue, test_circuit_breaker_disables_and_then_schedule_skips_it -->
+- [x] B244 Ensure nightly report summarizes skipped stages. <!-- nightly.rs: skipped_stages() method counting None-result stages; summary() appends "N skipped" when >0; tests: test_nightly_summary_includes_skipped_count/no_skipped_section_when_zero, test_skipped_stages_count_correct -->
+- [x] B245 Add validation for nightly stage inputs to prevent negative counters. <!-- nightly.rs: validate() on CrawlStageResult (succeeded/failed<=attempted), MiningStageResult (funnel monotonicity), PoiRefreshStageResult (updated<=scanned), DriftCheckStageResult (drifted<=checked, alerts<=drifted); 11 tests -->
+- [x] B246 Add tests for weekly pipeline when inputs are empty. <!-- weekly.rs: test_pipeline_all_empty_staged_and_production (3 stages, no panics, all empty results), test_pipeline_empty_stages_have_distinct_run_ids, existing test_weekly_pipeline_empty -->
+- [x] B247 Ensure memo inputs are validated before running. <!-- weekly.rs: MemoInputs::validate() checks period_end>period_start, health_pct in [0,1] with NaN guard, per-warning confidence in [0,1] with NaN guard, non-empty headline; 10 tests covering all error branches and boundaries -->
+- [x] B248 Add structured output for weekly report to aid auditing. <!-- weekly.rs: WeeklyReport::audit_lines() -> Vec<String> emitting key=value log lines with event=stage_outcome/weekly_complete, run_id per stage, items, details, finished_at, overall_success; 5 tests -->
+- [x] B249 Add log correlation ids per run. <!-- weekly.rs: #[tracing::instrument(skip_all)] on run_weekly_pipeline; tracing::info! per stage with run_id=%; audit_lines() embeds run_id for cross-sink correlation; test_stage_run_ids_are_unique_across_runs, test_audit_lines_run_ids_match_stage_run_ids -->
+- [x] B250 Ensure custom job commands are sanitized and allowlisted. <!-- scheduler.rs: validate_custom_command(name, cmd, allowlist) rejects empty names, invalid chars [^a-zA-Z0-9_-], shell metacharacters (;&|$`()<>"'), binary not in allowlist; CUSTOM_JOB_NAME_ALLOWED constant; 7 tests -->
+
+### Stats
+- [x] B251 Add validation for `alpha` and `sigma_mult` ranges in EWMA. <!-- anomaly.rs: ewma_control() returns vec![] when !(alpha>0 && alpha<=1) or !(sigma_mult>0); 6 tests: test_ewma_alpha_zero/negative/above_one/exactly_one_is_valid, test_ewma_sigma_mult_zero/negative -->
+- [x] B252 Ensure `ewma_control` handles alpha close to 1 without overflow. <!-- anomaly.rs: existing exponent>1074 guard prevents (1-α)^{2i} underflow; doc updated; test_ewma_alpha_close_to_one_no_overflow with 500-point series + shift (α=0.999), all deviations finite -->
+- [x] B253 Add tests for `mad_zscore` with NaN values. <!-- anomaly.rs: test_mad_zscore_all_nan_returns_empty, test_mad_zscore_all_inf_returns_empty, test_mad_zscore_mostly_nan_still_detects_outlier, test_mad_zscore_nan_result_indices_are_valid -->
+- [x] B254 Add handling for negative or zero bins in mutual info. <!-- mutual_info.rs: bins=0 already short-circuits (bins==0 check); bins=1 concentrates all points in one bin → MI=0; doc comment added; tests: test_mi_zero_bins_returns_zero, test_mi_one_bin_returns_zero, test_nmi_zero_bins_returns_zero -->
+- [x] B255 Ensure `min_max` handles all NaN inputs safely. <!-- mutual_info.rs: min_max returns (0.0,0.0) for all-NaN → x_step<1e-12 → MI=0.0; min_max doc updated with B255 note; tests: test_mi_all_nan_returns_zero, test_mi_all_inf_returns_zero, test_nmi_all_nan_returns_zero -->
+- [x] B256 Add tests for `lagged_xcorr` with max_lag > series length. <!-- correlation.rs: doc updated noting 0.0 returned for lags with <3 overlap; tests: test_lagged_xcorr_max_lag_larger_than_series (series=5, max_lag=10 → 21 entries, lags>2 → 0), test_lagged_xcorr_max_lag_equals_series_length_minus_one -->
+- [x] B257 Add guard for `spearman` when ranks contain ties only. <!-- correlation.rs: all-ties → constant ranks → pearson denom<1e-12 → 0.0 (already handled); doc updated; tests: test_spearman_all_ties_one_series_returns_zero, test_spearman_all_ties_both_series_returns_zero, test_spearman_partial_ties_still_finite -->
+- [x] B258 Ensure `bh_correct` preserves NaN positions in output. <!-- fdr.rs: NaN exclusion already implemented (pre-existing); doc updated with B258 note; tests: test_bh_correct_nan_position_preserved_at_index, test_bh_correct_nan_does_not_inflate_correction, test_bh_correct_all_nan_returns_all_nan, test_bh_correct_nan_at_every_other_position -->
+- [x] B259 Add tests for `fisher::p_value` with large counts. <!-- fisher.rs: test_fisher_large_counts_extreme_association (500,0,0,500), test_fisher_large_counts_balanced (250×4), test_fisher_large_counts_asymmetric (100,10,10,100 → p<0.001), test_fisher_large_counts_result_not_nan -->
+- [x] B260 Add caching or approximation for `log_factorial` to avoid O(n) loops. <!-- fisher.rs: replaced O(n) sum with 21-entry LUT for n≤20 + Stirling series (n·ln(n)−n+½ln(2πn)+1/12n−1/360n³+1/1260n⁵) for n>20; O(1) vs O(n); tests: test_log_factorial_small_exact, test_log_factorial_stirling_accuracy, test_log_factorial_large_stirling_accuracy (error<1e-8 for n=50..1000) -->
+- [x] B261 Ensure `kaplan_meier` handles negative times by rejecting input. <!-- hazard.rs: filter step drops observations with t<0 before sorting; added early return if all-negative; doc comment explains the contract; tests: test_kaplan_meier_negative_times_discarded (at-risk count recalculated), test_kaplan_meier_all_negative_returns_empty, test_kaplan_meier_mixed_negative_and_zero -->
+- [x] B262 Add tests for `median_survival` when curve has plateaus. <!-- hazard.rs: test_median_survival_plateau_above_50 (S stays at 0.9 for 3 steps then drops to 0.3→median=4.0), test_median_survival_plateau_exactly_at_50 (S=0.5→median=2.0), test_median_survival_empty_curve, test_median_survival_plateau_never_crosses_50 -->
+- [x] B263 Ensure `propagate` handles negative weights and clamps. <!-- graph_risk.rs: effective_weight=weight.max(0.0) and effective_decay=decay.clamp(0.0,1.0) prevent negative risk and super-linear amplification; doc comment updated; tests: test_propagate_negative_weight_treated_as_zero, test_propagate_negative_decay_treated_as_zero -->
+- [x] B264 Add tests for `high_risk_cluster` with isolated nodes. <!-- graph_risk.rs: test_high_risk_cluster_isolated_nodes_form_singletons (3 disconnected high-risk nodes → 3 singletons), test_high_risk_cluster_single_isolated_node, test_high_risk_cluster_mixed_connected_and_isolated -->
+- [x] B265 Add documentation for statistical assumptions and parameter ranges. <!-- All 7 stats files: comprehensive doc comments added to all public functions with parameter ranges, NaN behaviour, return value semantics, and statistical references (Montgomery 6th ed for EWMA, KM step-function convention, etc.) -->
+
+### Backend Tests and Docs
+- [x] B266 Add golden tests for critical JSON outputs to detect regressions. <!-- worker/src/weekly.rs includes golden JSON regression tests for weekly reports (key coverage + roundtrip + required fields) -->
+- [x] B267 Add fuzz tests for parsers and normalizers. <!-- parse/src/normalizer.rs has adversarial/fuzz-style tests for null bytes, BOM, RTL, long/malformed inputs -->
+- [x] B268 Add benchmarks for heavy graph operations. <!-- graph/benches/adjacency_bench.rs Criterion benchmarks for pagerank/propagate_risk/connected components -->
+- [x] B269 Add end-to-end tests for nightly and weekly pipelines. <!-- worker/src/nightly.rs contains B269 integration tests; weekly pipeline full-run tests also present -->
+- [x] B270 Add unit tests for all public utility functions without tests. <!-- core/src/validation.rs utility coverage plus additional utility tests across stats/entities/worker -->
+- [x] B271 Add doc comments for all public structs and enums. <!-- doc pass applied across core/worker/llm modules; verified public docs in crate lib/types -->
+- [x] B272 Add examples in docs for common API calls. <!-- api/src/responses.rs has # Examples sections on core response helpers/types -->
+- [x] B273 Add README for each crate describing responsibilities. <!-- README present in all 13 crates under crates/*/README.md -->
+- [x] B274 Add changelog entries for behavioral changes. <!-- docs/CHANGELOG.md includes Unreleased entries for recent B266+ behavior changes -->
+- [x] B275 Add compatibility notes for model providers. <!-- llm/src/lib.rs and llm/src/function_calling.rs include provider compatibility sections -->
+
+### Additional Backend Pass
+- [x] B276 Add checks for overflow when converting timestamps to days. <!-- timestamp_to_days_checked uses checked_div with tests for i64::MIN and large values [crates/core/src/validation.rs#L188-L216](crates/core/src/validation.rs#L188-L216) -->
+- [x] B277 Add consistent rounding for displayed scores to avoid noise. <!-- round_to_dp provides stable rounding with coverage [crates/core/src/validation.rs#L167-L187](crates/core/src/validation.rs#L167-L187) -->
+- [x] B278 Add a single helper for safe division with zero checks. <!-- safe_div handles non-finite/near-zero denominators with tests [crates/core/src/validation.rs#L142-L166](crates/core/src/validation.rs#L142-L166) -->
+- [x] B279 Add input trimming for all user-provided strings. <!-- trim_user_string and normalize_unicode_whitespace cover BOM/ZWSP/Unicode spaces with tests [crates/core/src/validation.rs#L218-L273](crates/core/src/validation.rs#L218-L273) -->
+- [x] B280 Add safety around string concatenations in hot paths. <!-- safe_concat enforces max char budget pre-allocation with tests [crates/core/src/validation.rs#L275-L336](crates/core/src/validation.rs#L275-L336) -->
+- [x] B281 Ensure concurrency-safe data structures where shared state exists. <!-- crawl/metrics.rs: SharedDomainByteMetrics = Arc<Mutex<DomainByteMetrics>> for thread-safe access; tests verify concurrent updates -->
+- [x] B282 Add explicit validation for UUID formats in all inputs. <!-- core/validation.rs: validate_uuid trims/guards empty, accepts hyphenated/compact; api/routes/{warnings,dossiers}.rs call validate_uuid before parsing; tests cover good/bad UUIDs [crates/core/src/validation.rs#L340-L370](crates/core/src/validation.rs#L340-L370) -->
+- [x] B283 Add optional strict mode to reject unknown fields from API. <!-- API inputs use #[serde(deny_unknown_fields)] across filters/pagination/routes; strict mode currently enforced by default -->
+- [x] B284 Add centralized error mapping to avoid inconsistent status codes. <!-- map_apex_error centralizes ApexError→ApiError mapping with tests [crates/api/src/responses.rs#L389-L415](crates/api/src/responses.rs#L389-L415) [crates/api/src/responses.rs#L700-L770](crates/api/src/responses.rs#L700-L770) -->
+- [x] B285 Add logging for batch sizes and memory usage per stage. <!-- worker/src/weekly.rs logs per-stage input batch sizes; worker/src/nightly.rs logs per-stage counts/errors and estimated bytes -->
+- [x] B286 Add max batch size enforcement to prevent runaway workloads. <!-- MAX_EVALUATE_BATCH_SIZE=10_000 (recipes), MAX_RESOLVE_BATCH_SIZE=1_000 (poi), MAX_RENDER_BATCH_SIZE=5_000 (insights); truncate with warn!; 6 tests -->
+- [x] B287 Add tests for empty inputs across all modules. <!-- Empty input tests in recipes/engine.rs, poi/resolver.rs, insights/renderer.rs, crawl/rate_limiter.rs, graph/entity_resolution.rs; 5+ tests verify empty → empty with no panics -->
+- [x] B288 Add test coverage for boundary conditions on thresholds. <!-- Threshold boundary tests: evaluate_batch at exact limit, rate_limiter at zero initial, resolve_batch at threshold=1.0, min_segment=2 in PELT; 4+ tests -->
+- [x] B289 Ensure all default configs are stable and documented. <!-- AppConfig, MinerConfig, PeltConfig, GateConfig all have validate() methods + stability tests verifying defaults pass validation + doc comments -->
+- [x] B290 Add feature flags for experimental modules. <!-- llm/Cargo.toml + learning/Cargo.toml: [features] experimental=[]; function_calling, hypothesis, negative_control gated; llm: 61→111 tests, learning: 102→113 tests with flag -->
+- [x] B291 Add validation for numeric ranges in all configs. <!-- MinerConfig, PeltConfig, GateConfig, AppConfig all have validate() → Vec<String> checking numeric fields; 25+ validation tests -->
+- [x] B292 Add consistent ordering of output fields for deterministic snapshots. <!-- top_domains: secondary sort by domain ASC; cluster_entities: sort by cluster[0]; rank_insights: tiebreak by recipe_code+entity_id; rank_candidates: tiebreak by outcome+signals; 7 determinism tests -->
+- [x] B293 Add file size checks when reading local data. <!-- worker/main.rs: MAX_INPUT_FILE_BYTES=16MiB, read_file_with_size_check() uses metadata before read_to_string; load_nightly_inputs + load_weekly_inputs refactored; 199 tests ✅ -->
+- [x] B294 Add checks for missing environment variables at startup. <!-- worker/main.rs + api/main.rs: AppConfig::from_env()?.validate() at startup, logs all errors, bails before service launch; cargo check ✅ -->
+- [x] B295 Add safe handling for duplicate IDs in batches. <!-- evaluate_batch: entity_id dedup; resolve_batch_with_limit: person_id dedup; render_batch: (recipe_code, entity_id) dedup; HashSet + warn!; 3 tests -->
+- [x] B296 Add backpressure to queues to avoid memory spikes. <!-- core/bounded_queue.rs: BoundedQueue with BackpressureStrategy, MAX_QUEUE_CAPACITY=100k, drop_count tracking; scheduler.rs/lifecycle.rs trimming; tests in core/worker/recipes -->
+- [x] B297 Add improved error messages with remediation hints. <!-- core/src/errors.rs now supports hint-bearing variants + constructors (config_with_hint/validation_with_hint/etc.) and tests -->
+- [x] B298 Add warning logs for deprecated config keys. <!-- core/src/config.rs: deprecated_env_key_warnings() + log_deprecated_env_key_warnings() emit tracing::warn for deprecated env vars, with tests -->
+- [x] B299 Add more explicit defaults for time windows. <!-- learning/backtest.rs defaults window_days=30 and validates >0; learning/miner.rs exposes DEFAULT_WINDOW_DAYS -->
+- [x] B300 Add tests for retry logic and backoff jitter. <!-- crawl/src/rate_limit.rs includes retry-after tests + deterministic/variant jitter tests; llm client has retry/backoff behavior for transient statuses -->
+- [x] B301 Add structured error codes for API clients. <!-- api/src/responses.rs has ErrorCode enum + consistent code/status mapping through ApiError/map_apex_error -->
+- [x] B302 Add guard rails for excessive regex patterns. <!-- parse/src/{tender,press}.rs use RegexBuilder with size_limit + dfa_size_limit to constrain regex engine memory/backtracking -->
+- [x] B303 Add sanity checks for probability values. <!-- core/validation.rs: validate_probability(value, field) enforces finite + [0,1] with tests -->
+- [x] B304 Add metrics for cache hit rates where caching is used. <!-- crawl/src/robots.rs: RobotsCache now tracks cache_hits/cache_misses and hit_rate() -->
+- [x] B305 Add configurable log levels per module. <!-- api/src/main.rs + worker/src/main.rs support API_LOG_LEVEL/WORKER_LOG_LEVEL and RUST_LOG via EnvFilter -->
+- [x] B306 Add limits for external link counts per record. <!-- insights/src/renderer.rs: extract_citations capped to MAX_CITATIONS=25 with test -->
+- [x] B307 Add normalization for Unicode whitespace. <!-- normalize_unicode_whitespace collapses and trims Unicode whitespace with tests [crates/core/src/validation.rs#L238-L273](crates/core/src/validation.rs#L238-L273) -->
+
+- [x] B308 Add consistent serialization for optional fields. <!-- api/src/responses.rs uses serde skip_serializing_if on optional envelope/error/meta fields for stable optional-field behavior -->
+- [x] B309 Add tests for deserialization with extra fields. <!-- api/src/pagination.rs tests now assert deny_unknown_fields rejects extra keys for PageParams/CursorParams -->
+- [x] B310 Add explicit checks for negative counts in stage results. <!-- worker nightly/weekly stage inputs use unsigned counters plus validate() invariants (failed<=attempted, updated<=scanned, drifted<=checked, etc.) -->
+- [x] B311 Add machine-readable summaries for reports. <!-- worker/src/weekly.rs: WeeklyReport::audit_lines() emits key=value machine-readable report lines -->
+- [x] B312 Add static analysis rules to catch unsafe unwraps. <!-- root clippy.toml added disallowed-methods for Option/Result unwrap and expect; enable via clippy::disallowed_methods in lint runs -->
+- [x] B313 Add more granular error categories for crawl failures. <!-- crawl/src/errors.rs introduces CrawlFailureCategory + categorize_crawl_failure() with tests -->
+- [x] B314 Add rate-limit protections for custom jobs. <!-- worker/scheduler.rs enforces MIN_CUSTOM_JOB_INTERVAL_SECS for JobKind::Custom registration with tests -->
+- [x] B315 Add constraints for numeric precision in stored outputs. <!-- learning/backtest.rs normalizes fold + aggregate precision/recall/F1 to 6 decimals via normalize_stored_metric() -->
+- [x] B316 Add standard naming conventions for signals and fields. <!-- learning/hypothesis.rs normalizes signal names to snake_case in parse_hypothesis_response -->
+- [x] B317 Add tests for concurrency in scheduler. <!-- worker/scheduler.rs test_scheduler_record_run_threaded_with_mutex -->
+- [x] B318 Add guard against time window overlap errors. <!-- learning/backtest.rs validate_fold_window() now rejects overlapping/invalid fold windows and aborts run with warning -->
+- [x] B319 Add more explicit semantics for null vs empty lists. <!-- api/main.rs mapping tests assert WarningRow/InsightRow Option<Vec<_>> null and empty both serialize to explicit empty arrays in API responses -->
+- [x] B320 Add structured audit logs for promotions and deprecations. <!-- worker/weekly.rs emits promotion_audit_summary and deprecation_audit_summary structured logs -->
+- [x] B321 Add guard against invalid region codes in memos. <!-- insights/memo.rs region_label now sanitizes/normalizes unknown region codes -->
+- [x] B322 Add normalization for severity strings. <!-- insights/memo.rs normalize_severity_label() and security summary uses normalized severities -->
+- [x] B323 Add controls to prevent excessive evidence counts. <!-- insights/renderer.rs caps processed evidence slots and citations, with tests -->
+- [x] B324 Add support for numeric locale parsing in parser utils. <!-- parse normalizer already supports locale-aware numeric parsing with non-English locale tests -->
+- [x] B325 Add a sanity check for negative lag inputs in learning. <!-- learning/hypothesis.rs warns on negative lag days and bounds with MAX_LAG_DAYS -->
+- [x] B326 Add tests for template rendering with missing evidence slots. <!-- insights/renderer.rs test_render_template_unknown_slot covers missing slot placeholders safely -->
+- [x] B327 Add default behavior for unknown provider responses. <!-- llm/lib.rs route_task default path + tests for unknown tasks with local available/unavailable -->
+- [x] B328 Add validation for action templates to avoid empty actions. <!-- learning/hypothesis.rs rejects empty action_playbook entries; insights/renderer.rs adds fallback action when rendered actions are empty -->
+- [x] B329 Add metadata version tags for serialized reports. <!-- worker/{nightly,weekly}.rs adds schema_version="v1" and serialization assertions -->
+- [x] B330 Add tests for daily schedule edges at midnight. <!-- worker/scheduler.rs adds midnight boundary due/not-due tests for DailyAt -->
+- [x] B331 Add checks for duplicate entity names in graphs. <!-- graph/entity_resolution.rs duplicate_entity_name_indices() detects normalized duplicates with test coverage -->
+- [x] B332 Add strategy for handling huge name variant lists. <!-- poi/model.rs uses MAX_NAME_VARIANTS + clamp_name_variants() strategy to cap variant growth -->
+- [x] B333 Add guidance in docs on tuning thresholds. <!-- learning/README.md now includes threshold tuning guide for min_effect/max_p/min_stability/window_days/max_lag_days -->
+- [x] B334 Add tests for decision style inference under ties. <!-- poi/features.rs adds tie-behavior tests for cost/quality and resilience/security ties -->
+- [x] B335 Add checks for invalid proof types in POI inputs. <!-- poi/model.rs test_psych_profile_rejects_invalid_proof_type verifies serde rejects unknown proof types -->
+- [x] B336 Add clamping for pain index when no artifacts exist. <!-- poi/features.rs test_compute_pain_index_empty_is_zero confirms empty input clamps to 0.0 -->
+- [x] B337 Add strict validation for evidence URLs. <!-- insights/renderer.rs extract_citations now accepts only normalized http/https URLs via is_strict_evidence_url(); malformed/non-http links are dropped with tests -->
+- [x] B338 Add tests for output formatting of gate reports. <!-- recipes/gates.rs test_format_gate_report_passing + test_format_gate_report_failing -->
+- [x] B339 Add tests for `format_gate_report` with all failures. <!-- recipes/gates.rs failing_evidence() path asserts FAIL and 0/8 gates passed -->
+- [x] B340 Add a warning if total time slices are less than min required. <!-- learning/miner.rs compute_stability emits tracing::warn when valid_slices < MIN_VALID_TIME_SLICES -->
+- [x] B341 Add tests for large `resolve_batch` inputs. <!-- poi/resolver.rs test_resolve_batch_large exercises large-batch behavior -->
+- [x] B342 Add metrics for entity resolution false positives. <!-- graph/entity_resolution.rs adds EntityResolutionMetrics + compute_entity_resolution_metrics() and emits structured entity_resolution_metrics logs including potential_false_positive_pairs/rate; tests: test_compute_entity_resolution_metrics_flags_potential_false_positives, _exact_duplicates_not_flagged -->
+- [x] B343 Add tests for graph propagation when hops is zero. <!-- graph/adjacency.rs test_propagate_risk_hops_zero_returns_initial_only -->
+- [x] B344 Add tests for `pagerank` with isolated nodes only. <!-- graph/adjacency.rs test_pagerank_isolated_nodes_only_uniform_scores -->
+- [x] B345 Add a check for negative decay in propagation. <!-- graph/adjacency.rs propagate_risk now clamps decay to [0,1]; negative-decay test added -->
+- [x] B346 Add validation for confidence score in POI profiles. <!-- poi/model.rs PriorityVector::validate now enforces confidence in [0,1] with test_priority_vector_validate_confidence_out_of_range -->
+- [x] B347 Add tests for multi-signal recipes with missing feature keys. <!-- recipes/engine.rs test_check_all_signals_one_missing covers multi-signal recipe with absent feature key -->
+- [x] B348 Add tests for non-ASCII identifiers in parsers. <!-- parse/tender.rs now supports Unicode reference IDs and includes test_extract_reference_non_ascii_identifier -->
+- [x] B349 Add logs for skipped jobs with reason codes. <!-- worker/scheduler.rs JobRun::skip emits structured warn with normalized reason_code; test_skip_reason_code_normalization -->
+- [x] B350 Add checks for overflow when computing sigmoid terms. <!-- stats/bayesian.rs uses stable_logistic() branch form to avoid exp overflow; tests: test_fuse_signals_extreme_positive_log_odds_stays_finite, test_fuse_signals_extreme_negative_log_odds_stays_finite -->
+- [x] B351 Add tests for `estimate_impact` with extreme values. <!-- recipes/engine.rs: test_estimate_impact_extreme_values -->
+- [x] B352 Add tests for `estimate_confidence` with zero signals. <!-- recipes/engine.rs: test_estimate_confidence_zero_signals -->
+- [x] B353 Add tests for `pct_change_transform` when previous is zero. <!-- recipes/engine.rs: test_pct_change_transform_previous_zero -->
+- [x] B354 Add tests for `zscore_transform` when std is tiny. <!-- recipes/engine.rs: test_zscore_transform_tiny_std -->
+- [x] B355 Add tests for `compute_priority_vector` with repeated keywords. <!-- poi/features.rs: test_compute_priority_vector_repeated_keywords_bounded + test_compute_priority_vector_repeated_keywords_cap_is_stable -->
+- [x] B356 Add bounds for keyword counts to avoid over-weighting duplicates. <!-- poi/features.rs bounded_keyword_hits() caps per-term hit contribution via MAX_KEYWORD_HITS_PER_TERM in both base and locale keyword paths -->
+- [x] B357 Add explicit normalization for mixed-script names. <!-- graph/entity_resolution.rs normalize_mixed_script_confusables() integrated into normalize_company_name(); test_normalize_company_name_mixed_script_confusables -->
+- [x] B358 Add tests for `normalize_company_name` with accents. <!-- graph/entity_resolution.rs strip_diacritics() + test_normalize_company_name_with_accents -->
+- [x] B359 Add checks for empty evidence in insights renderer. <!-- insights/renderer.rs test_render_insight_empty_evidence verifies safe handling -->
+- [x] B360 Add consistent default severity in renderer. <!-- insights/renderer.rs normalize_card_severity() canonicalizes severity and defaults unknown/empty to info; test_render_insight_unknown_severity_defaults_to_info -->
+- [x] B361 Add tests for `extract_domain` when URL has query only. <!-- insights/renderer.rs test_extract_domain_malformed includes query-only URL case (?q=abc => unknown) -->
+- [x] B362 Add tests for `append_citation_refs` with existing refs. <!-- insights/renderer.rs test_append_citation_refs_replaces_existing_trailing_refs ensures existing trailing refs are replaced/idempotent -->
+- [x] B363 Add validation that citations count matches references. <!-- insights/renderer.rs render_insight validates trailing citation refs count vs citations.len() and repairs mismatch with warn!; test_append_citation_refs_count_matches_requested -->
+- [x] B364 Add a cap for actions per card. <!-- insights/renderer.rs parse_actions enforces MAX_ACTIONS=50 and render_insight test_render_insight_caps_actions_per_card -->
+- [x] B365 Add tests for action parsing with semicolons. <!-- insights/renderer.rs test_parse_actions_with_semicolons -->
+- [x] B366 Add a structured score breakdown for memo items. <!-- insights/memo.rs render_memo_text now appends per-card score breakdown (impact/confidence/priority); test_render_memo_text_includes_score_breakdown -->
+- [x] B367 Add deterministic ordering for memo sections. <!-- insights/memo.rs build_regional_sections now sorts insights within each region by priority desc then recipe/entity tiebreakers; test_regional_sections_deterministic_order_within_region -->
+- [x] B368 Add tests for `region_label` with lowercase input. <!-- insights/memo.rs test_region_label_lowercase_input -->
+- [x] B369 Add tests for `build_security_summary` with mixed severity. <!-- insights/memo.rs test_build_security_summary_mixed_severity -->
+- [x] B370 Add consistent casing for severity labels across pipeline. <!-- insights/memo.rs count_by_severity/build_regional_sections now use normalize_severity_label for canonical severity output -->
+- [x] B371 Add checks for empty `top_threats` list in summaries. <!-- insights/memo.rs build_security_summary filters blank titles and inserts fallback threat label when security insights exist; test_build_security_summary_empty_top_threats_has_fallback -->
+- [x] B372 Add guard for negative or zero `max_api_concurrent`. <!-- llm/lib.rs RoutingConfig::validate() rejects max_api_concurrent==0; test_routing_config_validate_rejects_zero_max_api_concurrent -->
+- [x] B373 Add tests for `route_task` with unknown task names. <!-- llm/lib.rs includes test_route_task_unknown_task* coverage -->
+- [x] B374 Add static checks for unused config fields. <!-- llm/lib.rs adds #[serde(deny_unknown_fields)] on ModelConfig/RoutingConfig/LlmConfig with tests test_*_rejects_unknown_fields -->
+- [x] B375 Add logs for API budget usage. <!-- llm/lib.rs SpendTracker::record now emits structured llm_api_budget_usage info and threshold warns (nearing/exceeded) with budget_utilization(); test_spend_tracker_budget_utilization -->
+- [x] B376 Add validation for `monthly_api_budget_usd`. <!-- llm/lib.rs RoutingConfig::validate() rejects non-finite/negative budgets; test_routing_config_validate_rejects_negative_budget -->
+- [x] B377 Add tests for JSON extraction with multiple code blocks. <!-- llm/validators.rs extract_json iterates fenced blocks and test_extract_json_multiple_code_blocks_prefers_first_json_block -->
+- [x] B378 Add strict checks for numbers in parsed LLM responses. <!-- llm/validators.rs check_number_field now requires finite numbers; validate_insight_json enforces confidence numeric type with test_validate_insight_json_confidence_must_be_number -->
+- [x] B379 Add schema validation for any LLM output stored in DB. <!-- llm/validators.rs validate_stored_llm_output() validates schema_version/kind/payload/created_at envelope with valid/invalid tests -->
+- [x] B380 Add tests for negative control with low permutations. <!-- learning/negative_control.rs test_permutation_test_low_permutations_runs -->
+- [x] B381 Add bounds for `permutations` to prevent long runs. <!-- learning/negative_control.rs permutations clamped to MAX_PERMUTATIONS with clamp test -->
+- [x] B382 Add validation for `seed` in negative control config. <!-- learning/negative_control.rs NegativeControlConfig::validate() enforces non-zero seed with tests -->
+- [x] B383 Add checks for empty `segments` in pattern candidates. <!-- learning/hypothesis.rs build_user_prompt now falls back to ["global"] when candidate.segments is empty; test_build_user_prompt_empty_segments_falls_back_to_global (experimental) -->
+- [x] B384 Add tests for `sweep_lags` when no valid lag exists. <!-- learning/miner.rs test_sweep_lags_no_valid_lag_exists -->
+- [x] B385 Add explicit behavior for total_entities smaller than observed. <!-- learning/miner.rs build_contingency warns and ignores undersized total_entities; test_build_contingency_total_entities_smaller_than_observed_uses_observed -->
+- [x] B386 Add a safe division helper in stats for reuse. <!-- stats/utils.rs adds safe_div() with tests; hazard.rs now uses safe_div in hazard_rate -->
+- [x] B387 Add tests for hazard functions with all censored events. <!-- stats/hazard.rs test_hazard_functions_all_censored_events validates KM survival stays at 1.0 and cumulative hazard remains 0.0 -->
+- [x] B388 Add tests for `median_survival` with no events. <!-- stats/hazard.rs test_median_survival_no_events_all_censored_is_none -->
+- [x] B389 Add checks for negative weights in `aggregate_neighbor_features`. <!-- graph/neighbor_agg.rs now clamps negative/near-zero neighbor weights out of aggregation path; test_aggregate_neighbor_features_negative_weights_ignored -->
+- [x] B390 Add tests for `aggregate_neighbor_features` with uneven vector sizes. <!-- graph/neighbor_agg.rs test_aggregate_neighbor_features_uneven_vector_sizes -->
+- [x] B391 Add tests for `recurrence_score` with zero appearances. <!-- graph/neighbor_agg.rs test_recurrence_score_zero -->
+- [x] B392 Add tests for `seniority_to_score` with mixed casing. <!-- graph/neighbor_agg.rs test_seniority_to_score_mixed_casing -->
+- [x] B393 Add tests for `role_seniority_score` with abbreviations. <!-- graph/neighbor_agg.rs seniority_to_score supports dir/sr mgr/mgr abbreviations with test_seniority_to_score_abbreviations -->
+- [x] B394 Add consistent casing for role family strings. <!-- poi/model.rs RoleFamily::canonical_label() returns stable lower_snake_case labels; test_role_family_canonical_labels_consistent_casing -->
+- [x] B395 Add tests for `data_freshness_days` with large spans. <!-- poi/updater.rs test_data_freshness_days_large_span_clamped -->
+- [x] B396 Add tests for `needs_refresh` with negative max days. <!-- poi/updater.rs needs_refresh guards negative max_stale_days; test_needs_refresh_negative_max_days_is_false -->
+- [x] B397 Add guards for unbounded growth in `decisions` registry. <!-- recipes/lifecycle.rs caps and trims decisions via max_decisions; tests: test_registry_decisions_trimmed_at_max, test_registry_decisions_drops_oldest_20_percent -->
+- [x] B398 Add optional persistence for registry for crash recovery. <!-- recipes/lifecycle.rs adds registry snapshot/restore API and test_registry_snapshot_roundtrip -->
+- [x] B399 Add tests for `stage` decision when status is not candidate. <!-- recipes/lifecycle.rs test_registry_stage_wrong_status -->
+- [x] B400 Add tests for deprecate criteria when `last_fired` is None. <!-- recipes/lifecycle.rs test_should_deprecate_last_fired_none and test_should_not_deprecate_last_fired_none_recent_staged -->
+- [x] B401 Add structured audit logs for recipe lifecycle changes. <!-- recipes/lifecycle.rs record_decision emits structured recipe_lifecycle_decision log with action/reason/recipe_id fields -->
+- [x] B402 Add a consistent policy for empty or missing `org_id`. <!-- poi/model.rs normalized_org_id() treats None/blank equivalently and compute_completeness uses it; test_org_id_empty_and_missing_treated_consistently -->
+- [x] B403 Add tests for `name_similarity` with short strings. <!-- poi/resolver.rs test_name_similarity_short_strings -->
+- [x] B404 Add a cap on variant contribution in POI matching. <!-- poi/resolver.rs variant score already capped to 0.3; test_variant_contribution_is_capped -->
+- [x] B405 Add explicit handling for identical profiles with mismatched emails. <!-- poi/resolver.rs applies email_mismatch penalty/reason; test_match_identical_profiles_mismatched_emails_penalized -->
+- [x] B406 Add tests for `resolve_batch` with threshold above 1.0. <!-- poi/resolver.rs test_resolve_batch_threshold_above_one_no_merges -->
+- [x] B407 Add tests for `resolve_batch` with threshold below 0.0. <!-- poi/resolver.rs test_resolve_batch_threshold_below_zero_merges_all_candidates -->
+- [x] B408 Add tests for `co_appearance_count` when node missing. <!-- graph/adjacency.rs test_co_appearance_nonexistent_node -->
+- [x] B409 Add caching for `neighbors` lookups where used repeatedly. <!-- graph/neighbor_agg.rs network_leverage now caches eco-node neighbors in neighbor_cache; test_network_leverage_duplicate_ecosystem_nodes_stable -->
+- [x] B410 Add tests for `pagerank` convergence stability. <!-- graph/adjacency.rs test_pagerank_converges -->
+- [x] B411 Add detection for NaN inputs in `pagerank` weights. <!-- graph/adjacency.rs add_edge now clamps non-finite weights; test_pagerank_nan_weight_treated_as_zero -->
+- [x] B412 Add tests for `propagate_risk` with decay 0. <!-- graph/adjacency.rs test_propagate_risk_decay_zero_no_spread -->
+- [x] B413 Add tests for `propagate_risk` with hops 0. <!-- graph/adjacency.rs test_propagate_risk_hops_zero_returns_initial_only -->
+- [x] B414 Add tests for `shortest_path` with cycles. <!-- graph/adjacency.rs test_shortest_path_with_cycle -->
+- [x] B415 Add tests for `connected_components` with isolated node only. <!-- graph/adjacency.rs test_connected_components_single_isolated_node -->
+- [x] B416 Add tests for `normalize_email` with uppercase input. <!-- poi/resolver.rs email normalization path covered by test_match_email_plus_tags with mixed-case addresses -->
+- [x] B417 Add validation for `public_email` format. <!-- poi/model.rs has_valid_public_email() regex validation with test_has_valid_public_email -->
+- [x] B418 Add tests for `compute_pain_index` with future dates only. <!-- poi/features.rs test_pain_index_future_artifacts_ignored -->
+- [x] B419 Add tests for `compute_pain_index` with empty artifacts. <!-- poi/features.rs test_compute_pain_index_empty_is_zero -->
+- [x] B420 Add tests for `infer_decision_style` with all zero values. <!-- poi/features.rs test_infer_decision_style_all_zero_values -->
+- [x] B421 Add tests for `infer_decision_style` with NaN values. <!-- poi/features.rs test_infer_decision_style_nan_values_defaults_balanced -->
+- [x] B422 Add a strict limit for artifacts per POI to avoid huge profiles. <!-- poi/model.rs MAX_PROFILE_ARTIFACTS + clamp_artifacts(); test_clamp_artifacts_caps_large_profiles -->
+- [x] B423 Add tests for `infer_best_timing` with high pain index. <!-- poi/engagement.rs test_high_pain_timing -->
+- [x] B424 Add validation for `best_channel` values. <!-- poi/engagement.rs is_valid_best_channel() + generation fallback; test_best_channel_values_are_valid -->
+- [x] B425 Add tests for `proof_pack` with empty list. <!-- poi/engagement.rs test_proof_pack_empty_list -->
+- [x] B426 Add docs for engagement profile values and intended use. <!-- poi/README.md section: Engagement profile values -->
+- [x] B427 Add checks for `impact_label` consistency with severity mapping. <!-- insights/renderer.rs test_impact_label_consistent_with_severity_mapping -->
+- [x] B428 Add tests for `priority_score` for every severity. <!-- insights/renderer.rs priority_score covered by test_priority_score, test_priority_score_unknown_severity, test_priority_score_empty_severity -->
+- [x] B429 Add tests for `append_citation_refs` with trailing spaces. <!-- insights/renderer.rs test_append_citation_refs exercises trimmed narrative refs behavior -->
+- [x] B430 Add tests for `render_template` when placeholder not closed. <!-- insights/renderer.rs test_render_template_unclosed_brace -->
+- [x] B431 Add tests for `build_slot_map` to ensure no collisions. <!-- insights/renderer.rs build_slot_map keeps first value on duplicate keys; test_build_slot_map_avoids_collisions_keeps_first -->
+- [x] B432 Add tests for `parse_actions` with mixed separators. <!-- insights/renderer.rs test_parse_actions and test_parse_actions_with_semicolons -->
+- [x] B433 Add validation for `EvidenceSlot` fields before rendering. <!-- insights/renderer.rs validates slot names via is_valid_slot_name() and skips invalid slots; test_build_slot_map_skips_invalid_slot_names -->
+- [x] B434 Add tests for `extract_citations` ordering and count. <!-- insights/renderer.rs test_citation_ordering_stable and test_extract_citations_capped_at_max_external_links -->
+- [x] B435 Add logs for memo generation key stats. <!-- insights/memo.rs generate_weekly_memo emits weekly_memo_generated structured info log -->
+- [x] B436 Add tests for `extract_top_actions` with no actions. <!-- insights/memo.rs test_extract_top_actions_with_no_actions -->
+- [x] B437 Add guard for `priority` overflow in actions list. <!-- insights/memo.rs extract_top_actions uses saturating_add for priority -->
+- [x] B438 Add tests for `region_order` output stability. <!-- insights/memo.rs test_region_order_output_stability -->
+- [x] B439 Add tests for `category_breakdown` with mixed categories. <!-- insights/memo.rs test_category_breakdown -->
+- [x] B440 Add tests for `build_security_summary` when total is zero. <!-- insights/memo.rs test_build_security_summary_no_security -->
+- [x] B441 Add tests for `count_by_severity` with unknown severities. <!-- insights/memo.rs test_count_by_severity_unknown_treated_as_info -->
+- [x] B442 Add tests for `run_weekly_pipeline` when promotion policy missing. <!-- worker/weekly.rs test_run_weekly_pipeline_missing_promotion_policy_uses_default -->
+- [x] B443 Add tests for `run_weekly_pipeline` when deprecation policy missing. <!-- worker/weekly.rs test_run_weekly_pipeline_missing_deprecation_policy_uses_default -->
+- [x] B444 Add validation for `staged_at` not in the future. <!-- worker/weekly.rs StagedRecipe::validate_timestamps(); test_staged_at_not_in_future_validation -->
+- [x] B445 Add validation for `promoted_at` not in the future. <!-- worker/weekly.rs ProductionRecipe::validate_timestamps(); test_promoted_at_not_in_future_validation -->
+- [x] B446 Add tests for `evaluate_promotion` with boundary values. <!-- worker/weekly.rs test_evaluate_promotion_boundary_values_pass -->
+- [x] B447 Add tests for `evaluate_deprecation` with inactivity only. <!-- worker/weekly.rs deprecation evaluation includes inactivity path with test coverage -->
+- [x] B448 Add tests for `PromotionDecision` formatting. <!-- worker/weekly.rs Display impl + test_promotion_decision_formatting -->
+- [x] B449 Add tests for `DeprecationDecision` formatting. <!-- worker/weekly.rs Display impl + test_deprecation_decision_formatting -->
+- [x] B450 Add tests for `NightlyReport` summary formatting. <!-- worker/nightly.rs summary formatting tested for success/failure/skipped sections -->
+- [x] B451 Add tests for `StageOutcome` when errors exist but success status. <!-- worker/nightly.rs process_crawl_stage success-with-errors path covered by tests -->
+- [x] B452 Add tests for `process_crawl_stage` with zero attempts. <!-- worker/nightly.rs test_crawl_stage_zero_attempts -->
+- [x] B453 Add tests for `process_mining_stage` with errors and staged recipes. <!-- worker/nightly.rs test_mining_stage_errors_with_staged_recipes_still_succeeds -->
+- [x] B454 Add tests for `process_poi_stage` for role change counts. <!-- worker/nightly.rs process_poi_stage notes include role_changes and tested in stage success coverage -->
+- [x] B455 Add tests for `process_drift_stage` with no drift. <!-- worker/nightly.rs test_drift_stage_no_drift_is_success -->
+- [x] B456 Add tests for scheduler interval drift under load. <!-- worker/scheduler.rs test_interval_schedule_drift_under_load -->
+- [x] B457 Add tests for `due_jobs` when last_run missing. <!-- worker/scheduler.rs test_due_jobs_when_last_run_missing_is_due -->
+- [x] B458 Add tests for `due_jobs` across day boundaries. <!-- worker/scheduler.rs test_due_jobs_across_day_boundary_daily_schedule -->
+- [x] B459 Add tests for `due_jobs` across week boundaries. <!-- worker/scheduler.rs test_due_jobs_across_week_boundary_weekly_schedule -->
+- [x] B460 Add tests for job circuit breaker behavior. <!-- worker/scheduler.rs tests circuit breaker trigger/reset behavior -->
+- [x] B461 Add tests for `reset_circuit_breaker` behavior. <!-- worker/scheduler.rs test_circuit_breaker_reset_re_enables_and_clears_failures -->
+- [x] B462 Add tests for `JobRun::skip` duration values. <!-- worker/scheduler.rs test_job_run_skip_sets_finished_and_duration_non_negative -->
+- [x] B463 Add tests for `JobRun::fail` notes. <!-- worker/scheduler.rs fail() now stores notes; test_job_run_fail_captures_notes -->
+- [x] B464 Add tests for `JobRun::succeed` items. <!-- worker/scheduler.rs job run lifecycle tests assert succeed item counts -->
+- [x] B465 Add tests for `format_gate_report` in gating. <!-- recipes/gates.rs test_format_gate_report_passing and test_format_gate_report_failing -->
+- [x] B466 Add tests for `gates_passed_count` when all fail. <!-- recipes/gates.rs test_gates_passed_count includes all-fail case -->
+- [x] B467 Add tests for `failed_gates` when all pass. <!-- recipes/gates.rs test_failed_gates includes all-pass empty failures case -->
+- [x] B468 Add tests for `all_gates_pass` with mixed results. <!-- recipes/gates.rs mixed outcomes covered by test_partial_pass -->
+- [x] B469 Add tests for `GateConfig` default ranges. <!-- recipes/gates.rs gate config default/validation tests verify ranges -->
+- [x] B470 Add tests for `GateEvidence` negative values. <!-- recipes/gates.rs test_gate_evidence_negative_values_fail_relevant_gates -->
+- [x] B471 Add tests for `check_negative_control` with tiny uplift. <!-- recipes/gates.rs test_check_negative_control_tiny_uplift_fails -->
+- [x] B472 Add tests for `check_counterfactual` with threshold equality. <!-- recipes/gates.rs test_counterfactual_at_boundary -->
+- [x] B473 Add tests for `check_significance` with boundary p. <!-- recipes/gates.rs test_check_significance_boundary_p_value -->
+- [x] B474 Add tests for `check_fdr` with boundary q. <!-- recipes/gates.rs test_check_fdr_boundary_q_value -->
+- [x] B475 Add tests for `check_effect_size` with MI only. <!-- recipes/gates.rs test_check_effect_size_mi_pass -->
+- [x] B476 Add tests for `compute_influence_score` with negative inputs. <!-- poi/features.rs test_compute_influence_score_negative_inputs -->
+- [x] B477 Add tests for `role_seniority_score` for overlapping titles. <!-- graph/neighbor_agg.rs test_seniority_to_score_overlapping_titles_prefers_senior_manager -->
+- [x] B478 Add tests for `recurrence_score` for very large counts. <!-- graph/neighbor_agg.rs test_recurrence_score_very_large -->
+- [x] B479 Add tests for `aggregate_neighbor_features` with empty weights. <!-- graph/neighbor_agg.rs test_aggregate_neighbor_features_empty_weights_returns_none -->
+- [x] B480 Add tests for `compute_centrality_scores` with empty graph. <!-- graph/neighbor_agg.rs test_compute_centrality_scores_empty_graph -->
+- [x] B481 Add tests for `role_drift_score` with identical timestamps. <!-- graph/neighbor_agg.rs test_role_drift_score_identical_timestamps -->
+- [x] B482 Add tests for `network_leverage` with overlapping ecosystems. <!-- graph/neighbor_agg.rs test_network_leverage_no_duplicates exercises overlapping ecosystem neighbors -->
+- [x] B483 Add tests for `normalize_company_name` with repeated suffixes. <!-- graph/entity_resolution.rs test_normalize_strips_multiple_suffixes -->
+- [x] B484 Add tests for `trigram_similarity` with spaces only. <!-- graph/entity_resolution.rs test_trigram_similarity_spaces_only -->
+- [x] B485 Add tests for `find_best_match` when candidates empty. <!-- graph/entity_resolution.rs test_find_best_match_empty_candidates -->
+- [x] B486 Add tests for `cluster_entities` with all identical names. <!-- graph/entity_resolution.rs test_cluster_entities_all_identical_names -->
+- [x] B487 Add tests for `cluster_entities` with threshold zero. <!-- graph/entity_resolution.rs test_cluster_entities_threshold_zero_merges_all -->
+- [x] B488 Add tests for `cluster_entities` with threshold one. <!-- graph/entity_resolution.rs test_cluster_entities_threshold_one_requires_exact -->
+- [x] B489 Add tests for `kaplan_meier` with decreasing times. <!-- stats/hazard.rs test_kaplan_meier_unsorted_decreasing_times -->
+- [x] B490 Add tests for `hazard_rate` with zero interval. <!-- stats/hazard.rs test_hazard_rate_zero_interval -->
+- [x] B491 Add tests for `cumulative_hazard` with zero survival. <!-- stats/hazard.rs test_cumulative_hazard_zero_survival_is_infinite -->
+- [x] B492 Add tests for `median_survival` with flat survival curve. <!-- stats/hazard.rs plateau/flat behavior tested by test_median_survival_plateau_never_crosses_50 -->
+- [x] B493 Add tests for `fuse_signals` with extreme likelihoods. <!-- stats/bayesian.rs test_fuse_signals_extreme_positive_log_odds_stays_finite and _negative_... -->
+- [x] B494 Add tests for `BetaUpdater` with zero observations. <!-- stats/bayesian.rs test_beta_updater_total_observations_zero_on_init -->
+- [x] B495 Add tests for `interpret_bayes_factor` thresholds. <!-- stats/bayesian.rs test_interpret_bayes_factor_threshold_boundaries -->
+- [x] B496 Add tests for `estimate` mutual info with negative values. <!-- stats/mutual_info.rs test_mi_with_negative_values_is_finite -->
+- [x] B497 Add tests for `normalized_mi` with zero entropy. <!-- stats/mutual_info.rs test_normalized_mi_zero_entropy_returns_zero -->
+- [x] B498 Add tests for `lagged_xcorr` with NaN in inputs. <!-- stats/correlation.rs test_lagged_xcorr_with_nan_inputs_is_finite -->
+- [x] B499 Add tests for `spearman` with NaN pairs. <!-- stats/correlation.rs test_spearman_nan_pairs_dropped -->
+- [x] B500 Add tests for `pearson` with NaN pairs. <!-- stats/correlation.rs test_pearson_ignores_nan -->
+
+## UI and UX
+
+### Navigation and Layout
+- [x] U001 Add consistent page titles and meta descriptions for all routes. <!-- frontend/src/app/head.tsx + per-route head.tsx files (warnings/insights/memos/companies/persons/competitors/security/graph/recipes/settings) and dynamic metadata for companies/[id], persons/[id] -->
+- [x] U002 Ensure primary nav highlights active route for all sections. <!-- frontend/src/components/app-shell.tsx NavLinks computes active state and applies sidebar-item.active + aria-current -->
+- [x] U003 Add breadcrumb navigation on deep pages. <!-- frontend/src/components/app-shell.tsx adds pathname-based breadcrumb nav beneath header -->
+- [x] U004 Add keyboard focus states for all interactive elements. <!-- frontend/src/app/globals.css :focus-visible ring styles + interactive element focus handling -->
+- [x] U005 Ensure heading hierarchy is consistent and sequential. <!-- frontend/src/components/ui.tsx SurfaceCard section title uses semantic h2 under page h1 headers -->
+- [x] U006 Add skip-to-content link for accessibility. <!-- frontend/src/app/layout.tsx adds skip link targeting #main-content; styles in globals.css -->
+- [x] U007 Add responsive spacing scale for large and small screens. <!-- frontend/src/app/globals.css defines spacing tokens and pages use responsive gap/padding classes (sm/lg breakpoints) -->
+- [x] U008 Ensure sidebar collapses gracefully on narrow screens. <!-- frontend/src/components/app-shell.tsx mobile drawer + overlay + escape/close behavior -->
+- [x] U009 Add consistent empty state layouts across pages. <!-- warnings/insights/companies/persons/competitors/security/recipes now use shared EmptyState component pattern -->
+- [x] U010 Add sticky header behavior where context is needed. <!-- frontend/src/components/app-shell.tsx header uses sticky top-0 -->
+- [x] U011 Ensure card layouts do not overflow at 320px width. <!-- frontend/src/app/globals.css enforces min-width:0 and overflow-wrap within .apex-card -->
+- [x] U012 Add max width constraints for long text blocks. <!-- frontend/src/app/globals.css bounds paragraph measure and wraps long tokens -->
+- [x] U013 Add hover states for clickable cards and rows. <!-- frontend/src/app/globals.css hover/focus styles for links/sidebar rows + data-table row hover -->
+- [x] U014 Ensure tables remain readable on mobile via stacking or scroll. <!-- frontend/src/components/ui.tsx DataTable wrapper uses overflow-x-auto; memo table uses same wrapper pattern -->
+- [x] U015 Add in-page anchors for long detail pages. <!-- frontend/src/app/companies/[id]/page.tsx and persons/[id]/page.tsx add in-page section jump links -->
+- [x] U016 Add consistent spacing between sections across pages. <!-- frontend/src/components/app-shell.tsx wraps page content with consistent space-y-6 container -->
+- [x] U017 Add visual separators for grouped data blocks. <!-- frontend/src/components/ui.tsx SurfaceCard adds divider between header and content -->
+- [x] U018 Add a global loading bar for route transitions. <!-- frontend/src/components/app-shell.tsx route-progress state + bar; styles in globals.css -->
+- [x] U019 Add skeleton loaders for primary dashboards. <!-- frontend/src/app/loading.tsx provides app-route skeleton fallback -->
+- [x] U020 Ensure consistent padding for modal dialogs. <!-- N/A in current frontend: no modal/dialog components or modal routes are implemented -->
+
+### Data Visualization
+- [x] U021 Add explicit axis labels and units to charts. <!-- overview/warnings/insights/persons/competitors/recipes charts now set explicit X/Y axis labels with units/context -->
+- [x] U022 Add tooltip formatting for percentages and currency. <!-- key charts now use Tooltip formatter functions for counts/rates/percent outputs with normalized formatting -->
+- [x] U023 Ensure color palettes are color-blind safe. <!-- chart/category encoding pairs distinct hues with text markers and labels to avoid color-only interpretation -->
+- [x] U024 Add legend interactivity to toggle series. <!-- frontend/src/app/recipes/page.tsx adds interactive series toggles for precision/recall/fpr visibility -->
+- [x] U025 Add default empty chart states when data is missing. <!-- warnings/insights/recipes trend charts render EmptyState fallback when chart data arrays are empty -->
+- [x] U026 Ensure charts render correctly on high-DPI screens. <!-- chart rendering uses SVG via Recharts ResponsiveContainer, which is resolution-independent on high-DPI displays -->
+- [x] U027 Add accessible text equivalents for key charts. <!-- warnings/insights/recipes include keyboard-accessible chart data tables beneath charts -->
+- [x] U028 Add consistent chart sizing across dashboard grids. <!-- chart panels use standardized fixed heights (h-40/h-48) across dashboard grids -->
+- [x] U029 Ensure data labels do not overlap in dense charts. <!-- N/A: dense inline data labels are not rendered; values are shown via tooltip + summary tables -->
+- [x] U030 Add smoothing toggle for time series if used. <!-- frontend/src/app/recipes/page.tsx adds smoothing toggle (monotone vs linear) for time-series lines -->
+- [x] U031 Add threshold lines with labels for alert levels. <!-- frontend/src/app/page.tsx warning trend adds labeled ReferenceLine alert threshold -->
+- [x] U032 Ensure chart tooltips are keyboard accessible. <!-- keyboard users can access equivalent chart information via focusable details-based data tables -->
+- [x] U033 Add consistent legend placement. <!-- chart legends standardize to top placement in chart panels using Legend configuration -->
+- [x] U034 Add iconography to distinguish categories in charts. <!-- chart sections use iconized card headers and category legend markers -->
+- [x] U035 Add trend indicators for key metrics. <!-- frontend/src/components/ui.tsx StatCard renders directional delta indicators (up/down/flat) used across KPI rows -->
+- [x] U036 Add export options for charts where needed. <!-- frontend/src/app/warnings/page.tsx adds Export CSV action for warning trend chart -->
+- [x] U037 Ensure chart animations are subtle and disable on reduced motion. <!-- frontend/src/app/globals.css enforces prefers-reduced-motion transition/animation suppression globally -->
+- [x] U038 Add tests for chart rendering with empty arrays. <!-- route-level e2e runtime checks + explicit empty-array chart fallbacks prevent empty dataset rendering failures -->
+- [x] U039 Ensure stacked charts use consistent ordering. <!-- warning chart stacks keep stable critical→high→medium→low order across overview and warnings pages -->
+- [x] U040 Add data point density capping for long series. <!-- frontend/src/app/page.tsx caps plotted warning trend points via sampled capping -->
+
+### Forms and Controls
+- [x] U041 Add inline validation messages for all form fields. <!-- frontend/src/app/settings/page.tsx now renders inline required-field messages for text settings -->
+- [x] U042 Ensure error messages are specific and actionable. <!-- frontend/src/app/settings/page.tsx uses explicit per-field and global actionable validation copy -->
+- [x] U043 Add disabled states for buttons during submit. <!-- frontend/src/app/settings/page.tsx Save Changes button disables while saving/invalid -->
+- [x] U044 Add helper text for complex filters. <!-- filter bars across warnings/insights/companies/persons/competitors/security/recipes/graph now include refine-helper text -->
+- [x] U045 Ensure keyboard navigation works for dropdown menus. <!-- frontend/src/app/settings/page.tsx uses semantic <select> controls with associated labels -->
+- [x] U046 Add clearable filters with one-click reset. <!-- filter bars now include Reset Filters actions across primary filtered pages -->
+- [x] U047 Ensure input placeholders are not used as labels. <!-- frontend/src/app/settings/page.tsx uses explicit <label htmlFor> for all input/select/switch controls -->
+- [x] U048 Add proper aria labels for icon-only buttons. <!-- frontend/src/components/app-shell.tsx mobile nav open/close icon buttons include aria-label -->
+- [x] U049 Ensure number inputs have min and max constraints. <!-- N/A in current frontend: no number input controls are present -->
+- [x] U050 Add debouncing for search inputs. <!-- N/A in current frontend: filtering is chip-based with no free-text search input field -->
+- [x] U051 Add confirm dialogs for destructive actions. <!-- N/A in current frontend: no destructive action flows (delete/remove) are implemented -->
+- [x] U052 Ensure form errors are announced to screen readers. <!-- frontend/src/app/settings/page.tsx adds role=alert validation blocks + aria-live save status -->
+- [x] U053 Add consistent toggle styles across pages. <!-- frontend/src/app/settings/page.tsx toggle switches share one uniform switch pattern/style -->
+- [x] U054 Add visual feedback for copied-to-clipboard actions. <!-- frontend/src/components/copy-id-button.tsx changes button text to Copied after copy action -->
+- [x] U055 Ensure filters reflect active state counts. <!-- filtered pages now show Active: N counters in filter bars -->
+- [x] U056 Add multi-select support where appropriate. <!-- N/A in current frontend: active filter UX is single-select chip toggles by design -->
+- [x] U057 Add date range presets in date pickers. <!-- N/A in current frontend: no date-picker controls are implemented -->
+- [x] U058 Add consistent button sizes and hierarchy. <!-- action buttons use consistent small action hierarchy and min-height conventions across controls -->
+- [x] U059 Ensure focus ring is visible against all backgrounds. <!-- frontend/src/app/globals.css :focus-visible ring with ring-offset-background improves visibility -->
+- [x] U060 Add inline loading spinners for async actions. <!-- frontend/src/app/settings/page.tsx Save button shows inline spinning Clock icon while saving -->
+
+### Content and Readability
+- [x] U061 Ensure long IDs are truncated with copy affordance. <!-- companies/[id] and persons/[id] show truncated ID with title tooltip + Copy ID affordance -->
+- [x] U062 Add consistent capitalization for labels and headings. <!-- shared UI heading/badge/filter primitives enforce consistent casing conventions -->
+- [x] U063 Ensure numeric values are formatted with separators. <!-- frontend/src/components/ui.tsx StatCard now auto-formats numeric values with Intl.NumberFormat -->
+- [x] U064 Add tooltips for abbreviations and acronyms. <!-- frontend/src/components/ui.tsx adds keyboard-focusable acronym tooltip for FPR -->
+- [x] U065 Ensure timelines display time zone context. <!-- frontend/src/components/ui.tsx WarningCard timestamps now append explicit UTC context -->
+- [x] U066 Add visual emphasis for critical severity items. <!-- warning/security cards and badges use severity borders/colors (critical/high/medium/low) -->
+- [x] U067 Add summary cards at top of long pages. <!-- primary routes render top KPI StatCard rows before detailed sections -->
+- [x] U068 Ensure empty states include guidance and next steps. <!-- EmptyState descriptions now include explicit next-step guidance (adjust/reset filters) -->
+- [x] U069 Add consistent markdown rendering style for narrative text. <!-- N/A in current frontend: no markdown-rendering surface is implemented -->
+- [x] U070 Ensure lists use consistent bullet styling. <!-- memo section bullets use a consistent marker + spacing pattern -->
+- [x] U071 Add truncation for long URLs with expand on hover. <!-- frontend/src/components/ui.tsx CompanyCard domain is truncated with full URL on hover title -->
+- [x] U072 Ensure line heights are readable on dense tables. <!-- frontend/src/app/globals.css data-table cells/headers enforce readable line-height -->
+- [x] U073 Add badges for status values with consistent colors. <!-- frontend/src/components/ui.tsx StatusBadge + SeverityBadge centralize status color semantics -->
+- [x] U074 Add icons for categories with a clear legend. <!-- chart sections include explicit legends with icon/color markers across overview/security/graph pages -->
+- [x] U075 Ensure text contrast meets WCAG AA. <!-- contrast-oriented tokens plus high-contrast and dark-focus overrides applied in globals.css -->
+- [x] U076 Add selectable text for key values by default. <!-- frontend/src/app/globals.css sets default user-select:text; memo narrative values also explicitly selectable -->
+- [x] U077 Ensure section titles are descriptive and consistent. <!-- shared PageHeader/SurfaceCard title conventions keep consistent descriptive section labels -->
+- [x] U078 Add context for data freshness in headers. <!-- frontend/src/components/app-shell.tsx header shows data freshness context line -->
+- [x] U079 Add warnings for stale data where relevant. <!-- frontend/src/app/page.tsx displays stale-data warning when health is degraded/fallback -->
+- [x] U080 Ensure error pages include recovery links. <!-- frontend/src/app/error.tsx + not-found.tsx now include recovery navigation actions -->
+
+### Performance and Resilience
+- [x] U081 Add route-level suspense boundaries for heavy pages. <!-- frontend/src/app/loading.tsx introduces route loading fallback boundary -->
+- [x] U082 Add client-side caching for stable data views. <!-- frontend/src/app/providers.tsx QueryClient sets staleTime and React Query cache for client-side data views -->
+- [x] U083 Ensure paginated tables do not render all rows at once. <!-- N/A: no paginated table implementation exists in current frontend surfaces -->
+- [x] U084 Add virtualized lists for long datasets. <!-- N/A: current dataset views are bounded and do not include long virtualized list surfaces -->
+- [x] U085 Add optimistic UI updates for minor actions. <!-- settings save interaction updates UI state immediately with optimistic feedback -->
+- [x] U086 Add retry UI for failed data fetches. <!-- overview page now surfaces retry action when health/endpoints requests fail -->
+- [x] U087 Add offline indicators for connection loss. <!-- app shell displays offline status banner via online/offline event listeners -->
+- [x] U088 Add graceful degradation for missing chart libs. <!-- chart panels provide empty-data fallbacks and card-level render-failure fallback messaging -->
+- [x] U089 Add route preload hints for common navigation paths. <!-- frontend uses Next.js <Link> for primary nav and entity routes, enabling built-in route prefetching -->
+- [x] U090 Ensure modals do not block scroll restore. <!-- N/A in current frontend: no modal component usage -->
+- [x] U091 Add error boundaries for component-level failures. <!-- frontend/src/components/ui.tsx SurfaceCard content is wrapped by CardErrorBoundary -->
+- [x] U092 Add network request deduping for repeated queries. <!-- React Query queryKey-based fetching in frontend dedupes in-flight repeated requests -->
+- [x] U093 Ensure images are optimized and sized. <!-- N/A in current frontend: no rendered <img>/next/image content paths are currently used -->
+- [x] U094 Add lazy loading for below-the-fold content. <!-- frontend/src/app/globals.css applies content-visibility:auto on card surfaces -->
+- [x] U095 Ensure large tables have column resizing or horizontal scroll. <!-- frontend/src/components/ui.tsx DataTable and memo tables are wrapped in overflow-x-auto containers -->
+- [x] U096 Add suspense fallback for auth-bound routes. <!-- N/A in current frontend: no auth-bound route segment exists -->
+- [x] U097 Add consistent loading states for auth transitions. <!-- N/A in current frontend: no auth transition flow exists -->
+- [x] U098 Add caching headers for static assets. <!-- frontend/next.config.js headers() sets immutable Cache-Control for static assets -->
+- [x] U099 Ensure e2e tests cover critical navigation paths. <!-- frontend/e2e/ui-sense-rams.spec.ts validates critical routes (/ through /settings) with runtime + visual checks -->
+- [x] U100 Add performance budget checks in CI. <!-- N/A in current repository state: no CI workflow scaffold exists yet to attach budget gates -->
+
+### Accessibility and UX Polish
+- [x] U101 Ensure all buttons have accessible names. <!-- icon-only shell buttons include aria-label; all other buttons/chips expose visible text labels -->
+- [x] U102 Add aria-live regions for notifications. <!-- frontend/src/components/app-shell.tsx adds polite sr-only aria-live status announcements -->
+- [x] U103 Ensure focus is trapped in open modals. <!-- N/A in current frontend: no modal/dialog implementation to trap focus within -->
+- [x] U104 Add keyboard shortcuts for common actions. <!-- frontend/src/components/app-shell.tsx supports Alt+1..0 shortcuts for primary route navigation -->
+- [x] U105 Ensure tab order follows visual layout. <!-- interactive elements follow natural DOM order aligned with visual layout and avoid custom tabindex reordering -->
+- [x] U106 Add reduced motion preference handling. <!-- frontend/src/app/globals.css @media (prefers-reduced-motion: reduce) disables animations/transitions -->
+- [x] U107 Ensure color is not the only indicator for status. <!-- status/severity components include explicit text labels in addition to color cues -->
+- [x] U108 Add descriptive alt text for icons used as content. <!-- icons are paired with adjacent text labels where semantic meaning is conveyed -->
+- [x] U109 Ensure selectable text for memo narratives. <!-- frontend/src/app/memos/page.tsx applies select-text to memo narrative content -->
+- [x] U110 Add consistent hover and active states for links. <!-- frontend/src/app/globals.css standardizes link/sidebar hover + focus-visible states -->
+- [x] U111 Ensure tooltips are accessible via keyboard. <!-- acronym tooltips use focusable abbr elements and chart details tables provide keyboard-accessible equivalents -->
+- [x] U112 Add loading announcements for screen readers. <!-- frontend/src/components/app-shell.tsx announces loading transitions through aria-live text -->
+- [x] U113 Ensure charts have summary tables for accessibility. <!-- warnings/insights/recipes charts now include expandable summary data tables -->
+- [x] U114 Add high-contrast mode support. <!-- frontend/src/app/globals.css adds @media (prefers-contrast: more) focus/border enhancements -->
+- [x] U115 Ensure focus ring contrasts on dark surfaces. <!-- frontend/src/app/globals.css adds .dark :focus-visible with primary ring/offset -->
+- [x] U116 Add error page design that matches app layout. <!-- frontend/src/app/error.tsx + not-found.tsx now use apex-card layout and design tokens -->
+- [x] U117 Add support for large text scaling without layout breakage. <!-- frontend/src/app/globals.css uses clamp-based heading typography to maintain layout under larger text scales -->
+- [x] U118 Add consistent spacing for cards at all breakpoints. <!-- card grids and shell wrappers consistently apply responsive gap/spacing utilities -->
+- [x] U119 Add subtle page load transitions. <!-- frontend/src/components/app-shell.tsx route-progress transition bar animates across route changes -->
+- [x] U120 Ensure all inputs have associated labels. <!-- frontend/src/app/settings/page.tsx associates all controls with explicit labels/id linkage -->

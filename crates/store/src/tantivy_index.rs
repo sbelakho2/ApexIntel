@@ -1,10 +1,21 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
+use tantivy::collector::{Count, TopDocs};
+use tantivy::query::{BooleanQuery, QueryParser, TermQuery};
 use tantivy::schema::*;
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy};
+use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+
+/// Truncate a string to at most `max_chars` characters (safe for multi-byte UTF-8).
+fn truncate_snippet(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        text.to_string()
+    } else {
+        let truncated: String = text.chars().take(max_chars).collect();
+        format!("{truncated}...")
+    }
+}
 
 /// Full-text search index for observations, companies, and documents.
 pub struct SearchIndex {
@@ -34,6 +45,8 @@ pub struct SearchResult {
     pub url: String,
     pub region: String,
     pub score: f32,
+    /// Unix timestamp (seconds since epoch) from the indexed document.
+    pub timestamp: i64,
 }
 
 impl SearchIndex {
@@ -124,7 +137,8 @@ impl SearchIndex {
         Ok(self.index.writer(heap_size)?)
     }
 
-    /// Index a document.
+    /// Index a document. Deletes any existing document with the same ID first
+    /// to prevent duplicates on re-index.
     pub fn index_document(
         &self,
         writer: &IndexWriter,
@@ -138,6 +152,9 @@ impl SearchIndex {
         tags: &[String],
         timestamp: i64,
     ) -> Result<()> {
+        // Remove existing doc with this ID to prevent duplicates
+        writer.delete_term(Term::from_field_text(self.id_field, id));
+
         let tags_str = tags.join(" ");
         writer.add_document(doc!(
             self.id_field => id,
@@ -155,11 +172,22 @@ impl SearchIndex {
 
     /// Search across title and body fields.
     pub fn search(&self, query_str: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        Ok(self.search_with_total(query_str, limit, 0)?.0)
+    }
+
+    /// Search across title and body fields with pagination and total hits.
+    pub fn search_with_total(
+        &self,
+        query_str: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<SearchResult>, u64)> {
         let searcher = self.reader.searcher();
         let query_parser =
             QueryParser::for_index(&self.index, vec![self.title_field, self.body_field]);
         let query = query_parser.parse_query(query_str)?;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
+        let total_hits = searcher.search(&query, &Count)? as u64;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).and_offset(offset))?;
 
         let mut results = Vec::new();
         for (score, doc_address) in top_docs {
@@ -200,13 +228,12 @@ impl SearchIndex {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let timestamp = doc
+                .get_first(self.timestamp_field)
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
 
-            // Use first ~200 chars of body as snippet
-            let snippet = if body.len() > 200 {
-                format!("{}...", &body[..200])
-            } else {
-                body
-            };
+            let snippet = truncate_snippet(&body, 200);
 
             results.push(SearchResult {
                 id,
@@ -217,10 +244,11 @@ impl SearchIndex {
                 url,
                 region,
                 score,
+                timestamp,
             });
         }
 
-        Ok(results)
+        Ok((results, total_hits))
     }
 
     /// Search filtered by entity_type.
@@ -230,12 +258,31 @@ impl SearchIndex {
         entity_type: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        Ok(self
+            .search_entity_type_with_total(query_str, entity_type, limit, 0)?
+            .0)
+    }
+
+    pub fn search_entity_type_with_total(
+        &self,
+        query_str: &str,
+        entity_type: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<SearchResult>, u64)> {
         let searcher = self.reader.searcher();
         let query_parser =
             QueryParser::for_index(&self.index, vec![self.title_field, self.body_field]);
-        let full_query = format!("{} AND entity_type:{}", query_str, entity_type);
-        let query = query_parser.parse_query(&full_query)?;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
+        let text_query = query_parser.parse_query(query_str)?;
+        // Use BooleanQuery to combine text query with entity_type filter safely
+        let type_term = Term::from_field_text(self.entity_type_field, entity_type);
+        let type_query = TermQuery::new(type_term, IndexRecordOption::Basic);
+        let query = BooleanQuery::new(vec![
+            (tantivy::query::Occur::Must, text_query),
+            (tantivy::query::Occur::Must, Box::new(type_query)),
+        ]);
+        let total_hits = searcher.search(&query, &Count)? as u64;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).and_offset(offset))?;
 
         let mut results = Vec::new();
         for (score, doc_address) in top_docs {
@@ -276,12 +323,12 @@ impl SearchIndex {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let timestamp = doc
+                .get_first(self.timestamp_field)
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
 
-            let snippet = if body.len() > 200 {
-                format!("{}...", &body[..200])
-            } else {
-                body
-            };
+            let snippet = truncate_snippet(&body, 200);
 
             results.push(SearchResult {
                 id,
@@ -292,10 +339,11 @@ impl SearchIndex {
                 url,
                 region,
                 score,
+                timestamp,
             });
         }
 
-        Ok(results)
+        Ok((results, total_hits))
     }
 
     /// Reload the reader to pick up committed changes.
@@ -459,6 +507,7 @@ mod tests {
             url: "https://example.com".into(),
             region: "TN".into(),
             score: 1.5,
+            timestamp: 1700000000,
         };
         let json = serde_json::to_string(&result).unwrap();
         let deser: SearchResult = serde_json::from_str(&json).unwrap();

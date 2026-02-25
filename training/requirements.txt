@@ -1,0 +1,36 @@
+# ApexIntel Training Pipeline — vast.ai 8×B200 GPU
+# Install: pip install -r requirements.txt
+
+# Core training
+torch>=2.5.0
+transformers>=4.47.0
+peft>=0.14.0
+trl>=0.13.0
+datasets>=3.2.0
+accelerate>=1.2.0
+bitsandbytes>=0.45.0
+
+# DeepSpeed for multi-GPU
+deepspeed>=0.16.0
+
+# Quantization & export (optional — install separately if needed)
+# auto-gptq>=0.7.0   # CUDA version conflicts; install with: pip install auto-gptq --no-build-isolation
+# llama-cpp-python>=0.3.0  # only needed for GGUF export
+gguf>=0.10.0
+
+# Evaluation
+rouge-score>=0.1.2
+nltk>=3.9
+scikit-learn>=1.6.0
+rapidfuzz>=3.10.0
+langdetect>=1.0.9
+
+# Infra
+wandb>=0.19.0
+huggingface-hub>=0.27.0
+safetensors>=0.4.0
+sentencepiece>=0.2.0
+protobuf>=5.29.0
+pyyaml>=6.0
+rich>=13.9.0
+psutil>=6.1.0

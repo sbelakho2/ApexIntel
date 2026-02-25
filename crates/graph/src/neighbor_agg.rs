@@ -13,9 +13,9 @@ pub fn seniority_to_score(seniority: &str) -> f64 {
     match seniority.to_lowercase().as_str() {
         "c-level" | "c_level" | "clevel" => 95.0,
         "vp" | "vice president" | "vice_president" => 85.0,
-        "director" => 70.0,
-        "senior manager" | "senior_manager" => 60.0,
-        "manager" => 50.0,
+        "director" | "dir" => 70.0,
+        "senior manager" | "senior_manager" | "sr manager" | "sr. manager" | "sr mgr" => 60.0,
+        "manager" | "mgr" => 50.0,
         "lead" | "team lead" | "team_lead" => 40.0,
         "senior" | "senior engineer" => 30.0,
         "mid" | "engineer" => 20.0,
@@ -49,32 +49,42 @@ pub fn aggregate_neighbor_features(
         return None;
     }
 
-    let mut total_weight = 0.0;
     let mut agg: Option<Vec<f64>> = None;
+    let mut dim_weight: Vec<f64> = Vec::new();
 
     for (neighbor, weight) in neighbors {
+        let effective_weight = (*weight).max(0.0);
+        if effective_weight < 1e-12 {
+            continue;
+        }
         if let Some(feat) = features.get(neighbor) {
-            total_weight += weight;
             match &mut agg {
                 None => {
-                    agg = Some(feat.iter().map(|v| v * weight).collect());
+                    agg = Some(feat.iter().map(|v| v * effective_weight).collect());
+                    dim_weight = vec![effective_weight; feat.len()];
                 }
                 Some(a) => {
+                    // Extend accumulator if this neighbor has a longer feature vector
+                    if feat.len() > a.len() {
+                        a.resize(feat.len(), 0.0);
+                        dim_weight.resize(feat.len(), 0.0);
+                    }
                     for (i, v) in feat.iter().enumerate() {
-                        if i < a.len() {
-                            a[i] += v * weight;
-                        }
+                        a[i] += v * effective_weight;
+                        dim_weight[i] += effective_weight;
                     }
                 }
             }
         }
     }
 
-    if total_weight > 0.0 {
-        agg.map(|a| a.iter().map(|v| v / total_weight).collect())
-    } else {
-        None
-    }
+    // Divide each dimension by its own weight sum (not global total_weight)
+    agg.map(|a| {
+        a.iter()
+            .zip(dim_weight.iter())
+            .map(|(v, w)| if *w > 0.0 { v / w } else { 0.0 })
+            .collect()
+    })
 }
 
 /// Compute centrality-based influence for all nodes in a graph.
@@ -94,7 +104,11 @@ pub fn compute_centrality_scores(graph: &AdjacencyGraph) -> HashMap<String, f64>
     }
 
     pr.into_iter()
-        .map(|(k, v)| (k, (v / max_pr) * 100.0))
+        .map(|(k, v)| {
+            let raw = (v / max_pr) * 100.0;
+            let rounded = (raw * 100.0).round() / 100.0; // B164: round to 2 decimal places
+            (k, rounded)
+        })
         .collect()
 }
 
@@ -128,22 +142,31 @@ pub fn network_leverage(
         .map(|(n, _)| n.clone())
         .collect();
 
-    let mut shared = Vec::new();
+    let mut shared = std::collections::HashSet::new();
+    let mut neighbor_cache: HashMap<String, Vec<String>> = HashMap::new();
     for eco_node in ecosystem_nodes {
         if person_neighbors.contains(eco_node) {
-            shared.push(eco_node.clone());
+            shared.insert(eco_node.clone());
         }
+        let cached_neighbors = neighbor_cache.entry(eco_node.clone()).or_insert_with(|| {
+            graph
+                .neighbors(eco_node)
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect()
+        });
+
         // Also check if any of eco_node's neighbors overlap
-        for (n, _) in graph.neighbors(eco_node) {
-            if person_neighbors.contains(n.as_str()) && !shared.contains(&n) {
-                shared.push(n.clone());
+        for n in cached_neighbors.iter() {
+            if person_neighbors.contains(n.as_str()) {
+                shared.insert(n.clone());
             }
         }
     }
 
-    shared.sort();
-    shared.dedup();
-    shared
+    let mut shared_vec: Vec<String> = shared.into_iter().collect();
+    shared_vec.sort();
+    shared_vec
 }
 
 #[cfg(test)]
@@ -182,6 +205,18 @@ mod tests {
     #[test]
     fn test_seniority_to_score_unknown() {
         assert!((seniority_to_score("intern") - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_seniority_to_score_mixed_casing() {
+        assert!((seniority_to_score("DiReCtOr") - 70.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_seniority_to_score_abbreviations() {
+        assert!((seniority_to_score("VP") - 85.0).abs() < 0.01);
+        assert!((seniority_to_score("sr mgr") - 60.0).abs() < 0.01);
+        assert!((seniority_to_score("mgr") - 50.0).abs() < 0.01);
     }
 
     #[test]
@@ -228,6 +263,51 @@ mod tests {
     }
 
     #[test]
+    fn test_aggregate_neighbor_features_empty_weights_returns_none() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("center", "a", 0.0);
+
+        let mut features = HashMap::new();
+        features.insert("a".to_string(), vec![10.0, 20.0]);
+
+        let result = aggregate_neighbor_features(&g, &features, "center");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_aggregate_neighbor_features_negative_weights_ignored() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("center", "a", -1.0);
+        g.add_edge("center", "b", 1.0);
+
+        let mut features = HashMap::new();
+        features.insert("a".to_string(), vec![100.0, 100.0]);
+        features.insert("b".to_string(), vec![30.0, 40.0]);
+
+        let result = aggregate_neighbor_features(&g, &features, "center").unwrap();
+        assert!((result[0] - 30.0).abs() < 0.01);
+        assert!((result[1] - 40.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_aggregate_neighbor_features_uneven_vector_sizes() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("center", "a", 1.0);
+        g.add_edge("center", "b", 1.0);
+
+        let mut features = HashMap::new();
+        features.insert("a".to_string(), vec![10.0, 20.0]);
+        features.insert("b".to_string(), vec![30.0, 40.0, 50.0, 60.0]);
+
+        let result = aggregate_neighbor_features(&g, &features, "center").unwrap();
+        assert_eq!(result.len(), 4);
+        assert!((result[0] - 20.0).abs() < 0.01);
+        assert!((result[1] - 30.0).abs() < 0.01);
+        assert!((result[2] - 50.0).abs() < 0.01);
+        assert!((result[3] - 60.0).abs() < 0.01);
+    }
+
+    #[test]
     fn test_compute_centrality_scores() {
         let mut g = AdjacencyGraph::new();
         g.add_bidi_edge("center", "a", 1.0);
@@ -237,6 +317,13 @@ mod tests {
         let scores = compute_centrality_scores(&g);
         // Center should have the highest score (100)
         assert!((scores["center"] - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_compute_centrality_scores_empty_graph() {
+        let g = AdjacencyGraph::new();
+        let scores = compute_centrality_scores(&g);
+        assert!(scores.is_empty());
     }
 
     #[test]
@@ -256,6 +343,21 @@ mod tests {
     fn test_role_drift_score_single_entry() {
         let history = vec![(1000, 70.0)];
         assert!((role_drift_score(&history) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_role_drift_score_identical_timestamps() {
+        let history = vec![(1000, 40.0), (1000, 90.0), (1000, 90.0)];
+        // Sort stability keeps insertion order for identical keys, so drift is between
+        // the last two entries (90 and 90).
+        assert!((role_drift_score(&history) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_seniority_to_score_overlapping_titles_prefers_senior_manager() {
+        assert!((seniority_to_score("Sr Manager") - 60.0).abs() < 0.01);
+        assert!((seniority_to_score("Senior Manager") - 60.0).abs() < 0.01);
+        assert!((seniority_to_score("manager") - 50.0).abs() < 0.01);
     }
 
     #[test]
@@ -282,5 +384,72 @@ mod tests {
         let leverage = network_leverage(&g, "alice", &ecosystem);
         // bridge is a shared connection
         assert!(leverage.contains(&"bridge".to_string()));
+    }
+
+    // ── B162: network_leverage dedup ──
+
+    #[test]
+    fn test_network_leverage_no_duplicates() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("alice", "shared", 1.0);
+        g.add_edge("eco1", "shared", 1.0);
+        g.add_edge("eco2", "shared", 1.0);
+
+        let ecosystem = vec!["eco1".to_string(), "eco2".to_string()];
+        let leverage = network_leverage(&g, "alice", &ecosystem);
+        // "shared" appears via both eco nodes, but should only appear once
+        let unique: std::collections::HashSet<_> = leverage.iter().collect();
+        assert_eq!(unique.len(), leverage.len(), "network_leverage should not contain duplicates");
+    }
+
+    #[test]
+    fn test_network_leverage_duplicate_ecosystem_nodes_stable() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("alice", "shared", 1.0);
+        g.add_edge("eco1", "shared", 1.0);
+
+        let ecosystem = vec!["eco1".to_string(), "eco1".to_string()];
+        let leverage = network_leverage(&g, "alice", &ecosystem);
+        assert_eq!(leverage, vec!["shared".to_string()]);
+    }
+
+    // ── B163: recurrence_score large counts ──
+
+    #[test]
+    fn test_recurrence_score_very_large() {
+        let score = recurrence_score(1_000_000);
+        assert!((score - 100.0).abs() < 0.01, "Very large count should saturate at 100");
+    }
+
+    #[test]
+    fn test_recurrence_score_zero() {
+        let score = recurrence_score(0);
+        assert!(score < 10.0, "Zero appearances should yield low score: {}", score);
+    }
+
+    // ── B164: centrality rounding ──
+
+    #[test]
+    fn test_centrality_scores_rounded() {
+        let mut g = AdjacencyGraph::new();
+        g.add_bidi_edge("a", "b", 1.0);
+        g.add_bidi_edge("b", "c", 1.0);
+        let scores = compute_centrality_scores(&g);
+        for (_node, score) in &scores {
+            // After rounding to 2 decimals, score * 100 should be close to integer
+            let scaled = score * 100.0;
+            assert!((scaled - scaled.round()).abs() < 0.01);
+        }
+    }
+
+    // ── B165: role_drift_score with unordered timestamps ──
+
+    #[test]
+    fn test_role_drift_score_unordered() {
+        // Timestamps intentionally out of order
+        let history = vec![(3000, 95.0), (1000, 30.0), (2000, 70.0)];
+        let drift = role_drift_score(&history);
+        // After sorting: (1000,30), (2000,70), (3000,95) → delta = |95-70|/100 = 0.25
+        assert!((drift - 0.25).abs() < 0.01, "Drift should be 0.25, got {}", drift);
     }
 }

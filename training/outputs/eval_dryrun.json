@@ -1,0 +1,14 @@
+{
+  "dry_run": true,
+  "total": 654,
+  "valid": 654,
+  "by_type": {
+    "adversarial_tests": 5,
+    "entity_extraction": 260,
+    "memo_quality": 60,
+    "multilingual_golden": 7,
+    "poi_synthesis": 121,
+    "recipe_quality": 200,
+    "recipe_hypothesis": 1
+  }
+}

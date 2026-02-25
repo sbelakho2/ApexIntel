@@ -1,0 +1,127 @@
+{
+  "description": "EMS supply chain risk assessment framework and reference data",
+  "version": "1.0",
+  "supply_chain_risk_categories": {
+    "description": "Risk taxonomy for EMS competitive intelligence supply chain analysis",
+    "categories": [
+      {
+        "id": "SC-GEO",
+        "name": "Geopolitical Risk",
+        "sub_risks": [
+          {"id": "SC-GEO-01", "name": "Sanctions & Export Controls", "description": "Entity on sanctions/export control lists", "severity": "critical", "data_sources": ["OFAC SDN", "EU sanctions", "UN sanctions", "BIS Entity List"]},
+          {"id": "SC-GEO-02", "name": "Political Instability", "description": "Country-level political risk affecting operations", "severity": "high", "data_sources": ["WB WGI", "Fragile States Index", "GDELT events"]},
+          {"id": "SC-GEO-03", "name": "Trade War / Tariff Escalation", "description": "Sudden tariff changes affecting cost structure", "severity": "high", "data_sources": ["WTO disputes", "News monitoring"]},
+          {"id": "SC-GEO-04", "name": "Border/Port Disruption", "description": "Physical disruption to shipping routes", "severity": "high", "data_sources": ["GDELT events", "Port authority feeds"]}
+        ]
+      },
+      {
+        "id": "SC-FIN",
+        "name": "Financial Risk",
+        "sub_risks": [
+          {"id": "SC-FIN-01", "name": "Supplier Bankruptcy", "description": "Key supplier enters insolvency", "severity": "critical", "data_sources": ["SEC filings", "Altman Z-Score", "Financial press"]},
+          {"id": "SC-FIN-02", "name": "Currency Fluctuation", "description": "FX rate movements affecting margins", "severity": "medium", "data_sources": ["ECB rates", "Central bank feeds"]},
+          {"id": "SC-FIN-03", "name": "Commodity Price Volatility", "description": "Raw material price spikes (copper, tin, gold)", "severity": "medium", "data_sources": ["LME prices", "Commodity indexes"]},
+          {"id": "SC-FIN-04", "name": "Credit Risk", "description": "Customer/supplier creditworthiness deterioration", "severity": "high", "data_sources": ["Financial statements", "Credit agencies"]}
+        ]
+      },
+      {
+        "id": "SC-OPS",
+        "name": "Operational Risk",
+        "sub_risks": [
+          {"id": "SC-OPS-01", "name": "Single Source Dependency", "description": "Critical component/service from single supplier", "severity": "high", "indicators": ["Sole source contracts", "No approved alternates"]},
+          {"id": "SC-OPS-02", "name": "Component Shortage", "description": "Lead time extension or allocation", "severity": "high", "data_sources": ["Distributor APIs", "Lead time databases"]},
+          {"id": "SC-OPS-03", "name": "Quality Escape", "description": "Defective products reaching customer", "severity": "critical", "indicators": ["RMA rate", "Field failure rate", "Audit findings"]},
+          {"id": "SC-OPS-04", "name": "Capacity Constraint", "description": "Supplier unable to meet demand increase", "severity": "medium", "indicators": ["Utilization rate", "Lead time trend"]},
+          {"id": "SC-OPS-05", "name": "Counterfeit Components", "description": "Fake/substandard parts entering supply chain", "severity": "critical", "data_sources": ["GIDEP", "ERAI", "OCM traceability"]}
+        ]
+      },
+      {
+        "id": "SC-REG",
+        "name": "Regulatory/Compliance Risk",
+        "sub_risks": [
+          {"id": "SC-REG-01", "name": "RoHS/REACH Non-compliance", "description": "Products failing environmental substance restrictions", "severity": "high"},
+          {"id": "SC-REG-02", "name": "Conflict Minerals Non-compliance", "description": "3TG sourcing from non-conformant smelters", "severity": "medium"},
+          {"id": "SC-REG-03", "name": "Export License Violation", "description": "Shipping controlled items without proper license", "severity": "critical"},
+          {"id": "SC-REG-04", "name": "Data Privacy Violation", "description": "GDPR/local law violations in data handling", "severity": "high"},
+          {"id": "SC-REG-05", "name": "Labor/Safety Violation", "description": "Worker safety or labor law non-compliance", "severity": "high"}
+        ]
+      },
+      {
+        "id": "SC-CYB",
+        "name": "Cyber Risk",
+        "sub_risks": [
+          {"id": "SC-CYB-01", "name": "Ransomware Attack", "description": "Supplier operations halted by ransomware", "severity": "critical"},
+          {"id": "SC-CYB-02", "name": "IP Theft", "description": "Design data exfiltration", "severity": "critical"},
+          {"id": "SC-CYB-03", "name": "Supply Chain Cyberattack", "description": "Compromise propagating through supplier network", "severity": "high"}
+        ]
+      },
+      {
+        "id": "SC-ENV",
+        "name": "Environmental/ESG Risk",
+        "sub_risks": [
+          {"id": "SC-ENV-01", "name": "Natural Disaster", "description": "Earthquake, flood, typhoon affecting supplier facilities", "severity": "high", "data_sources": ["GDACS", "USGS earthquake feed"]},
+          {"id": "SC-ENV-02", "name": "Climate Change Impact", "description": "Long-term climate effects on operations", "severity": "medium"},
+          {"id": "SC-ENV-03", "name": "ESG Score Deterioration", "description": "Supplier ESG rating decline affecting brand risk", "severity": "medium"}
+        ]
+      }
+    ]
+  },
+  "ems_industry_kpis": {
+    "description": "Key Performance Indicators for EMS industry benchmarking",
+    "kpis": [
+      {"name": "First Pass Yield (FPY)", "unit": "%", "good": ">98%", "world_class": ">99.5%", "formula": "(Good units from first pass) / (Total units started)"},
+      {"name": "DPMO (Defects Per Million Opportunities)", "unit": "count", "good": "<100", "world_class": "<10", "formula": "(Defects × 1,000,000) / (Units × Opportunities per unit)"},
+      {"name": "On-Time Delivery (OTD)", "unit": "%", "good": ">95%", "world_class": ">99%"},
+      {"name": "Line Utilization", "unit": "%", "good": ">75%", "world_class": ">90%"},
+      {"name": "Changeover Time", "unit": "minutes", "good": "<60 min", "world_class": "<15 min for similar products"},
+      {"name": "Inventory Turns", "unit": "x/year", "good": ">6x", "world_class": ">12x"},
+      {"name": "Customer RMA Rate", "unit": "PPM", "good": "<500 PPM", "world_class": "<50 PPM"},
+      {"name": "Revenue per Employee", "unit": "USD", "typical_range": "$80K-$200K depending on labor cost geography"},
+      {"name": "Gross Margin", "unit": "%", "typical_ems": "6-12%", "typical_odm": "3-8%"},
+      {"name": "Operating Margin", "unit": "%", "typical_ems": "2-6%", "typical_odm": "1-4%"},
+      {"name": "WIP Days", "unit": "days", "good": "<15", "world_class": "<5"},
+      {"name": "Scrap Rate", "unit": "%", "good": "<1%", "world_class": "<0.1%"}
+    ]
+  },
+  "naics_cpv_crosswalk": {
+    "description": "Mapping between NAICS (US) and CPV (EU) codes for EMS-relevant categories",
+    "mappings": [
+      {"naics": "334412", "naics_desc": "Bare Printed Circuit Board Manufacturing", "cpv": "31710000-6", "cpv_desc": "Electronic equipment"},
+      {"naics": "334418", "naics_desc": "Printed Circuit Assembly Manufacturing", "cpv": "31700000-3", "cpv_desc": "Electronic, electromechanical and electrotechnical supplies"},
+      {"naics": "334413", "naics_desc": "Semiconductor and Related Device Manufacturing", "cpv": "31711000-3", "cpv_desc": "Electronic supplies"},
+      {"naics": "334416", "naics_desc": "Capacitor, Resistor, Coil, Transformer, and Other Inductor Manufacturing", "cpv": "31711100-4", "cpv_desc": "Electronic components"},
+      {"naics": "334419", "naics_desc": "Other Electronic Component Manufacturing", "cpv": "31711000-3", "cpv_desc": "Electronic supplies"},
+      {"naics": "335931", "naics_desc": "Current-Carrying Wiring Device Manufacturing", "cpv": "31200000-8", "cpv_desc": "Electricity distribution and control apparatus"},
+      {"naics": "335921", "naics_desc": "Fiber Optic Cable Manufacturing", "cpv": "32562000-0", "cpv_desc": "Fibre optic cable"},
+      {"naics": "335929", "naics_desc": "Other Communication and Energy Wire Manufacturing", "cpv": "31320000-5", "cpv_desc": "Electricity distribution cables"},
+      {"naics": "336320", "naics_desc": "Motor Vehicle Electrical and Electronic Equipment Manufacturing", "cpv": "34320000-6", "cpv_desc": "Mechanical spare parts except engines and engine parts"},
+      {"naics": "334511", "naics_desc": "Search, Detection, Navigation, Guidance, Aeronautical Systems", "cpv": "35710000-1", "cpv_desc": "Command, control, communication and computer systems"},
+      {"naics": "334290", "naics_desc": "Other Communications Equipment Manufacturing", "cpv": "32200000-5", "cpv_desc": "Transmission apparatus for radiotelephony, radiotelegraphy"}
+    ]
+  },
+  "incoterms_2020": {
+    "description": "ICC Incoterms 2020 — International Commercial Terms for shipping terms in tenders/contracts",
+    "terms": [
+      {"code": "EXW", "name": "Ex Works", "risk_transfer": "At seller's premises", "seller_obligation": "Minimal — make goods available", "buyer_obligation": "All transportation and risk"},
+      {"code": "FCA", "name": "Free Carrier", "risk_transfer": "At named place (seller's premises or carrier)", "seller_obligation": "Deliver to carrier", "buyer_obligation": "Main carriage"},
+      {"code": "FAS", "name": "Free Alongside Ship", "risk_transfer": "Alongside vessel at port", "mode": "Sea only"},
+      {"code": "FOB", "name": "Free on Board", "risk_transfer": "On board vessel at port", "mode": "Sea only", "common_use": "Very common in Asian EMS trade"},
+      {"code": "CPT", "name": "Carriage Paid To", "risk_transfer": "At first carrier", "seller_obligation": "Pay freight to destination"},
+      {"code": "CIF", "name": "Cost, Insurance and Freight", "risk_transfer": "On board vessel", "mode": "Sea only", "seller_obligation": "Pay freight + insurance to destination port"},
+      {"code": "CIP", "name": "Carriage and Insurance Paid To", "risk_transfer": "At first carrier", "seller_obligation": "Pay freight + insurance to destination"},
+      {"code": "DAP", "name": "Delivered at Place", "risk_transfer": "At destination (before unloading)", "seller_obligation": "All transport to destination"},
+      {"code": "DPU", "name": "Delivered at Place Unloaded", "risk_transfer": "At destination (after unloading)", "seller_obligation": "Transport + unload"},
+      {"code": "DDP", "name": "Delivered Duty Paid", "risk_transfer": "At destination (import cleared)", "seller_obligation": "All transport + import duties", "buyer_obligation": "Minimal"}
+    ]
+  },
+  "shipping_container_types": {
+    "description": "ISO container types for logistics cost estimation",
+    "containers": [
+      {"type": "20' Standard (TEU)", "internal_cbm": 33.2, "max_payload_kg": 28200, "tare_kg": 2300, "use": "General cargo, electronics pallets"},
+      {"type": "40' Standard", "internal_cbm": 67.7, "max_payload_kg": 28800, "tare_kg": 3800, "use": "General cargo, large shipments"},
+      {"type": "40' High Cube", "internal_cbm": 76.3, "max_payload_kg": 28560, "tare_kg": 4020, "use": "Lightweight/voluminous cargo"},
+      {"type": "20' Reefer", "internal_cbm": 28.3, "max_payload_kg": 27400, "temp_range": "-30°C to +30°C", "use": "Temperature-sensitive components"},
+      {"type": "Air Freight ULD (LD3)", "volume_cbm": 4.3, "max_payload_kg": 1588, "use": "Urgent electronics shipments"}
+    ]
+  }
+}

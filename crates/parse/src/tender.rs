@@ -1,8 +1,43 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::normalizer;
+use apex_core::validation::normalize_url;
+
+static RE_BUYER: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:buyer|acheteur|contracting authority|maître d'ouvrage|entidad contratante)[:\s]+([^\n.]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_REFERENCE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:ref(?:erence)?|n°|numéro)[:\s]*([\p{L}\p{N}][\p{L}\p{N}_\-/]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_VALUE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:value|montant|budget|estimated value)[:\s]*([€$£¥]?)\s*([\d,.]+)\s*(EUR|USD|TND|MAD|GBP|CNY|JPY|KRW|ILS)?")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_DEADLINE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:deadline|date limite|fecha límite|closing date)[:\s]+([^\n.]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
 
 /// Extracted tender/procurement posting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,16 +63,18 @@ pub fn extract_tender(
     url: &str,
     portal: &str,
 ) -> TenderExtract {
-    let buyer = extract_buyer(body_text);
-    let reference_number = extract_reference(body_text);
-    let (value_estimate, currency) = extract_value(body_text);
-    let deadline = extract_deadline_text(body_text);
-    let sector = detect_sector(body_text);
+    let normalized_body = normalizer::normalize_whitespace(body_text);
+    let buyer = extract_buyer(&normalized_body);
+    let reference_number = extract_reference(&normalized_body);
+    let (value_estimate, currency) = extract_value(&normalized_body);
+    let deadline = extract_deadline_text(&normalized_body);
+    let sector = detect_sector(&normalized_body);
 
     let proc_kws = crate::multilingual::procurement_keywords("en");
     let ems_kws = crate::multilingual::ems_keywords("en");
     let all_kws: Vec<&str> = proc_kws.into_iter().chain(ems_kws.into_iter()).collect();
-    let keywords = crate::multilingual::contains_keywords(body_text, &all_kws);
+    let keywords = crate::multilingual::contains_keywords(&normalized_body, &all_kws);
+    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
 
     TenderExtract {
         title: normalizer::normalize_whitespace(title),
@@ -48,58 +85,56 @@ pub fn extract_tender(
         sector,
         deadline,
         portal: portal.to_string(),
-        url: url.to_string(),
-        description: normalizer::truncate(body_text, 500),
+        url: normalized_url,
+        description: normalizer::truncate(&normalized_body, 500),
         keywords,
         extracted_at: Utc::now(),
     }
 }
 
 fn extract_buyer(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:buyer|acheteur|contracting authority|maître d'ouvrage|entidad contratante)[:\s]+([^\n.]+)").ok()?;
-    re.captures(text)
+    RE_BUYER.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_reference(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:ref(?:erence)?|n°|numéro)[:\s]*([A-Z0-9][\w\-/]+)").ok()?;
-    re.captures(text)
+    RE_REFERENCE.captures(text)
         .map(|c| c.get(1).unwrap().as_str().to_string())
 }
 
 fn extract_value(text: &str) -> (Option<f64>, Option<String>) {
-    let re = Regex::new(r"(?i)(?:value|montant|budget|estimated value)[:\s]*([€$£¥]?)\s*([\d,.]+)\s*(EUR|USD|TND|MAD|GBP|CNY|JPY|KRW|ILS)?").ok();
-    if let Some(re) = re {
-        if let Some(caps) = re.captures(text) {
-            let symbol = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-            let amount_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-            let currency_name = caps.get(3).map(|m| m.as_str().to_string());
+    if let Some(caps) = RE_VALUE.captures(text) {
+        let symbol = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let amount_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let currency_name = caps.get(3).map(|m| m.as_str().to_string());
 
-            let amount = amount_str
-                .replace(',', "")
-                .parse::<f64>()
-                .ok();
+        let amount = normalizer::parse_number(amount_str);
 
-            let currency = currency_name.or_else(|| {
-                match symbol {
-                    "€" => Some("EUR".to_string()),
-                    "$" => Some("USD".to_string()),
-                    "£" => Some("GBP".to_string()),
-                    "¥" => Some("CNY".to_string()),
-                    _ => None,
-                }
-            });
+        let currency = currency_name.or_else(|| {
+            match symbol {
+                "€" => Some("EUR".to_string()),
+                "$" => Some("USD".to_string()),
+                "£" => Some("GBP".to_string()),
+                "¥" => Some("CNY".to_string()),
+                _ => None,
+            }
+        });
 
-            return (amount, currency);
-        }
+        return (amount, currency);
     }
     (None, None)
 }
 
 fn extract_deadline_text(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:deadline|date limite|fecha límite|closing date)[:\s]+([^\n.]+)").ok()?;
-    re.captures(text)
+    RE_DEADLINE.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+        .and_then(|raw| {
+            if normalizer::is_valid_date_range(&raw) {
+                Some(raw)
+            } else {
+                None
+            }
+        })
 }
 
 fn detect_sector(text: &str) -> Option<String> {
@@ -163,6 +198,13 @@ mod tests {
         let text = "Reference: TN-2024-EMS-001. Procurement details.";
         let reference = extract_reference(text);
         assert_eq!(reference, Some("TN-2024-EMS-001".to_string()));
+    }
+
+    #[test]
+    fn test_extract_reference_non_ascii_identifier() {
+        let text = "Numéro: 供应链-٢٠٢٦-Α1.";
+        let reference = extract_reference(text);
+        assert_eq!(reference, Some("供应链-٢٠٢٦-Α1".to_string()));
     }
 
     #[test]

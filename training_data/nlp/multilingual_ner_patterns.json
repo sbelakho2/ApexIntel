@@ -1,0 +1,100 @@
+{
+  "description": "Multilingual NER entity patterns for named entity recognition across target languages (en, fr, ar, de, he, zh, ja, ko)",
+  "version": "1.0",
+  "entity_types": {
+    "ORG": {
+      "description": "Organization names — companies, agencies, institutions",
+      "patterns": {
+        "en": {"suffixes": ["Inc", "Inc.", "Corp", "Corp.", "Corporation", "Ltd", "Ltd.", "Limited", "LLC", "LLP", "PLC", "plc", "Group", "Holdings", "Co.", "Co", "Company", "GmbH", "AG", "SA", "SAS", "SARL", "BV", "NV", "Pty", "AB"], "prefixes": []},
+        "fr": {"suffixes": ["SA", "SAS", "SARL", "SNC", "SCS", "EURL", "SASU", "GIE", "Groupe", "Cie"], "prefixes": ["Société", "Groupe", "Compagnie"]},
+        "ar": {"suffixes": ["ش.م.م", "ش.ذ.م.م", "شركة", "مؤسسة", "مجموعة", "هيئة", "وكالة"], "prefixes": ["شركة", "مؤسسة", "مجموعة", "بنك", "هيئة"]},
+        "de": {"suffixes": ["GmbH", "AG", "KG", "OHG", "eG", "e.V.", "KGaA", "SE", "Gruppe", "Holding"], "prefixes": ["Deutsche", "Gesellschaft"]},
+        "he": {"suffixes": ["בע\"מ", "מ.ע", "חברת", "קבוצת"], "prefixes": ["חברת", "קבוצת", "בנק", "מכון"]},
+        "zh": {"suffixes": ["有限公司", "股份有限公司", "集团", "公司", "厂", "研究所", "研究院"], "prefixes": ["中国", "国家", "北京", "上海", "深圳"]},
+        "ja": {"suffixes": ["株式会社", "有限会社", "合同会社", "グループ", "ホールディングス"], "prefixes": ["株式会社"]},
+        "ko": {"suffixes": ["주식회사", "유한회사", "그룹", "홀딩스"], "prefixes": ["주식회사", "삼성", "현대", "LG"]}
+      }
+    },
+    "PER": {
+      "description": "Person names — executives, decision-makers, officials",
+      "patterns": {
+        "ar_name_structure": "First + Father's name + Family name. Common: محمد، أحمد، علي، فاطمة، مريم",
+        "he_name_structure": "First + Family. Common: דוד, משה, יעקב, שרה, רחל",
+        "zh_name_structure": "Family (1 char) + Given (1-2 chars). Common surnames: 王、李、张、刘、陈",
+        "ja_name_structure": "Family + Given. Common: 田中、鈴木、佐藤、山田",
+        "ko_name_structure": "Family (1 char) + Given (2 chars). Common: 김、이、박、정、최",
+        "title_prefixes": {
+          "en": ["Mr.", "Mrs.", "Ms.", "Dr.", "Prof.", "Eng.", "CEO", "CTO", "CFO", "COO", "VP", "Director", "Manager", "General Manager", "Chairman", "President"],
+          "fr": ["M.", "Mme", "Mlle", "Dr", "Pr", "Ing.", "PDG", "DG", "Directeur", "Gérant", "Président"],
+          "ar": ["السيد", "السيدة", "الدكتور", "المهندس", "الأستاذ", "المدير العام", "الرئيس التنفيذي"],
+          "de": ["Herr", "Frau", "Dr.", "Prof.", "Ing.", "Geschäftsführer", "Vorstand"],
+          "he": ["מר", "גב'", "ד\"ר", "פרופ'", "מנכ\"ל", "סמנכ\"ל"]
+        }
+      }
+    },
+    "LOC": {
+      "description": "Location names — countries, cities, regions, facilities",
+      "gazetteer_sources": ["GeoNames", "UN/LOCODE", "Natural Earth", "OpenStreetMap"],
+      "target_regions": {
+        "tunisia": {
+          "governorates": ["Tunis", "Ariana", "Ben Arous", "Manouba", "Nabeul", "Zaghouan", "Bizerte", "Beja", "Jendouba", "Le Kef", "Siliana", "Sousse", "Monastir", "Mahdia", "Sfax", "Kairouan", "Kasserine", "Sidi Bouzid", "Gabes", "Medenine", "Tataouine", "Gafsa", "Tozeur", "Kebili"],
+          "industrial_cities": ["Tunis", "Sfax", "Sousse", "Bizerte", "Monastir", "Ben Arous", "Nabeul", "Gabes", "Mghira", "El Fejja", "Borj Cedria"]
+        },
+        "morocco": {
+          "regions": ["Casablanca-Settat", "Rabat-Salé-Kénitra", "Tanger-Tétouan-Al Hoceïma", "Fès-Meknès", "Marrakech-Safi", "Souss-Massa"],
+          "industrial_cities": ["Casablanca", "Tanger", "Kénitra", "Rabat", "Fès", "Marrakech", "Agadir"]
+        },
+        "israel": {
+          "districts": ["Tel Aviv", "Central", "Haifa", "Northern", "Southern", "Jerusalem"],
+          "tech_hubs": ["Tel Aviv", "Herzliya", "Ra'anana", "Haifa", "Petah Tikva", "Netanya", "Beer Sheva"]
+        }
+      }
+    },
+    "PRODUCT": {
+      "description": "Product, component, or technology names",
+      "patterns": {
+        "part_number_regex": "[A-Z]{2,5}[0-9]{3,10}[A-Z]{0,3}[-/]?[0-9A-Z]*",
+        "example_formats": ["STM32F407VGT6", "LM7805CT", "TPS62130", "AD8232", "ESP32-WROOM-32", "nRF52840", "ATMEGA328P-AU", "74HC595D"],
+        "board_model_regex": "[A-Z]{2,6}-[0-9]{3,5}[-_]?[A-Z0-9]*",
+        "common_prefixes": ["PCB", "PCBA", "FPC", "Module", "Board", "Assembly", "Kit", "Unit"]
+      }
+    },
+    "EVENT": {
+      "description": "Business events — tenders, trade shows, M&A, filings",
+      "subtypes": ["TENDER", "TRADE_SHOW", "MERGER", "ACQUISITION", "IPO", "FILING", "CONTRACT_AWARD", "PLANT_OPENING", "PLANT_CLOSURE", "PRODUCT_LAUNCH", "RECALL", "CERTIFICATION"]
+    },
+    "REGULATION": {
+      "description": "Regulatory references — standards, laws, directives",
+      "patterns": {
+        "iso_regex": "ISO\\s*[0-9]{4,5}([-:][0-9]{4})?",
+        "iec_regex": "IEC\\s*[0-9]{4,5}([-:][0-9]{1,4})?",
+        "ipc_regex": "IPC[-\\s][A-Z]?[-]?[0-9]{3,4}[A-Z]?",
+        "eu_directive_regex": "(Directive|Regulation)\\s*(EU\\s*)?[0-9]{4}/[0-9]{1,4}",
+        "mil_spec_regex": "MIL-[A-Z]{3,4}-[0-9]{3,6}[A-Z]?"
+      }
+    },
+    "MONEY": {
+      "description": "Monetary amounts with currency",
+      "currency_symbols": {"USD": "$", "EUR": "€", "GBP": "£", "TND": "د.ت", "MAD": "د.م.", "ILS": "₪", "CNY": "¥", "JPY": "¥", "KRW": "₩", "CHF": "CHF", "CAD": "C$", "SGD": "S$"},
+      "magnitude_terms": {
+        "en": ["thousand", "million", "billion", "trillion", "K", "M", "B", "T"],
+        "fr": ["mille", "million", "milliard", "billion"],
+        "ar": ["ألف", "مليون", "مليار"]
+      }
+    },
+    "DATE": {
+      "description": "Temporal expressions",
+      "formats": ["ISO 8601", "DD/MM/YYYY", "MM/DD/YYYY", "YYYY年MM月DD日", "DD.MM.YYYY"],
+      "relative_terms": {
+        "en": ["yesterday", "today", "tomorrow", "last week", "next month", "Q1", "Q2", "Q3", "Q4", "FY2024", "H1", "H2"],
+        "fr": ["hier", "aujourd'hui", "demain", "la semaine dernière", "le mois prochain", "T1", "T2", "T3", "T4"],
+        "ar": ["أمس", "اليوم", "غداً", "الأسبوع الماضي", "الشهر القادم", "الربع الأول"]
+      }
+    }
+  },
+  "stopwords_extended": {
+    "description": "Domain-specific stopwords that should NOT be treated as entity candidates",
+    "en_technical": ["pcb", "pcba", "smt", "tht", "bga", "qfp", "sop", "dip", "io", "ic", "led", "lcd", "esd", "emi", "rfi", "rf", "dc", "ac", "pcb", "pwm", "spi", "i2c", "uart", "usb", "can", "lin", "tcp", "ip", "http"],
+    "en_business": ["quarterly", "annual", "revenue", "profit", "loss", "margin", "growth", "decline", "forecast", "guidance", "outlook", "pipeline"]
+  }
+}

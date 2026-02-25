@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use subtle::ConstantTimeEq;
 
 // ────────────────────────────────────────────
 // API Key management
@@ -120,14 +121,27 @@ pub fn extract_bearer_token(header_value: &str) -> Option<&str> {
 }
 
 /// Validate a token against a key registry.
+/// Uses constant-time comparison to prevent timing side-channel attacks.
 pub fn validate_token(
     token: &str,
     registry: &HashMap<String, ApiKey>,
     now: DateTime<Utc>,
 ) -> AuthResult {
     let token_hash = hash_api_key(token);
+    let token_bytes = token_hash.as_bytes();
 
-    let key = match registry.values().find(|k| k.key_hash == token_hash) {
+    // Constant-time scan: always iterate all keys, no early exit
+    let mut matched_key: Option<&ApiKey> = None;
+    for key in registry.values() {
+        let stored_bytes = key.key_hash.as_bytes();
+        if stored_bytes.len() == token_bytes.len() {
+            if bool::from(stored_bytes.ct_eq(token_bytes)) {
+                matched_key = Some(key);
+            }
+        }
+    }
+
+    let key = match matched_key {
         Some(k) => k,
         None => return AuthResult::InvalidKey,
     };

@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use apex_core::validation::{normalize_email, validate_nonempty_id, validate_uuid};
 
 // ────────────────────────────────────────────
 // Request types
@@ -10,6 +11,7 @@ use uuid::Uuid;
 
 /// Query parameters for listing warnings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListWarningsQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
@@ -25,6 +27,7 @@ pub struct ListWarningsQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum WarningSortField {
     CreatedAt,
     Severity,
@@ -43,6 +46,7 @@ impl WarningSortField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum SortDirection {
     Asc,
     Desc,
@@ -65,6 +69,7 @@ impl SortDirection {
 
 /// Request body for acknowledging a warning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcknowledgeRequest {
     pub user_id: String,
     pub note: Option<String>,
@@ -109,7 +114,8 @@ pub struct AcknowledgeResponse {
 
 /// Validate a warning ID.
 pub fn validate_warning_id(id: &str) -> Result<Uuid, String> {
-    Uuid::parse_str(id).map_err(|_| format!("Invalid warning ID: '{}'", id))
+    validate_uuid(id, "warning_id").map_err(|e| e.to_string())?;
+    Uuid::parse_str(id.trim()).map_err(|_| format!("Invalid warning ID: '{}'", id))
 }
 
 /// Validate an acknowledge request.
@@ -117,8 +123,16 @@ pub fn validate_acknowledge(req: &AcknowledgeRequest) -> Result<(), String> {
     if req.user_id.trim().is_empty() {
         return Err("user_id is required".to_string());
     }
+    if req.user_id.chars().count() > 200 {
+        return Err("user_id must be <= 200 characters".to_string());
+    }
+    if let Some(email) = normalize_email(&req.user_id) {
+        if !email.contains('@') && req.user_id.contains('@') {
+            return Err("user_id must be a valid email when '@' is present".to_string());
+        }
+    }
     if let Some(note) = &req.note {
-        if note.len() > 1000 {
+        if note.chars().count() > 1000 {
             return Err("note must be <= 1000 characters".to_string());
         }
     }
@@ -236,6 +250,15 @@ mod tests {
         let req = AcknowledgeRequest {
             user_id: "user-1".to_string(),
             note: Some("x".repeat(1001)),
+        };
+        assert!(validate_acknowledge(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_acknowledge_long_user_id() {
+        let req = AcknowledgeRequest {
+            user_id: "u".repeat(201),
+            note: None,
         };
         assert!(validate_acknowledge(&req).is_err());
     }

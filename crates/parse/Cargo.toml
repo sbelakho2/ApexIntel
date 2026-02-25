@@ -16,6 +16,8 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
+encoding_rs = { workspace = true }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

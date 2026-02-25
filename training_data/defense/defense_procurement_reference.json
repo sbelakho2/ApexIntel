@@ -1,0 +1,114 @@
+{
+  "description": "Defense electronics procurement and compliance reference for military/aerospace EMS intelligence",
+  "version": "1.0",
+  "usml_category_xi": {
+    "description": "ITAR USML Category XI — Military Electronics (the most relevant category for EMS companies)",
+    "subcategories": [
+      {"sub": "(a)", "description": "Electronic equipment, systems, and components specifically designed, modified, or configured for military use", "examples": ["Tactical radios", "Military GPS receivers", "IFF transponders", "Electronic warfare systems", "Radar systems", "Sonar systems"]},
+      {"sub": "(b)", "description": "Electronic combat (EC) systems, equipment, and components", "examples": ["Jammers", "RWR (Radar Warning Receivers)", "Direction finders", "Chaff/flare dispensers"]},
+      {"sub": "(c)", "description": "Information security systems and equipment", "examples": ["Type 1 encryption", "NSA-approved crypto", "TEMPEST shielding", "KG/KIV series fill devices"]},
+      {"sub": "(d)", "description": "Space-qualified electronics", "scope": "Electronics specifically designed for satellite, launch vehicle, or spacecraft applications"},
+      {"sub": "(e)", "description": "Software specifically designed for items in (a)-(d)"},
+      {"sub": "(f)", "description": "Technology for production, development, operation of items in (a)-(e)"}
+    ],
+    "key_controls": {
+      "rad_hard": "Radiation-hardened or radiation-tolerant ICs designed for military/space use",
+      "tempest": "Electronics meeting TEMPEST/EMSEC standards for preventing electromagnetic emanations",
+      "mil_spec_screening": "Components screened to MIL-STD-883 (ICs) or MIL-STD-750 (discrete) for military temperature range (-55°C to +125°C)",
+      "dfars_source": "DFARS 252.225-7014 requires certain specialty metals and electronics from qualifying countries"
+    }
+  },
+  "dfars_key_clauses": {
+    "description": "Defense Federal Acquisition Regulation Supplement — key clauses for EMS defense contractors",
+    "clauses": [
+      {"clause": "DFARS 252.204-7012", "title": "Safeguarding Covered Defense Information and Cyber Incident Reporting", "description": "Requires NIST SP 800-171 compliance for CUI handling; 72-hour cyber incident reporting to DIBNet", "ems_relevance": "critical"},
+      {"clause": "DFARS 252.204-7019/7020/7021", "title": "CMMC Requirements", "description": "Requires CMMC assessment and certification at appropriate level", "ems_relevance": "critical"},
+      {"clause": "DFARS 252.225-7014", "title": "Preference for Domestic Specialty Metals", "description": "Restricts use of Chinese/Russian specialty metals in defense items", "ems_relevance": "high"},
+      {"clause": "DFARS 252.225-7012", "title": "Preference for Certain Domestic Commodities", "description": "Buy American requirements for specific commodities", "ems_relevance": "medium"},
+      {"clause": "DFARS 252.246-7007", "title": "Contractor Counterfeit Electronic Part Detection and Avoidance System", "description": "Requires counterfeit part avoidance system per SAE AS6174/AS6081/AS6171", "ems_relevance": "critical"},
+      {"clause": "DFARS 252.211-7003", "title": "Item Unique Identification (IUID)", "description": "Requires UID marking per MIL-STD-130 for items above threshold", "ems_relevance": "high"},
+      {"clause": "FAR 52.222-26", "title": "Equal Opportunity", "ems_relevance": "standard"},
+      {"clause": "FAR 52.219-9", "title": "Small Business Subcontracting Plan", "ems_relevance": "standard for large primes"}
+    ]
+  },
+  "counterfeit_prevention": {
+    "description": "Anti-counterfeit standards critical for defense EMS",
+    "standards": [
+      {"standard": "SAE AS6171", "title": "Test Methods Standard to Assess Electronic Components for Counterfeit", "scope": "Testing methods for suspect parts"},
+      {"standard": "SAE AS6081", "title": "Fraudulent/Counterfeit Electronic Parts: Avoidance, Detection, Mitigation, and Disposition for Distributors", "scope": "For independent distributors"},
+      {"standard": "SAE AS6174", "title": "Counterfeit Electronic Parts: Avoidance Protocol, Distributors", "scope": "Authorized distributor requirements"},
+      {"standard": "SAE AS5553", "title": "Counterfeit Electronic Parts: Avoidance, Detection, Mitigation, and Disposition", "scope": "For OEMs and EMS companies"},
+      {"standard": "GIDEP (Government-Industry Data Exchange Program)", "description": "Database for reporting suspect counterfeit parts"},
+      {"standard": "ERAI", "description": "Industry database tracking counterfeit and substandard parts reports"}
+    ],
+    "common_counterfeit_methods": [
+      "Remarking (sanding and re-labeling lower-grade parts)",
+      "Refurbished parts sold as new",
+      "Cloning (unauthorized copies of legitimate designs)",
+      "Overproduction (legitimate fab produces extra unauthorized units)",
+      "Recycled e-waste components",
+      "Die substitution (wrong die in correct package)"
+    ]
+  },
+  "mil_std_reference": {
+    "description": "Key MIL-STDs relevant to defense electronics manufacturing",
+    "standards": [
+      {"standard": "MIL-STD-883", "title": "Test Methods and Procedures for Microelectronics", "ems_relevance": "Component screening — Class B (military), Class S (space)"},
+      {"standard": "MIL-STD-750", "title": "Test Methods for Semiconductor Devices", "ems_relevance": "Discrete semiconductor screening"},
+      {"standard": "MIL-STD-810", "title": "Environmental Engineering Considerations and Laboratory Tests", "ems_relevance": "Environmental testing: vibration, shock, temperature, humidity, altitude"},
+      {"standard": "MIL-STD-461", "title": "Requirements for the Control of Electromagnetic Interference (EMI)", "ems_relevance": "EMI/EMC compliance for military equipment"},
+      {"standard": "MIL-STD-1275", "title": "Characteristics of 28 Volt DC Electrical Systems in Military Vehicles", "ems_relevance": "Power quality for vehicle electronics"},
+      {"standard": "MIL-STD-130", "title": "Identification Marking of U.S. Military Property", "ems_relevance": "IUID marking requirements"},
+      {"standard": "MIL-STD-38784", "title": "Technical Manual Writing Standards", "ems_relevance": "Documentation for military deliverables"},
+      {"standard": "MIL-PRF-31032", "title": "Performance Specification: Printed Circuit Board/Printed Wiring Board, General", "ems_relevance": "Military PCB fabrication requirements"},
+      {"standard": "MIL-PRF-55110", "title": "Performance Specification: Printed Wiring Boards (single/double sided)", "ems_relevance": "Military rigid PCB requirements"},
+      {"standard": "MIL-PRF-50884", "title": "Performance Specification: Printed Wiring, Flexible/Rigid-Flexible", "ems_relevance": "Military flex PCB requirements"}
+    ]
+  },
+  "defense_procurement_platforms": {
+    "description": "Defense procurement portals for tender/contract monitoring",
+    "platforms": [
+      {"name": "SAM.gov", "country": "US", "url": "https://sam.gov", "description": "US federal procurement including DoD", "api": true},
+      {"name": "DIBBS (DLA Internet Bid Board)", "country": "US", "url": "https://www.dibbs.bsm.dla.mil", "description": "Defense Logistics Agency procurement", "api": false},
+      {"name": "TED (Tenders Electronic Daily)", "country": "EU", "url": "https://ted.europa.eu", "description": "EU public procurement above thresholds, including defense", "api": true},
+      {"name": "Contracts Finder", "country": "GB", "url": "https://www.contractsfinder.service.gov.uk", "description": "UK government procurement", "api": true},
+      {"name": "MERX", "country": "CA", "url": "https://www.merx.com", "description": "Canadian government procurement", "api": false},
+      {"name": "Tuneps", "country": "TN", "url": "https://www.tuneps.tn", "description": "Tunisia government e-procurement portal", "api": false},
+      {"name": "MPMP", "country": "MA", "url": "https://www.marchespublics.gov.ma", "description": "Morocco government procurement portal", "api": false},
+      {"name": "Israeli Government Procurement Portal", "country": "IL", "url": "https://www.mr.gov.il", "description": "Israel Accountant General procurement", "api": false}
+    ]
+  },
+  "nato_codification": {
+    "description": "NATO Stock Number (NSN) structure for military supply classification",
+    "format": {
+      "structure": "XXXX-YY-ZZZ-ZZZZ",
+      "nato_supply_class": "XXXX (first 4 digits: Federal Supply Classification)",
+      "country_code": "YY (2 digits: NATO country code — 00=US, 99=UK, 14=CA, 12=DE, 14=FR)",
+      "item_number": "ZZZ-ZZZZ (7 digits: unique item identifier)"
+    },
+    "electronics_fsc_groups": [
+      {"fsc": "5905", "description": "Resistors"},
+      {"fsc": "5910", "description": "Capacitors"},
+      {"fsc": "5915", "description": "Filters and Networks"},
+      {"fsc": "5920", "description": "Fuses, Arresters, Absorbers, Protectors"},
+      {"fsc": "5925", "description": "Circuit Breakers"},
+      {"fsc": "5930", "description": "Switches"},
+      {"fsc": "5935", "description": "Connectors, Electrical"},
+      {"fsc": "5940", "description": "Lugs, Terminals, Misc Electrical Hardware"},
+      {"fsc": "5945", "description": "Relays and Solenoids"},
+      {"fsc": "5950", "description": "Coils and Transformers"},
+      {"fsc": "5960", "description": "Electron Tubes and Associated Hardware"},
+      {"fsc": "5961", "description": "Semiconductor Devices and Associated Hardware"},
+      {"fsc": "5962", "description": "Microcircuits, Electronic"},
+      {"fsc": "5963", "description": "Electronic Modules"},
+      {"fsc": "5970", "description": "Electrical Insulators and Insulating Materials"},
+      {"fsc": "5975", "description": "Electrical Hardware and Supplies"},
+      {"fsc": "5977", "description": "Electrical Contact Brushes and Electrodes"},
+      {"fsc": "5980", "description": "Optoelectronic Devices and Associated Hardware"},
+      {"fsc": "5985", "description": "Antennas, Waveguides, Related Equipment"},
+      {"fsc": "5990", "description": "Synchros and Resolvers"},
+      {"fsc": "5995", "description": "Cable, Cord, Wire Assemblies: Communication Equipment"},
+      {"fsc": "5998", "description": "Electrical and Electronic Assemblies, Boards, Cards"}
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use url::Url;
 
 /// Health tracking for a proxy endpoint.
 #[derive(Debug, Clone)]
@@ -68,6 +69,8 @@ impl ProxyRotator {
             return None;
         }
 
+        // Normalize index after possible proxy removal to prevent OOB.
+        self.current_idx = self.current_idx % self.proxies.len();
         let start = self.current_idx;
         let max_tries = self.proxies.len().min(10);
 
@@ -125,6 +128,7 @@ impl ProxyRotator {
         // Remove proxy after too many failures
         if failures >= 5 {
             self.proxies.retain(|p| p != proxy);
+            self.health.remove(proxy);
         }
     }
 
@@ -152,6 +156,7 @@ impl ProxyRotator {
                     format!("http://{}", l)
                 }
             })
+            .filter(|proxy| Url::parse(proxy).is_ok())
             .collect()
     }
 }

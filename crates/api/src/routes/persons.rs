@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use apex_core::validation::clamp_ratio;
 
 // ────────────────────────────────────────────
 // Request types
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Query parameters for listing persons/POIs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListPersonsQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
@@ -99,7 +101,7 @@ impl PriorityVector {
             self.intelligence_value,
         ];
         let score: f64 = weights.iter().zip(values.iter()).map(|(w, v)| w * v).sum();
-        score.clamp(0.0, 1.0)
+        clamp_ratio(score)
     }
 }
 

@@ -1,0 +1,63 @@
+{
+  "description": "IPC (Association Connecting Electronics Industries) standards reference for EMS quality classification and process control",
+  "ipc_standards": {
+    "assembly_soldering": [
+      {"standard": "IPC J-STD-001", "title": "Requirements for Soldered Electrical and Electronic Assemblies", "edition": "H (2020) + Amendment 1", "scope": "Defines materials, methods, and verification criteria for soldered connections", "classes": ["Class 1: General Electronics", "Class 2: Dedicated Service Electronics", "Class 3: High-Performance/Harsh-Environment Electronics"], "relevance": "critical"},
+      {"standard": "IPC-A-610", "title": "Acceptability of Electronic Assemblies", "edition": "H (2020)", "scope": "Workmanship standard — visual acceptance criteria for assembled boards", "classes": ["Class 1", "Class 2", "Class 3"], "relevance": "critical"},
+      {"standard": "IPC-A-620", "title": "Requirements and Acceptance for Cable and Wire Harness Assemblies", "edition": "D (2018)", "scope": "Workmanship standard for cable/wire harnesses", "classes": ["Class 1", "Class 2", "Class 3"], "relevance": "high"},
+      {"standard": "IPC J-STD-002", "title": "Solderability Tests for Component Leads, Terminations, Lugs, Terminals, and Wires", "edition": "C", "scope": "Incoming QC — solderability testing of components", "relevance": "medium"},
+      {"standard": "IPC J-STD-003", "title": "Solderability Tests for Printed Boards", "edition": "C", "scope": "Incoming QC — solderability testing of bare PCBs", "relevance": "medium"},
+      {"standard": "IPC J-STD-004", "title": "Requirements for Soldering Fluxes", "edition": "C", "scope": "Classification and requirements for flux materials", "relevance": "medium"},
+      {"standard": "IPC J-STD-005", "title": "Requirements for Soldering Pastes", "edition": "A", "scope": "Requirements for solder paste materials", "relevance": "medium"},
+      {"standard": "IPC J-STD-006", "title": "Requirements for Electronic Grade Solder Alloys and Fluxed and Non-Fluxed Solid Solders", "edition": "C", "scope": "Solder alloy specifications", "relevance": "medium"},
+      {"standard": "IPC J-STD-020", "title": "Moisture/Reflow Sensitivity Classification for Nonhermetic Surface Mount Devices", "edition": "E", "scope": "MSL classification (MSL 1–6) for SMDs", "relevance": "high"}
+    ],
+    "bare_board": [
+      {"standard": "IPC-A-600", "title": "Acceptability of Printed Boards", "edition": "J (2021)", "scope": "Acceptance criteria for incoming bare PCBs", "relevance": "high"},
+      {"standard": "IPC-6012", "title": "Qualification and Performance Specification for Rigid Printed Boards", "edition": "E", "scope": "Performance requirements for rigid PCBs", "classes": ["Class 1", "Class 2", "Class 3", "Class 3/A (Space/Military)"], "relevance": "high"},
+      {"standard": "IPC-6013", "title": "Qualification and Performance Specification for Flexible/Rigid-Flexible Printed Boards", "edition": "D", "scope": "Performance requirements for flex/rigid-flex PCBs", "relevance": "medium"},
+      {"standard": "IPC-2221", "title": "Generic Standard on Printed Board Design", "edition": "B", "scope": "General PCB design guidelines", "relevance": "medium"},
+      {"standard": "IPC-2222", "title": "Sectional Standard on Rigid Organic Printed Board Design", "scope": "Rigid board specific design rules", "relevance": "medium"}
+    ],
+    "component_packaging": [
+      {"standard": "IPC-SM-780", "title": "Component Packaging and Interconnecting with Emphasis on Surface Mounting", "scope": "Land pattern design guidelines", "relevance": "medium"},
+      {"standard": "IPC-7351", "title": "Generic Requirements for Surface Mount Design and Land Pattern Standard", "edition": "B", "scope": "Footprint/land pattern guidelines", "relevance": "medium"},
+      {"standard": "IPC-7093", "title": "Design and Assembly Process Implementation for Bottom Termination Components", "scope": "QFN/DFN/LGA assembly guidelines", "relevance": "high"}
+    ],
+    "cleaning_coating": [
+      {"standard": "IPC-CC-830", "title": "Qualification and Performance of Electrical Insulating Compound for Printed Wiring Assemblies", "edition": "B", "scope": "Conformal coating qualification and testing", "relevance": "high"},
+      {"standard": "IPC-CH-65", "title": "Guidelines for Cleaning of Printed Boards and Assemblies", "edition": "B", "scope": "Post-solder cleaning processes", "relevance": "medium"}
+    ],
+    "rework_repair": [
+      {"standard": "IPC-7711/7721", "title": "Rework, Modification, and Repair of Electronic Assemblies", "edition": "C", "scope": "Comprehensive rework and repair procedures", "relevance": "high"}
+    ],
+    "esd_handling": [
+      {"standard": "IPC/JEDEC J-STD-033", "title": "Handling, Packing, Shipping and Use of Moisture/Reflow Sensitive Surface Mount Devices", "edition": "D", "scope": "Floor life management for moisture-sensitive devices", "relevance": "high"},
+      {"standard": "ANSI/ESD S20.20", "title": "ESD Association Standard for the Development of an ESD Control Program", "edition": "2021", "scope": "ESD control program requirements", "relevance": "high"}
+    ],
+    "reliability_testing": [
+      {"standard": "IPC-9701", "title": "Performance Test Methods and Qualification Requirements for Surface Mount Solder Attachments", "edition": "A", "scope": "Thermal cycling qualification for SMT solder joints", "relevance": "medium"},
+      {"standard": "IPC-TM-650", "title": "Test Methods Manual", "scope": "Comprehensive test method collection", "relevance": "medium"}
+    ],
+    "quality_systems": [
+      {"standard": "IPC-1710", "title": "OEM Standard for Printed Board Manufacturer Qualification Profile", "scope": "PCB supplier qualification", "relevance": "medium"},
+      {"standard": "IPC-1752", "title": "Materials Declaration Management", "scope": "Material content declaration for RoHS/REACH compliance", "relevance": "high"}
+    ]
+  },
+  "ems_quality_certifications": {
+    "description": "Key certifications for EMS companies",
+    "certifications": [
+      {"name": "ISO 9001:2015", "scope": "Quality Management System", "relevance": "mandatory_all"},
+      {"name": "ISO 14001:2015", "scope": "Environmental Management System", "relevance": "common"},
+      {"name": "ISO 45001:2018", "scope": "Occupational Health and Safety", "relevance": "common"},
+      {"name": "IATF 16949:2016", "scope": "Automotive Quality Management", "relevance": "automotive_ems", "note": "Required for automotive EMS; extends ISO 9001"},
+      {"name": "AS9100D", "scope": "Aerospace Quality Management", "relevance": "aerospace_defense_ems", "base": "ISO 9001 + aerospace supplements"},
+      {"name": "ISO 13485:2016", "scope": "Medical Device Quality Management", "relevance": "medical_ems"},
+      {"name": "NADCAP", "scope": "National Aerospace and Defense Contractors Accreditation", "relevance": "aerospace_special_processes", "processes": ["Soldering", "Electronics", "Welding", "NDT"]},
+      {"name": "IPC J-STD-001 Space Addendum", "scope": "Space-grade soldering requirements", "relevance": "space_grade_ems"},
+      {"name": "UL/CSA", "scope": "Product safety certification", "relevance": "consumer_industrial", "types": ["UL 60950-1", "UL 62368-1", "UL 94"]},
+      {"name": "ITAR Registration", "scope": "US defense manufacturing authorization", "relevance": "defense_ems", "note": "Required for USML-controlled items"},
+      {"name": "CMMC Level 2+", "scope": "Cybersecurity Maturity Model Certification", "relevance": "dod_supply_chain", "note": "Required for handling CUI in DoD contracts"}
+    ]
+  }
+}

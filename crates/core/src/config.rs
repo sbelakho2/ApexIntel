@@ -1,42 +1,88 @@
+use crate::env;
 use crate::errors::{ApexError, Result};
 use serde::{Deserialize, Serialize};
 
-/// Global application configuration, loaded from env vars and/or config files.
+/// Global application configuration, loaded from environment variables.
+///
+/// # Loading
+/// Call [`AppConfig::from_env`] after `dotenvy::dotenv().ok()` to populate this
+/// struct from the process environment.
+///
+/// # Required env vars
+/// - `DATABASE_URL` — PostgreSQL connection string (no default; startup fails without it).
+///
+/// # Env vars with defaults (B289)
+/// | Env var                    | Default                        | Notes                                |
+/// |---------------------------|-------------------------------|--------------------------------------|
+/// | `REDIS_URL`               | `redis://127.0.0.1:6379`      | Local dev Redis                      |
+/// | `NATS_URL`                | `nats://127.0.0.1:4222`       | Local dev NATS                       |
+/// | `MINIO_URL`               | `http://127.0.0.1:9000`       | Local dev MinIO                      |
+/// | `MINIO_BUCKET`            | `apexintel`                   | Default bucket name                  |
+/// | `LLM_MODEL`               | `Qwen3-30B-A3B-Q4_K_M`        | Locally deployed quantized model     |
+/// | `ENABLE_PROXY_ROTATION`   | `false`                       | Enable only in production            |
+/// | `ENABLE_HEADLESS_BROWSER` | `false`                       | Enable only when scraping JS pages   |
+/// | `CRAWL_INTERVAL_SECS`     | `21600` (6 h)                 | How often to re-crawl domains        |
+/// | `NIGHTLY_HOUR_UTC`        | `2`                           | UTC hour for the nightly pipeline    |
+/// | `WEEKLY_DAY`              | `0` (Monday)                  | 0=Mon … 6=Sun                        |
+/// | `DEFAULT_RPS`             | `0.2`                         | Requests/second per domain           |
+/// | `PROXY_POOL_SIZE`         | `50`                          | Number of rotating proxy slots       |
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// PostgreSQL connection string.  **Required** — set `DATABASE_URL`.
     pub database_url: String,
+    /// Redis URL.  Default: `redis://127.0.0.1:6379`.
     pub redis_url: String,
+    /// NATS URL.  Default: `nats://127.0.0.1:4222`.
     pub nats_url: String,
+    /// MinIO endpoint URL.  Default: `http://127.0.0.1:9000`.
     pub minio_url: String,
+    /// MinIO bucket.  Default: `apexintel`.
     pub minio_bucket: String,
 
-    // API keys
+    // ── API keys (all optional) ──────────────────────────────────
+    /// Google Custom Search API key.  Optional.
     pub google_api_key: Option<String>,
+    /// Google Custom Search Engine ID.  Optional.
     pub google_search_engine_id: Option<String>,
+    /// Nexar OAuth client ID.  Optional.
     pub nexar_client_id: Option<String>,
+    /// Nexar OAuth client secret.  Optional.
     pub nexar_client_secret: Option<String>,
+    /// Mouser API key.  Optional.
     pub mouser_api_key: Option<String>,
+    /// Digi-Key client ID.  Optional.
     pub digikey_client_id: Option<String>,
 
-    // LLM
+    // ── LLM ─────────────────────────────────────────────────────
+    /// Base URL for the local/remote LLM endpoint.  Optional (disables LLM if absent).
     pub llm_base_url: Option<String>,
+    /// Bearer token for the LLM API.  Optional.
     pub llm_api_key: Option<String>,
+    /// Model identifier string.  Default: `Qwen3-30B-A3B-Q4_K_M`.
     pub llm_model: String,
 
-    // SMTP
+    // ── SMTP ────────────────────────────────────────────────────
+    /// SMTP connection URL.  Optional (disables email dispatch if absent).
     pub smtp_url: Option<String>,
 
-    // Feature flags
+    // ── Feature flags ───────────────────────────────────────────
+    /// Enable rotating proxy pool for crawl requests.  Default: `false`.
     pub enable_proxy_rotation: bool,
+    /// Enable headless-browser crawl fallback.  Default: `false`.
     pub enable_headless_browser: bool,
 
-    // Scheduling
+    // ── Scheduling ──────────────────────────────────────────────
+    /// Crawl polling interval in seconds.  Default: `21600` (6 hours).
     pub crawl_interval_secs: u64,
+    /// UTC hour (0–23) when the nightly pipeline fires.  Default: `2`.
     pub nightly_hour_utc: u32,
-    pub weekly_day: u32, // 0=Mon .. 6=Sun
+    /// Day-of-week (0=Monday … 6=Sunday) for the weekly pipeline.  Default: `0`.
+    pub weekly_day: u32,
 
-    // Rate limiting defaults
+    // ── Rate limiting ────────────────────────────────────────────
+    /// Default crawl rate in requests per second per domain.  Default: `0.2`.
     pub default_requests_per_second: f64,
+    /// Number of proxy slots in the rotation pool.  Default: `50`.
     pub proxy_pool_size: usize,
 }
 
@@ -44,53 +90,137 @@ impl AppConfig {
     /// Load configuration from environment variables.
     /// Call `dotenvy::dotenv().ok()` before this if you want .env support.
     pub fn from_env() -> Result<Self> {
+        log_deprecated_env_key_warnings();
+
         Ok(Self {
-            database_url: require_env("DATABASE_URL")?,
-            redis_url: env_or("REDIS_URL", "redis://127.0.0.1:6379"),
-            nats_url: env_or("NATS_URL", "nats://127.0.0.1:4222"),
-            minio_url: env_or("MINIO_URL", "http://127.0.0.1:9000"),
-            minio_bucket: env_or("MINIO_BUCKET", "apexintel"),
+            database_url: require_env(env::DATABASE_URL)?,
+            redis_url: env_or(env::REDIS_URL, "redis://127.0.0.1:6379"),
+            nats_url: env_or(env::NATS_URL, "nats://127.0.0.1:4222"),
+            minio_url: env_or(env::MINIO_URL, "http://127.0.0.1:9000"),
+            minio_bucket: env_or(env::MINIO_BUCKET, "apexintel"),
 
-            google_api_key: opt_env("GOOGLE_API_KEY"),
-            google_search_engine_id: opt_env("GOOGLE_SEARCH_ENGINE_ID"),
-            nexar_client_id: opt_env("NEXAR_CLIENT_ID"),
-            nexar_client_secret: opt_env("NEXAR_CLIENT_SECRET"),
-            mouser_api_key: opt_env("MOUSER_API_KEY"),
-            digikey_client_id: opt_env("DIGIKEY_CLIENT_ID"),
+            google_api_key: opt_env(env::GOOGLE_API_KEY),
+            google_search_engine_id: opt_env(env::GOOGLE_SEARCH_ENGINE_ID),
+            nexar_client_id: opt_env(env::NEXAR_CLIENT_ID),
+            nexar_client_secret: opt_env(env::NEXAR_CLIENT_SECRET),
+            mouser_api_key: opt_env(env::MOUSER_API_KEY),
+            digikey_client_id: opt_env(env::DIGIKEY_CLIENT_ID),
 
-            llm_base_url: opt_env("LLM_BASE_URL"),
-            llm_api_key: opt_env("LLM_API_KEY"),
-            llm_model: env_or("LLM_MODEL", "Qwen3-Next-80B-A3B-Instruct-Q4_K_M"),
+            llm_base_url: opt_env(env::LLM_BASE_URL),
+            llm_api_key: opt_env(env::LLM_API_KEY),
+            llm_model: env_or(env::LLM_MODEL, "Qwen3-30B-A3B-Q4_K_M"),
 
-            smtp_url: opt_env("SMTP_URL"),
+            smtp_url: opt_env(env::SMTP_URL),
 
-            enable_proxy_rotation: env_or("ENABLE_PROXY_ROTATION", "false")
-                .parse()
-                .unwrap_or(false),
-            enable_headless_browser: env_or("ENABLE_HEADLESS_BROWSER", "false")
-                .parse()
-                .unwrap_or(false),
+            enable_proxy_rotation: parse_bool_env(env::ENABLE_PROXY_ROTATION, false)?,
+            enable_headless_browser: parse_bool_env(env::ENABLE_HEADLESS_BROWSER, false)?,
 
-            crawl_interval_secs: env_or("CRAWL_INTERVAL_SECS", "21600")
-                .parse()
-                .unwrap_or(21600),
-            nightly_hour_utc: env_or("NIGHTLY_HOUR_UTC", "2")
-                .parse()
-                .unwrap_or(2),
-            weekly_day: env_or("WEEKLY_DAY", "0").parse().unwrap_or(0),
+            crawl_interval_secs: parse_u64_env(env::CRAWL_INTERVAL_SECS, 21600)?,
+            nightly_hour_utc: parse_u32_env(env::NIGHTLY_HOUR_UTC, 2)?.min(23),
+            weekly_day: parse_u32_env(env::WEEKLY_DAY, 0)?.min(6),
 
-            default_requests_per_second: env_or("DEFAULT_RPS", "0.2")
-                .parse()
-                .unwrap_or(0.2),
-            proxy_pool_size: env_or("PROXY_POOL_SIZE", "50")
-                .parse()
-                .unwrap_or(50),
+            default_requests_per_second: {
+                let rps = parse_f64_env(env::DEFAULT_RPS, 0.2)?;
+                if rps.is_finite() && rps > 0.0 { rps } else { 0.2 }
+            },
+            proxy_pool_size: parse_usize_env(env::PROXY_POOL_SIZE, 50)?.max(1),
         })
+    }
+
+    /// Validate that all numeric fields are within their valid operating ranges.
+    ///
+    /// Checks invariants that `from_env` cannot fully enforce due to type
+    /// coercions (e.g. `crawl_interval_secs` clamping).  Call this immediately
+    /// after `from_env()` at service startup to produce a full list of problems
+    /// rather than failing on the first misconfigured field.
+    ///
+    /// Returns an empty `Vec` when the config is valid.
+    ///
+    /// # Valid ranges
+    /// | Field                      | Constraint    | Rationale                               |
+    /// |---------------------------|---------------|-----------------------------------------|
+    /// | `database_url`            | non-empty     | Required for all DB operations          |
+    /// | `crawl_interval_secs`     | `>= 60`       | Prevents accidental DoS of target sites |
+    /// | `nightly_hour_utc`        | `<= 23`       | Valid 24-hour clock                     |
+    /// | `weekly_day`              | `<= 6`        | Sun=0 … Sat=6                           |
+    /// | `default_requests_per_second` | `> 0.0`   | Must be a positive rate                 |
+    /// | `proxy_pool_size`         | `>= 1`        | At least one proxy slot required        |
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        if self.database_url.trim().is_empty() {
+            errors.push("AppConfig.database_url must not be empty".to_string());
+        }
+        if self.crawl_interval_secs < 60 {
+            errors.push(format!(
+                "AppConfig.crawl_interval_secs = {} must be >= 60 (prevents accidental crawl flood)",
+                self.crawl_interval_secs
+            ));
+        }
+        if self.nightly_hour_utc > 23 {
+            errors.push(format!(
+                "AppConfig.nightly_hour_utc = {} must be in [0, 23]",
+                self.nightly_hour_utc
+            ));
+        }
+        if self.weekly_day > 6 {
+            errors.push(format!(
+                "AppConfig.weekly_day = {} must be in [0, 6] (Sun=0, Sat=6)",
+                self.weekly_day
+            ));
+        }
+        if !self.default_requests_per_second.is_finite() || self.default_requests_per_second <= 0.0 {
+            errors.push(format!(
+                "AppConfig.default_requests_per_second = {} must be a positive finite number",
+                self.default_requests_per_second
+            ));
+        }
+        if self.proxy_pool_size < 1 {
+            errors.push(format!(
+                "AppConfig.proxy_pool_size = {} must be >= 1",
+                self.proxy_pool_size
+            ));
+        }
+
+        errors
+    }
+}
+
+/// Deprecated environment keys and their replacement keys (B298).
+const DEPRECATED_ENV_KEYS: [(&str, &str); 7] = [
+    ("DB_URL", env::DATABASE_URL),
+    ("REDIS_URI", env::REDIS_URL),
+    ("NATS_URI", env::NATS_URL),
+    ("CRAWL_INTERVAL", env::CRAWL_INTERVAL_SECS),
+    ("NIGHTLY_HOUR", env::NIGHTLY_HOUR_UTC),
+    ("DEFAULT_REQUESTS_PER_SECOND", env::DEFAULT_RPS),
+    ("PROXY_ROTATION_ENABLED", env::ENABLE_PROXY_ROTATION),
+];
+
+fn deprecated_env_key_warnings() -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (deprecated, replacement) in DEPRECATED_ENV_KEYS {
+        if std::env::var_os(deprecated).is_some() {
+            warnings.push(format!(
+                "deprecated config key '{}' detected; use '{}' instead",
+                deprecated, replacement
+            ));
+        }
+    }
+    warnings
+}
+
+fn log_deprecated_env_key_warnings() {
+    for warning in deprecated_env_key_warnings() {
+        tracing::warn!("{warning}");
     }
 }
 
 fn require_env(key: &str) -> Result<String> {
-    std::env::var(key).map_err(|_| ApexError::Config(format!("missing required env var: {key}")))
+    std::env::var(key).map_err(|_| ApexError::config_with_hint(
+        format!("missing required env var: {key}"),
+        "set the variable in the environment or .env file",
+    ))
 }
 
 fn opt_env(key: &str) -> Option<String> {
@@ -99,6 +229,66 @@ fn opt_env(key: &str) -> Option<String> {
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn parse_bool_env(key: &str, default: bool) -> Result<bool> {
+    match std::env::var(key) {
+        Ok(value) => value
+            .parse::<bool>()
+            .map_err(|_| ApexError::config_with_hint(
+                format!("invalid bool for {key}"),
+                "expected 'true' or 'false'",
+            )),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_u64_env(key: &str, default: u64) -> Result<u64> {
+    match std::env::var(key) {
+        Ok(value) => value
+            .parse::<u64>()
+            .map_err(|_| ApexError::config_with_hint(
+                format!("invalid u64 for {key}"),
+                "provide a positive integer",
+            )),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_u32_env(key: &str, default: u32) -> Result<u32> {
+    match std::env::var(key) {
+        Ok(value) => value
+            .parse::<u32>()
+            .map_err(|_| ApexError::config_with_hint(
+                format!("invalid u32 for {key}"),
+                "provide a non-negative integer",
+            )),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_usize_env(key: &str, default: usize) -> Result<usize> {
+    match std::env::var(key) {
+        Ok(value) => value
+            .parse::<usize>()
+            .map_err(|_| ApexError::config_with_hint(
+                format!("invalid usize for {key}"),
+                "provide a non-negative integer",
+            )),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_f64_env(key: &str, default: f64) -> Result<f64> {
+    match std::env::var(key) {
+        Ok(value) => value
+            .parse::<f64>()
+            .map_err(|_| ApexError::config_with_hint(
+                format!("invalid f64 for {key}"),
+                "provide a finite number",
+            )),
+        Err(_) => Ok(default),
+    }
 }
 
 #[cfg(test)]
@@ -157,9 +347,79 @@ mod tests {
         std::env::set_var("DATABASE_URL", "postgres://test:test@localhost/test");
         let cfg = AppConfig::from_env().unwrap();
         assert_eq!(cfg.database_url, "postgres://test:test@localhost/test");
-        assert_eq!(cfg.llm_model, "Qwen3-Next-80B-A3B-Instruct-Q4_K_M");
+        assert_eq!(cfg.llm_model, "Qwen3-30B-A3B-Q4_K_M");
         assert_eq!(cfg.crawl_interval_secs, 21600);
         assert!(!cfg.enable_proxy_rotation);
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_deprecated_env_key_warnings_detects_old_keys() {
+        std::env::set_var("DB_URL", "postgres://old-style");
+        std::env::set_var("NIGHTLY_HOUR", "3");
+
+        let warnings = deprecated_env_key_warnings();
+        assert!(warnings.iter().any(|w| w.contains("DB_URL") && w.contains("DATABASE_URL")));
+        assert!(warnings.iter().any(|w| w.contains("NIGHTLY_HOUR") && w.contains("NIGHTLY_HOUR_UTC")));
+
+        std::env::remove_var("DB_URL");
+        std::env::remove_var("NIGHTLY_HOUR");
+    }
+
+    // B291: AppConfig::validate
+    #[test]
+    fn test_app_config_valid_production_config_passes() {
+        std::env::set_var("DATABASE_URL", "postgres://user:pass@db.example.com/apex");
+        let cfg = AppConfig::from_env().unwrap();
+        assert!(
+            cfg.validate().is_empty(),
+            "a properly loaded config must pass validation"
+        );
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_app_config_empty_database_url_is_invalid() {
+        // Construct a config directly to bypass require_env
+        std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
+        let mut cfg = AppConfig::from_env().unwrap();
+        cfg.database_url = String::new();
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("database_url")));
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_app_config_crawl_interval_below_60_is_invalid() {
+        std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
+        let mut cfg = AppConfig::from_env().unwrap();
+        cfg.crawl_interval_secs = 30;
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("crawl_interval_secs")));
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_app_config_rps_zero_is_invalid() {
+        std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
+        let mut cfg = AppConfig::from_env().unwrap();
+        cfg.default_requests_per_second = 0.0;
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("default_requests_per_second")));
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[test]
+    fn test_app_config_multiple_invalid_fields_all_reported() {
+        std::env::set_var("DATABASE_URL", "postgres://x@localhost/test");
+        let mut cfg = AppConfig::from_env().unwrap();
+        cfg.database_url = String::new();
+        cfg.crawl_interval_secs = 0;
+        cfg.default_requests_per_second = -1.0;
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("database_url")));
+        assert!(errs.iter().any(|e| e.contains("crawl_interval_secs")));
+        assert!(errs.iter().any(|e| e.contains("default_requests_per_second")));
         std::env::remove_var("DATABASE_URL");
     }
 }

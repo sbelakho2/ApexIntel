@@ -6,17 +6,43 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// Default observation window in days for contingency tables (B220).
+pub const DEFAULT_WINDOW_DAYS: i32 = 30;
+
+/// Maximum sweep lag to prevent extremely long runtimes (B222).
+pub const MAX_SWEEP_LAG_DAYS: i32 = 365;
+
 // ────────────────────────────────────────────
 // Config & types
 // ────────────────────────────────────────────
 
+/// Configuration for the causal signal miner (B289).
+///
+/// All fields have well-tested defaults via [`Default`]; override only when you
+/// have domain-specific knowledge that warrants it.
+///
+/// # Default values
+/// | Field               | Default | Rationale                                                   |
+/// |--------------------|---------|------------------------------------------------------------|
+/// | `max_lag_days`    | 90      | Covers a full business quarter; longer lags are noisy      |
+/// | `min_effect`      | 1.5     | Requires at least 50% uplift in odds ratio                 |
+/// | `max_p`           | 0.01    | 1% significance threshold (stricter than the usual 5%)     |
+/// | `min_stability`   | 0.6     | 60% cross-time-slice consistency required                  |
+/// | `time_splits`     | 4       | Quarterly splits for stability validation                  |
+/// | `entity_min_count`| 5       | Exclude pairs with too few observations                     |
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinerConfig {
+    /// Maximum causal lag in calendar days to evaluate.  Default: `90`.
     pub max_lag_days: i32,
-    pub min_effect: f64,    // minimum odds ratio
+    /// Minimum required odds ratio (effect size).  Default: `1.5`.
+    pub min_effect: f64,
+    /// Maximum p-value for the Fisher exact test.  Default: `0.01`.
     pub max_p: f64,
+    /// Minimum cross-split stability score (0–1).  Default: `0.6`.
     pub min_stability: f64,
+    /// Number of time splits used for stability validation.  Default: `4`.
     pub time_splits: usize,
+    /// Minimum entity count required for a valid contingency table.  Default: `5`.
     pub entity_min_count: usize,
 }
 
@@ -30,6 +56,66 @@ impl Default for MinerConfig {
             time_splits: 4,
             entity_min_count: 5,
         }
+    }
+}
+
+impl MinerConfig {
+    /// Validate that all numeric fields are within their valid operating ranges.
+    ///
+    /// Returns an empty `Vec` when the config is valid.  Each entry in a
+    /// non-empty return value is a human-readable error string suitable for
+    /// logging at startup or returning from an API validation endpoint.
+    ///
+    /// # Valid ranges
+    /// | Field              | Constraint                  | Rationale                          |
+    /// |-------------------|-----------------------------|------------------------------------||
+    /// | `max_lag_days`    | `>= 1`                      | At least one day lag required      |
+    /// | `min_effect`      | `> 1.0`                     | Effect must exceed baseline         |
+    /// | `max_p`           | `(0.0, 1.0]`                | Valid probability                   |
+    /// | `min_stability`   | `[0.0, 1.0]`                | Fraction; unity means perfectly stable |
+    /// | `time_splits`     | `>= 2`                      | Need ≥2 splits for cross-validation |
+    /// | `entity_min_count`| `>= 1`                      | At least one entity required        |
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        if self.max_lag_days < 1 {
+            errors.push(format!(
+                "MinerConfig.max_lag_days = {} must be >= 1",
+                self.max_lag_days
+            ));
+        }
+        if self.min_effect <= 1.0 || !self.min_effect.is_finite() {
+            errors.push(format!(
+                "MinerConfig.min_effect = {} must be > 1.0 (represents uplift over baseline)",
+                self.min_effect
+            ));
+        }
+        if !self.max_p.is_finite() || self.max_p <= 0.0 || self.max_p > 1.0 {
+            errors.push(format!(
+                "MinerConfig.max_p = {} must be in (0.0, 1.0]",
+                self.max_p
+            ));
+        }
+        if !self.min_stability.is_finite() || self.min_stability < 0.0 || self.min_stability > 1.0 {
+            errors.push(format!(
+                "MinerConfig.min_stability = {} must be in [0.0, 1.0]",
+                self.min_stability
+            ));
+        }
+        if self.time_splits < 2 {
+            errors.push(format!(
+                "MinerConfig.time_splits = {} must be >= 2 for meaningful cross-validation",
+                self.time_splits
+            ));
+        }
+        if self.entity_min_count < 1 {
+            errors.push(format!(
+                "MinerConfig.entity_min_count = {} must be >= 1",
+                self.entity_min_count
+            ));
+        }
+
+        errors
     }
 }
 
@@ -97,6 +183,11 @@ pub fn build_contingency(
         .copied()
         .collect();
 
+    // Compute study observation period from signal timestamps for c-cell symmetry
+    let all_signal_times: Vec<i64> = signal_map.values().flat_map(|v| v.iter().copied()).collect();
+    let study_start = all_signal_times.iter().copied().min().unwrap_or(0) + lag_secs;
+    let study_end = all_signal_times.iter().copied().max().unwrap_or(0) + lag_secs + window_secs;
+
     let (mut a, mut b, mut c, mut d) = (0u64, 0u64, 0u64, 0u64);
 
     for entity in &all_entities {
@@ -109,14 +200,14 @@ pub fn build_contingency(
             outcome_map.get(*entity).map_or(false, |o_ts| {
                 o_ts.iter().any(|ot| {
                     s_ts.iter()
-                        .any(|st| (*ot - (st + lag_secs)).abs() <= window_secs)
+                        .any(|st| *ot >= st + lag_secs && *ot <= st + lag_secs + window_secs)
                 })
             })
         } else {
-            // No signal: check if entity has any outcome at all
+            // No signal: require outcome within the study observation period
             outcome_map
                 .get(*entity)
-                .map_or(false, |o_ts| !o_ts.is_empty())
+                .map_or(false, |o_ts| o_ts.iter().any(|ot| *ot >= study_start && *ot <= study_end))
         };
 
         match (has_signal, has_outcome_in_window) {
@@ -127,9 +218,16 @@ pub fn build_contingency(
         }
     }
 
-    // Account for background population not present in data
+    // Account for background population not present in data.
+    // If total_entities is smaller than observed entities, ignore it and use observed size.
     if total_entities > all_entities.len() {
         d += (total_entities - all_entities.len()) as u64;
+    } else if total_entities > 0 && total_entities < all_entities.len() {
+        tracing::warn!(
+            total_entities,
+            observed_entities = all_entities.len(),
+            "build_contingency: total_entities smaller than observed; using observed entities"
+        );
     }
 
     (a, b, c, d)
@@ -140,7 +238,7 @@ pub fn odds_ratio(a: u64, b: u64, c: u64, d: u64) -> f64 {
     let num = (a as f64) * (d as f64);
     let den = (b as f64) * (c as f64);
     if den < 1e-12 {
-        return f64::MAX;
+        return 100.0; // cap instead of f64::MAX to prevent Infinity propagation in rank scoring
     }
     num / den
 }
@@ -161,6 +259,7 @@ pub fn compute_stability(
     lag_days: i32,
     splits: usize,
 ) -> f64 {
+    const MIN_VALID_TIME_SLICES: usize = 2;
     if outcomes.is_empty() || signals.is_empty() || splits == 0 {
         return 0.0;
     }
@@ -187,7 +286,8 @@ pub fn compute_stability(
 
     for i in 0..splits {
         let start = min_ts + i as i64 * split_size;
-        let end = start + split_size;
+        // Last split extends to max_ts+1 to include boundary events.
+        let end = if i == splits - 1 { max_ts + 1 } else { start + split_size };
 
         let split_outcomes: Vec<EventRecord> = outcomes
             .iter()
@@ -218,6 +318,15 @@ pub fn compute_stability(
         return 0.0;
     }
 
+    if valid_splits < MIN_VALID_TIME_SLICES {
+        tracing::warn!(
+            requested_splits = splits,
+            valid_slices = valid_splits,
+            min_required = MIN_VALID_TIME_SLICES,
+            "compute_stability: valid time slices below minimum required"
+        );
+    }
+
     positive_splits as f64 / valid_splits as f64
 }
 
@@ -235,15 +344,17 @@ pub fn entity_coverage(signals: &[EventRecord], all_entity_count: usize) -> f64 
 // ────────────────────────────────────────────
 
 /// Sweep lags to find the best one for a signal-outcome pair.
+/// `max_lag_days` is clamped to `MAX_SWEEP_LAG_DAYS` to prevent excessive runtimes (B222).
 pub fn sweep_lags(
     outcomes: &[EventRecord],
     signals: &[EventRecord],
     config: &MinerConfig,
     window_days: i32,
 ) -> Option<PatternCandidate> {
+    let effective_max = config.max_lag_days.min(MAX_SWEEP_LAG_DAYS); // B222
     let mut best: Option<(i32, f64, f64, (u64, u64, u64, u64))> = None;
 
-    for lag in -config.max_lag_days..=config.max_lag_days {
+    for lag in -effective_max..=effective_max {
         let (a, b, c, d) = build_contingency(outcomes, signals, lag, window_days, 0);
         let total = a + b + c + d;
         if total < 20 {
@@ -318,9 +429,14 @@ pub fn rank_candidates(candidates: &mut [PatternCandidate]) {
     candidates.sort_by(|a, b| {
         let score_a = a.effect_size * a.stability * (1.0 - a.p_value);
         let score_b = b.effect_size * b.stability * (1.0 - b.p_value);
+        // Primary: composite score DESC
         score_b
             .partial_cmp(&score_a)
             .unwrap_or(std::cmp::Ordering::Equal)
+            // Secondary: outcome ASC — deterministic tiebreak (B292)
+            .then_with(|| a.outcome.cmp(&b.outcome))
+            // Tertiary: signals join ASC — fully deterministic across equal-score candidates
+            .then_with(|| a.signals.join(",").cmp(&b.signals.join(",")))
     });
 }
 
@@ -376,6 +492,30 @@ mod tests {
         assert_eq!(cfg.entity_min_count, 5);
     }
 
+    // B289: MinerConfig default stability
+    #[test]
+    fn test_miner_config_default_is_stable_across_two_calls() {
+        let a = MinerConfig::default();
+        let b = MinerConfig::default();
+        assert_eq!(a.max_lag_days, b.max_lag_days);
+        assert!((a.min_effect - b.min_effect).abs() < f64::EPSILON);
+        assert!((a.max_p - b.max_p).abs() < f64::EPSILON);
+        assert!((a.min_stability - b.min_stability).abs() < f64::EPSILON);
+        assert_eq!(a.time_splits, b.time_splits);
+        assert_eq!(a.entity_min_count, b.entity_min_count);
+    }
+
+    #[test]
+    fn test_miner_config_default_values_are_in_valid_ranges() {
+        let cfg = MinerConfig::default();
+        assert!(cfg.max_lag_days > 0, "max_lag_days must be positive");
+        assert!(cfg.min_effect > 1.0, "min_effect must be > 1.0 (odds ratio uplift)");
+        assert!(cfg.max_p > 0.0 && cfg.max_p < 1.0, "max_p must be in (0,1)");
+        assert!(cfg.min_stability >= 0.0 && cfg.min_stability <= 1.0, "min_stability in [0,1]");
+        assert!(cfg.time_splits >= 2, "time_splits must be >= 2 for meaningful cross-validation");
+        assert!(cfg.entity_min_count >= 1, "entity_min_count must be >= 1");
+    }
+
     #[test]
     fn test_build_contingency_basic() {
         // Entity A: has signal and outcome within window
@@ -420,8 +560,9 @@ mod tests {
 
     #[test]
     fn test_odds_ratio_perfect() {
-        // All signal entities have outcome, no non-signal entities do
-        assert_eq!(odds_ratio(10, 0, 0, 10), f64::MAX);
+        // All signal entities have outcome, no non-signal entities do.
+        // Returns 100.0 (capped) instead of f64::MAX to prevent Infinity in rank scoring.
+        assert_eq!(odds_ratio(10, 0, 0, 10), 100.0);
     }
 
     #[test]
@@ -582,5 +723,263 @@ mod tests {
         let cfg = MinerConfig::default();
         let result = sweep_lags(&[], &[], &cfg, 30);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_sweep_lags_no_valid_lag_exists() {
+        let outcomes: Vec<EventRecord> = (0..30)
+            .map(|i| (format!("E{}", i), i as i64 * 86400))
+            .collect();
+        let signals: Vec<EventRecord> = (0..30)
+            .map(|i| (format!("S{}", i), i as i64 * 86400))
+            .collect();
+
+        let mut cfg = MinerConfig::default();
+        cfg.min_effect = 50.0;
+        cfg.max_p = 1e-10;
+
+        let result = sweep_lags(&outcomes, &signals, &cfg, 30);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_contingency_total_entities_smaller_than_observed_uses_observed() {
+        let outcomes = vec![("A".to_string(), 0i64), ("B".to_string(), 0i64)];
+        let signals = vec![("A".to_string(), 0i64), ("C".to_string(), 0i64)];
+
+        let observed = build_contingency(&outcomes, &signals, 0, 30, 0);
+        let undersized = build_contingency(&outcomes, &signals, 0, 30, 1);
+
+        assert_eq!(observed, undersized, "undersized total_entities must not distort counts");
+    }
+
+    // ── B216: build_contingency with empty data ──────────
+    #[test]
+    fn test_build_contingency_empty_outcomes() {
+        let signals = vec![("A".to_string(), 100i64)];
+        let (a, b, c, d) = build_contingency(&[], &signals, 0, 30, 0);
+        assert_eq!(a, 0);
+        assert_eq!(c, 0);
+        assert!(b >= 1 || d >= 0); // A is signal-only
+    }
+
+    #[test]
+    fn test_build_contingency_empty_signals() {
+        let outcomes = vec![("A".to_string(), 100i64)];
+        let (a, b, c, d) = build_contingency(&outcomes, &[], 0, 30, 0);
+        assert_eq!(a, 0);
+        assert_eq!(b, 0);
+    }
+
+    #[test]
+    fn test_build_contingency_both_empty() {
+        let (a, b, c, d) = build_contingency(&[], &[], 0, 30, 0);
+        assert_eq!((a, b, c, d), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_build_contingency_both_empty_with_population() {
+        let (a, b, c, d) = build_contingency(&[], &[], 0, 30, 100);
+        assert_eq!(a, 0);
+        assert_eq!(d, 100); // all population goes to d
+    }
+
+    // ── B218: odds_ratio small denominator ──────────
+    #[test]
+    fn test_odds_ratio_zero_denominator_capped() {
+        // b=0, c=0 → den near zero, should return 100.0 (not infinity)
+        let or = odds_ratio(5, 0, 0, 10);
+        assert_eq!(or, 100.0);
+        assert!(or.is_finite());
+    }
+
+    #[test]
+    fn test_odds_ratio_all_zeros() {
+        let or = odds_ratio(0, 0, 0, 0);
+        assert!(or.is_finite());
+    }
+
+    // ── B219: compute_stability small splits ──────────
+    #[test]
+    fn test_compute_stability_one_split() {
+        let outcomes: Vec<EventRecord> = (0..10)
+            .map(|i| (format!("E{}", i), i as i64 * 86400 * 10))
+            .collect();
+        let signals: Vec<EventRecord> = (0..10)
+            .map(|i| (format!("E{}", i), i as i64 * 86400 * 10))
+            .collect();
+        let stability = compute_stability(&outcomes, &signals, 0, 1);
+        // With 1 split, stability is 0.0 or 1.0
+        assert!(stability >= 0.0 && stability <= 1.0);
+    }
+
+    #[test]
+    fn test_compute_stability_two_splits() {
+        let outcomes: Vec<EventRecord> = (0..20)
+            .map(|i| (format!("E{}", i), i as i64 * 86400 * 5))
+            .collect();
+        let signals: Vec<EventRecord> = (0..20)
+            .map(|i| (format!("E{}", i), i as i64 * 86400 * 5))
+            .collect();
+        let stability = compute_stability(&outcomes, &signals, 0, 2);
+        assert!(stability >= 0.0 && stability <= 1.0);
+    }
+
+    // ── B220: DEFAULT_WINDOW_DAYS constant ──────────
+    #[test]
+    fn test_default_window_days_constant() {
+        assert_eq!(DEFAULT_WINDOW_DAYS, 30);
+    }
+
+    // ── B221: entity_coverage with zero entities ──────────
+    #[test]
+    fn test_entity_coverage_zero_total() {
+        assert_eq!(entity_coverage(&[("A".to_string(), 1)], 0), 0.0);
+    }
+
+    #[test]
+    fn test_entity_coverage_zero_signals_zero_total() {
+        assert_eq!(entity_coverage(&[], 0), 0.0);
+    }
+
+    // ── B222: sweep_lags large max_lag_days clamped ──────────
+    #[test]
+    fn test_sweep_lags_large_max_lag_clamped() {
+        let mut cfg = MinerConfig::default();
+        cfg.max_lag_days = 10_000; // exceeds MAX_SWEEP_LAG_DAYS
+        // Should not panic or take forever — clamped to MAX_SWEEP_LAG_DAYS
+        let result = sweep_lags(&[], &[], &cfg, 30);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_max_sweep_lag_days_constant() {
+        assert_eq!(MAX_SWEEP_LAG_DAYS, 365);
+    }
+
+    // ── B223: pattern_emerges is not exposed publicly but we test
+    //    through compute_stability with small counts ──────────
+    #[test]
+    fn test_compute_stability_very_few_events() {
+        // Only 2 events each — too few per split
+        let outcomes = vec![("A".to_string(), 0i64), ("B".to_string(), 86400)];
+        let signals = vec![("A".to_string(), 0i64), ("B".to_string(), 86400)];
+        let stability = compute_stability(&outcomes, &signals, 0, 4);
+        assert_eq!(stability, 0.0);
+    }
+
+    // B291: MinerConfig::validate
+    #[test]
+    fn test_miner_config_default_passes_validation() {
+        assert!(
+            MinerConfig::default().validate().is_empty(),
+            "default config must be valid out of the box"
+        );
+    }
+
+    #[test]
+    fn test_miner_config_zero_lag_is_invalid() {
+        let cfg = MinerConfig { max_lag_days: 0, ..MinerConfig::default() };
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("max_lag_days")));
+    }
+
+    #[test]
+    fn test_miner_config_min_effect_exactly_one_is_invalid() {
+        let cfg = MinerConfig { min_effect: 1.0, ..MinerConfig::default() };
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("min_effect")));
+    }
+
+    #[test]
+    fn test_miner_config_max_p_zero_is_invalid() {
+        let cfg = MinerConfig { max_p: 0.0, ..MinerConfig::default() };
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("max_p")));
+    }
+
+    #[test]
+    fn test_miner_config_min_stability_above_one_is_invalid() {
+        let cfg = MinerConfig { min_stability: 1.01, ..MinerConfig::default() };
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("min_stability")));
+    }
+
+    #[test]
+    fn test_miner_config_one_time_split_is_invalid() {
+        let cfg = MinerConfig { time_splits: 1, ..MinerConfig::default() };
+        let errs = cfg.validate();
+        assert!(errs.iter().any(|e| e.contains("time_splits")));
+    }
+
+    #[test]
+    fn test_miner_config_all_invalid_fields_all_reported() {
+        let cfg = MinerConfig {
+            max_lag_days: 0,
+            min_effect: 0.5,
+            max_p: 1.5,
+            min_stability: -0.1,
+            time_splits: 1,
+            entity_min_count: 0,
+        };
+        let errs = cfg.validate();
+        // Every broken field must appear in the error list
+        assert!(errs.iter().any(|e| e.contains("max_lag_days")));
+        assert!(errs.iter().any(|e| e.contains("min_effect")));
+        assert!(errs.iter().any(|e| e.contains("max_p")));
+        assert!(errs.iter().any(|e| e.contains("min_stability")));
+        assert!(errs.iter().any(|e| e.contains("time_splits")));
+        assert!(errs.iter().any(|e| e.contains("entity_min_count")));
+    }
+
+    // B292: rank_candidates deterministic tie-breaking
+    #[test]
+    fn test_rank_candidates_equal_scores_ordered_by_outcome_asc() {
+        // Two candidates with identical computed score (effect × stability × (1 - p))
+        // must be ordered by outcome ASC, then signals ASC
+        let make = |outcome: &str, sig: &str| PatternCandidate {
+            outcome: outcome.to_string(),
+            signals: vec![sig.to_string()],
+            best_lag_days: 7,
+            effect_size: 2.0,
+            p_value: 0.01,
+            q_value: 0.01,
+            stability: 0.8,
+            entity_coverage: 0.5,
+            segments: vec![],
+            contingency: (10, 5, 5, 80),
+        };
+        let mut candidates = vec![
+            make("zzz_outcome", "signal_a"),  // same score, should sort last
+            make("aaa_outcome", "signal_a"),  // same score, should sort first
+        ];
+        rank_candidates(&mut candidates);
+        assert_eq!(
+            candidates[0].outcome, "aaa_outcome",
+            "with equal scores, lower outcome string must come first"
+        );
+    }
+
+    #[test]
+    fn test_rank_candidates_deterministic_across_calls() {
+        let make = |outcome: &str, effect: f64| PatternCandidate {
+            outcome: outcome.to_string(),
+            signals: vec!["sig".to_string()],
+            best_lag_days: 7,
+            effect_size: effect,
+            p_value: 0.01,
+            q_value: 0.01,
+            stability: 0.8,
+            entity_coverage: 0.5,
+            segments: vec![],
+            contingency: (10, 5, 5, 80),
+        };
+        let mut c1 = vec![make("out_b", 2.0), make("out_a", 2.0)];
+        let mut c2 = vec![make("out_b", 2.0), make("out_a", 2.0)];
+        rank_candidates(&mut c1);
+        rank_candidates(&mut c2);
+        let outcomes1: Vec<&str> = c1.iter().map(|c| c.outcome.as_str()).collect();
+        let outcomes2: Vec<&str> = c2.iter().map(|c| c.outcome.as_str()).collect();
+        assert_eq!(outcomes1, outcomes2, "rank_candidates must be deterministic");
     }
 }

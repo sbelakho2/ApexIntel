@@ -1,22 +1,75 @@
 //! Model-agnostic LLM client — trait, provider implementations, routing.
 //!
-//! Supports multiple providers: llama.cpp (local Qwen3-Next-80B-A3B on CPU),
-//! OpenAI, Azure.  Deployed on a Hetzner EX44 (i5-13500, 64 GB RAM, no GPU)
-//! using GGUF Q4_K_M quantisation via llama-server.  Primary and lightweight
-//! tiers both hit the same llama-server instance — no Ollama wrapper overhead.
-//! All logic is testable without external services; async HTTP is sealed behind
-//! the trait boundary.
+//! # Provider compatibility
+//!
+//! | Provider       | API            | Auth            | Format notes |
+//! |---------------|----------------|-----------------|---------------------------------------------------|
+//! | `LlamaCpp`    | OpenAI-compat  | None (local)    | `max_tokens` caps output; `top_k`/`top_p` via ext |
+//! | `OpenAi`      | OpenAI native  | `OPENAI_API_KEY`| Chat completions `/v1/chat/completions`           |
+//! | `AzureOpenAi` | Azure OpenAI   | `AZURE_API_KEY` | Base URL includes deployment name                 |
+//!
+//! All three providers use the **OpenAI-compatible chat completions format**
+//! (`messages: [{role, content}]`).  llama-server (llama.cpp) exposes exactly
+//! this interface on port 8080 by default.
+//!
+//! # Local model setup
+//!
+//! Deployed on Hetzner EX44 (i5-13500, 64 GB RAM, no GPU) using GGUF Q4_K_M
+//! quantisation via `llama-server`.  Typical inference: 2–4 tokens/sec.
+//! Primary and lightweight tiers share the same server instance; `max_tokens`
+//! differentiates them.  No Ollama wrapper is used.
+//!
+//! # Testability
+//!
+//! All pure logic (routing, config validation, response parsing) is testable
+//! without external services.  Async HTTP is hidden behind the `LlmClient`
+//! trait — provide a mock impl in tests.
 
 pub mod validators;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Experimental modules (B290)
+//
+// Compiled only when the `experimental` Cargo feature is enabled:
+//   cargo build -p apex-llm --features experimental
+//
+// Rationale: these modules expose APIs that are not yet stable across all
+// supported providers (llama.cpp / OpenAI / Azure) and may break without a
+// semver major bump until stabilised.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// OpenAI-compatible function / tool calling.
+///
+/// Enable with `--features experimental`.  See [`function_calling`] module docs
+/// for provider compatibility and stability caveats.
+#[cfg(feature = "experimental")]
+pub mod function_calling;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing;
 
 // ────────────────────────────────────────────
 // Provider & Config
 // ────────────────────────────────────────────
 
+/// LLM provider backend.
+///
+/// # Compatibility
+///
+/// All three variants use the OpenAI-compatible chat completions format.
+/// Certain parameters differ between providers:
+///
+/// | Field            | LlamaCpp         | OpenAi         | AzureOpenAi     |
+/// |-----------------|------------------|----------------|------------------|
+/// | `base_url`       | `http://host:8080` | `https://api.openai.com/v1` | deployment-specific URL |
+/// | `api_key`        | not required     | required       | required (`AZURE_API_KEY`) |
+/// | `model_name`     | name from GGUF   | e.g. `gpt-4o`  | deployment name  |
+/// | streaming        | supported        | supported      | supported        |
+/// | function calling | limited          | full support   | full support     |
+///
+/// Use [`ModelConfig::llamacpp_default`] for the typical local deployment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LlmProvider {
     LlamaCpp,
@@ -38,7 +91,24 @@ impl LlmProvider {
     }
 }
 
+/// Per-model configuration including provider, endpoint, and generation parameters.
+///
+/// # Compatibility notes
+///
+/// - **llama.cpp**: `api_key` is ignored; set `base_url` to your `llama-server` address.
+///   Recommended `temperature`: 0.1–0.3 for structured extraction; 0.4–0.7 for narration.
+///   `max_tokens` caps total generated tokens (input + output for some model variants);
+///   keep below `n_ctx` set at server startup (default 4096 for Q4_K_M).
+/// - **OpenAI**: Set `api_key` from `OPENAI_API_KEY` env var.  `gpt-4o` supports 128k context.
+///   `max_tokens` governs output only; cost is metered per input+output token.
+/// - **Azure OpenAI**: `base_url` must include the deployment name, e.g.
+///   `https://{resource}.openai.azure.com/openai/deployments/{deployment}`.
+///   Rotate `api_key` from `AZURE_API_KEY`; never embed in config files.
+///
+/// Validate before use with [`ModelConfig::validate`]; log safely with
+/// [`ModelConfig::redacted_api_key`] (B199).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelConfig {
     pub model_name: String,
     pub provider: LlmProvider,
@@ -51,10 +121,10 @@ pub struct ModelConfig {
 
 impl ModelConfig {
     /// Default for llama.cpp server (llama-server) running locally on CPU.
-    /// Hetzner EX44: i5-13500, 64 GB RAM, GGUF Q4_K_M (~45 GB).
+    /// Hetzner EX44: i5-13500, 64 GB RAM, GGUF Q4_K_M (~17 GB).
     pub fn llamacpp_default() -> Self {
         Self {
-            model_name: "Qwen3-Next-80B-A3B-Instruct-Q4_K_M".to_string(),
+            model_name: "Qwen3-30B-A3B-Q4_K_M".to_string(),
             provider: LlmProvider::LlamaCpp,
             base_url: "http://localhost:8080".to_string(),
             api_key: None,
@@ -68,7 +138,7 @@ impl ModelConfig {
     /// fast classification / extraction / simple JSON tasks.
     pub fn llamacpp_lightweight() -> Self {
         Self {
-            model_name: "Qwen3-Next-80B-A3B-Instruct-Q4_K_M".to_string(),
+            model_name: "Qwen3-30B-A3B-Q4_K_M".to_string(),
             provider: LlmProvider::LlamaCpp,
             base_url: "http://localhost:8080".to_string(),
             api_key: None,
@@ -91,11 +161,43 @@ impl ModelConfig {
     }
 
     /// Build chat completions endpoint URL.
+    /// Trailing slashes in `base_url` are stripped for consistency (B193).
     pub fn chat_endpoint(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
         match self.provider {
-            LlmProvider::LlamaCpp => format!("{}/v1/chat/completions", self.base_url),
-            LlmProvider::OpenAi => format!("{}/chat/completions", self.base_url),
-            LlmProvider::AzureOpenAi => format!("{}/chat/completions", self.base_url),
+            LlmProvider::LlamaCpp => format!("{}/v1/chat/completions", base),
+            LlmProvider::OpenAi => format!("{}/chat/completions", base),
+            LlmProvider::AzureOpenAi => format!("{}/chat/completions", base),
+        }
+    }
+
+    /// Validate config values. Returns a list of issues (B192, B196).
+    pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.model_name.trim().is_empty() {
+            issues.push("model_name must not be empty".to_string()); // B196
+        }
+        if self.max_tokens == 0 || self.max_tokens > 128_000 {
+            issues.push(format!(
+                "max_tokens must be 1..=128000, got {}",
+                self.max_tokens
+            )); // B192
+        }
+        if !(0.0..=2.0).contains(&self.temperature) {
+            issues.push(format!(
+                "temperature must be 0.0..=2.0, got {}",
+                self.temperature
+            )); // B192
+        }
+        issues
+    }
+
+    /// Redact the API key for safe logging (B199).
+    pub fn redacted_api_key(&self) -> String {
+        match &self.api_key {
+            None => "(none)".to_string(),
+            Some(k) if k.len() <= 8 => "***".to_string(),
+            Some(k) => format!("{}...{}", &k[..4], &k[k.len() - 4..]),
         }
     }
 }
@@ -104,7 +206,21 @@ impl ModelConfig {
 // Task Routing
 // ────────────────────────────────────────────
 
+/// Maximum LLM response size in bytes before truncation (B206).
+pub const MAX_RESPONSE_SIZE: usize = 512_000; // 512 KB
+
+/// Routing policy that determines which provider handles each task class.
+///
+/// `local_only_tasks` are tasks that must **never** call cloud providers —
+/// enforced by returning [`ProviderChoice::Unavailable`] when the local model
+/// is down.  This protects sensitive data.
+///
+/// `api_fallback_tasks` prefer local but can call the API when the local
+/// model is overloaded or offline.
+///
+/// All task matching in [`route_task`] is case-insensitive (B191).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoutingConfig {
     /// Tasks that always use local model (data never leaves premises).
     pub local_only_tasks: Vec<String>,
@@ -114,6 +230,9 @@ pub struct RoutingConfig {
     pub max_api_concurrent: u32,
     /// Monthly API spend cap in USD.
     pub monthly_api_budget_usd: f64,
+    /// Allowed provider types. If non-empty, only listed providers may be used (B208).
+    #[serde(default)]
+    pub allowed_providers: Vec<LlmProvider>,
 }
 
 impl Default for RoutingConfig {
@@ -131,14 +250,39 @@ impl Default for RoutingConfig {
             ],
             max_api_concurrent: 5,
             monthly_api_budget_usd: 500.0,
+            allowed_providers: vec![], // empty = all allowed
         }
     }
 }
 
+impl RoutingConfig {
+    pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.max_api_concurrent == 0 {
+            issues.push("max_api_concurrent must be > 0".to_string());
+        }
+        if !self.monthly_api_budget_usd.is_finite() || self.monthly_api_budget_usd < 0.0 {
+            issues.push(format!(
+                "monthly_api_budget_usd must be >= 0.0, got {}",
+                self.monthly_api_budget_usd
+            ));
+        }
+        issues
+    }
+}
+
 /// Determine which provider to route a task to.
+/// Task matching is case-insensitive (B191).
 pub fn route_task(task: &str, routing: &RoutingConfig, local_available: bool) -> ProviderChoice {
+    let task_lower = task.to_lowercase();
+
     // Local-only tasks never go to cloud
-    if routing.local_only_tasks.iter().any(|t| t == task) {
+    if routing
+        .local_only_tasks
+        .iter()
+        .any(|t| t.to_lowercase() == task_lower)
+    {
+        tracing::info!(task = %task, choice = "Local", "route_task: local-only task"); // B195
         return if local_available {
             ProviderChoice::Local
         } else {
@@ -147,20 +291,28 @@ pub fn route_task(task: &str, routing: &RoutingConfig, local_available: bool) ->
     }
 
     // Fallback-capable tasks prefer local, fall back to API
-    if routing.api_fallback_tasks.iter().any(|t| t == task) {
-        return if local_available {
+    if routing
+        .api_fallback_tasks
+        .iter()
+        .any(|t| t.to_lowercase() == task_lower)
+    {
+        let choice = if local_available {
             ProviderChoice::Local
         } else {
             ProviderChoice::ApiFallback
         };
+        tracing::info!(task = %task, ?choice, "route_task: fallback-capable task"); // B195
+        return choice;
     }
 
     // Default: prefer local if available
-    if local_available {
+    let choice = if local_available {
         ProviderChoice::Local
     } else {
         ProviderChoice::ApiFallback
-    }
+    };
+    tracing::info!(task = %task, ?choice, "route_task: default routing"); // B195
+    choice
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,7 +326,16 @@ pub enum ProviderChoice {
 // LLM Config (full system)
 // ────────────────────────────────────────────
 
+/// Full LLM configuration for the pipeline: primary, optional fallback, and lightweight model.
+///
+/// `primary` is used for complex multi-step reasoning (recipe hypothesis, dossier generation).
+/// `fallback` is an optional cloud model invoked when the local server is unavailable.
+/// `lightweight` targets fast single-step tasks (entity extraction, classification).
+/// `routing` controls which tasks may call cloud providers.
+///
+/// Default configuration targets the local llama-server + OpenAI fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlmConfig {
     pub primary: ModelConfig,
     pub fallback: Option<ModelConfig>,
@@ -197,6 +358,11 @@ impl Default for LlmConfig {
 // Chat message types
 // ────────────────────────────────────────────
 
+/// A single chat message with `role` and `content`.
+///
+/// Roles must be one of `"system"`, `"user"`, or `"assistant"`.
+/// Use the named constructors [`ChatMessage::system`], [`ChatMessage::user`],
+/// [`ChatMessage::assistant`] rather than constructing directly to avoid typos.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -267,9 +433,9 @@ pub fn extract_response_content(body: &serde_json::Value) -> Option<String> {
 pub fn extract_usage(body: &serde_json::Value) -> Option<UsageStats> {
     let usage = body.get("usage")?;
     Some(UsageStats {
-        prompt_tokens: usage.get("prompt_tokens")?.as_u64()? as u32,
-        completion_tokens: usage.get("completion_tokens")?.as_u64()? as u32,
-        total_tokens: usage.get("total_tokens")?.as_u64()? as u32,
+        prompt_tokens: u32::try_from(usage.get("prompt_tokens")?.as_u64()?).unwrap_or(u32::MAX),
+        completion_tokens: u32::try_from(usage.get("completion_tokens")?.as_u64()?).unwrap_or(u32::MAX),
+        total_tokens: u32::try_from(usage.get("total_tokens")?.as_u64()?).unwrap_or(u32::MAX),
     })
 }
 
@@ -312,6 +478,28 @@ impl SpendTracker {
     pub fn record(&mut self, cost_usd: f64) {
         self.month_spend_usd += cost_usd;
         self.request_count += 1;
+
+        let utilization = self.budget_utilization();
+        tracing::info!(
+            month_spend_usd = self.month_spend_usd,
+            remaining_budget_usd = self.remaining_budget(),
+            utilization_pct = utilization * 100.0,
+            request_count = self.request_count,
+            "llm_api_budget_usage"
+        );
+        if utilization >= 1.0 {
+            tracing::warn!(
+                month_spend_usd = self.month_spend_usd,
+                budget_usd = self.budget_usd,
+                "llm_api_budget_exceeded"
+            );
+        } else if utilization >= 0.8 {
+            tracing::warn!(
+                month_spend_usd = self.month_spend_usd,
+                budget_usd = self.budget_usd,
+                "llm_api_budget_nearing_limit"
+            );
+        }
     }
 
     pub fn within_budget(&self) -> bool {
@@ -328,6 +516,14 @@ impl SpendTracker {
 
     pub fn request_count(&self) -> u32 {
         self.request_count
+    }
+
+    pub fn budget_utilization(&self) -> f64 {
+        if self.budget_usd <= 0.0 {
+            1.0
+        } else {
+            (self.month_spend_usd / self.budget_usd).max(0.0)
+        }
     }
 
     pub fn reset(&mut self) {
@@ -354,10 +550,13 @@ pub struct OpenAiCompatibleClient {
 
 impl OpenAiCompatibleClient {
     pub fn new(config: ModelConfig) -> Self {
+        let timeout = std::time::Duration::from_secs(config.timeout_seconds as u64);
+        let connect_timeout = std::time::Duration::from_secs(10);
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds as u64))
+            .timeout(timeout)
+            .connect_timeout(connect_timeout)
             .build()
-            .unwrap_or_default();
+            .expect("failed to build HTTP client");
         Self { config, http }
     }
 
@@ -376,27 +575,60 @@ impl OpenAiCompatibleClient {
         );
 
         let endpoint = self.config.chat_endpoint();
-        let mut req = self.http.post(&endpoint).json(&body);
 
-        if let Some(ref key) = self.config.api_key {
-            req = req.header("Authorization", format!("Bearer {}", key));
+        const MAX_RETRIES: u32 = 3;
+        let mut last_err: Option<anyhow::Error> = None;
+
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let backoff_ms = 500 * 2u64.pow(attempt - 1); // 500ms, 1s, 2s
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+
+            let mut req = self.http.post(&endpoint).json(&body);
+            if let Some(ref key) = self.config.api_key {
+                req = req.header("Authorization", format!("Bearer {}", key));
+            }
+
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) if e.is_connect() || e.is_timeout() => {
+                    last_err = Some(e.into());
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
+
+            let status = resp.status();
+
+            // Retry on 429 (rate limit), 500, 502, 503, 504 (transient server errors) — B200
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+                || status == reqwest::StatusCode::BAD_GATEWAY
+                || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                || status == reqwest::StatusCode::GATEWAY_TIMEOUT
+            {
+                tracing::warn!(status = %status, attempt, "LLM API transient error, retrying");
+                last_err = Some(anyhow::anyhow!("LLM API returned {}", status));
+                continue;
+            }
+
+            let resp_body: serde_json::Value = resp.json().await?;
+
+            if !status.is_success() {
+                let error_msg = resp_body
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown error");
+                anyhow::bail!("LLM API error ({}): {}", status, error_msg);
+            }
+
+            return extract_response_content(&resp_body)
+                .ok_or_else(|| anyhow::anyhow!("No content in LLM response"));
         }
 
-        let resp = req.send().await?;
-        let status = resp.status();
-        let resp_body: serde_json::Value = resp.json().await?;
-
-        if !status.is_success() {
-            let error_msg = resp_body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("Unknown error");
-            anyhow::bail!("LLM API error ({}): {}", status, error_msg);
-        }
-
-        extract_response_content(&resp_body)
-            .ok_or_else(|| anyhow::anyhow!("No content in LLM response"))
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM call failed after {} retries", MAX_RETRIES)))
     }
 }
 
@@ -436,7 +668,7 @@ mod tests {
     #[test]
     fn test_model_config_llamacpp() {
         let cfg = ModelConfig::llamacpp_default();
-        assert_eq!(cfg.model_name, "Qwen3-Next-80B-A3B-Instruct-Q4_K_M");
+        assert_eq!(cfg.model_name, "Qwen3-30B-A3B-Q4_K_M");
         assert_eq!(cfg.provider, LlmProvider::LlamaCpp);
         assert_eq!(cfg.max_tokens, 4096);
         assert!((cfg.temperature - 0.2).abs() < 0.01);
@@ -446,7 +678,7 @@ mod tests {
     #[test]
     fn test_model_config_llamacpp_lightweight() {
         let cfg = ModelConfig::llamacpp_lightweight();
-        assert_eq!(cfg.model_name, "Qwen3-Next-80B-A3B-Instruct-Q4_K_M");
+        assert_eq!(cfg.model_name, "Qwen3-30B-A3B-Q4_K_M");
         assert_eq!(cfg.provider, LlmProvider::LlamaCpp);
         assert_eq!(cfg.max_tokens, 1024);
         assert!((cfg.temperature - 0.1).abs() < 0.01);
@@ -488,6 +720,23 @@ mod tests {
         assert_eq!(cfg.api_fallback_tasks.len(), 3);
         assert_eq!(cfg.max_api_concurrent, 5);
         assert!((cfg.monthly_api_budget_usd - 500.0).abs() < 0.01);
+        assert!(cfg.validate().is_empty());
+    }
+
+    #[test]
+    fn test_routing_config_validate_rejects_zero_max_api_concurrent() {
+        let mut cfg = RoutingConfig::default();
+        cfg.max_api_concurrent = 0;
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|m| m.contains("max_api_concurrent")));
+    }
+
+    #[test]
+    fn test_routing_config_validate_rejects_negative_budget() {
+        let mut cfg = RoutingConfig::default();
+        cfg.monthly_api_budget_usd = -1.0;
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|m| m.contains("monthly_api_budget_usd")));
     }
 
     #[test]
@@ -515,6 +764,20 @@ mod tests {
     fn test_route_task_fallback_local_unavailable() {
         let routing = RoutingConfig::default();
         let choice = route_task("narrative_rendering", &routing, false);
+        assert_eq!(choice, ProviderChoice::ApiFallback);
+    }
+
+    #[test]
+    fn test_route_task_unknown_task_defaults_with_local_available() {
+        let routing = RoutingConfig::default();
+        let choice = route_task("totally_unknown_task", &routing, true);
+        assert_eq!(choice, ProviderChoice::Local);
+    }
+
+    #[test]
+    fn test_route_task_unknown_task_defaults_with_local_unavailable() {
+        let routing = RoutingConfig::default();
+        let choice = route_task("totally_unknown_task", &routing, false);
         assert_eq!(choice, ProviderChoice::ApiFallback);
     }
 
@@ -665,11 +928,239 @@ mod tests {
     }
 
     #[test]
+    fn test_spend_tracker_budget_utilization() {
+        let mut tracker = SpendTracker::new(200.0);
+        assert!((tracker.budget_utilization() - 0.0).abs() < 1e-9);
+        tracker.record(50.0);
+        assert!((tracker.budget_utilization() - 0.25).abs() < 1e-9);
+        tracker.record(150.0);
+        assert!((tracker.budget_utilization() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn test_config_serialization() {
         let cfg = LlmConfig::default();
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: LlmConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.primary.model_name, cfg.primary.model_name);
         assert_eq!(parsed.primary.provider, cfg.primary.provider);
+    }
+
+    #[test]
+    fn test_model_config_rejects_unknown_fields() {
+        let mut value = serde_json::to_value(ModelConfig::openai_default()).unwrap();
+        value["unused_field"] = serde_json::Value::Bool(true);
+        let err = serde_json::from_value::<ModelConfig>(value)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field"));
+        assert!(err.contains("unused_field"));
+    }
+
+    #[test]
+    fn test_routing_config_rejects_unknown_fields() {
+        let mut value = serde_json::to_value(RoutingConfig::default()).unwrap();
+        value["unexpected"] = serde_json::Value::String("x".to_string());
+        let err = serde_json::from_value::<RoutingConfig>(value)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field"));
+        assert!(err.contains("unexpected"));
+    }
+
+    #[test]
+    fn test_llm_config_rejects_unknown_fields() {
+        let mut value = serde_json::to_value(LlmConfig::default()).unwrap();
+        value["mystery"] = serde_json::Value::Bool(true);
+        let err = serde_json::from_value::<LlmConfig>(value)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field"));
+        assert!(err.contains("mystery"));
+    }
+
+    // ── B191: case-insensitive route_task ────────────────────────
+    #[test]
+    fn test_route_task_case_insensitive() {
+        let routing = RoutingConfig::default();
+        assert_eq!(
+            route_task("POI_SYNTHESIS", &routing, true),
+            ProviderChoice::Local
+        );
+        assert_eq!(
+            route_task("Entity_Extraction", &routing, false),
+            ProviderChoice::Unavailable
+        );
+        assert_eq!(
+            route_task("MEMO_GENERATION", &routing, true),
+            ProviderChoice::Local
+        );
+        assert_eq!(
+            route_task("Narrative_Rendering", &routing, false),
+            ProviderChoice::ApiFallback
+        );
+    }
+
+    // ── B192: validate max_tokens and temperature ────────────────
+    #[test]
+    fn test_model_config_validate_valid() {
+        let cfg = ModelConfig::llamacpp_default();
+        assert!(cfg.validate().is_empty());
+    }
+
+    #[test]
+    fn test_model_config_validate_zero_tokens() {
+        let mut cfg = ModelConfig::llamacpp_default();
+        cfg.max_tokens = 0;
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("max_tokens")));
+    }
+
+    #[test]
+    fn test_model_config_validate_temp_out_of_range() {
+        let mut cfg = ModelConfig::llamacpp_default();
+        cfg.temperature = 3.0;
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("temperature")));
+    }
+
+    #[test]
+    fn test_model_config_validate_negative_temp() {
+        let mut cfg = ModelConfig::llamacpp_default();
+        cfg.temperature = -0.1;
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("temperature")));
+    }
+
+    // ── B193: trailing slash in chat_endpoint ────────────────────
+    #[test]
+    fn test_chat_endpoint_trailing_slash() {
+        let mut cfg = ModelConfig::openai_default();
+        cfg.base_url = "https://api.openai.com/v1/".to_string();
+        assert_eq!(
+            cfg.chat_endpoint(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_chat_endpoint_multiple_trailing_slashes() {
+        let mut cfg = ModelConfig::llamacpp_default();
+        cfg.base_url = "http://localhost:8080///".to_string();
+        assert_eq!(
+            cfg.chat_endpoint(),
+            "http://localhost:8080/v1/chat/completions"
+        );
+    }
+
+    // ── B194: timeout per provider ───────────────────────────────
+    #[test]
+    fn test_timeout_per_provider() {
+        let mut cfg = ModelConfig::llamacpp_default();
+        cfg.timeout_seconds = 600;
+        let client = OpenAiCompatibleClient::new(cfg);
+        assert_eq!(client.config().timeout_seconds, 600);
+
+        let cfg2 = ModelConfig::openai_default();
+        let client2 = OpenAiCompatibleClient::new(cfg2);
+        assert_eq!(client2.config().timeout_seconds, 60);
+    }
+
+    // ── B196: empty model_name ───────────────────────────────────
+    #[test]
+    fn test_model_config_validate_empty_name() {
+        let mut cfg = ModelConfig::llamacpp_default();
+        cfg.model_name = "".to_string();
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("model_name")));
+    }
+
+    #[test]
+    fn test_model_config_validate_whitespace_name() {
+        let mut cfg = ModelConfig::llamacpp_default();
+        cfg.model_name = "   ".to_string();
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|i| i.contains("model_name")));
+    }
+
+    // ── B197: build_request_body json mode ───────────────────────
+    #[test]
+    fn test_build_request_body_json_mode_has_format() {
+        let msgs = build_messages("s", "u");
+        let body = build_request_body("model", &msgs, 0.2, 1024, true);
+        assert_eq!(body["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn test_build_request_body_no_json_mode_no_format() {
+        let msgs = build_messages("s", "u");
+        let body = build_request_body("model", &msgs, 0.2, 1024, false);
+        assert!(body.get("response_format").is_none());
+    }
+
+    // ── B198: malformed responses ────────────────────────────────
+    #[test]
+    fn test_extract_response_content_no_message() {
+        let resp = serde_json::json!({"choices": [{"index": 0}]});
+        assert_eq!(extract_response_content(&resp), None);
+    }
+
+    #[test]
+    fn test_extract_response_content_content_is_number() {
+        let resp = serde_json::json!({"choices": [{"message": {"content": 42}}]});
+        assert_eq!(extract_response_content(&resp), None);
+    }
+
+    #[test]
+    fn test_extract_response_content_null_content() {
+        let resp = serde_json::json!({"choices": [{"message": {"content": null}}]});
+        assert_eq!(extract_response_content(&resp), None);
+    }
+
+    // ── B199: redacted API key ───────────────────────────────────
+    #[test]
+    fn test_redacted_api_key_none() {
+        let cfg = ModelConfig::llamacpp_default();
+        assert_eq!(cfg.redacted_api_key(), "(none)");
+    }
+
+    #[test]
+    fn test_redacted_api_key_short() {
+        let mut cfg = ModelConfig::openai_default();
+        cfg.api_key = Some("abc".to_string());
+        assert_eq!(cfg.redacted_api_key(), "***");
+    }
+
+    #[test]
+    fn test_redacted_api_key_long() {
+        let mut cfg = ModelConfig::openai_default();
+        cfg.api_key = Some("sk-1234567890abcdef".to_string());
+        let redacted = cfg.redacted_api_key();
+        assert!(redacted.starts_with("sk-1"));
+        assert!(redacted.ends_with("cdef"));
+        assert!(redacted.contains("..."));
+    }
+
+    // ── B206: MAX_RESPONSE_SIZE constant ─────────────────────────
+    #[test]
+    fn test_max_response_size_constant() {
+        assert!(MAX_RESPONSE_SIZE > 0);
+        assert_eq!(MAX_RESPONSE_SIZE, 512_000);
+    }
+
+    // ── B208: allowed_providers config ───────────────────────────
+    #[test]
+    fn test_routing_config_allowed_providers_default_empty() {
+        let cfg = RoutingConfig::default();
+        assert!(cfg.allowed_providers.is_empty());
+    }
+
+    #[test]
+    fn test_routing_config_allowed_providers_restricted() {
+        let mut cfg = RoutingConfig::default();
+        cfg.allowed_providers = vec![LlmProvider::LlamaCpp];
+        assert_eq!(cfg.allowed_providers.len(), 1);
+        assert!(cfg.allowed_providers.contains(&LlmProvider::LlamaCpp));
+        assert!(!cfg.allowed_providers.contains(&LlmProvider::OpenAi));
     }
 }

@@ -20,9 +20,11 @@ impl CrawlGovernor {
 
     /// Create with custom per-domain and global RPS limits.
     pub fn with_limits(domain_rps: u32, global_rps: u32) -> Self {
-        let domain_quota = Quota::per_second(NonZeroU32::new(domain_rps.max(1)).unwrap())
+        let domain_rps = domain_rps.max(1);
+        let global_rps = global_rps.max(1);
+        let domain_quota = Quota::per_second(NonZeroU32::new(domain_rps).unwrap())
             .allow_burst(NonZeroU32::new(1).unwrap());
-        let global_quota = Quota::per_second(NonZeroU32::new(global_rps.max(1)).unwrap());
+        let global_quota = Quota::per_second(NonZeroU32::new(global_rps).unwrap());
 
         Self {
             domain_limiter: Arc::new(RateLimiter::keyed(domain_quota)),
@@ -33,17 +35,20 @@ impl CrawlGovernor {
     }
 
     /// Wait until a slot is available for the given domain.
+    /// Acquires domain-local token first (more restrictive) to avoid holding
+    /// a global token while waiting on the per-domain limiter.
     pub async fn wait_for_slot(&self, domain: &str) {
-        self.global_limiter.until_ready().await;
         self.domain_limiter.until_key_ready(&domain.to_string()).await;
+        self.global_limiter.until_ready().await;
     }
 
     /// Try to acquire a slot without waiting. Returns true if acquired.
+    /// Checks domain first: if domain fails, no global token is wasted.
     pub fn try_acquire(&self, domain: &str) -> bool {
-        if self.global_limiter.check().is_err() {
+        if self.domain_limiter.check_key(&domain.to_string()).is_err() {
             return false;
         }
-        self.domain_limiter.check_key(&domain.to_string()).is_ok()
+        self.global_limiter.check().is_ok()
     }
 
     pub fn domain_rps(&self) -> f64 {
@@ -77,6 +82,13 @@ mod tests {
         let gov = CrawlGovernor::with_limits(5, 10);
         assert!((gov.domain_rps() - 5.0).abs() < f64::EPSILON);
         assert_eq!(gov.global_rps(), 10);
+    }
+
+    #[test]
+    fn test_governor_zero_limits_clamped() {
+        let gov = CrawlGovernor::with_limits(0, 0);
+        assert!((gov.domain_rps() - 1.0).abs() < f64::EPSILON);
+        assert_eq!(gov.global_rps(), 1);
     }
 
     #[test]

@@ -1,0 +1,61 @@
+{
+  "company": "Plexus Corp",
+  "ticker": "PLXS",
+  "cik": "0000785786",
+  "filings": [
+    {
+      "date": "2025-11-14",
+      "accession": "0000785786-25-000064",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578625000064/plxs-20250927.htm",
+      "document": "plxs-20250927.htm"
+    },
+    {
+      "date": "2024-11-15",
+      "accession": "0000785786-24-000074",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578624000074/plxs-20240928.htm",
+      "document": "plxs-20240928.htm"
+    },
+    {
+      "date": "2023-11-17",
+      "accession": "0000785786-23-000066",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578623000066/plxs-20230930.htm",
+      "document": "plxs-20230930.htm"
+    },
+    {
+      "date": "2022-11-18",
+      "accession": "0000785786-22-000085",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578622000085/plxs-20221001.htm",
+      "document": "plxs-20221001.htm"
+    },
+    {
+      "date": "2021-11-19",
+      "accession": "0000785786-21-000082",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578621000082/plxs-20211002.htm",
+      "document": "plxs-20211002.htm"
+    },
+    {
+      "date": "2020-11-20",
+      "accession": "0000785786-20-000102",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578620000102/plxs-20201003.htm",
+      "document": "plxs-20201003.htm"
+    },
+    {
+      "date": "2019-11-15",
+      "accession": "0000785786-19-000059",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578619000059/plxsf1910-k.htm",
+      "document": "plxsf1910-k.htm"
+    },
+    {
+      "date": "2018-11-16",
+      "accession": "0000785786-18-000051",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578618000051/plxsf1810-k.htm",
+      "document": "plxsf1810-k.htm"
+    },
+    {
+      "date": "2017-11-17",
+      "accession": "0000785786-17-000049",
+      "url": "https://www.sec.gov/Archives/edgar/data/785786/000078578617000049/plxsf1710-k.htm",
+      "document": "plxsf1710-k.htm"
+    }
+  ]
+}

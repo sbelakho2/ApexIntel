@@ -1,0 +1,118 @@
+{
+  "description": "Cybersecurity frameworks, standards, and threat reference for EMS supply chain security assessment",
+  "version": "1.0",
+  "nist_csf_2_0": {
+    "description": "NIST Cybersecurity Framework 2.0 (2024) — core functions",
+    "functions": [
+      {
+        "id": "GV", "name": "Govern", "description": "Establish and monitor cybersecurity risk management strategy, expectations, and policy",
+        "categories": ["GV.OC (Organizational Context)", "GV.RM (Risk Management Strategy)", "GV.RR (Roles, Responsibilities, Authorities)", "GV.PO (Policy)", "GV.OV (Oversight)", "GV.SC (Cybersecurity Supply Chain Risk Management)"]
+      },
+      {
+        "id": "ID", "name": "Identify", "description": "Understand assets, vulnerabilities, threats, risks",
+        "categories": ["ID.AM (Asset Management)", "ID.RA (Risk Assessment)", "ID.IM (Improvement)"]
+      },
+      {
+        "id": "PR", "name": "Protect", "description": "Safeguards to manage cybersecurity risks",
+        "categories": ["PR.AA (Identity Management, Authentication, Access Control)", "PR.AT (Awareness and Training)", "PR.DS (Data Security)", "PR.PS (Platform Security)", "PR.IR (Technology Infrastructure Resilience)"]
+      },
+      {
+        "id": "DE", "name": "Detect", "description": "Find and analyze possible cybersecurity attacks",
+        "categories": ["DE.CM (Continuous Monitoring)", "DE.AE (Adverse Event Analysis)"]
+      },
+      {
+        "id": "RS", "name": "Respond", "description": "Actions regarding detected cybersecurity incidents",
+        "categories": ["RS.MA (Incident Management)", "RS.AN (Incident Analysis)", "RS.CO (Incident Response Reporting and Communication)", "RS.MI (Incident Mitigation)"]
+      },
+      {
+        "id": "RC", "name": "Recover", "description": "Restore assets and operations after incidents",
+        "categories": ["RC.RP (Incident Recovery Plan Execution)", "RC.CO (Incident Recovery Communication)"]
+      }
+    ]
+  },
+  "cmmc_2_0": {
+    "description": "Cybersecurity Maturity Model Certification 2.0 — required for DoD supply chain",
+    "levels": [
+      {
+        "level": 1, "name": "Foundational", "practices": 17,
+        "scope": "Federal Contract Information (FCI)",
+        "assessment": "Self-assessment",
+        "source_standard": "FAR 52.204-21 (15 basic safeguarding requirements + 2 additional)"
+      },
+      {
+        "level": 2, "name": "Advanced", "practices": 110,
+        "scope": "Controlled Unclassified Information (CUI)",
+        "assessment": "Third-party assessment (C3PAO) for prioritized acquisitions; self for non-prioritized",
+        "source_standard": "NIST SP 800-171 Rev 2 (110 security requirements)"
+      },
+      {
+        "level": 3, "name": "Expert", "practices": 134,
+        "scope": "CUI for highest-priority programs",
+        "assessment": "Government-led assessment (DIBCAC)",
+        "source_standard": "NIST SP 800-172 (24 additional enhanced requirements beyond 800-171)"
+      }
+    ],
+    "ems_relevance": "Any EMS company in the DoD supply chain handling CUI (technical drawings, test data, specifications) needs CMMC Level 2 minimum"
+  },
+  "nist_sp_800_171": {
+    "description": "NIST SP 800-171 Rev 2 — Protecting CUI in Nonfederal Systems (14 families, 110 requirements)",
+    "families": [
+      {"id": "3.1", "name": "Access Control", "requirements": 22},
+      {"id": "3.2", "name": "Awareness and Training", "requirements": 3},
+      {"id": "3.3", "name": "Audit and Accountability", "requirements": 9},
+      {"id": "3.4", "name": "Configuration Management", "requirements": 9},
+      {"id": "3.5", "name": "Identification and Authentication", "requirements": 11},
+      {"id": "3.6", "name": "Incident Response", "requirements": 3},
+      {"id": "3.7", "name": "Maintenance", "requirements": 6},
+      {"id": "3.8", "name": "Media Protection", "requirements": 9},
+      {"id": "3.9", "name": "Personnel Security", "requirements": 2},
+      {"id": "3.10", "name": "Physical Protection", "requirements": 6},
+      {"id": "3.11", "name": "Risk Assessment", "requirements": 3},
+      {"id": "3.12", "name": "Security Assessment", "requirements": 4},
+      {"id": "3.13", "name": "System and Communications Protection", "requirements": 16},
+      {"id": "3.14", "name": "System and Information Integrity", "requirements": 7}
+    ]
+  },
+  "iec_62443": {
+    "description": "IEC 62443 — Industrial Automation and Control Systems Security (relevant to EMS factory OT)",
+    "parts": [
+      {"part": "1-1", "title": "Terminology, concepts, models"},
+      {"part": "2-1", "title": "Security management system requirements for IACS asset owners"},
+      {"part": "2-4", "title": "Security program requirements for IACS service providers"},
+      {"part": "3-3", "title": "System security requirements and security levels"},
+      {"part": "4-1", "title": "Secure product development lifecycle requirements"},
+      {"part": "4-2", "title": "Technical security requirements for IACS components"}
+    ],
+    "security_levels": [
+      {"sl": 0, "description": "No specific requirement"},
+      {"sl": 1, "description": "Protection against casual or coincidental violation"},
+      {"sl": 2, "description": "Protection against intentional violation using simple means"},
+      {"sl": 3, "description": "Protection against intentional violation using sophisticated means"},
+      {"sl": 4, "description": "Protection against intentional violation using state-sponsored means"}
+    ]
+  },
+  "common_vulnerability_types": {
+    "description": "OWASP/CWE vulnerability categories relevant to web scraping infrastructure and API security",
+    "web_vulnerabilities": [
+      {"cwe": "CWE-79", "name": "Cross-site Scripting (XSS)", "relevance": "API output encoding"},
+      {"cwe": "CWE-89", "name": "SQL Injection", "relevance": "Store crate parameterized queries"},
+      {"cwe": "CWE-200", "name": "Information Exposure", "relevance": "API response filtering"},
+      {"cwe": "CWE-287", "name": "Improper Authentication", "relevance": "API key management"},
+      {"cwe": "CWE-306", "name": "Missing Authentication", "relevance": "API endpoint protection"},
+      {"cwe": "CWE-352", "name": "CSRF", "relevance": "API state-changing operations"},
+      {"cwe": "CWE-400", "name": "Resource Exhaustion", "relevance": "Crawler rate limiting"},
+      {"cwe": "CWE-918", "name": "SSRF", "relevance": "Crawl target validation"},
+      {"cwe": "CWE-502", "name": "Deserialization", "relevance": "JSON/XML parsing safety"}
+    ]
+  },
+  "threat_intelligence_feeds": {
+    "description": "Open-source threat intelligence feeds for domain/IP reputation checking in crawl crate",
+    "feeds": [
+      {"name": "CISA KEV", "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "format": "JSON", "update_freq": "daily"},
+      {"name": "Tranco Top 1M", "url": "https://tranco-list.eu/top-1m.csv.zip", "format": "CSV.zip", "update_freq": "daily", "use": "Domain reputation/trust scoring"},
+      {"name": "PhishTank", "url": "https://data.phishtank.com/data/online-valid.json", "format": "JSON", "use": "Phishing URL detection", "note": "Requires API key"},
+      {"name": "URLhaus", "url": "https://urlhaus.abuse.ch/downloads/json/", "format": "JSON", "use": "Malware URL detection"},
+      {"name": "Abuse.ch SSL Blacklist", "url": "https://sslbl.abuse.ch/blacklist/sslblacklist.csv", "format": "CSV", "use": "Malicious SSL cert detection"}
+    ]
+  }
+}

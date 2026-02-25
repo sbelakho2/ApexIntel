@@ -222,19 +222,43 @@ CREATE TABLE IF NOT EXISTS recipes (
 CREATE TABLE IF NOT EXISTS warnings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     recipe_code TEXT REFERENCES recipes(code),
-    entity_id UUID,
-    entity_type TEXT,
+    warning_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
     severity TEXT NOT NULL,
-    headline TEXT NOT NULL,
-    detail TEXT,
-    evidence JSONB DEFAULT '[]',
+    region TEXT,
+    source_urls TEXT[],
+    entity_ids UUID[],
+    confidence FLOAT DEFAULT 1.0,
     ts_utc TIMESTAMPTZ NOT NULL,
     acknowledged BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT now()
+    acknowledged_by TEXT,
+    acknowledged_at TIMESTAMPTZ,
+    acknowledged_note TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_warnings_entity ON warnings(entity_id, ts_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_warnings_ts ON warnings(ts_utc DESC);
 CREATE INDEX IF NOT EXISTS idx_warnings_recipe ON warnings(recipe_code, ts_utc DESC);
+
+-- Insights (analytics layer)
+CREATE TABLE IF NOT EXISTS insights (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    insight_type TEXT,
+    region TEXT,
+    confidence FLOAT DEFAULT 0.0,
+    evidence_urls TEXT[],
+    entity_ids UUID[],
+    tags TEXT[],
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_insights_region ON insights(region, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_insights_type ON insights(insight_type, created_at DESC);
 
 -- Outcome events for the learning loop
 CREATE TABLE IF NOT EXISTS outcome_events (
@@ -250,3 +274,23 @@ CREATE TABLE IF NOT EXISTS outcome_events (
 
 CREATE INDEX IF NOT EXISTS idx_outcome_entity ON outcome_events(entity_id, ts_utc DESC);
 CREATE INDEX IF NOT EXISTS idx_outcome_event ON outcome_events(event, ts_utc DESC);
+
+-- Foreign key column indexes (PostgreSQL does not auto-index FK columns)
+CREATE INDEX IF NOT EXISTS idx_sites_company ON sites(company_id);
+CREATE INDEX IF NOT EXISTS idx_product_families_company ON product_families(company_id);
+CREATE INDEX IF NOT EXISTS idx_capabilities_company ON capabilities(company_id);
+CREATE INDEX IF NOT EXISTS idx_capabilities_site ON capabilities(site_id);
+CREATE INDEX IF NOT EXISTS idx_certifications_company ON certifications(company_id);
+CREATE INDEX IF NOT EXISTS idx_certifications_site ON certifications(site_id);
+CREATE INDEX IF NOT EXISTS idx_persons_org ON persons(primary_org_id);
+
+-- Filter/sort column indexes
+CREATE INDEX IF NOT EXISTS idx_companies_region ON companies(region);
+CREATE INDEX IF NOT EXISTS idx_companies_type ON companies(company_type);
+CREATE INDEX IF NOT EXISTS idx_companies_name ON companies(name);
+CREATE INDEX IF NOT EXISTS idx_warnings_severity ON warnings(severity);
+CREATE INDEX IF NOT EXISTS idx_warnings_type ON warnings(warning_type);
+CREATE INDEX IF NOT EXISTS idx_warnings_ack ON warnings(acknowledged);
+CREATE INDEX IF NOT EXISTS idx_persons_region ON persons(region);
+CREATE INDEX IF NOT EXISTS idx_warnings_region ON warnings(region);
+CREATE INDEX IF NOT EXISTS idx_companies_updated_at ON companies(updated_at DESC);

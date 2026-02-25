@@ -1,0 +1,61 @@
+{
+  "company": "Jabil Inc",
+  "ticker": "JBL",
+  "cik": "0000898293",
+  "filings": [
+    {
+      "date": "2025-10-17",
+      "accession": "0001628280-25-045293",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000162828025045293/jbl-20250831.htm",
+      "document": "jbl-20250831.htm"
+    },
+    {
+      "date": "2024-10-28",
+      "accession": "0001628280-24-043960",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000162828024043960/jbl-20240831.htm",
+      "document": "jbl-20240831.htm"
+    },
+    {
+      "date": "2023-10-20",
+      "accession": "0001193125-23-259599",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000119312523259599/d533726d10k.htm",
+      "document": "d533726d10k.htm"
+    },
+    {
+      "date": "2022-10-25",
+      "accession": "0001193125-22-268383",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000119312522268383/d389587d10k.htm",
+      "document": "d389587d10k.htm"
+    },
+    {
+      "date": "2021-10-22",
+      "accession": "0001193125-21-305429",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000119312521305429/d176971d10k.htm",
+      "document": "d176971d10k.htm"
+    },
+    {
+      "date": "2020-10-22",
+      "accession": "0001193125-20-274411",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000119312520274411/d25678d10k.htm",
+      "document": "d25678d10k.htm"
+    },
+    {
+      "date": "2019-10-22",
+      "accession": "0001193125-19-271646",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000119312519271646/d782178d10k.htm",
+      "document": "d782178d10k.htm"
+    },
+    {
+      "date": "2018-10-19",
+      "accession": "0001193125-18-303041",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000119312518303041/d636018d10k.htm",
+      "document": "d636018d10k.htm"
+    },
+    {
+      "date": "2017-10-19",
+      "accession": "0001193125-17-313834",
+      "url": "https://www.sec.gov/Archives/edgar/data/898293/000119312517313834/d424121d10k.htm",
+      "document": "d424121d10k.htm"
+    }
+  ]
+}

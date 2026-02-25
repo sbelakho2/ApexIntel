@@ -5,13 +5,30 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
+use apex_core::errors::ApexError;
 
 // ────────────────────────────────────────────
 // Success envelope
 // ────────────────────────────────────────────
 
 /// Standard API response envelope.
+///
+/// All ApexIntel JSON endpoints return this wrapper.  `success` is `true`
+/// when the request was fulfilled; `data` is `None` on error.
+/// `meta` carries timestamp, version, and optional request-id.
+///
+/// # Examples
+///
+/// ```rust
+/// use apex_api::responses::{success, ApiResponse};
+///
+/// let resp: ApiResponse<String> = success("ok".to_string());
+/// assert!(resp.success);
+/// assert_eq!(resp.data.as_deref(), Some("ok"));
+/// assert!(resp.error.is_none());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiResponse<T: Serialize> {
     pub success: bool,
@@ -22,7 +39,49 @@ pub struct ApiResponse<T: Serialize> {
     pub meta: Option<ResponseMeta>,
 }
 
+/// Paged response payload for list endpoints.
+///
+/// Embed this inside an [`ApiResponse`] using [`success`] to return paginated
+/// lists with total count and pagination metadata.
+///
+/// # Examples
+///
+/// ```rust
+/// use apex_api::responses::{success, PagedResponse, ApiResponse};
+///
+/// let page: ApiResponse<PagedResponse<String>> = success(PagedResponse {
+///     items: vec!["item1".to_string(), "item2".to_string()],
+///     total: 42,
+///     page: 1,
+///     per_page: 20,
+/// });
+/// assert!(page.success);
+/// assert_eq!(page.data.as_ref().unwrap().total, 42);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PagedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: u64,
+    pub page: u32,
+    pub per_page: u32,
+}
+
 /// Build a success response.
+///
+/// Wraps `data` in an [`ApiResponse`] with `success: true`, attaching
+/// a generated [`ResponseMeta`] timestamp and version.
+///
+/// # Examples
+///
+/// ```rust
+/// use apex_api::responses::success;
+///
+/// let resp = success(42u64);
+/// assert!(resp.success);
+/// assert_eq!(resp.data, Some(42));
+/// assert!(resp.error.is_none());
+/// assert!(resp.meta.is_some());
+/// ```
 pub fn success<T: Serialize>(data: T) -> ApiResponse<T> {
     ApiResponse {
         success: true,
@@ -43,6 +102,25 @@ pub fn success_with_meta<T: Serialize>(data: T, meta: ResponseMeta) -> ApiRespon
 }
 
 /// Build an error response with no data.
+///
+/// Sets `success: false`, `data: None`, and attaches the provided
+/// [`ApiError`].  Route handlers should use [`map_apex_error`] to
+/// convert domain errors rather than constructing [`ApiError`] by hand.
+///
+/// # Examples
+///
+/// ```rust
+/// use apex_api::responses::{error_response, ApiError, ErrorCode};
+///
+/// let resp = error_response::<()>(ApiError::new(
+///     ErrorCode::NotFound,
+///     "company 'ABC' not found",
+/// ));
+/// assert!(!resp.success);
+/// assert!(resp.data.is_none());
+/// let err = resp.error.unwrap();
+/// assert_eq!(err.code, ErrorCode::NotFound);
+/// ```
 pub fn error_response<T: Serialize>(error: ApiError) -> ApiResponse<T> {
     ApiResponse {
         success: false,
@@ -62,7 +140,7 @@ pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<HashMap<String, String>>,
+    pub details: Option<BTreeMap<String, String>>,
 }
 
 impl ApiError {
@@ -74,7 +152,7 @@ impl ApiError {
         }
     }
 
-    pub fn with_details(mut self, details: HashMap<String, String>) -> Self {
+    pub fn with_details(mut self, details: BTreeMap<String, String>) -> Self {
         self.details = Some(details);
         self
     }
@@ -103,7 +181,7 @@ impl ApiError {
     }
 
     pub fn rate_limited(retry_after_secs: u32) -> Self {
-        let mut details = HashMap::new();
+        let mut details = BTreeMap::new();
         details.insert("retry_after".to_string(), retry_after_secs.to_string());
         Self::new(
             ErrorCode::RateLimited,
@@ -113,7 +191,7 @@ impl ApiError {
     }
 
     pub fn validation(field: &str, message: impl Into<String>) -> Self {
-        let mut details = HashMap::new();
+        let mut details = BTreeMap::new();
         details.insert("field".to_string(), field.to_string());
         Self::new(ErrorCode::ValidationError, message).with_details(details)
     }
@@ -187,7 +265,7 @@ impl ResponseMeta {
     pub fn now() -> Self {
         Self {
             timestamp: Utc::now(),
-            version: "1.0.0".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             request_id: None,
             duration_ms: None,
         }
@@ -233,6 +311,27 @@ pub struct ComponentHealth {
 }
 
 /// Aggregate component health into an overall status.
+///
+/// Returns `Unhealthy` if any component is unhealthy, `Degraded` if any
+/// is degraded but none is unhealthy, and `Healthy` otherwise.
+///
+/// # Examples
+///
+/// ```rust
+/// use apex_api::responses::{aggregate_health, ComponentHealth, HealthStatus};
+///
+/// let checks = vec![
+///     ComponentHealth { name: "db".into(), status: HealthStatus::Healthy, message: None },
+///     ComponentHealth { name: "cache".into(), status: HealthStatus::Degraded, message: None },
+/// ];
+/// assert_eq!(aggregate_health(&checks), HealthStatus::Degraded);
+///
+/// let all_ok = vec![
+///     ComponentHealth { name: "db".into(), status: HealthStatus::Healthy, message: None },
+/// ];
+/// assert_eq!(aggregate_health(&all_ok), HealthStatus::Healthy);
+/// assert_eq!(aggregate_health(&[]), HealthStatus::Healthy);
+/// ```
 pub fn aggregate_health(checks: &[ComponentHealth]) -> HealthStatus {
     if checks.iter().any(|c| c.status == HealthStatus::Unhealthy) {
         HealthStatus::Unhealthy
@@ -278,12 +377,61 @@ pub struct PoiCoverageSummary {
 }
 
 // ────────────────────────────────────────────
+// Centralized error mapping (B284)
+// ────────────────────────────────────────────
+
+/// Convert a domain-layer [`ApexError`] into a wire-ready [`ApiError`] (B284).
+///
+/// This is the single authoritative mapping from internal error types to HTTP
+/// semantics, ensuring that every error code/status combination is consistent
+/// across all route handlers.  Route handlers should call this function rather
+/// than constructing `ApiError` instances manually when they receive an
+/// `ApexError` from a service call.
+///
+/// Mapping rules:
+/// - `NotFound`   → `ErrorCode::NotFound`   (404)
+/// - `Validation` → `ErrorCode::ValidationError` (422)
+/// - `Config`     → `ErrorCode::InternalError`   (500)  — config is never exposed
+/// - `Parse`      → `ErrorCode::BadRequest`       (400)
+/// - `Io`         → `ErrorCode::InternalError`   (500)  — not exposed externally
+/// - `Json`       → `ErrorCode::BadRequest`       (400)  — malformed JSON from upstream
+/// - `Url`        → `ErrorCode::BadRequest`       (400)
+/// - `Internal`   → `ErrorCode::InternalError`   (500)
+///
+/// The `message` field of internal errors is replaced with a generic string so
+/// that implementation details are never leaked to API clients.
+pub fn map_apex_error(err: &ApexError) -> ApiError {
+    match err {
+        ApexError::NotFound { kind, id, .. } => ApiError::not_found(kind, id),
+        ApexError::Validation { message, .. } => {
+            ApiError::new(ErrorCode::ValidationError, message.as_str())
+        }
+        ApexError::Parse { message, .. } => {
+            ApiError::new(ErrorCode::BadRequest, format!("Parse error: {message}"))
+        }
+        ApexError::Url(_) => ApiError::new(ErrorCode::BadRequest, "Invalid URL format"),
+        ApexError::Json(_) => ApiError::new(ErrorCode::BadRequest, "Malformed JSON"),
+        // Internal errors — do not expose implementation details
+        ApexError::Config { .. } | ApexError::Io(_) | ApexError::Internal { .. } => {
+            ApiError::internal("An unexpected error occurred")
+        }
+    }
+}
+
+/// Build a full [`ApiResponse<T>`] from an [`ApexError`] using the centralized
+/// mapping.  Convenience wrapper for route handlers.
+pub fn apex_error_response<T: Serialize>(err: &ApexError) -> ApiResponse<T> {
+    error_response(map_apex_error(err))
+}
+
+// ────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::url;
 
     // ── Success response ──
 
@@ -408,7 +556,7 @@ mod tests {
     #[test]
     fn test_response_meta_now() {
         let meta = ResponseMeta::now();
-        assert_eq!(meta.version, "1.0.0");
+        assert_eq!(meta.version, env!("CARGO_PKG_VERSION"));
         assert!(meta.request_id.is_none());
         assert!(meta.duration_ms.is_none());
     }
@@ -543,5 +691,93 @@ mod tests {
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("55"));
+    }
+
+    // ── B284: Centralized error mapping ──
+
+    #[test]
+    fn map_apex_error_not_found_gives_404() {
+        let e = ApexError::NotFound {
+            kind: "Company".into(),
+            id: "abc-123".into(),
+            hint: None,
+        };
+        let api_err = map_apex_error(&e);
+        assert_eq!(api_err.code, ErrorCode::NotFound);
+        assert_eq!(api_err.http_status(), 404);
+        assert!(api_err.message.contains("Company"));
+        assert!(api_err.message.contains("abc-123"));
+    }
+
+    #[test]
+    fn map_apex_error_validation_gives_422() {
+        let e = ApexError::validation("field 'email' is required");
+        let api_err = map_apex_error(&e);
+        assert_eq!(api_err.code, ErrorCode::ValidationError);
+        assert_eq!(api_err.http_status(), 422);
+        assert!(api_err.message.contains("email"));
+    }
+
+    #[test]
+    fn map_apex_error_parse_gives_400() {
+        let e = ApexError::Parse {
+            message: "unexpected token at line 3".into(),
+            hint: None,
+        };
+        let api_err = map_apex_error(&e);
+        assert_eq!(api_err.code, ErrorCode::BadRequest);
+        assert_eq!(api_err.http_status(), 400);
+    }
+
+    #[test]
+    fn map_apex_error_url_gives_400() {
+        let e = ApexError::Url(url::ParseError::EmptyHost);
+        let api_err = map_apex_error(&e);
+        assert_eq!(api_err.code, ErrorCode::BadRequest);
+        assert_eq!(api_err.http_status(), 400);
+    }
+
+    #[test]
+    fn map_apex_error_config_gives_500_and_hides_details() {
+        let e = ApexError::config("DATABASE_URL missing");
+        let api_err = map_apex_error(&e);
+        assert_eq!(api_err.code, ErrorCode::InternalError);
+        assert_eq!(api_err.http_status(), 500);
+        // Implementation detail must NOT be leaked
+        assert!(!api_err.message.contains("DATABASE_URL"));
+    }
+
+    #[test]
+    fn map_apex_error_internal_gives_500_and_hides_details() {
+        let e = ApexError::Internal {
+            message: "panic at redis connection pool".into(),
+            hint: None,
+        };
+        let api_err = map_apex_error(&e);
+        assert_eq!(api_err.code, ErrorCode::InternalError);
+        assert_eq!(api_err.http_status(), 500);
+        assert!(!api_err.message.contains("redis"));
+    }
+
+    #[test]
+    fn apex_error_response_wraps_correctly() {
+        let e = ApexError::NotFound {
+            kind: "Person".into(),
+            id: "p-999".into(),
+            hint: None,
+        };
+        let resp: ApiResponse<String> = apex_error_response(&e);
+        assert!(!resp.success);
+        assert!(resp.data.is_none());
+        assert_eq!(resp.error.unwrap().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn map_apex_error_json_error_gives_400() {
+        let json_err = serde_json::from_str::<serde_json::Value>("{{invalid}}").unwrap_err();
+        let e = ApexError::Json(json_err);
+        let api_err = map_apex_error(&e);
+        assert_eq!(api_err.code, ErrorCode::BadRequest);
+        assert_eq!(api_err.http_status(), 400);
     }
 }

@@ -1,5 +1,15 @@
 /// Bayesian evidence fusion.
 
+fn stable_logistic(log_odds: f64) -> f64 {
+    if log_odds >= 0.0 {
+        let z = (-log_odds).exp();
+        1.0 / (1.0 + z)
+    } else {
+        let z = log_odds.exp();
+        z / (1.0 + z)
+    }
+}
+
 /// Fuse multiple signals using Bayesian odds updating.
 ///
 /// `prior`: Prior probability of the hypothesis (0-1).
@@ -15,11 +25,19 @@ pub fn fuse_signals(prior: f64, likelihoods: &[(f64, f64)]) -> f64 {
 
     let mut log_odds = (prior / (1.0 - prior)).ln();
     for &(p_true, p_false) in likelihoods {
-        if p_false > 1e-12 {
-            log_odds += (p_true / p_false).ln();
+        if p_true.abs() < 1e-12 && p_false.abs() < 1e-12 {
+            continue; // both near zero — uninformative signal
         }
+        let log_bf = if p_false < 1e-12 {
+            20.0 // decisive support: cap log Bayes factor
+        } else if p_true < 1e-12 {
+            -20.0 // decisive refutation: cap log Bayes factor
+        } else {
+            (p_true / p_false).ln()
+        };
+        log_odds += log_bf;
     }
-    1.0 / (1.0 + (-log_odds).exp())
+    stable_logistic(log_odds)
 }
 
 /// Beta-Binomial Bayesian updater for binary outcomes.
@@ -27,6 +45,8 @@ pub fn fuse_signals(prior: f64, likelihoods: &[(f64, f64)]) -> f64 {
 pub struct BetaUpdater {
     alpha: f64,
     beta: f64,
+    prior_alpha: f64,
+    prior_beta: f64,
 }
 
 impl BetaUpdater {
@@ -35,12 +55,14 @@ impl BetaUpdater {
         Self {
             alpha: 1.0,
             beta: 1.0,
+            prior_alpha: 1.0,
+            prior_beta: 1.0,
         }
     }
 
     /// Create with custom prior parameters.
     pub fn new(alpha: f64, beta: f64) -> Self {
-        Self { alpha, beta }
+        Self { alpha, beta, prior_alpha: alpha, prior_beta: beta }
     }
 
     /// Update with a success observation.
@@ -71,9 +93,9 @@ impl BetaUpdater {
         ((m - 1.96 * sd).max(0.0), (m + 1.96 * sd).min(1.0))
     }
 
-    /// Total observations.
+    /// Total observations (excludes the prior).
     pub fn total_observations(&self) -> f64 {
-        self.alpha + self.beta - 2.0 // subtract prior parameters
+        (self.alpha - self.prior_alpha) + (self.beta - self.prior_beta)
     }
 }
 
@@ -130,6 +152,28 @@ mod tests {
     }
 
     #[test]
+    fn test_fuse_signals_extreme_positive_log_odds_stays_finite() {
+        let mut likes = Vec::new();
+        for _ in 0..2_000 {
+            likes.push((1.0, 1e-20));
+        }
+        let posterior = fuse_signals(0.5, &likes);
+        assert!(posterior.is_finite());
+        assert!(posterior > 0.999_999);
+    }
+
+    #[test]
+    fn test_fuse_signals_extreme_negative_log_odds_stays_finite() {
+        let mut likes = Vec::new();
+        for _ in 0..2_000 {
+            likes.push((1e-20, 1.0));
+        }
+        let posterior = fuse_signals(0.5, &likes);
+        assert!(posterior.is_finite());
+        assert!(posterior < 0.000_001);
+    }
+
+    #[test]
     fn test_fuse_signals_edge_prior_zero() {
         let posterior = fuse_signals(0.0, &[(0.9, 0.1)]);
         assert!((posterior - 0.0).abs() < 1e-10);
@@ -183,5 +227,114 @@ mod tests {
         assert_eq!(interpret_bayes_factor(5.0), "substantial");
         assert_eq!(interpret_bayes_factor(1.5), "barely_worth_mentioning");
         assert_eq!(interpret_bayes_factor(0.5), "against");
+    }
+
+    #[test]
+    fn test_interpret_bayes_factor_threshold_boundaries() {
+        assert_eq!(interpret_bayes_factor(100.0), "very_strong");
+        assert_eq!(interpret_bayes_factor(30.0), "strong");
+        assert_eq!(interpret_bayes_factor(10.0), "substantial");
+        assert_eq!(interpret_bayes_factor(3.0), "barely_worth_mentioning");
+        assert_eq!(interpret_bayes_factor(1.0), "against");
+    }
+
+    // ── B270: previously uncovered utility methods ──────────────────────────
+
+    #[test]
+    fn test_beta_updater_variance_uniform_prior() {
+        // Uniform prior: alpha=1, beta=1
+        // variance = (1*1) / (2^2 * 3) = 1/12
+        let u = BetaUpdater::uniform_prior();
+        let expected = 1.0 / 12.0;
+        assert!(
+            (u.variance() - expected).abs() < 1e-10,
+            "uniform prior variance = {:.6}, expected {:.6}",
+            u.variance(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_beta_updater_variance_after_updates() {
+        // 8 successes + 2 failures on uniform prior → alpha=9, beta=3, ab=12
+        // variance = (9*3) / (12^2 * 13) = 27 / 1872 ≈ 0.01442
+        let mut u = BetaUpdater::uniform_prior();
+        for _ in 0..8 { u.observe_success(); }
+        for _ in 0..2 { u.observe_failure(); }
+        let expected = (9.0 * 3.0) / (12.0_f64.powi(2) * 13.0);
+        assert!(
+            (u.variance() - expected).abs() < 1e-10,
+            "variance after updates = {:.6}, expected {:.6}",
+            u.variance(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_beta_updater_variance_symmetric_peak() {
+        // Symmetric Beta(50,50): variance peaks near mean=0.5
+        let mut u = BetaUpdater::uniform_prior();
+        for _ in 0..49 { u.observe_success(); }
+        for _ in 0..49 { u.observe_failure(); }
+        // Both mean and variance should be close to symmetric values
+        assert!((u.mean() - 0.5).abs() < 1e-10);
+        // variance should be small (concentrated distribution)
+        assert!(u.variance() < 0.005, "variance should be small for n=99, got {}", u.variance());
+    }
+
+    #[test]
+    fn test_beta_updater_total_observations_zero_on_init() {
+        // Fresh updater has seen no data — prior is not counted as observations
+        let u = BetaUpdater::uniform_prior();
+        assert!(
+            (u.total_observations() - 0.0).abs() < 1e-10,
+            "fresh updater should have 0 observations, got {}",
+            u.total_observations()
+        );
+    }
+
+    #[test]
+    fn test_beta_updater_total_observations_counts_both() {
+        let mut u = BetaUpdater::uniform_prior();
+        for _ in 0..7 { u.observe_success(); }
+        for _ in 0..3 { u.observe_failure(); }
+        assert!(
+            (u.total_observations() - 10.0).abs() < 1e-10,
+            "expected 10 observations, got {}",
+            u.total_observations()
+        );
+    }
+
+    #[test]
+    fn test_beta_updater_total_observations_custom_prior() {
+        // Custom prior (alpha=2, beta=5) — observations start at 0
+        let mut u = BetaUpdater::new(2.0, 5.0);
+        assert!((u.total_observations() - 0.0).abs() < 1e-10);
+        for _ in 0..3 { u.observe_success(); }
+        assert!(
+            (u.total_observations() - 3.0).abs() < 1e-10,
+            "expected 3 obs after 3 successes, got {}",
+            u.total_observations()
+        );
+        for _ in 0..2 { u.observe_failure(); }
+        assert!(
+            (u.total_observations() - 5.0).abs() < 1e-10,
+            "expected 5 total obs, got {}",
+            u.total_observations()
+        );
+    }
+
+    #[test]
+    fn test_bayes_factor_zero_denominator_returns_infinity() {
+        // When likelihood_h0 is effectively zero, BF must be infinite
+        let bf = bayes_factor(0.9, 0.0);
+        assert!(bf.is_infinite() && bf > 0.0, "expected +∞, got {bf}");
+    }
+
+    #[test]
+    fn test_bayes_factor_both_small_returns_ratio() {
+        // Both likelihoods above epsilon — simple ratio
+        let bf = bayes_factor(0.3, 0.1);
+        assert!((bf - 3.0).abs() < 1e-10, "expected 3.0, got {bf}");
     }
 }

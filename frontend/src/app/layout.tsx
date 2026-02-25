@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import { AppShell } from "@/components/app-shell";
+import { Providers } from "./providers";
 
 const apexSans = localFont({
   src: [
@@ -22,7 +23,10 @@ const apexMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "ApexIntel",
+  title: {
+    default: "ApexIntel",
+    template: "%s | ApexIntel",
+  },
   description: "ApexIntel OSINT Intelligence Platform",
 };
 
@@ -34,7 +38,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${apexSans.variable} ${apexMono.variable}`}>
-        <AppShell>{children}</AppShell>
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
+        <div className="fixed inset-0 border-[8px] border-rams-chassis pointer-events-none z-[100] hidden md:block" aria-hidden="true" />
+        <Providers>
+          <AppShell>{children}</AppShell>
+        </Providers>
       </body>
     </html>
   );

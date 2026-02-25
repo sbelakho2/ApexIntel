@@ -1,0 +1,162 @@
+[
+  {
+    "standard": "IATF 16949:2016",
+    "domain": "automotive",
+    "description": "Quality management system for automotive production and service parts organizations",
+    "registry": "IATF OASIS",
+    "registry_url": "https://www.iatfglobaloversight.org/oasis/",
+    "certification_bodies": ["TÜV SÜD", "TÜV Rheinland", "Bureau Veritas", "SGS", "DNV", "BSI", "LRQA"],
+    "relevance": "P0",
+    "key_requirements": ["Process approach", "FMEA", "PPAP", "SPC", "MSA", "Control plans", "Customer-specific requirements"]
+  },
+  {
+    "standard": "ISO 9001:2015",
+    "domain": "general_quality",
+    "description": "Quality management systems — Requirements",
+    "registry": "IAF CertSearch",
+    "registry_url": "https://www.iafcertsearch.org/",
+    "certification_bodies": ["TÜV SÜD", "TÜV Rheinland", "Bureau Veritas", "SGS", "DNV", "BSI", "LRQA", "Intertek", "INNORPI"],
+    "relevance": "P0",
+    "key_requirements": ["Risk-based thinking", "Process approach", "Leadership", "Continual improvement"]
+  },
+  {
+    "standard": "AS9100 Rev D",
+    "domain": "aerospace",
+    "description": "Quality management system for aviation, space and defense organizations",
+    "registry": "OASIS (IAQG)",
+    "registry_url": "https://www.sae.org/iaqg/oasis/",
+    "certification_bodies": ["BSI", "PRI/Registrar", "DNV", "TÜV SÜD", "Bureau Veritas", "SAI Global"],
+    "relevance": "P1",
+    "key_requirements": ["Configuration management", "Risk management", "Project management", "Product safety", "Counterfeit parts prevention"]
+  },
+  {
+    "standard": "NADCAP",
+    "domain": "aerospace_special_processes",
+    "description": "National Aerospace and Defense Contractors Accreditation Program for special processes",
+    "registry": "eAuditNet",
+    "registry_url": "https://www.eauditnet.com/",
+    "certification_bodies": ["PRI (Performance Review Institute)"],
+    "relevance": "P1",
+    "commodities": ["Chemical Processing", "Coatings", "Composites", "Elastomer Seals", "Electronics", "Heat Treating", "Materials Testing", "Nonconventional Machining", "Non-Destructive Testing", "Shot Peening", "Welding"]
+  },
+  {
+    "standard": "ISO 14001:2015",
+    "domain": "environmental",
+    "description": "Environmental management systems — Requirements",
+    "registry": "IAF CertSearch",
+    "registry_url": "https://www.iafcertsearch.org/",
+    "certification_bodies": ["TÜV SÜD", "TÜV Rheinland", "Bureau Veritas", "SGS", "DNV", "BSI"],
+    "relevance": "P1",
+    "key_requirements": ["Environmental aspects", "Legal compliance", "Life cycle perspective", "Pollution prevention"]
+  },
+  {
+    "standard": "ISO 45001:2018",
+    "domain": "occupational_health_safety",
+    "description": "Occupational health and safety management systems",
+    "registry": "IAF CertSearch",
+    "registry_url": "https://www.iafcertsearch.org/",
+    "certification_bodies": ["TÜV SÜD", "TÜV Rheinland", "Bureau Veritas", "SGS", "DNV", "BSI"],
+    "relevance": "P2",
+    "key_requirements": ["Worker participation", "Hazard identification", "Risk assessment", "Emergency preparedness"]
+  },
+  {
+    "standard": "ISO 13485:2016",
+    "domain": "medical_devices",
+    "description": "Quality management systems for medical devices",
+    "registry": "IAF CertSearch",
+    "registry_url": "https://www.iafcertsearch.org/",
+    "certification_bodies": ["TÜV SÜD", "TÜV Rheinland", "BSI", "SGS", "DNV", "Intertek"],
+    "relevance": "P2",
+    "key_requirements": ["Design controls", "Risk management (ISO 14971)", "Traceability", "Sterile processing"]
+  },
+  {
+    "standard": "IPC-A-610",
+    "domain": "electronics_assembly",
+    "description": "Acceptability of Electronic Assemblies",
+    "registry": "IPC Validation Services",
+    "registry_url": "https://www.ipc.org/ipc-validation-services",
+    "certification_bodies": ["IPC"],
+    "relevance": "P0",
+    "classes": ["Class 1 (General)", "Class 2 (Dedicated Service)", "Class 3 (High Performance)"]
+  },
+  {
+    "standard": "IPC J-STD-001",
+    "domain": "soldering",
+    "description": "Requirements for Soldered Electrical and Electronic Assemblies",
+    "registry": "IPC Validation Services",
+    "registry_url": "https://www.ipc.org/ipc-validation-services",
+    "certification_bodies": ["IPC"],
+    "relevance": "P0",
+    "classes": ["Class 1 (General)", "Class 2 (Dedicated Service)", "Class 3 (High Reliability)"]
+  },
+  {
+    "standard": "IPC-6012",
+    "domain": "pcb_qualification",
+    "description": "Qualification and Performance Specification for Rigid Printed Boards",
+    "registry": "IPC",
+    "registry_url": "https://www.ipc.org/",
+    "certification_bodies": ["IPC"],
+    "relevance": "P0",
+    "classes": ["Class 1", "Class 2", "Class 3", "Class 3/A (Space/Military Avionics)"]
+  },
+  {
+    "standard": "UL/cUL Recognition",
+    "domain": "safety",
+    "description": "Product safety certification for US/Canadian markets",
+    "registry": "UL Product iQ",
+    "registry_url": "https://iq.ulprospector.com/",
+    "certification_bodies": ["UL Solutions"],
+    "relevance": "P1",
+    "key_requirements": ["Fire safety", "Electrical safety", "Material flammability (UL 94)"]
+  },
+  {
+    "standard": "ITAR Registration",
+    "domain": "defense_export",
+    "description": "International Traffic in Arms Regulations — US defense article registration",
+    "registry": "DDTC",
+    "registry_url": "https://www.pmddtc.state.gov/",
+    "certification_bodies": ["US Department of State / DDTC"],
+    "relevance": "P1",
+    "key_requirements": ["Registration", "Technology control plan", "Personnel screening", "Physical security", "Classified handling"]
+  },
+  {
+    "standard": "ISO 27001:2022",
+    "domain": "information_security",
+    "description": "Information security management systems",
+    "registry": "IAF CertSearch",
+    "registry_url": "https://www.iafcertsearch.org/",
+    "certification_bodies": ["BSI", "TÜV SÜD", "TÜV Rheinland", "Bureau Veritas", "SGS", "DNV"],
+    "relevance": "P1",
+    "key_requirements": ["Risk assessment", "Annex A controls", "Statement of Applicability", "Incident management"]
+  },
+  {
+    "standard": "CMMC 2.0",
+    "domain": "us_defense_cybersecurity",
+    "description": "Cybersecurity Maturity Model Certification for US DoD contractors",
+    "registry": "CMMC-AB",
+    "registry_url": "https://cyberab.org/",
+    "certification_bodies": ["C3PAOs (Certified Third-Party Assessment Organizations)"],
+    "relevance": "P2",
+    "levels": ["Level 1 (Foundational)", "Level 2 (Advanced)", "Level 3 (Expert)"]
+  },
+  {
+    "standard": "RoHS Compliance",
+    "domain": "environmental_substance",
+    "description": "Restriction of Hazardous Substances in electrical/electronic equipment",
+    "registry": "Self-declaration / Third-party testing",
+    "registry_url": "N/A",
+    "certification_bodies": ["SGS", "Intertek", "Bureau Veritas", "TÜV Rheinland"],
+    "relevance": "P0",
+    "restricted_substances": ["Lead", "Mercury", "Cadmium", "Hexavalent chromium", "PBB", "PBDE", "DEHP", "BBP", "DBP", "DIBP"]
+  },
+  {
+    "standard": "REACH Compliance",
+    "domain": "eu_chemical_regulation",
+    "description": "Registration, Evaluation, Authorisation and Restriction of Chemicals",
+    "registry": "ECHA",
+    "registry_url": "https://echa.europa.eu/",
+    "certification_bodies": ["ECHA (European Chemicals Agency)"],
+    "relevance": "P1",
+    "key_requirements": ["SVHC declaration", "SCIP database notification", "Substance registration"]
+  }
+]

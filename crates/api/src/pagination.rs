@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Pagination query parameters (offset-based).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PageParams {
     pub page: u32,
     pub per_page: u32,
@@ -35,7 +36,7 @@ impl PageParams {
 
     /// SQL OFFSET value.
     pub fn offset(&self) -> u32 {
-        (self.page.max(1) - 1) * self.per_page
+        (self.page.max(1) - 1).saturating_mul(self.per_page)
     }
 
     /// SQL LIMIT value.
@@ -55,6 +56,7 @@ impl PageParams {
 
 /// Cursor-based pagination (for real-time feeds).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CursorParams {
     pub cursor: Option<String>,
     pub limit: u32,
@@ -105,7 +107,16 @@ pub struct PageMeta {
 /// Compute page metadata from params and total count.
 pub fn compute_page_meta(params: &PageParams, total_items: u64) -> PageMeta {
     let per_page = params.per_page.max(1);
-    let total_pages = ((total_items as f64) / (per_page as f64)).ceil() as u32;
+    // Integer ceiling division, capped at u32::MAX to avoid f64→u32 truncation on huge totals.
+    let total_pages = if total_items == 0 {
+        0u32
+    } else {
+        let tp = total_items
+            .checked_add(per_page as u64 - 1)
+            .unwrap_or(u64::MAX)
+            / per_page.max(1) as u64;
+        tp.min(u32::MAX as u64) as u32
+    };
     let page = params.page.max(1).min(total_pages.max(1));
 
     PageMeta {
@@ -161,8 +172,9 @@ pub struct PaginatedResponse<T> {
 pub fn paginate_in_memory<T: Clone>(items: &[T], params: &PageParams) -> PaginatedResponse<T> {
     let total = items.len() as u64;
     let meta = compute_page_meta(params, total);
-    let start = params.offset() as usize;
-    let end = (start + params.limit() as usize).min(items.len());
+    // Use the clamped page from meta (not raw params.offset()) so data matches metadata.
+    let start = ((meta.page.max(1) - 1) as usize) * (meta.per_page as usize);
+    let end = (start + meta.per_page as usize).min(items.len());
     let data = if start < items.len() {
         items[start..end].to_vec()
     } else {
@@ -242,6 +254,20 @@ mod tests {
         let s = c.sanitize();
         assert_eq!(s.limit, 100); // clamped
         assert_eq!(s.direction, CursorDirection::Backward);
+    }
+
+    #[test]
+    fn test_page_params_deserialize_rejects_unknown_fields() {
+        let json = r#"{"page":1,"per_page":25,"extra":"boom"}"#;
+        let parsed = serde_json::from_str::<PageParams>(json);
+        assert!(parsed.is_err(), "unknown fields must be rejected");
+    }
+
+    #[test]
+    fn test_cursor_params_deserialize_rejects_unknown_fields() {
+        let json = r#"{"cursor":null,"limit":25,"direction":"Forward","extra":1}"#;
+        let parsed = serde_json::from_str::<CursorParams>(json);
+        assert!(parsed.is_err(), "unknown fields must be rejected");
     }
 
     // ── PageMeta ──
@@ -361,10 +387,14 @@ mod tests {
 
     #[test]
     fn test_paginate_in_memory_beyond_range() {
+        // Requesting page 10 of 5 items (1 page total) → clamps to page 1, returns all data.
+        // Meta and data are now consistent (previously meta said page 1 but data was empty).
         let items: Vec<i32> = (1..=5).collect();
         let params = PageParams::new(10, 10);
         let resp = paginate_in_memory(&items, &params);
-        assert!(resp.data.is_empty());
+        assert_eq!(resp.meta.page, 1);
+        assert_eq!(resp.data.len(), 5);
+        assert_eq!(resp.data[0], 1);
     }
 
     // ── Serialization ──

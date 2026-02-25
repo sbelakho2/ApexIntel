@@ -1,9 +1,80 @@
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use apex_core::entities::*;
+use apex_core::validation::normalize_url;
+
+/// Escape ILIKE wildcard characters (`%` and `_`) in user input,
+/// then wrap with `%…%` for a contains-match pattern.
+fn ilike_pattern(raw: &str) -> String {
+    let escaped = raw.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{}%", escaped)
+}
+
+const MAX_LIST_LIMIT: i64 = 500;
+
+fn clamp_limit(limit: i64) -> i64 {
+    limit.clamp(1, MAX_LIST_LIMIT)
+}
+
+fn normalize_url_vec(urls: &[String]) -> Vec<String> {
+    urls.iter()
+        .filter_map(|u| normalize_url(u))
+        .collect()
+}
+
+fn validate_tags(tags: &[String]) -> Result<()> {
+    for tag in tags {
+        if tag.chars().count() > 64 {
+            return Err(anyhow::anyhow!("tag too long (max 64 chars)"));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WarningListFilters {
+    pub regions: Vec<String>,
+    pub severities: Vec<String>,
+    pub warning_types: Vec<String>,
+    pub acknowledged: Option<bool>,
+    pub date_from: Option<DateTime<Utc>>,
+    pub date_to: Option<DateTime<Utc>>,
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InsightListFilters {
+    pub regions: Vec<String>,
+    pub date_from: Option<DateTime<Utc>>,
+    pub date_to: Option<DateTime<Utc>>,
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompanyListFilters {
+    pub regions: Vec<String>,
+    pub search: Option<String>,
+    pub is_competitor: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WarningOrderBy {
+    CreatedAt,
+    Severity,
+    WarningType,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CompanyOrderBy {
+    Name,
+    Region,
+    ThreatScore,
+    UpdatedAt,
+}
 
 
 /// PostgreSQL connection pool wrapper with all CRUD operations.
@@ -16,6 +87,9 @@ impl PgStore {
     pub async fn connect(database_url: &str) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(20)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .idle_timeout(std::time::Duration::from_secs(600))
+            .max_lifetime(std::time::Duration::from_secs(1800))
             .connect(database_url)
             .await?;
         Ok(Self { pool })
@@ -28,6 +102,7 @@ impl PgStore {
     // ─── Companies ───────────────────────────────────────────────────────
 
     pub async fn insert_company(&self, c: &Company) -> Result<()> {
+        validate_tags(&c.industry_tags)?;
         sqlx::query(
             r#"INSERT INTO companies
                (id, name, legal_name, domain, country_code, region, company_type,
@@ -37,6 +112,19 @@ impl PgStore {
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
                ON CONFLICT (id) DO UPDATE SET
                  name = EXCLUDED.name,
+                 legal_name = EXCLUDED.legal_name,
+                 domain = EXCLUDED.domain,
+                 country_code = EXCLUDED.country_code,
+                 region = EXCLUDED.region,
+                 company_type = EXCLUDED.company_type,
+                 industry_tags = EXCLUDED.industry_tags,
+                 employee_estimate = EXCLUDED.employee_estimate,
+                 revenue_estimate_usd = EXCLUDED.revenue_estimate_usd,
+                 risk_score = EXCLUDED.risk_score,
+                 threat_score = EXCLUDED.threat_score,
+                 overlap_score = EXCLUDED.overlap_score,
+                 strategic_relevance = EXCLUDED.strategic_relevance,
+                 metadata = EXCLUDED.metadata,
                  updated_at = now()"#,
         )
         .bind(c.id)
@@ -103,6 +191,362 @@ impl PgStore {
         Ok(rows)
     }
 
+    pub async fn list_companies(
+        &self,
+        filters: &CompanyListFilters,
+        order_by: Option<CompanyOrderBy>,
+        desc: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<CompanyRow>> {
+        let limit = clamp_limit(limit);
+        let offset = offset.max(0);
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT id, name, legal_name, domain, country_code, region, company_type,
+                    industry_tags, employee_estimate, revenue_estimate_usd,
+                    risk_score, threat_score, overlap_score, strategic_relevance,
+        let limit = clamp_limit(limit);
+        let offset = offset.max(0);
+                    metadata, created_at, updated_at
+             FROM companies",
+        );
+
+        let mut has_where = false;
+        if !filters.regions.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("region = ANY(").push_bind(&filters.regions).push(")");
+            has_where = true;
+        }
+
+        if let Some(search) = &filters.search {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("(name ILIKE ").push_bind(ilike_pattern(search)).push(")");
+            has_where = true;
+        }
+
+        if let Some(is_competitor) = filters.is_competitor {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("COALESCE((metadata->>'is_competitor')::boolean, false) = ")
+                .push_bind(is_competitor);
+            let _ = has_where;
+        }
+
+        let order_by = order_by.unwrap_or(CompanyOrderBy::UpdatedAt);
+        qb.push(" ORDER BY ");
+        match order_by {
+            CompanyOrderBy::Name => qb.push("name"),
+            CompanyOrderBy::Region => qb.push("region"),
+            CompanyOrderBy::ThreatScore => qb.push("threat_score"),
+            CompanyOrderBy::UpdatedAt => qb.push("updated_at"),
+        };
+        qb.push(if desc { " DESC" } else { " ASC" });
+        // Tiebreaker for deterministic pagination when sort column has duplicates
+        qb.push(", id ASC");
+        qb.push(" LIMIT ").push_bind(limit);
+        qb.push(" OFFSET ").push_bind(offset);
+
+        let rows = qb.build_query_as::<CompanyRow>().fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    pub async fn count_companies(&self, filters: &CompanyListFilters) -> Result<i64> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT COUNT(*) FROM companies");
+        let mut has_where = false;
+
+        if !filters.regions.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("region = ANY(").push_bind(&filters.regions).push(")");
+            has_where = true;
+        }
+
+        if let Some(search) = &filters.search {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("(name ILIKE ").push_bind(ilike_pattern(search)).push(")");
+            has_where = true;
+        }
+
+        if let Some(is_competitor) = filters.is_competitor {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("COALESCE((metadata->>'is_competitor')::boolean, false) = ")
+                .push_bind(is_competitor);
+            let _ = has_where;
+        }
+
+        let row: (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
+        Ok(row.0)
+    }
+
+    // ─── Warnings ───────────────────────────────────────────────────────
+
+    pub async fn list_warnings(
+        &self,
+        filters: &WarningListFilters,
+        order_by: Option<WarningOrderBy>,
+        desc: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<WarningRow>> {
+        // Query relies on indexes for ts_utc, region, and severity to stay performant.
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT id, recipe_code, warning_type, title, description, severity, region,
+                    source_urls, entity_ids, confidence, ts_utc, acknowledged,
+                    acknowledged_by, acknowledged_at, acknowledged_note, created_at, updated_at
+             FROM warnings",
+        );
+
+        let mut has_where = false;
+        if !filters.regions.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("region = ANY(").push_bind(&filters.regions).push(")");
+            has_where = true;
+        }
+
+        if !filters.severities.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("severity = ANY(").push_bind(&filters.severities).push(")");
+            has_where = true;
+        }
+
+        if !filters.warning_types.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("warning_type = ANY(").push_bind(&filters.warning_types).push(")");
+            has_where = true;
+        }
+
+        if let Some(ack) = filters.acknowledged {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("acknowledged = ").push_bind(ack);
+            has_where = true;
+        }
+
+        if let Some(date_from) = filters.date_from {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("ts_utc >= ").push_bind(date_from);
+            has_where = true;
+        }
+
+        if let Some(date_to) = filters.date_to {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("ts_utc <= ").push_bind(date_to);
+            has_where = true;
+        }
+
+        if let Some(search) = &filters.search {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            let pattern = ilike_pattern(search);
+            qb.push("(title ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR description ILIKE ")
+                .push_bind(pattern)
+                .push(")");
+            let _ = has_where;
+        }
+
+        let order_by = order_by.unwrap_or(WarningOrderBy::CreatedAt);
+        qb.push(" ORDER BY ");
+        match order_by {
+            WarningOrderBy::CreatedAt => qb.push("ts_utc"),
+            WarningOrderBy::WarningType => qb.push("warning_type"),
+            WarningOrderBy::Severity => qb.push(
+                "CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END",
+            ),
+        };
+        qb.push(if desc { " DESC" } else { " ASC" });
+        // Tiebreaker for deterministic pagination when sort column has duplicates
+        qb.push(", id ASC");
+        qb.push(" LIMIT ").push_bind(limit);
+        qb.push(" OFFSET ").push_bind(offset);
+
+        let rows = qb.build_query_as::<WarningRow>().fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    pub async fn count_warnings(&self, filters: &WarningListFilters) -> Result<i64> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT COUNT(*) FROM warnings");
+        let mut has_where = false;
+
+        if !filters.regions.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("region = ANY(").push_bind(&filters.regions).push(")");
+            has_where = true;
+        }
+
+        if !filters.severities.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("severity = ANY(").push_bind(&filters.severities).push(")");
+            has_where = true;
+        }
+
+        if !filters.warning_types.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("warning_type = ANY(").push_bind(&filters.warning_types).push(")");
+            has_where = true;
+        }
+
+        if let Some(ack) = filters.acknowledged {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("acknowledged = ").push_bind(ack);
+            has_where = true;
+        }
+
+        if let Some(date_from) = filters.date_from {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("ts_utc >= ").push_bind(date_from);
+            has_where = true;
+        }
+
+        if let Some(date_to) = filters.date_to {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("ts_utc <= ").push_bind(date_to);
+            has_where = true;
+        }
+
+        if let Some(search) = &filters.search {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            let pattern = ilike_pattern(search);
+            qb.push("(title ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR description ILIKE ")
+                .push_bind(pattern)
+                .push(")");
+            let _ = has_where;
+        }
+
+        let row: (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
+        Ok(row.0)
+    }
+
+    /// Acknowledge a warning. Returns:
+    /// - Ok(Some(true))  if the warning was found and newly acknowledged
+    /// - Ok(Some(false)) if the warning exists but was already acknowledged
+    /// - Ok(None)        if the warning was not found
+    pub async fn acknowledge_warning(
+        &self,
+        id: Uuid,
+        user_id: &str,
+        note: Option<&str>,
+    ) -> Result<Option<bool>> {
+        let res = sqlx::query(
+            r#"UPDATE warnings
+               SET acknowledged = TRUE,
+                   acknowledged_by = $2,
+                   acknowledged_at = now(),
+                   acknowledged_note = $3,
+                   updated_at = now()
+               WHERE id = $1 AND acknowledged = FALSE"#,
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(note)
+        .execute(&self.pool)
+        .await?;
+        if res.rows_affected() == 1 {
+            return Ok(Some(true));
+        }
+        // Distinguish "not found" from "already acknowledged"
+        let exists: (bool,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM warnings WHERE id = $1)")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?;
+        if exists.0 {
+            Ok(Some(false)) // exists but already acknowledged
+        } else {
+            Ok(None) // not found
+        }
+    }
+
+    // ─── Insights ───────────────────────────────────────────────────────
+
+    pub async fn list_insights(
+        &self,
+        filters: &InsightListFilters,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<InsightRow>> {
+        // Query relies on indexes for created_at and region to stay performant.
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT id, title, summary, insight_type, region, confidence,
+                    evidence_urls, entity_ids, tags, created_at, updated_at
+             FROM insights",
+        );
+
+        let mut has_where = false;
+        if !filters.regions.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("region = ANY(").push_bind(&filters.regions).push(")");
+            has_where = true;
+        }
+
+        if let Some(date_from) = filters.date_from {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("created_at >= ").push_bind(date_from);
+            has_where = true;
+        }
+
+        if let Some(date_to) = filters.date_to {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("created_at <= ").push_bind(date_to);
+            has_where = true;
+        }
+
+        if let Some(search) = &filters.search {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            let pattern = ilike_pattern(search);
+            qb.push("(title ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR summary ILIKE ")
+                .push_bind(pattern)
+                .push(")");
+            let _ = has_where;
+        }
+
+        // Tiebreaker for deterministic pagination when sort column has duplicates
+        qb.push(" ORDER BY created_at DESC, id ASC ");
+        qb.push(" LIMIT ").push_bind(limit);
+        qb.push(" OFFSET ").push_bind(offset);
+
+        let rows = qb.build_query_as::<InsightRow>().fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    pub async fn count_insights(&self, filters: &InsightListFilters) -> Result<i64> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT COUNT(*) FROM insights");
+        let mut has_where = false;
+
+        if !filters.regions.is_empty() {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("region = ANY(").push_bind(&filters.regions).push(")");
+            has_where = true;
+        }
+
+        if let Some(date_from) = filters.date_from {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("created_at >= ").push_bind(date_from);
+            has_where = true;
+        }
+
+        if let Some(date_to) = filters.date_to {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            qb.push("created_at <= ").push_bind(date_to);
+            has_where = true;
+        }
+
+        if let Some(search) = &filters.search {
+            qb.push(if has_where { " AND " } else { " WHERE " });
+            let pattern = ilike_pattern(search);
+            qb.push("(title ILIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR summary ILIKE ")
+                .push_bind(pattern)
+                .push(")");
+            let _ = has_where;
+        }
+
+        let row: (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
+        Ok(row.0)
+    }
+
     // ─── Sites ───────────────────────────────────────────────────────────
 
     pub async fn insert_site(&self, s: &Site) -> Result<()> {
@@ -114,6 +558,18 @@ impl PgStore {
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
                ON CONFLICT (id) DO UPDATE SET
                  name = EXCLUDED.name,
+                 address = EXCLUDED.address,
+                 city = EXCLUDED.city,
+                 country_code = EXCLUDED.country_code,
+                 region = EXCLUDED.region,
+                 lat = EXCLUDED.lat,
+                 lon = EXCLUDED.lon,
+                 site_type = EXCLUDED.site_type,
+                 capabilities = EXCLUDED.capabilities,
+                 certifications = EXCLUDED.certifications,
+                 employee_estimate = EXCLUDED.employee_estimate,
+                 free_zone = EXCLUDED.free_zone,
+                 metadata = EXCLUDED.metadata,
                  updated_at = now()"#,
         )
         .bind(s.id)
@@ -162,7 +618,17 @@ impl PgStore {
                 influence_score, metadata, created_at, updated_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                ON CONFLICT (id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 name_ar = EXCLUDED.name_ar,
+                 name_fr = EXCLUDED.name_fr,
+                 primary_org_id = EXCLUDED.primary_org_id,
                  current_role = EXCLUDED.current_role,
+                 role_family = EXCLUDED.role_family,
+                 region = EXCLUDED.region,
+                 country_code = EXCLUDED.country_code,
+                 priority_vector = EXCLUDED.priority_vector,
+                 influence_score = EXCLUDED.influence_score,
+                 metadata = EXCLUDED.metadata,
                  updated_at = now()"#,
         )
         .bind(p.id)
@@ -289,6 +755,8 @@ impl PgStore {
                DO UPDATE SET
                  weight = EXCLUDED.weight,
                  confidence = EXCLUDED.confidence,
+                 evidence_ids = EXCLUDED.evidence_ids,
+                 metadata = EXCLUDED.metadata,
                  last_seen = now()"#,
         )
         .bind(e.id)
@@ -359,6 +827,12 @@ impl PgStore {
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                ON CONFLICT (id) DO UPDATE SET
                  status = EXCLUDED.status,
+                 issuing_body = EXCLUDED.issuing_body,
+                 valid_from = EXCLUDED.valid_from,
+                 valid_until = EXCLUDED.valid_until,
+                 scope = EXCLUDED.scope,
+                 evidence_url = EXCLUDED.evidence_url,
+                 metadata = EXCLUDED.metadata,
                  updated_at = now()"#,
         )
         .bind(c.id)
@@ -432,6 +906,7 @@ impl PgStore {
         person_id: Uuid,
         limit: i64,
     ) -> Result<Vec<ArtifactRow>> {
+        let limit = clamp_limit(limit);
         let rows = sqlx::query_as::<_, ArtifactRow>(
             "SELECT id, person_id, artifact_type, title, content_summary,
                     url, source_domain, language, topics, sentiment_score,
@@ -451,12 +926,17 @@ impl PgStore {
     // ─── Capabilities ────────────────────────────────────────────────────
 
     pub async fn insert_capability(&self, cap: &Capability) -> Result<()> {
+        let evidence_urls = normalize_url_vec(&cap.evidence_urls);
         sqlx::query(
             r#"INSERT INTO capabilities
                (id, company_id, site_id, capability, proof_grade,
                 evidence_urls, first_seen, last_confirmed, metadata)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                ON CONFLICT (id) DO UPDATE SET
+                 capability = EXCLUDED.capability,
+                 proof_grade = EXCLUDED.proof_grade,
+                 evidence_urls = EXCLUDED.evidence_urls,
+                 metadata = EXCLUDED.metadata,
                  last_confirmed = now()"#,
         )
         .bind(cap.id)
@@ -464,7 +944,7 @@ impl PgStore {
         .bind(cap.site_id)
         .bind(&cap.capability)
         .bind(cap.proof_grade.as_str())
-        .bind(&cap.evidence_urls)
+        .bind(&evidence_urls)
         .bind(cap.first_seen)
         .bind(cap.last_confirmed)
         .bind(&cap.metadata)
@@ -498,9 +978,8 @@ impl PgStore {
 
     /// Run the full schema creation. Idempotent via IF NOT EXISTS.
     pub async fn run_migrations(&self) -> Result<()> {
-        sqlx::query(include_str!("../migrations/init.sql"))
-            .execute(&self.pool)
-            .await?;
+        // Use versioned migrations from ./migrations so schema changes are tracked over time.
+        sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
     }
 }
@@ -563,6 +1042,42 @@ pub struct PersonRow {
     pub priority_vector: Option<serde_json::Value>,
     pub influence_score: Option<f64>,
     pub metadata: Option<serde_json::Value>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct WarningRow {
+    pub id: Uuid,
+    pub recipe_code: Option<String>,
+    pub warning_type: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub severity: String,
+    pub region: Option<String>,
+    pub source_urls: Option<Vec<String>>,
+    pub entity_ids: Option<Vec<Uuid>>,
+    pub confidence: Option<f64>,
+    pub ts_utc: DateTime<Utc>,
+    pub acknowledged: bool,
+    pub acknowledged_by: Option<String>,
+    pub acknowledged_at: Option<DateTime<Utc>>,
+    pub acknowledged_note: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct InsightRow {
+    pub id: Uuid,
+    pub title: String,
+    pub summary: String,
+    pub insight_type: Option<String>,
+    pub region: Option<String>,
+    pub confidence: Option<f64>,
+    pub evidence_urls: Option<Vec<String>>,
+    pub entity_ids: Option<Vec<Uuid>>,
+    pub tags: Option<Vec<String>>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }

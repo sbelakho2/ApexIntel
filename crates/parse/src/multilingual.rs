@@ -1,5 +1,7 @@
 use whatlang::{detect, Lang};
 
+use crate::normalizer;
+
 /// Detect language and return ISO 639-1 code.
 pub fn detect_language(text: &str) -> String {
     if text.trim().is_empty() {
@@ -111,11 +113,17 @@ pub fn certification_keywords(_lang: &str) -> Vec<&'static str> {
 }
 
 /// Check if text contains any of the given keywords (case-insensitive).
+/// Strips HTML tags and diacritics before matching (B107, B108).
 pub fn contains_keywords(text: &str, keywords: &[&str]) -> Vec<String> {
-    let lower = text.to_lowercase();
+    let cleaned = normalizer::strip_html_tags(text);
+    let stripped = normalizer::strip_diacritics(&cleaned);
+    let lower = normalizer::normalize_whitespace(&stripped).to_lowercase();
     keywords
         .iter()
-        .filter(|kw| lower.contains(&kw.to_lowercase()))
+        .filter(|kw| {
+            let kw_lower = normalizer::strip_diacritics(&kw.to_lowercase());
+            lower.contains(&kw_lower)
+        })
         .map(|kw| kw.to_string())
         .collect()
 }
@@ -160,6 +168,11 @@ mod tests {
     #[test]
     fn test_detect_empty() {
         assert_eq!(detect_language(""), "en");
+    }
+
+    #[test]
+    fn test_detect_gibberish_defaults() {
+        assert_eq!(detect_language("@@@###$$$"), "en");
     }
 
     #[test]
@@ -212,5 +225,35 @@ mod tests {
     fn test_keyword_relevance_empty() {
         assert_eq!(keyword_relevance_score("", &["test"]), 0.0);
         assert_eq!(keyword_relevance_score("text", &[]), 0.0);
+    }
+
+    // B104: Mixed language content edge case
+    #[test]
+    fn test_contains_keywords_mixed_language() {
+        let text = "The supplier provides fournisseur services and 供应商 solutions.";
+        let kws = vec!["supplier", "fournisseur", "供应商", "missing"];
+        let found = contains_keywords(text, &kws);
+        assert_eq!(found.len(), 3);
+        assert!(found.contains(&"supplier".to_string()));
+        assert!(found.contains(&"fournisseur".to_string()));
+        assert!(found.contains(&"供应商".to_string()));
+    }
+
+    // B107: Keyword scoring ignores markup remnants
+    #[test]
+    fn test_keyword_score_strips_markup() {
+        let text = "<div class='supplier'>We are an EMS <b>supplier</b></div>";
+        let kws = vec!["supplier", "EMS"];
+        let score = keyword_relevance_score(text, &kws);
+        assert!((score - 1.0).abs() < 0.001); // both found
+    }
+
+    // B108: Diacritics normalization in matching
+    #[test]
+    fn test_contains_keywords_diacritics() {
+        let text = "Le fournisseur offre des résistances électroniques.";
+        let kws = vec!["resistances", "electroniques"];
+        let found = contains_keywords(text, &kws);
+        assert_eq!(found.len(), 2);
     }
 }

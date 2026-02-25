@@ -3,6 +3,27 @@ name = "apex-learning"
 version = "0.1.0"
 edition = "2021"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature flags (B290)
+#
+# `experimental` — enables the `hypothesis` and `negative_control` modules.
+#
+# `hypothesis` builds LLM prompt templates from mined pattern candidates.
+#   Its output quality is tightly coupled to the underlying LLM; the prompts
+#   and output schema are expected to evolve alongside model upgrades.
+#
+# `negative_control` runs synthetic null-signal back-tests to calibrate FPR.
+#   The methodology is under active refinement; results are not yet suitable
+#   for automated promotion decisions without human review.
+#
+# Usage:
+#   cargo build -p apex-learning --features experimental
+#   cargo test  -p apex-learning --features experimental
+# ─────────────────────────────────────────────────────────────────────────────
+[features]
+default = []
+experimental = []
+
 [dependencies]
 apex-core = { path = "../core" }
 apex-stats = { path = "../stats" }

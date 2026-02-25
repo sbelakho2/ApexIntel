@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Query parameters for listing recipes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListRecipesQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
@@ -43,6 +44,7 @@ impl RecipeSortField {
 
 /// Promote recipe request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromoteRequest {
     pub promoted_by: String,
     pub reason: Option<String>,
@@ -152,7 +154,7 @@ pub fn validate_promote(req: &PromoteRequest) -> Result<(), String> {
         return Err("promoted_by is required".to_string());
     }
     if let Some(reason) = &req.reason {
-        if reason.len() > 500 {
+        if reason.chars().count() > 500 {
             return Err("reason must be <= 500 characters".to_string());
         }
     }

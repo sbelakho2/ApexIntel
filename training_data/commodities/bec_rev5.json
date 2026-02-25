@@ -1,0 +1,1254 @@
+{
+"more": false,
+"classCode": "B5",
+"className": "BEC Rev.5",
+"minimumInputLength": 0,
+"results":[
+	  {
+		"id": "TOTAL",
+		"text": "Total of all BEC5 categories",
+		"parent": "#",
+		"isLeaf": "0",
+		"aggrlevel": 0
+	  },
+	  {
+		"id": "1",
+		"text": "1 - Agriculture, forestry, fishing, food, beverages, tobacco ",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "2",
+		"text": "2 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment ",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "3",
+		"text": "3 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  ",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "4",
+		"text": "4 - Textile, apparel, shoes ",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "5",
+		"text": "5 - Transport equipment and services, travel, postal services",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "6",
+		"text": "6 - ICT, media, computers, business and financial services",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "7",
+		"text": "7 - Health, pharmaceuticals, education, cultural, sport",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "8",
+		"text": "8 - Government, military and other",
+		"parent": "TOTAL",
+		"isLeaf": "0",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "9",
+		"text": "9 - Not-elsewhere-specified (NES)",
+		"parent": "TOTAL",
+		"isLeaf": "1",
+		"aggrlevel": 1
+	  },
+	  {
+		"id": "11",
+		"text": "11 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods",
+		"parent": "1",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "12",
+		"text": "12 - Agriculture, forestry, fishing, food, beverages, tobacco |Services",
+		"parent": "1",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "21",
+		"text": "21 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods",
+		"parent": "2",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "22",
+		"text": "22 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Services",
+		"parent": "2",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "31",
+		"text": "31 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods",
+		"parent": "3",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "32",
+		"text": "32 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Services",
+		"parent": "3",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "41",
+		"text": "41 - Textile, apparel, shoes |Goods",
+		"parent": "4",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "42",
+		"text": "42 - Textile, apparel, shoes |Services",
+		"parent": "4",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "51",
+		"text": "51 - Transport equipment and services, travel, postal services|Goods",
+		"parent": "5",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "52",
+		"text": "52 - Transport equipment and services, travel, postal services|Services",
+		"parent": "5",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "61",
+		"text": "61 - ICT, media, computers, business and financial services|Goods",
+		"parent": "6",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "62",
+		"text": "62 - ICT, media, computers, business and financial services|Services",
+		"parent": "6",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "71",
+		"text": "71 - Health, pharmaceuticals, education, cultural, sport|Goods",
+		"parent": "7",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "72",
+		"text": "72 - Health, pharmaceuticals, education, cultural, sport|Services",
+		"parent": "7",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "81",
+		"text": "81 - Government, military and other|Goods",
+		"parent": "8",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "82",
+		"text": "82 - Government, military and other|Services",
+		"parent": "8",
+		"isLeaf": "0",
+		"aggrlevel": 2
+	  },
+	  {
+		"id": "111",
+		"text": "111 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Intermediate Consumption",
+		"parent": "11",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "112",
+		"text": "112 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Gross Fixed Capital Formation",
+		"parent": "11",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "113",
+		"text": "113 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Final Consumption",
+		"parent": "11",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "121",
+		"text": "121 - Agriculture, forestry, fishing, food, beverages, tobacco |Services|Intermediate Consumption",
+		"parent": "12",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "123",
+		"text": "123 - Agriculture, forestry, fishing, food, beverages, tobacco |Services|Final Consumption",
+		"parent": "12",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "211",
+		"text": "211 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Intermediate Consumption",
+		"parent": "21",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "212",
+		"text": "212 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Gross Fixed Capital Formation",
+		"parent": "21",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "213",
+		"text": "213 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Final Consumption",
+		"parent": "21",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "221",
+		"text": "221 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Services|Intermediate Consumption",
+		"parent": "22",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "223",
+		"text": "223 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Services|Final Consumption",
+		"parent": "22",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "311",
+		"text": "311 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Intermediate Consumption",
+		"parent": "31",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "312",
+		"text": "312 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Gross Fixed Capital Formation",
+		"parent": "31",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "313",
+		"text": "313 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Final Consumption",
+		"parent": "31",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "321",
+		"text": "321 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Services|Intermediate Consumption",
+		"parent": "32",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "323",
+		"text": "323 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Services|Final Consumption",
+		"parent": "32",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "411",
+		"text": "411 - Textile, apparel, shoes |Goods|Intermediate Consumption",
+		"parent": "41",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "412",
+		"text": "412 - Textile, apparel, shoes |Goods|Gross Fixed Capital Formation",
+		"parent": "41",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "413",
+		"text": "413 - Textile, apparel, shoes |Goods|Final Consumption",
+		"parent": "41",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "421",
+		"text": "421 - Textile, apparel, shoes |Services|Intermediate Consumption",
+		"parent": "42",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "423",
+		"text": "423 - Textile, apparel, shoes |Services|Final Consumption",
+		"parent": "42",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "511",
+		"text": "511 - Transport equipment and services, travel, postal services|Goods|Intermediate Consumption",
+		"parent": "51",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "512",
+		"text": "512 - Transport equipment and services, travel, postal services|Goods|Gross Fixed Capital Formation",
+		"parent": "51",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "513",
+		"text": "513 - Transport equipment and services, travel, postal services|Goods|Final Consumption",
+		"parent": "51",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "521",
+		"text": "521 - Transport equipment and services, travel, postal services|Services|Intermediate Consumption",
+		"parent": "52",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "523",
+		"text": "523 - Transport equipment and services, travel, postal services|Services|Final Consumption",
+		"parent": "52",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "611",
+		"text": "611 - ICT, media, computers, business and financial services|Goods|Intermediate Consumption",
+		"parent": "61",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "612",
+		"text": "612 - ICT, media, computers, business and financial services|Goods|Gross Fixed Capital Formation",
+		"parent": "61",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "613",
+		"text": "613 - ICT, media, computers, business and financial services|Goods|Final Consumption",
+		"parent": "61",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "621",
+		"text": "621 - ICT, media, computers, business and financial services|Services|Intermediate Consumption",
+		"parent": "62",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "623",
+		"text": "623 - ICT, media, computers, business and financial services|Services|Final Consumption",
+		"parent": "62",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "711",
+		"text": "711 - Health, pharmaceuticals, education, cultural, sport|Goods|Intermediate Consumption",
+		"parent": "71",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "712",
+		"text": "712 - Health, pharmaceuticals, education, cultural, sport|Goods|Gross Fixed Capital Formation",
+		"parent": "71",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "713",
+		"text": "713 - Health, pharmaceuticals, education, cultural, sport|Goods|Final Consumption",
+		"parent": "71",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "721",
+		"text": "721 - Health, pharmaceuticals, education, cultural, sport|Services|Intermediate Consumption",
+		"parent": "72",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "723",
+		"text": "723 - Health, pharmaceuticals, education, cultural, sport|Services|Final Consumption",
+		"parent": "72",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "811",
+		"text": "811 - Government, military and other|Goods|Intermediate Consumption",
+		"parent": "81",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "812",
+		"text": "812 - Government, military and other|Goods|Gross Fixed Capital Formation",
+		"parent": "81",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "813",
+		"text": "813 - Government, military and other|Goods|Final Consumption",
+		"parent": "81",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "821",
+		"text": "821 - Government, military and other|Services|Intermediate Consumption",
+		"parent": "82",
+		"isLeaf": "0",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "823",
+		"text": "823 - Government, military and other|Services|Final Consumption",
+		"parent": "82",
+		"isLeaf": "1",
+		"aggrlevel": 3
+	  },
+	  {
+		"id": "1111",
+		"text": "1111 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Intermediate Consumption|Primary",
+		"parent": "111",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "1112",
+		"text": "1112 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Intermediate Consumption|Processed",
+		"parent": "111",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "1131",
+		"text": "1131 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Final Consumption|Primary",
+		"parent": "113",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "1132",
+		"text": "1132 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Final Consumption|Processed",
+		"parent": "113",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "2111",
+		"text": "2111 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Intermediate Consumption|Primary",
+		"parent": "211",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "2112",
+		"text": "2112 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Intermediate Consumption|Processed",
+		"parent": "211",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "2131",
+		"text": "2131 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Final Consumption|Primary",
+		"parent": "213",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "2132",
+		"text": "2132 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Final Consumption|Processed",
+		"parent": "213",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "3111",
+		"text": "3111 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Intermediate Consumption|Primary",
+		"parent": "311",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "3112",
+		"text": "3112 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Intermediate Consumption|Processed",
+		"parent": "311",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "3131",
+		"text": "3131 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Final Consumption|Primary",
+		"parent": "313",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "3132",
+		"text": "3132 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Final Consumption|Processed",
+		"parent": "313",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "4111",
+		"text": "4111 - Textile, apparel, shoes |Goods|Intermediate Consumption|Primary",
+		"parent": "411",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "4112",
+		"text": "4112 - Textile, apparel, shoes |Goods|Intermediate Consumption|Processed",
+		"parent": "411",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "4131",
+		"text": "4131 - Textile, apparel, shoes |Goods|Final Consumption|Primary",
+		"parent": "413",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "4132",
+		"text": "4132 - Textile, apparel, shoes |Goods|Final Consumption|Processed",
+		"parent": "413",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "5111",
+		"text": "5111 - Transport equipment and services, travel, postal services|Goods|Intermediate Consumption|Primary",
+		"parent": "511",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "5112",
+		"text": "5112 - Transport equipment and services, travel, postal services|Goods|Intermediate Consumption|Processed",
+		"parent": "511",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "5131",
+		"text": "5131 - Transport equipment and services, travel, postal services|Goods|Final Consumption|Primary",
+		"parent": "513",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "5132",
+		"text": "5132 - Transport equipment and services, travel, postal services|Goods|Final Consumption|Processed",
+		"parent": "513",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "6111",
+		"text": "6111 - ICT, media, computers, business and financial services|Goods|Intermediate Consumption|Primary",
+		"parent": "611",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "6112",
+		"text": "6112 - ICT, media, computers, business and financial services|Goods|Intermediate Consumption|Processed",
+		"parent": "611",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "6131",
+		"text": "6131 - ICT, media, computers, business and financial services|Goods|Final Consumption|Primary",
+		"parent": "613",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "6132",
+		"text": "6132 - ICT, media, computers, business and financial services|Goods|Final Consumption|Processed",
+		"parent": "613",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "7111",
+		"text": "7111 - Health, pharmaceuticals, education, cultural, sport|Goods|Intermediate Consumption|Primary",
+		"parent": "711",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "7112",
+		"text": "7112 - Health, pharmaceuticals, education, cultural, sport|Goods|Intermediate Consumption|Processed",
+		"parent": "711",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "7131",
+		"text": "7131 - Health, pharmaceuticals, education, cultural, sport|Goods|Final Consumption|Primary",
+		"parent": "713",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "7132",
+		"text": "7132 - Health, pharmaceuticals, education, cultural, sport|Goods|Final Consumption|Processed",
+		"parent": "713",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "8111",
+		"text": "8111 - Government, military and other|Goods|Intermediate Consumption|Primary",
+		"parent": "811",
+		"isLeaf": "1",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "8112",
+		"text": "8112 - Government, military and other|Goods|Intermediate Consumption|Processed",
+		"parent": "811",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "8131",
+		"text": "8131 - Government, military and other|Goods|Final Consumption|Primary",
+		"parent": "813",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "8132",
+		"text": "8132 - Government, military and other|Goods|Final Consumption|Processed",
+		"parent": "813",
+		"isLeaf": "0",
+		"aggrlevel": 4
+	  },
+	  {
+		"id": "111210",
+		"text": "111210 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "1112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "111220",
+		"text": "111220 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "1112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "112010",
+		"text": "112010 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "112020",
+		"text": "112020 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "113101",
+		"text": "113101 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Final Consumption|Primary|Non-durable",
+		"parent": "1131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "113102",
+		"text": "113102 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Final Consumption|Primary|Durable",
+		"parent": "1131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "113201",
+		"text": "113201 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Final Consumption|Processed|Non-durable",
+		"parent": "1132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "113202",
+		"text": "113202 - Agriculture, forestry, fishing, food, beverages, tobacco |Goods|Final Consumption|Processed|Durable",
+		"parent": "1132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "121010",
+		"text": "121010 - Agriculture, forestry, fishing, food, beverages, tobacco |Services|Intermediate Consumption|Generic",
+		"parent": "121",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "121020",
+		"text": "121020 - Agriculture, forestry, fishing, food, beverages, tobacco |Services|Intermediate Consumption|Specific",
+		"parent": "121",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "211210",
+		"text": "211210 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "2112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "211220",
+		"text": "211220 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "2112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "212010",
+		"text": "212010 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "212",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "212020",
+		"text": "212020 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "212",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "213101",
+		"text": "213101 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Final Consumption|Primary|Non-durable",
+		"parent": "2131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "213102",
+		"text": "213102 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Final Consumption|Primary|Durable",
+		"parent": "2131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "213201",
+		"text": "213201 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Final Consumption|Processed|Non-durable",
+		"parent": "2132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "213202",
+		"text": "213202 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Goods|Final Consumption|Processed|Durable",
+		"parent": "2132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "221010",
+		"text": "221010 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Services|Intermediate Consumption|Generic",
+		"parent": "221",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "221020",
+		"text": "221020 - Mining, quarrying, refinery, fuels, chemicals, electricity, water, waste treatment |Services|Intermediate Consumption|Specific",
+		"parent": "221",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "311210",
+		"text": "311210 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "3112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "311220",
+		"text": "311220 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "3112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "312010",
+		"text": "312010 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "312",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "312020",
+		"text": "312020 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "312",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "313101",
+		"text": "313101 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Final Consumption|Primary|Non-durable",
+		"parent": "3131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "313102",
+		"text": "313102 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Final Consumption|Primary|Durable",
+		"parent": "3131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "313201",
+		"text": "313201 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Final Consumption|Processed|Non-durable",
+		"parent": "3132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "313202",
+		"text": "313202 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Goods|Final Consumption|Processed|Durable",
+		"parent": "3132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "321010",
+		"text": "321010 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Services|Intermediate Consumption|Generic",
+		"parent": "321",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "321020",
+		"text": "321020 - Construction, wood, glass, stone, basic metals, housing, electrical appliances, furniture  |Services|Intermediate Consumption|Specific",
+		"parent": "321",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "411210",
+		"text": "411210 - Textile, apparel, shoes |Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "4112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "411220",
+		"text": "411220 - Textile, apparel, shoes |Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "4112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "412010",
+		"text": "412010 - Textile, apparel, shoes |Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "412",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "412020",
+		"text": "412020 - Textile, apparel, shoes |Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "412",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "413101",
+		"text": "413101 - Textile, apparel, shoes |Goods|Final Consumption|Primary|Non-durable",
+		"parent": "4131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "413102",
+		"text": "413102 - Textile, apparel, shoes |Goods|Final Consumption|Primary|Durable",
+		"parent": "4131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "413201",
+		"text": "413201 - Textile, apparel, shoes |Goods|Final Consumption|Processed|Non-durable",
+		"parent": "4132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "413202",
+		"text": "413202 - Textile, apparel, shoes |Goods|Final Consumption|Processed|Durable",
+		"parent": "4132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "421010",
+		"text": "421010 - Textile, apparel, shoes |Services|Intermediate Consumption|Generic",
+		"parent": "421",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "421020",
+		"text": "421020 - Textile, apparel, shoes |Services|Intermediate Consumption|Specific",
+		"parent": "421",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "511210",
+		"text": "511210 - Transport equipment and services, travel, postal services|Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "5112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "511220",
+		"text": "511220 - Transport equipment and services, travel, postal services|Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "5112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "512010",
+		"text": "512010 - Transport equipment and services, travel, postal services|Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "512",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "512020",
+		"text": "512020 - Transport equipment and services, travel, postal services|Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "512",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "513101",
+		"text": "513101 - Transport equipment and services, travel, postal services|Goods|Final Consumption|Primary|Non-durable",
+		"parent": "5131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "513102",
+		"text": "513102 - Transport equipment and services, travel, postal services|Goods|Final Consumption|Primary|Durable",
+		"parent": "5131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "513201",
+		"text": "513201 - Transport equipment and services, travel, postal services|Goods|Final Consumption|Processed|Non-durable",
+		"parent": "5132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "513202",
+		"text": "513202 - Transport equipment and services, travel, postal services|Goods|Final Consumption|Processed|Durable",
+		"parent": "5132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "521010",
+		"text": "521010 - Transport equipment and services, travel, postal services|Services|Intermediate Consumption|Generic",
+		"parent": "521",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "521020",
+		"text": "521020 - Transport equipment and services, travel, postal services|Services|Intermediate Consumption|Specific",
+		"parent": "521",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "611210",
+		"text": "611210 - ICT, media, computers, business and financial services|Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "6112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "611220",
+		"text": "611220 - ICT, media, computers, business and financial services|Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "6112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "612010",
+		"text": "612010 - ICT, media, computers, business and financial services|Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "612",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "612020",
+		"text": "612020 - ICT, media, computers, business and financial services|Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "612",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "613101",
+		"text": "613101 - ICT, media, computers, business and financial services|Goods|Final Consumption|Primary|Non-durable",
+		"parent": "6131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "613102",
+		"text": "613102 - ICT, media, computers, business and financial services|Goods|Final Consumption|Primary|Durable",
+		"parent": "6131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "613201",
+		"text": "613201 - ICT, media, computers, business and financial services|Goods|Final Consumption|Processed|Non-durable",
+		"parent": "6132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "613202",
+		"text": "613202 - ICT, media, computers, business and financial services|Goods|Final Consumption|Processed|Durable",
+		"parent": "6132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "621010",
+		"text": "621010 - ICT, media, computers, business and financial services|Services|Intermediate Consumption|Generic",
+		"parent": "621",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "621020",
+		"text": "621020 - ICT, media, computers, business and financial services|Services|Intermediate Consumption|Specific",
+		"parent": "621",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "711210",
+		"text": "711210 - Health, pharmaceuticals, education, cultural, sport|Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "7112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "711220",
+		"text": "711220 - Health, pharmaceuticals, education, cultural, sport|Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "7112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "712010",
+		"text": "712010 - Health, pharmaceuticals, education, cultural, sport|Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "712",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "712020",
+		"text": "712020 - Health, pharmaceuticals, education, cultural, sport|Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "712",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "713101",
+		"text": "713101 - Health, pharmaceuticals, education, cultural, sport|Goods|Final Consumption|Primary|Non-durable",
+		"parent": "7131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "713102",
+		"text": "713102 - Health, pharmaceuticals, education, cultural, sport|Goods|Final Consumption|Primary|Durable",
+		"parent": "7131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "713201",
+		"text": "713201 - Health, pharmaceuticals, education, cultural, sport|Goods|Final Consumption|Processed|Non-durable",
+		"parent": "7132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "713202",
+		"text": "713202 - Health, pharmaceuticals, education, cultural, sport|Goods|Final Consumption|Processed|Durable",
+		"parent": "7132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "721010",
+		"text": "721010 - Health, pharmaceuticals, education, cultural, sport|Services|Intermediate Consumption|Generic",
+		"parent": "721",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "721020",
+		"text": "721020 - Health, pharmaceuticals, education, cultural, sport|Services|Intermediate Consumption|Specific",
+		"parent": "721",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "811210",
+		"text": "811210 - Government, military and other|Goods|Intermediate Consumption|Processed|Generic",
+		"parent": "8112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "811220",
+		"text": "811220 - Government, military and other|Goods|Intermediate Consumption|Processed|Specific",
+		"parent": "8112",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "812010",
+		"text": "812010 - Government, military and other|Goods|Gross Fixed Capital Formation|Generic",
+		"parent": "812",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "812020",
+		"text": "812020 - Government, military and other|Goods|Gross Fixed Capital Formation|Specific",
+		"parent": "812",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "813101",
+		"text": "813101 - Government, military and other|Goods|Final Consumption|Primary|Non-durable",
+		"parent": "8131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "813102",
+		"text": "813102 - Government, military and other|Goods|Final Consumption|Primary|Durable",
+		"parent": "8131",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "813201",
+		"text": "813201 - Government, military and other|Goods|Final Consumption|Processed|Non-durable",
+		"parent": "8132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "813202",
+		"text": "813202 - Government, military and other|Goods|Final Consumption|Processed|Durable",
+		"parent": "8132",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "821010",
+		"text": "821010 - Government, military and other|Services|Intermediate Consumption|Generic",
+		"parent": "821",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  },
+	  {
+		"id": "821020",
+		"text": "821020 - Government, military and other|Services|Intermediate Consumption|Specific",
+		"parent": "821",
+		"isLeaf": "1",
+		"aggrlevel": 6
+	  }
+	]
+}

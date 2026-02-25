@@ -1,0 +1,267 @@
+{
+  "description": "Seed URLs and metadata for domain-specific text corpus collection (DAPT Phase 1)",
+  "total_target_documents": 500000,
+  "collection_method": "Scheduled crawl via crates/crawl module",
+  "sources": [
+    {
+      "type": "ems_industry_articles",
+      "target_count": 50000,
+      "seed_urls": [
+        "https://www.emsnow.com/",
+        "https://www.circuitsassembly.com/",
+        "https://smt.iconnect007.com/",
+        "https://www.evertiq.com/",
+        "https://www.emsasia.net/",
+        "https://www.smtnet.com/",
+        "https://www.assemblymag.com/",
+        "https://www.ipc.org/news",
+        "https://www.semi.org/en/news",
+        "https://www.globalsmtandpackaging.com/",
+        "https://www.electronicsweekly.com/",
+        "https://www.eenewseurope.com/",
+        "https://www.electronicdesign.com/",
+        "https://www.embedded.com/",
+        "https://www.fierceelectronics.com/"
+      ],
+      "languages": ["en"],
+      "crawl_depth": 3,
+      "date_range": "2019-01-01 to 2025-06-01",
+      "keywords": ["EMS", "electronics manufacturing", "SMT", "PCB assembly", "contract manufacturing", "PCBA", "OEM", "supply chain", "component shortage", "NPI"]
+    },
+    {
+      "type": "competitor_web_content",
+      "target_count": 10000,
+      "seed_urls": [
+        "https://www.jabil.com/capabilities.html",
+        "https://flex.com/resources",
+        "https://www.celestica.com/our-expertise",
+        "https://www.bench.com/solutions",
+        "https://www.plexus.com/en-us/solutions",
+        "https://www.sanmina.com/services/",
+        "https://www.ttm.com/products-and-services/",
+        "https://www.foxconn.com/en-us/",
+        "https://www.pegatroncorp.com/",
+        "https://www.wistron.com/",
+        "https://www.quantatw.com/",
+        "https://www.compal.com/",
+        "https://www.byd-electronic.com/",
+        "https://www.luxshare-ict.com/",
+        "https://www.goertek.com/en/",
+        "https://www.venture.com.sg/",
+        "https://www.usiglobal.com/",
+        "https://www.zollner.de/en/",
+        "https://www.lacroix-group.com/en/",
+        "https://www.telnet.com.tn/",
+        "https://www.allcircuits.com/",
+        "https://www.fabrinet.com/",
+        "https://www.keytronic.com/",
+        "https://www.katek-group.com/en/",
+        "https://www.gpvgroup.com/",
+        "https://www.enics.com/",
+        "https://www.incap.com/",
+        "https://www.neways.com/",
+        "https://www.deltagroup.net/",
+        "https://www.inovar.com/"
+      ],
+      "crawl_targets": ["capabilities", "services", "certifications", "about", "press-releases", "news", "locations", "contact"],
+      "languages": ["en", "de", "fr", "zh"]
+    },
+    {
+      "type": "north_africa_business",
+      "target_count": 30000,
+      "seed_urls": [
+        "https://www.leconomiste.com/",
+        "https://medias24.com/",
+        "https://www.leaders.com.tn/",
+        "https://www.webmanagercenter.com/",
+        "https://www.tunisienumerique.com/",
+        "https://www.espacemanager.com/",
+        "https://www.realites.com.tn/",
+        "https://www.lemagazinedutourisme.tn/",
+        "https://www.investir-en-tunisie.net/",
+        "https://www.leseco.ma/",
+        "https://www.challenge.ma/",
+        "https://fr.hespress.com/",
+        "https://www.menara.ma/",
+        "https://www.tangermedport.com/en/press/",
+        "https://www.fipa.tn/en/news/"
+      ],
+      "languages": ["fr", "ar"],
+      "keywords": ["investissement", "zone franche", "industrie électronique", "manufacturing", "exportation", "usine", "certification", "appel d'offres", "marché public", "assemblage"]
+    },
+    {
+      "type": "israel_tech_business",
+      "target_count": 40000,
+      "seed_urls": [
+        "https://en.globes.co.il/",
+        "https://www.calcalist.co.il/",
+        "https://www.calcalistech.com/",
+        "https://www.themarker.com/",
+        "https://www.timesofisrael.com/topic/technology/",
+        "https://www.israel21c.org/",
+        "https://nocamels.com/",
+        "https://www.jpost.com/business-and-innovation/tech-and-start-ups",
+        "https://finder.startupnationcentral.org/",
+        "https://www.iai.co.il/",
+        "https://elbitsystems.com/",
+        "https://www.rafael.co.il/",
+        "https://www.towersemi.com/"
+      ],
+      "languages": ["he", "en"],
+      "keywords": ["defense", "electronics", "semiconductor", "cyber", "manufacturing", "procurement", "tender", "SIBAT", "MOD"]
+    },
+    {
+      "type": "israel_defense_industry",
+      "target_count": 5000,
+      "seed_urls": [
+        "https://www.israeldefense.co.il/en",
+        "https://www.idf.il/en/",
+        "https://www.mod.gov.il/English/Pages/default.aspx",
+        "https://www.iai.co.il/press-releases",
+        "https://elbitsystems.com/media/press-releases/",
+        "https://www.rafael.co.il/press-releases/",
+        "https://www.sibat.mod.gov.il/"
+      ],
+      "languages": ["he", "en"],
+      "keywords": ["defense procurement", "military electronics", "C4ISR", "EW systems", "radar", "missile defense", "UAV", "cybersecurity"]
+    },
+    {
+      "type": "hebrew_procurement_corpus",
+      "target_count": 15000,
+      "seed_urls": [
+        "https://mr.gov.il/",
+        "https://www.gov.il/he/departments/general/tenders",
+        "https://maya.tase.co.il/",
+        "https://www.moag.gov.il/",
+        "https://www.economy.gov.il/"
+      ],
+      "languages": ["he"],
+      "keywords": ["מכרז", "רכש", "אלקטרוניקה", "ייצור", "אספקה"]
+    },
+    {
+      "type": "china_electronics_industry",
+      "target_count": 60000,
+      "seed_urls": [
+        "https://www.caixin.com/",
+        "https://www.scmp.com/tech",
+        "https://36kr.com/",
+        "https://www.eet-china.com/",
+        "https://www.digitimes.com/",
+        "https://www.chinastarmarket.cn/",
+        "https://www.semi.org/en/region/china",
+        "https://www.elecfans.com/",
+        "https://www.eefocus.com/",
+        "https://www.chinasemicom.com/"
+      ],
+      "languages": ["zh", "en"],
+      "keywords": ["电子制造", "SMT", "PCB", "半导体", "芯片", "制造业", "5G", "新能源", "supply chain", "semiconductor"]
+    },
+    {
+      "type": "china_semiconductor_policy",
+      "target_count": 10000,
+      "seed_urls": [
+        "https://www.miit.gov.cn/",
+        "https://www.ndrc.gov.cn/",
+        "https://www.mofcom.gov.cn/",
+        "http://www.csia.net.cn/",
+        "https://www.semiengineering.com/topic/china/"
+      ],
+      "languages": ["zh", "en"],
+      "keywords": ["中国制造2025", "集成电路", "芯片", "国产替代", "export control", "sanctions", "CHIPS Act", "semiconductor policy"]
+    },
+    {
+      "type": "china_procurement_corpus",
+      "target_count": 25000,
+      "seed_urls": [
+        "http://www.ccgp.gov.cn/",
+        "https://www.chinabidding.com.cn/",
+        "https://www.mofcom.gov.cn/article/b/",
+        "https://www.tianyancha.com/",
+        "https://www.qcc.com/"
+      ],
+      "languages": ["zh"],
+      "keywords": ["招标", "采购", "电子", "PCB", "制造", "国防", "军工"]
+    },
+    {
+      "type": "east_asia_supply_chain",
+      "target_count": 30000,
+      "seed_urls": [
+        "https://www.digitimes.com/",
+        "https://asia.nikkei.com/",
+        "https://www.trendforce.com/",
+        "https://www.semi.org/en",
+        "https://www.kedglobal.com/",
+        "https://english.etnews.com/",
+        "https://www.reuters.com/technology/",
+        "https://www.bloomberg.com/asia"
+      ],
+      "languages": ["en", "zh", "ja", "ko"],
+      "keywords": ["supply chain", "EMS", "semiconductor", "component shortage", "manufacturing", "TSMC", "Samsung", "logistics"]
+    },
+    {
+      "type": "procurement_documents",
+      "target_count": 20000,
+      "seed_urls": [
+        "https://ted.europa.eu/",
+        "https://sam.gov/search/",
+        "https://www.tuneps.tn/",
+        "https://marchespublics.gov.ma/",
+        "https://mr.gov.il/",
+        "http://www.ccgp.gov.cn/",
+        "https://www.dgmarket.com/"
+      ],
+      "languages": ["en", "fr", "ar", "he", "zh"],
+      "keywords": ["tender", "procurement", "electronics", "manufacturing", "PCB", "assembly", "contract", "supply"],
+      "cpv_codes": ["31000000", "32000000", "38000000", "50000000"]
+    },
+    {
+      "type": "trade_show_proceedings",
+      "target_count": 5000,
+      "seed_urls": [
+        "https://www.ipcapexexpo.org/",
+        "https://electronica.de/en/",
+        "https://pcim.mesago.com/",
+        "https://www.semicon.org/",
+        "https://www.embedded-world.de/en",
+        "https://www.productronica.com/"
+      ],
+      "languages": ["en", "de"],
+      "keywords": ["technical paper", "proceedings", "presentation", "keynote", "workshop"]
+    },
+    {
+      "type": "supply_chain_reports",
+      "target_count": 500,
+      "seed_urls": [
+        "https://www.mckinsey.com/capabilities/operations",
+        "https://www2.deloitte.com/global/en/pages/operations/topics/supply-chain.html",
+        "https://www.bcg.com/capabilities/operations/supply-chain-management",
+        "https://www.gartner.com/en/supply-chain",
+        "https://www.weforum.org/topics/supply-chains/",
+        "https://www.imf.org/en/publications",
+        "https://www.worldbank.org/en/topic/trade"
+      ],
+      "languages": ["en"],
+      "keywords": ["supply chain resilience", "nearshoring", "reshoring", "logistics", "disruption", "risk management"]
+    }
+  ],
+  "crawl_config": {
+    "user_agent": "ApexIntel-Crawler/1.0 (research; +https://starz-electronics.com)",
+    "respect_robots_txt": true,
+    "rate_limit_ms": 2000,
+    "max_concurrent": 5,
+    "max_page_size_kb": 500,
+    "timeout_seconds": 30,
+    "retry_attempts": 3,
+    "store_raw_html": false,
+    "extract_text": true,
+    "detect_language": true,
+    "dedup_by_content_hash": true
+  },
+  "notes": [
+    "IPC standards text, IATF 16949, and ISO standards require purchased licenses — not crawlable",
+    "Chinese government sites may require VPN access from mainland China",
+    "Hebrew procurement portal (mr.gov.il) requires periodic authentication",
+    "SEC EDGAR XBRL filings are downloaded separately via training_data/filings/download_sec.py",
+    "Patent abstracts are extracted from USPTO bulk data (already done: 511K records)"
+  ]
+}

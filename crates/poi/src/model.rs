@@ -1,6 +1,8 @@
 //! POI profile model and supporting types.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 /// Role families for POI classification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -22,6 +24,31 @@ pub enum RoleFamily {
     Military,
     Intelligence,
     Other(String),
+}
+
+impl RoleFamily {
+    /// Canonical lower_snake_case label for stable string formatting.
+    pub fn canonical_label(&self) -> String {
+        match self {
+            RoleFamily::Procurement => "procurement".to_string(),
+            RoleFamily::SupplierQuality => "supplier_quality".to_string(),
+            RoleFamily::Engineering => "engineering".to_string(),
+            RoleFamily::Operations => "operations".to_string(),
+            RoleFamily::Security => "security".to_string(),
+            RoleFamily::Executive => "executive".to_string(),
+            RoleFamily::Government => "government".to_string(),
+            RoleFamily::FreeZoneAuthority => "free_zone_authority".to_string(),
+            RoleFamily::PortLogistics => "port_logistics".to_string(),
+            RoleFamily::CertificationBody => "certification_body".to_string(),
+            RoleFamily::IndustryAssociation => "industry_association".to_string(),
+            RoleFamily::Distributor => "distributor".to_string(),
+            RoleFamily::Finance => "finance".to_string(),
+            RoleFamily::Legal => "legal".to_string(),
+            RoleFamily::Military => "military".to_string(),
+            RoleFamily::Intelligence => "intelligence".to_string(),
+            RoleFamily::Other(v) => v.trim().to_ascii_lowercase().replace(' ', "_"),
+        }
+    }
 }
 
 /// Decision style inferred from artifacts and behavior.
@@ -67,6 +94,19 @@ pub struct PriorityVector {
     pub confidence: f64,
 }
 
+/// Maximum allowed name variants to prevent unbounded growth (B116).
+pub const MAX_NAME_VARIANTS: usize = 50;
+
+/// Maximum network size to prevent unreasonable values (B128).
+pub const MAX_NETWORK_SIZE: usize = 10_000;
+
+/// Maximum artifacts retained per POI to avoid unbounded profile growth.
+pub const MAX_PROFILE_ARTIFACTS: usize = 2_000;
+
+static PUBLIC_EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$").unwrap()
+});
+
 impl PriorityVector {
     pub fn zero() -> Self {
         Self {
@@ -80,7 +120,36 @@ impl PriorityVector {
         }
     }
 
+    /// Validate that dimension values are in [0,1] and sum is within expected range (B111).
+    pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        let fields = [
+            ("cost", self.cost), ("quality", self.quality), ("speed", self.speed),
+            ("resilience", self.resilience), ("compliance", self.compliance), ("security", self.security),
+        ];
+        for (name, val) in &fields {
+            if val.is_nan() || val.is_infinite() {
+                issues.push(format!("{} is NaN/Inf", name));
+            } else if *val < 0.0 || *val > 1.0 {
+                issues.push(format!("{} out of [0,1]: {}", name, val));
+            }
+        }
+        let sum: f64 = fields.iter().map(|(_, v)| v).filter(|v| v.is_finite()).sum();
+        if sum > 1.5 {
+            issues.push(format!("dimension sum {:.2} > 1.5", sum));
+        }
+        if self.confidence.is_nan() || self.confidence.is_infinite() {
+            issues.push("confidence is NaN/Inf".to_string());
+        } else if !(0.0..=1.0).contains(&self.confidence) {
+            issues.push(format!("confidence out of [0,1]: {}", self.confidence));
+        }
+        issues
+    }
+
     /// Return the dominant priority dimension.
+    ///
+    /// NaN-safe: NaN values are skipped so they cannot silently "win"
+    /// due to IEEE 754 comparison semantics.
     pub fn dominant(&self) -> &'static str {
         let pairs = [
             ("cost", self.cost),
@@ -92,7 +161,10 @@ impl PriorityVector {
         ];
         let mut best = pairs[0];
         for &p in &pairs[1..] {
-            if p.1 > best.1 {
+            if p.1.is_nan() {
+                continue;
+            }
+            if best.1.is_nan() || p.1 > best.1 {
                 best = p;
             }
         }
@@ -130,6 +202,15 @@ pub struct InfluenceProfile {
     pub public_recurrence: f64,
     pub role_seniority_score: f64,
     pub network_size: usize,
+}
+
+impl InfluenceProfile {
+    /// Clamp network_size to MAX_NETWORK_SIZE (B128).
+    pub fn clamp_network_size(&mut self) {
+        if self.network_size > MAX_NETWORK_SIZE {
+            self.network_size = MAX_NETWORK_SIZE;
+        }
+    }
 }
 
 /// Engagement strategy profile.
@@ -188,23 +269,69 @@ pub struct PoiProfile {
 }
 
 impl PoiProfile {
+    /// Returns normalized org_id: trimmed non-empty string, otherwise None.
+    pub fn normalized_org_id(&self) -> Option<&str> {
+        self.org_id.as_deref().map(str::trim).filter(|id| !id.is_empty())
+    }
+
     /// Compute profile completeness (0-1) based on filled fields.
+    /// Accounts for org_id and region presence consistently (B113).
     pub fn compute_completeness(&self) -> f64 {
         let mut filled = 0.0;
-        let total = 10.0;
+        let total = 12.0;
 
         if !self.name.is_empty() { filled += 1.0; }
         if !self.org.is_empty() { filled += 1.0; }
+        if self.normalized_org_id().is_some() { filled += 1.0; } // B113/B402
         if !self.current_role.is_empty() { filled += 1.0; }
         if !self.public_bio.is_empty() { filled += 1.0; }
         if self.public_email.is_some() { filled += 1.0; }
         if !self.artifacts.is_empty() { filled += 1.0; }
         if !self.role_history.is_empty() { filled += 1.0; }
-        if !self.region.is_empty() { filled += 1.0; }
+        if !self.region.is_empty() { filled += 1.0; } // B113
+        if !self.country_code.is_empty() { filled += 1.0; } // B113
         if self.priority_vector.confidence > 0.0 { filled += 1.0; }
         if self.influence.influence_score > 0.0 { filled += 1.0; }
 
-        filled / total
+        let raw: f64 = filled / total;
+        raw.clamp(0.0, 1.0) // B129: prevent exceeding 1.0
+    }
+
+    /// Truncate name_variants to MAX_NAME_VARIANTS (B116).
+    pub fn clamp_name_variants(&mut self) {
+        if self.name_variants.len() > MAX_NAME_VARIANTS {
+            self.name_variants.truncate(MAX_NAME_VARIANTS);
+        }
+    }
+
+    /// Truncate artifacts to a strict cap to prevent huge profiles.
+    pub fn clamp_artifacts(&mut self) {
+        if self.artifacts.len() > MAX_PROFILE_ARTIFACTS {
+            self.artifacts.truncate(MAX_PROFILE_ARTIFACTS);
+        }
+    }
+
+    /// Validate optional public email format when present.
+    pub fn has_valid_public_email(&self) -> bool {
+        match &self.public_email {
+            None => true,
+            Some(email) => {
+                let normalized = email.trim();
+                !normalized.is_empty() && PUBLIC_EMAIL_RE.is_match(normalized)
+            }
+        }
+    }
+
+    /// Validate role_history timestamps are in ascending order (B117).
+    pub fn validate_role_history_order(&self) -> bool {
+        self.role_history.windows(2).all(|pair| pair[0].start_ts <= pair[1].start_ts)
+    }
+
+    /// Detect identical consecutive role history entries (B118).
+    pub fn has_consecutive_duplicates(&self) -> bool {
+        self.role_history.windows(2).any(|pair| {
+            pair[0].org == pair[1].org && pair[0].title == pair[1].title
+        })
     }
 }
 
@@ -337,5 +464,143 @@ mod tests {
         assert!(json.contains("Procurement"));
         let back: RoleFamily = serde_json::from_str(&json).unwrap();
         assert_eq!(back, rf);
+    }
+
+    #[test]
+    fn test_role_family_canonical_labels_consistent_casing() {
+        assert_eq!(RoleFamily::Procurement.canonical_label(), "procurement");
+        assert_eq!(RoleFamily::SupplierQuality.canonical_label(), "supplier_quality");
+        assert_eq!(RoleFamily::FreeZoneAuthority.canonical_label(), "free_zone_authority");
+        assert_eq!(RoleFamily::Other("MiXeD Case".to_string()).canonical_label(), "mixed_case");
+    }
+
+    #[test]
+    fn test_psych_profile_rejects_invalid_proof_type() {
+        let bad = serde_json::json!({
+            "decision_style": "BalancedAnalytical",
+            "change_appetite": "Pragmatist",
+            "pain_index": 0.3,
+            "preferred_proof": ["NotARealProofType"],
+            "risk_tolerance": 0.5
+        });
+        let parsed: Result<PsychProfile, _> = serde_json::from_value(bad);
+        assert!(parsed.is_err());
+    }
+
+    // B111: PriorityVector validation
+    #[test]
+    fn test_priority_vector_validate() {
+        let pv = PriorityVector {
+            cost: 0.3, quality: 0.3, speed: 0.1, resilience: 0.1,
+            compliance: 0.1, security: 0.1, confidence: 0.8,
+        };
+        assert!(pv.validate().is_empty());
+    }
+
+    #[test]
+    fn test_priority_vector_validate_nan() {
+        let pv = PriorityVector {
+            cost: f64::NAN, quality: 0.3, speed: 0.1, resilience: 0.1,
+            compliance: 0.1, security: 0.1, confidence: 0.8,
+        };
+        assert!(!pv.validate().is_empty());
+    }
+
+    #[test]
+    fn test_priority_vector_validate_confidence_out_of_range() {
+        let pv = PriorityVector {
+            cost: 0.2,
+            quality: 0.2,
+            speed: 0.2,
+            resilience: 0.2,
+            compliance: 0.2,
+            security: 0.2,
+            confidence: 1.2,
+        };
+        let issues = pv.validate();
+        assert!(issues.iter().any(|m| m.contains("confidence")));
+    }
+
+    // B115: dominant with NaN values
+    #[test]
+    fn test_dominant_all_nan() {
+        let pv = PriorityVector {
+            cost: f64::NAN, quality: f64::NAN, speed: f64::NAN,
+            resilience: f64::NAN, compliance: f64::NAN, security: f64::NAN,
+            confidence: 0.0,
+        };
+        // Should not panic, returns some valid string
+        let _ = pv.dominant();
+    }
+
+    // B116: Clamp name variants
+    #[test]
+    fn test_clamp_name_variants() {
+        let mut p = sample_profile();
+        p.name_variants = (0..100).map(|i| format!("variant_{}", i)).collect();
+        p.clamp_name_variants();
+        assert!(p.name_variants.len() <= MAX_NAME_VARIANTS);
+    }
+
+    // B117: Role history timestamp ordering
+    #[test]
+    fn test_validate_role_history_order() {
+        let p = sample_profile();
+        assert!(p.validate_role_history_order());
+    }
+
+    // B118: Consecutive duplicate detection
+    #[test]
+    fn test_has_consecutive_duplicates() {
+        let mut p = sample_profile();
+        assert!(!p.has_consecutive_duplicates());
+        p.role_history.push(p.role_history.last().unwrap().clone());
+        assert!(p.has_consecutive_duplicates());
+    }
+
+    // B129: Completeness never exceeds 1.0
+    #[test]
+    fn test_completeness_capped() {
+        let p = sample_profile();
+        assert!(p.compute_completeness() <= 1.0);
+    }
+
+    #[test]
+    fn test_org_id_empty_and_missing_treated_consistently() {
+        let mut missing = sample_profile();
+        missing.org_id = None;
+
+        let mut empty = sample_profile();
+        empty.org_id = Some("   ".to_string());
+
+        assert_eq!(missing.normalized_org_id(), None);
+        assert_eq!(empty.normalized_org_id(), None);
+        assert_eq!(missing.compute_completeness(), empty.compute_completeness());
+    }
+
+    #[test]
+    fn test_clamp_artifacts_caps_large_profiles() {
+        let mut p = sample_profile();
+        p.artifacts = (0..(MAX_PROFILE_ARTIFACTS + 50))
+            .map(|i| PoiArtifact {
+                artifact_type: "article".to_string(),
+                title: format!("A{i}"),
+                content_summary: "x".to_string(),
+                source_url: None,
+                ts_utc: 0,
+            })
+            .collect();
+        p.clamp_artifacts();
+        assert_eq!(p.artifacts.len(), MAX_PROFILE_ARTIFACTS);
+    }
+
+    #[test]
+    fn test_has_valid_public_email() {
+        let mut p = sample_profile();
+        p.public_email = Some("valid.email+tag@example.com".to_string());
+        assert!(p.has_valid_public_email());
+
+        p.public_email = Some("not-an-email".to_string());
+        assert!(!p.has_valid_public_email());
     }
 }

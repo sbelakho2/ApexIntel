@@ -235,7 +235,7 @@ pub fn assess_capabilities(capabilities: &[Capability]) -> CapabilityAssessment 
 
     let top: Vec<CapabilitySummary> = capabilities
         .iter()
-        .take(10)
+        .take(10) // B172: cap top_capabilities to avoid uncontrolled growth
         .map(|c| CapabilitySummary {
             capability: c.capability.clone(),
             proof_grade: c.proof_grade.as_str().to_string(),
@@ -264,11 +264,17 @@ pub fn analyze_certifications(
     let mut pending = 0usize;
 
     for cert in certs {
-        match cert.status {
-            CertStatus::Active => active += 1,
-            CertStatus::Expired => expired += 1,
-            CertStatus::Suspended => expired += 1, // treat suspended as expired for health
-            CertStatus::Pending => pending += 1,
+        // Use is_valid() so date-expired Active certs are not counted as healthy.
+        // This keeps the health score consistent with gap detection (which also
+        // uses is_valid()).
+        if cert.is_valid() {
+            active += 1;
+        } else {
+            match cert.status {
+                CertStatus::Expired | CertStatus::Suspended => expired += 1,
+                CertStatus::Pending => pending += 1,
+                CertStatus::Active => expired += 1, // Active status but date-expired
+            }
         }
     }
 
@@ -295,7 +301,8 @@ pub fn analyze_certifications(
         .map(|s| s.to_string())
         .collect();
 
-    // Health score: active/(active+expired+pending), penalized by gaps
+    // B173: Health score = active_ratio − (0.1 × gap_count), clamped to [0, 1].
+    // active_ratio = active / total; missing required standards penalize health.
     let total = certs.len();
     let base_health = if total > 0 {
         active as f64 / total as f64
@@ -303,7 +310,7 @@ pub fn analyze_certifications(
         0.0
     };
     let gap_penalty = gaps.len() as f64 * 0.1;
-    let health = (base_health - gap_penalty).max(0.0);
+    let health = (base_health - gap_penalty).clamp(0.0, 1.0);
 
     CertificationAnalysis {
         total: certs.len(),
@@ -318,7 +325,7 @@ pub fn analyze_certifications(
 
 /// Assess risk from company scores.
 pub fn assess_risk(company: &Company) -> RiskAssessment {
-    let overall = company.risk_score;
+    let overall = company.risk_score.clamp(0.0, 1.0);
     let label = if overall >= 0.8 {
         "Critical"
     } else if overall >= 0.6 {
@@ -350,7 +357,7 @@ pub fn assess_risk(company: &Company) -> RiskAssessment {
     RiskAssessment {
         overall_risk: overall,
         risk_label: label.to_string(),
-        threat_score: company.threat_score,
+        threat_score: company.threat_score.clamp(0.0, 1.0),
         factors,
     }
 }
@@ -381,8 +388,8 @@ pub fn analyze_opportunities(company: &Company) -> OpportunityAnalysis {
     };
 
     OpportunityAnalysis {
-        overlap_score: company.overlap_score,
-        strategic_relevance: company.strategic_relevance,
+        overlap_score: company.overlap_score.clamp(0.0, 1.0),
+        strategic_relevance: company.strategic_relevance.clamp(0.0, 1.0),
         opportunities,
         approach_recommendation: approach,
     }
@@ -573,8 +580,8 @@ pub fn generate_company_dossier(
     let profile = CompanyProfile {
         name: company.name.clone(),
         company_type: company.company_type.as_str().to_string(),
-        country: company.country_code.clone().unwrap_or_else(|| "Unknown".to_string()),
-        region: company.region.clone().unwrap_or_else(|| "Unknown".to_string()),
+        country: company.country_code.clone().unwrap_or_else(|| "N/A".to_string()),
+        region: company.region.clone().unwrap_or_else(|| "N/A".to_string()),
         industry_tags: company.industry_tags.clone(),
         employee_estimate: company.employee_estimate,
         revenue_estimate_usd: company.revenue_estimate_usd,
@@ -692,6 +699,7 @@ pub fn summarize_artifacts(artifacts: &[PoiArtifact]) -> ArtifactSummarySection 
     let highlights: Vec<ArtifactHighlight> = sorted
         .iter()
         .take(5)
+        .filter(|a| !a.url.is_empty()) // B177: skip artifacts with no URL
         .map(|a| ArtifactHighlight {
             artifact_type: a.artifact_type.as_str().to_string(),
             title: a.title.clone(),
@@ -1291,5 +1299,118 @@ mod tests {
         assert!(text.contains("VP Procurement"));
         assert!(text.contains("procurement"));
         assert!(text.contains("P0 — Critical"));
+    }
+
+    // ── B171: missing optional fields use N/A not empty ──
+
+    #[test]
+    fn test_company_profile_missing_fields_use_na() {
+        let mut company = sample_company();
+        company.country_code = None;
+        company.region = None;
+        let dossier = generate_company_dossier(&company, &[], &[], &[], &[]);
+        assert_eq!(dossier.profile_section.country, "N/A");
+        assert_eq!(dossier.profile_section.region, "N/A");
+    }
+
+    // ── B172: top_capabilities bounded ──
+
+    #[test]
+    fn test_top_capabilities_bounded() {
+        let id = Uuid::new_v4();
+        let caps: Vec<Capability> = (0..20)
+            .map(|i| Capability::new(id, &format!("Cap_{}", i), ProofGrade::A))
+            .collect();
+        let assessment = assess_capabilities(&caps);
+        assert!(assessment.top_capabilities.len() <= 10);
+    }
+
+    // ── B173: cert_health_score scaling ──
+
+    #[test]
+    fn test_cert_health_score_clamped() {
+        let id = Uuid::new_v4();
+        // All expired with many gaps — health should not go below 0
+        let c = Certification::new(id, "FAKE");
+        let analysis = analyze_certifications(
+            &[c],
+            &["ISO_9001", "ISO_14001", "AS9100", "IATF_16949", "ISO_27001",
+              "ISO_13485", "AS9100D", "ISO_45001", "ISO_50001", "NADCAP",
+              "SO_17025"],
+        );
+        assert!(analysis.cert_health_score >= 0.0);
+        assert!(analysis.cert_health_score <= 1.0);
+    }
+
+    // ── B174: certification gaps with mixed statuses ──
+
+    #[test]
+    fn test_cert_gaps_mixed_statuses() {
+        let id = Uuid::new_v4();
+        let mut c1 = Certification::new(id, "ISO_9001");
+        c1.status = CertStatus::Active;
+        let mut c2 = Certification::new(id, "IATF_16949");
+        c2.status = CertStatus::Expired;
+        let mut c3 = Certification::new(id, "AS9100");
+        c3.status = CertStatus::Pending;
+        let analysis = analyze_certifications(
+            &[c1, c2, c3],
+            &["ISO_9001", "IATF_16949", "AS9100", "ISO_14001"],
+        );
+        // ISO_9001 active → no gap; IATF expired → gap; AS9100 pending → gap; ISO_14001 missing → gap
+        assert!(analysis.gaps.contains(&"IATF_16949".to_string()));
+        assert!(analysis.gaps.contains(&"AS9100".to_string()));
+        assert!(analysis.gaps.contains(&"ISO_14001".to_string()));
+        assert!(!analysis.gaps.contains(&"ISO_9001".to_string()));
+    }
+
+    // ── B175: risk_label consistent with numeric ranges ──
+
+    #[test]
+    fn test_risk_label_ranges() {
+        let mut c = sample_company();
+        for (score, expected_label) in [
+            (0.0, "Minimal"), (0.19, "Minimal"), (0.2, "Low"), (0.39, "Low"),
+            (0.4, "Medium"), (0.59, "Medium"), (0.6, "High"), (0.79, "High"),
+            (0.8, "Critical"), (1.0, "Critical"),
+        ] {
+            c.risk_score = score;
+            let risk = assess_risk(&c);
+            assert_eq!(risk.risk_label, expected_label,
+                "risk_score={} should map to '{}', got '{}'", score, expected_label, risk.risk_label);
+        }
+    }
+
+    // ── B176: opportunity_analysis with empty inputs ──
+
+    #[test]
+    fn test_opportunity_analysis_empty_company() {
+        let c = Company::new("Empty", CompanyType::Other("Supplier".to_string()));
+        let opps = analyze_opportunities(&c);
+        assert!(opps.opportunities.is_empty());
+        assert!(opps.approach_recommendation.contains("Monitor"));
+    }
+
+    // ── B177: artifact highlights skip empty URLs ──
+
+    #[test]
+    fn test_artifact_highlight_skips_empty_url() {
+        let person_id = Uuid::new_v4();
+        let now = Utc::now();
+        let mut a = PoiArtifact::new(person_id, ArtifactType::PressQuote, "", now);
+        a.title = Some("No URL artifact".to_string());
+        let summary = summarize_artifacts(&[a]);
+        assert_eq!(summary.total_artifacts, 1);
+        assert!(summary.recent_highlights.is_empty(), "Artifacts with empty URL should be excluded from highlights");
+    }
+
+    // ── B178: artifact_summary counts match items ──
+
+    #[test]
+    fn test_artifact_summary_counts_match() {
+        let artifacts = sample_artifacts();
+        let summary = summarize_artifacts(&artifacts);
+        let type_total: usize = summary.by_type.values().sum();
+        assert_eq!(type_total, summary.total_artifacts);
     }
 }

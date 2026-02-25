@@ -1,0 +1,37 @@
+{
+  "description": "EMS domain-specific keyword corpus for Domain-Adaptive Pre-Training (DAPT) of the Qwen3 model",
+  "version": "1.0",
+  "language": "en",
+  "categories": {
+    "manufacturing_processes": {
+      "smt": ["surface mount technology", "pick and place", "reflow soldering", "solder paste printing", "stencil printing", "solder paste inspection", "automated optical inspection", "reflow oven", "nitrogen reflow", "vapor phase soldering", "component placement", "chip shooter", "flex placer", "nozzle calibration", "fiducial recognition", "vision alignment", "thermal profiling", "reflow profile", "preheat zone", "soak zone", "reflow zone", "cooling zone", "peak temperature", "time above liquidus"],
+      "tht": ["through-hole technology", "wave soldering", "selective soldering", "hand soldering", "dip soldering", "lead forming", "lead trimming", "clinching", "flow soldering", "solder pot", "peel-back", "bridging", "solder skip", "icicle", "solder ball"],
+      "cleaning": ["aqueous cleaning", "no-clean flux", "defluxing", "ionic contamination", "ROSE test", "saponifier", "DI water rinse", "ultrasonic cleaning", "vapor degreasing", "cleanliness testing", "surface insulation resistance", "ion chromatography"],
+      "coating": ["conformal coating", "selective coating", "spray coating", "dip coating", "brush coating", "UV cure coating", "parylene deposition", "silicone coating", "acrylic coating", "urethane coating", "epoxy coating", "moisture protection"],
+      "testing": ["in-circuit test", "functional test", "flying probe test", "boundary scan", "JTAG", "bed of nails", "test fixture", "test coverage", "fault coverage", "analog test", "digital test", "power on test", "burn-in test", "HALT", "HASS", "environmental stress screening", "thermal cycling test", "vibration test", "hipot test", "insulation resistance", "continuity test"],
+      "inspection": ["automated optical inspection", "3D AOI", "2D AOI", "X-ray inspection", "5DX", "CT scan", "visual inspection", "microscope inspection", "solder joint inspection", "component presence", "polarity check", "tombstone", "solder bridge", "insufficient solder", "excess solder", "cold solder joint", "void analysis", "solder paste height", "solder paste volume"],
+      "rework": ["BGA rework", "hot air rework", "infrared rework", "component removal", "pad repair", "trace repair", "solder wick", "desoldering braid", "solder sucker", "reballing", "underfill removal", "IPC-7711", "IPC-7721"]
+    },
+    "component_types": {
+      "passive": ["resistor", "capacitor", "inductor", "transformer", "crystal", "oscillator", "MLCC", "electrolytic capacitor", "tantalum capacitor", "film capacitor", "ceramic capacitor", "chip resistor", "thick film resistor", "thin film resistor", "wire wound inductor", "ferrite bead", "common mode choke", "varistor", "thermistor", "NTC", "PTC", "fuse"],
+      "active": ["microcontroller", "microprocessor", "FPGA", "CPLD", "ASIC", "SoC", "DSP", "op-amp", "comparator", "ADC", "DAC", "voltage regulator", "LDO", "DC-DC converter", "MOSFET", "IGBT", "transistor", "diode", "LED", "photodiode", "phototransistor", "optocoupler", "relay", "MEMS sensor", "accelerometer", "gyroscope"],
+      "packages": ["0201", "0402", "0603", "0805", "1206", "1210", "2512", "SOT-23", "SOT-223", "SOT-89", "SOIC", "SOP", "SSOP", "TSSOP", "MSOP", "QFP", "TQFP", "LQFP", "QFN", "DFN", "BGA", "FBGA", "CSP", "WLCSP", "LGA", "SIP", "DIP", "TO-220", "TO-263", "D2PAK", "DPAK"],
+      "connectors": ["header", "socket", "edge connector", "FPC connector", "USB", "HDMI", "RJ45", "M.2", "PCI Express", "SATA", "power connector", "Molex", "JST", "TE Connectivity", "Amphenol", "D-sub", "circular connector", "RF connector", "SMA", "BNC", "N-type"]
+    },
+    "quality_compliance": {
+      "standards": ["IPC-A-610", "IPC J-STD-001", "IPC-A-620", "IPC-6012", "IPC-CC-830", "ISO 9001", "ISO 14001", "IATF 16949", "AS9100", "ISO 13485", "NADCAP", "UL", "CE marking", "FCC", "RoHS", "REACH", "WEEE", "conflict minerals", "Dodd-Frank 1502"],
+      "defect_types": ["solder bridge", "cold joint", "tombstone", "billboard", "head-in-pillow", "non-wet", "dewetting", "void", "crack", "delamination", "pad lift", "measling", "blister", "missing component", "wrong component", "reversed polarity", "shifted component", "damaged component", "contamination", "whisker"],
+      "process_control": ["SPC", "statistical process control", "Cp", "Cpk", "Pp", "Ppk", "control chart", "X-bar R chart", "p-chart", "c-chart", "FMEA", "failure mode effects analysis", "control plan", "process capability", "first pass yield", "DPMO", "PPM", "sigma level", "gage R&R", "measurement system analysis"]
+    },
+    "business_intelligence": {
+      "competitive_signals": ["capacity expansion", "new facility", "factory opening", "plant closure", "layoffs", "hiring", "revenue growth", "revenue decline", "market share", "contract win", "contract loss", "merger", "acquisition", "divestiture", "joint venture", "strategic partnership", "bankruptcy", "restructuring", "IPO", "delisting", "executive departure", "CEO change", "supply disruption", "force majeure"],
+      "market_dynamics": ["bill of materials", "BOM cost", "lead time", "allocation", "shortage", "surplus", "end-of-life", "last-time buy", "design win", "design loss", "second source", "dual sourcing", "sole source", "vendor consolidation", "nearshoring", "reshoring", "offshoring", "China+1", "supply chain resilience", "just-in-time", "safety stock"],
+      "tender_signals": ["request for proposal", "RFP", "request for quotation", "RFQ", "request for information", "RFI", "invitation to bid", "ITB", "tender notice", "contract award", "framework agreement", "blanket purchase order", "OEM specification", "approved vendor list", "vendor qualification", "first article inspection", "PPAP", "production part approval"]
+    },
+    "geopolitical_risk": {
+      "sanctions_terms": ["OFAC", "SDN list", "entity list", "denied persons", "unverified list", "military end user", "sanctioned country", "designated national", "blocked property", "general license", "specific license", "secondary sanctions", "sectoral sanctions", "comprehensive sanctions"],
+      "export_control": ["EAR", "ITAR", "Wassenaar Arrangement", "dual-use", "ECCN", "export classification", "license exception", "deemed export", "end-use certificate", "end-user statement", "catch-all clause", "military end-use", "WMD", "missile technology"],
+      "risk_indicators": ["political instability", "regime change", "civil unrest", "armed conflict", "trade war", "tariff escalation", "currency crisis", "sovereign default", "coup", "revolution", "embargo", "blockade", "border closure", "supply route disruption"]
+    }
+  }
+}

@@ -1,8 +1,18 @@
 /// Mutual information estimation via binning.
+///
+/// Estimates are in nats (natural-log base).  All functions filter out
+/// `NaN` / `±∞` via the `min_max` helper so callers do not need to
+/// pre-clean their data.
+///
+/// **Bins parameter**: must be ≥ 1.  `bins = 0` is treated as having
+/// insufficient data and returns `0.0` immediately.  More bins improve
+/// resolution but require more data; a rule of thumb is `bins ≈ √(n/5)`.
 
 /// Estimate mutual information between two variables using binned estimation.
 ///
-/// Returns MI in nats (natural log).
+/// Returns MI in nats (natural log).  Returns `0.0` when `bins == 0`,
+/// when either variable has insufficient variance, or when there are fewer
+/// than `2 × bins` paired finite observations.
 pub fn estimate(x: &[f64], y: &[f64], bins: usize) -> f64 {
     let n = x.len().min(y.len());
     if n < bins * 2 || bins == 0 {
@@ -45,7 +55,10 @@ pub fn estimate(x: &[f64], y: &[f64], bins: usize) -> f64 {
     mi.max(0.0)
 }
 
-/// Normalized mutual information (0-1).
+/// Normalized mutual information (0–1).
+///
+/// NMI = MI / (H(X) + H(Y)) / 2.  Returns `0.0` when both entropies are
+/// negligible (constant variables) and `1.0` for perfectly dependent ones.
 pub fn normalized_mi(x: &[f64], y: &[f64], bins: usize) -> f64 {
     let mi = estimate(x, y, bins);
     let hx = entropy_binned(x, bins);
@@ -85,16 +98,26 @@ fn entropy_binned(data: &[f64], bins: usize) -> f64 {
     h
 }
 
+/// Returns `(min, max + 1e-12)` for the finite elements in `data`.
+/// Returns `(0.0, 0.0)` when no finite elements exist (all-`NaN` / all-`±∞`
+/// input), which causes downstream step-size computation to fall below the
+/// `1e-12` guard and short-circuit with `MI = 0.0` (B255).
 fn min_max(data: &[f64]) -> (f64, f64) {
     let mut min = f64::MAX;
     let mut max = f64::MIN;
     for &v in data {
+        if !v.is_finite() {
+            continue;
+        }
         if v < min {
             min = v;
         }
         if v > max {
             max = v;
         }
+    }
+    if min == f64::MAX || max == f64::MIN {
+        return (0.0, 0.0);
     }
     (min, max + 1e-12)
 }
@@ -151,5 +174,83 @@ mod tests {
         let h = entropy_binned(&data, 10);
         // Entropy of uniform distribution with 10 bins = ln(10) ≈ 2.30
         assert!(h > 1.5, "Uniform data should have high entropy, got {}", h);
+    }
+
+    #[test]
+    fn test_min_max_ignores_nan() {
+        let data = vec![1.0, f64::NAN, 3.0];
+        let (min, max) = min_max(&data);
+        assert_eq!(min, 1.0);
+        assert!(max >= 3.0);
+    }
+
+    // ── B254: bins edge cases ────────────────────────────────────────────────
+
+    #[test]
+    fn test_mi_zero_bins_returns_zero() {
+        // bins=0 must short-circuit safely, not panic or divide-by-zero.
+        let x: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..50).map(|i| i as f64 * 2.0).collect();
+        let mi = estimate(&x, &y, 0);
+        assert!((mi - 0.0).abs() < 1e-10, "bins=0 must return 0.0, got {mi}");
+    }
+
+    #[test]
+    fn test_mi_one_bin_returns_zero() {
+        // bins=1 requires n >= 2; with reasonable data x_step=( max-min)/1
+        // which is non-trivial, so all points land in bin 0 → p(x=0)=1,
+        // p(y=0)=1, p(xy=00)=1 → MI = 1*ln(1/1*1) = 0.
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let mi = estimate(&x, &y, 1);
+        assert!((mi - 0.0).abs() < 1e-10, "bins=1 must return 0.0 (no resolution), got {mi}");
+    }
+
+    #[test]
+    fn test_nmi_zero_bins_returns_zero() {
+        let x: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        let mi = normalized_mi(&x, &x, 0);
+        assert!((mi - 0.0).abs() < 1e-10, "NMI with bins=0 must return 0.0, got {mi}");
+    }
+
+    // ── B255: all-NaN / all-Inf input safety via min_max ────────────────────
+
+    #[test]
+    fn test_mi_all_nan_returns_zero() {
+        let data: Vec<f64> = vec![f64::NAN; 50];
+        let mi = estimate(&data, &data, 5);
+        assert!((mi - 0.0).abs() < 1e-10, "all-NaN input must return 0.0, got {mi}");
+        assert!(mi.is_finite(), "result must be finite, not NaN");
+    }
+
+    #[test]
+    fn test_mi_all_inf_returns_zero() {
+        let data: Vec<f64> = vec![f64::INFINITY; 50];
+        let mi = estimate(&data, &data, 5);
+        assert!((mi - 0.0).abs() < 1e-10, "all-Inf input must return 0.0, got {mi}");
+    }
+
+    #[test]
+    fn test_nmi_all_nan_returns_zero() {
+        let data: Vec<f64> = vec![f64::NAN; 50];
+        let nmi = normalized_mi(&data, &data, 5);
+        assert!((nmi - 0.0).abs() < 1e-10, "NMI for all-NaN must be 0.0, got {nmi}");
+    }
+
+    #[test]
+    fn test_mi_with_negative_values_is_finite() {
+        let x: Vec<f64> = (-50..50).map(|i| i as f64).collect();
+        let y: Vec<f64> = (-50..50).map(|i| (i as f64) * 1.5 - 2.0).collect();
+        let mi = estimate(&x, &y, 10);
+        assert!(mi.is_finite());
+        assert!(mi >= 0.0);
+    }
+
+    #[test]
+    fn test_normalized_mi_zero_entropy_returns_zero() {
+        let x = vec![5.0; 100];
+        let y = vec![5.0; 100];
+        let nmi = normalized_mi(&x, &y, 10);
+        assert!((nmi - 0.0).abs() < 1e-10);
     }
 }

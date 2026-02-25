@@ -20,11 +20,16 @@ pub fn refresh_profile(profile: &mut PoiProfile, now_utc: i64) -> PoiUpdateRepor
     let old_influence = profile.influence.influence_score;
     let old_pain = profile.psychological.pain_index;
 
-    // 1. Recompute priority vector
+    // 1. Recompute priority vector — compare all 7 dimensions
     let new_pv = features::compute_priority_vector(&profile.artifacts);
-    if (new_pv.cost - profile.priority_vector.cost).abs() > 0.01
+    let pv_changed = (new_pv.cost - profile.priority_vector.cost).abs() > 0.01
         || (new_pv.quality - profile.priority_vector.quality).abs() > 0.01
-    {
+        || (new_pv.speed - profile.priority_vector.speed).abs() > 0.01
+        || (new_pv.resilience - profile.priority_vector.resilience).abs() > 0.01
+        || (new_pv.compliance - profile.priority_vector.compliance).abs() > 0.01
+        || (new_pv.security - profile.priority_vector.security).abs() > 0.01
+        || (new_pv.confidence - profile.priority_vector.confidence).abs() > 0.01;
+    if pv_changed {
         fields_updated.push("priority_vector".to_string());
     }
     profile.priority_vector = new_pv;
@@ -99,11 +104,14 @@ fn detect_role_change(history: &[RoleHistoryEntry]) -> bool {
 
 /// Compute data freshness in days.
 pub fn data_freshness_days(last_updated_utc: i64, now_utc: i64) -> i32 {
-    ((now_utc - last_updated_utc) / 86400) as i32
+    ((now_utc - last_updated_utc) / 86400).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 /// Determine if a profile needs refresh based on staleness.
 pub fn needs_refresh(profile: &PoiProfile, now_utc: i64, max_stale_days: i32) -> bool {
+    if max_stale_days < 0 {
+        return false;
+    }
     let days = data_freshness_days(profile.last_updated_utc, now_utc);
     days >= max_stale_days
 }
@@ -199,10 +207,22 @@ mod tests {
     }
 
     #[test]
+    fn test_data_freshness_days_large_span_clamped() {
+        let days = data_freshness_days(i64::MIN / 2, i64::MAX / 2);
+        assert_eq!(days, i32::MAX);
+    }
+
+    #[test]
     fn test_needs_refresh() {
         let p = make_profile();
         assert!(needs_refresh(&p, 1700000000, 7)); // 10M seconds > 7 days
         assert!(!needs_refresh(&p, 1690000001, 7)); // 1 second not stale
+    }
+
+    #[test]
+    fn test_needs_refresh_negative_max_days_is_false() {
+        let p = make_profile();
+        assert!(!needs_refresh(&p, 1700000000, -1));
     }
 
     #[test]

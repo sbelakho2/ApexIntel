@@ -1,0 +1,61 @@
+{
+  "company": "Flex Ltd",
+  "ticker": "FLEX",
+  "cik": "0000866374",
+  "filings": [
+    {
+      "date": "2025-05-21",
+      "accession": "0000866374-25-000027",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637425000027/flex-20250331.htm",
+      "document": "flex-20250331.htm"
+    },
+    {
+      "date": "2024-05-17",
+      "accession": "0000866374-24-000021",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637424000021/flex-20240331.htm",
+      "document": "flex-20240331.htm"
+    },
+    {
+      "date": "2023-05-19",
+      "accession": "0000866374-23-000028",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637423000028/flex-20230331.htm",
+      "document": "flex-20230331.htm"
+    },
+    {
+      "date": "2022-05-20",
+      "accession": "0000866374-22-000035",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637422000035/flex-20220331.htm",
+      "document": "flex-20220331.htm"
+    },
+    {
+      "date": "2021-05-19",
+      "accession": "0000866374-21-000030",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637421000030/flex-20210331.htm",
+      "document": "flex-20210331.htm"
+    },
+    {
+      "date": "2020-05-28",
+      "accession": "0000866374-20-000009",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637420000009/flex331202010-k.htm",
+      "document": "flex331202010-k.htm"
+    },
+    {
+      "date": "2019-05-21",
+      "accession": "0000866374-19-000006",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637419000006/flex331201910-k.htm",
+      "document": "flex331201910-k.htm"
+    },
+    {
+      "date": "2018-06-14",
+      "accession": "0000866374-18-000007",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637418000007/flex331201810-k.htm",
+      "document": "flex331201810-k.htm"
+    },
+    {
+      "date": "2017-05-16",
+      "accession": "0000866374-17-000005",
+      "url": "https://www.sec.gov/Archives/edgar/data/866374/000086637417000005/flex331201710-k.htm",
+      "document": "flex331201710-k.htm"
+    }
+  ]
+}

@@ -1,8 +1,64 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::normalizer;
+use apex_core::validation::normalize_url;
+
+static RE_SOURCE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:source|agence|agency|wire)[:\s]+([^\n.;]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_AUTHOR: LazyLock<Regex> = LazyLock::new(|| {
+    // Use (?-i:...) around the name capture so that [A-Z]/[a-z] retain
+    // case-sensitivity — the outer (?i) is only for the keyword prefix.
+    RegexBuilder::new(r"(?i)(?:by|author|par|auteur)[:\s]+(?-i:([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3}))")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+/// Pre-compiled company mention regex — avoids O(n) recompilation per article parse.
+static RE_COMPANY_MENTION: LazyLock<Regex> = LazyLock::new(|| {
+    let suffix_pattern = [
+        "Inc", "Corp", "Ltd", "SARL", "SA", "GmbH", "AG", "SAS",
+        "LLC", "Co", "Group", "Holdings", "Technologies", "Electronics",
+        "Manufacturing", "Services",
+    ].join("|");
+    let pattern = format!(
+        r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){{0,3}})\s+(?:{})\b",
+        suffix_pattern
+    );
+    RegexBuilder::new(&pattern)
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static DATE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?i)(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}",
+        r"(?i)\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}",
+        r"\d{4}[-/]\d{2}[-/]\d{2}",
+    ]
+    .iter()
+    .map(|p| {
+        RegexBuilder::new(p)
+            .size_limit(100_000)
+            .dfa_size_limit(100_000)
+            .build()
+            .unwrap()
+    })
+    .collect()
+});
 
 /// Extracted press release / news article.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,53 +99,63 @@ pub fn extract_press(
     title: &str,
     url: &str,
 ) -> PressExtract {
-    let source = extract_source(body_text);
-    let author = extract_author(body_text);
-    let date = extract_article_date(body_text);
-    let companies = extract_company_mentions(body_text);
-    let topics = classify_topics(body_text, title);
-    let lang = crate::multilingual::detect_language(body_text);
+    let normalized_body = normalizer::normalize_whitespace(body_text);
+    let source = extract_source(&normalized_body);
+    let author = extract_author(&normalized_body);
+    let date = extract_article_date(&normalized_body);
+    let companies = extract_company_mentions(&normalized_body);
+    let topics = classify_topics(&normalized_body, title);
+    let mut lang = crate::multilingual::detect_language(&normalized_body);
+    if lang.trim().is_empty() {
+        lang = "en".to_string();
+    }
+    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
 
     PressExtract {
         headline: normalizer::normalize_whitespace(title),
         source,
         author,
         date,
-        summary: extract_lead(body_text),
+        summary: extract_lead(&normalized_body),
         companies_mentioned: companies,
         topics,
-        url: url.to_string(),
+        url: normalized_url,
         language: Some(lang),
         extracted_at: Utc::now(),
     }
 }
 
 fn extract_source(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:source|agence|agency|wire)[:\s]+([^\n.;]+)").ok()?;
-    re.captures(text)
+    RE_SOURCE.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_author(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:by|author|par|auteur)[:\s]+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})").ok()?;
-    re.captures(text)
+    RE_AUTHOR.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_article_date(text: &str) -> Option<String> {
-    let patterns = [
-        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}",
-        r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}",
-        r"\d{4}[-/]\d{2}[-/]\d{2}",
-    ];
-    for pat in &patterns {
-        if let Ok(re) = Regex::new(pat) {
-            if let Some(m) = re.find(text) {
-                return Some(m.as_str().to_string());
+    for re in DATE_PATTERNS.iter() {
+        if let Some(m) = re.find(text) {
+            let raw = m.as_str();
+            if is_valid_date(raw) {
+                return Some(raw.to_string());
             }
         }
     }
     None
+}
+
+fn is_valid_date(raw: &str) -> bool {
+    let patterns = [
+        "%B %d, %Y",
+        "%B %d %Y",
+        "%d %B %Y",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ];
+    patterns.iter().any(|p| chrono::NaiveDate::parse_from_str(raw, p).is_ok())
 }
 
 fn extract_lead(text: &str) -> String {
@@ -111,26 +177,12 @@ pub fn extract_company_mentions(text: &str) -> Vec<String> {
     let mut companies = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    // Pattern: capitalized words followed by company suffixes
-    let suffixes = [
-        "Inc", "Corp", "Ltd", "SARL", "SA", "GmbH", "AG", "SAS",
-        "LLC", "Co", "Group", "Holdings", "Technologies", "Electronics",
-        "Manufacturing", "Services",
-    ];
-    let suffix_pattern = suffixes.join("|");
-    let pattern = format!(
-        r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){{0,3}})\s+(?:{})\b",
-        suffix_pattern
-    );
-
-    if let Ok(re) = Regex::new(&pattern) {
-        for caps in re.captures_iter(text) {
-            let full_match = caps.get(0).unwrap().as_str();
-            let name = normalizer::normalize_whitespace(full_match);
-            if !seen.contains(&name) {
-                seen.insert(name.clone());
-                companies.push(name);
-            }
+    for caps in RE_COMPANY_MENTION.captures_iter(text) {
+        let full_match = caps.get(0).unwrap().as_str();
+        let name = normalizer::normalize_whitespace(full_match);
+        if !seen.contains(&name) {
+            seen.insert(name.clone());
+            companies.push(name);
         }
     }
 
@@ -245,6 +297,7 @@ mod tests {
         assert!(extract_article_date("January 15, 2025").is_some());
         assert!(extract_article_date("15 March 2025").is_some());
         assert!(extract_article_date("Published: 2025-01-15").is_some());
+        assert!(extract_article_date("February 31, 2024").is_none());
     }
 
     #[test]

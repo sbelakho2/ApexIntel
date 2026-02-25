@@ -1,6 +1,7 @@
 //! Graph route — request/response types and logic for graph exploration endpoints.
 
 use serde::{Deserialize, Serialize};
+use apex_core::validation::validate_nonempty_id;
 
 // ────────────────────────────────────────────
 // Request types
@@ -8,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Query parameters for neighborhood exploration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NeighborhoodQuery {
     pub depth: Option<u32>,
     pub max_nodes: Option<u32>,
@@ -39,6 +41,7 @@ impl NeighborhoodQuery {
 
 /// Query parameters for path finding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PathQuery {
     pub max_hops: Option<u32>,
     pub edge_types: Option<String>,
@@ -159,13 +162,12 @@ pub fn graph_density(node_count: usize, edge_count: usize) -> f64 {
 /// Validate entity ID for graph queries.
 pub fn validate_entity_id(id: &str) -> Result<String, String> {
     let trimmed = id.trim();
-    if trimmed.is_empty() {
-        return Err("Entity ID cannot be empty".to_string());
+    if let Err(err) = validate_nonempty_id(trimmed, "entity_id") {
+        return Err(err.to_string());
     }
     if trimmed.len() > 128 {
         return Err("Entity ID too long (max 128 chars)".to_string());
     }
-    // Accept UUID or prefixed IDs
     Ok(trimmed.to_string())
 }
 

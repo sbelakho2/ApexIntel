@@ -17,12 +17,14 @@ use std::collections::HashSet;
 pub fn extract_json(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
 
-    // Try to extract from ```json ... ``` or ``` ... ``` block
-    if let Some(start) = trimmed.find("```") {
+    // Try all fenced code blocks in order and return the first JSON-looking payload.
+    let mut search_from = 0usize;
+    while let Some(start_rel) = trimmed[search_from..].find("```") {
+        let start = search_from + start_rel;
         let after_fence = &trimmed[start + 3..];
-        // Skip optional language tag (json, JSON, etc.)
-        let content_start = if after_fence.starts_with("json") || after_fence.starts_with("JSON") {
-            after_fence.find('\n').map(|i| i + 1).unwrap_or(0)
+        let after_fence_trimmed = after_fence.trim_start();
+        let content_start = if after_fence_trimmed.starts_with("json") || after_fence_trimmed.starts_with("JSON") {
+            after_fence.find('\n').map(|i| i + 1).unwrap_or(after_fence.len())
         } else if after_fence.starts_with('\n') {
             1
         } else {
@@ -30,10 +32,19 @@ pub fn extract_json(raw: &str) -> Option<String> {
         };
 
         let content = &after_fence[content_start..];
-        if let Some(end) = content.find("```") {
-            let json_str = content[..end].trim();
-            return Some(json_str.to_string());
+        let end = content
+            .find("\n```")
+            .map(|i| i + 1)
+            .or_else(|| content.find("```"));
+        if let Some(end) = end {
+            let block = content[..end].trim();
+            if block.starts_with('{') || block.starts_with('[') {
+                return Some(block.to_string());
+            }
+            search_from = start + 3 + content_start + end + 3;
+            continue;
         }
+        break;
     }
 
     // Try bare JSON: starts with { or [
@@ -45,8 +56,10 @@ pub fn extract_json(raw: &str) -> Option<String> {
 }
 
 /// Parse JSON from a raw LLM response, handling code fences.
+/// Returns error if no JSON found or if the extracted string is not valid JSON (B201).
 pub fn parse_json_response(raw: &str) -> Result<Value, String> {
     let json_str = extract_json(raw).ok_or_else(|| "No JSON found in response".to_string())?;
+    // B201: explicitly validate that extracted content parses as JSON
     serde_json::from_str(&json_str).map_err(|e| format!("Invalid JSON: {}", e))
 }
 
@@ -85,7 +98,11 @@ pub fn check_array_field(value: &Value, field: &str) -> bool {
 
 /// Check that a field is a number.
 pub fn check_number_field(value: &Value, field: &str) -> bool {
-    value.get(field).and_then(|v| v.as_f64()).is_some()
+    value
+        .get(field)
+        .and_then(|v| v.as_f64())
+        .map(|n| n.is_finite())
+        .unwrap_or(false)
 }
 
 /// Validate a recipe JSON against the expected schema.
@@ -102,8 +119,27 @@ pub fn validate_recipe_json(value: &Value) -> Vec<String> {
         errors.push("narrative_template must be a non-empty string".to_string());
     }
 
+    // B204: action_playbook must be a non-empty string
+    if !missing.contains(&"action_playbook".to_string()) {
+        if !check_string_field(value, "action_playbook") {
+            errors.push("action_playbook must be a non-empty string".to_string());
+        }
+    }
+
     if !check_array_field(value, "signals") && !missing.contains(&"signals".to_string()) {
         errors.push("signals must be an array".to_string());
+    }
+
+    // B205: validate signals items are objects with non-empty values
+    if let Some(signals) = value.get("signals").and_then(|v| v.as_array()) {
+        if signals.is_empty() {
+            errors.push("signals array must not be empty".to_string());
+        }
+        for (i, sig) in signals.iter().enumerate() {
+            if !sig.is_object() {
+                errors.push(format!("signals[{}] must be an object", i));
+            }
+        }
     }
 
     errors
@@ -119,7 +155,9 @@ pub fn validate_insight_json(value: &Value) -> Vec<String> {
         errors.push(format!("Missing required field: {}", field));
     }
 
-    if let Some(conf) = value.get("confidence").and_then(|v| v.as_f64()) {
+    if value.get("confidence").is_some() && !check_number_field(value, "confidence") {
+        errors.push("confidence must be a finite number".to_string());
+    } else if let Some(conf) = value.get("confidence").and_then(|v| v.as_f64()) {
         if !(0.0..=1.0).contains(&conf) {
             errors.push(format!("confidence must be 0-1, got {}", conf));
         }
@@ -130,6 +168,39 @@ pub fn validate_insight_json(value: &Value) -> Vec<String> {
         if !valid.contains(&sev.to_lowercase().as_str()) {
             errors.push(format!("Invalid severity: {}", sev));
         }
+    }
+
+    errors
+}
+
+/// Validate the envelope schema for an LLM output record before DB storage (B379).
+///
+/// Expected shape:
+/// `{ "schema_version": "v1", "kind": "...", "payload": { ... }, "created_at": "..." }`
+pub fn validate_stored_llm_output(value: &Value) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    let required = ["schema_version", "kind", "payload", "created_at"];
+    for missing in check_required_fields(value, &required) {
+        errors.push(format!("Missing required field: {}", missing));
+    }
+
+    if let Some(schema_version) = value.get("schema_version").and_then(|v| v.as_str()) {
+        if !schema_version.starts_with('v') {
+            errors.push("schema_version must start with 'v' (e.g., v1)".to_string());
+        }
+    }
+
+    if !check_string_field(value, "kind") && value.get("kind").is_some() {
+        errors.push("kind must be a non-empty string".to_string());
+    }
+
+    if value.get("payload").is_some() && !value.get("payload").map(|p| p.is_object()).unwrap_or(false) {
+        errors.push("payload must be an object".to_string());
+    }
+
+    if !check_string_field(value, "created_at") && value.get("created_at").is_some() {
+        errors.push("created_at must be a non-empty string".to_string());
     }
 
     errors
@@ -157,7 +228,7 @@ pub fn check_content_quality(text: &str) -> Vec<String> {
     // Check for excessive repetition
     let chars: Vec<char> = trimmed.chars().collect();
     if chars.len() > 10 {
-        let unique: HashSet<&char> = chars.iter().collect();
+        let unique: HashSet<char> = chars.iter().copied().collect();
         let ratio = unique.len() as f64 / chars.len() as f64;
         if ratio < 0.05 {
             issues.push("Content has excessive character repetition".to_string());
@@ -188,11 +259,12 @@ pub fn check_content_quality(text: &str) -> Vec<String> {
 }
 
 /// Validate that a JSON response has a unique ID (not a copy of another recipe).
+/// Returns `false` if the `id` field is missing or not a string (B209).
 pub fn check_unique_id(value: &Value, existing_ids: &[&str]) -> bool {
-    if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
-        !existing_ids.contains(&id)
-    } else {
-        true // no id field -> can't check
+    match value.get("id").and_then(|v| v.as_str()) {
+        Some(id) if id.trim().is_empty() => false, // B209: empty id is invalid
+        Some(id) => !existing_ids.contains(&id),
+        None => false, // B209: missing id is explicitly invalid
     }
 }
 
@@ -457,8 +529,9 @@ mod tests {
 
     #[test]
     fn test_check_unique_id_no_id_field() {
+        // B209: missing id is now explicitly invalid
         let val: Value = serde_json::json!({"name": "test"});
-        assert!(check_unique_id(&val, &["R001"]));
+        assert!(!check_unique_id(&val, &["R001"]));
     }
 
     // -- Full pipeline --
@@ -479,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_validate_recipe_response_duplicate_id() {
-        let raw = r#"{"id": "R001", "signals": [1], "narrative_template": "Some long enough narrative text here.", "action_playbook": "Take these actions"}"#;
+        let raw = r#"{"id": "R001", "signals": [{"type":"x"}], "narrative_template": "Some long enough narrative text here.", "action_playbook": "Take these actions"}"#;
         let result = validate_recipe_response(raw, &["R001"]);
         assert!(result.is_err());
         let errors = result.unwrap_err();
@@ -498,5 +571,275 @@ mod tests {
         let raw = r#"{"id": "R100"}"#;
         let result = validate_recipe_response(raw, &[]);
         assert!(result.is_err());
+    }
+
+    // ════════════════════════════════════════════
+    // B201: validate response format is JSON
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_parse_json_response_plain_text_rejected() {
+        let raw = "This response is just plain text, not JSON.";
+        let result = parse_json_response(raw);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No JSON"));
+    }
+
+    #[test]
+    fn test_parse_json_response_html_rejected() {
+        let raw = "<html><body>Not JSON</body></html>";
+        let result = parse_json_response(raw);
+        assert!(result.is_err());
+    }
+
+    // ════════════════════════════════════════════
+    // B202: nested code fences
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_extract_json_nested_backticks_in_string() {
+        // JSON value contains backticks — should still extract correctly
+        let raw = "```json\n{\"code\": \"use `var`\"}\n```";
+        let result = extract_json(raw).unwrap();
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["code"], "use `var`");
+    }
+
+    #[test]
+    fn test_extract_json_double_fence() {
+        // Outer fence wraps inner fence — should get the outer content
+        let raw = "```json\n{\"example\": \"```inner```\"}\n```";
+        let result = extract_json(raw);
+        assert!(result.is_some());
+    }
+
+    // ════════════════════════════════════════════
+    // B203: multilingual content quality
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_check_content_quality_chinese() {
+        let text = "星茨电子已获得ISO 9001认证，其突尼斯工厂的质量管理体系得到了国际认可。";
+        let issues = check_content_quality(text);
+        assert!(issues.is_empty(), "Chinese text should pass: {:?}", issues);
+    }
+
+    #[test]
+    fn test_check_content_quality_arabic() {
+        let text = "حصلت شركة ستارز للإلكترونيات على شهادة آيزو ٩٠٠١ لمنشأتها في تونس.";
+        let issues = check_content_quality(text);
+        assert!(issues.is_empty(), "Arabic text should pass: {:?}", issues);
+    }
+
+    #[test]
+    fn test_check_content_quality_mixed_scripts() {
+        let text = "Starz Electronics (星茨电子) achieved ISO 9001 certification for Tunis.";
+        let issues = check_content_quality(text);
+        assert!(issues.is_empty(), "Mixed-script text should pass: {:?}", issues);
+    }
+
+    // ════════════════════════════════════════════
+    // B204: action_playbook type check
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_validate_recipe_json_action_playbook_not_string() {
+        let val: Value = serde_json::json!({
+            "id": "R001",
+            "signals": [{"type": "hiring"}],
+            "narrative_template": "Company is hiring",
+            "action_playbook": 42
+        });
+        let errors = validate_recipe_json(&val);
+        assert!(
+            errors.iter().any(|e| e.contains("action_playbook")),
+            "Should flag non-string action_playbook: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_recipe_json_action_playbook_empty() {
+        let val: Value = serde_json::json!({
+            "id": "R001",
+            "signals": [{"type": "hiring"}],
+            "narrative_template": "Company is hiring",
+            "action_playbook": ""
+        });
+        let errors = validate_recipe_json(&val);
+        assert!(errors.iter().any(|e| e.contains("action_playbook")));
+    }
+
+    // ════════════════════════════════════════════
+    // B205: signals item validation
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_validate_recipe_json_signals_non_object_items() {
+        let val: Value = serde_json::json!({
+            "id": "R001",
+            "signals": [42, "string"],
+            "narrative_template": "Narrative text here",
+            "action_playbook": "Take action"
+        });
+        let errors = validate_recipe_json(&val);
+        assert!(
+            errors.iter().any(|e| e.contains("signals[0]")),
+            "Should flag non-object signal items: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_recipe_json_signals_empty_array() {
+        let val: Value = serde_json::json!({
+            "id": "R001",
+            "signals": [],
+            "narrative_template": "Narrative text here",
+            "action_playbook": "Take action"
+        });
+        let errors = validate_recipe_json(&val);
+        assert!(errors.iter().any(|e| e.contains("signals array must not be empty")));
+    }
+
+    // ════════════════════════════════════════════
+    // B207: refusal detection false positives
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_check_content_quality_no_false_positive_i_can() {
+        let text = "I can confirm that the certification has been granted for ISO 27001.";
+        let issues = check_content_quality(text);
+        assert!(
+            !issues.iter().any(|i| i.contains("refusal")),
+            "Should not flag 'I can confirm': {:?}",
+            issues
+        );
+    }
+
+    #[test]
+    fn test_check_content_quality_no_false_positive_as_an_analyst() {
+        let text = "As an analyst reviewing the supply chain data, there are three key findings.";
+        let issues = check_content_quality(text);
+        assert!(
+            !issues.iter().any(|i| i.contains("refusal")),
+            "Should not flag 'As an analyst': {:?}",
+            issues
+        );
+    }
+
+    #[test]
+    fn test_check_content_quality_actual_refusal_still_detected() {
+        let text = "I cannot generate the requested analysis because the data is insufficient.";
+        let issues = check_content_quality(text);
+        assert!(issues.iter().any(|i| i.contains("refusal")));
+    }
+
+    // ════════════════════════════════════════════
+    // B209: check_unique_id missing / empty id
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_check_unique_id_missing_id_explicit() {
+        let val: Value = serde_json::json!({"name": "test"});
+        assert!(!check_unique_id(&val, &[]), "Missing id should return false");
+    }
+
+    #[test]
+    fn test_check_unique_id_empty_string_id() {
+        let val: Value = serde_json::json!({"id": ""});
+        assert!(!check_unique_id(&val, &[]), "Empty id should return false");
+    }
+
+    #[test]
+    fn test_check_unique_id_whitespace_id() {
+        let val: Value = serde_json::json!({"id": "   "});
+        assert!(!check_unique_id(&val, &[]), "Whitespace id should return false");
+    }
+
+    #[test]
+    fn test_check_unique_id_numeric_id_ignored() {
+        let val: Value = serde_json::json!({"id": 123});
+        assert!(!check_unique_id(&val, &[]), "Non-string id should return false");
+    }
+
+    // ════════════════════════════════════════════
+    // B210: JSON extraction with leading text
+    // ════════════════════════════════════════════
+
+    #[test]
+    fn test_extract_json_leading_text_before_fence() {
+        let raw = "Sure, here is the JSON:\n```json\n{\"key\": \"value\"}\n```";
+        let result = extract_json(raw).unwrap();
+        assert_eq!(result, r#"{"key": "value"}"#);
+    }
+
+    #[test]
+    fn test_extract_json_leading_text_bare_object() {
+        // Leading text before bare JSON — extract_json only finds { at start
+        let raw = "Here is the output: {\"key\": 42}";
+        // This should return None because the trimmed string doesn't start with {
+        assert!(extract_json(raw).is_none());
+    }
+
+    #[test]
+    fn test_extract_json_leading_whitespace_bare_object() {
+        let raw = "  \n  {\"key\": 42}";
+        let result = extract_json(raw).unwrap();
+        assert_eq!(result, r#"{"key": 42}"#);
+    }
+
+    #[test]
+    fn test_extract_json_leading_text_with_trailing_text() {
+        let raw = "Analysis complete.\n```json\n[1,2,3]\n```\nEnd of response.";
+        let result = extract_json(raw).unwrap();
+        assert_eq!(result, "[1,2,3]");
+    }
+
+    #[test]
+    fn test_extract_json_multiple_code_blocks_prefers_first_json_block() {
+        let raw = "```text\nnot json\n```\n\n```json\n{\"id\":\"R001\"}\n```\n\n```json\n{\"id\":\"R002\"}\n```";
+        let result = extract_json(raw).unwrap();
+        assert_eq!(result, "{\"id\":\"R001\"}");
+    }
+
+    #[test]
+    fn test_validate_insight_json_confidence_must_be_number() {
+        let val: Value = serde_json::json!({
+            "recipe_id": "R001",
+            "entity_id": "E001",
+            "narrative": "text",
+            "severity": "high",
+            "confidence": "0.8"
+        });
+        let errors = validate_insight_json(&val);
+        assert!(errors.iter().any(|e| e.contains("finite number")));
+    }
+
+    #[test]
+    fn test_validate_stored_llm_output_valid() {
+        let val: Value = serde_json::json!({
+            "schema_version": "v1",
+            "kind": "recipe_response",
+            "payload": {"id": "R001"},
+            "created_at": "2025-01-01T00:00:00Z"
+        });
+        let errors = validate_stored_llm_output(&val);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn test_validate_stored_llm_output_invalid_schema() {
+        let val: Value = serde_json::json!({
+            "schema_version": "1",
+            "kind": "",
+            "payload": [1,2,3],
+            "created_at": ""
+        });
+        let errors = validate_stored_llm_output(&val);
+        assert!(errors.iter().any(|e| e.contains("schema_version")));
+        assert!(errors.iter().any(|e| e.contains("kind")));
+        assert!(errors.iter().any(|e| e.contains("payload")));
+        assert!(errors.iter().any(|e| e.contains("created_at")));
     }
 }

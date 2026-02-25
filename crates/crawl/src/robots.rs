@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+const MIN_CRAWL_DELAY_SECS: f64 = 0.5;
+const MAX_CRAWL_DELAY_SECS: f64 = 60.0;
+
 /// Cached robots.txt rules for a domain.
 #[derive(Debug, Clone)]
 pub struct RobotsRules {
@@ -9,6 +12,7 @@ pub struct RobotsRules {
     pub crawl_delay: Option<f64>,
     pub sitemaps: Vec<String>,
     pub fetched_at: Instant,
+    pub max_age: Option<Duration>,
 }
 
 impl RobotsRules {
@@ -33,9 +37,14 @@ impl RobotsRules {
 
             if lower.starts_with("user-agent:") {
                 let value = line[11..].trim().to_lowercase();
+                // Guard against malformed robots.txt with empty User-Agent:
+                // ("anything".contains("") == true in Rust, which would match all crawlers)
+                if value.is_empty() {
+                    continue;
+                }
                 if value == "*" && !found_specific {
                     in_matching_section = true;
-                } else if ua_lower.contains(&value) || value.contains(&ua_lower) {
+                } else if ua_lower.contains(&value) {
                     if !found_specific {
                         // Clear wildcard rules, use specific ones
                         disallowed.clear();
@@ -86,29 +95,52 @@ impl RobotsRules {
             crawl_delay,
             sitemaps,
             fetched_at: Instant::now(),
+            max_age: None,
         }
     }
 
     /// Check if a path is allowed according to these rules.
+    /// Per RFC 9309, the longest matching pattern wins.
     pub fn is_allowed(&self, path: &str) -> bool {
-        // Check allow rules first (more specific)
+        let mut best_allow: Option<usize> = None;
+        let mut best_disallow: Option<usize> = None;
+
         for pattern in &self.allowed {
             if path_matches(path, pattern) {
-                return true;
+                let len = pattern.len();
+                if best_allow.map_or(true, |prev| len > prev) {
+                    best_allow = Some(len);
+                }
             }
         }
-        // Check disallow rules
         for pattern in &self.disallowed {
             if path_matches(path, pattern) {
-                return false;
+                let len = pattern.len();
+                if best_disallow.map_or(true, |prev| len > prev) {
+                    best_disallow = Some(len);
+                }
             }
         }
-        true // default: allowed
+
+        match (best_allow, best_disallow) {
+            (Some(a), Some(d)) => a >= d, // equal length: allow wins (per RFC 9309)
+            (None, Some(_)) => false,      // only disallow matched
+            _ => true,                     // no match or only allow matched → allowed
+        }
     }
 
     /// Get the crawl delay as Duration.
     pub fn crawl_delay_duration(&self) -> Option<Duration> {
-        self.crawl_delay.map(|d| Duration::from_secs_f64(d))
+        self.crawl_delay.map(|d| {
+            let clamped = d.clamp(MIN_CRAWL_DELAY_SECS, MAX_CRAWL_DELAY_SECS);
+            Duration::from_secs_f64(clamped)
+        })
+    }
+
+    /// Set cache max-age for these rules (from Cache-Control headers).
+    pub fn with_max_age(mut self, max_age: Duration) -> Self {
+        self.max_age = Some(max_age);
+        self
     }
 }
 
@@ -116,21 +148,49 @@ fn path_matches(path: &str, pattern: &str) -> bool {
     if pattern == "/" {
         return true; // Disallow all
     }
-    if pattern.ends_with('*') {
-        let prefix = &pattern[..pattern.len() - 1];
-        return path.starts_with(prefix);
+    // Extract end-of-path anchor ($) first, then handle wildcards.
+    let (pat, must_end) = if pattern.ends_with('$') {
+        (&pattern[..pattern.len() - 1], true)
+    } else {
+        (pattern, false)
+    };
+    // Support * at any position per RFC 9309 §2.2.2
+    if pat.contains('*') {
+        let segments: Vec<&str> = pat.split('*').collect();
+        let mut pos = 0;
+        for (i, seg) in segments.iter().enumerate() {
+            if seg.is_empty() {
+                continue;
+            }
+            if i == 0 {
+                // First segment must be a prefix
+                if !path[pos..].starts_with(seg) {
+                    return false;
+                }
+                pos += seg.len();
+            } else {
+                // Subsequent segments must appear in order
+                match path[pos..].find(seg) {
+                    Some(idx) => pos += idx + seg.len(),
+                    None => return false,
+                }
+            }
+        }
+        // If anchored, the match must consume the entire path
+        if must_end { pos == path.len() } else { true }
+    } else if must_end {
+        path == pat
+    } else {
+        path.starts_with(pat)
     }
-    if pattern.ends_with('$') {
-        let exact = &pattern[..pattern.len() - 1];
-        return path == exact;
-    }
-    path.starts_with(pattern)
 }
 
 /// Cache of robots.txt rules per domain.
 pub struct RobotsCache {
     cache: HashMap<String, RobotsRules>,
     ttl: Duration,
+    cache_hits: u64,
+    cache_misses: u64,
 }
 
 impl RobotsCache {
@@ -138,14 +198,27 @@ impl RobotsCache {
         Self {
             cache: HashMap::new(),
             ttl,
+            cache_hits: 0,
+            cache_misses: 0,
         }
     }
 
-    pub fn get(&self, domain: &str) -> Option<&RobotsRules> {
-        self.cache.get(domain).filter(|r| r.fetched_at.elapsed() < self.ttl)
+    pub fn get(&mut self, domain: &str) -> Option<&RobotsRules> {
+        let result = self.cache.get(domain).filter(|r| {
+            let ttl = r.max_age.map(|v| v.min(self.ttl)).unwrap_or(self.ttl);
+            r.fetched_at.elapsed() < ttl
+        });
+        if result.is_some() {
+            self.cache_hits = self.cache_hits.saturating_add(1);
+        } else {
+            self.cache_misses = self.cache_misses.saturating_add(1);
+        }
+        result
     }
 
     pub fn insert(&mut self, domain: &str, rules: RobotsRules) {
+        // Auto-evict expired entries on every insert to bound memory growth
+        self.evict_expired();
         self.cache.insert(domain.to_string(), rules);
     }
 
@@ -155,6 +228,26 @@ impl RobotsCache {
 
     pub fn evict_expired(&mut self) {
         self.cache.retain(|_, r| r.fetched_at.elapsed() < self.ttl);
+    }
+
+    /// Number of successful cache lookups.
+    pub fn cache_hits(&self) -> u64 {
+        self.cache_hits
+    }
+
+    /// Number of failed cache lookups.
+    pub fn cache_misses(&self) -> u64 {
+        self.cache_misses
+    }
+
+    /// Cache hit-rate in `[0.0, 1.0]` when there have been lookups, else `0.0`.
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.cache_hits.saturating_add(self.cache_misses);
+        if total == 0 {
+            0.0
+        } else {
+            self.cache_hits as f64 / total as f64
+        }
     }
 }
 
@@ -257,6 +350,9 @@ Sitemap: https://example.com/sitemap.xml
         assert_eq!(cache.cached_count(), 1);
         assert!(cache.get("example.com").is_some());
         assert!(cache.get("other.com").is_none());
+        assert_eq!(cache.cache_hits(), 1);
+        assert_eq!(cache.cache_misses(), 1);
+        assert!((cache.hit_rate() - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]

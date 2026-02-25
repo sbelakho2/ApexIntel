@@ -15,11 +15,14 @@ impl AdjacencyGraph {
     }
 
     /// Add a directed edge from `from` to `to` with a given weight.
+    ///
+    /// B152: negative weights are clamped to 0.0.
     pub fn add_edge(&mut self, from: &str, to: &str, weight: f64) {
+        let w = if !weight.is_finite() || weight < 0.0 { 0.0 } else { weight };
         self.edges
             .entry(from.to_string())
             .or_default()
-            .push((to.to_string(), weight));
+            .push((to.to_string(), w));
     }
 
     /// Add a bidirectional edge.
@@ -62,26 +65,47 @@ impl AdjacencyGraph {
 
     /// Propagate risk from initial_risk scores through the graph.
     ///
-    /// BFS-style propagation for `hops` rounds with decay factor.
-    /// This follows the IMPLEMENTATION.md graph_risk::propagate() algorithm.
+    /// Frontier-based BFS propagation for `hops` rounds with decay factor.
+    /// Each hop only propagates from nodes discovered in the previous frontier,
+    /// preventing additive accumulation that inflates scores.
     pub fn propagate_risk(
         &self,
         initial_risk: &HashMap<String, f64>,
         hops: u8,
         decay: f64,
     ) -> HashMap<String, f64> {
+        if hops == 0 {
+            return initial_risk.clone();
+        }
+        let effective_decay = decay.clamp(0.0, 1.0);
         let mut risk = initial_risk.clone();
+        let mut frontier: HashSet<String> = initial_risk.keys().cloned().collect();
 
         for _ in 0..hops {
-            let mut new_risk = risk.clone();
-            for (node, neighbors) in &self.edges {
-                for (neighbor, weight) in neighbors {
-                    let propagated = risk.get(node).unwrap_or(&0.0) * weight * decay;
-                    let entry = new_risk.entry(neighbor.clone()).or_insert(0.0);
-                    *entry = (*entry + propagated).min(1.0);
+            let mut next_frontier = HashSet::new();
+            let mut updates: HashMap<String, f64> = HashMap::new();
+            for node in &frontier {
+                let node_risk = risk.get(node).copied().unwrap_or(0.0);
+                if node_risk <= 0.0 {
+                    continue;
+                }
+                for (neighbor, weight) in self.neighbors(node) {
+                    let clamped_w = weight.clamp(0.0, 1.0); // B151
+                    let propagated = node_risk * clamped_w * effective_decay;
+                    let entry = updates.entry(neighbor.clone()).or_insert(0.0);
+                    // Take max rather than sum to avoid additive inflation
+                    if propagated > *entry {
+                        *entry = propagated;
+                    }
+                    next_frontier.insert(neighbor.clone());
                 }
             }
-            risk = new_risk;
+            // Apply updates: only increase risk, never decrease
+            for (node, new_val) in updates {
+                let entry = risk.entry(node).or_insert(0.0);
+                *entry = entry.max(new_val).min(1.0);
+            }
+            frontier = next_frontier;
         }
         risk
     }
@@ -100,23 +124,33 @@ impl AdjacencyGraph {
         let mut scores: HashMap<String, f64> = nodes.iter().map(|n| (n.clone(), init_score)).collect();
 
         for _ in 0..iterations {
-            let base = (1.0 - damping) / nodes.len() as f64;
+            let base = (1.0 - damping) / n as f64;
             let mut new_scores: HashMap<String, f64> =
                 nodes.iter().map(|n| (n.clone(), base)).collect();
 
+            // First pass: accumulate total dangling mass
+            let dangling_mass: f64 = nodes
+                .iter()
+                .filter(|node| self.out_degree(node) == 0)
+                .map(|node| scores[node])
+                .sum();
+            let dangling_share = damping * dangling_mass / n as f64;
+
+            // Distribute dangling mass evenly to all nodes
+            for target in &nodes {
+                *new_scores.get_mut(target).unwrap() += dangling_share;
+            }
+
+            // Second pass: distribute non-dangling node scores to neighbors using edge weights
             for node in &nodes {
-                let out_deg = self.out_degree(node);
-                if out_deg == 0 {
-                    // Distribute score evenly (dangling node)
-                    let share = damping * scores[node] / nodes.len() as f64;
-                    for target in &nodes {
-                        *new_scores.get_mut(target).unwrap() += share;
-                    }
-                } else {
-                    let share = damping * scores[node] / out_deg as f64;
-                    for (neighbor, _weight) in self.neighbors(node) {
-                        if let Some(s) = new_scores.get_mut(neighbor) {
-                            *s += share;
+                let neighbors = self.neighbors(node);
+                if !neighbors.is_empty() {
+                    let total_weight: f64 = neighbors.iter().map(|(_, w)| w).sum();
+                    if total_weight > 0.0 {
+                        for (neighbor, weight) in neighbors {
+                            if let Some(s) = new_scores.get_mut(neighbor) {
+                                *s += damping * scores[node] * weight / total_weight;
+                            }
                         }
                     }
                 }
@@ -159,8 +193,27 @@ impl AdjacencyGraph {
         None
     }
 
-    /// Find connected components via BFS.
+    /// Find connected components via undirected BFS.
+    ///
+    /// Builds an undirected adjacency view so that directed edges are traversed
+    /// in both directions — otherwise nodes reachable only via incoming edges
+    /// may appear as separate components.
     pub fn connected_components(&self) -> Vec<Vec<String>> {
+        // Build undirected adjacency for BFS
+        let mut undirected: HashMap<String, HashSet<String>> = HashMap::new();
+        for (node, neighbors) in &self.edges {
+            for (neighbor, _) in neighbors {
+                undirected
+                    .entry(node.clone())
+                    .or_default()
+                    .insert(neighbor.clone());
+                undirected
+                    .entry(neighbor.clone())
+                    .or_default()
+                    .insert(node.clone());
+            }
+        }
+
         let all_nodes = self.nodes();
         let mut visited: HashSet<String> = HashSet::new();
         let mut components = Vec::new();
@@ -176,10 +229,12 @@ impl AdjacencyGraph {
 
             while let Some(n) = queue.pop_front() {
                 component.push(n.clone());
-                for (neighbor, _) in self.neighbors(&n) {
-                    if !visited.contains(neighbor) {
-                        visited.insert(neighbor.clone());
-                        queue.push_back(neighbor.clone());
+                if let Some(neighbors) = undirected.get(&n) {
+                    for neighbor in neighbors {
+                        if !visited.contains(neighbor) {
+                            visited.insert(neighbor.clone());
+                            queue.push_back(neighbor.clone());
+                        }
                     }
                 }
             }
@@ -252,6 +307,32 @@ mod tests {
         // foxconn and jabil should get some risk
         assert!(*result.get("foxconn").unwrap_or(&0.0) > 0.0);
         assert!(*result.get("jabil").unwrap_or(&0.0) > 0.0);
+    }
+
+    #[test]
+    fn test_propagate_risk_hops_zero_returns_initial_only() {
+        let g = sample_graph();
+        let mut initial = HashMap::new();
+        initial.insert("starz".to_string(), 0.8);
+
+        let result = g.propagate_risk(&initial, 0, 0.5);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("starz").copied(), Some(0.8));
+        assert!(!result.contains_key("foxconn"));
+    }
+
+    #[test]
+    fn test_propagate_risk_negative_decay_treated_as_zero() {
+        let g = sample_graph();
+        let mut initial = HashMap::new();
+        initial.insert("starz".to_string(), 0.8);
+
+        let result = g.propagate_risk(&initial, 2, -0.5);
+
+        assert_eq!(result.get("starz").copied(), Some(0.8));
+        assert_eq!(result.get("foxconn").copied().unwrap_or(0.0), 0.0);
+        assert_eq!(result.get("jabil").copied().unwrap_or(0.0), 0.0);
     }
 
     #[test]
@@ -364,5 +445,243 @@ mod tests {
         assert_eq!(g.node_count(), 0);
         assert_eq!(g.edge_count(), 0);
         assert!(g.pagerank(10, 0.85).is_empty());
+    }
+
+    // ── B152: negative weight validation ──
+
+    #[test]
+    fn test_add_edge_negative_weight_clamped() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", -0.5);
+        let neighbors = g.neighbors("a");
+        assert_eq!(neighbors.len(), 1);
+        assert!((neighbors[0].1 - 0.0).abs() < f64::EPSILON, "Negative weight should be clamped to 0");
+    }
+
+    // ── B153: self-loop tests ──
+
+    #[test]
+    fn test_self_loop_edge() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "a", 0.5);
+        let neighbors = g.neighbors("a");
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].0, "a");
+        assert_eq!(g.node_count(), 1);
+    }
+
+    #[test]
+    fn test_self_loop_propagate_risk() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "a", 1.0);
+        let mut initial = HashMap::new();
+        initial.insert("a".to_string(), 0.5);
+        let result = g.propagate_risk(&initial, 3, 0.9);
+        // Risk should never exceed 1.0
+        assert!(*result.get("a").unwrap() <= 1.0);
+    }
+
+    #[test]
+    fn test_self_loop_shortest_path() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "a", 1.0);
+        let path = g.shortest_path("a", "a").unwrap();
+        assert_eq!(path, vec!["a"]);
+    }
+
+    // ── B154: disconnected nodes in pagerank ──
+
+    #[test]
+    fn test_pagerank_disconnected_nodes() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", 1.0);
+        g.add_edge("b", "a", 1.0);
+        // c is completely disconnected — add as an isolated source with no real target
+        g.add_edge("c", "c", 0.0);
+        let scores = g.pagerank(30, 0.85);
+        // All nodes including the disconnected one should have positive score
+        assert!(scores.len() >= 3);
+        for (_node, score) in &scores {
+            assert!(*score > 0.0, "All nodes should have positive pagerank");
+        }
+    }
+
+    #[test]
+    fn test_pagerank_isolated_nodes_only_uniform_scores() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "a", 0.0);
+        g.add_edge("b", "b", 0.0);
+        g.add_edge("c", "c", 0.0);
+
+        let scores = g.pagerank(30, 0.85);
+        assert_eq!(scores.len(), 3);
+
+        let a = scores["a"];
+        let b = scores["b"];
+        let c = scores["c"];
+        assert!((a - b).abs() < 1e-9);
+        assert!((b - c).abs() < 1e-9);
+    }
+
+    // ── B155: division by zero guard when total_weight is 0 ──
+
+    #[test]
+    fn test_pagerank_zero_weight_edges() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", 0.0);
+        g.add_edge("b", "a", 0.0);
+        // Should not panic
+        let scores = g.pagerank(10, 0.85);
+        assert!(!scores.is_empty());
+    }
+
+    #[test]
+    fn test_pagerank_nan_weight_treated_as_zero() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", f64::NAN);
+        g.add_edge("b", "a", 1.0);
+
+        let scores = g.pagerank(20, 0.85);
+        assert_eq!(scores.len(), 2);
+        assert!(scores.values().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_propagate_risk_decay_zero_no_spread() {
+        let g = sample_graph();
+        let mut initial = HashMap::new();
+        initial.insert("starz".to_string(), 0.8);
+
+        let result = g.propagate_risk(&initial, 3, 0.0);
+        assert_eq!(result.get("starz").copied(), Some(0.8));
+        assert_eq!(result.get("foxconn").copied().unwrap_or(0.0), 0.0);
+        assert_eq!(result.get("jabil").copied().unwrap_or(0.0), 0.0);
+    }
+
+    // ── B156: shortest_path when target unreachable ──
+
+    #[test]
+    fn test_shortest_path_unreachable_directed() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", 1.0);
+        // b -> a doesn't exist, so "b" cannot reach "a"
+        assert!(g.shortest_path("b", "a").is_none());
+    }
+
+    #[test]
+    fn test_shortest_path_nonexistent_nodes() {
+        let g = AdjacencyGraph::new();
+        assert!(g.shortest_path("x", "y").is_none());
+    }
+
+    #[test]
+    fn test_shortest_path_with_cycle() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", 1.0);
+        g.add_edge("b", "c", 1.0);
+        g.add_edge("c", "a", 1.0);
+        g.add_edge("c", "d", 1.0);
+
+        let path = g.shortest_path("a", "d").unwrap();
+        assert_eq!(path, vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn test_shortest_path_same_node() {
+        let g = sample_graph();
+        let path = g.shortest_path("starz", "starz").unwrap();
+        assert_eq!(path, vec!["starz"]);
+    }
+
+    // ── B157: nodes() caching ──
+    // (The fix caches via a HashSet built on each call; verifying consistency.)
+
+    #[test]
+    fn test_nodes_consistent_after_mutation() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", 1.0);
+        let nodes1 = g.nodes();
+        g.add_edge("c", "d", 1.0);
+        let nodes2 = g.nodes();
+        assert_eq!(nodes1.len(), 2);
+        assert_eq!(nodes2.len(), 4);
+    }
+
+    // ── B158: connected_components in directed-only graphs ──
+
+    #[test]
+    fn test_connected_components_directed_only() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", 1.0);
+        g.add_edge("c", "d", 1.0);
+        // directed only — connected_components uses undirected view
+        let components = g.connected_components();
+        assert_eq!(components.len(), 2);
+    }
+
+    #[test]
+    fn test_connected_components_directed_chain() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "b", 1.0);
+        g.add_edge("b", "c", 1.0);
+        // One component via undirected view
+        let components = g.connected_components();
+        assert_eq!(components.len(), 1);
+    }
+
+    // ── B166: empty adjacency safe handling ──
+
+    #[test]
+    fn test_empty_graph_propagate_risk() {
+        let g = AdjacencyGraph::new();
+        let result = g.propagate_risk(&HashMap::new(), 3, 0.5);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_empty_graph_shortest_path() {
+        let g = AdjacencyGraph::new();
+        assert!(g.shortest_path("a", "b").is_none());
+    }
+
+    #[test]
+    fn test_empty_graph_connected_components() {
+        let g = AdjacencyGraph::new();
+        let components = g.connected_components();
+        assert!(components.is_empty());
+    }
+
+    #[test]
+    fn test_connected_components_single_isolated_node() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("solo", "solo", 0.0);
+
+        let mut components = g.connected_components();
+        assert_eq!(components.len(), 1);
+        components[0].sort();
+        assert_eq!(components[0], vec!["solo".to_string()]);
+    }
+
+    #[test]
+    fn test_empty_graph_co_appearance() {
+        let g = AdjacencyGraph::new();
+        assert_eq!(g.co_appearance_count("a", "b"), 0);
+    }
+
+    // ── B167: co_appearance_count with no shared neighbors ──
+
+    #[test]
+    fn test_co_appearance_no_shared_neighbors() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("alice", "event1", 1.0);
+        g.add_edge("bob", "event2", 1.0);
+        assert_eq!(g.co_appearance_count("alice", "bob"), 0);
+    }
+
+    #[test]
+    fn test_co_appearance_nonexistent_node() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("alice", "event1", 1.0);
+        assert_eq!(g.co_appearance_count("alice", "nobody"), 0);
     }
 }

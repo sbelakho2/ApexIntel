@@ -25,6 +25,18 @@ pub struct StagedRecipe {
     pub true_positives: u64,
 }
 
+impl StagedRecipe {
+    pub fn validate_timestamps(&self, now: DateTime<Utc>) -> Result<(), String> {
+        if self.staged_at > now {
+            return Err(format!(
+                "staged_at ({}) cannot be in the future",
+                self.staged_at.format("%Y-%m-%dT%H:%M:%SZ")
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A production recipe being monitored for degradation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductionRecipe {
@@ -35,6 +47,18 @@ pub struct ProductionRecipe {
     pub recall_history: Vec<f64>,
     pub false_positive_rate: f64,
     pub alerts_fired_total: u64,
+}
+
+impl ProductionRecipe {
+    pub fn validate_timestamps(&self, now: DateTime<Utc>) -> Result<(), String> {
+        if self.promoted_at > now {
+            return Err(format!(
+                "promoted_at ({}) cannot be in the future",
+                self.promoted_at.format("%Y-%m-%dT%H:%M:%SZ")
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Promotion policy thresholds.
@@ -83,6 +107,11 @@ impl Default for DeprecationPolicy {
 // Weekly stages
 // ────────────────────────────────────────────
 
+/// Identifies one stage in the weekly pipeline.
+///
+/// Stages run in their `all()` order:
+/// PromotionBoard → RecipeDeprecation → StrategyMemo.
+/// All three stages are independent; none gates the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WeeklyStage {
     PromotionBoard,
@@ -126,6 +155,16 @@ pub enum PromotionDecision {
     Promote { reason: String },
     Keep { reason: String },
     Reject { reason: String },
+}
+
+impl std::fmt::Display for PromotionDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PromotionDecision::Promote { reason } => write!(f, "PROMOTE: {}", reason),
+            PromotionDecision::Keep { reason } => write!(f, "KEEP: {}", reason),
+            PromotionDecision::Reject { reason } => write!(f, "REJECT: {}", reason),
+        }
+    }
 }
 
 /// Evaluate whether a staged recipe should be promoted.
@@ -210,13 +249,24 @@ pub fn run_promotion_board(
         }
     }
 
-    PromotionBoardResult {
+    let result = PromotionBoardResult {
         promoted,
         kept,
         rejected,
-    }
+    };
+    tracing::info!(
+        promoted = result.promoted.len(),
+        kept = result.kept.len(),
+        rejected = result.rejected.len(),
+        "promotion_audit_summary"
+    );
+    result
 }
 
+/// Aggregated outcome of the promotion-board stage.
+///
+/// Items are `(recipe_id, reason)` tuples.  `promoted` and `rejected` carry
+/// the deciding reason string; `kept` also carries a reason for auditability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromotionBoardResult {
     pub promoted: Vec<(String, String)>,
@@ -228,10 +278,23 @@ pub struct PromotionBoardResult {
 // Deprecation logic (pure)
 // ────────────────────────────────────────────
 
+/// Per-recipe outcome of the deprecation-check stage.
+///
+/// `Deprecate` carries a human-readable `reason` string (FPR too high,
+/// precision declining, inactive, etc.).  `Keep` means all thresholds pass.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DeprecationDecision {
     Deprecate { reason: String },
     Keep,
+}
+
+impl std::fmt::Display for DeprecationDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeprecationDecision::Deprecate { reason } => write!(f, "DEPRECATE: {}", reason),
+            DeprecationDecision::Keep => write!(f, "KEEP"),
+        }
+    }
 }
 
 /// Evaluate whether a production recipe should be deprecated.
@@ -281,7 +344,13 @@ pub fn is_declining(history: &[f64], n: u32) -> bool {
         return false;
     }
     let tail = &history[history.len() - (n as usize + 1)..];
-    tail.windows(2).all(|w| w[1] < w[0])
+    tail.windows(2).all(|w| {
+        // Treat NaN as 0.0 (worst precision) so unmeasurable weeks
+        // count as declining rather than silently blocking deprecation.
+        let prev = if w[0].is_nan() { 0.0 } else { w[0] };
+        let curr = if w[1].is_nan() { 0.0 } else { w[1] };
+        curr < prev
+    })
 }
 
 /// Run deprecation check for all production recipes.
@@ -303,9 +372,19 @@ pub fn run_deprecation_check(
         }
     }
 
-    DeprecationResult { deprecated, kept }
+    let result = DeprecationResult { deprecated, kept };
+    tracing::info!(
+        deprecated = result.deprecated.len(),
+        kept = result.kept.len(),
+        "deprecation_audit_summary"
+    );
+    result
 }
 
+/// Aggregated outcome of [`run_deprecation_check`].
+///
+/// `deprecated` is a list of `(recipe_id, reason)` pairs; `kept` is a list
+/// of recipe IDs that passed all deprecation gates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeprecationResult {
     pub deprecated: Vec<(String, String)>,
@@ -330,6 +409,52 @@ pub struct MemoInputs {
     pub period_end: DateTime<Utc>,
 }
 
+impl MemoInputs {
+    /// Validate memo inputs for semantic correctness (B247).
+    ///
+    /// Checks:
+    /// - `period_end` is strictly after `period_start`
+    /// - `pipeline_health_pct` is in `[0.0, 1.0]`
+    /// - every warning `confidence` is in `[0.0, 1.0]`
+    pub fn validate(&self) -> Result<(), String> {
+        if self.period_end <= self.period_start {
+            return Err(format!(
+                "period_end ({}) must be strictly after period_start ({})",
+                self.period_end.format("%Y-%m-%dT%H:%M:%SZ"),
+                self.period_start.format("%Y-%m-%dT%H:%M:%SZ")
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.pipeline_health_pct)
+            || self.pipeline_health_pct.is_nan()
+        {
+            return Err(format!(
+                "pipeline_health_pct {} must be in [0.0, 1.0]",
+                self.pipeline_health_pct
+            ));
+        }
+        for (i, warning) in self.top_warnings.iter().enumerate() {
+            if !(0.0..=1.0).contains(&warning.confidence) || warning.confidence.is_nan() {
+                return Err(format!(
+                    "top_warnings[{}] (id={:?}) confidence {} must be in [0.0, 1.0]",
+                    i, warning.id, warning.confidence
+                ));
+            }
+            if warning.headline.trim().is_empty() {
+                return Err(format!(
+                    "top_warnings[{}] (id={:?}) headline must not be empty",
+                    i, warning.id
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A single warning item surfaced in the weekly strategy memo.
+///
+/// `id` is a stable machine-readable key (e.g. recipe code + entity id).
+/// `confidence` must be in `[0.0, 1.0]`; `headline` must be non-empty.
+/// Validated by [`MemoInputs::validate`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoWarning {
     pub id: String,
@@ -338,6 +463,10 @@ pub struct MemoWarning {
     pub confidence: f64,
 }
 
+/// A notable change detected for a Person-of-Interest during the week.
+///
+/// `change_type` is a short slug, e.g. `"role_change"` or `"new_employer"`.
+/// `details` provides the human-readable description for the memo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoiChange {
     pub person_name: String,
@@ -381,6 +510,10 @@ pub fn build_memo_structure(inputs: &MemoInputs) -> MemoStructure {
     }
 }
 
+/// Full structured memo produced by [`build_memo_structure`].
+///
+/// Contains a title, an ordered list of [`MemoSection`]s, and the UTC
+/// generation timestamp for auditing and caching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoStructure {
     pub title: String,
@@ -388,6 +521,9 @@ pub struct MemoStructure {
     pub generated_at: DateTime<Utc>,
 }
 
+/// A single titled content block inside a [`MemoStructure`].
+///
+/// `content` is Markdown-formatted text ready for downstream rendering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoSection {
     pub title: String,
@@ -478,6 +614,7 @@ pub struct WeeklyStageOutcome {
 /// Full weekly report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeeklyReport {
+    pub schema_version: String,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub stages: Vec<WeeklyStageOutcome>,
@@ -490,6 +627,7 @@ pub struct WeeklyReport {
 impl WeeklyReport {
     pub fn new() -> Self {
         Self {
+            schema_version: "v1".to_string(),
             started_at: Utc::now(),
             finished_at: None,
             stages: Vec::new(),
@@ -521,6 +659,63 @@ impl WeeklyReport {
             status, succeeded, total
         )
     }
+
+    /// Return structured audit log lines for all stages (B248).
+    ///
+    /// Each line is a key=value record suitable for ingestion by structured
+    /// logging systems (e.g., Loki, Splunk, ELK).  Each stage records its
+    /// `run_id` for correlation across distributed log sinks (B249).
+    pub fn audit_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "event=weekly_report started_at={} overall={}",
+            self.started_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            if self.overall_success { "success" } else { "failure" },
+        ));
+        for outcome in &self.stages {
+            let status_str = match &outcome.run.status {
+                JobStatus::Succeeded { duration_ms } => {
+                    format!("succeeded duration_ms={}", duration_ms)
+                }
+                JobStatus::Failed { error, duration_ms } => {
+                    format!("failed error={:?} duration_ms={}", error, duration_ms)
+                }
+                JobStatus::Skipped { reason } => format!("skipped reason={:?}", reason),
+                JobStatus::Running => "running".to_string(),
+                JobStatus::Pending => "pending".to_string(),
+            };
+            lines.push(format!(
+                "  event=stage_outcome stage={} run_id={} {} items={} details={:?}",
+                outcome.stage.as_str(),
+                outcome.run.run_id,
+                status_str,
+                outcome.run.items_processed,
+                outcome.details,
+            ));
+        }
+        if let Some(ref promo) = self.promotion_result {
+            lines.push(format!(
+                "  event=promotion promoted={} kept={} rejected={}",
+                promo.promoted.len(),
+                promo.kept.len(),
+                promo.rejected.len()
+            ));
+        }
+        if let Some(ref dep) = self.deprecation_result {
+            lines.push(format!(
+                "  event=deprecation deprecated={} kept={}",
+                dep.deprecated.len(),
+                dep.kept.len()
+            ));
+        }
+        if let Some(ref finished) = self.finished_at {
+            lines.push(format!(
+                "event=weekly_report_end finished_at={}",
+                finished.format("%Y-%m-%dT%H:%M:%SZ")
+            ));
+        }
+        lines
+    }
 }
 
 impl Default for WeeklyReport {
@@ -530,6 +725,10 @@ impl Default for WeeklyReport {
 }
 
 /// Run the full weekly pipeline from pre-computed inputs.
+///
+/// Emits structured tracing events with the correlation id taken from each
+/// stage's `run_id` so log lines can be joined across the pipeline (B249).
+#[tracing::instrument(skip_all, fields(stages = %WeeklyStage::all().len()))]
 pub fn run_weekly_pipeline(
     staged_recipes: &[StagedRecipe],
     production_recipes: &[ProductionRecipe],
@@ -537,9 +736,44 @@ pub fn run_weekly_pipeline(
     promotion_policy: &PromotionPolicy,
     deprecation_policy: &DeprecationPolicy,
 ) -> WeeklyReport {
+    run_weekly_pipeline_with_optional_policies(
+        staged_recipes,
+        production_recipes,
+        memo_inputs,
+        Some(promotion_policy),
+        Some(deprecation_policy),
+    )
+}
+
+/// Same as `run_weekly_pipeline`, but falls back to defaults if policies are missing.
+pub fn run_weekly_pipeline_with_optional_policies(
+    staged_recipes: &[StagedRecipe],
+    production_recipes: &[ProductionRecipe],
+    memo_inputs: &MemoInputs,
+    promotion_policy: Option<&PromotionPolicy>,
+    deprecation_policy: Option<&DeprecationPolicy>,
+) -> WeeklyReport {
+    let default_promotion = PromotionPolicy::default();
+    let default_deprecation = DeprecationPolicy::default();
+    let promotion_policy = promotion_policy.unwrap_or(&default_promotion);
+    let deprecation_policy = deprecation_policy.unwrap_or(&default_deprecation);
+
     let mut report = WeeklyReport::new();
 
+    // ── Pipeline start: log batch sizes (B285) ──
+    tracing::info!(
+        staged_recipes_count = staged_recipes.len(),
+        production_recipes_count = production_recipes.len(),
+        warnings_count = memo_inputs.top_warnings.len(),
+        "weekly_pipeline_begin"
+    );
+
     // Stage 1: Promotion board
+    tracing::info!(
+        stage = "promotion_board",
+        input_batch_size = staged_recipes.len(),
+        "weekly_stage_begin"
+    );
     let promo_result = run_promotion_board(staged_recipes, promotion_policy);
     let mut promo_run = JobRun::new(JobKind::PromotionBoard);
     promo_run.start();
@@ -553,6 +787,15 @@ pub fn run_weekly_pipeline(
             promo_result.rejected.len(),
         ),
     );
+    // B249: emit correlation id so downstream log systems can join by run_id
+    tracing::info!(
+        stage = "promotion_board",
+        run_id = %promo_run.run_id,
+        promoted = promo_result.promoted.len(),
+        kept = promo_result.kept.len(),
+        rejected = promo_result.rejected.len(),
+        "stage_completed"
+    );
     report.stages.push(WeeklyStageOutcome {
         stage: WeeklyStage::PromotionBoard,
         run: promo_run,
@@ -561,6 +804,11 @@ pub fn run_weekly_pipeline(
     report.promotion_result = Some(promo_result);
 
     // Stage 2: Deprecation
+    tracing::info!(
+        stage = "recipe_deprecation",
+        input_batch_size = production_recipes.len(),
+        "weekly_stage_begin"
+    );
     let dep_result = run_deprecation_check(production_recipes, deprecation_policy);
     let mut dep_run = JobRun::new(JobKind::RecipeDeprecation);
     dep_run.start();
@@ -573,6 +821,14 @@ pub fn run_weekly_pipeline(
             dep_result.kept.len(),
         ),
     );
+    // B249: emit correlation id
+    tracing::info!(
+        stage = "recipe_deprecation",
+        run_id = %dep_run.run_id,
+        deprecated = dep_result.deprecated.len(),
+        kept = dep_result.kept.len(),
+        "stage_completed"
+    );
     report.stages.push(WeeklyStageOutcome {
         stage: WeeklyStage::RecipeDeprecation,
         run: dep_run,
@@ -581,12 +837,24 @@ pub fn run_weekly_pipeline(
     report.deprecation_result = Some(dep_result);
 
     // Stage 3: Strategy memo
+    tracing::info!(
+        stage = "strategy_memo",
+        warnings_count = memo_inputs.top_warnings.len(),
+        "weekly_stage_begin"
+    );
     let memo = build_memo_structure(memo_inputs);
     let mut memo_run = JobRun::new(JobKind::StrategyMemo);
     memo_run.start();
     memo_run.succeed(
         memo.sections.len() as u64,
         &format!("{} sections generated", memo.sections.len()),
+    );
+    // B249: emit correlation id
+    tracing::info!(
+        stage = "strategy_memo",
+        run_id = %memo_run.run_id,
+        sections = memo.sections.len(),
+        "stage_completed"
     );
     report.stages.push(WeeklyStageOutcome {
         stage: WeeklyStage::StrategyMemo,
@@ -596,6 +864,15 @@ pub fn run_weekly_pipeline(
     report.memo = Some(memo);
 
     report.finish();
+
+    // B249: final summary event with batch totals (B285)
+    tracing::info!(
+        overall = report.overall_success,
+        stages = report.stages.len(),
+        total_staged_recipes = staged_recipes.len(),
+        total_production_recipes = production_recipes.len(),
+        "weekly_pipeline_complete"
+    );
     report
 }
 
@@ -849,6 +1126,19 @@ mod tests {
         assert!(matches!(decision, PromotionDecision::Promote { .. }));
     }
 
+    #[test]
+    fn test_evaluate_promotion_boundary_values_pass() {
+        let mut recipe = sample_staged_good();
+        let policy = PromotionPolicy::default();
+        recipe.weeks_in_staging = policy.min_weeks_staged;
+        recipe.precision = policy.min_precision;
+        recipe.recall = policy.min_recall;
+        recipe.false_positive_rate = policy.max_false_positive_rate;
+        recipe.alerts_fired = policy.min_alerts_fired;
+        let decision = evaluate_promotion(&recipe, &policy);
+        assert!(matches!(decision, PromotionDecision::Promote { .. }));
+    }
+
     // ── Deprecation logic ──
 
     #[test]
@@ -911,6 +1201,41 @@ mod tests {
         let result = run_deprecation_check(&[], &DeprecationPolicy::default());
         assert!(result.deprecated.is_empty());
         assert!(result.kept.is_empty());
+    }
+
+    #[test]
+    fn test_staged_at_not_in_future_validation() {
+        let mut recipe = sample_staged_good();
+        let now = Utc::now();
+        recipe.staged_at = now + chrono::Duration::days(1);
+        assert!(recipe.validate_timestamps(now).is_err());
+    }
+
+    #[test]
+    fn test_promoted_at_not_in_future_validation() {
+        let mut recipe = sample_prod_healthy();
+        let now = Utc::now();
+        recipe.promoted_at = now + chrono::Duration::days(1);
+        assert!(recipe.validate_timestamps(now).is_err());
+    }
+
+    #[test]
+    fn test_promotion_decision_formatting() {
+        let txt = PromotionDecision::Promote {
+            reason: "all gates met".to_string(),
+        }
+        .to_string();
+        assert!(txt.starts_with("PROMOTE:"));
+    }
+
+    #[test]
+    fn test_deprecation_decision_formatting() {
+        let txt = DeprecationDecision::Deprecate {
+            reason: "inactive".to_string(),
+        }
+        .to_string();
+        assert!(txt.starts_with("DEPRECATE:"));
+        assert_eq!(DeprecationDecision::Keep.to_string(), "KEEP");
     }
 
     // ── is_declining ──
@@ -1106,6 +1431,34 @@ mod tests {
         assert!(summary.contains("3/3"));
     }
 
+    #[test]
+    fn test_run_weekly_pipeline_missing_promotion_policy_uses_default() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline_with_optional_policies(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &memo_inputs,
+            None,
+            Some(&DeprecationPolicy::default()),
+        );
+        assert!(report.overall_success);
+        assert!(report.promotion_result.is_some());
+    }
+
+    #[test]
+    fn test_run_weekly_pipeline_missing_deprecation_policy_uses_default() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline_with_optional_policies(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &memo_inputs,
+            Some(&PromotionPolicy::default()),
+            None,
+        );
+        assert!(report.overall_success);
+        assert!(report.deprecation_result.is_some());
+    }
+
     // ── Serialization ──
 
     #[test]
@@ -1146,5 +1499,400 @@ mod tests {
         let back: WeeklyReport = serde_json::from_str(&json).unwrap();
         assert_eq!(back.stages.len(), 3);
         assert!(back.overall_success);
+        assert_eq!(back.schema_version, "v1");
+    }
+
+    // ── B246: empty weekly inputs through the full pipeline ──
+
+    #[test]
+    fn test_pipeline_all_empty_staged_and_production() {
+        // B246: guarantee the pipeline never panics or returns < 3 stages on empty inputs
+        let memo_inputs = MemoInputs {
+            top_warnings: vec![],
+            new_recipes_staged: 0,
+            recipes_promoted: 0,
+            recipes_deprecated: 0,
+            pipeline_health_pct: 1.0,
+            top_drift_features: vec![],
+            poi_changes: vec![],
+            period_start: utc(2026, 2, 16, 0, 0, 0),
+            period_end: utc(2026, 2, 23, 0, 0, 0),
+        };
+        let report = run_weekly_pipeline(
+            &[],
+            &[],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        assert!(report.overall_success, "empty pipeline should still succeed");
+        assert_eq!(report.stages.len(), 3, "all three stages must run even with empty inputs");
+        assert!(report.promotion_result.as_ref().unwrap().promoted.is_empty());
+        assert!(report.promotion_result.as_ref().unwrap().kept.is_empty());
+        assert!(report.promotion_result.as_ref().unwrap().rejected.is_empty());
+        assert!(report.deprecation_result.as_ref().unwrap().deprecated.is_empty());
+        assert!(report.deprecation_result.as_ref().unwrap().kept.is_empty());
+        assert!(report.memo.is_some(), "memo must always be generated");
+    }
+
+    #[test]
+    fn test_pipeline_empty_stages_have_distinct_run_ids() {
+        // B246: even with empty inputs, each stage should get a unique run_id
+        let memo_inputs = MemoInputs {
+            top_warnings: vec![],
+            new_recipes_staged: 0,
+            recipes_promoted: 0,
+            recipes_deprecated: 0,
+            pipeline_health_pct: 1.0,
+            top_drift_features: vec![],
+            poi_changes: vec![],
+            period_start: utc(2026, 2, 16, 0, 0, 0),
+            period_end: utc(2026, 2, 23, 0, 0, 0),
+        };
+        let report = run_weekly_pipeline(
+            &[],
+            &[],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let ids: Vec<_> = report.stages.iter().map(|s| s.run.run_id.clone()).collect();
+        assert_eq!(ids.len(), 3);
+        // All UUIDs must be distinct
+        assert_ne!(ids[0], ids[1]);
+        assert_ne!(ids[1], ids[2]);
+        assert_ne!(ids[0], ids[2]);
+    }
+
+    // ── B247: MemoInputs::validate ──
+
+    #[test]
+    fn test_memo_inputs_validate_ok() {
+        let inputs = sample_memo_inputs();
+        assert!(inputs.validate().is_ok());
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_period_end_before_start() {
+        let mut inputs = sample_memo_inputs();
+        // swap start/end so end < start
+        inputs.period_end = utc(2026, 2, 15, 0, 0, 0); // before 2026-02-16
+        let err = inputs.validate().unwrap_err();
+        assert!(
+            err.contains("period_end"),
+            "error should mention period_end, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_period_end_equals_start() {
+        let mut inputs = sample_memo_inputs();
+        inputs.period_end = inputs.period_start; // same instant
+        let err = inputs.validate().unwrap_err();
+        assert!(err.contains("period_end"));
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_health_pct_below_zero() {
+        let mut inputs = sample_memo_inputs();
+        inputs.pipeline_health_pct = -0.1;
+        let err = inputs.validate().unwrap_err();
+        assert!(
+            err.contains("pipeline_health_pct"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_health_pct_above_one() {
+        let mut inputs = sample_memo_inputs();
+        inputs.pipeline_health_pct = 1.01;
+        let err = inputs.validate().unwrap_err();
+        assert!(err.contains("pipeline_health_pct"));
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_health_pct_nan() {
+        let mut inputs = sample_memo_inputs();
+        inputs.pipeline_health_pct = f64::NAN;
+        let err = inputs.validate().unwrap_err();
+        assert!(err.contains("pipeline_health_pct"));
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_warning_confidence_out_of_range() {
+        let mut inputs = sample_memo_inputs();
+        inputs.top_warnings[0].confidence = 1.5;
+        let err = inputs.validate().unwrap_err();
+        assert!(
+            err.contains("confidence"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_warning_confidence_nan() {
+        let mut inputs = sample_memo_inputs();
+        inputs.top_warnings[0].confidence = f64::NAN;
+        let err = inputs.validate().unwrap_err();
+        assert!(err.contains("confidence"));
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_warning_empty_headline() {
+        let mut inputs = sample_memo_inputs();
+        inputs.top_warnings[0].headline = String::new();
+        let err = inputs.validate().unwrap_err();
+        assert!(
+            err.contains("headline"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_memo_inputs_validate_boundary_health_pct_zero_and_one() {
+        let mut inputs = sample_memo_inputs();
+        inputs.pipeline_health_pct = 0.0;
+        assert!(inputs.validate().is_ok(), "0.0 is valid");
+        inputs.pipeline_health_pct = 1.0;
+        assert!(inputs.validate().is_ok(), "1.0 is valid");
+    }
+
+    // ── B248: WeeklyReport::audit_lines ──
+
+    #[test]
+    fn test_audit_lines_present_for_all_stages() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let lines = report.audit_lines();
+        // Must have at least one line per stage plus a footer
+        assert!(lines.len() >= 4, "expected ≥4 audit lines, got {}", lines.len());
+    }
+
+    #[test]
+    fn test_audit_lines_contain_stage_keys() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let lines = report.audit_lines();
+        let joined = lines.join("\n");
+        assert!(joined.contains("promotion_board"), "missing promotion_board stage");
+        assert!(joined.contains("recipe_deprecation"), "missing recipe_deprecation stage");
+        assert!(joined.contains("strategy_memo"), "missing strategy_memo stage");
+    }
+
+    #[test]
+    fn test_audit_lines_contain_run_ids() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let lines = report.audit_lines();
+        let joined = lines.join("\n");
+        // Each stage line must carry a run_id= key for log correlation
+        assert!(
+            joined.contains("run_id="),
+            "audit_lines must embed run_id for correlation; got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn test_audit_lines_key_value_format() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline(
+            &[],
+            &[],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let lines = report.audit_lines();
+        // Every line must be non-empty and contain at least one '='
+        for line in &lines {
+            assert!(
+                !line.is_empty(),
+                "audit_lines must not emit blank lines"
+            );
+            assert!(
+                line.contains('='),
+                "audit line must use key=value format: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_audit_lines_finished_at_present() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline(
+            &[],
+            &[],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let lines = report.audit_lines();
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("finished_at=") || joined.contains("overall_success="),
+            "audit_lines footer must record completion; got:\n{joined}"
+        );
+    }
+
+    // ── B249: per-stage run_id uniqueness (tracing correlation) ──
+
+    #[test]
+    fn test_stage_run_ids_are_unique_across_runs() {
+        let memo_inputs = sample_memo_inputs();
+        let report1 = run_weekly_pipeline(
+            &[],
+            &[],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let report2 = run_weekly_pipeline(
+            &[],
+            &[],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let ids1: Vec<_> = report1.stages.iter().map(|s| s.run.run_id.clone()).collect();
+        let ids2: Vec<_> = report2.stages.iter().map(|s| s.run.run_id.clone()).collect();
+        // run_ids from two different invocations must all be different
+        for id1 in &ids1 {
+            assert!(
+                !ids2.contains(id1),
+                "run_id {id1} appeared in two separate pipeline runs — not unique"
+            );
+        }
+    }
+
+    #[test]
+    fn test_audit_lines_run_ids_match_stage_run_ids() {
+        let memo_inputs = sample_memo_inputs();
+        let report = run_weekly_pipeline(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &memo_inputs,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let joined = report.audit_lines().join("\n");
+        // Every stage's run_id must appear verbatim in audit_lines for correlation
+        for outcome in &report.stages {
+            let id = outcome.run.run_id.to_string();
+            assert!(
+                joined.contains(&id),
+                "run_id {id} for stage {:?} missing from audit_lines",
+                outcome.stage
+            );
+        }
+    }
+
+    // ── B266: Golden JSON regression tests ──────────────────────────────────
+
+    #[test]
+    fn golden_weekly_report_json_has_required_keys() {
+        let report = run_weekly_pipeline(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &sample_memo_inputs(),
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let json = serde_json::to_string(&report).expect("WeeklyReport must serialize");
+
+        // Top-level structural fields
+        assert!(json.contains("\"started_at\""), "missing started_at");
+        assert!(json.contains("\"finished_at\""), "missing finished_at");
+        assert!(json.contains("\"stages\""), "missing stages");
+        assert!(json.contains("\"overall_success\""), "missing overall_success");
+        // Optional output fields
+        assert!(json.contains("\"promotion_result\""), "missing promotion_result");
+        assert!(json.contains("\"deprecation_result\""), "missing deprecation_result");
+        assert!(json.contains("\"memo\""), "missing memo");
+    }
+
+    #[test]
+    fn golden_weekly_report_roundtrips_losslessly() {
+        let report = run_weekly_pipeline(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &sample_memo_inputs(),
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let json = serde_json::to_string(&report).expect("serialize");
+        let back: WeeklyReport = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.overall_success, report.overall_success);
+        assert_eq!(back.stages.len(), report.stages.len());
+        // Promotion/deprecation/memo presence preserved
+        assert_eq!(back.promotion_result.is_some(), report.promotion_result.is_some());
+        assert_eq!(back.deprecation_result.is_some(), report.deprecation_result.is_some());
+        assert_eq!(back.memo.is_some(), report.memo.is_some());
+    }
+
+    #[test]
+    fn golden_weekly_stage_count_equals_three() {
+        // There are exactly 3 weekly stages — any addition must update this test
+        assert_eq!(WeeklyStage::all().len(), 3);
+        let report = run_weekly_pipeline(
+            &[sample_staged_good()],
+            &[sample_prod_healthy()],
+            &sample_memo_inputs(),
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        assert_eq!(report.stages.len(), 3);
+        let json = serde_json::to_string(&report).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["stages"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn golden_weekly_report_empty_inputs_serializes() {
+        let memo = sample_memo_inputs();
+        let report = run_weekly_pipeline(
+            &[],
+            &[],
+            &memo,
+            &PromotionPolicy::default(),
+            &DeprecationPolicy::default(),
+        );
+        let json = serde_json::to_string(&report).expect("empty-input report must serialize");
+        let back: WeeklyReport = serde_json::from_str(&json).expect("must deserialize");
+        assert_eq!(back.overall_success, report.overall_success);
+    }
+
+    #[test]
+    fn golden_staged_recipe_json_has_required_fields() {
+        let r = sample_staged_good();
+        let json = serde_json::to_string(&r).expect("StagedRecipe must serialize");
+        assert!(json.contains("\"recipe_id\""), "missing recipe_id");
+        assert!(json.contains("\"staged_at\""), "missing staged_at");
+        assert!(json.contains("\"precision\""), "missing precision");
+        assert!(json.contains("\"recall\""), "missing recall");
+        // Round-trip must preserve all values
+        let back: StagedRecipe = serde_json::from_str(&json).expect("must deserialize");
+        assert_eq!(back.recipe_id, r.recipe_id);
+        assert!((back.precision - r.precision).abs() < 1e-9);
     }
 }
+

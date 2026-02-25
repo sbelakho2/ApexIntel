@@ -16,10 +16,13 @@ use serde::{Deserialize, Serialize};
 // Config & types
 // ────────────────────────────────────────────
 
+/// Maximum permutations to prevent extremely long runtimes (B227).
+pub const MAX_PERMUTATIONS: usize = 10_000;
+
 /// Configuration for negative control validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NegativeControlConfig {
-    /// Number of permutation rounds.
+    /// Number of permutation rounds (clamped to MAX_PERMUTATIONS).
     pub permutations: usize,
     /// Significance threshold for the permutation test.
     pub alpha: f64,
@@ -37,6 +40,26 @@ impl Default for NegativeControlConfig {
             window_days: 30,
             seed: 42,
         }
+    }
+}
+
+impl NegativeControlConfig {
+    /// Validate negative-control runtime knobs (B381, B382).
+    pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.permutations == 0 {
+            issues.push("permutations must be > 0".to_string());
+        }
+        if self.seed == 0 {
+            issues.push("seed must be non-zero".to_string());
+        }
+        if !(0.0..=1.0).contains(&self.alpha) || self.alpha.is_nan() {
+            issues.push(format!("alpha must be in [0.0, 1.0], got {}", self.alpha));
+        }
+        if self.window_days <= 0 {
+            issues.push(format!("window_days must be > 0, got {}", self.window_days));
+        }
+        issues
     }
 }
 
@@ -112,9 +135,16 @@ pub fn run_permutation_test(
     config: &NegativeControlConfig,
     shuffle_kind: ShuffleKind,
 ) -> Option<NegativeControlResult> {
+    if !config.validate().is_empty() {
+        return None;
+    }
+
     if outcomes.is_empty() || signals.is_empty() {
         return None;
     }
+
+    // B227: clamp permutations to prevent excessively long runtimes
+    let effective_perms = config.permutations.min(MAX_PERMUTATIONS);
 
     let lag = candidate.best_lag_days;
 
@@ -129,10 +159,10 @@ pub fn run_permutation_test(
 
     // Permutation distribution
     let mut rng = rand::rngs::StdRng::seed_from_u64(config.seed);
-    let mut permuted_effects = Vec::with_capacity(config.permutations);
+    let mut permuted_effects = Vec::with_capacity(effective_perms);
     let mut count_ge = 0usize;
 
-    for _ in 0..config.permutations {
+    for _ in 0..effective_perms {
         let shuffled = match shuffle_kind {
             ShuffleKind::TimeShuffle => shuffle_times(signals, &mut rng),
             ShuffleKind::EntityShuffle => shuffle_entities(signals, &mut rng),
@@ -146,7 +176,10 @@ pub fn run_permutation_test(
         permuted_effects.push(perm_effect);
     }
 
-    let perm_p = count_ge as f64 / config.permutations as f64;
+    // Standard permutation p-value with +1 correction (Phipson & Smyth 2010):
+    // include the observed statistic in the reference distribution so p is
+    // never exactly zero and the minimum achievable p = 1/(permutations+1).
+    let perm_p = (count_ge + 1) as f64 / (effective_perms + 1) as f64;
 
     // The control PASSES if permuted effects are significantly lower than
     // observed (i.e., the effect vanishes under shuffling).
@@ -219,12 +252,21 @@ pub fn mean_permuted_effect(effects: &[f64]) -> f64 {
 
 /// Compute effect ratio: observed_effect / mean_permuted_effect.
 /// A high ratio (> 2–3×) indicates a robust signal.
+/// Capped at 100.0 to prevent `f64::MAX` / `Infinity` from corrupting
+/// downstream arithmetic (consistent with `miner.rs::odds_ratio`).
+///
+/// B229: NaN inputs are handled gracefully — NaN observed yields 1.0,
+/// NaN permuted values are filtered out before computing the mean.
 pub fn effect_ratio(observed: f64, permuted: &[f64]) -> f64 {
-    let mean = mean_permuted_effect(permuted);
-    if mean < 1e-12 {
-        return if observed > 1e-12 { f64::MAX } else { 1.0 };
+    if observed.is_nan() {
+        return 1.0;
     }
-    observed / mean
+    let clean: Vec<f64> = permuted.iter().copied().filter(|v| !v.is_nan()).collect();
+    let mean = mean_permuted_effect(&clean);
+    if mean < 1e-12 {
+        return if observed > 1e-12 { 100.0 } else { 1.0 };
+    }
+    (observed / mean).min(100.0)
 }
 
 // ────────────────────────────────────────────
@@ -286,6 +328,26 @@ mod tests {
         assert!((cfg.alpha - 0.05).abs() < 0.001);
         assert_eq!(cfg.window_days, 30);
         assert_eq!(cfg.seed, 42);
+    }
+
+    #[test]
+    fn test_config_validate_rejects_zero_seed() {
+        let cfg = NegativeControlConfig {
+            seed: 0,
+            ..Default::default()
+        };
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|m| m.contains("seed")));
+    }
+
+    #[test]
+    fn test_config_validate_rejects_zero_permutations() {
+        let cfg = NegativeControlConfig {
+            permutations: 0,
+            ..Default::default()
+        };
+        let issues = cfg.validate();
+        assert!(issues.iter().any(|m| m.contains("permutations")));
     }
 
     // ── Shuffle helpers ──────────────────
@@ -408,6 +470,28 @@ mod tests {
         assert!(result.is_some());
         let r = result.unwrap();
         assert_eq!(r.permuted_effects.len(), 100);
+    }
+
+    #[test]
+    fn test_permutation_test_low_permutations_runs() {
+        let (outcomes, signals) = genuine_pattern(20);
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig {
+            permutations: 1,
+            alpha: 0.10,
+            window_days: 5,
+            seed: 42,
+        };
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            ShuffleKind::TimeShuffle,
+        )
+        .unwrap();
+        assert_eq!(result.permuted_effects.len(), 1);
+        assert!(result.permutation_p_value >= 0.0 && result.permutation_p_value <= 1.0);
     }
 
     #[test]
@@ -593,14 +677,14 @@ mod tests {
     #[test]
     fn test_effect_ratio_zero_permuted() {
         let permuted = vec![0.0, 0.0, 0.0];
-        assert_eq!(effect_ratio(5.0, &permuted), f64::MAX);
+        assert!((effect_ratio(5.0, &permuted) - 100.0).abs() < f64::EPSILON);
         assert!((effect_ratio(0.0, &permuted) - 1.0).abs() < 0.01);
     }
 
     #[test]
     fn test_effect_ratio_empty_permuted() {
-        // mean = 0 → same as zero
-        assert_eq!(effect_ratio(3.0, &[]), f64::MAX);
+        // mean = 0 → same as zero, capped at 100.0
+        assert!((effect_ratio(3.0, &[]) - 100.0).abs() < f64::EPSILON);
     }
 
     // ── NegativeControlResult serialization ──────────────────
@@ -631,5 +715,88 @@ mod tests {
         assert_ne!(ShuffleKind::TimeShuffle, ShuffleKind::EntityShuffle);
         let json = serde_json::to_string(&ShuffleKind::EntityShuffle).unwrap();
         assert!(json.contains("EntityShuffle"));
+    }
+
+    // ── B226: identical timestamps ──────────────────
+
+    #[test]
+    fn test_permutation_test_identical_timestamps() {
+        // All signals at the exact same timestamp — shuffle should be a no-op
+        let same_ts = 100 * 86400i64;
+        let signals: Vec<EventRecord> = (0..20).map(|i| (format!("E{}", i), same_ts)).collect();
+        let outcomes: Vec<EventRecord> = (0..20).map(|i| (format!("E{}", i), same_ts + 86400)).collect();
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig {
+            permutations: 50,
+            alpha: 0.05,
+            window_days: 5,
+            seed: 42,
+        };
+        // Should not panic; result may be None (if contingency < 10) or Some
+        let result = run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle);
+        if let Some(r) = result {
+            assert!(!r.permutation_p_value.is_nan());
+        }
+    }
+
+    // ── B227: permutations clamped ──────────────────
+
+    #[test]
+    fn test_permutation_count_clamped_to_max() {
+        let (outcomes, signals) = genuine_pattern(25);
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig {
+            permutations: 50_000, // exceeds MAX_PERMUTATIONS
+            alpha: 0.05,
+            window_days: 5,
+            seed: 42,
+        };
+        let result = run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle);
+        let r = result.unwrap();
+        // Should have MAX_PERMUTATIONS effects, not 50_000
+        assert_eq!(r.permuted_effects.len(), MAX_PERMUTATIONS);
+    }
+
+    // ── B228: empty signals ──────────────────
+
+    #[test]
+    fn test_permutation_test_empty_signals_only() {
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig::default();
+        let outcomes = vec![("A".to_string(), 86400i64)];
+        let result = run_permutation_test(&candidate, &outcomes, &[], &config, ShuffleKind::TimeShuffle);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_permutation_test_empty_outcomes_only() {
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig::default();
+        let signals = vec![("A".to_string(), 86400i64)];
+        let result = run_permutation_test(&candidate, &[], &signals, &config, ShuffleKind::EntityShuffle);
+        assert!(result.is_none());
+    }
+
+    // ── B229: NaN handling in effect_ratio ──────────────────
+
+    #[test]
+    fn test_effect_ratio_nan_observed() {
+        let permuted = vec![1.0, 2.0, 3.0];
+        assert!((effect_ratio(f64::NAN, &permuted) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_effect_ratio_nan_permuted_values() {
+        let permuted = vec![1.0, f64::NAN, 3.0, f64::NAN];
+        // Only 1.0 and 3.0 survive → mean = 2.0
+        let ratio = effect_ratio(6.0, &permuted);
+        assert!((ratio - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_effect_ratio_all_nan_permuted() {
+        let permuted = vec![f64::NAN, f64::NAN];
+        // All filtered → mean = 0 → 100.0 (observed > 0)
+        assert!((effect_ratio(5.0, &permuted) - 100.0).abs() < f64::EPSILON);
     }
 }

@@ -1,8 +1,73 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::normalizer;
+use apex_core::validation::normalize_url;
+
+static RE_LOCATION: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:venue|location|lieu|held at|held in)[:\s]+([^\n.;]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static DATE_RANGE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?i)(\d{1,2}[-–]\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})",
+        r"(?i)((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}[-–]\d{1,2},?\s+\d{4})",
+        r"(\d{4}[-/]\d{2}[-/]\d{2}\s*(?:to|[-–])\s*\d{4}[-/]\d{2}[-/]\d{2})",
+    ]
+    .iter()
+    .map(|p| {
+        RegexBuilder::new(p)
+            .size_limit(100_000)
+            .dfa_size_limit(100_000)
+            .build()
+            .unwrap()
+    })
+    .collect()
+});
+
+static RE_BOOTH: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:booth|stand|kiosk)[:\s]*([A-Z0-9][\w\-]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_HALL: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:hall|pavilion|halle)[:\s]*(\w+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_COUNTRY: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:country|pays)[:\s]+(\w[\w\s]+)")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_SPEAKERS: LazyLock<Regex> = LazyLock::new(|| {
+    // Use (?-i:...) around the name capture so that [A-Z] / [a-z] retain
+    // their case-sensitivity — otherwise the outer (?i) makes them
+    // equivalent and any word sequence matches as a "name".
+    RegexBuilder::new(
+        r"(?i)(?:speaker|keynote|presenter|panelist)[:\s]+(?-i:([A-Z][a-z]+(?:\s[A-Z][a-z]+)+))(?:\s*,\s*(.+?))?(?:\s+(?:at|from|of)\s+(.+?))?(?:\.|$|\n)"
+    )
+    .size_limit(200_000)
+    .dfa_size_limit(200_000)
+    .build()
+    .unwrap()
+});
 
 /// Extracted exhibitor or speaker from a trade show / conference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,10 +108,12 @@ pub fn extract_trade_show(
     title: &str,
     url: &str,
 ) -> TradeShowExtract {
-    let location = extract_location(body_text);
-    let date_range = extract_date_range(body_text);
-    let exhibitors = extract_exhibitors(body_text);
-    let speakers = extract_speakers(body_text);
+    let normalized_body = normalizer::normalize_whitespace(body_text);
+    let location = extract_location(&normalized_body);
+    let date_range = extract_date_range(&normalized_body);
+    let exhibitors = extract_exhibitors(&normalized_body);
+    let speakers = extract_speakers(&normalized_body);
+    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
 
     TradeShowExtract {
         event_name: normalizer::normalize_whitespace(title),
@@ -54,29 +121,25 @@ pub fn extract_trade_show(
         date_range,
         exhibitors,
         speakers,
-        url: url.to_string(),
+        url: normalized_url,
         extracted_at: Utc::now(),
     }
 }
 
 fn extract_location(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)(?:venue|location|lieu|held at|held in)[:\s]+([^\n.;]+)").ok()?;
-    re.captures(text)
+    RE_LOCATION.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_date_range(text: &str) -> Option<String> {
     // Pattern: "January 15-17, 2025" or "15-17 March 2025" or "2025-03-15 to 2025-03-17"
-    let patterns = [
-        r"(\d{1,2}[-–]\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})",
-        r"((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}[-–]\d{1,2},?\s+\d{4})",
-        r"(\d{4}[-/]\d{2}[-/]\d{2}\s*(?:to|[-–])\s*\d{4}[-/]\d{2}[-/]\d{2})",
-    ];
-    for pat in &patterns {
-        if let Ok(re) = Regex::new(pat) {
-            if let Some(m) = re.find(text) {
-                return Some(normalizer::normalize_whitespace(m.as_str()));
+    for re in DATE_RANGE_PATTERNS.iter() {
+        if let Some(m) = re.find(text) {
+            let raw = normalizer::normalize_whitespace(m.as_str());
+            if normalizer::is_valid_date_range(&raw) {
+                return Some(raw);
             }
+            return None;
         }
     }
     None
@@ -87,12 +150,6 @@ pub fn extract_exhibitors(text: &str) -> Vec<ExhibitorExtract> {
     let mut exhibitors = Vec::new();
 
     // Pattern: "Company Name - Booth A123 - Hall 5 - Country"
-    let booth_re = Regex::new(r"(?i)(?:booth|stand|kiosk)[:\s]*([A-Z0-9][\w\-]+)")
-        .ok();
-    let hall_re = Regex::new(r"(?i)(?:hall|pavilion|halle)[:\s]*(\w+)")
-        .ok();
-    let country_re = Regex::new(r"(?i)(?:country|pays)[:\s]+(\w[\w\s]+)")
-        .ok();
 
     // Try line-by-line extraction for exhibitor lists
     for line in text.lines() {
@@ -102,21 +159,16 @@ pub fn extract_exhibitors(text: &str) -> Vec<ExhibitorExtract> {
         }
 
         // Lines with booth numbers are likely exhibitor entries
-        let has_booth = booth_re.as_ref()
-            .map(|re| re.is_match(trimmed))
-            .unwrap_or(false);
+        let has_booth = RE_BOOTH.is_match(trimmed);
 
         if has_booth {
-            let booth = booth_re.as_ref()
-                .and_then(|re| re.captures(trimmed))
+            let booth = RE_BOOTH.captures(trimmed)
                 .map(|c| c.get(1).unwrap().as_str().to_string());
 
-            let hall = hall_re.as_ref()
-                .and_then(|re| re.captures(trimmed))
+            let hall = RE_HALL.captures(trimmed)
                 .map(|c| c.get(1).unwrap().as_str().to_string());
 
-            let country = country_re.as_ref()
-                .and_then(|re| re.captures(trimmed))
+            let country = RE_COUNTRY.captures(trimmed)
                 .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()));
 
             // Name is typically the first part before any delimiter
@@ -147,23 +199,17 @@ pub fn extract_speakers(text: &str) -> Vec<SpeakerExtract> {
     let mut speakers = Vec::new();
 
     // Pattern: "Name, Title at Company" or "Name (Company)"
-    let re = Regex::new(
-        r"(?i)(?:speaker|keynote|presenter|panelist)[:\s]+([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)(?:\s*,\s*(.+?))?(?:\s+(?:at|from|of)\s+(.+?))?(?:\.|$|\n)"
-    ).ok();
+    for caps in RE_SPEAKERS.captures_iter(text) {
+        let name = normalizer::normalize_whitespace(caps.get(1).unwrap().as_str());
+        let title = caps.get(2).map(|m| normalizer::normalize_whitespace(m.as_str()));
+        let company = caps.get(3).map(|m| normalizer::normalize_whitespace(m.as_str()));
 
-    if let Some(re) = re {
-        for caps in re.captures_iter(text) {
-            let name = normalizer::normalize_whitespace(caps.get(1).unwrap().as_str());
-            let title = caps.get(2).map(|m| normalizer::normalize_whitespace(m.as_str()));
-            let company = caps.get(3).map(|m| normalizer::normalize_whitespace(m.as_str()));
-
-            speakers.push(SpeakerExtract {
-                name,
-                title,
-                company,
-                topic: None,
-            });
-        }
+        speakers.push(SpeakerExtract {
+            name,
+            title,
+            company,
+            topic: None,
+        });
     }
 
     speakers

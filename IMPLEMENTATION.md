@@ -4123,12 +4123,12 @@ fn infer_best_timing(poi: &PoiProfile) -> String {
 
 ### 8.0 Model Selection & Training Strategy
 
-#### 8.0.1 Primary Model: Qwen3-Next-80B-A3B-Instruct (CPU-Only Local Deployment)
+#### 8.0.1 Primary Model: Qwen3-30B-A3B (CPU-Only Local Deployment)
 
-**Why Qwen3-Next-80B-A3B:**
+**Why Qwen3-30B-A3B:**
 - **Best-in-class for multilingual**: Native Arabic, Hebrew, French, English, German, Chinese, Japanese, Korean support — critical for TN/MA/IL/CN/JP/KR/EU regions
 - **Benchmark performance**: Outperforms Llama-3.1-70B on multilingual tasks and structured generation
-- **MoE architecture (80B total, 3B active per token)**: Only 3B parameters computed per forward pass — excellent for CPU inference. Comparable latency to dense 3–7B models while retaining 80B-quality reasoning.
+- **MoE architecture (30B total, 3B active per token)**: Only 3B parameters computed per forward pass — excellent for CPU inference. Comparable latency to dense 3–7B models while retaining 30B-quality reasoning.
 
 **Target Hardware: Hetzner EX44**
 - Intel Core i5-13500 (6P + 8E cores, 20 threads)
@@ -4140,10 +4140,10 @@ fn infer_best_timing(poi: &PoiProfile) -> String {
 ```yaml
 llm_deployment:
   primary:
-    model: Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf
+    model: Qwen3-30B-A3B-Q4_K_M.gguf
     engine: llama-server  # llama.cpp HTTP server, OpenAI-compatible API
     hardware: Hetzner EX44 (i5-13500, 64 GB RAM, no GPU)
-    quantization: GGUF Q4_K_M  # ~45 GB on disk, ~48 GB resident
+    quantization: GGUF Q4_K_M  # ~17 GB on disk, ~20 GB resident
     max_context: 8192   # limited by RAM headroom for OS + Postgres + services
     n_threads: 14       # all P+E cores
     batch_size: 512     # llama.cpp -b flag, prompt processing batch
@@ -4153,7 +4153,7 @@ llm_deployment:
     port: 8080
     
   lightweight:
-    model: Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf
+    model: Qwen3-30B-A3B-Q4_K_M.gguf
     engine: same llama-server instance (port 8080)
     config: max_tokens=1024, timeout=120s  # shorter output for fast tasks
     use_for:
@@ -4165,7 +4165,7 @@ llm_deployment:
 **llama-server launch command:**
 ```bash
 llama-server \\
-  --model /models/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf \\
+  --model /models/Qwen3-30B-A3B-Q4_K_M.gguf \\
   --host 0.0.0.0 --port 8080 \\
   --ctx-size 8192 \\
   --n-gpu-layers 0 \\
@@ -4181,7 +4181,7 @@ llama-server \\
 
 **Phase 1: Domain Corpus Pre-Training (LoRA)**
 
-Fine-tune Qwen3-Next-80B-A3B with LoRA (Low-Rank Adaptation) on an EMS/manufacturing domain corpus:
+Fine-tune Qwen3-30B-A3B with LoRA (Low-Rank Adaptation) on an EMS/manufacturing domain corpus:
 
 ```yaml
 finetuning_phase1:
@@ -4579,7 +4579,7 @@ pub struct ModelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LlmProvider {
-    LlamaCpp,      // llama-server running Qwen3-Next-80B-A3B on CPU (GGUF Q4_K_M)
+    LlamaCpp,      // llama-server running Qwen3-30B-A3B on CPU (GGUF Q4_K_M)
     OpenAi,        // OpenAI API (GPT-4o fallback)
     AzureOpenAi,   // Azure OpenAI (alternative API)
 }
@@ -4602,7 +4602,7 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             primary: ModelConfig {
-                model_name: "Qwen3-Next-80B-A3B-Instruct-Q4_K_M".into(),
+                model_name: "Qwen3-30B-A3B-Q4_K_M".into(),
                 provider: LlmProvider::LlamaCpp,
                 base_url: "http://localhost:8080".into(),
                 api_key: None,
@@ -4620,7 +4620,7 @@ impl Default for LlmConfig {
                 timeout_seconds: 60,
             }),
             lightweight: Some(ModelConfig {
-                model_name: "Qwen3-Next-80B-A3B-Instruct-Q4_K_M".into(),
+                model_name: "Qwen3-30B-A3B-Q4_K_M".into(),
                 provider: LlmProvider::LlamaCpp,
                 base_url: "http://localhost:8080".into(),
                 api_key: None,
@@ -5283,11 +5283,32 @@ impl RecipeLifecycle {
         Ok(deprecated)
     }
 
-    async fn get_staged_recipes(&self) -> Result<Vec<RecipeRecord>> { todo!() }
-    async fn get_production_recipes(&self) -> Result<Vec<RecipeRecord>> { todo!() }
-    async fn compute_performance(&self, recipe_id: &str) -> Result<RecipePerformance> { todo!() }
-    async fn promote(&self, recipe_id: &str) -> Result<()> { todo!() }
-    async fn deprecate(&self, recipe_id: &str) -> Result<()> { todo!() }
+    async fn get_staged_recipes(&self) -> Result<Vec<RecipeRecord>> {
+        // Pull staged recipes from the backing store.
+        self.repo.list_by_status("staged").await
+    }
+
+    async fn get_production_recipes(&self) -> Result<Vec<RecipeRecord>> {
+        // Pull production recipes from the backing store.
+        self.repo.list_by_status("production").await
+    }
+
+    async fn compute_performance(&self, recipe_id: &str) -> Result<RecipePerformance> {
+        // Evaluate model metrics for the given recipe.
+        self.metrics_client.performance(recipe_id).await
+    }
+
+    async fn promote(&self, recipe_id: &str) -> Result<()> {
+        // Move a staged recipe into production and record provenance.
+        self.repo.promote(recipe_id).await?;
+        self.audit.log("recipe.promoted", recipe_id).await
+    }
+
+    async fn deprecate(&self, recipe_id: &str) -> Result<()> {
+        // Disable a production recipe that no longer meets thresholds.
+        self.repo.deprecate(recipe_id).await?;
+        self.audit.log("recipe.deprecated", recipe_id).await
+    }
 }
 
 struct RecipeRecord {
@@ -6444,7 +6465,7 @@ npm run build
 docker compose up -d postgres redis nats minio
 
 # Run migrations
-sqlx migrate run --source migrations/
+sqlx migrate run --source crates/store/migrations/
 
 # Start services
 docker compose up -d api worker frontend

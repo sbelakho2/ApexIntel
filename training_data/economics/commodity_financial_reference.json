@@ -1,0 +1,109 @@
+{
+  "description": "Commodity price benchmarks and financial metrics reference for EMS supply chain price monitoring",
+  "lme_metals": {
+    "description": "London Metal Exchange base metals relevant to electronics manufacturing",
+    "metals": [
+      {"name": "Copper", "symbol": "Cu", "lme_code": "CA", "unit": "USD/tonne", "relevance": "PCB trace, wire, connector", "api_source": "LME / Quandl"},
+      {"name": "Tin", "symbol": "Sn", "lme_code": "SN", "unit": "USD/tonne", "relevance": "Solder alloy primary constituent", "api_source": "LME / Quandl"},
+      {"name": "Nickel", "symbol": "Ni", "lme_code": "NI", "unit": "USD/tonne", "relevance": "Plating, stainless steel enclosures", "api_source": "LME / Quandl"},
+      {"name": "Aluminium", "symbol": "Al", "lme_code": "AH", "unit": "USD/tonne", "relevance": "Heatsinks, enclosures, EMI shielding", "api_source": "LME / Quandl"},
+      {"name": "Zinc", "symbol": "Zn", "lme_code": "ZS", "unit": "USD/tonne", "relevance": "Galvanizing, die-cast enclosures", "api_source": "LME / Quandl"},
+      {"name": "Lead", "symbol": "Pb", "lme_code": "PB", "unit": "USD/tonne", "relevance": "Legacy solder, batteries", "api_source": "LME / Quandl"}
+    ]
+  },
+  "precious_metals": {
+    "description": "Precious metals used in electronics",
+    "metals": [
+      {"name": "Gold", "symbol": "Au", "unit": "USD/troy oz", "relevance": "Connector plating, wire bonding, BGA", "benchmark": "LBMA Gold Price"},
+      {"name": "Silver", "symbol": "Ag", "unit": "USD/troy oz", "relevance": "Conductive paste, solar cells, switches", "benchmark": "LBMA Silver Price"},
+      {"name": "Palladium", "symbol": "Pd", "unit": "USD/troy oz", "relevance": "MLCC terminations, connector plating", "benchmark": "LPPM"},
+      {"name": "Platinum", "symbol": "Pt", "unit": "USD/troy oz", "relevance": "Sensors, catalysts, high-rel contacts", "benchmark": "LPPM"}
+    ]
+  },
+  "rare_earths_critical_minerals": {
+    "description": "Critical minerals for electronics - supply chain risk indicators",
+    "minerals": [
+      {"name": "Neodymium (Nd)", "use": "Permanent magnets (motors, speakers, HDD)", "major_source": "CN (60%+)", "supply_risk": "high"},
+      {"name": "Dysprosium (Dy)", "use": "High-temp permanent magnets", "major_source": "CN (90%+)", "supply_risk": "critical"},
+      {"name": "Cobalt (Co)", "use": "Li-ion batteries, superalloys", "major_source": "CD (70%), refined in CN", "supply_risk": "high"},
+      {"name": "Lithium (Li)", "use": "Li-ion batteries", "major_source": "AU, CL, AR, CN", "supply_risk": "medium"},
+      {"name": "Gallium (Ga)", "use": "GaAs/GaN semiconductors, LEDs, 5G", "major_source": "CN (80%+)", "supply_risk": "critical"},
+      {"name": "Germanium (Ge)", "use": "Fiber optics, IR optics, solar cells", "major_source": "CN (60%+)", "supply_risk": "high"},
+      {"name": "Indium (In)", "use": "ITO touchscreens, solder (InSn)", "major_source": "CN, KR, JP", "supply_risk": "medium"},
+      {"name": "Tantalum (Ta)", "use": "Capacitors", "major_source": "CD, RW, AU (conflict mineral)", "supply_risk": "high"},
+      {"name": "Silicon (Si)", "use": "Semiconductors, solar cells", "major_source": "CN, RU, NO, BR", "supply_risk": "low"},
+      {"name": "Antimony (Sb)", "use": "Flame retardants, lead-acid batteries", "major_source": "CN (50%+)", "supply_risk": "medium"}
+    ]
+  },
+  "semiconductor_market_segments": {
+    "description": "Major IC market segments for demand tracking",
+    "segments": [
+      {"segment": "Logic ICs", "includes": ["CPUs", "GPUs", "FPGAs", "ASICs", "SoCs"], "tracking_sources": ["WSTS", "SIA"]},
+      {"segment": "Memory ICs", "includes": ["DRAM", "NAND Flash", "NOR Flash", "SRAM"], "tracking_sources": ["WSTS", "DRAMeXchange"]},
+      {"segment": "Analog ICs", "includes": ["Op-amps", "ADC/DAC", "Voltage regulators", "Power management"], "tracking_sources": ["WSTS"]},
+      {"segment": "Discrete Semiconductors", "includes": ["Diodes", "Transistors", "MOSFETs", "IGBTs", "Thyristors"], "tracking_sources": ["WSTS"]},
+      {"segment": "Optoelectronics", "includes": ["LEDs", "Laser diodes", "Image sensors", "Optocouplers"], "tracking_sources": ["WSTS"]},
+      {"segment": "Sensors/Actuators", "includes": ["MEMS", "Temperature", "Pressure", "Accelerometers", "Gyroscopes"], "tracking_sources": ["WSTS"]},
+      {"segment": "Passive Components", "includes": ["MLCC", "Resistors", "Inductors", "Transformers", "Crystals"], "tracking_sources": ["ECIA", "Paumanok"]}
+    ]
+  },
+  "financial_health_signals": {
+    "description": "Financial metrics used in the learning crate for company financial health scoring",
+    "metrics": [
+      {"name": "Current Ratio", "formula": "Current Assets / Current Liabilities", "healthy_range": ">1.5", "signal": "Short-term liquidity"},
+      {"name": "Quick Ratio", "formula": "(Current Assets - Inventory) / Current Liabilities", "healthy_range": ">1.0", "signal": "Immediate liquidity"},
+      {"name": "Debt-to-Equity", "formula": "Total Debt / Total Equity", "healthy_range": "<2.0 (industry-dependent)", "signal": "Leverage/solvency"},
+      {"name": "Interest Coverage", "formula": "EBIT / Interest Expense", "healthy_range": ">3.0", "signal": "Debt service ability"},
+      {"name": "Gross Margin", "formula": "(Revenue - COGS) / Revenue", "healthy_range": "15-30% for EMS", "signal": "Pricing power"},
+      {"name": "Operating Margin", "formula": "Operating Income / Revenue", "healthy_range": "3-8% for EMS", "signal": "Operational efficiency"},
+      {"name": "Net Margin", "formula": "Net Income / Revenue", "healthy_range": "2-5% for EMS", "signal": "Overall profitability"},
+      {"name": "Return on Equity", "formula": "Net Income / Shareholders' Equity", "healthy_range": ">15%", "signal": "Capital efficiency"},
+      {"name": "Return on Assets", "formula": "Net Income / Total Assets", "healthy_range": ">5%", "signal": "Asset utilization"},
+      {"name": "Revenue Growth (YoY)", "formula": "(Rev_t - Rev_t-1) / Rev_t-1", "healthy_range": ">5%", "signal": "Growth trajectory"},
+      {"name": "Days Sales Outstanding", "formula": "Accounts Receivable / (Revenue/365)", "healthy_range": "<60 days", "signal": "Collection efficiency"},
+      {"name": "Inventory Turnover", "formula": "COGS / Average Inventory", "healthy_range": ">6x for EMS", "signal": "Inventory management"},
+      {"name": "Altman Z-Score", "formula": "1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E", "healthy_range": ">2.99 (safe zone)", "signal": "Bankruptcy probability"},
+      {"name": "Piotroski F-Score", "formula": "Sum of 9 binary signals", "healthy_range": "7-9 (strong)", "signal": "Financial strength composite"}
+    ]
+  },
+  "trade_agreement_tariff_reference": {
+    "description": "Key trade agreements and preferential tariff frameworks for target markets",
+    "agreements": [
+      {"name": "EU-Tunisia Association Agreement", "parties": ["TN", "EU"], "type": "FTA", "coverage": "Industrial goods duty-free; agriculture partial", "entered_into_force": "1998-03-01"},
+      {"name": "EU-Morocco Association Agreement", "parties": ["MA", "EU"], "type": "FTA", "coverage": "Industrial goods duty-free; agriculture partial", "entered_into_force": "2000-03-01"},
+      {"name": "EU-Israel Association Agreement", "parties": ["IL", "EU"], "type": "FTA", "coverage": "Industrial goods duty-free", "entered_into_force": "2000-06-01"},
+      {"name": "Agadir Agreement", "parties": ["TN", "MA", "EG", "JO"], "type": "FTA", "coverage": "Pan-Arab FTA for industrial goods", "entered_into_force": "2007"},
+      {"name": "GZALE (Greater Arab Free Trade Area)", "parties": ["TN", "MA", "+16 Arab states"], "type": "FTA", "coverage": "Duty-free industrial and agricultural goods"},
+      {"name": "Tunisia-Turkey FTA", "parties": ["TN", "TR"], "type": "FTA", "coverage": "Industrial goods", "entered_into_force": "2005"},
+      {"name": "RCEP", "parties": ["CN", "JP", "KR", "AU", "NZ", "ASEAN"], "type": "Mega-FTA", "coverage": "Regional comprehensive economic partnership", "entered_into_force": "2022-01-01"},
+      {"name": "USMCA", "parties": ["US", "CA", "MX"], "type": "FTA", "coverage": "North American trade", "entered_into_force": "2020-07-01"},
+      {"name": "EU-Japan EPA", "parties": ["EU", "JP"], "type": "EPA", "coverage": "Industrial goods, services, investment", "entered_into_force": "2019-02-01"},
+      {"name": "EU-Korea FTA", "parties": ["EU", "KR"], "type": "FTA", "coverage": "Comprehensive trade and investment", "entered_into_force": "2011-07-01"},
+      {"name": "EU-Singapore FTA", "parties": ["EU", "SG"], "type": "FTA", "coverage": "Comprehensive trade", "entered_into_force": "2019-11-21"},
+      {"name": "EU-Canada CETA", "parties": ["EU", "CA"], "type": "FTA", "coverage": "Comprehensive trade", "entered_into_force": "2017-09-21", "note": "Provisionally applied"},
+      {"name": "Israel-US FTA", "parties": ["IL", "US"], "type": "FTA", "entered_into_force": "1985"},
+      {"name": "AfCFTA", "parties": ["TN", "MA", "+52 African Union states"], "type": "Continental FTA", "entered_into_force": "2021-01-01", "coverage": "African Continental Free Trade Area"}
+    ]
+  },
+  "economic_zones_tunisia": {
+    "description": "Tunisia economic development and incentive zones relevant to EMS operations",
+    "zones": [
+      {"name": "El Fejja Free Trade Zone", "location": "Ben Arous Governorate", "type": "Industrial FTZ", "incentives": "0% corporate tax on export revenue, customs duty exemption", "target_sectors": ["Electronics", "Automotive", "Textiles"]},
+      {"name": "Bizerte Free Trade Zone", "location": "Bizerte", "type": "Industrial FTZ", "incentives": "0% corporate tax on exports, duty-free imports", "target_sectors": ["Electronics", "Mechanical"]},
+      {"name": "Zarzis Free Trade Zone", "location": "Medenine Governorate", "type": "Industrial FTZ", "incentives": "Tax holiday, customs exemptions", "target_sectors": ["Industry", "Logistics"]},
+      {"name": "Sousse Technopole", "location": "Sousse", "type": "Technology Park", "incentives": "R&D tax credits, infrastructure support", "target_sectors": ["ICT", "Electronics", "Mechatronics"]},
+      {"name": "El Ghazala Technopark", "location": "Ariana (Greater Tunis)", "type": "Technology Park", "incentives": "ICT focus, incubation, R&D support", "target_sectors": ["ICT", "Software", "Telecom"]},
+      {"name": "Monastir El Fejja Industrial Zone", "location": "Monastir", "type": "Industrial Zone", "target_sectors": ["Electronics", "Automotive", "Textiles"]}
+    ],
+    "investment_code": {
+      "law": "Investment Law 2016-71 (Tunisia Investment Code)",
+      "key_benefits": [
+        "Flat 15% corporate tax for onshore (was 25%)",
+        "0% on export profits for offshore companies",
+        "State participation up to 1/3 of investment cost in priority regions",
+        "Employer social charge subsidy for 3-5 years in interior regions",
+        "Customs duty exemptions for capital goods imports"
+      ]
+    }
+  }
+}

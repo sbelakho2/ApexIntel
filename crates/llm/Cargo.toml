@@ -3,6 +3,23 @@ name = "apex-llm"
 version = "0.1.0"
 edition = "2021"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature flags (B290)
+#
+# `experimental` — enables the `function_calling` module which exposes the
+#   OpenAI tool-calling schema (FunctionSpec / FunctionCall).  The feature is
+#   opt-in because:
+#   (a) llama.cpp function-calling support is limited and provider-dependent,
+#   (b) the API is expected to evolve as the standard matures.
+#
+# Usage:
+#   cargo build -p apex-llm --features experimental
+#   cargo test  -p apex-llm --features experimental
+# ─────────────────────────────────────────────────────────────────────────────
+[features]
+default = []
+experimental = []
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"

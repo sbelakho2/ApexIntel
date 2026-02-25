@@ -7,7 +7,12 @@ pub fn generate_engagement_profile(poi: &PoiProfile) -> EngagementProfile {
     let what_they_want_to_hear = role_talking_points(&poi.role_family);
     let opening_topics = decision_style_openers(&poi.psychological.decision_style);
     let avoid_topics = compute_avoid_topics(&poi.psychological);
-    let best_channel = infer_best_channel(&poi.psychological.change_appetite);
+    let inferred_channel = infer_best_channel(&poi.psychological.change_appetite);
+    let best_channel = if is_valid_best_channel(&inferred_channel) {
+        inferred_channel
+    } else {
+        "trade_show_referral".to_string()
+    };
     let best_timing = infer_best_timing(poi);
     let recommended_proof_pack = proof_pack(&poi.psychological.preferred_proof);
 
@@ -19,6 +24,16 @@ pub fn generate_engagement_profile(poi: &PoiProfile) -> EngagementProfile {
         best_timing,
         recommended_proof_pack,
     }
+}
+
+fn is_valid_best_channel(channel: &str) -> bool {
+    matches!(
+        channel,
+        "direct_outreach"
+            | "trade_show_referral"
+            | "referral_trusted_partner"
+            | "existing_relationship_only"
+    )
 }
 
 /// Get role-specific talking points.
@@ -222,6 +237,21 @@ mod tests {
         assert_eq!(pack.len(), 2);
         assert!(pack[0].contains("PPM"));
         assert!(pack[1].contains("case studies"));
+    }
+
+    #[test]
+    fn test_proof_pack_empty_list() {
+        let pack = proof_pack(&[]);
+        assert!(pack.is_empty());
+    }
+
+    #[test]
+    fn test_best_channel_values_are_valid() {
+        assert!(is_valid_best_channel("direct_outreach"));
+        assert!(is_valid_best_channel("trade_show_referral"));
+        assert!(is_valid_best_channel("referral_trusted_partner"));
+        assert!(is_valid_best_channel("existing_relationship_only"));
+        assert!(!is_valid_best_channel("email_blast"));
     }
 
     #[test]

@@ -1,0 +1,172 @@
+{
+  "results": [
+    {
+      "category": "dataitem",
+      "variable": "Trade data items",
+      "description": "List of data items/variables used in UN Comtrade",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/TradeDataItems.json"
+    },
+    {
+      "category": "freq",
+      "variable": "Frequency",
+      "description": "The time interval at which observations occur",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/Frequency.json"
+    },
+    {
+      "category": "flow",
+      "variable": "Trade Flow",
+      "description": "Trade flow or sub-flow (exports, re-exports, imports, re-imports, etc.)",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/tradeRegimes.json"
+    },
+    {
+      "category": "mot",
+      "variable": "Modes of Transport",
+      "description": "The mode of transport used when goods enter or leave the economic territory of a country",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/ModeOfTransportCodes.json"
+    },
+    {
+      "category": "partner",
+      "variable": "Partner country/area",
+      "description": "The partner country or geographic area for the respective trade flow",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/partnerAreas.json"
+    },
+    {
+      "category": "reporter",
+      "variable": "Reporter",
+      "description": "The country or geographic area to which the measured statistical phenomenon relates",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/Reporters.json"
+    },
+    {
+      "category": "qtyunit",
+      "variable": "Units of quantity",
+      "description": "The unit for quantity and alternate quantity data items",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/QuantityUnits.json"
+    },
+	{
+      "category": "mos",
+      "variable": "Mode of Supply",
+      "description": "The mode of supply on delivery of services (trade in services only)",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/ModeOfSupply.json"
+    },
+    {
+      "category": "customs",
+      "variable": "Customs Procedure Code",
+      "description": "Customs or statistical procedure",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/CustomsCodes.json"
+    },
+    {
+      "category": "cmd:B4",
+      "variable": "Product [BEC Rev. 4]",
+      "description": "The classification of BEC Rev.4 – goods and services",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/B4.json"
+    },
+    {
+      "category": "cmd:B5",
+      "variable": "Product [BEC Rev. 5]",
+      "description": "The classification of BEC Rev.5 – goods or services",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/B5.json"
+    },
+    {
+      "category": "cmd:EB02",
+      "variable": "Product [EBOPS 2002]",
+      "description": "The classification of EBOPS 2002 – services",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/EB02.json"
+    },
+    {
+      "category": "cmd:EB10",
+      "variable": "Product [EBOPS 2010]",
+      "description": "The classification of EBOPS 2010 – services",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/EB10.json"
+    },
+    {
+      "category": "cmd:EB10S",
+      "variable": "Product [EBOPS 2010 SDMX]",
+      "description": "The classification of EBOPS 2010 SDMX – services",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/EB10S.json"
+    },
+    {
+      "category": "cmd:EB",
+      "variable": "Product [EBOPS]",
+      "description": "The classification of Combined EBOPS – services",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/EB.json"
+    },
+    {
+      "category": "cmd:H0",
+      "variable": "Product [HS 1992]",
+      "description": "The classification of HS 1992 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/H0.json"
+    },
+    {
+      "category": "cmd:H1",
+      "variable": "Product [HS 1996]",
+      "description": "The classification of HS 1996 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/H1.json"
+    },
+    {
+      "category": "cmd:H2",
+      "variable": "Product [HS 2002]",
+      "description": "The classification of HS 2002 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/H2.json"
+    },
+    {
+      "category": "cmd:H3",
+      "variable": "Product [HS 2007]",
+      "description": "The classification of HS 2007 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/H3.json"
+    },
+    {
+      "category": "cmd:H4",
+      "variable": "Product [HS 2012]",
+      "description": "The classification of HS 2012 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/H4.json"
+    },
+    {
+      "category": "cmd:H5",
+      "variable": "Product [HS 2017]",
+      "description": "The classification of HS 2017 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/H5.json"
+    },
+    {
+      "category": "cmd:H6",
+      "variable": "Product [HS 2022]",
+      "description": "The classification of HS 2022 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/H6.json"
+    },
+    {
+      "category": "cmd:HS",
+      "variable": "Product [HS]",
+      "description": "The classification of Combined HS – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/HS.json"
+    },
+    {
+      "category": "cmd:S1",
+      "variable": "Product [SITC Rev.1]",
+      "description": "The classification of SITC Rev.1 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/S1.json"
+    },
+    {
+      "category": "cmd:S2",
+      "variable": "Product [SITC Rev.2]",
+      "description": "The classification of SITC Rev.2 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/S2.json"
+    },
+    {
+      "category": "cmd:S3",
+      "variable": "Product [SITC Rev.3]",
+      "description": "The classification of SITC Rev.3 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/S3.json"
+    },
+    {
+      "category": "cmd:S4",
+      "variable": "Product [SITC Rev.4]",
+      "description": "The classification of SITC Rev.4 – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/S4.json"
+    },
+    {
+      "category": "cmd:SS",
+      "variable": "Product [SITC]",
+      "description": "The classification of Combined SITC – goods",
+      "fileuri": "https://comtradeapi.un.org/files/v1/app/reference/SS.json"
+    }
+  ]
+}

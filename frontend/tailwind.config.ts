@@ -81,12 +81,30 @@ const config: Config = {
           800: 'rgb(var(--surface-800) / <alpha-value>)',
           900: 'rgb(var(--surface-900) / <alpha-value>)',
         },
+        rams: {
+          chassis: 'var(--rams-chassis, #F2F2F2)',
+          module: 'var(--rams-module, #E6E6E6)',
+          panel: 'var(--rams-panel, #D9D9D9)',
+          line: 'var(--rams-line, #CCCCCC)',
+          muted: 'var(--rams-muted, #999999)',
+          orange: 'var(--rams-accent, var(--rams-orange, #FFBE00))',
+          green: 'var(--rams-green, #2D8C3C)',
+          red: 'var(--rams-red, #D62D2D)',
+          steel: 'var(--rams-steel, #4A90E2)',
+        },
       },
       boxShadow: {
         premium: '0 1px 2px rgba(16,24,40,0.06), 0 10px 20px rgba(16,24,40,0.06)',
         'premium-hover': '0 14px 40px rgba(15,23,42,0.08)',
+        'rams-inset': 'inset 1px 1px 0 rgba(255,255,255,0.5), inset -1px -1px 0 rgba(0,0,0,0.05)',
+        'rams-pressed': 'inset 0 2px 4px rgba(0,0,0,0.1)',
+        'rams-focus': '0 0 0 2px rgba(255,190,0,0.3)',
       },
       borderRadius: {
+        'rams-none': '0px',
+        'rams-sm': '2px',
+        'rams-md': '4px',
+        'rams-lg': '8px',
         xl: 'var(--radius-xl)',
         lg: 'var(--radius-lg)',
         md: 'var(--radius-md)',
@@ -99,7 +117,24 @@ const config: Config = {
         apex: ['var(--font-apex)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
       fontSize: {
+        '3xs': ['8px', { lineHeight: '12px' }],
         '2xs': ['0.625rem', { lineHeight: '0.75rem' }],
+      },
+      spacing: {
+        'rams-1': '4px',
+        'rams-2': '8px',
+        'rams-3': '12px',
+        'rams-4': '16px',
+        'rams-6': '24px',
+        'rams-8': '32px',
+        'rams-12': '48px',
+        'rams-16': '64px',
+      },
+      transitionDuration: {
+        'rams-instant': '50ms',
+        'rams-fast': '100ms',
+        'rams-normal': '150ms',
+        'rams-slow': '200ms',
       },
       keyframes: {
         'accordion-down': {
@@ -141,7 +176,11 @@ const config: Config = {
       },
     },
   },
-  plugins: [require('tailwindcss-animate')],
+  plugins: [
+    require('@tailwindcss/forms'),
+    require('@tailwindcss/typography'),
+    require('tailwindcss-animate'),
+  ],
 };
 
 export default config;

@@ -236,6 +236,7 @@ impl DateRange {
 
 /// Combined filter for the warnings list endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WarningFilters {
     pub regions: Vec<RegionFilter>,
     pub severities: Vec<SeverityFilter>,
@@ -247,6 +248,7 @@ pub struct WarningFilters {
 
 /// Combined filter for the companies list endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompanyFilters {
     pub regions: Vec<RegionFilter>,
     pub search_text: Option<String>,
@@ -255,6 +257,7 @@ pub struct CompanyFilters {
 
 /// Combined filter for the persons/POI list endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PersonFilters {
     pub regions: Vec<RegionFilter>,
     pub search_text: Option<String>,
@@ -264,6 +267,7 @@ pub struct PersonFilters {
 
 /// Combined filter for the recipes list endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecipeFilters {
     pub status: Option<RecipeStatusFilter>,
     pub search_text: Option<String>,
@@ -273,6 +277,7 @@ pub struct RecipeFilters {
 
 /// Combined filter for the insights endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InsightFilters {
     pub regions: Vec<RegionFilter>,
     pub date_range: Option<DateRange>,
@@ -281,6 +286,7 @@ pub struct InsightFilters {
 
 /// Global search filter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchFilter {
     pub query: String,
     pub entity_types: Vec<EntityTypeFilter>,
@@ -360,10 +366,26 @@ pub fn sanitize_search_text(input: &str, max_len: usize) -> Option<String> {
     if trimmed.is_empty() {
         None
     } else if trimmed.len() > max_len {
-        Some(trimmed[..max_len].to_string())
+        // Use char-safe truncation to avoid panicking on multi-byte UTF-8.
+        Some(trimmed.chars().take(max_len).collect())
     } else {
         Some(trimmed)
     }
+}
+
+/// Validate search text: enforce max length and reject empty input.
+pub fn validate_search_text(input: &str, max_len: usize) -> Result<Option<String>, String> {
+    let trimmed: String = input
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > max_len {
+        return Err(format!("search text too long (max {} chars)", max_len));
+    }
+    Ok(Some(trimmed))
 }
 
 /// Check if a minimum value filter is in a valid range.
@@ -633,6 +655,16 @@ mod tests {
             sanitize_search_text("abcdef", 3),
             Some("abc".to_string())
         );
+    }
+
+    #[test]
+    fn test_validate_search_text() {
+        // "hello world" is 11 chars; max_len must be >= 11 for it to pass
+        assert_eq!(validate_search_text("  hello world ", 11).unwrap(), Some("hello world".to_string()));
+        // Shorter input with smaller max
+        assert_eq!(validate_search_text("  hello  ", 10).unwrap(), Some("hello".to_string()));
+        assert_eq!(validate_search_text("   ", 10).unwrap(), None);
+        assert!(validate_search_text("x".repeat(11).as_str(), 10).is_err());
     }
 
     #[test]

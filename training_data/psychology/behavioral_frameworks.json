@@ -1,0 +1,121 @@
+{
+  "decision_style_frameworks": {
+    "thomas_kilmann_conflict_modes": {
+      "description": "Thomas-Kilmann Conflict Mode Instrument (TKI) — maps negotiation and conflict-resolution styles along two axes: assertiveness and cooperativeness",
+      "modes": [
+        {"mode": "competing", "assertiveness": "high", "cooperativeness": "low", "description": "Win-lose; power-oriented. Pursues own concerns at other's expense.", "apexintel_mapping": "Competitive negotiation profile", "text_signals": ["must win", "non-negotiable", "our terms", "take it or leave", "aggressive", "dominant position"]},
+        {"mode": "collaborating", "assertiveness": "high", "cooperativeness": "high", "description": "Win-win; explores disagreement to find creative solutions.", "apexintel_mapping": "Collaborative negotiation profile", "text_signals": ["partnership", "mutual benefit", "together", "joint development", "co-create", "synergy"]},
+        {"mode": "compromising", "assertiveness": "medium", "cooperativeness": "medium", "description": "Split the difference; expedient middle ground.", "apexintel_mapping": "Analytical negotiation profile", "text_signals": ["fair deal", "middle ground", "reasonable", "balanced", "pragmatic", "acceptable"]},
+        {"mode": "avoiding", "assertiveness": "low", "cooperativeness": "low", "description": "Sidesteps conflict; postpones issues.", "apexintel_mapping": "Accommodating negotiation profile", "text_signals": ["not now", "defer", "revisit later", "no comment", "pass", "not ready"]},
+        {"mode": "accommodating", "assertiveness": "low", "cooperativeness": "high", "description": "Yields to other's point of view; selfless generosity.", "apexintel_mapping": "Accommodating negotiation profile", "text_signals": ["whatever works for you", "flexible", "happy to adjust", "your call", "we can accommodate"]}
+      ]
+    },
+    "rogers_diffusion_of_innovations": {
+      "description": "Technology Adoption Lifecycle — classifies adopters by their willingness to try new innovations",
+      "categories": [
+        {"category": "innovators", "population_pct": 2.5, "description": "Venturesome; first to adopt. Tolerate high uncertainty.", "apexintel_mapping": "EarlyAdopter (aggressive subset)", "text_signals": ["first mover", "pioneering", "bleeding edge", "experiment", "disrupt", "prototype"]},
+        {"category": "early_adopters", "population_pct": 13.5, "description": "Opinion leaders; visionary. Embrace change for strategic advantage.", "apexintel_mapping": "EarlyAdopter", "text_signals": ["innovative", "transform", "new approach", "early stage", "adopt", "opportunity"]},
+        {"category": "early_majority", "population_pct": 34.0, "description": "Deliberate; adopt before average. Need proven results.", "apexintel_mapping": "Pragmatist", "text_signals": ["proven", "track record", "reference", "case study", "evidence-based", "benchmarked"]},
+        {"category": "late_majority", "population_pct": 34.0, "description": "Skeptical; adopt after majority. Need peer pressure or necessity.", "apexintel_mapping": "Conservative", "text_signals": ["industry standard", "established", "reliable", "trusted", "safe choice", "low risk"]},
+        {"category": "laggards", "population_pct": 16.0, "description": "Traditional; resist change. Only adopt when no alternative.", "apexintel_mapping": "Laggard", "text_signals": ["if it ain't broke", "traditional", "proven partner only", "no changes", "stable", "legacy"]}
+      ]
+    },
+    "cialdini_influence_principles": {
+      "description": "Robert Cialdini's 6 Principles of Influence/Persuasion — framework for engagement strategy",
+      "principles": [
+        {"principle": "reciprocity", "description": "People feel obligated to return favors", "engagement_tactic": "Offer free audit, capability assessment, or technical consultation before asking for business", "text_signals": ["give back", "return the favor", "mutual", "in exchange"]},
+        {"principle": "commitment_consistency", "description": "People want to be consistent with prior commitments", "engagement_tactic": "Get small commitments first (NDA, plant tour, technical review) before larger asks", "text_signals": ["committed", "consistent", "aligned with our strategy", "we always"]},
+        {"principle": "social_proof", "description": "People look to others' actions to determine correct behavior", "engagement_tactic": "Reference similar companies, competitor adoptions, industry benchmarks", "text_signals": ["others are doing", "industry trend", "best practice", "peer", "benchmark"]},
+        {"principle": "authority", "description": "People defer to experts and authority figures", "engagement_tactic": "Lead with certifications, technical expertise, published papers, patents", "text_signals": ["expert", "certified", "accredited", "published", "recognized"]},
+        {"principle": "liking", "description": "People prefer to say yes to people they like", "engagement_tactic": "Find common ground (alma mater, hometown, shared interests), use referrals from known contacts", "text_signals": ["personal connection", "colleague", "referred by", "alumni"]},
+        {"principle": "scarcity", "description": "People value things more when they're scarce", "engagement_tactic": "Emphasize limited capacity, time-sensitive opportunities, exclusive capabilities", "text_signals": ["limited", "exclusive", "only a few", "deadline", "window closing"]}
+      ]
+    },
+    "kahneman_prospect_theory": {
+      "description": "Prospect Theory (Kahneman & Tversky, 1979) — explains decision-making under risk and uncertainty",
+      "key_parameters": {
+        "loss_aversion_lambda": 2.25,
+        "description": "Losses are felt ~2.25x more strongly than equivalent gains",
+        "risk_seeking_in_losses": true,
+        "risk_averse_in_gains": true,
+        "reference_point_dependence": true
+      },
+      "apexintel_application": {
+        "risk_tolerant_pois": "Frame proposals as gains (upside potential, new revenue, competitive advantage)",
+        "risk_averse_pois": "Frame proposals as loss prevention (avoid supply disruption, prevent quality escapes, maintain compliance)",
+        "framing_signals": {
+          "gain_frame": ["opportunity", "upside", "growth", "advantage", "profit", "improve"],
+          "loss_frame": ["risk", "avoid", "prevent", "protect", "don't lose", "threat"]
+        }
+      }
+    },
+    "batna_negotiation_framework": {
+      "description": "Best Alternative to a Negotiated Agreement (Fisher & Ury, 'Getting to Yes')",
+      "concepts": [
+        {"concept": "BATNA", "description": "Best Alternative To a Negotiated Agreement — your walkaway option", "apexintel_use": "Assess POI's alternatives (other suppliers) to gauge negotiating leverage"},
+        {"concept": "ZOPA", "description": "Zone Of Possible Agreement — range where both parties can agree", "apexintel_use": "Map Starz capabilities vs POI requirements to find overlap"},
+        {"concept": "reservation_price", "description": "Minimum acceptable outcome before walking away", "apexintel_use": "Estimate from POI's budget signals, historical contract values"},
+        {"concept": "anchoring", "description": "First offer sets the frame for negotiation", "apexintel_use": "Prepare recommended first-offer positioning per POI profile"}
+      ]
+    }
+  },
+  "big_five_ocean_traits": {
+    "description": "Big Five personality traits (OCEAN model) — the dominant psychometric framework in psychology",
+    "traits": [
+      {"trait": "openness", "facets": ["imagination", "artistic_interests", "emotionality", "adventurousness", "intellect", "liberalism"], "high_signals": ["innovative", "creative", "curious", "experimental", "diverse"], "low_signals": ["practical", "conventional", "traditional", "routine", "consistent"], "apexintel_mapping": "Maps to change_appetite (high O → EarlyAdopter)"},
+      {"trait": "conscientiousness", "facets": ["self_efficacy", "orderliness", "dutifulness", "achievement_striving", "self_discipline", "cautiousness"], "high_signals": ["systematic", "organized", "quality", "thorough", "process", "documented", "controlled"], "low_signals": ["flexible", "spontaneous", "adaptable", "informal"], "apexintel_mapping": "Maps to decision_style (high C → ComplianceFirst or QualityFirst)"},
+      {"trait": "extraversion", "facets": ["friendliness", "gregariousness", "assertiveness", "activity_level", "excitement_seeking", "cheerfulness"], "high_signals": ["networking", "conference", "speaker", "visible", "public", "engaged"], "low_signals": ["reserved", "private", "written communication", "focused"], "apexintel_mapping": "Maps to communication_style and channel_recommendation"},
+      {"trait": "agreeableness", "facets": ["trust", "morality", "altruism", "cooperation", "modesty", "sympathy"], "high_signals": ["partner", "collaborate", "trust", "relationship", "team", "consensus"], "low_signals": ["competitive", "demanding", "challenge", "push back", "negotiate hard"], "apexintel_mapping": "Maps to negotiation_profile (high A → Collaborative, low A → Competitive)"},
+      {"trait": "neuroticism", "facets": ["anxiety", "anger", "depression", "self_consciousness", "immoderation", "vulnerability"], "high_signals": ["worry", "risk", "concern", "cautious", "stress", "pressure"], "low_signals": ["confident", "calm", "steady", "resilient", "composed"], "apexintel_mapping": "Maps to risk_tolerance (high N → Conservative)"}
+    ]
+  },
+  "disc_profile_mapping": {
+    "description": "DISC personality model — maps behavioral tendencies for workplace interactions",
+    "profiles": [
+      {"profile": "dominance", "characteristics": ["direct", "decisive", "competitive", "demanding", "results-oriented"], "communication_preference": "Be brief, focus on bottom line, present options", "apexintel_decision_style": "CostFirst or SpeedFirst", "text_signals": ["results", "bottom line", "ROI", "efficiency", "execute", "goal"]},
+      {"profile": "influence", "characteristics": ["enthusiastic", "optimistic", "collaborative", "expressive", "persuasive"], "communication_preference": "Be friendly, allow time for socializing, show enthusiasm", "apexintel_decision_style": "Relationship-driven", "text_signals": ["exciting", "opportunity", "together", "vision", "story", "impact"]},
+      {"profile": "steadiness", "characteristics": ["patient", "reliable", "team-oriented", "deliberate", "stable"], "communication_preference": "Be patient, provide assurance, clarify expectations", "apexintel_decision_style": "QualityFirst (conservative)", "text_signals": ["reliable", "consistent", "stable", "proven", "trusted", "steady"]},
+      {"profile": "conscientiousness_disc", "characteristics": ["analytical", "precise", "systematic", "careful", "quality-focused"], "communication_preference": "Provide data, be accurate, allow time for analysis", "apexintel_decision_style": "ComplianceFirst or BalancedAnalytical", "text_signals": ["data", "analysis", "detail", "accurate", "specification", "standard"]}
+    ]
+  },
+  "cultural_dimensions_hofstede": {
+    "description": "Hofstede's Cultural Dimensions — critical for ApexIntel's multi-region POI engagement (TN/MA/IL/CN/JP/KR/EU/US)",
+    "dimensions": ["power_distance", "individualism_collectivism", "masculinity_femininity", "uncertainty_avoidance", "long_term_orientation", "indulgence_restraint"],
+    "country_scores": {
+      "TN": {"power_distance": 80, "individualism": 36, "masculinity": 40, "uncertainty_avoidance": 70, "long_term_orientation": 26, "indulgence": 36},
+      "MA": {"power_distance": 70, "individualism": 46, "masculinity": 53, "uncertainty_avoidance": 68, "long_term_orientation": 14, "indulgence": 25},
+      "IL": {"power_distance": 13, "individualism": 54, "masculinity": 47, "uncertainty_avoidance": 81, "long_term_orientation": 38, "indulgence": null},
+      "CN": {"power_distance": 80, "individualism": 20, "masculinity": 66, "uncertainty_avoidance": 30, "long_term_orientation": 87, "indulgence": 24},
+      "JP": {"power_distance": 54, "individualism": 46, "masculinity": 95, "uncertainty_avoidance": 92, "long_term_orientation": 88, "indulgence": 42},
+      "KR": {"power_distance": 60, "individualism": 18, "masculinity": 39, "uncertainty_avoidance": 85, "long_term_orientation": 100, "indulgence": 29},
+      "DE": {"power_distance": 35, "individualism": 67, "masculinity": 66, "uncertainty_avoidance": 65, "long_term_orientation": 83, "indulgence": 40},
+      "FR": {"power_distance": 68, "individualism": 71, "masculinity": 43, "uncertainty_avoidance": 86, "long_term_orientation": 63, "indulgence": 48},
+      "US": {"power_distance": 40, "individualism": 91, "masculinity": 62, "uncertainty_avoidance": 46, "long_term_orientation": 26, "indulgence": 68}
+    },
+    "engagement_implications": {
+      "high_power_distance": "Respect hierarchy; approach top-down. Titles and formal address matter (TN, MA, CN).",
+      "low_power_distance": "Flatter structure; direct approach acceptable (IL, US).",
+      "high_uncertainty_avoidance": "Need detailed specs, contracts, certifications upfront (JP, KR, IL, FR).",
+      "low_uncertainty_avoidance": "More comfortable with ambiguity; pilot projects over formal RFPs (CN, US).",
+      "collectivist": "Group consensus decisions; relationship networks critical (CN, KR, JP, TN, MA).",
+      "individualist": "Individual decision-makers; direct ROI arguments (US, FR).",
+      "long_term_oriented": "Emphasize long-term partnership, investment horizon (CN, JP, KR, DE).",
+      "short_term_oriented": "Emphasize quick wins, immediate ROI (TN, MA, US)."
+    }
+  },
+  "seniority_scoring_reference": {
+    "description": "Role seniority weights used in influence scoring — calibrated against HR/organizational behavior research",
+    "scores": {
+      "CEO/CTO/CFO/COO": 95,
+      "SVP/EVP": 90,
+      "VP": 85,
+      "Senior Director": 75,
+      "Director": 70,
+      "Senior Manager": 60,
+      "Manager": 50,
+      "Lead/Principal": 40,
+      "Senior (IC)": 30,
+      "Individual Contributor": 20
+    }
+  }
+}

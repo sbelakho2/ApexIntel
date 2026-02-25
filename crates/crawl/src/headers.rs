@@ -51,9 +51,14 @@ const REFERERS: &[&str] = &[
 /// Generate realistic random HTTP headers for a crawl request.
 pub fn random_headers(region: Option<&str>) -> HeaderMap {
     let mut rng = rand::thread_rng();
+    random_headers_with_rng(region, &mut rng)
+}
+
+/// Generate headers using a caller-provided RNG (deterministic in tests).
+pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut R) -> HeaderMap {
     let mut headers = HeaderMap::new();
 
-    let ua = USER_AGENTS.choose(&mut rng).unwrap();
+    let ua = USER_AGENTS.choose(rng).unwrap();
     headers.insert("User-Agent", HeaderValue::from_str(ua).unwrap());
 
     headers.insert(
@@ -69,7 +74,7 @@ pub fn random_headers(region: Option<&str>) -> HeaderMap {
         .find(|(k, _)| *k == lang_key)
         .map(|(_, v)| *v)
         .unwrap_or(ACCEPT_LANGUAGES[0].1);
-    let lang = langs.choose(&mut rng).unwrap();
+    let lang = langs.choose(rng).unwrap();
     headers.insert("Accept-Language", HeaderValue::from_str(lang).unwrap());
 
     headers.insert("Accept-Encoding", HeaderValue::from_static("gzip, deflate, br"));
@@ -108,7 +113,7 @@ pub fn random_headers(region: Option<&str>) -> HeaderMap {
     }
 
     // Referer
-    let referer = REFERERS.choose(&mut rng).unwrap();
+    let referer = REFERERS.choose(rng).unwrap();
     if !referer.is_empty() {
         headers.insert("Referer", HeaderValue::from_str(referer).unwrap());
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("cross-site"));
@@ -132,10 +137,13 @@ pub fn get_user_agent(index: usize) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     #[test]
     fn test_random_headers_has_user_agent() {
-        let headers = random_headers(None);
+        let mut rng = StdRng::seed_from_u64(1);
+        let headers = random_headers_with_rng(None, &mut rng);
         assert!(headers.contains_key("User-Agent"));
         let ua = headers.get("User-Agent").unwrap().to_str().unwrap();
         assert!(ua.contains("Mozilla"));
@@ -143,7 +151,8 @@ mod tests {
 
     #[test]
     fn test_random_headers_has_accept() {
-        let headers = random_headers(None);
+        let mut rng = StdRng::seed_from_u64(2);
+        let headers = random_headers_with_rng(None, &mut rng);
         assert!(headers.contains_key("Accept"));
         assert!(headers.contains_key("Accept-Language"));
         assert!(headers.contains_key("Accept-Encoding"));
@@ -151,14 +160,16 @@ mod tests {
 
     #[test]
     fn test_random_headers_region_ar() {
-        let headers = random_headers(Some("AR"));
+        let mut rng = StdRng::seed_from_u64(3);
+        let headers = random_headers_with_rng(Some("AR"), &mut rng);
         let lang = headers.get("Accept-Language").unwrap().to_str().unwrap();
         assert!(lang.contains("ar"));
     }
 
     #[test]
     fn test_random_headers_region_tn() {
-        let headers = random_headers(Some("TN"));
+        let mut rng = StdRng::seed_from_u64(4);
+        let headers = random_headers_with_rng(Some("TN"), &mut rng);
         let lang = headers.get("Accept-Language").unwrap().to_str().unwrap();
         // Should contain Arabic or French variant for Tunisia
         assert!(lang.contains("ar") || lang.contains("fr"));
@@ -166,14 +177,16 @@ mod tests {
 
     #[test]
     fn test_random_headers_region_cn() {
-        let headers = random_headers(Some("CN"));
+        let mut rng = StdRng::seed_from_u64(5);
+        let headers = random_headers_with_rng(Some("CN"), &mut rng);
         let lang = headers.get("Accept-Language").unwrap().to_str().unwrap();
         assert!(lang.contains("zh"));
     }
 
     #[test]
     fn test_random_headers_has_security_headers() {
-        let headers = random_headers(None);
+        let mut rng = StdRng::seed_from_u64(6);
+        let headers = random_headers_with_rng(None, &mut rng);
         assert!(headers.contains_key("Sec-Fetch-Dest"));
         assert!(headers.contains_key("Sec-Fetch-Mode"));
     }
@@ -194,8 +207,9 @@ mod tests {
     fn test_headers_vary_between_calls() {
         // Call multiple times and verify we get different results sometimes
         let mut user_agents = std::collections::HashSet::new();
+        let mut rng = StdRng::seed_from_u64(7);
         for _ in 0..20 {
-            let headers = random_headers(None);
+            let headers = random_headers_with_rng(None, &mut rng);
             let ua = headers.get("User-Agent").unwrap().to_str().unwrap().to_string();
             user_agents.insert(ua);
         }

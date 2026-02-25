@@ -1,8 +1,39 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
+use crate::normalizer;
+use apex_core::validation::normalize_url;
 
+static RE_PRICE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?i)(?:[$€£¥])\s*([\d,.]+)|(?:([\d,.]+)\s*(?:USD|EUR|GBP|CNY|JPY))")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    // B103: Anchored with \b word boundaries to avoid partial matches
+    RegexBuilder::new(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b")
+        .size_limit(200_000)
+        .dfa_size_limit(200_000)
+        .build()
+        .unwrap()
+});
+
+static RE_TABULAR: LazyLock<Regex> = LazyLock::new(|| {
+    // B103: Anchored with \b to prevent partial commodity name matches
+    RegexBuilder::new(
+        r"(?i)\b(copper|gold|silver|tin|palladium|aluminum|steel|solder|silicon|neon|fr[-]?4)\b[\s|]+\$?([\d,.]+)\s*(USD|EUR|GBP|CNY|JPY)?\s*(?:/\s*(\w+))?",
+    )
+    .size_limit(200_000)
+    .dfa_size_limit(200_000)
+    .build()
+    .unwrap()
+});
 
 /// A commodity price observation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,18 +69,42 @@ pub enum CommodityType {
 impl CommodityType {
     pub fn from_name(name: &str) -> Self {
         let lower = name.to_lowercase();
-        if lower.contains("copper") || lower == "cu" { return CommodityType::Copper; }
-        if lower.contains("gold") || lower == "au" { return CommodityType::Gold; }
-        if lower.contains("silver") || lower == "ag" { return CommodityType::Silver; }
-        if lower.contains("tin") || lower == "sn" { return CommodityType::Tin; }
-        if lower.contains("palladium") || lower == "pd" { return CommodityType::Palladium; }
-        if lower.contains("alumi") || lower == "al" { return CommodityType::Aluminum; }
-        if lower.contains("steel") { return CommodityType::Steel; }
-        if lower.contains("epoxy") { return CommodityType::Epoxy; }
-        if lower.contains("solder") { return CommodityType::Solder; }
-        if lower.contains("silicon") || lower == "si" { return CommodityType::Silicon; }
-        if lower.contains("neon") || lower == "ne" { return CommodityType::Neon; }
-        if lower.contains("fr4") || lower.contains("fr-4") { return CommodityType::FR4; }
+        if lower.contains("copper") || lower == "cu" {
+            return CommodityType::Copper;
+        }
+        if lower.contains("gold") || lower == "au" {
+            return CommodityType::Gold;
+        }
+        if lower.contains("silver") || lower == "ag" {
+            return CommodityType::Silver;
+        }
+        if lower.contains("tin") || lower == "sn" {
+            return CommodityType::Tin;
+        }
+        if lower.contains("palladium") || lower == "pd" {
+            return CommodityType::Palladium;
+        }
+        if lower.contains("alumi") || lower == "al" {
+            return CommodityType::Aluminum;
+        }
+        if lower.contains("steel") {
+            return CommodityType::Steel;
+        }
+        if lower.contains("epoxy") {
+            return CommodityType::Epoxy;
+        }
+        if lower.contains("solder") {
+            return CommodityType::Solder;
+        }
+        if lower.contains("silicon") || lower == "si" {
+            return CommodityType::Silicon;
+        }
+        if lower.contains("neon") || lower == "ne" {
+            return CommodityType::Neon;
+        }
+        if lower.contains("fr4") || lower.contains("fr-4") {
+            return CommodityType::FR4;
+        }
         CommodityType::Other(name.to_string())
     }
 
@@ -74,6 +129,7 @@ impl CommodityType {
 
 /// Extract commodity prices from page text (price feeds, commodity trackers).
 pub fn extract_commodity_prices(body_text: &str, source: &str, url: &str) -> Vec<CommodityPrice> {
+    let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
     let mut prices = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -95,7 +151,7 @@ pub fn extract_commodity_prices(body_text: &str, source: &str, url: &str) -> Vec
                     unit: price_info.2,
                     date: extract_price_date(body_text),
                     source: source.to_string(),
-                    url: url.to_string(),
+                    url: normalized_url.clone(),
                     extracted_at: Utc::now(),
                 });
             }
@@ -103,7 +159,7 @@ pub fn extract_commodity_prices(body_text: &str, source: &str, url: &str) -> Vec
     }
 
     // Also try generic tabular extraction
-    let tabular = extract_tabular_prices(body_text, source, url);
+    let tabular = extract_tabular_prices(body_text, source, &normalized_url);
     for p in tabular {
         let key = format!("{}:{}", p.commodity, p.price);
         if !seen.contains(&key) {
@@ -118,29 +174,41 @@ pub fn extract_commodity_prices(body_text: &str, source: &str, url: &str) -> Vec
 fn find_price_for_commodity(text: &str, commodity: &str) -> Option<(f64, String, String)> {
     // Look for the commodity name followed by a price within 200 chars
     let lower = text.to_lowercase();
-    let idx = lower.find(commodity)?;
+    // Use word-boundary search to avoid matching "tin" inside "heating",
+    // "testing", etc.  Build a small regex per commodity (they are static
+    // strings so the set is tiny and only compiled once per call).
+    let boundary_re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(commodity))).ok()?;
+    let m = boundary_re.find(&lower)?;
+    let idx = m.start();
 
-    let window_end = (idx + 200).min(text.len());
-    let window = &text[idx..window_end];
+    // Work entirely in the lowered string to avoid byte-offset mismatch
+    // between lowercase and original text (multi-byte characters can change length).
+    let window_end = lower.ceil_char_boundary((idx + 200).min(lower.len()));
+    let window = &lower[idx..window_end];
 
     // Extract price with currency
-    let re = Regex::new(r"(?:[$€£¥])\s*([\d,.]+)|(?:([\d,.]+)\s*(?:USD|EUR|GBP|CNY|JPY))").ok()?;
-    let caps = re.captures(window)?;
+    let caps = RE_PRICE.captures(window)?;
 
-    let price_str = caps.get(1)
+    let price_str = caps
+        .get(1)
         .or(caps.get(2))
         .map(|m| m.as_str())
         .unwrap_or("0");
 
-    let price = price_str.replace(',', "").parse::<f64>().ok()?;
+    let price = normalizer::parse_number(price_str)?;
 
-    // Detect currency
-    let currency = if window.contains('$') || window.contains("USD") {
+    // Detect currency (window is lowercased, so check lowercase codes too).
+    // Check explicit currency codes before the ambiguous Yen symbol.
+    let currency = if window.contains('$') || window.contains("usd") {
         "USD".to_string()
-    } else if window.contains('€') || window.contains("EUR") {
+    } else if window.contains('€') || window.contains("eur") {
         "EUR".to_string()
-    } else if window.contains('£') || window.contains("GBP") {
+    } else if window.contains('£') || window.contains("gbp") {
         "GBP".to_string()
+    } else if window.contains("jpy") {
+        "JPY".to_string()
+    } else if window.contains('¥') || window.contains("cny") {
+        "CNY".to_string()
     } else {
         "USD".to_string()
     };
@@ -171,41 +239,39 @@ fn detect_unit(text: &str) -> String {
 }
 
 fn extract_price_date(text: &str) -> Option<String> {
-    let re = Regex::new(r"\d{4}[-/]\d{2}[-/]\d{2}").ok()?;
-    re.find(text).map(|m| m.as_str().to_string())
+    RE_DATE
+        .find(text)
+        .map(|m| m.as_str().to_string())
+        .filter(|raw| normalizer::is_valid_date(raw))
 }
 
 fn extract_tabular_prices(text: &str, source: &str, url: &str) -> Vec<CommodityPrice> {
     let mut prices = Vec::new();
 
     // Pattern for table rows: "Name | Price | Currency | Unit"
-    let line_re = Regex::new(
-        r"(?i)(copper|gold|silver|tin|palladium|aluminum|steel|solder|silicon|neon|fr[-]?4)[\s|]+\$?([\d,.]+)\s*(USD|EUR|GBP|CNY)?\s*(?:/\s*(\w+))?"
-    ).ok();
+    for caps in RE_TABULAR.captures_iter(text) {
+        let commodity = caps.get(1).unwrap().as_str().to_lowercase();
+        let price_str = caps.get(2).unwrap().as_str();
+        let currency = caps
+            .get(3)
+            .map(|m| m.as_str().to_uppercase())
+            .unwrap_or_else(|| "USD".to_string());
+        let unit = caps
+            .get(4)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| "unit".to_string());
 
-    if let Some(re) = line_re {
-        for caps in re.captures_iter(text) {
-            let commodity = caps.get(1).unwrap().as_str().to_lowercase();
-            let price_str = caps.get(2).unwrap().as_str();
-            let currency = caps.get(3)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_else(|| "USD".to_string());
-            let unit = caps.get(4)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_else(|| "unit".to_string());
-
-            if let Ok(price) = price_str.replace(',', "").parse::<f64>() {
-                prices.push(CommodityPrice {
-                    commodity,
-                    price,
-                    currency,
-                    unit,
-                    date: extract_price_date(text),
-                    source: source.to_string(),
-                    url: url.to_string(),
-                    extracted_at: Utc::now(),
-                });
-            }
+        if let Some(price) = normalizer::parse_number(price_str) {
+            prices.push(CommodityPrice {
+                commodity,
+                price,
+                currency,
+                unit,
+                date: extract_price_date(text),
+                source: source.to_string(),
+                url: url.to_string(),
+                extracted_at: Utc::now(),
+            });
         }
     }
 
@@ -245,14 +311,20 @@ mod tests {
         assert_eq!(CommodityType::from_name("Gold"), CommodityType::Gold);
         assert_eq!(CommodityType::from_name("FR-4"), CommodityType::FR4);
         assert_eq!(CommodityType::from_name("Cu"), CommodityType::Copper);
-        assert_eq!(CommodityType::from_name("unknown metal"), CommodityType::Other("unknown metal".to_string()));
+        assert_eq!(
+            CommodityType::from_name("unknown metal"),
+            CommodityType::Other("unknown metal".to_string())
+        );
     }
 
     #[test]
     fn test_commodity_display_names() {
         assert_eq!(CommodityType::Copper.display_name(), "Copper");
         assert_eq!(CommodityType::FR4.display_name(), "FR-4");
-        assert_eq!(CommodityType::Other("Zinc".to_string()).display_name(), "Zinc");
+        assert_eq!(
+            CommodityType::Other("Zinc".to_string()).display_name(),
+            "Zinc"
+        );
     }
 
     #[test]
@@ -330,5 +402,37 @@ mod tests {
         let (price, currency, _) = result.unwrap();
         assert!((price - 3.95).abs() < 0.01);
         assert_eq!(currency, "EUR");
+    }
+
+    #[test]
+    fn test_usd_code_price() {
+        // Regression: "100 USD" style must work even though text is lowercased internally
+        let text = "copper price: 4.25 USD per lb";
+        let result = find_price_for_commodity(text, "copper");
+        assert!(result.is_some());
+        let (price, currency, _) = result.unwrap();
+        assert!((price - 4.25).abs() < 0.01);
+        assert_eq!(currency, "USD");
+    }
+
+    #[test]
+    fn test_yen_symbol_defaults_to_cny() {
+        // Bare Yen symbol without explicit currency code defaults to CNY
+        let text = "gold price: ¥185000 per oz";
+        let result = find_price_for_commodity(text, "gold");
+        assert!(result.is_some());
+        let (_, currency, _) = result.unwrap();
+        assert_eq!(currency, "CNY");
+    }
+
+    #[test]
+    fn test_explicit_jpy_text() {
+        // Explicit "JPY" in the text must be classified as JPY, not CNY
+        let text = "gold price: 185000 JPY per oz";
+        let result = find_price_for_commodity(text, "gold");
+        assert!(result.is_some());
+        let (price, currency, _) = result.unwrap();
+        assert!((price - 185000.0).abs() < 1.0);
+        assert_eq!(currency, "JPY");
     }
 }

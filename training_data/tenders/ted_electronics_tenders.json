@@ -1,0 +1,3681 @@
+[
+  {
+    "notice_id": "TED-2024-126225",
+    "publication_date": "2024-12-09",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 10217207,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-03-24",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-191161",
+    "publication_date": "2024-10-14",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 1533224,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-02-07",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-731262",
+    "publication_date": "2024-01-18",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 4335942,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-04-15",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-948749",
+    "publication_date": "2024-01-25",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 14519403,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-12-14",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-263032",
+    "publication_date": "2024-04-25",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 6647119,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-13",
+    "language": "es",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-988662",
+    "publication_date": "2024-06-20",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 22751694,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-12-15",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-496922",
+    "publication_date": "2024-02-18",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 11837430,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-10-07",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-148050",
+    "publication_date": "2024-11-08",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 27939869,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-02-28",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-498591",
+    "publication_date": "2024-05-15",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 23330030,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-03-12",
+    "language": "de",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-802729",
+    "publication_date": "2024-05-23",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 96977837,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-10-21",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-864544",
+    "publication_date": "2024-04-06",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 8755439,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-05-21",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-330283",
+    "publication_date": "2024-11-11",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 1938483,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-01-26",
+    "language": "pl",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-380746",
+    "publication_date": "2024-02-07",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 12558837,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-11-16",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-249811",
+    "publication_date": "2024-05-05",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 86203567,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-12-19",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-518801",
+    "publication_date": "2024-06-08",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 9641643,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-02-25",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-260265",
+    "publication_date": "2024-11-06",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 28577773,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-10-03",
+    "language": "de",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-724834",
+    "publication_date": "2024-08-17",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 10436057,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-11-24",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-887352",
+    "publication_date": "2024-05-25",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 6707197,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-05-14",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-103402",
+    "publication_date": "2024-12-24",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 90702958,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-09-04",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-982554",
+    "publication_date": "2024-11-17",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 11216824,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-03-12",
+    "language": "es",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-916449",
+    "publication_date": "2024-09-01",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 6438436,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-01-04",
+    "language": "pl",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-351083",
+    "publication_date": "2024-01-08",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 10518669,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-24",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-897549",
+    "publication_date": "2024-09-25",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 6219822,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-11-16",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-377932",
+    "publication_date": "2024-09-28",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 23353914,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-04-18",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-847581",
+    "publication_date": "2024-05-13",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 97225156,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-08-17",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-359947",
+    "publication_date": "2024-04-03",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 13344269,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-10-18",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-330914",
+    "publication_date": "2024-01-03",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 28751200,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-03",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-174299",
+    "publication_date": "2024-09-08",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 23688292,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-18",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-704201",
+    "publication_date": "2024-08-08",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 20870338,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-04",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-471507",
+    "publication_date": "2024-07-14",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 17670747,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-11-21",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-163556",
+    "publication_date": "2024-07-24",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 13385106,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-04-07",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-570405",
+    "publication_date": "2024-03-14",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 4078418,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-08-08",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-947272",
+    "publication_date": "2024-09-04",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 33579701,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-02-25",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-526156",
+    "publication_date": "2024-08-16",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 10172169,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-01-06",
+    "language": "it",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-509386",
+    "publication_date": "2024-05-26",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 35535094,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-07-23",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-794022",
+    "publication_date": "2024-12-16",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 3597059,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-05-07",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-871476",
+    "publication_date": "2024-09-02",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 15522831,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-01-19",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-994141",
+    "publication_date": "2024-09-06",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 1954280,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-03-03",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-808011",
+    "publication_date": "2024-04-13",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 6022727,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-10-20",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-185965",
+    "publication_date": "2024-07-22",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 24584792,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-05-07",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-350280",
+    "publication_date": "2024-05-13",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 13783092,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-08-11",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-580547",
+    "publication_date": "2024-10-19",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 11709628,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-09-07",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-238890",
+    "publication_date": "2024-06-03",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 5098412,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-05-06",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-837715",
+    "publication_date": "2024-05-20",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 9874152,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-11-27",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-795613",
+    "publication_date": "2024-02-05",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 5437001,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-24",
+    "language": "es",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-385577",
+    "publication_date": "2024-05-20",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 10067558,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-04-22",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-629959",
+    "publication_date": "2024-08-09",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 1852264,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-11-14",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-103717",
+    "publication_date": "2024-06-25",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 13779158,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-03-24",
+    "language": "fr",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-839945",
+    "publication_date": "2024-07-18",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 1162230,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-02-23",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-137778",
+    "publication_date": "2024-06-19",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 3484601,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-03-02",
+    "language": "pl",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-934794",
+    "publication_date": "2024-01-12",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 19097997,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-11-04",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-526117",
+    "publication_date": "2024-10-24",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 3592974,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-03-26",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-125990",
+    "publication_date": "2024-03-24",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 13146294,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-11-28",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-379766",
+    "publication_date": "2024-03-26",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 24508349,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-01-28",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-309267",
+    "publication_date": "2024-08-12",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 50962024,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-04-01",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-517821",
+    "publication_date": "2024-06-09",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 19317495,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-06-21",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-812526",
+    "publication_date": "2024-09-11",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 2926120,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-05-06",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-140115",
+    "publication_date": "2024-02-20",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 8290770,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-12-26",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-735656",
+    "publication_date": "2024-09-04",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 14925013,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-05-02",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-101773",
+    "publication_date": "2024-09-26",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 8611401,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-07-03",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-753425",
+    "publication_date": "2024-06-22",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 13363463,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-09-10",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-442027",
+    "publication_date": "2024-07-23",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 11920542,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-04-14",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-810219",
+    "publication_date": "2024-12-06",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 12098202,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-09-27",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-400850",
+    "publication_date": "2024-04-14",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 14182845,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-08-15",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-636004",
+    "publication_date": "2024-08-26",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 32775593,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-05-17",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-451470",
+    "publication_date": "2024-02-27",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 12880882,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-26",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-125611",
+    "publication_date": "2024-01-08",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 18942930,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-08-14",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-303880",
+    "publication_date": "2024-12-23",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 17884179,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-07-08",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-887443",
+    "publication_date": "2024-02-25",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 33531078,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-03-26",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-587115",
+    "publication_date": "2024-01-18",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 5180853,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-08-05",
+    "language": "pl",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-686075",
+    "publication_date": "2024-10-11",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 8425149,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-09-15",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-571932",
+    "publication_date": "2024-05-25",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 86367911,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-09-16",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-387936",
+    "publication_date": "2024-08-03",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 48349783,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-05-11",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-184491",
+    "publication_date": "2024-03-05",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 4879923,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-12-05",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-167348",
+    "publication_date": "2024-07-14",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 54410148,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-07-02",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-508396",
+    "publication_date": "2024-10-23",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 2655383,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-08-01",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-890075",
+    "publication_date": "2024-07-28",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 8030010,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-08-08",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-609232",
+    "publication_date": "2024-01-13",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 13278635,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-12-06",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-752483",
+    "publication_date": "2024-09-01",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 16221125,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-02-21",
+    "language": "it",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-584125",
+    "publication_date": "2024-03-02",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 11729397,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-06-07",
+    "language": "it",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-453894",
+    "publication_date": "2024-07-09",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 33290736,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-02-16",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-154615",
+    "publication_date": "2024-06-08",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 2151225,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-01-08",
+    "language": "pl",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-751517",
+    "publication_date": "2024-03-08",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 13470546,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-11-04",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-587623",
+    "publication_date": "2024-12-09",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 59512272,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-10-20",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-915573",
+    "publication_date": "2024-03-10",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 5627192,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-05-19",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-515922",
+    "publication_date": "2024-12-07",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 4550018,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-02-23",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-944657",
+    "publication_date": "2024-02-26",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 23989545,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-06-18",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-172306",
+    "publication_date": "2024-09-21",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 27899636,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-07-27",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-554582",
+    "publication_date": "2024-06-21",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 29806803,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-12-05",
+    "language": "de",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-869440",
+    "publication_date": "2024-09-21",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 12062461,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-08-14",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-381433",
+    "publication_date": "2024-06-28",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 13237450,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-05-15",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-697530",
+    "publication_date": "2024-10-22",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 121734166,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-01-16",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-611233",
+    "publication_date": "2024-04-12",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 11668868,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-05-20",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-682789",
+    "publication_date": "2024-01-17",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 4205394,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-04-24",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-682144",
+    "publication_date": "2024-04-23",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 147800270,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-08-26",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-408528",
+    "publication_date": "2024-04-13",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 25212525,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-05-22",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-596249",
+    "publication_date": "2024-09-17",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 28069168,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-12-18",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-836996",
+    "publication_date": "2024-08-09",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 25577120,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-04",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-430876",
+    "publication_date": "2024-02-24",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 81922443,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-04-07",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-389930",
+    "publication_date": "2024-12-19",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 160831137,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-02-27",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-338533",
+    "publication_date": "2024-06-06",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 6071208,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-12-18",
+    "language": "es",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-147726",
+    "publication_date": "2024-01-18",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 5901239,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-11-28",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-112861",
+    "publication_date": "2024-10-10",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 17750347,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-08-11",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-364742",
+    "publication_date": "2024-08-04",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 9385123,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-08-03",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-259097",
+    "publication_date": "2024-03-26",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 42771525,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-08",
+    "language": "fr",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-901577",
+    "publication_date": "2024-07-20",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 4786401,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-08-15",
+    "language": "pl",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-549660",
+    "publication_date": "2024-05-19",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 25838219,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-10-24",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-755900",
+    "publication_date": "2024-04-09",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 98641164,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-03-08",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-178711",
+    "publication_date": "2024-03-01",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 7853787,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-12-20",
+    "language": "pl",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-134225",
+    "publication_date": "2024-04-10",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 12860750,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-12-28",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-820775",
+    "publication_date": "2024-04-09",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 28435121,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-07-04",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-779094",
+    "publication_date": "2024-03-09",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 29090631,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-01-06",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-885339",
+    "publication_date": "2024-10-10",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 19735544,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-08-23",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-385470",
+    "publication_date": "2024-09-18",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 18569018,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-02-20",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-870214",
+    "publication_date": "2024-06-20",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 10400952,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-02-08",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-715643",
+    "publication_date": "2024-01-25",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 27558026,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-10-02",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-644173",
+    "publication_date": "2024-11-15",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 94667087,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-10-14",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-195674",
+    "publication_date": "2024-08-12",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 129615107,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-06-22",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-445824",
+    "publication_date": "2024-07-23",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 19625181,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-11-13",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-576919",
+    "publication_date": "2024-02-11",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 21938200,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-25",
+    "language": "fr",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-964998",
+    "publication_date": "2024-01-22",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 8750676,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-01-07",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-752878",
+    "publication_date": "2024-08-21",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 34664866,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-09",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-402020",
+    "publication_date": "2024-08-23",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 19264229,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-01-21",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-844261",
+    "publication_date": "2024-03-10",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 83932360,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-09-14",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-982277",
+    "publication_date": "2024-02-15",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 25766039,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-08-23",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-839677",
+    "publication_date": "2024-05-14",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 9094999,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-04-15",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-502219",
+    "publication_date": "2024-04-20",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 20053734,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-02-09",
+    "language": "it",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-925981",
+    "publication_date": "2024-09-09",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 5172151,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-12-10",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-791998",
+    "publication_date": "2024-08-28",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 9986034,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-09-16",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-678727",
+    "publication_date": "2024-09-13",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 35557659,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-23",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-501574",
+    "publication_date": "2024-04-28",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 18783325,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-06-24",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-504832",
+    "publication_date": "2024-11-26",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 7103807,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-01-05",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-448121",
+    "publication_date": "2024-02-28",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 19774224,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-09-15",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-529893",
+    "publication_date": "2024-11-05",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 5510819,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-05-11",
+    "language": "it",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-781403",
+    "publication_date": "2024-02-28",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 13024831,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-06-21",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-667296",
+    "publication_date": "2024-01-20",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 38366554,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-11-22",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-883041",
+    "publication_date": "2024-02-14",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 23212812,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-08-06",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-130353",
+    "publication_date": "2024-01-11",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 14357070,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-05-12",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-252640",
+    "publication_date": "2024-04-17",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 15826162,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-03-06",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-501126",
+    "publication_date": "2024-10-22",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 13080906,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-10-05",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-768891",
+    "publication_date": "2024-05-15",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 88538740,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-08-10",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-265649",
+    "publication_date": "2024-02-15",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 6797629,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-11-14",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-579027",
+    "publication_date": "2024-05-07",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 7454081,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-08",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-476395",
+    "publication_date": "2024-10-10",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 28463912,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-01-27",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-387813",
+    "publication_date": "2024-01-19",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 3645651,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-05-25",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-940886",
+    "publication_date": "2024-06-08",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 26361351,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-10-09",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-758765",
+    "publication_date": "2024-02-21",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 24687592,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-05-26",
+    "language": "it",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-707727",
+    "publication_date": "2024-06-24",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 13818897,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-05-11",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-284171",
+    "publication_date": "2024-04-05",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 14276141,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-03-09",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-882824",
+    "publication_date": "2024-06-26",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 2932227,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-05",
+    "language": "es",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-986827",
+    "publication_date": "2024-09-12",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 5030061,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-01-09",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-576877",
+    "publication_date": "2024-06-22",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 27132658,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-10-13",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-213609",
+    "publication_date": "2024-11-08",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 36640277,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-10-18",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-332120",
+    "publication_date": "2024-11-03",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 26320617,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-12-10",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-222343",
+    "publication_date": "2024-03-02",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 3248631,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-08-04",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-663658",
+    "publication_date": "2024-03-13",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 70887034,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-11-24",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-539486",
+    "publication_date": "2024-10-24",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 3592464,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-11-04",
+    "language": "pl",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-527940",
+    "publication_date": "2024-05-02",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 28161975,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-15",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-997004",
+    "publication_date": "2024-06-04",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 59302863,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-01-13",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-228093",
+    "publication_date": "2024-08-03",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 98955314,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-11-21",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-153035",
+    "publication_date": "2024-06-08",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 13450608,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-27",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-714867",
+    "publication_date": "2024-04-27",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 41272553,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-03-26",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-390743",
+    "publication_date": "2024-03-05",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 41253245,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-03-04",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-238205",
+    "publication_date": "2024-01-12",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 20967319,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-01-06",
+    "language": "fr",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-232915",
+    "publication_date": "2024-12-14",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 40305002,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-12-03",
+    "language": "fr",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-915809",
+    "publication_date": "2024-06-17",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 179361008,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-08-17",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-145471",
+    "publication_date": "2024-12-26",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 27109118,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-08-21",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-602248",
+    "publication_date": "2024-07-14",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 12245195,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-12-15",
+    "language": "fr",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-437758",
+    "publication_date": "2024-10-05",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 4203930,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-05-20",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-674993",
+    "publication_date": "2024-12-11",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 17781030,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-08-17",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-203996",
+    "publication_date": "2024-12-04",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 9214976,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-08-08",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-967611",
+    "publication_date": "2024-08-13",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 32916592,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-06-14",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-492483",
+    "publication_date": "2024-03-22",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 8956894,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-27",
+    "language": "es",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-552855",
+    "publication_date": "2024-02-24",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 26789880,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-03-18",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-688866",
+    "publication_date": "2024-09-11",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 27481914,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-07-12",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-856086",
+    "publication_date": "2024-01-10",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 12484045,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-02-19",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-262246",
+    "publication_date": "2024-11-16",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 40097636,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-06-28",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-220465",
+    "publication_date": "2024-05-19",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 20177279,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-09-25",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-807764",
+    "publication_date": "2024-11-18",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 5880932,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-01-06",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-456331",
+    "publication_date": "2024-06-01",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 4043480,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-10-22",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-248766",
+    "publication_date": "2024-12-21",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 3028681,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-12-17",
+    "language": "de",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-540226",
+    "publication_date": "2024-08-11",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 7281778,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-05-24",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-725185",
+    "publication_date": "2024-02-02",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 10220395,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-10-02",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-385320",
+    "publication_date": "2024-08-22",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 16227574,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-10-15",
+    "language": "de",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-326040",
+    "publication_date": "2024-09-04",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 6791039,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-02-10",
+    "language": "es",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-610271",
+    "publication_date": "2024-09-22",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 15348837,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-04-13",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-108060",
+    "publication_date": "2024-04-10",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 19175672,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-05-10",
+    "language": "fr",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-108105",
+    "publication_date": "2024-08-24",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 16450384,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-03-13",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-624563",
+    "publication_date": "2024-09-27",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 99663907,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-02-13",
+    "language": "en",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-557409",
+    "publication_date": "2024-01-15",
+    "cpv_code": "31000000",
+    "country": "FR",
+    "contracting_authority": "Direction Générale de l'Armement (DGA)",
+    "title": "Fabrication et assemblage de cartes électroniques pour systèmes de défense",
+    "estimated_value_eur": 10225271,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-10-14",
+    "language": "fr",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-843963",
+    "publication_date": "2024-11-14",
+    "cpv_code": "38000000",
+    "country": "SE",
+    "contracting_authority": "Saab AB",
+    "title": "PCB Assembly and Testing Services for Avionics Systems",
+    "estimated_value_eur": 11714518,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3",
+      "J-STD-001 Class 3"
+    ],
+    "deadline": "2025-07-01",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-940247",
+    "publication_date": "2024-10-15",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 15141761,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-07-28",
+    "language": "it",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-556839",
+    "publication_date": "2024-10-13",
+    "cpv_code": "32000000",
+    "country": "GB",
+    "contracting_authority": "Ministry of Defence - Defence Equipment & Support",
+    "title": "Electronic Manufacturing Services for C4ISR Systems",
+    "estimated_value_eur": 80325062,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "Cyber Essentials Plus"
+    ],
+    "deadline": "2025-07-28",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-332335",
+    "publication_date": "2024-06-25",
+    "cpv_code": "32000000",
+    "country": "NL",
+    "contracting_authority": "Thales Nederland B.V.",
+    "title": "EMS Services for Naval Radar and Communication Equipment",
+    "estimated_value_eur": 16283195,
+    "currency": "EUR",
+    "procedure_type": "Open",
+    "certification_requirements": [
+      "AS9100D",
+      "NADCAP",
+      "ISO 27001"
+    ],
+    "deadline": "2025-09-21",
+    "language": "en",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-634723",
+    "publication_date": "2024-04-25",
+    "cpv_code": "32000000",
+    "country": "PL",
+    "contracting_authority": "PGZ (Polska Grupa Zbrojeniowa)",
+    "title": "Produkcja elektroniki do systemów obrony przeciwlotniczej",
+    "estimated_value_eur": 6861544,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "NATO AQAP"
+    ],
+    "deadline": "2025-12-27",
+    "language": "pl",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-347745",
+    "publication_date": "2024-02-05",
+    "cpv_code": "31000000",
+    "country": "IT",
+    "contracting_authority": "Leonardo S.p.A. - Divisione Elettronica",
+    "title": "Servizi di produzione EMS per sistemi radar e comunicazioni",
+    "estimated_value_eur": 11588868,
+    "currency": "EUR",
+    "procedure_type": "Restricted",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 9001"
+    ],
+    "deadline": "2025-03-20",
+    "language": "it",
+    "status": "Open"
+  },
+  {
+    "notice_id": "TED-2024-285751",
+    "publication_date": "2024-11-16",
+    "cpv_code": "32000000",
+    "country": "DE",
+    "contracting_authority": "Bundesamt für Ausrüstung, Informationstechnik und Nutzung der Bundeswehr (BAAINBw)",
+    "title": "Lieferung von elektronischen Baugruppen für Kommunikationssysteme",
+    "estimated_value_eur": 17567681,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "ISO 9001",
+      "IATF 16949"
+    ],
+    "deadline": "2025-11-19",
+    "language": "de",
+    "status": "Awarded"
+  },
+  {
+    "notice_id": "TED-2024-438908",
+    "publication_date": "2024-11-11",
+    "cpv_code": "31000000",
+    "country": "FI",
+    "contracting_authority": "Finnish Defence Forces",
+    "title": "Electronics Manufacturing Services for Military Communications",
+    "estimated_value_eur": 10065289,
+    "currency": "EUR",
+    "procedure_type": "Negotiated",
+    "certification_requirements": [
+      "AS9100D",
+      "ISO 27001"
+    ],
+    "deadline": "2025-02-16",
+    "language": "en",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-935012",
+    "publication_date": "2024-05-19",
+    "cpv_code": "31000000",
+    "country": "ES",
+    "contracting_authority": "Indra Sistemas S.A.",
+    "title": "Fabricación de placas electrónicas para sistemas de control de tráfico aéreo",
+    "estimated_value_eur": 1942411,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "AS9100D",
+      "IPC-A-610 Class 3"
+    ],
+    "deadline": "2025-09-03",
+    "language": "es",
+    "status": "Closed"
+  },
+  {
+    "notice_id": "TED-2024-573866",
+    "publication_date": "2024-01-02",
+    "cpv_code": "31000000",
+    "country": "BE",
+    "contracting_authority": "European Defence Agency",
+    "title": "Framework Contract for Electronic Component Manufacturing",
+    "estimated_value_eur": 118982245,
+    "currency": "EUR",
+    "procedure_type": "Competitive dialogue",
+    "certification_requirements": [
+      "ISO 9001",
+      "AS9100D"
+    ],
+    "deadline": "2025-02-21",
+    "language": "en",
+    "status": "Open"
+  }
+]
