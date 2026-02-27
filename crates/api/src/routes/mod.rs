@@ -34,6 +34,10 @@ pub mod paths {
     pub const GRAPH: &str = "/api/graph";
     pub const SECURITY: &str = "/api/security";
     pub const ADMIN: &str = "/api/admin";
+    pub const LLM_EXTRACT_ENTITIES: &str = "/api/llm/extract-entities";
+    pub const LLM_GENERATE_RECIPE: &str = "/api/llm/generate-recipe";
+    pub const LLM_SYNTHESIZE_POI: &str = "/api/llm/synthesize-poi";
+    pub const LLM_GENERATE_MEMO: &str = "/api/llm/generate-memo";
 }
 
 // ─── Endpoint catalogue ─────────────────────────────────────────────────
@@ -117,6 +121,14 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "viewer",
         },
+        // Persons
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/persons",
+            description: "List persons of interest with filters",
+            auth_required: true,
+            min_role: "viewer",
+        },
         // Search
         EndpointDef {
             method: HttpMethod::Get,
@@ -124,6 +136,59 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             description: "Full-text search across all entities",
             auth_required: true,
             min_role: "viewer",
+        },
+        // Graph
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/graph",
+            description: "Graph overview counts",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Recipes
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/recipes",
+            description: "List recipe signals and metadata",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Security
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/security",
+            description: "Security overview",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // LLM
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: "/api/llm/extract-entities",
+            description: "Extract named entities from freeform text",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: "/api/llm/generate-recipe",
+            description: "Generate a recipe hypothesis from a pattern description",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: "/api/llm/synthesize-poi",
+            description: "Synthesize a POI dossier from fragments",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: "/api/llm/generate-memo",
+            description: "Generate a strategic intelligence memo",
+            auth_required: true,
+            min_role: "analyst",
         },
     ]
 }
@@ -135,7 +200,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 7);
+        assert_eq!(eps.len(), 15);
     }
 
     #[test]

@@ -130,14 +130,14 @@ pub fn validate_recipe_json(value: &Value) -> Vec<String> {
         errors.push("signals must be an array".to_string());
     }
 
-    // B205: validate signals items are objects with non-empty values
+    // B205: validate signals items are objects or strings with non-empty values
     if let Some(signals) = value.get("signals").and_then(|v| v.as_array()) {
         if signals.is_empty() {
             errors.push("signals array must not be empty".to_string());
         }
         for (i, sig) in signals.iter().enumerate() {
-            if !sig.is_object() {
-                errors.push(format!("signals[{}] must be an object", i));
+            if !(sig.is_object() || sig.is_string()) {
+                errors.push(format!("signals[{}] must be an object or string", i));
             }
         }
     }

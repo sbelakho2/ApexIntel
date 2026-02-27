@@ -30,6 +30,14 @@ pub struct KevRelevance {
     pub rationale: String,
 }
 
+/// Summary payload for security overview endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecuritySummary {
+    pub dns_posture: Vec<DnsPostureResponse>,
+    pub lookalikes: Vec<LookalikeDomain>,
+    pub kev: Vec<KevRelevance>,
+}
+
 pub fn dns_score(has_spf: bool, has_dkim: bool, has_dmarc: bool) -> f64 {
     let mut score: f64 = 0.0;
     if has_spf {

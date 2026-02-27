@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use apex_core::validation::{normalize_email, validate_nonempty_id, validate_uuid};
+use apex_core::validation::{normalize_email, validate_uuid};
 
 // ────────────────────────────────────────────
 // Request types

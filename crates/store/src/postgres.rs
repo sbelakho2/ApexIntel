@@ -61,6 +61,14 @@ pub struct CompanyListFilters {
     pub is_competitor: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PersonListFilters {
+    pub regions: Vec<String>,
+    pub roles: Vec<String>,
+    pub search: Option<String>,
+    pub min_priority: Option<f64>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum WarningOrderBy {
     CreatedAt,
@@ -73,6 +81,14 @@ pub enum CompanyOrderBy {
     Name,
     Region,
     ThreatScore,
+    UpdatedAt,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PersonOrderBy {
+    Name,
+    Priority,
+    Region,
     UpdatedAt,
 }
 
@@ -205,8 +221,6 @@ impl PgStore {
             "SELECT id, name, legal_name, domain, country_code, region, company_type,
                     industry_tags, employee_estimate, revenue_estimate_usd,
                     risk_score, threat_score, overlap_score, strategic_relevance,
-        let limit = clamp_limit(limit);
-        let offset = offset.max(0);
                     metadata, created_at, updated_at
              FROM companies",
         );
@@ -228,7 +242,6 @@ impl PgStore {
             qb.push(if has_where { " AND " } else { " WHERE " });
             qb.push("COALESCE((metadata->>'is_competitor')::boolean, false) = ")
                 .push_bind(is_competitor);
-            let _ = has_where;
         }
 
         let order_by = order_by.unwrap_or(CompanyOrderBy::UpdatedAt);
@@ -269,7 +282,6 @@ impl PgStore {
             qb.push(if has_where { " AND " } else { " WHERE " });
             qb.push("COALESCE((metadata->>'is_competitor')::boolean, false) = ")
                 .push_bind(is_competitor);
-            let _ = has_where;
         }
 
         let row: (i64,) = qb.build_query_as().fetch_one(&self.pool).await?;
@@ -613,7 +625,7 @@ impl PgStore {
         let pv_json = serde_json::to_value(&p.priority_vector)?;
         sqlx::query(
             r#"INSERT INTO persons
-               (id, name, name_ar, name_fr, primary_org_id, current_role,
+               (id, name, name_ar, name_fr, primary_org_id, "current_role",
                 role_family, region, country_code, priority_vector,
                 influence_score, metadata, created_at, updated_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
@@ -622,7 +634,7 @@ impl PgStore {
                  name_ar = EXCLUDED.name_ar,
                  name_fr = EXCLUDED.name_fr,
                  primary_org_id = EXCLUDED.primary_org_id,
-                 current_role = EXCLUDED.current_role,
+                 "current_role" = EXCLUDED."current_role",
                  role_family = EXCLUDED.role_family,
                  region = EXCLUDED.region,
                  country_code = EXCLUDED.country_code,
@@ -652,7 +664,7 @@ impl PgStore {
 
     pub async fn get_person(&self, id: Uuid) -> Result<Option<PersonRow>> {
         let row = sqlx::query_as::<_, PersonRow>(
-            "SELECT id, name, name_ar, name_fr, primary_org_id, current_role,
+            "SELECT id, name, name_ar, name_fr, primary_org_id, \"current_role\",
                     role_family, region, country_code, priority_vector,
                     influence_score, metadata, created_at, updated_at
              FROM persons WHERE id = $1",
@@ -665,7 +677,7 @@ impl PgStore {
 
     pub async fn list_persons_by_org(&self, org_id: Uuid) -> Result<Vec<PersonRow>> {
         let rows = sqlx::query_as::<_, PersonRow>(
-            "SELECT id, name, name_ar, name_fr, primary_org_id, current_role,
+            "SELECT id, name, name_ar, name_fr, primary_org_id, \"current_role\",
                     role_family, region, country_code, priority_vector,
                     influence_score, metadata, created_at, updated_at
              FROM persons WHERE primary_org_id = $1 ORDER BY name",
@@ -673,6 +685,159 @@ impl PgStore {
         .bind(org_id)
         .fetch_all(&self.pool)
         .await?;
+        Ok(rows)
+    }
+
+    pub async fn count_persons(&self, filters: &PersonListFilters) -> Result<i64> {
+        let mut qb = QueryBuilder::new(
+            "SELECT COUNT(*) FROM persons p LEFT JOIN companies c ON p.primary_org_id = c.id",
+        );
+        let mut has_where = false;
+
+        if !filters.regions.is_empty() {
+            let regions: Vec<String> = filters.regions.iter().map(|r| r.to_lowercase()).collect();
+            if !has_where {
+                qb.push(" WHERE ");
+                has_where = true;
+            }
+            qb.push("LOWER(COALESCE(p.region, '')) = ANY(");
+            qb.push_bind(regions);
+            qb.push(")");
+        }
+
+        if !filters.roles.is_empty() {
+            let roles: Vec<String> = filters.roles.iter().map(|r| r.to_lowercase()).collect();
+            if !has_where {
+                qb.push(" WHERE ");
+                has_where = true;
+            } else {
+                qb.push(" AND ");
+            }
+            qb.push("LOWER(COALESCE(p.role_family, p.\"current_role\", '')) = ANY(");
+            qb.push_bind(roles);
+            qb.push(")");
+        }
+
+        if let Some(min_priority) = filters.min_priority {
+            if !has_where {
+                qb.push(" WHERE ");
+                has_where = true;
+            } else {
+                qb.push(" AND ");
+            }
+            qb.push("COALESCE(p.influence_score, 0) >= ");
+            qb.push_bind(min_priority);
+        }
+
+        if let Some(search) = &filters.search {
+            let pattern = ilike_pattern(search);
+            if !has_where {
+                qb.push(" WHERE ");
+            } else {
+                qb.push(" AND ");
+            }
+            qb.push("(p.name ILIKE ");
+            qb.push_bind(pattern.clone());
+            qb.push(" OR c.name ILIKE ");
+            qb.push_bind(pattern);
+            qb.push(")");
+        }
+
+        let query = qb.build_query_as::<(i64,)>();
+        let (count,) = query.fetch_one(&self.pool).await?;
+        Ok(count)
+    }
+
+    pub async fn list_persons(
+        &self,
+        filters: &PersonListFilters,
+        order_by: Option<PersonOrderBy>,
+        desc: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PersonListRow>> {
+        let limit = clamp_limit(limit);
+        let mut qb = QueryBuilder::new(
+            "SELECT p.id,
+                    p.name,
+                    COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
+                    COALESCE(c.name, 'Independent') AS organization,
+                    COALESCE(p.region, '') AS region,
+                    COALESCE(p.influence_score, 0) AS priority_score,
+                    COALESCE(p.metadata->>'engagement_status', 'untracked') AS engagement_status,
+                    COALESCE(p.updated_at, p.created_at, now()) AS updated_at
+             FROM persons p
+             LEFT JOIN companies c ON p.primary_org_id = c.id",
+        );
+        let mut has_where = false;
+
+        if !filters.regions.is_empty() {
+            let regions: Vec<String> = filters.regions.iter().map(|r| r.to_lowercase()).collect();
+            if !has_where {
+                qb.push(" WHERE ");
+                has_where = true;
+            }
+            qb.push("LOWER(COALESCE(p.region, '')) = ANY(");
+            qb.push_bind(regions);
+            qb.push(")");
+        }
+
+        if !filters.roles.is_empty() {
+            let roles: Vec<String> = filters.roles.iter().map(|r| r.to_lowercase()).collect();
+            if !has_where {
+                qb.push(" WHERE ");
+                has_where = true;
+            } else {
+                qb.push(" AND ");
+            }
+            qb.push("LOWER(COALESCE(p.role_family, p.\"current_role\", '')) = ANY(");
+            qb.push_bind(roles);
+            qb.push(")");
+        }
+
+        if let Some(min_priority) = filters.min_priority {
+            if !has_where {
+                qb.push(" WHERE ");
+                has_where = true;
+            } else {
+                qb.push(" AND ");
+            }
+            qb.push("COALESCE(p.influence_score, 0) >= ");
+            qb.push_bind(min_priority);
+        }
+
+        if let Some(search) = &filters.search {
+            let pattern = ilike_pattern(search);
+            if !has_where {
+                qb.push(" WHERE ");
+            } else {
+                qb.push(" AND ");
+            }
+            qb.push("(p.name ILIKE ");
+            qb.push_bind(pattern.clone());
+            qb.push(" OR c.name ILIKE ");
+            qb.push_bind(pattern);
+            qb.push(")");
+        }
+
+        let order_clause = match order_by.unwrap_or(PersonOrderBy::UpdatedAt) {
+            PersonOrderBy::Name => "p.name",
+            PersonOrderBy::Priority => "COALESCE(p.influence_score, 0)",
+            PersonOrderBy::Region => "COALESCE(p.region, '')",
+            PersonOrderBy::UpdatedAt => "COALESCE(p.updated_at, p.created_at)",
+        };
+        qb.push(" ORDER BY ");
+        qb.push(order_clause);
+        if desc {
+            qb.push(" DESC");
+        }
+        qb.push(" LIMIT ");
+        qb.push_bind(limit);
+        qb.push(" OFFSET ");
+        qb.push_bind(offset.max(0));
+
+        let query = qb.build_query_as::<PersonListRow>();
+        let rows = query.fetch_all(&self.pool).await?;
         Ok(rows)
     }
 
@@ -1044,6 +1209,18 @@ pub struct PersonRow {
     pub metadata: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct PersonListRow {
+    pub id: Uuid,
+    pub name: String,
+    pub role: String,
+    pub organization: String,
+    pub region: String,
+    pub priority_score: f64,
+    pub engagement_status: String,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]

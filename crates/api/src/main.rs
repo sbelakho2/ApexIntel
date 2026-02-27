@@ -2,16 +2,27 @@ use anyhow::Result;
 use apex_api::auth::{self, ApiKey, ApiRole, AuthResult, PermissionLevel};
 use apex_api::filters::{validate_search_text, RegionFilter, SeverityFilter, WarningTypeFilter};
 use apex_api::responses::{
-    aggregate_health, error_response, success_with_meta, ApiError, ApiResponse, ComponentHealth, HealthResponse, HealthStatus,
-    PagedResponse, ResponseMeta,
+    aggregate_health, error_response, success_with_meta, ApiError, ApiResponse, ComponentHealth, ErrorCode, HealthResponse,
+    HealthStatus, PagedResponse, ResponseMeta,
 };
 use apex_api::routes;
 use apex_api::routes::companies::{CompanyListItem, CompanySortField, ListCompaniesQuery};
+use apex_api::routes::graph::GraphOverview;
 use apex_api::routes::insights::{InsightResponse, ListInsightsQuery};
+use apex_api::routes::llm::{
+    ExtractEntitiesRequest, ExtractEntitiesResponse, GenerateMemoRequest, GenerateMemoResponse, GenerateRecipeRequest,
+    GenerateRecipeResponse, SynthesizePoiRequest, SynthesizePoiResponse,
+};
+#[cfg(feature = "llm")]
+use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
+use apex_api::routes::persons::{ListPersonsQuery, PersonListItem, PersonSortField};
+use apex_api::routes::recipes::ListRecipesQuery;
+use apex_api::routes::recipes::RecipeListItem;
 use apex_api::routes::search::{
     build_facets, highlight_snippet, sort_by_score, tokenize_query, validate_search_query, SearchHit, SearchQuery,
     SearchResponse,
 };
+use apex_api::routes::security::SecuritySummary;
 use apex_api::routes::warnings::{
     validate_acknowledge, validate_warning_id, AcknowledgeRequest, ListWarningsQuery, SortDirection, WarningResponse,
     WarningSortField,
@@ -19,8 +30,8 @@ use apex_api::routes::warnings::{
 use apex_core::config::AppConfig;
 use apex_core::validation::clamp_ratio;
 use apex_store::postgres::{
-    CompanyListFilters, CompanyOrderBy, CompanyRow, InsightListFilters, InsightRow, PgStore, WarningListFilters,
-    WarningOrderBy, WarningRow,
+    CompanyListFilters, CompanyOrderBy, CompanyRow, InsightListFilters, InsightRow, PgStore, PersonListFilters,
+    PersonListRow, PersonOrderBy, WarningListFilters, WarningOrderBy, WarningRow,
 };
 use apex_store::tantivy_index::SearchIndex;
 use axum::{
@@ -32,10 +43,16 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+use serde::Serialize;
+#[cfg(feature = "llm")]
+use serde_json::Value as JsonValue;
 use std::{collections::HashMap, path::Path as FsPath, sync::Arc, sync::OnceLock, time::Instant};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+
+#[cfg(feature = "llm")]
+use apex_llm::{validators, LlmClient, LlmProvider, ModelConfig, OpenAiCompatibleClient};
 
 static STARTED_AT: OnceLock<DateTime<Utc>> = OnceLock::new();
 const MAX_JSON_DEPTH: usize = 32;
@@ -54,11 +71,20 @@ struct AppState {
     /// SIGHUP handler that calls `write().unwrap().insert(...)` after verifying
     /// the new key format.
     api_keys: Arc<HashMap<String, ApiKey>>,
+    #[cfg(feature = "llm")]
+    llm: Option<LlmRuntime>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RateLimitInfo {
     limit_per_min: u32,
+}
+
+#[cfg(feature = "llm")]
+#[derive(Clone)]
+struct LlmRuntime {
+    primary: ModelConfig,
+    lightweight: ModelConfig,
 }
 
 #[tokio::main]
@@ -95,7 +121,15 @@ async fn main() -> Result<()> {
         .route("/api/warnings/:id/acknowledge", post(acknowledge_warning))
         .route("/api/insights", get(list_insights))
         .route("/api/companies", get(list_companies))
+        .route("/api/persons", get(list_persons))
         .route("/api/search", get(search))
+        .route("/api/graph", get(list_graph))
+        .route("/api/recipes", get(list_recipes))
+        .route("/api/security", get(list_security))
+        .route("/api/llm/extract-entities", post(llm_extract_entities))
+        .route("/api/llm/generate-recipe", post(llm_generate_recipe))
+        .route("/api/llm/synthesize-poi", post(llm_synthesize_poi))
+        .route("/api/llm/generate-memo", post(llm_generate_memo))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let app = Router::new()
@@ -202,7 +236,7 @@ async fn require_auth(
 }
 
 async fn add_rate_limit_headers(
-    mut request: axum::extract::Request,
+    request: axum::extract::Request,
     next: middleware::Next,
 ) -> axum::response::Response {
     let limit = request
@@ -220,6 +254,67 @@ async fn add_rate_limit_headers(
         header::HeaderValue::from_static("burst=60, window=60"),
     );
     response
+}
+
+fn llm_service_unavailable<T: Serialize>(message: &str) -> (StatusCode, Json<ApiResponse<T>>) {
+    let api_err = ApiError::new(ErrorCode::ServiceUnavailable, message);
+    (
+        StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+        Json(error_response(api_err)),
+    )
+}
+
+#[cfg(feature = "llm")]
+fn infer_llm_provider(base_url: &str) -> LlmProvider {
+    let lower = base_url.to_lowercase();
+    if lower.contains("openai.azure.com") {
+        LlmProvider::AzureOpenAi
+    } else if lower.contains("api.openai.com") {
+        LlmProvider::OpenAi
+    } else {
+        LlmProvider::LlamaCpp
+    }
+}
+
+#[cfg(feature = "llm")]
+fn build_llm_runtime(config: &AppConfig) -> Result<Option<LlmRuntime>> {
+    let base_url = match config.llm_base_url.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(url) => url.to_string(),
+        None => return Ok(None),
+    };
+
+    let provider = infer_llm_provider(&base_url);
+    if matches!(provider, LlmProvider::OpenAi | LlmProvider::AzureOpenAi) && config.llm_api_key.is_none() {
+        anyhow::bail!("LLM_API_KEY is required for OpenAI/Azure providers");
+    }
+
+    let primary = ModelConfig {
+        model_name: config.llm_model.clone(),
+        provider: provider.clone(),
+        base_url: base_url.clone(),
+        api_key: config.llm_api_key.clone(),
+        max_tokens: 4096,
+        temperature: 0.2,
+        timeout_seconds: 300,
+    };
+
+    let lightweight = ModelConfig {
+        model_name: config.llm_model.clone(),
+        provider,
+        base_url,
+        api_key: config.llm_api_key.clone(),
+        max_tokens: 1024,
+        temperature: 0.1,
+        timeout_seconds: 120,
+    };
+
+    let mut issues = primary.validate();
+    issues.extend(lightweight.validate());
+    if !issues.is_empty() {
+        anyhow::bail!("Invalid LLM configuration: {}", issues.join("; "));
+    }
+
+    Ok(Some(LlmRuntime { primary, lightweight }))
 }
 
 fn auth_error_response(err: ApiError) -> axum::response::Response {
@@ -760,6 +855,653 @@ async fn list_companies(
     (StatusCode::OK, Json(success_with_meta(payload, meta)))
 }
 
+async fn list_persons(
+    State(state): State<AppState>,
+    Query(params): Query<ListPersonsQuery>,
+) -> (StatusCode, Json<ApiResponse<PagedResponse<PersonListItem>>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+    let (page, per_page, _offset) = match validate_pagination(params.page, params.per_page) {
+        Ok(p) => p,
+        Err(err) => {
+            return (
+                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(error_response(err)),
+            );
+        }
+    };
+
+    let regions = match parse_csv_lower_strict(&params.regions, 32, "regions") {
+        Ok(v) => v,
+        Err(api_err) => {
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let roles = match parse_csv_lower_strict(&params.roles, 32, "roles") {
+        Ok(v) => v,
+        Err(api_err) => {
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let filters = PersonListFilters {
+        regions,
+        roles,
+        search: match params.search.as_deref() {
+            Some(value) => match validate_search_text(value, 500) {
+                Ok(v) => v,
+                Err(msg) => {
+                    let api_err = ApiError::validation("search", msg);
+                    return (
+                        StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                        Json(error_response(api_err)),
+                    );
+                }
+            },
+            None => None,
+        },
+        min_priority: params.min_priority.map(clamp_ratio),
+    };
+
+    let sort_field = params.sort_by.clone();
+    let order_by = sort_field.clone().map(map_person_sort);
+    let desc = params
+        .sort_by
+        .clone()
+        .map(|v| matches!(v, PersonSortField::Priority | PersonSortField::UpdatedAt))
+        .unwrap_or(true);
+
+    let total = match tracing::info_span!("db.count_persons", request_id = %request_id).in_scope(|| {
+        state.store.count_persons(&filters)
+    }).await {
+        Ok(value) => value.max(0) as u64,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "count persons failed: {err:#}");
+            let api_err = ApiError::internal("Failed to count persons");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let clamped_page = clamp_page(page, per_page, total);
+    let clamped_offset = ((clamped_page - 1) as i64).saturating_mul(per_page as i64);
+
+    let rows = match tracing::info_span!("db.list_persons", request_id = %request_id).in_scope(|| {
+        state
+            .store
+            .list_persons(&filters, order_by, desc, per_page as i64, clamped_offset)
+    }).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "list persons failed: {err:#}");
+            let api_err = ApiError::internal("Failed to list persons");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let items: Vec<PersonListItem> = rows.into_iter().map(person_row_to_item).collect();
+    let payload = PagedResponse {
+        items,
+        total,
+        page: clamped_page,
+        per_page,
+    };
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+    log_latency("list_persons", duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(payload, meta)))
+}
+
+#[cfg(feature = "llm")]
+#[derive(serde::Deserialize)]
+struct PoiPayload {
+    summary: String,
+    roles: Vec<String>,
+    affiliations: Vec<String>,
+    key_facts: Vec<String>,
+    risk_indicators: Vec<String>,
+}
+
+#[cfg(feature = "llm")]
+#[derive(serde::Deserialize)]
+struct MemoPayload {
+    title: String,
+    executive_summary: String,
+    sections: Vec<MemoSection>,
+    recommendations: Vec<String>,
+}
+
+#[cfg(feature = "llm")]
+fn parse_entities_value(value: JsonValue) -> Result<Vec<ExtractedEntity>, String> {
+    let entities_value = if value.is_array() {
+        value
+    } else {
+        value
+            .get("entities")
+            .or_else(|| value.get("items"))
+            .or_else(|| value.get("data"))
+            .cloned()
+            .or_else(|| value.as_object().and_then(|map| map.values().find(|v| v.is_array()).cloned()))
+            .ok_or_else(|| "Missing 'entities' array in response".to_string())?
+    };
+
+    let array = entities_value
+        .as_array()
+        .ok_or_else(|| "Entities payload is not an array".to_string())?;
+
+    let mut entities = Vec::with_capacity(array.len());
+    for (idx, item) in array.iter().enumerate() {
+        if let Some(name) = item.as_str() {
+            entities.push(ExtractedEntity {
+                name: name.to_string(),
+                entity_type: "unknown".to_string(),
+                confidence: 0.5,
+                span_start: None,
+                span_end: None,
+                canonical: None,
+            });
+            continue;
+        }
+
+        let obj = item
+            .as_object()
+            .ok_or_else(|| format!("entities[{}] must be an object or string", idx))?;
+
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("entities[{}] missing field 'name'", idx))?;
+        let entity_type = obj
+            .get("entity_type")
+            .or_else(|| obj.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let confidence = obj
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.5);
+        let span_start = obj.get("span_start").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let span_end = obj.get("span_end").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let canonical = obj.get("canonical").and_then(|v| v.as_str()).map(|v| v.to_string());
+
+        entities.push(ExtractedEntity {
+            name: name.to_string(),
+            entity_type: entity_type.to_string(),
+            confidence,
+            span_start,
+            span_end,
+            canonical,
+        });
+    }
+
+    Ok(entities)
+}
+
+#[cfg(feature = "llm")]
+async fn llm_extract_entities(
+    State(state): State<AppState>,
+    Json(payload): Json<ExtractEntitiesRequest>,
+) -> (StatusCode, Json<ApiResponse<ExtractEntitiesResponse>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let issues = payload.validate();
+    if !issues.is_empty() {
+        let api_err = ApiError::validation("payload", issues.join("; "));
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+            Json(error_response(api_err)),
+        );
+    }
+
+    let runtime = match state.llm.as_ref() {
+        Some(rt) => rt,
+        None => return llm_service_unavailable("LLM not configured"),
+    };
+
+    let client = OpenAiCompatibleClient::new(runtime.lightweight.clone());
+    let system = "You are an OSINT analyst. Extract named entities from the user text.\n\
+Return JSON ONLY with field 'entities' as an array of objects: \
+{name, entity_type, confidence (0-1), span_start, span_end, canonical}.\n\
+Use null for unknown spans. Confidence must be between 0 and 1.\n\
+Do not output schema field names as entities. Only real entities from the text.\n\
+Example output:\n\
+{\"entities\":[{\"name\":\"Starz Electronics\",\"entity_type\":\"company\",\"confidence\":0.9,\"span_start\":0,\"span_end\":17,\"canonical\":\"Starz Electronics\"},{\"name\":\"Tangier\",\"entity_type\":\"location\",\"confidence\":0.8,\"span_start\":33,\"span_end\":40,\"canonical\":\"Tangier\"}]}.";
+
+    let mut user = format!("Text:\n{}\n", payload.text);
+    if let Some(doc_type) = &payload.doc_type {
+        user.push_str(&format!("Doc type: {}\n", doc_type));
+    }
+    if let Some(types) = &payload.entity_types {
+        user.push_str(&format!("Entity types: {:?}\n", types));
+    }
+    user.push_str("Return JSON only.");
+
+    let raw = match client.generate_json(system, &user).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "LLM entity extraction failed: {err:#}");
+            let api_err = ApiError::internal("LLM entity extraction failed");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let value = match validators::parse_json_response(&raw) {
+        Ok(v) => v,
+        Err(_) => {
+            // Retry once with stricter JSON guidance to reduce llama.cpp format drift.
+            let strict_user = format!("{}\nSTRICT JSON ONLY. No trailing text.", user);
+            let retry_raw = match client.generate_json(system, &strict_user).await {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::error!(request_id = %request_id, "LLM entity extraction retry failed: {err:#}");
+                    let api_err = ApiError::internal("LLM entity extraction failed");
+                    return (
+                        StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                        Json(error_response(api_err)),
+                    );
+                }
+            };
+            match validators::parse_json_response(&retry_raw) {
+                Ok(v) => v,
+                Err(err) => {
+                    let api_err = ApiError::validation("llm", err);
+                    return (
+                        StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+                        Json(error_response(api_err)),
+                    );
+                }
+            }
+        }
+    };
+
+    let entities = match parse_entities_value(value) {
+        Ok(v) => v,
+        Err(err) => {
+            let api_err = ApiError::validation("entities", err);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let response = ExtractEntitiesResponse {
+        entities,
+        task: LlmTask::EntityExtraction,
+        model_used: client.config().model_name.clone(),
+        processing_ms: duration_ms,
+    };
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(response, meta)))
+}
+
+#[cfg(not(feature = "llm"))]
+async fn llm_extract_entities(
+    State(_state): State<AppState>,
+    Json(_payload): Json<ExtractEntitiesRequest>,
+) -> (StatusCode, Json<ApiResponse<ExtractEntitiesResponse>>) {
+    llm_service_unavailable("LLM feature disabled")
+}
+
+#[cfg(feature = "llm")]
+async fn llm_generate_recipe(
+    State(state): State<AppState>,
+    Json(payload): Json<GenerateRecipeRequest>,
+) -> (StatusCode, Json<ApiResponse<GenerateRecipeResponse>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let issues = payload.validate();
+    if !issues.is_empty() {
+        let api_err = ApiError::validation("payload", issues.join("; "));
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+            Json(error_response(api_err)),
+        );
+    }
+
+    let runtime = match state.llm.as_ref() {
+        Some(rt) => rt,
+        None => return llm_service_unavailable("LLM not configured"),
+    };
+
+    let client = OpenAiCompatibleClient::new(runtime.primary.clone());
+    let system = "You are an OSINT analyst generating detection recipes.\n\
+Return JSON ONLY with fields: id, signals, narrative_template, action_playbook.\n\
+Fields: id is a unique snake_case string, signals is a non-empty array.\n\
+Signals must be objects with at least {name, description}.\n\
+narrative_template and action_playbook must be non-empty strings.";
+
+    let user = format!(
+        "Pattern description: {}\nOutcome: {}\nSignals: {:?}\nExisting IDs: {:?}\nRegions: {:?}\nReturn JSON only.",
+        payload.pattern_description,
+        payload.outcome,
+        payload.signals,
+        payload.existing_recipe_ids,
+        payload.regions
+    );
+
+    let raw = match client.generate_json(system, &user).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "LLM recipe generation failed: {err:#}");
+            let api_err = ApiError::internal("LLM recipe generation failed");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let recipe_json = match validators::parse_json_response(&raw) {
+        Ok(v) => v,
+        Err(err) => {
+            let api_err = ApiError::validation("llm", err);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let recipe_issues = validators::validate_recipe_json(&recipe_json);
+    if !recipe_issues.is_empty() {
+        let api_err = ApiError::validation("recipe_json", recipe_issues.join("; "));
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+            Json(error_response(api_err)),
+        );
+    }
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let response = GenerateRecipeResponse {
+        recipe_json,
+        task: LlmTask::RecipeHypothesis,
+        model_used: client.config().model_name.clone(),
+        processing_ms: duration_ms,
+    };
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(response, meta)))
+}
+
+#[cfg(not(feature = "llm"))]
+async fn llm_generate_recipe(
+    State(_state): State<AppState>,
+    Json(_payload): Json<GenerateRecipeRequest>,
+) -> (StatusCode, Json<ApiResponse<GenerateRecipeResponse>>) {
+    llm_service_unavailable("LLM feature disabled")
+}
+
+#[cfg(feature = "llm")]
+async fn llm_synthesize_poi(
+    State(state): State<AppState>,
+    Json(payload): Json<SynthesizePoiRequest>,
+) -> (StatusCode, Json<ApiResponse<SynthesizePoiResponse>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let issues = payload.validate();
+    if !issues.is_empty() {
+        let api_err = ApiError::validation("payload", issues.join("; "));
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+            Json(error_response(api_err)),
+        );
+    }
+
+    let runtime = match state.llm.as_ref() {
+        Some(rt) => rt,
+        None => return llm_service_unavailable("LLM not configured"),
+    };
+
+    let client = OpenAiCompatibleClient::new(runtime.primary.clone());
+    let system = "You are an OSINT analyst building POI dossiers.\n\
+Return JSON ONLY with fields: summary, roles, affiliations, key_facts, risk_indicators.\n\
+All fields required; arrays must be non-empty.";
+
+    let fragments_text = payload
+        .fragments
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            format!(
+                "[{}] source_url={:?} source_type={:?} date={:?}\n{}",
+                i + 1,
+                f.source_url,
+                f.source_type,
+                f.date,
+                f.text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let user = format!(
+        "Person: {}\nKnown titles: {:?}\nFragments:\n{}\nReturn JSON only.",
+        payload.person_name,
+        payload.known_titles,
+        fragments_text
+    );
+
+    let raw = match client.generate_json(system, &user).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "LLM POI synthesis failed: {err:#}");
+            let api_err = ApiError::internal("LLM POI synthesis failed");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let value = match validators::parse_json_response(&raw) {
+        Ok(v) => v,
+        Err(err) => {
+            let api_err = ApiError::validation("llm", err);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let payload_value: PoiPayload = match serde_json::from_value(value) {
+        Ok(v) => v,
+        Err(err) => {
+            let api_err = ApiError::validation("poi", format!("Invalid POI payload: {}", err));
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    if payload_value.summary.trim().is_empty() || payload_value.roles.is_empty() {
+        let api_err = ApiError::validation("poi", "summary/roles must not be empty");
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+            Json(error_response(api_err)),
+        );
+    }
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let response = SynthesizePoiResponse {
+        person_name: payload.person_name,
+        summary: payload_value.summary,
+        roles: payload_value.roles,
+        affiliations: payload_value.affiliations,
+        key_facts: payload_value.key_facts,
+        risk_indicators: payload_value.risk_indicators,
+        source_count: payload.fragments.len(),
+        task: LlmTask::PoiSynthesis,
+        model_used: client.config().model_name.clone(),
+        processing_ms: duration_ms,
+    };
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(response, meta)))
+}
+
+#[cfg(not(feature = "llm"))]
+async fn llm_synthesize_poi(
+    State(_state): State<AppState>,
+    Json(_payload): Json<SynthesizePoiRequest>,
+) -> (StatusCode, Json<ApiResponse<SynthesizePoiResponse>>) {
+    llm_service_unavailable("LLM feature disabled")
+}
+
+#[cfg(feature = "llm")]
+async fn llm_generate_memo(
+    State(state): State<AppState>,
+    Json(payload): Json<GenerateMemoRequest>,
+) -> (StatusCode, Json<ApiResponse<GenerateMemoResponse>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let issues = payload.validate();
+    if !issues.is_empty() {
+        let api_err = ApiError::validation("payload", issues.join("; "));
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+            Json(error_response(api_err)),
+        );
+    }
+
+    let runtime = match state.llm.as_ref() {
+        Some(rt) => rt,
+        None => return llm_service_unavailable("LLM not configured"),
+    };
+
+    let client = OpenAiCompatibleClient::new(runtime.primary.clone());
+    let system = "You are an intelligence analyst writing concise strategic memos.\n\
+Return JSON ONLY with fields: title, executive_summary, sections, recommendations.\n\
+sections is an array of {heading, content}. recommendations is an array of strings.";
+
+    let context_text = payload
+        .context_items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            format!(
+                "[{}] {}\n{}\nsource={:?} date={:?}",
+                i + 1,
+                item.title,
+                item.content,
+                item.source,
+                item.date
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let user = format!(
+        "Topic: {}\nAudience: {:?}\nMax words: {:?}\nContext:\n{}\nReturn JSON only.",
+        payload.topic,
+        payload.audience,
+        payload.max_words,
+        context_text
+    );
+
+    let raw = match client.generate_json(system, &user).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "LLM memo generation failed: {err:#}");
+            let api_err = ApiError::internal("LLM memo generation failed");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let value = match validators::parse_json_response(&raw) {
+        Ok(v) => v,
+        Err(err) => {
+            let api_err = ApiError::validation("llm", err);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let payload_value: MemoPayload = match serde_json::from_value(value) {
+        Ok(v) => v,
+        Err(err) => {
+            let api_err = ApiError::validation("memo", format!("Invalid memo payload: {}", err));
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    if payload_value.title.trim().is_empty()
+        || payload_value.executive_summary.trim().is_empty()
+        || payload_value.sections.is_empty()
+    {
+        let api_err = ApiError::validation("memo", "title, executive_summary, sections required");
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
+            Json(error_response(api_err)),
+        );
+    }
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let response = GenerateMemoResponse {
+        title: payload_value.title,
+        executive_summary: payload_value.executive_summary,
+        sections: payload_value.sections,
+        recommendations: payload_value.recommendations,
+        task: LlmTask::MemoGeneration,
+        model_used: client.config().model_name.clone(),
+        processing_ms: duration_ms,
+    };
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(response, meta)))
+}
+
+#[cfg(not(feature = "llm"))]
+async fn llm_generate_memo(
+    State(_state): State<AppState>,
+    Json(_payload): Json<GenerateMemoRequest>,
+) -> (StatusCode, Json<ApiResponse<GenerateMemoResponse>>) {
+    llm_service_unavailable("LLM feature disabled")
+}
+
 async fn search(
     State(state): State<AppState>,
     Query(params): Query<SearchQuery>,
@@ -929,6 +1671,126 @@ async fn search(
     (StatusCode::OK, Json(success_with_meta(resp, meta)))
 }
 
+async fn list_graph(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<ApiResponse<GraphOverview>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let companies_total = match state.store.count_companies(&CompanyListFilters::default()).await {
+        Ok(v) => v.max(0) as u64,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "count companies failed: {err:#}");
+            let api_err = ApiError::internal("Failed to count companies");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let persons_total = match state.store.count_persons(&PersonListFilters::default()).await {
+        Ok(v) => v.max(0) as u64,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "count persons failed: {err:#}");
+            let api_err = ApiError::internal("Failed to count persons");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let warnings_total = match state.store.count_warnings(&WarningListFilters::default()).await {
+        Ok(v) => v.max(0) as u64,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "count warnings failed: {err:#}");
+            let api_err = ApiError::internal("Failed to count warnings");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let insights_total = match state.store.count_insights(&InsightListFilters::default()).await {
+        Ok(v) => v.max(0) as u64,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "count insights failed: {err:#}");
+            let api_err = ApiError::internal("Failed to count insights");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let payload = GraphOverview {
+        companies_total,
+        persons_total,
+        warnings_total,
+        insights_total,
+    };
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+    log_latency("list_graph", duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(payload, meta)))
+}
+
+async fn list_recipes(
+    Query(params): Query<ListRecipesQuery>,
+) -> (StatusCode, Json<ApiResponse<PagedResponse<RecipeListItem>>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+    let (page, per_page, _offset) = match validate_pagination(params.page, params.per_page) {
+        Ok(p) => p,
+        Err(err) => {
+            return (
+                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(error_response(err)),
+            );
+        }
+    };
+
+    let payload = PagedResponse {
+        items: Vec::new(),
+        total: 0,
+        page,
+        per_page,
+    };
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+    log_latency("list_recipes", duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(payload, meta)))
+}
+
+async fn list_security(
+    State(_state): State<AppState>,
+) -> (StatusCode, Json<ApiResponse<SecuritySummary>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let payload = SecuritySummary {
+        dns_posture: Vec::new(),
+        lookalikes: Vec::new(),
+        kev: Vec::new(),
+    };
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+    log_latency("list_security", duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(payload, meta)))
+}
+
 async fn build_state() -> Result<AppState> {
     dotenvy::dotenv().ok();
     
@@ -949,6 +1811,9 @@ async fn build_state() -> Result<AppState> {
     }
     tracing::info!("config validated successfully");
 
+    #[cfg(feature = "llm")]
+    let llm = build_llm_runtime(&config)?;
+
     let store = PgStore::connect(&config.database_url).await?;
     store.run_migrations().await?;
 
@@ -963,6 +1828,8 @@ async fn build_state() -> Result<AppState> {
         store: Arc::new(store),
         search_index: Arc::new(search_index),
         api_keys: Arc::new(api_keys),
+        #[cfg(feature = "llm")]
+        llm,
     })
 }
 
@@ -1030,6 +1897,7 @@ fn clamp_page(page: u32, per_page: u32, total: u64) -> u32 {
     page.clamp(1, total_pages)
 }
 
+#[allow(dead_code)]
 fn parse_csv_upper(value: &Option<String>) -> Vec<String> {
     value
         .as_ref()
@@ -1043,6 +1911,7 @@ fn parse_csv_upper(value: &Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn parse_csv_lower(value: &Option<String>) -> Vec<String> {
     value
         .as_ref()
@@ -1284,6 +2153,19 @@ fn company_row_to_item(row: CompanyRow) -> CompanyListItem {
     }
 }
 
+fn person_row_to_item(row: PersonListRow) -> PersonListItem {
+    PersonListItem {
+        id: row.id.to_string(),
+        name: row.name,
+        role: row.role,
+        organization: row.organization,
+        region: row.region,
+        priority_score: clamp_ratio(row.priority_score),
+        engagement_status: row.engagement_status,
+        updated_at: row.updated_at,
+    }
+}
+
 fn map_warning_sort(sort: WarningSortField) -> WarningOrderBy {
     match sort {
         WarningSortField::CreatedAt => WarningOrderBy::CreatedAt,
@@ -1298,6 +2180,15 @@ fn map_company_sort(sort: CompanySortField) -> CompanyOrderBy {
         CompanySortField::Region => CompanyOrderBy::Region,
         CompanySortField::ThreatScore => CompanyOrderBy::ThreatScore,
         CompanySortField::UpdatedAt => CompanyOrderBy::UpdatedAt,
+    }
+}
+
+fn map_person_sort(sort: PersonSortField) -> PersonOrderBy {
+    match sort {
+        PersonSortField::Name => PersonOrderBy::Name,
+        PersonSortField::Priority => PersonOrderBy::Priority,
+        PersonSortField::Region => PersonOrderBy::Region,
+        PersonSortField::UpdatedAt => PersonOrderBy::UpdatedAt,
     }
 }
 

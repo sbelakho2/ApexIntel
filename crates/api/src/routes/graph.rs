@@ -118,6 +118,15 @@ pub struct PathStep {
     pub edge_weight: Option<f64>,
 }
 
+/// Summary counts for the graph overview endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphOverview {
+    pub companies_total: u64,
+    pub persons_total: u64,
+    pub warnings_total: u64,
+    pub insights_total: u64,
+}
+
 // ────────────────────────────────────────────
 // Logic
 // ────────────────────────────────────────────

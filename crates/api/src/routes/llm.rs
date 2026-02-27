@@ -9,7 +9,6 @@
 //! All endpoints require authentication (`min_role: analyst`).
 //! When the `llm` feature is disabled, the handler layer should return 501.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 // ────────────────────────────────────────────

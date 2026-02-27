@@ -3,7 +3,6 @@
 use apex_core::validation::validate_uuid;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ────────────────────────────────────────────
 // Response types
