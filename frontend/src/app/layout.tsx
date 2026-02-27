@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
-import { AppShell } from "@/components/app-shell";
+import { ConditionalShell } from "@/components/conditional-shell";
 import { Providers } from "./providers";
 
 const apexSans = localFont({
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     default: "ApexIntel",
     template: "%s | ApexIntel",
   },
-  description: "ApexIntel OSINT Intelligence Platform",
+  description: "ApexIntel Competitive Intelligence",
 };
 
 export default function RootLayout({
@@ -43,7 +43,7 @@ export default function RootLayout({
         </a>
         <div className="fixed inset-0 border-[8px] border-rams-chassis pointer-events-none z-[100] hidden md:block" aria-hidden="true" />
         <Providers>
-          <AppShell>{children}</AppShell>
+          <ConditionalShell>{children}</ConditionalShell>
         </Providers>
       </body>
     </html>

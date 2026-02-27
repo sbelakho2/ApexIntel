@@ -127,6 +127,25 @@ pub struct GraphOverview {
     pub insights_total: u64,
 }
 
+/// Extended graph overview with edges data for visualization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphOverviewWithEdges {
+    pub companies_total: u64,
+    pub persons_total: u64,
+    pub warnings_total: u64,
+    pub insights_total: u64,
+    pub edges_total: u64,
+    pub edges: Vec<GraphEdge>,
+    pub edge_type_counts: Vec<EdgeTypeCount>,
+}
+
+/// Edge type count summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeTypeCount {
+    pub edge_type: String,
+    pub count: u64,
+}
+
 // ────────────────────────────────────────────
 // Logic
 // ────────────────────────────────────────────

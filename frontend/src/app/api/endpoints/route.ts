@@ -14,7 +14,9 @@ const FALLBACK_ENDPOINTS: EndpointDef[] = [
   { method: 'GET', path: '/api/warnings', description: 'List warnings with filters', auth_required: true, min_role: 'viewer' },
   { method: 'GET', path: '/api/insights', description: 'List insights with filters', auth_required: true, min_role: 'viewer' },
   { method: 'GET', path: '/api/companies', description: 'List companies with filters', auth_required: true, min_role: 'viewer' },
+  { method: 'GET', path: '/api/companies/:id', description: 'Get a company profile', auth_required: true, min_role: 'viewer' },
   { method: 'GET', path: '/api/persons', description: 'List persons / key contacts', auth_required: true, min_role: 'viewer' },
+  { method: 'GET', path: '/api/persons/:id', description: 'Get a person-of-interest profile', auth_required: true, min_role: 'viewer' },
   { method: 'GET', path: '/api/security/dns-posture', description: 'Get DNS posture checks', auth_required: true, min_role: 'viewer' },
   { method: 'GET', path: '/api/graph/neighborhood/:id', description: 'Get entity neighborhood in graph', auth_required: true, min_role: 'viewer' },
 ];

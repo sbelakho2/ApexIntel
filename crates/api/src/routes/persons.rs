@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use apex_core::validation::clamp_ratio;
+use uuid::Uuid;
+use apex_core::validation::{clamp_ratio, validate_uuid};
 
 // ────────────────────────────────────────────
 // Request types
@@ -22,6 +23,7 @@ pub struct ListPersonsQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum PersonSortField {
     Name,
     Priority,
@@ -131,6 +133,12 @@ pub struct EngagementGuide {
     pub risk_factors: Vec<String>,
     pub optimal_timing: Option<String>,
     pub communication_preference: Option<String>,
+}
+
+/// Validate a person ID.
+pub fn validate_person_id(id: &str) -> Result<Uuid, String> {
+    validate_uuid(id, "person_id").map_err(|e| e.to_string())?;
+    Uuid::parse_str(id.trim()).map_err(|_| format!("Invalid person ID: '{}'", id))
 }
 
 // ────────────────────────────────────────────

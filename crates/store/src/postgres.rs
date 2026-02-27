@@ -981,6 +981,49 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// List all graph edges (up to limit)
+    pub async fn list_all_edges(&self, limit: u32) -> Result<Vec<EdgeRow>> {
+        let rows = sqlx::query_as::<_, EdgeRow>(
+            "SELECT id, source_id, source_type, target_id, target_type,
+                    edge_type, weight, confidence, evidence_ids, metadata,
+                    first_seen, last_seen
+             FROM graph_edges
+             ORDER BY weight DESC NULLS LAST, last_seen DESC NULLS LAST
+             LIMIT $1",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Count total graph edges
+    pub async fn count_edges(&self) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM graph_edges")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
+    }
+
+    /// Get recipe signal statistics from warnings (aggregated by recipe_code)
+    pub async fn get_recipe_stats(&self) -> Result<Vec<RecipeStatRow>> {
+        let rows = sqlx::query_as::<_, RecipeStatRow>(
+            r#"SELECT 
+                 recipe_code,
+                 COUNT(*) as fired_count,
+                 MAX(created_at) as last_fired,
+                 MIN(created_at) as first_fired,
+                 COUNT(*) FILTER (WHERE NOT acknowledged) as active_count
+               FROM warnings
+               WHERE recipe_code IS NOT NULL
+               GROUP BY recipe_code
+               ORDER BY fired_count DESC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     // ─── Certifications ──────────────────────────────────────────────────
 
     pub async fn insert_certification(&self, c: &Certification) -> Result<()> {
@@ -1139,6 +1182,206 @@ impl PgStore {
         Ok(())
     }
 
+    // ─── Worker Pipeline Statistics ──────────────────────────────────────
+
+    /// Get crawl statistics for a given time window.
+    /// Used by the worker to build CrawlStageResult from actual data.
+    pub async fn get_crawl_stats(&self, _since: DateTime<Utc>) -> Result<CrawlStats> {
+        // Query crawl_logs for the time window
+        let row = sqlx::query_as::<_, CrawlStatsRow>(
+            r#"SELECT 
+                COALESCE(COUNT(*), 0) as sources_attempted,
+                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) as sources_succeeded,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as sources_failed,
+                COALESCE(SUM(new_observations), 0) as new_observations,
+                COALESCE(SUM(changed_pages), 0) as changed_pages,
+                COALESCE(SUM(bytes_fetched), 0) as bytes_fetched
+               FROM crawl_logs
+               WHERE created_at >= $1"#,
+        )
+        .bind(_since)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(CrawlStats {
+                sources_attempted: r.sources_attempted.unwrap_or(0) as u64,
+                sources_succeeded: r.sources_succeeded.unwrap_or(0) as u64,
+                sources_failed: r.sources_failed.unwrap_or(0) as u64,
+                new_observations: r.new_observations.unwrap_or(0) as u64,
+                changed_pages: r.changed_pages.unwrap_or(0) as u64,
+                bytes_fetched: r.bytes_fetched.unwrap_or(0) as u64,
+                errors: vec![],
+            }),
+            None => Ok(CrawlStats::default()),
+        }
+    }
+
+    /// Get mining statistics for a given time window.
+    pub async fn get_mining_stats(&self, _since: DateTime<Utc>) -> Result<MiningStats> {
+        // Query pattern_candidates and recipes for the time window
+        let candidates_found: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pattern_candidates WHERE created_at >= $1",
+        )
+        .bind(_since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let candidates_passed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pattern_candidates WHERE created_at >= $1 AND passed_gates = true",
+        )
+        .bind(_since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let recipes_staged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM recipes WHERE created_at >= $1 AND lifecycle_state = 'staged'",
+        )
+        .bind(_since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        Ok(MiningStats {
+            candidates_found: candidates_found as u64,
+            candidates_passed_gates: candidates_passed as u64,
+            hypotheses_generated: candidates_passed as u64, // Assume 1:1 mapping
+            recipes_staged: recipes_staged as u64,
+            errors: vec![],
+        })
+    }
+
+    /// Get POI statistics for a given time window.
+    pub async fn get_poi_stats(&self, _since: DateTime<Utc>) -> Result<PoiStats> {
+        let profiles_scanned: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM persons WHERE updated_at >= $1",
+        )
+        .bind(_since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let profiles_updated: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM persons WHERE updated_at >= $1 AND updated_at != created_at",
+        )
+        .bind(_since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let new_pois: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM persons WHERE created_at >= $1",
+        )
+        .bind(_since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        Ok(PoiStats {
+            profiles_scanned: profiles_scanned as u64,
+            profiles_updated: profiles_updated as u64,
+            new_pois_discovered: new_pois as u64,
+            role_changes_detected: 0, // TODO: track role changes
+            errors: vec![],
+        })
+    }
+
+    /// Get drift statistics from the feature store.
+    pub async fn get_drift_stats(&self) -> Result<DriftStats> {
+        // Placeholder - drift detection is computed at runtime from feature_store
+        Ok(DriftStats::default())
+    }
+
+    /// Get staged recipes ready for promotion evaluation.
+    pub async fn get_staged_recipes_for_promotion(&self) -> Result<Vec<StagedRecipeRow>> {
+        let rows = sqlx::query_as::<_, StagedRecipeRow>(
+            r#"SELECT 
+                id, name, 
+                COALESCE(precision_observed, 0.0) as precision_observed,
+                COALESCE(recall_observed, 0.0) as recall_observed,
+                COALESCE(false_positive_rate, 0.0) as false_positive_rate,
+                COALESCE(sample_size, 0) as sample_size,
+                EXTRACT(DAY FROM (NOW() - created_at))::INT as days_in_staging,
+                created_at
+               FROM recipes
+               WHERE lifecycle_state = 'staged'
+               ORDER BY created_at ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Get production recipes for deprecation evaluation.
+    pub async fn get_production_recipes_for_deprecation(&self) -> Result<Vec<ProductionRecipeRow>> {
+        let rows = sqlx::query_as::<_, ProductionRecipeRow>(
+            r#"SELECT 
+                id, name,
+                COALESCE(precision_observed, 0.0) as precision_current,
+                COALESCE(precision_baseline, 0.0) as precision_baseline,
+                COALESCE(false_positive_rate, 0.0) as false_positive_rate,
+                COALESCE(fpr_baseline, 0.0) as fpr_baseline,
+                COALESCE(warnings_generated_last_week, 0) as warnings_generated_last_week,
+                last_triggered_at,
+                EXTRACT(DAY FROM (NOW() - COALESCE(last_triggered_at, created_at)))::INT as days_inactive,
+                created_at
+               FROM recipes
+               WHERE lifecycle_state = 'production'
+               ORDER BY last_triggered_at DESC NULLS LAST"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Get weekly summary statistics for memo generation.
+    pub async fn get_weekly_summary_stats(&self, since: DateTime<Utc>) -> Result<WeeklySummaryStats> {
+        let companies_monitored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM companies")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+        let persons_tracked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM persons")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+        let warnings_generated: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM warnings WHERE created_at >= $1",
+        )
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let insights_produced: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM insights WHERE created_at >= $1",
+        )
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let recipes_in_production: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM recipes WHERE lifecycle_state = 'production'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        Ok(WeeklySummaryStats {
+            companies_monitored: companies_monitored as u64,
+            persons_tracked: persons_tracked as u64,
+            warnings_generated: warnings_generated as u64,
+            insights_produced: insights_produced as u64,
+            recipes_in_production: recipes_in_production as u64,
+            top_regions: vec![],
+            notable_events: vec![],
+        })
+    }
+
     // ─── Schema Migration ────────────────────────────────────────────────
 
     /// Run the full schema creation. Idempotent via IF NOT EXISTS.
@@ -1150,6 +1393,102 @@ impl PgStore {
 }
 
 // ─── Row Types (sqlx::FromRow) ──────────────────────────────────────────────
+
+// ─── Worker Pipeline Stats Types ─────────────────────────────────────────────
+
+/// Stats returned by get_crawl_stats for worker pipeline integration.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CrawlStats {
+    pub sources_attempted: u64,
+    pub sources_succeeded: u64,
+    pub sources_failed: u64,
+    pub new_observations: u64,
+    pub changed_pages: u64,
+    pub bytes_fetched: u64,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct CrawlStatsRow {
+    sources_attempted: Option<i64>,
+    sources_succeeded: Option<i64>,
+    sources_failed: Option<i64>,
+    new_observations: Option<i64>,
+    changed_pages: Option<i64>,
+    bytes_fetched: Option<i64>,
+}
+
+/// Stats for the mining pipeline stage.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct MiningStats {
+    pub candidates_found: u64,
+    pub candidates_passed_gates: u64,
+    pub hypotheses_generated: u64,
+    pub recipes_staged: u64,
+    pub errors: Vec<String>,
+}
+
+/// Stats for the POI refresh pipeline stage.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PoiStats {
+    pub profiles_scanned: u64,
+    pub profiles_updated: u64,
+    pub new_pois_discovered: u64,
+    pub role_changes_detected: u64,
+    pub errors: Vec<String>,
+}
+
+/// Stats for the drift check pipeline stage.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DriftStats {
+    pub features_checked: u64,
+    pub features_drifted: u64,
+    pub drift_scores: Vec<(String, f64)>,
+    pub alerts_raised: u64,
+    pub errors: Vec<String>,
+}
+
+/// Row type for staged recipe queries.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct StagedRecipeRow {
+    pub id: Uuid,
+    pub name: String,
+    pub precision_observed: f64,
+    pub recall_observed: f64,
+    pub false_positive_rate: f64,
+    pub sample_size: i32,
+    pub days_in_staging: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Row type for production recipe queries.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ProductionRecipeRow {
+    pub id: Uuid,
+    pub name: String,
+    pub precision_current: f64,
+    pub precision_baseline: f64,
+    pub false_positive_rate: f64,
+    pub fpr_baseline: f64,
+    pub warnings_generated_last_week: i64,
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    pub days_inactive: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Weekly summary statistics for memo generation.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct WeeklySummaryStats {
+    pub companies_monitored: u64,
+    pub persons_tracked: u64,
+    pub warnings_generated: u64,
+    pub insights_produced: u64,
+    pub recipes_in_production: u64,
+    pub top_regions: Vec<String>,
+    pub notable_events: Vec<String>,
+}
+
+// ─── Entity Row Types ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct CompanyRow {
@@ -1286,6 +1625,15 @@ pub struct EdgeRow {
     pub metadata: Option<serde_json::Value>,
     pub first_seen: Option<DateTime<Utc>>,
     pub last_seen: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct RecipeStatRow {
+    pub recipe_code: String,
+    pub fired_count: i64,
+    pub last_fired: Option<DateTime<Utc>>,
+    pub first_fired: Option<DateTime<Utc>>,
+    pub active_count: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]

@@ -20,6 +20,8 @@ llm = ["apex-llm", "apex-learning"]
 
 [dependencies]
 apex-core = { path = "../core" }
+apex-store = { path = "../store" }
+apex-crawl = { path = "../crawl" }
 apex-llm = { path = "../llm", optional = true }
 apex-learning = { path = "../learning", optional = true }
 serde = { workspace = true, features = ["derive"] }

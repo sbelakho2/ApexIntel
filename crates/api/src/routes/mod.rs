@@ -28,8 +28,10 @@ pub mod paths {
     pub const WARNINGS: &str = "/api/warnings";
     pub const INSIGHTS: &str = "/api/insights";
     pub const COMPANIES: &str = "/api/companies";
+    pub const COMPANY_DETAIL: &str = "/api/companies/:id";
     pub const SEARCH: &str = "/api/search";
     pub const PERSONS: &str = "/api/persons";
+    pub const PERSON_DETAIL: &str = "/api/persons/:id";
     pub const RECIPES: &str = "/api/recipes";
     pub const GRAPH: &str = "/api/graph";
     pub const SECURITY: &str = "/api/security";
@@ -121,11 +123,25 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "viewer",
         },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/companies/:id",
+            description: "Get a company profile",
+            auth_required: true,
+            min_role: "viewer",
+        },
         // Persons
         EndpointDef {
             method: HttpMethod::Get,
             path: "/api/persons",
             description: "List persons of interest with filters",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/persons/:id",
+            description: "Get a person-of-interest profile",
             auth_required: true,
             min_role: "viewer",
         },
@@ -200,7 +216,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 15);
+        assert_eq!(eps.len(), 17);
     }
 
     #[test]

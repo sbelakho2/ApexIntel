@@ -1,0 +1,4 @@
+aiohttp>=3.9
+asyncpg>=0.29
+beautifulsoup4>=4.12
+lxml>=5.0

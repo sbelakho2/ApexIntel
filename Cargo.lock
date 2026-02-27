@@ -94,6 +94,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "subtle",
  "thiserror 1.0.69",
  "tokio",
@@ -307,8 +308,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "apex-core",
+ "apex-crawl",
  "apex-learning",
  "apex-llm",
+ "apex-store",
  "async-trait",
  "chrono",
  "dotenvy",

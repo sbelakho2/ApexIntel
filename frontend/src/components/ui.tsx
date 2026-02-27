@@ -6,7 +6,7 @@ import {
   FileText, Globe, Lock, Minus, Search, Shield, Sparkles, TrendingUp,
   Users, Zap, Radio, Eye, Server, Clock, BarChart3, Target, Check, X
 } from "lucide-react";
-import type { Severity } from "@/lib/mock-data";
+export type Severity = "critical" | "high" | "medium" | "low";
 
 class CardErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: { children: React.ReactNode }) {
@@ -568,10 +568,19 @@ export function InsightCard({
   region: string;
   confidence: number;
   impact: "high" | "medium" | "low";
-  sources: number;
+  sources: string[];
   summary: string;
 }) {
   const impactColor = impact === "high" ? "#D62D2D" : impact === "medium" ? "#FFBE00" : "#4A90E2";
+  const visibleSources = sources.slice(0, 3);
+  const formatSourceLabel = (url: string) => {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      const cleaned = url.replace(/^https?:\/\//, "");
+      return cleaned.split("/")[0] || url;
+    }
+  };
   return (
     <div className="apex-card p-4">
       <div className="flex items-start justify-between gap-3">
@@ -597,8 +606,33 @@ export function InsightCard({
             </div>
             <div className="flex items-center gap-1.5">
               <Database className="h-3 w-3 text-muted-foreground" />
-              <span className="text-[10px] font-bold">{sources} sources</span>
+              <span className="text-[10px] font-bold">{sources.length} sources</span>
             </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {visibleSources.length === 0 ? (
+              <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+                No sources linked
+              </span>
+            ) : (
+              visibleSources.map((url) => (
+                <a
+                  key={url}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground"
+                >
+                  {formatSourceLabel(url)}
+                  <span aria-hidden="true">↗</span>
+                </a>
+              ))
+            )}
+            {sources.length > visibleSources.length && (
+              <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+                +{sources.length - visibleSources.length} more
+              </span>
+            )}
           </div>
         </div>
         <Eye className="h-5 w-5 text-muted-foreground flex-shrink-0" />

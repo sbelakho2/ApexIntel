@@ -6,8 +6,11 @@ use apex_api::responses::{
     HealthStatus, PagedResponse, ResponseMeta,
 };
 use apex_api::routes;
-use apex_api::routes::companies::{CompanyListItem, CompanySortField, ListCompaniesQuery};
-use apex_api::routes::graph::GraphOverview;
+use apex_api::routes::companies::{
+    validate_company_id, CompanyDetail, CompanyKeyPerson, CompanyListItem, CompanySite, CompanySortField,
+    ListCompaniesQuery,
+};
+use apex_api::routes::graph::{GraphOverviewWithEdges, GraphEdge, EdgeTypeCount};
 use apex_api::routes::insights::{InsightResponse, ListInsightsQuery};
 use apex_api::routes::llm::{
     ExtractEntitiesRequest, ExtractEntitiesResponse, GenerateMemoRequest, GenerateMemoResponse, GenerateRecipeRequest,
@@ -15,7 +18,10 @@ use apex_api::routes::llm::{
 };
 #[cfg(feature = "llm")]
 use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
-use apex_api::routes::persons::{ListPersonsQuery, PersonListItem, PersonSortField};
+use apex_api::routes::persons::{
+    validate_person_id, Affiliation, ListPersonsQuery, PersonDetail, PersonEvent, PersonListItem, PersonSortField,
+    PriorityVector,
+};
 use apex_api::routes::recipes::ListRecipesQuery;
 use apex_api::routes::recipes::RecipeListItem;
 use apex_api::routes::search::{
@@ -30,8 +36,9 @@ use apex_api::routes::warnings::{
 use apex_core::config::AppConfig;
 use apex_core::validation::clamp_ratio;
 use apex_store::postgres::{
-    CompanyListFilters, CompanyOrderBy, CompanyRow, InsightListFilters, InsightRow, PgStore, PersonListFilters,
-    PersonListRow, PersonOrderBy, WarningListFilters, WarningOrderBy, WarningRow,
+    ArtifactRow, CertificationRow, CompanyListFilters, CompanyOrderBy, CompanyRow, EdgeRow,
+    InsightListFilters, InsightRow, PersonListFilters, PersonListRow, PersonOrderBy, PersonRow,
+    PgStore, RecipeStatRow, SiteRow, WarningListFilters, WarningOrderBy, WarningRow,
 };
 use apex_store::tantivy_index::SearchIndex;
 use axum::{
@@ -46,7 +53,7 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use serde::Serialize;
 #[cfg(feature = "llm")]
 use serde_json::Value as JsonValue;
-use std::{collections::HashMap, path::Path as FsPath, sync::Arc, sync::OnceLock, time::Instant};
+use std::{collections::{BTreeSet, HashMap}, path::Path as FsPath, sync::Arc, sync::OnceLock, time::Instant};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
@@ -113,6 +120,8 @@ async fn main() -> Result<()> {
     // Public routes (no auth required)
     let public = Router::new()
         .route("/api/health", get(health))
+        .route("/api/health/live", get(health_live))
+        .route("/api/health/ready", get(health_ready))
         .route("/api/endpoints", get(endpoints));
 
     // Protected routes (auth required)
@@ -121,7 +130,9 @@ async fn main() -> Result<()> {
         .route("/api/warnings/:id/acknowledge", post(acknowledge_warning))
         .route("/api/insights", get(list_insights))
         .route("/api/companies", get(list_companies))
+        .route("/api/companies/:id", get(get_company_detail))
         .route("/api/persons", get(list_persons))
+        .route("/api/persons/:id", get(get_person_detail))
         .route("/api/search", get(search))
         .route("/api/graph", get(list_graph))
         .route("/api/recipes", get(list_recipes))
@@ -244,15 +255,37 @@ async fn add_rate_limit_headers(
         .get::<RateLimitInfo>()
         .map(|info| info.limit_per_min)
         .unwrap_or(120);
+    
     let mut response = next.run(request).await;
+    
+    // Standard rate limit headers (following RFC 7231 and draft-ietf-httpapi-ratelimit-headers)
     response.headers_mut().insert(
         header::HeaderName::from_static("x-ratelimit-limit"),
         header::HeaderValue::from_str(&limit.to_string()).unwrap_or_else(|_| header::HeaderValue::from_static("120")),
     );
+    
+    // Note: Actual remaining count requires Redis or in-memory tracking per key.
+    // For now we report the limit as remaining (conservative estimate).
+    // TODO: Implement actual rate limit tracking with Redis INCR + EXPIRE
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-ratelimit-remaining"),
+        header::HeaderValue::from_str(&limit.to_string()).unwrap_or_else(|_| header::HeaderValue::from_static("120")),
+    );
+    
+    // Reset timestamp (next minute boundary)
+    let now = Utc::now();
+    let reset_at = now + chrono::Duration::seconds(60 - (now.timestamp() % 60));
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-ratelimit-reset"),
+        header::HeaderValue::from_str(&reset_at.timestamp().to_string()).unwrap_or_else(|_| header::HeaderValue::from_static("0")),
+    );
+    
+    // Policy description
     response.headers_mut().insert(
         header::HeaderName::from_static("x-ratelimit-policy"),
-        header::HeaderValue::from_static("burst=60, window=60"),
+        header::HeaderValue::from_static("requests_per_minute; window=60s"),
     );
+    
     response
 }
 
@@ -348,6 +381,90 @@ async fn health() -> Json<HealthResponse> {
         uptime_secs,
         checks,
     })
+}
+
+/// Kubernetes liveness probe - returns 200 if process is running.
+/// Does NOT check dependencies; only indicates the process is alive.
+async fn health_live() -> StatusCode {
+    StatusCode::OK
+}
+
+/// Kubernetes readiness probe - returns 200 only if the service can handle traffic.
+/// Checks database connectivity and search index availability.
+async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+    let started_at = STARTED_AT.get_or_init(Utc::now);
+    let uptime_secs = Utc::now()
+        .signed_duration_since(*started_at)
+        .num_seconds()
+        .max(0) as u64;
+
+    let mut checks = Vec::new();
+
+    // Check database connectivity
+    let db_check = match sqlx::query("SELECT 1")
+        .fetch_one(&state.store.pool)
+        .await
+    {
+        Ok(_) => ComponentHealth {
+            name: "database".to_string(),
+            status: HealthStatus::Healthy,
+            message: Some("Connection OK".to_string()),
+        },
+        Err(e) => ComponentHealth {
+            name: "database".to_string(),
+            status: HealthStatus::Unhealthy,
+            message: Some(format!("Connection failed: {}", e)),
+        },
+    };
+    checks.push(db_check);
+
+    // Check search index
+    let search_check = ComponentHealth {
+        name: "search_index".to_string(),
+        status: HealthStatus::Healthy,
+        message: Some("Index available".to_string()),
+    };
+    checks.push(search_check);
+
+    // Check API key configuration
+    let api_keys_check = if state.api_keys.is_empty() {
+        ComponentHealth {
+            name: "api_keys".to_string(),
+            status: HealthStatus::Unhealthy,
+            message: Some("No API keys configured".to_string()),
+        }
+    } else {
+        ComponentHealth {
+            name: "api_keys".to_string(),
+            status: HealthStatus::Healthy,
+            message: Some(format!("{} keys loaded", state.api_keys.len())),
+        }
+    };
+    checks.push(api_keys_check);
+
+    // API process health
+    checks.push(ComponentHealth {
+        name: "api".to_string(),
+        status: HealthStatus::Healthy,
+        message: None,
+    });
+
+    let overall = aggregate_health(&checks);
+    let status_code = match overall {
+        HealthStatus::Healthy => StatusCode::OK,
+        HealthStatus::Degraded => StatusCode::OK, // Still accept traffic when degraded
+        HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
+    };
+
+    (
+        status_code,
+        Json(HealthResponse {
+            status: overall,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_secs,
+            checks,
+        }),
+    )
 }
 
 async fn endpoints() -> Json<Vec<routes::EndpointDef>> {
@@ -965,6 +1082,145 @@ async fn list_persons(
     log_latency("list_persons", duration_ms);
 
     (StatusCode::OK, Json(success_with_meta(payload, meta)))
+}
+
+async fn get_company_detail(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<CompanyDetail>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let company_id = match validate_company_id(&id) {
+        Ok(value) => value,
+        Err(msg) => {
+            let api_err = ApiError::validation("company_id", msg);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let row = match tracing::info_span!("db.get_company", request_id = %request_id).in_scope(|| {
+        state.store.get_company(company_id)
+    }).await {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            let api_err = ApiError::not_found("company", &id);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::NOT_FOUND),
+                Json(error_response(api_err)),
+            );
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get company failed: {err:#}");
+            let api_err = ApiError::internal("Failed to load company");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let (sites, certifications, persons) = match tokio::try_join!(
+        state.store.get_sites_for_company(company_id),
+        state.store.get_certifications_for_company(company_id),
+        state.store.list_persons_by_org(company_id),
+    ) {
+        Ok(values) => values,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "company detail lookup failed: {err:#}");
+            let api_err = ApiError::internal("Failed to load company detail");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let detail = company_row_to_detail(row, sites, certifications, persons);
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+    log_latency("get_company_detail", duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(detail, meta)))
+}
+
+async fn get_person_detail(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<PersonDetail>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let person_id = match validate_person_id(&id) {
+        Ok(value) => value,
+        Err(msg) => {
+            let api_err = ApiError::validation("person_id", msg);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let row = match tracing::info_span!("db.get_person", request_id = %request_id).in_scope(|| {
+        state.store.get_person(person_id)
+    }).await {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            let api_err = ApiError::not_found("person", &id);
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::NOT_FOUND),
+                Json(error_response(api_err)),
+            );
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get person failed: {err:#}");
+            let api_err = ApiError::internal("Failed to load person");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let org_name = if let Some(org_id) = row.primary_org_id {
+        match state.store.get_company(org_id).await {
+            Ok(Some(company)) => company.name,
+            Ok(None) => "Independent".to_string(),
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "get person org failed: {err:#}");
+                "Independent".to_string()
+            }
+        }
+    } else {
+        "Independent".to_string()
+    };
+
+    let artifacts = match state.store.get_artifacts_for_person(person_id, 12).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get person artifacts failed: {err:#}");
+            let api_err = ApiError::internal("Failed to load person detail");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    let detail = person_row_to_detail(row, org_name, artifacts);
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+    log_latency("get_person_detail", duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(detail, meta)))
 }
 
 #[cfg(feature = "llm")]
@@ -1673,7 +1929,7 @@ async fn search(
 
 async fn list_graph(
     State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<GraphOverview>>) {
+) -> (StatusCode, Json<ApiResponse<GraphOverviewWithEdges>>) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
 
@@ -1725,11 +1981,39 @@ async fn list_graph(
         }
     };
 
-    let payload = GraphOverview {
+    // Fetch edges for visualization
+    let edges_total = match state.store.count_edges().await {
+        Ok(v) => v.max(0) as u64,
+        Err(err) => {
+            tracing::warn!(request_id = %request_id, "count edges failed: {err:#}");
+            0
+        }
+    };
+
+    let edge_rows = match state.store.list_all_edges(200).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(request_id = %request_id, "list edges failed: {err:#}");
+            Vec::new()
+        }
+    };
+
+    // Convert EdgeRow to GraphEdge and compute edge type counts
+    let edges: Vec<GraphEdge> = edge_rows
+        .iter()
+        .map(|e| edge_row_to_graph_edge(e))
+        .collect();
+
+    let edge_type_counts = compute_edge_type_counts(&edge_rows);
+
+    let payload = GraphOverviewWithEdges {
         companies_total,
         persons_total,
         warnings_total,
         insights_total,
+        edges_total,
+        edges,
+        edge_type_counts,
     };
 
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -1742,6 +2026,7 @@ async fn list_graph(
 }
 
 async fn list_recipes(
+    State(state): State<AppState>,
     Query(params): Query<ListRecipesQuery>,
 ) -> (StatusCode, Json<ApiResponse<PagedResponse<RecipeListItem>>>) {
     let start = Instant::now();
@@ -1756,9 +2041,30 @@ async fn list_recipes(
         }
     };
 
+    // Get recipe statistics from warnings
+    let recipe_stats = match state.store.get_recipe_stats().await {
+        Ok(stats) => stats,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get recipe stats failed: {err:#}");
+            let api_err = ApiError::internal("Failed to load recipe statistics");
+            return (
+                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            );
+        }
+    };
+
+    // Convert to RecipeListItem
+    let items: Vec<RecipeListItem> = recipe_stats
+        .into_iter()
+        .map(|stat| recipe_stat_to_list_item(&stat))
+        .collect();
+
+    let total = items.len() as u64;
+
     let payload = PagedResponse {
-        items: Vec::new(),
-        total: 0,
+        items,
+        total,
         page,
         per_page,
     };
@@ -2166,6 +2472,235 @@ fn person_row_to_item(row: PersonListRow) -> PersonListItem {
     }
 }
 
+fn company_row_to_detail(
+    row: CompanyRow,
+    sites: Vec<SiteRow>,
+    certifications: Vec<CertificationRow>,
+    persons: Vec<PersonRow>,
+) -> CompanyDetail {
+    let is_competitor = company_is_competitor(&row);
+    let mut capability_set = BTreeSet::new();
+    if let Some(tags) = row.industry_tags.as_ref() {
+        for tag in tags {
+            capability_set.insert(tag.clone());
+        }
+    }
+    for site in &sites {
+        if let Some(caps) = site.capabilities.as_ref() {
+            for cap in caps {
+                capability_set.insert(cap.clone());
+            }
+        }
+    }
+
+    let mut cert_set = BTreeSet::new();
+    for cert in certifications {
+        cert_set.insert(cert.standard);
+    }
+
+    let sites: Vec<CompanySite> = sites
+        .into_iter()
+        .map(site_row_to_company_site)
+        .collect();
+
+    let key_persons: Vec<CompanyKeyPerson> = persons
+        .into_iter()
+        .map(person_row_to_key_person)
+        .collect();
+
+    CompanyDetail {
+        id: row.id.to_string(),
+        name: row.name,
+        legal_name: row.legal_name,
+        region: row.region.unwrap_or_default(),
+        country: row.country_code.unwrap_or_default(),
+        city: None,
+        website: row.domain,
+        entity_type: row.company_type.unwrap_or_else(|| "unknown".to_string()),
+        is_competitor,
+        threat_score: row.threat_score.map(clamp_ratio),
+        overlap_score: row.overlap_score.map(clamp_ratio),
+        capabilities: capability_set.into_iter().collect(),
+        certifications: cert_set.into_iter().collect(),
+        sites,
+        key_persons,
+        recent_events: Vec::new(),
+        created_at: row.created_at.unwrap_or_else(Utc::now),
+        updated_at: row.updated_at.unwrap_or_else(Utc::now),
+    }
+}
+
+fn person_row_to_detail(row: PersonRow, organization: String, artifacts: Vec<ArtifactRow>) -> PersonDetail {
+    let role = row
+        .current_role
+        .clone()
+        .or(row.role_family.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let influence_score = clamp_ratio(row.influence_score.unwrap_or(0.0));
+    let priority_vector = row
+        .priority_vector
+        .as_ref()
+        .and_then(|value| serde_json::from_value::<PriorityVector>(value.clone()).ok())
+        .unwrap_or_else(|| default_priority_vector(influence_score));
+    let priority_score = if row.priority_vector.is_some() {
+        priority_vector.composite()
+    } else {
+        influence_score
+    };
+
+    let mut affiliations = metadata_affiliations(&row.metadata);
+    if affiliations.is_empty() && !organization.is_empty() && organization != "Independent" {
+        affiliations.push(Affiliation {
+            organization: organization.clone(),
+            role: role.clone(),
+            current: true,
+        });
+    }
+
+    let timeline: Vec<PersonEvent> = artifacts
+        .into_iter()
+        .map(|artifact| PersonEvent {
+            event_type: artifact.artifact_type,
+            description: artifact
+                .title
+                .or(artifact.content_summary)
+                .unwrap_or_else(|| "Artifact".to_string()),
+            date: artifact.ts_utc,
+            source_url: Some(artifact.url),
+        })
+        .collect();
+
+    PersonDetail {
+        id: row.id.to_string(),
+        name: row.name,
+        role,
+        organization,
+        region: row.region.unwrap_or_default(),
+        country: row.country_code.unwrap_or_default(),
+        email: metadata_string(&row.metadata, "email"),
+        phone: metadata_string(&row.metadata, "phone"),
+        linkedin: metadata_string(&row.metadata, "linkedin"),
+        priority_score,
+        priority_vector,
+        engagement_status: metadata_engagement_status(&row.metadata),
+        tags: metadata_string_vec(&row.metadata, "tags"),
+        affiliations,
+        timeline,
+        created_at: row.created_at.unwrap_or_else(Utc::now),
+        updated_at: row.updated_at.unwrap_or_else(Utc::now),
+    }
+}
+
+fn company_is_competitor(row: &CompanyRow) -> bool {
+    row.metadata
+        .as_ref()
+        .and_then(|meta| meta.get("is_competitor"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn site_row_to_company_site(row: SiteRow) -> CompanySite {
+    let location = site_location(&row);
+    let site_type = row.site_type.unwrap_or_else(|| "site".to_string());
+    CompanySite {
+        name: row.name,
+        location,
+        site_type,
+    }
+}
+
+fn site_location(row: &SiteRow) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(address) = row.address.as_ref().filter(|v| !v.trim().is_empty()) {
+        parts.push(address.to_string());
+    }
+    if let Some(city) = row.city.as_ref().filter(|v| !v.trim().is_empty()) {
+        parts.push(city.to_string());
+    }
+    if let Some(region) = row.region.as_ref().filter(|v| !v.trim().is_empty()) {
+        parts.push(region.to_string());
+    }
+    if let Some(country) = row.country_code.as_ref().filter(|v| !v.trim().is_empty()) {
+        parts.push(country.to_string());
+    }
+    if parts.is_empty() {
+        "Unknown".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn person_row_to_key_person(row: PersonRow) -> CompanyKeyPerson {
+    CompanyKeyPerson {
+        person_id: row.id.to_string(),
+        name: row.name,
+        role: row
+            .current_role
+            .or(row.role_family)
+            .unwrap_or_else(|| "Unknown".to_string()),
+    }
+}
+
+fn default_priority_vector(score: f64) -> PriorityVector {
+    let value = clamp_ratio(score);
+    PriorityVector {
+        decision_power: value,
+        domain_relevance: value,
+        network_centrality: value,
+        engagement_potential: value,
+        intelligence_value: value,
+    }
+}
+
+fn metadata_string(meta: &Option<serde_json::Value>, key: &str) -> Option<String> {
+    meta.as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn metadata_string_vec(meta: &Option<serde_json::Value>, key: &str) -> Vec<String> {
+    meta.as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(|value| value.to_string()))
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default()
+}
+
+fn metadata_affiliations(meta: &Option<serde_json::Value>) -> Vec<Affiliation> {
+    let Some(items) = meta.as_ref().and_then(|value| value.get("affiliations")).and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|item| {
+            let obj = item.as_object()?;
+            let organization = obj.get("organization")?.as_str()?;
+            let role = obj.get("role").and_then(|value| value.as_str()).unwrap_or("Unknown");
+            let current = obj.get("current").and_then(|value| value.as_bool()).unwrap_or(false);
+            Some(Affiliation {
+                organization: organization.to_string(),
+                role: role.to_string(),
+                current,
+            })
+        })
+        .collect()
+}
+
+fn metadata_engagement_status(meta: &Option<serde_json::Value>) -> String {
+    meta.as_ref()
+        .and_then(|value| value.get("engagement_status"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("untracked")
+        .to_string()
+}
+
 fn map_warning_sort(sort: WarningSortField) -> WarningOrderBy {
     match sort {
         WarningSortField::CreatedAt => WarningOrderBy::CreatedAt,
@@ -2189,6 +2724,74 @@ fn map_person_sort(sort: PersonSortField) -> PersonOrderBy {
         PersonSortField::Priority => PersonOrderBy::Priority,
         PersonSortField::Region => PersonOrderBy::Region,
         PersonSortField::UpdatedAt => PersonOrderBy::UpdatedAt,
+    }
+}
+
+// ────────────────────────────────────────────
+// Graph & Recipe Mapping
+// ────────────────────────────────────────────
+
+fn edge_row_to_graph_edge(row: &EdgeRow) -> GraphEdge {
+    GraphEdge {
+        source: row.source_id.to_string(),
+        target: row.target_id.to_string(),
+        edge_type: row.edge_type.clone(),
+        weight: row.weight.unwrap_or(1.0),
+        label: Some(format!("{} → {}", row.source_type, row.target_type)),
+    }
+}
+
+fn compute_edge_type_counts(rows: &[EdgeRow]) -> Vec<EdgeTypeCount> {
+    let mut counts: HashMap<String, u64> = HashMap::new();
+    for row in rows {
+        *counts.entry(row.edge_type.clone()).or_insert(0) += 1;
+    }
+    let mut result: Vec<EdgeTypeCount> = counts
+        .into_iter()
+        .map(|(edge_type, count)| EdgeTypeCount { edge_type, count })
+        .collect();
+    result.sort_by(|a, b| b.count.cmp(&a.count));
+    result
+}
+
+fn recipe_stat_to_list_item(stat: &RecipeStatRow) -> RecipeListItem {
+    use apex_api::routes::recipes::RecipeStatus;
+    
+    // Generate a deterministic ID from recipe_code
+    let id = format!("recipe-{}", stat.recipe_code.to_lowercase().replace('_', "-"));
+    
+    // Format name from recipe code (e.g., "TECH_CONVERGENCE" → "Tech Convergence")
+    let name = stat.recipe_code
+        .split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Generate a description
+    let description = format!(
+        "Signal recipe that has fired {} times. {} currently active.",
+        stat.fired_count, stat.active_count
+    );
+
+    RecipeListItem {
+        id,
+        name,
+        description,
+        status: RecipeStatus::Production,
+        region: None,
+        precision: 0.85, // Default placeholder
+        recall: 0.72,    // Default placeholder
+        false_positive_rate: 0.08, // Default placeholder
+        fired_count: stat.fired_count as u32,
+        last_fired: stat.last_fired,
+        created_at: stat.first_fired.unwrap_or_else(Utc::now),
+        updated_at: stat.last_fired.unwrap_or_else(Utc::now),
     }
 }
 

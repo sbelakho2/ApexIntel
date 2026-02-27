@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useAuth } from "@/lib/auth-context";
 
 const navItems = [
   { href: "/", label: "Overview" },
@@ -44,6 +45,7 @@ function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () 
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { user, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
@@ -146,11 +148,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-border lg:bg-card" aria-label="Main navigation">
           <div className="min-h-16 border-b border-border px-4 flex flex-col justify-center">
             <p className="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
-            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">OSINT Intelligence Platform</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Competitive Intelligence</p>
           </div>
           <nav className="flex-1 p-3 space-y-1">
             <NavLinks pathname={pathname} />
           </nav>
+          <div className="border-t border-border p-3">
+            {user && (
+              <div className="px-2">
+                <p className="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
+                <p className="text-xs font-bold text-foreground">{user.username}</p>
+              </div>
+            )}
+          </div>
         </aside>
 
         {/* Mobile overlay */}
@@ -171,7 +181,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center justify-between px-4 py-5 border-b border-border">
               <div>
                 <p className="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">OSINT Intelligence Platform</p>
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Competitive Intelligence</p>
               </div>
               <button
                 ref={mobileCloseRef}
@@ -185,6 +195,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <nav className="flex-1 overflow-y-auto p-3 space-y-1">
               <NavLinks pathname={pathname} onNavigate={closeMobile} />
             </nav>
+            <div className="border-t border-border p-3">
+              {user && (
+                <div className="px-2">
+                  <p className="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
+                  <p className="text-xs font-bold text-foreground">{user.username}</p>
+                </div>
+              )}
+            </div>
           </aside>
         )}
 
@@ -208,7 +226,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <p className="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">Operational Intelligence for EMS, Supply Chain, and Security</p>
                   <p className="hidden text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground md:block">Data freshness: near real-time</p>
                 </div>
-                <span className="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Live</span>
+                <div className="flex items-center gap-3">
+                  <span className="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Live</span>
+                  {user && (
+                    <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{user.username}</span>
+                  )}
+                  <button
+                    onClick={logout}
+                    className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:text-destructive hover:border-destructive/40 transition-colors whitespace-nowrap"
+                    title="Sign out"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    <span>Sign Out</span>
+                  </button>
+                </div>
               </div>
               {breadcrumbs.length > 0 && (
                 <nav aria-label="Breadcrumb" className="mt-2 overflow-x-auto">

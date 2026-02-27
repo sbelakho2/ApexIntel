@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS persons (
     name_ar TEXT,
     name_fr TEXT,
     primary_org_id UUID REFERENCES companies(id),
-    current_role TEXT,
+    "current_role" TEXT,
     role_family TEXT,
     region TEXT,
     country_code TEXT,

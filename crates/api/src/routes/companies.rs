@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use apex_core::validation::clamp_ratio;
+use uuid::Uuid;
+use apex_core::validation::{clamp_ratio, validate_uuid};
 
 use super::warnings::SortDirection;
 
@@ -117,6 +118,12 @@ pub struct CompetitorChange {
     pub significance: f64,
     pub detected_at: DateTime<Utc>,
     pub source_url: Option<String>,
+}
+
+/// Validate a company ID.
+pub fn validate_company_id(id: &str) -> Result<Uuid, String> {
+    validate_uuid(id, "company_id").map_err(|e| e.to_string())?;
+    Uuid::parse_str(id.trim()).map_err(|_| format!("Invalid company ID: '{}'", id))
 }
 
 // ────────────────────────────────────────────
