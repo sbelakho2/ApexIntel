@@ -3,7 +3,8 @@ const nextConfig = {
   reactStrictMode: true,
   experimental: {
     typedRoutes: true,
-    instrumentationHook: true,
+    // instrumentationHook disabled due to crypto webpack issues
+    // instrumentationHook: true,
   },
   images: {
     remotePatterns: [

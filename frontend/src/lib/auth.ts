@@ -1,5 +1,20 @@
 import { cookies } from "next/headers";
-import crypto from "crypto";
+
+// Use dynamic import for crypto to avoid webpack bundling issues
+let createHash: typeof import("crypto").createHash;
+let createHmac: typeof import("crypto").createHmac;
+let timingSafeEqual: typeof import("crypto").timingSafeEqual;
+
+// Initialize crypto functions lazily
+function getCrypto() {
+  if (!createHash) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const crypto = require("crypto");
+    createHash = crypto.createHash;
+    createHmac = crypto.createHmac;
+    timingSafeEqual = crypto.timingSafeEqual;
+  }
+}
 
 // ─── Configuration from environment ─────────────────────────────────────────
 // SECURITY: All credentials MUST come from environment variables in production.
@@ -61,9 +76,10 @@ function getSessionSecret(): string {
 
 /** Generate a signed session token */
 export function createSessionToken(username: string): string {
+  getCrypto();
   const secret = getSessionSecret();
   const payload = JSON.stringify({ sub: username, iat: Date.now() });
-  const hmac = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  const hmac = createHmac("sha256", secret).update(payload).digest("hex");
   const token = Buffer.from(payload).toString("base64url") + "." + hmac;
   return token;
 }
@@ -71,13 +87,14 @@ export function createSessionToken(username: string): string {
 /** Verify a session token, return payload or null */
 export function verifySessionToken(token: string): { sub: string; iat: number } | null {
   try {
+    getCrypto();
     const secret = getSessionSecret();
     const [payloadB64, sig] = token.split(".");
     if (!payloadB64 || !sig) return null;
     const payload = Buffer.from(payloadB64, "base64url").toString();
-    const expected = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+    const expected = createHmac("sha256", secret).update(payload).digest("hex");
     // Constant-time comparison
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+    if (!timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
     const data = JSON.parse(payload);
     // Sessions expire after 24 hours
     if (Date.now() - data.iat > 24 * 60 * 60 * 1000) return null;
@@ -99,11 +116,12 @@ export function validateCredentials(username: string, password: string): boolean
   }
   
   if (username !== validUsername) return false;
-  const hash = crypto.createHash("sha256").update(password).digest("hex");
+  getCrypto();
+  const hash = createHash("sha256").update(password).digest("hex");
   
   // Constant-time comparison to prevent timing attacks
   try {
-    return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(validPasswordHash));
+    return timingSafeEqual(Buffer.from(hash), Buffer.from(validPasswordHash));
   } catch {
     // This can happen if the hash lengths don't match (misconfiguration)
     return false;
