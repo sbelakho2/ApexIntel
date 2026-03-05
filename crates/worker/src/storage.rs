@@ -17,11 +17,12 @@
 //! real database integration in production.
 
 use anyhow::Result;
-use apex_store::postgres::PgStore;
+use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 use chrono::{DateTime, Duration, Utc};
+use sqlx::Row;
 
 use crate::nightly::{CrawlStageResult, DriftCheckStageResult, MiningStageResult, PoiRefreshStageResult};
-use crate::weekly::{MemoInputs, MemoWarning, PoiChange, ProductionRecipe, StagedRecipe};
+use crate::weekly::{MemoInputs, ProductionRecipe, StagedRecipe};
 
 /// Context for building pipeline inputs from storage.
 pub struct StorageContext {
@@ -153,18 +154,95 @@ pub async fn load_production_recipes(ctx: &StorageContext) -> Result<Vec<Product
 /// Build memo inputs from recent activity summaries.
 pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
     let since = ctx.run_timestamp - Duration::days(7);
-    
-    // Aggregate stats for memo generation
+
     let _stats = ctx.store.get_weekly_summary_stats(since).await?;
-    
+    let drift = ctx.store.get_drift_stats().await.unwrap_or_default();
+
+    let warning_filters = WarningListFilters {
+        date_from: Some(since),
+        ..WarningListFilters::default()
+    };
+    let warning_rows = ctx
+        .store
+        .list_warnings(&warning_filters, Some(WarningOrderBy::Severity), true, 5, 0)
+        .await
+        .unwrap_or_default();
+    let top_warnings = warning_rows
+        .into_iter()
+        .map(|row| crate::weekly::MemoWarning {
+            id: row.id.to_string(),
+            headline: row.title,
+            impact: row.description.unwrap_or_else(|| row.warning_type),
+            confidence: row.confidence.unwrap_or(0.0).clamp(0.0, 1.0),
+        })
+        .collect();
+
+    let new_recipes_staged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM recipes WHERE status = 'staging' AND created_at >= $1",
+    )
+    .bind(since)
+    .fetch_one(&ctx.store.pool)
+    .await
+    .unwrap_or(0);
+
+    let recipes_promoted: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM recipes WHERE status = 'production' AND updated_at >= $1",
+    )
+    .bind(since)
+    .fetch_one(&ctx.store.pool)
+    .await
+    .unwrap_or(0);
+
+    let recipes_deprecated: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM recipes WHERE status = 'deprecated' AND updated_at >= $1",
+    )
+    .bind(since)
+    .fetch_one(&ctx.store.pool)
+    .await
+    .unwrap_or(0);
+
+    let poi_changes_rows = sqlx::query(
+        r#"SELECT
+                COALESCE(p.name, pc.person_id::text) AS person_name,
+                pc.change_type,
+                COALESCE(NULLIF(pc.new_value, ''), NULLIF(pc.old_value, ''), 'change detected') AS details
+           FROM person_changes pc
+           LEFT JOIN persons p ON p.id = pc.person_id
+           WHERE pc.detected_at >= $1
+           ORDER BY pc.detected_at DESC
+           LIMIT 10"#,
+    )
+    .bind(since)
+    .fetch_all(&ctx.store.pool)
+    .await
+    .unwrap_or_default();
+    let poi_changes = poi_changes_rows
+        .into_iter()
+        .map(|row| crate::weekly::PoiChange {
+            person_name: row.try_get::<String, _>("person_name").unwrap_or_else(|_| "Unknown".to_string()),
+            change_type: row.try_get::<String, _>("change_type").unwrap_or_else(|_| "change".to_string()),
+            details: row.try_get::<String, _>("details").unwrap_or_else(|_| "change detected".to_string()),
+        })
+        .collect();
+
+    let mut top_drift_features = drift.drift_scores;
+    top_drift_features.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    top_drift_features.truncate(5);
+
+    let pipeline_health_pct = if drift.features_checked == 0 {
+        1.0
+    } else {
+        (1.0 - (drift.features_drifted as f64 / drift.features_checked as f64)).clamp(0.0, 1.0)
+    };
+
     Ok(MemoInputs {
-        top_warnings: vec![], // Would need additional query to populate
-        new_recipes_staged: 0,
-        recipes_promoted: 0,
-        recipes_deprecated: 0,
-        pipeline_health_pct: 1.0, // Assume healthy unless drift detected
-        top_drift_features: vec![],
-        poi_changes: vec![],
+        top_warnings,
+        new_recipes_staged: new_recipes_staged.max(0) as u32,
+        recipes_promoted: recipes_promoted.max(0) as u32,
+        recipes_deprecated: recipes_deprecated.max(0) as u32,
+        pipeline_health_pct,
+        top_drift_features,
+        poi_changes,
         period_start: since,
         period_end: ctx.run_timestamp,
     })

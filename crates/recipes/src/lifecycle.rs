@@ -887,7 +887,7 @@ mod tests {
 
         // Add candidate recipes and stage them to generate decisions
         for i in 0..200 {
-            let mut perf = make_perf(&format!("TRIM{:03}", i), RecipeStatus::Candidate);
+            let perf = make_perf(&format!("TRIM{:03}", i), RecipeStatus::Candidate);
             let recipe_id = perf.recipe_id;
             registry.register(perf);
             // Staging generates a decision
@@ -909,7 +909,7 @@ mod tests {
 
         // Add exactly 100 candidate recipes
         for i in 0..100 {
-            let mut perf = make_perf(&format!("D{:03}", i), RecipeStatus::Candidate);
+            let perf = make_perf(&format!("D{:03}", i), RecipeStatus::Candidate);
             let recipe_id = perf.recipe_id;
             registry.register(perf);
             registry.stage(&recipe_id);
@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(registry.decisions().len(), 100);
 
         // Add 1 more - should trigger trim of 20 oldest
-        let mut perf = make_perf("D100", RecipeStatus::Candidate);
+        let perf = make_perf("D100", RecipeStatus::Candidate);
         let recipe_id = perf.recipe_id;
         registry.register(perf);
         registry.stage(&recipe_id);
@@ -939,7 +939,7 @@ mod tests {
 
         // Add only 50 candidates and stage them
         for i in 0..50 {
-            let mut perf = make_perf(&format!("NT{:02}", i), RecipeStatus::Candidate);
+            let perf = make_perf(&format!("NT{:02}", i), RecipeStatus::Candidate);
             let recipe_id = perf.recipe_id;
             registry.register(perf);
             registry.stage(&recipe_id);
@@ -958,7 +958,7 @@ mod tests {
 
         // Add 30 candidates, stage them
         for i in 0..30 {
-            let mut perf = make_perf(&format!("REC{:02}", i), RecipeStatus::Candidate);
+            let perf = make_perf(&format!("REC{:02}", i), RecipeStatus::Candidate);
             let recipe_id = perf.recipe_id;
             registry.register(perf);
             registry.stage(&recipe_id);

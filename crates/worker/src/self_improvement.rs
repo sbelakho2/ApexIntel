@@ -348,8 +348,7 @@ pub fn process_outcome_tracking_stage(result: &OutcomeTrackingStageResult) -> Im
 }
 
 pub fn process_meta_learning_stage(result: &MetaLearningStageResult) -> ImprovementStageOutcome {
-    let mut run = JobRun::new(JobKind::SourceScoring); // reuse for tracking
-    run.kind = JobKind::Custom("meta_learning".into());
+    let mut run = JobRun::new(JobKind::Custom("meta_learning".into()));
     run.start();
 
     if let Err(e) = result.validate() {

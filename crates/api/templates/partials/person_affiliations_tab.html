@@ -1,0 +1,22 @@
+{# ── Person affiliations tab partial ──────────────────────────────────── #}
+
+<div id="person-affiliations-tab">
+  {% if !affiliations.is_empty() %}
+  <div class="divide-y divide-border">
+    {% for a in affiliations %}
+    <div class="px-4 py-3 flex items-center justify-between hover:bg-muted/30 transition-colors">
+      <div>
+        <a href="/companies/{{ a.company_id }}" class="text-sm font-semibold hover:underline">{{ a.company_name }}</a>
+        <span class="ml-2 text-[11px] text-muted-foreground">{{ a.role }}</span>
+        {% if a.is_current %}
+        <span class="ml-1 text-[9px] font-bold text-green-600 uppercase">Current</span>
+        {% endif %}
+      </div>
+      <span class="text-[10px] text-muted-foreground tabular-nums">{{ a.since }}{% if let Some(u) = a.until %} – {{ u }}{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No affiliations recorded</p>
+  {% endif %}
+</div>

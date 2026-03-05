@@ -1,0 +1,38 @@
+{# ── Pagination partial with HTMX ─────────────────────────────────────── #}
+{# Variables expected: base_url, page, total_pages, total, per_page       #}
+
+{% if total_pages > 1 %}
+<nav class="mt-4 flex items-center justify-between" aria-label="Pagination">
+  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <div class="flex gap-1">
+    {% if page > 1 %}
+    <a href="{{ base_url }}?page={{ page - 1 }}&per_page={{ per_page }}"
+       hx-get="{{ base_url }}?page={{ page - 1 }}&per_page={{ per_page }}"
+       hx-target="#main-results" hx-push-url="true"
+       class="rounded-sm border border-border px-2.5 py-1 text-[10px] font-bold hover:bg-muted">
+      Prev
+    </a>
+    {% endif %}
+
+    {% if page > 2 %}
+    <a href="{{ base_url }}?page=1&per_page={{ per_page }}"
+       hx-get="{{ base_url }}?page=1&per_page={{ per_page }}"
+       hx-target="#main-results" hx-push-url="true"
+       class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold hover:bg-muted tabular-nums">
+      1
+    </a>
+    {% endif %}
+
+    <span class="rounded-sm border border-primary bg-primary/10 px-2.5 py-1 text-[10px] font-black tabular-nums">{{ page }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ base_url }}?page={{ page + 1 }}&per_page={{ per_page }}"
+       hx-get="{{ base_url }}?page={{ page + 1 }}&per_page={{ per_page }}"
+       hx-target="#main-results" hx-push-url="true"
+       class="rounded-sm border border-border px-2.5 py-1 text-[10px] font-bold hover:bg-muted">
+      Next
+    </a>
+    {% endif %}
+  </div>
+</nav>
+{% endif %}

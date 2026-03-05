@@ -1,0 +1,31 @@
+[Unit]
+Description=ApexIntel LLM Server (llama-server + Qwen3)
+After=network.target
+
+[Service]
+Type=simple
+User=apexintel
+Group=apexintel
+ExecStart=/usr/local/bin/llama-server \
+    --model /opt/apexintel/model/Qwen3-30B-A3B-Q4_K_M.gguf \
+    --host 127.0.0.1 --port 8081 \
+    --ctx-size 8192 \
+    --n-gpu-layers 0 \
+    --threads 14 \
+    --batch-size 512 \
+    --parallel 2 \
+    --mlock \
+    --flash-attn \
+    --cont-batching
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=120
+TimeoutStopSec=30
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apexintel-llm
+
+[Install]
+WantedBy=multi-user.target

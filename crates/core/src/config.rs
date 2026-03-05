@@ -142,7 +142,7 @@ impl AppConfig {
     /// | `database_url`            | non-empty     | Required for all DB operations          |
     /// | `crawl_interval_secs`     | `>= 60`       | Prevents accidental DoS of target sites |
     /// | `nightly_hour_utc`        | `<= 23`       | Valid 24-hour clock                     |
-    /// | `weekly_day`              | `<= 6`        | Sun=0 … Sat=6                           |
+    /// | `weekly_day`              | `<= 6`        | Mon=0 … Sun=6                           |
     /// | `default_requests_per_second` | `> 0.0`   | Must be a positive rate                 |
     /// | `proxy_pool_size`         | `>= 1`        | At least one proxy slot required        |
     pub fn validate(&self) -> Vec<String> {
@@ -165,7 +165,7 @@ impl AppConfig {
         }
         if self.weekly_day > 6 {
             errors.push(format!(
-                "AppConfig.weekly_day = {} must be in [0, 6] (Sun=0, Sat=6)",
+                "AppConfig.weekly_day = {} must be in [0, 6] (Mon=0, Sun=6)",
                 self.weekly_day
             ));
         }

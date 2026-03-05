@@ -93,6 +93,17 @@ pub struct Citation {
 /// narrative templates (~50 KB).
 const MAX_TEMPLATE_OUTPUT_BYTES: usize = 256 * 1024; // 256 KB
 
+fn utf8_prefix(input: &str, max_bytes: usize) -> &str {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    &input[..end]
+}
+
 /// Render a template string by replacing `{slot_name}` placeholders with evidence values.
 /// Unknown placeholders are left as-is.
 ///
@@ -172,7 +183,7 @@ pub fn render_template(template: &str, slots: &HashMap<String, String>) -> Strin
                     if tail.len() <= remaining {
                         result.push_str(tail);
                     } else {
-                        result.push_str(&tail[..remaining]);
+                        result.push_str(utf8_prefix(tail, remaining));
                         result.push('…');
                     }
                 }

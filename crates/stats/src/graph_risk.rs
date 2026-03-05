@@ -104,6 +104,11 @@ pub fn high_risk_cluster(
         return vec![];
     }
 
+    // O(1) membership set — avoids O(n) `Vec::contains` scans when building
+    // the undirected adjacency list below.
+    let high_risk_set: std::collections::HashSet<&str> =
+        high_risk.iter().map(|s| s.as_str()).collect();
+
     // Build undirected adjacency among high-risk nodes so cluster detection is
     // order-independent (directed graph: A→B means A and B share a cluster even
     // when BFS starts from B and B has no outgoing edge back to A).
@@ -111,7 +116,7 @@ pub fn high_risk_cluster(
         std::collections::HashMap::new();
     for (node, neighbors) in adjacency {
         for (neighbor, _) in neighbors {
-            if high_risk.contains(node) && high_risk.contains(neighbor) {
+            if high_risk_set.contains(node.as_str()) && high_risk_set.contains(neighbor.as_str()) {
                 undirected.entry(node.as_str()).or_default().push(neighbor.as_str());
                 undirected.entry(neighbor.as_str()).or_default().push(node.as_str());
             }

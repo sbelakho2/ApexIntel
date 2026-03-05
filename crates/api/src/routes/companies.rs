@@ -54,6 +54,7 @@ impl CompanySortField {
 pub struct CompanyListItem {
     pub id: String,
     pub name: String,
+    pub domain: Option<String>,
     pub region: String,
     pub country: String,
     pub entity_type: String,
@@ -214,6 +215,7 @@ mod tests {
         CompanyListItem {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
+            domain: None,
             region: region.to_string(),
             country: region.to_string(),
             entity_type: "manufacturer".to_string(),

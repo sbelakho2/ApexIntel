@@ -135,8 +135,18 @@ pub struct GraphOverviewWithEdges {
     pub warnings_total: u64,
     pub insights_total: u64,
     pub edges_total: u64,
+    /// Resolved node labels for every unique entity UUID that appears in edges.
+    pub nodes: Vec<GraphNodeLabel>,
     pub edges: Vec<GraphEdge>,
     pub edge_type_counts: Vec<EdgeTypeCount>,
+}
+
+/// Resolved name + type for a node UUID referenced in graph edges.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphNodeLabel {
+    pub id: String,
+    pub label: String,
+    pub node_type: String,  // "company" | "person"
 }
 
 /// Edge type count summary.

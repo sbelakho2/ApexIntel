@@ -8,3 +8,5 @@ pub mod bayesian;
 pub mod graph_risk;
 pub mod fdr;
 pub mod utils;
+pub mod pipeline;
+pub mod observation_anomaly;

@@ -1,0 +1,19 @@
+{# ── Company changes tab partial ──────────────────────────────────────── #}
+
+<div id="company-changes-tab">
+  {% if !events.is_empty() %}
+  <div class="divide-y divide-border">
+    {% for ev in events %}
+    <div class="px-4 py-3 hover:bg-muted/30 transition-colors">
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-semibold">{{ ev.kind }}</span>
+        <span class="text-[10px] text-muted-foreground tabular-nums">{{ ev.date }}</span>
+      </div>
+      <p class="mt-1 text-[11px] text-muted-foreground">{{ ev.description }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No recent changes recorded</p>
+  {% endif %}
+</div>

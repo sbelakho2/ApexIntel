@@ -26,6 +26,12 @@
 //! trait — provide a mock impl in tests.
 
 pub mod validators;
+pub mod inference;
+pub mod poi_profiler;
+pub mod insight_gen;
+pub mod recipe_hypothesis;
+pub mod self_improvement;
+pub mod evaluation;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Experimental modules (B290)
@@ -49,6 +55,17 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing;
+
+pub(crate) fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    &input[..end]
+}
 
 // ────────────────────────────────────────────
 // Provider & Config
@@ -565,7 +582,13 @@ impl OpenAiCompatibleClient {
     }
 
     async fn call(&self, system: &str, user: &str, json_mode: bool) -> Result<String> {
-        let messages = build_messages(system, user);
+        // Inject /no_think for Qwen3 to suppress chain-of-thought tokens
+        let system_with_nothink = if system.ends_with("/no_think") {
+            system.to_string()
+        } else {
+            format!("{}\n/no_think", system)
+        };
+        let messages = build_messages(&system_with_nothink, user);
         let body = build_request_body(
             &self.config.model_name,
             &messages,
@@ -624,8 +647,10 @@ impl OpenAiCompatibleClient {
                 anyhow::bail!("LLM API error ({}): {}", status, error_msg);
             }
 
-            return extract_response_content(&resp_body)
-                .ok_or_else(|| anyhow::anyhow!("No content in LLM response"));
+            // Strip Qwen3 <think>...</think> tags from the response
+            let raw = extract_response_content(&resp_body)
+                .ok_or_else(|| anyhow::anyhow!("No content in LLM response"))?;
+            return Ok(crate::inference::strip_think_tags(&raw));
         }
 
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM call failed after {} retries", MAX_RETRIES)))

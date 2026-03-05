@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Recipes — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Recipes</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("Recipe Manager", "zap", "Signal detection recipes and their performance metrics.", "<a href=\"/recipes/new\" class=\"rounded-sm border border-border bg-secondary px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] hover:bg-muted\">New Recipe</a>") %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 mb-6">
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Recipes</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ active_recipes_count }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Production</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ production_count }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Precision %</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_precision }}%</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Recall %</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_recall }}%</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#9B59B6"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Alerts (7d)</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ total_fired }}</p>
+  </div>
+</div>
+
+{# ── Precision / Recall / FPR Trend (30d) ── #}
+<div class="apex-card p-4 mb-6">
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Precision / Recall / FPR Trend (30d)</h2>
+    <div class="flex items-center gap-2">
+      <button type="button" id="recipe-toggle-precision" class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">Precision</button>
+      <button type="button" id="recipe-toggle-recall" class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">Recall</button>
+      <button type="button" id="recipe-toggle-fpr" class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">FPR</button>
+      <button type="button" id="recipe-toggle-smoothing" class="rounded-sm border border-border bg-secondary text-muted-foreground px-2 py-1 text-[9px] font-black uppercase">Smoothing: On</button>
+    </div>
+  </div>
+  <div style="height:200px;position:relative">
+    <canvas id="recipe-perf-chart"></canvas>
+  </div>
+  <script>
+  (function(){
+    var ctx = document.getElementById('recipe-perf-chart');
+    if (!ctx) return;
+    if (ctx._chart) { ctx._chart.destroy(); }
+    var isSmooth = true;
+    var seriesVisible = { precision: true, recall: true, fpr: true };
+    var togglePrecision = document.getElementById('recipe-toggle-precision');
+    var toggleRecall = document.getElementById('recipe-toggle-recall');
+    var toggleFpr = document.getElementById('recipe-toggle-fpr');
+    var toggleSmoothing = document.getElementById('recipe-toggle-smoothing');
+
+    function applyButtonState(btn, active) {
+      if (!btn) return;
+      btn.classList.toggle('border-foreground', active);
+      btn.classList.toggle('bg-foreground', active);
+      btn.classList.toggle('text-background', active);
+      btn.classList.toggle('border-border', !active);
+      btn.classList.toggle('bg-secondary', !active);
+      btn.classList.toggle('text-muted-foreground', !active);
+    }
+
+    function makeDataset(label, color, bgColor, values, visible) {
+      return {
+        label: label,
+        data: values,
+        borderColor: color,
+        backgroundColor: bgColor,
+        tension: isSmooth ? 0.3 : 0,
+        fill: true,
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        hidden: !visible
+      };
+    }
+
+    function buildDatasets() {
+      return [
+        makeDataset('Precision', '#D62D2D', 'rgba(214,45,45,0.08)', [{% for row in recipe_perf_trend %}{{ row.precision_pct }},{% endfor %}], seriesVisible.precision),
+        makeDataset('Recall', '#4A90E2', 'rgba(74,144,226,0.08)', [{% for row in recipe_perf_trend %}{{ row.recall_pct }},{% endfor %}], seriesVisible.recall),
+        makeDataset('FPR', '#FFBE00', 'rgba(255,190,0,0.08)', [{% for row in recipe_perf_trend %}{{ row.fpr_pct }},{% endfor %}], seriesVisible.fpr)
+      ];
+    }
+
+    ctx._chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [{% for row in recipe_perf_trend %}'{{ row.month }}',{% endfor %}],
+        datasets: buildDatasets()
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 12, padding: 6 } },
+          tooltip: {
+            mode: 'index',
+            callbacks: { label: function(c) { return c.dataset.label + ': ' + c.raw + '%'; } }
+          }
+        },
+        scales: {
+          x: { ticks: { font: { size: 9 }, maxRotation: 35 } },
+          y: { min: 0, max: 100, ticks: { font: { size: 9 }, callback: function(v){ return v + '%'; } } }
+        }
+      }
+    });
+
+    function rerenderChart() {
+      ctx._chart.data.datasets = buildDatasets();
+      ctx._chart.update();
+      applyButtonState(togglePrecision, seriesVisible.precision);
+      applyButtonState(toggleRecall, seriesVisible.recall);
+      applyButtonState(toggleFpr, seriesVisible.fpr);
+      if (toggleSmoothing) toggleSmoothing.textContent = isSmooth ? 'Smoothing: On' : 'Smoothing: Off';
+    }
+
+    if (togglePrecision) togglePrecision.addEventListener('click', function(){ seriesVisible.precision = !seriesVisible.precision; rerenderChart(); });
+    if (toggleRecall) toggleRecall.addEventListener('click', function(){ seriesVisible.recall = !seriesVisible.recall; rerenderChart(); });
+    if (toggleFpr) toggleFpr.addEventListener('click', function(){ seriesVisible.fpr = !seriesVisible.fpr; rerenderChart(); });
+    if (toggleSmoothing) toggleSmoothing.addEventListener('click', function(){ isSmooth = !isSmooth; rerenderChart(); });
+  })();
+  </script>
+  <details class="mt-3">
+    <summary class="text-[10px] font-bold uppercase cursor-pointer text-muted-foreground hover:text-foreground select-none">Chart data table</summary>
+    <div class="mt-2 overflow-x-auto">
+      <table class="w-full text-[10px]">
+        <thead><tr class="border-b border-border">
+          <th class="py-1 pr-3 text-left font-bold uppercase text-muted-foreground">Month</th>
+          <th class="py-1 pr-3 text-right font-bold uppercase" style="color:#D62D2D">Precision %</th>
+          <th class="py-1 pr-3 text-right font-bold uppercase" style="color:#4A90E2">Recall %</th>
+          <th class="py-1 text-right font-bold uppercase" style="color:#FFBE00">FPR %</th>
+        </tr></thead>
+        <tbody class="divide-y divide-border">
+          {% for row in recipe_perf_trend %}
+          <tr>
+            <td class="py-1 pr-3 text-muted-foreground">{{ row.month }}</td>
+            <td class="py-1 pr-3 text-right tabular-nums font-bold">{{ row.precision_pct }}%</td>
+            <td class="py-1 pr-3 text-right tabular-nums font-bold">{{ row.recall_pct }}%</td>
+            <td class="py-1 text-right tabular-nums font-bold">{{ row.fpr_pct }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</div>
+
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Status:</span>
+    <a href="/recipes" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
+    <a href="/recipes?status=production" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "production" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">production</a>
+    <a href="/recipes?status=staging" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "staging" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">staging</a>
+    <a href="/recipes?status=deprecated" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "deprecated" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">deprecated</a>
+    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_status.is_empty() %}0{% else %}1{% endif %}</span>
+    <a href="/recipes" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset</a>
+  </div>
+</div>
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {% if recipes.is_empty() %}
+    {% call m::empty_state("No Recipes", "Create your first recipe to start automating intelligence gathering.") %}
+  {% else %}
+    {% for r in recipes %}
+    <div class="apex-card p-4 hover:bg-muted/30 transition-colors">
+      <div class="flex items-start justify-between gap-2 mb-2">
+        <span class="text-sm font-semibold leading-tight">{{ r.name }}</span>
+        {% if r.status == "production" %}{% call m::status_badge("Production", "success") %}
+        {% else if r.status == "staging" %}{% call m::status_badge("Staging", "warning") %}
+        {% else if r.status == "deprecated" %}{% call m::status_badge("Deprecated", "error") %}
+        {% else %}{% call m::status_badge(r.status, "") %}{% endif %}
+      </div>
+      <p class="text-[11px] text-muted-foreground mb-3">{{ r.description|truncate(80) }}</p>
+      <div class="grid grid-cols-3 gap-2 text-center border-t border-border pt-3">
+        <div>
+          <p class="text-[9px] font-bold uppercase text-muted-foreground">Runs</p>
+          <p class="text-sm font-black tabular-nums">{{ r.total_runs }}</p>
+        </div>
+        <div>
+          <p class="text-[9px] font-bold uppercase text-muted-foreground">Success</p>
+          <p class="text-sm font-black tabular-nums">{{ r.success_rate }}%</p>
+        </div>
+        <div>
+          <p class="text-[9px] font-bold uppercase text-muted-foreground">Schedule</p>
+          <p class="text-[10px] font-black truncate">{{ r.schedule }}</p>
+        </div>
+      </div>
+      <p class="mt-2 text-[9px] text-muted-foreground text-right">Last run: {{ r.last_run.as_deref().unwrap_or("—") }}</p>
+    </div>
+    {% endfor %}
+  {% endif %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 flex items-center justify-between">
+  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <div class="flex gap-1">
+    {% if page > 1 %}<a href="/recipes?page={{ page - 1 }}" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="/recipes?page={{ page + 1 }}" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

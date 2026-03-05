@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Settings — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Settings</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("Settings", "server", "API keys, region coverage, watchlist, and scheduler controls.", "") %}
+
+{% if let Some(message) = save_success %}
+<div class="mb-4 rounded border border-green-500/30 bg-green-500/10 px-3 py-2 text-xs font-semibold text-green-700">{{ message }}</div>
+{% endif %}
+{% if let Some(message) = save_error %}
+<div class="mb-4 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700">{{ message }}</div>
+{% endif %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">API Keys</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ api_status }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Active Regions</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ endpoints_count }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Scheduler Jobs</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{% if let Some(hours) = uptime_hours %}{{ hours }}h{% else %}—{% endif %}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Alerting</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">On</p>
+  </div>
+</div>
+
+<form method="post" action="/settings" class="grid gap-6 lg:grid-cols-2">
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">API Keys &amp; Services</h2>
+    </div>
+    <p class="px-4 pt-3 text-xs text-muted-foreground">Provide service credentials and endpoint values. Use least-privilege keys where possible.</p>
+    <div class="divide-y divide-border">
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">API Key</span>
+        <input type="password" name="api_key_display" value="{{ api_key_display }}" class="h-7 w-52 rounded border border-border bg-background px-2 text-xs" />
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Backend URL</span>
+        <input type="text" name="backend_url_display" value="{{ backend_url_display }}" class="h-7 w-52 rounded border border-border bg-background px-2 text-xs" />
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Session Timeout</span>
+        <select name="session_timeout_hours" class="h-7 w-40 rounded border border-border bg-background px-2 text-xs">
+          <option value="8" {% if session_timeout_hours == 8 %}selected{% endif %}>8h</option>
+          <option value="24" {% if session_timeout_hours == 24 %}selected{% endif %}>24h</option>
+          <option value="72" {% if session_timeout_hours == 72 %}selected{% endif %}>72h</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Region Coverage</h2>
+    </div>
+    <p class="px-4 pt-3 text-xs text-muted-foreground">Choose coverage defaults used by warning, insight, and graph views.</p>
+    <div class="divide-y divide-border">
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Default Region</span>
+        <select name="default_region" class="h-7 w-40 rounded border border-border bg-background px-2 text-xs">
+          <option value="Global" {% if default_region == "Global" %}selected{% endif %}>Global</option>
+          <option value="EU" {% if default_region == "EU" %}selected{% endif %}>EU</option>
+          <option value="MENA" {% if default_region == "MENA" %}selected{% endif %}>MENA</option>
+        </select>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Auto Include Neighbors</span>
+        <label class="inline-flex items-center gap-2 text-xs">
+          <input type="checkbox" name="auto_include_neighbors" value="on" {% if auto_include_neighbors %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />
+          Enabled
+        </label>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Freshness Interval</span>
+        <span class="text-xs text-muted-foreground">{{ data_freshness_interval }}s</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Scheduler</h2>
+    </div>
+    <p class="px-4 pt-3 text-xs text-muted-foreground">Control cadence and processing windows for automated runs.</p>
+    <div class="divide-y divide-border">
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Daily Crawl</span>
+        <label class="inline-flex items-center gap-2 text-xs">
+          <input type="checkbox" name="daily_crawl_enabled" value="on" {% if daily_crawl_enabled %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />
+          Enabled
+        </label>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Window</span>
+        <select name="crawl_window" class="h-7 w-40 rounded border border-border bg-background px-2 text-xs">
+          <option value="00:00-06:00 UTC" {% if crawl_window == "00:00-06:00 UTC" %}selected{% endif %}>00:00-06:00 UTC</option>
+          <option value="06:00-12:00 UTC" {% if crawl_window == "06:00-12:00 UTC" %}selected{% endif %}>06:00-12:00 UTC</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Alerting</h2>
+    </div>
+    <p class="px-4 pt-3 text-xs text-muted-foreground">Define channels and thresholds for operational notifications.</p>
+    <div class="divide-y divide-border">
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Slack</span>
+        <label class="inline-flex items-center gap-2 text-xs">
+          <input type="checkbox" name="slack_enabled" value="on" {% if slack_enabled %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />
+          Enabled
+        </label>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Minimum Severity</span>
+        <select name="minimum_severity" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs">
+          <option value="high" {% if minimum_severity == "high" %}selected{% endif %}>high</option>
+          <option value="medium" {% if minimum_severity == "medium" %}selected{% endif %}>medium</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="lg:col-span-2 apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Health Checks</h2>
+    </div>
+    {% if !health_checks.is_empty() %}
+      <div class="divide-y divide-border">
+        {% for check in health_checks %}
+        <div class="flex items-center justify-between px-4 py-3">
+          <span class="text-sm font-bold">{{ check.name }}</span>
+          <span class="text-xs font-bold uppercase {% if check.status == "Healthy" %}text-green-600{% else if check.status == "Degraded" %}text-yellow-600{% else %}text-red-500{% endif %}">{{ check.status }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="px-4 py-6 text-xs text-muted-foreground">No health check data available.</p>
+    {% endif %}
+  </div>
+
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Data Management</h2>
+    </div>
+    <p class="px-4 pt-3 text-xs text-muted-foreground">Export, import, and manage stored intelligence data.</p>
+    <div class="divide-y divide-border">
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Auto-Cleanup (30d)</span>
+        <label class="inline-flex items-center gap-2 text-xs">
+          <input type="checkbox" name="auto_cleanup_enabled" value="on" {% if auto_cleanup_enabled %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />
+          Enabled
+        </label>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Export Format</span>
+        <select name="export_format" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs">
+          <option value="JSON" {% if export_format == "JSON" %}selected{% endif %}>JSON</option>
+          <option value="CSV" {% if export_format == "CSV" %}selected{% endif %}>CSV</option>
+        </select>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Retention Period</span>
+        <select name="retention_period" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs">
+          <option value="90 days" {% if retention_period == "90 days" %}selected{% endif %}>90 days</option>
+          <option value="180 days" {% if retention_period == "180 days" %}selected{% endif %}>180 days</option>
+          <option value="1 year" {% if retention_period == "1 year" %}selected{% endif %}>1 year</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Notification Preferences</h2>
+    </div>
+    <p class="px-4 pt-3 text-xs text-muted-foreground">Control how and when you receive notifications.</p>
+    <div class="divide-y divide-border">
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Email Digest</span>
+        <label class="inline-flex items-center gap-2 text-xs">
+          <input type="checkbox" name="email_digest_enabled" value="on" {% if email_digest_enabled %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />
+          Enabled
+        </label>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Frequency</span>
+        <select name="notification_frequency" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs">
+          <option value="Daily" {% if notification_frequency == "Daily" %}selected{% endif %}>Daily</option>
+          <option value="Weekly" {% if notification_frequency == "Weekly" %}selected{% endif %}>Weekly</option>
+        </select>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Critical Only</span>
+        <label class="inline-flex items-center gap-2 text-xs">
+          <input type="checkbox" name="critical_only_enabled" value="on" {% if critical_only_enabled %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />
+          Enabled
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="lg:col-span-2 mt-1 flex justify-end">
+    <button type="submit" class="inline-flex min-h-[40px] items-center gap-2 rounded border border-border bg-primary px-4 py-2 text-xs font-bold uppercase text-primary-foreground">Save Changes</button>
+  </div>
+</form>
+{% endblock %}

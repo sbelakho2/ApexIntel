@@ -1,0 +1,21 @@
+{# ── Company card partial with ScoreRing ──────────────────────────────── #}
+{% import "macros.html" as m %}
+
+<a href="/companies/{{ id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block" id="company-card-{{ id }}">
+  <div class="flex items-start justify-between gap-3">
+    <div class="min-w-0 flex-1">
+      <span class="text-sm font-semibold">{{ name }}</span>
+      {% if is_competitor %}<span class="ml-1 text-[9px] font-bold text-orange-600 uppercase">Competitor</span>{% endif %}
+      <div class="mt-1.5 flex items-center gap-2">
+        {% call m::region_badge(region) %}
+        <span class="text-[11px] text-muted-foreground">{{ sector }}</span>
+      </div>
+    </div>
+    {% call m::score_ring(risk_score, 36) %}
+  </div>
+  <div class="mt-3 grid grid-cols-3 gap-2 text-[10px]">
+    <div><span class="font-black uppercase text-muted-foreground">Warnings</span><br>{{ warning_count }}</div>
+    <div><span class="font-black uppercase text-muted-foreground">Insights</span><br>{{ insight_count }}</div>
+    <div><span class="font-black uppercase text-muted-foreground">Updated</span><br>{{ updated_at }}</div>
+  </div>
+</a>

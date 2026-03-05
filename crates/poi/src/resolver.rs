@@ -134,11 +134,11 @@ fn resolve_batch_with_limit(
 ) -> Vec<Vec<usize>> {
     // B295: Deduplicate by person_id before truncation or processing
     let mut seen_ids = std::collections::HashSet::new();
-    let mut unique_profiles = Vec::new();
+    let mut unique_profiles: Vec<(usize, &PoiProfile)> = Vec::new();
     let mut dup_count = 0;
-    for profile in profiles {
-        if seen_ids.insert(&profile.person_id) {
-            unique_profiles.push(profile);
+    for (original_idx, profile) in profiles.iter().enumerate() {
+        if seen_ids.insert(profile.person_id.clone()) {
+            unique_profiles.push((original_idx, profile));
         } else {
             dup_count += 1;
         }
@@ -150,7 +150,7 @@ fn resolve_batch_with_limit(
         );
     }
 
-    let profiles: Vec<&PoiProfile> = if unique_profiles.len() > max_batch_size {
+    let profiles: Vec<(usize, &PoiProfile)> = if unique_profiles.len() > max_batch_size {
         warn!(
             input_len = unique_profiles.len(),
             limit = max_batch_size,
@@ -166,7 +166,7 @@ fn resolve_batch_with_limit(
 
     for i in 0..n {
         for j in (i + 1)..n {
-            if let Some(m) = match_profiles(&profiles[i], &profiles[j]) {
+            if let Some(m) = match_profiles(profiles[i].1, profiles[j].1) {
                 if m.confidence >= threshold {
                     // Iterative path-halving find for node i
                     let mut pi = i;
@@ -212,7 +212,7 @@ fn resolve_batch_with_limit(
 
     let mut clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
     for i in 0..n {
-        clusters.entry(parent[i]).or_default().push(i);
+        clusters.entry(parent[i]).or_default().push(profiles[i].0);
     }
 
     clusters.into_values().collect()
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn test_resolve_batch_drops_duplicate_person_ids() {
         // B295: Verify that duplicate person_ids are dropped
-        let mut dup_person1 = make_poi("dup123", "Alice Smith", "OrgA", Some("alice1@example.com"));
+        let dup_person1 = make_poi("dup123", "Alice Smith", "OrgA", Some("alice1@example.com"));
         let mut dup_person2 = make_poi("dup123", "Alice Jones", "OrgB", Some("alice2@example.com"));
         let unique_person = make_poi("unique456", "Bob Brown", "OrgC", Some("bob@example.com"));
         

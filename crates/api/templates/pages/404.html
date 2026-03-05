@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}404 — ApexIntel{% endblock %}
+
+{% block content %}
+<div class="flex flex-col items-center justify-center py-20">
+  <div class="mb-6 flex h-16 w-16 items-center justify-center rounded-sm border border-border bg-secondary text-muted-foreground">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+  </div>
+  <h1 class="text-4xl font-black">404</h1>
+  <p class="mt-2 text-sm text-muted-foreground">The page you requested was not found.</p>
+  {% if !requested_path.is_empty() %}
+  <p class="mt-1 text-[10px] font-mono text-muted-foreground">{{ requested_path }}</p>
+  {% endif %}
+  <a href="/" class="mt-6 rounded-sm border border-border bg-secondary px-4 py-2 text-[10px] font-black uppercase tracking-[0.12em] hover:bg-muted">
+    Return to Dashboard
+  </a>
+</div>
+{% endblock %}

@@ -117,8 +117,19 @@ pub fn parse_number(text: &str) -> Option<f64> {
     } else if has_comma {
         let comma_count = s.matches(',').count();
         if comma_count > 1 {
-            // Thousand-group separators (including Indian grouping): 1,23,456 -> 123456
-            s = s.replace(',', "");
+            if let Some(last_comma) = s.rfind(',') {
+                let digits_after = s.len().saturating_sub(last_comma + 1);
+                if digits_after == 2 {
+                    // European format with grouped thousands and decimal comma:
+                    // 1,234,56 -> 1234.56
+                    let integer_part = s[..last_comma].replace(',', "");
+                    let decimal_part = &s[last_comma + 1..];
+                    s = format!("{}.{}", integer_part, decimal_part);
+                } else {
+                    // Thousand-group separators (including Indian grouping): 1,23,456 -> 123456
+                    s = s.replace(',', "");
+                }
+            }
         } else if let Some(pos) = s.find(',') {
             let digits_after = s.len().saturating_sub(pos + 1);
             if digits_after == 3 {

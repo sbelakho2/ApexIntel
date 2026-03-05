@@ -104,6 +104,51 @@ pub fn check_all_signals(recipe: &Recipe, features: &FeatureMap) -> Option<Vec<f
     Some(values)
 }
 
+/// Check signals with partial matching and fallback support.
+///
+/// For each signal, tries exact key match first, then falls back to
+/// `"{observation_type}.count"` if available.  Returns `None` only when zero
+/// signals can be matched.  The caller receives the matched values alongside
+/// the total/matched counts so confidence can be scaled proportionally.
+pub fn check_signals_partial(
+    recipe: &Recipe,
+    features: &FeatureMap,
+) -> Option<(Vec<f64>, usize, usize)> {
+    let total = recipe.signals.len();
+    if total == 0 {
+        return None;
+    }
+
+    let mut matched_values = Vec::new();
+    let mut matched_count: usize = 0;
+
+    for signal in &recipe.signals {
+        // Try exact match first.
+        if let Some(v) = check_signal(signal, features) {
+            matched_values.push(v);
+            matched_count += 1;
+            continue;
+        }
+        // Fallback: check if the observation_type has ANY presence via .count key.
+        // NOTE: .any fallback removed (Q1 2026) — it was too permissive and caused
+        // unrelated recipes to fire on generic entity data.
+        let fallback_key = format!("{}.count", signal.observation_type);
+        if let Some(&v) = features.get(&fallback_key) {
+            if v > 0.0 {
+                matched_values.push(v);
+                matched_count += 1;
+                continue;
+            }
+        }
+    }
+
+    if matched_count == 0 {
+        return None;
+    }
+
+    Some((matched_values, total, matched_count))
+}
+
 // ────────────────────────────────────────────
 // Transform application
 // ────────────────────────────────────────────
@@ -206,34 +251,72 @@ pub fn estimate_impact(values: &[f64]) -> f64 {
 }
 
 /// Estimate confidence from number of signals and their (transformed) strengths.
+///
+/// Produces a well-spread confidence score in \[0.05, 1.0\] by combining:
+/// 1. **Coverage** – fraction of recipe signals that matched (penalises partials)
+/// 2. **Strength** – log-scaled average magnitude (avoids clustering from small counts)
+/// 3. **Diversity** – coefficient-of-variation bonus for heterogeneous evidence
+/// 4. **Precision** – recipe historical accuracy (discounted for seed recipes with
+///    no firing history)
 pub fn estimate_confidence(signal_values: &[f64], recipe: &Recipe) -> f64 {
     if signal_values.is_empty() {
         return 0.0;
     }
-    // Base confidence from signal count
-    let signal_factor = (signal_values.len() as f64 / 3.0).min(1.0);
 
-    // Strength factor: average absolute value normalized
-    let avg_strength = signal_values
-        .iter()
-        .map(|v| v.abs())
-        .sum::<f64>()
-        / signal_values.len() as f64;
-    let strength_factor = (avg_strength / 5.0).min(1.0);
+    let n = signal_values.len() as f64;
+    let total_signals = recipe.signals.len().max(1) as f64;
 
-    // Recipe reliability factor based on precision history
-    let precision_factor = recipe.precision();
+    // 1. Coverage factor: what fraction of the recipe's declared signals fired?
+    let coverage = (n / total_signals).min(1.0);
 
-    // Combined confidence
-    let raw = 0.4 * signal_factor + 0.3 * strength_factor + 0.3 * precision_factor;
-    raw.min(1.0).max(0.0)
+    // 2. Strength factor: log-scaled average absolute value.
+    //    ln(1+x)/ln(1+50) maps [0,50] → [0,1], giving much more spread
+    //    than the previous linear (avg/5).min(1.0).
+    let avg_mag = signal_values.iter().map(|v| v.abs()).sum::<f64>() / n;
+    let strength = (1.0 + avg_mag).ln() / (1.0 + 50.0_f64).ln();
+
+    // 3. Diversity factor: coefficient of variation of absolute values.
+    //    Rewards insights backed by heterogeneous signal strengths.
+    let diversity = if n > 1.0 {
+        let mean = signal_values.iter().map(|v| v.abs()).sum::<f64>() / n;
+        let var = signal_values
+            .iter()
+            .map(|v| (v.abs() - mean).powi(2))
+            .sum::<f64>()
+            / n;
+        (var.sqrt() / (mean + 1.0)).min(1.0)
+    } else {
+        0.0
+    };
+
+    // 4. Precision factor: historical accuracy, discounted for seed recipes.
+    //    Seed recipes (fire_count == 0) previously returned 1.0 which inflated
+    //    confidence.  We use 0.5 as a neutral prior instead.
+    let precision = if recipe.fire_count == 0 {
+        0.5
+    } else {
+        recipe.precision()
+    };
+
+    // Weighted combination
+    let raw = 0.30 * coverage + 0.30 * strength + 0.15 * diversity + 0.25 * precision;
+    raw.min(1.0).max(0.05)
 }
 
 // ────────────────────────────────────────────
 // Recipe evaluation
 // ────────────────────────────────────────────
 
+/// Minimum fraction of signals that must match for partial evaluation.
+const PARTIAL_MATCH_MIN_FRACTION: f64 = 0.50;
+
 /// Evaluate a single recipe against entity features.
+///
+/// Tries exact (all signals) matching first.  When that fails, uses partial
+/// matching with a fallback to `{observation_type}.count` keys.  The recipe
+/// fires if at least [`PARTIAL_MATCH_MIN_FRACTION`] (40 %) of its signals can
+/// be satisfied; confidence is then scaled by the match fraction so fully-
+/// matched recipes always rank higher.
 pub fn evaluate_recipe(
     recipe: &Recipe,
     entity_id: &str,
@@ -248,27 +331,38 @@ pub fn evaluate_recipe(
         return None;
     }
 
-    // 1. Check signal presence
-    let signal_values = check_all_signals(recipe, features)?;
-
-    // 2. Apply transforms
-    let transformed = apply_transforms(&signal_values, &recipe.transforms, features);
-
-    // 3. Estimate impact and confidence (use transformed values for strength)
-    let impact = estimate_impact(&transformed);
-    let confidence = estimate_confidence(&transformed, recipe);
-
-    // 4. Check minimum thresholds
-    if impact < 0.1 {
-        return None;
-    }
-
     // B143: Validate templates are not empty
     if recipe.insight_template.trim().is_empty() || recipe.action_template.trim().is_empty() {
         tracing::warn!(
             recipe_code = %recipe.code,
             "Recipe has empty narrative or action template, skipping"
         );
+        return None;
+    }
+
+    // 1. Try exact (all signals) matching first.
+    let (signal_values, match_fraction) = if let Some(vals) = check_all_signals(recipe, features) {
+        (vals, 1.0_f64)
+    } else {
+        // 1b. Fall back to partial matching with observation-type-level fallbacks.
+        let (vals, total, matched) = check_signals_partial(recipe, features)?;
+        let frac = matched as f64 / total as f64;
+        if frac < PARTIAL_MATCH_MIN_FRACTION {
+            return None;
+        }
+        (vals, frac)
+    };
+
+    // 2. Apply transforms
+    let transformed = apply_transforms(&signal_values, &recipe.transforms, features);
+
+    // 3. Estimate impact and confidence (use transformed values for strength)
+    let impact = estimate_impact(&transformed);
+    // Scale confidence by the fraction of signals that matched.
+    let confidence = (estimate_confidence(&transformed, recipe) * match_fraction).min(1.0);
+
+    // 4. Check minimum thresholds
+    if impact < 0.1 {
         return None;
     }
 
@@ -602,12 +696,17 @@ mod tests {
 
     #[test]
     fn test_estimate_confidence() {
-        let recipe = make_recipe("A001", vec![make_signal("X", "y", "above", Some(0.0))]);
+        // Recipe declares 3 signals so that coverage differentiates 2 vs 3 matches.
+        let recipe = make_recipe("A001", vec![
+            make_signal("X", "y", "above", Some(0.0)),
+            make_signal("Y", "z", "above", Some(0.0)),
+            make_signal("Z", "w", "above", Some(0.0)),
+        ]);
         let conf = estimate_confidence(&[5.0, 3.0], &recipe);
         assert!(conf > 0.0);
         assert!(conf <= 1.0);
 
-        // More signals should give higher confidence
+        // More matched signals → higher coverage → higher confidence
         let conf_many = estimate_confidence(&[5.0, 3.0, 4.0], &recipe);
         assert!(conf_many >= conf);
     }
@@ -642,8 +741,8 @@ mod tests {
             make_signal("JobPost", "count", "above", Some(10.0)),
         ];
         let recipe = make_recipe("A001", signals);
-        let mut features = FeatureMap::new();
-        features.insert("JobPost.count".to_string(), 5.0);
+        // No features at all — neither exact match nor .count fallback fire.
+        let features = FeatureMap::new();
 
         let candidate = evaluate_recipe(&recipe, "company-123", &features);
         assert!(candidate.is_none());
@@ -826,7 +925,7 @@ mod tests {
     // B142: Precision is consistent between RecipePerformance and engine estimate
     #[test]
     fn test_estimate_confidence_uses_recipe_precision() {
-        let mut recipe = make_recipe("A001", vec![make_signal("X", "y", "above", Some(0.0))]);
+        let recipe = make_recipe("A001", vec![make_signal("X", "y", "above", Some(0.0))]);
         // Recipe::precision() returns 1.0 by default (0 fires)
         let conf = estimate_confidence(&[5.0], &recipe);
         assert!(conf > 0.0 && conf <= 1.0);

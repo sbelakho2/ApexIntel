@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Admin — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Admin</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("Admin Dashboard", "cpu", "System administration and monitoring", "") %}
+
+<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  <div class="apex-card p-4">
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Uptime</p>
+    <p class="mt-1.5 apex-metric-number text-xl">{{ uptime }}</p>
+  </div>
+  <div class="apex-card p-4">
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">DB Size</p>
+    <p class="mt-1.5 apex-metric-number text-xl">{{ db_size }}</p>
+  </div>
+  <div class="apex-card p-4">
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Observations</p>
+    <p class="mt-1.5 apex-metric-number text-xl">{{ total_observations }}</p>
+  </div>
+  <div class="apex-card p-4">
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Entities</p>
+    <p class="mt-1.5 apex-metric-number text-xl">{{ total_entities }}</p>
+  </div>
+</div>
+
+{# ── System health ── #}
+<div class="apex-card mb-6">
+  <div class="border-b border-border px-4 py-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">System Health</h2>
+  </div>
+  <div class="divide-y divide-border">
+    {% for m in system_metrics %}
+    <div class="px-4 py-3 flex items-center justify-between">
+      <span class="text-sm font-semibold">{{ m.name }}</span>
+      <div class="flex items-center gap-2">
+        <span class="text-[11px]">{{ m.value }}</span>
+        <span class="h-2 w-2 rounded-full {% if m.status == "ok" %}bg-green-500{% else if m.status == "warning" %}bg-yellow-500{% else %}bg-red-500{% endif %}"></span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{# ── Crawl statuses ── #}
+{% if !crawl_statuses.is_empty() %}
+<div class="apex-card mb-6">
+  <div class="border-b border-border px-4 py-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Crawl Status</h2>
+  </div>
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-border">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Source</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Status</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase text-muted-foreground">Items</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase text-muted-foreground">Errors</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase text-muted-foreground">Last Run</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-border">
+      {% for c in crawl_statuses %}
+      <tr>
+        <td class="px-4 py-2 text-sm font-semibold">{{ c.source }}</td>
+        <td class="px-4 py-2">
+          {% if c.status == "running" %}{% call m::status_badge("Running", "success") %}
+          {% else if c.status == "error" %}{% call m::status_badge("Error", "error") %}
+          {% else %}{% call m::status_badge("Idle", "") %}{% endif %}
+        </td>
+        <td class="px-4 py-2 text-right tabular-nums text-[11px]">{{ c.items_crawled }}</td>
+        <td class="px-4 py-2 text-right tabular-nums text-[11px]">{{ c.error_count }}</td>
+        <td class="px-4 py-2 text-right text-[11px] text-muted-foreground">{{ c.last_run }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{# ── Queues ── #}
+{% if !queues.is_empty() %}
+<div class="apex-card">
+  <div class="border-b border-border px-4 py-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Queues</h2>
+  </div>
+  <div class="divide-y divide-border">
+    {% for q in queues %}
+    <div class="px-4 py-3 flex items-center justify-between">
+      <span class="text-sm font-semibold">{{ q.name }}</span>
+      <div class="flex gap-4 text-[11px] tabular-nums">
+        <span>Depth: {{ q.depth }}</span>
+        <span>Processing: {{ q.processing }}</span>
+        <span class="{% if q.failed > 0 %}text-red-500{% endif %}">Failed: {{ q.failed }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

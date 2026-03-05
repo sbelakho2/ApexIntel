@@ -1,0 +1,126 @@
+{# ── HTMX partial: companies list results fragment ────────────────────── #}
+{% import "macros.html" as m %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Companies Tracked</p><p class="mt-1.5 apex-metric-number text-2xl">{{ total }}</p></div>
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">High Risk (≥70)</p><p class="mt-1.5 apex-metric-number text-2xl">{{ high_risk_count }}</p></div>
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Risk Score</p><p class="mt-1.5 apex-metric-number text-2xl">{% if avg_risk > 0 %}{{ avg_risk }}{% else %}—{% endif %}</p></div>
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Regions</p><p class="mt-1.5 apex-metric-number text-2xl">{{ regions_count }}</p></div>
+</div>
+
+{% if !region_slices.is_empty() %}
+<div class="grid gap-4 lg:grid-cols-3 mb-6">
+  <div class="lg:col-span-2 apex-card p-4">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-4">Coverage by Region</h2>
+    <div style="height:200px;position:relative">
+      <canvas id="company-region-chart"></canvas>
+    </div>
+    <script>
+    (function(){
+      var ctx = document.getElementById('company-region-chart');
+      if (!ctx || !window.Chart) return;
+      if (ctx._chart) { ctx._chart.destroy(); }
+      ctx._chart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: [{% for r in region_slices %}'{{ r.name }}',{% endfor %}],
+          datasets: [{
+            data: [{% for r in region_slices %}{{ r.count }},{% endfor %}],
+            backgroundColor: [{% for r in region_slices %}'{{ r.color }}',{% endfor %}],
+            borderColor: [{% for r in region_slices %}'{{ r.color }}',{% endfor %}],
+            borderWidth: 0,
+            hoverOffset: 4
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          cutout: '62%',
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(c) {
+                  return c.label + ': ' + c.raw;
+                }
+              }
+            }
+          }
+        }
+      });
+    })();
+    </script>
+    <div class="mt-3 flex flex-wrap justify-center gap-3">
+      {% for r in region_slices %}
+      <span class="flex items-center gap-1 text-[10px] font-bold uppercase">
+        <span class="h-2.5 w-2.5 rounded-sm" style="background-color: {{ r.color }}"></span>
+        {{ r.name }} ({{ r.count }})
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="apex-card p-4">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Quick Links</h2>
+    <div class="space-y-2">
+      {% for q in quick_links %}
+      <a href="/companies/{{ q.id }}" class="flex items-center justify-between rounded-sm border border-border bg-secondary/30 px-3 py-2 text-sm hover:bg-secondary">
+        <span class="font-bold">{{ q.name }}</span>
+        <span class="text-[10px] text-muted-foreground uppercase">{{ q.tier }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
+    <a href="/companies" hx-get="/companies" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
+    <a href="/companies?region=Tunisia{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-get="/companies?region=Tunisia{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Tunisia" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Tunisia</a>
+    <a href="/companies?region=Morocco{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-get="/companies?region=Morocco{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Morocco" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Morocco</a>
+    <a href="/companies?region=Israel{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-get="/companies?region=Israel{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Israel" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Israel</a>
+    <a href="/companies?region=EU{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-get="/companies?region=EU{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "EU" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">EU</a>
+    <a href="/companies?region=China{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-get="/companies?region=China{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "China" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">China</a>
+    <a href="/companies?region=Global{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-get="/companies?region=Global{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Global" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Global</a>
+    <span class="mx-2 h-4 w-px bg-border"></span>
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Tier:</span>
+    <a href="/companies?sector=T1{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-get="/companies?sector=T1{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T1" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T1</a>
+    <a href="/companies?sector=T2{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-get="/companies?sector=T2{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T2" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T2</a>
+    <a href="/companies?sector=T3{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-get="/companies?sector=T3{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T3" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T3</a>
+    <a href="/companies?sector=T4{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-get="/companies?sector=T4{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T4" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T4</a>
+    <a href="/companies?sector=T5{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-get="/companies?sector=T5{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T5" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T5</a>
+    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_region.is_empty() %}{% if active_sector.is_empty() %}0{% else %}1{% endif %}{% else %}{% if active_sector.is_empty() %}1{% else %}2{% endif %}{% endif %}</span>
+    <a href="/companies" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+  </div>
+</div>
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {% if companies.is_empty() %}
+  <div class="col-span-full">
+    {% call m::empty_state("No companies found", "Try broadening your filter.") %}
+  </div>
+  {% else %}
+    {% for c in companies %}
+    <a href="/companies/{{ c.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <p class="font-bold text-sm">{{ c.name }}</p>
+          <p class="text-[10px] text-muted-foreground uppercase mt-1">{{ c.region }} · {{ c.sector }}</p>
+        </div>
+        {% if c.risk_score > 0 %}<p class="text-xs">Threat: <span class="font-bold tabular-nums">{{ c.risk_score }}</span></p>{% endif %}
+      </div>
+      {% if c.is_competitor %}<p class="mt-2 text-[10px] font-bold uppercase text-orange-600">Competitor</p>{% endif %}
+    </a>
+    {% endfor %}
+  {% endif %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 flex items-center justify-between">
+  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <div class="flex gap-1">
+    {% if page > 1 %}<a href="/companies?page={{ page - 1 }}" hx-get="/companies?page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="/companies?page={{ page + 1 }}" hx-get="/companies?page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+  </div>
+</div>
+{% endif %}

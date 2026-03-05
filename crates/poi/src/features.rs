@@ -5,13 +5,138 @@ use crate::model::*;
 const MAX_KEYWORD_HITS_PER_TERM: usize = 5;
 
 /// Keyword categories used for priority vector computation.
+/// Covers English, Arabic, French, German, Spanish, Hebrew, Korean,
+/// Japanese, Chinese and Russian signals in a single pass.
 const KEYWORD_CATEGORIES: &[(&str, &[&str])] = &[
-    ("cost", &["cost", "price", "budget", "savings", "tco", "should-cost", "تكلفة", "coût", "prix"]),
-    ("quality", &["quality", "ppm", "defect", "yield", "zero defects", "جودة", "qualité"]),
-    ("speed", &["speed", "lead time", "fast", "agile", "npi", "time-to-market", "سرعة", "rapidité"]),
-    ("resilience", &["resilience", "risk", "disruption", "continuity", "dual source", "مرونة", "résilience"]),
-    ("compliance", &["compliance", "audit", "regulation", "standard", "certification", "امتثال", "conformité"]),
-    ("security", &["security", "cyber", "dmarc", "breach", "zero trust", "أمن", "sécurité"]),
+    ("cost", &[
+        // EN
+        "cost", "price", "budget", "savings", "tco", "should-cost", "capex", "opex",
+        "spend", "expenditure", "affordable", "cheap", "overrun", "invoice", "roi",
+        "payback", "margin", "profitability", "financial", "fiscal",
+        // AR
+        "تكلفة", "سعر", "ميزانية", "وفورات", "إنفاق",
+        // FR
+        "coût", "prix", "budget", "économies", "dépense",
+        // DE
+        "kosten", "preis", "budget", "einsparung",
+        // ES
+        "costo", "precio", "presupuesto", "ahorro",
+        // HE
+        "עלות", "מחיר", "תקציב",
+        // KO
+        "비용", "가격", "예산",
+        // JA
+        "コスト", "価格", "予算",
+        // ZH
+        "成本", "价格", "预算",
+        // RU
+        "стоимость", "бюджет",
+    ]),
+    ("quality", &[
+        // EN
+        "quality", "ppm", "defect", "yield", "zero defects", "six sigma", "iso 9001",
+        "inspection", "reliability", "durability", "tolerance", "precision", "accuracy",
+        "validation", "testing", "audit trail", "traceability", "asq", "apqp", "ppap",
+        // AR
+        "جودة", "عيب", "موثوقية",
+        // FR
+        "qualité", "défaut", "rendement", "fiabilité",
+        // DE
+        "qualität", "fehler", "zuverlässigkeit",
+        // ES
+        "calidad", "defecto", "confiabilidad",
+        // HE
+        "איכות", "פגם",
+        // KO
+        "품질", "결함", "수율",
+        // JA
+        "品質", "不良", "歩留まり",
+        // ZH
+        "质量", "缺陷", "良率",
+    ]),
+    ("speed", &[
+        // EN
+        "speed", "lead time", "fast", "agile", "npi", "time-to-market", "delivery",
+        "turnaround", "velocity", "throughput", "expedite", "urgent", "asap", "rapid",
+        "quick", "swift", "on-time", "runway", "sprint",
+        // AR
+        "سرعة", "وقت التسليم", "عاجل",
+        // FR
+        "rapidité", "délai", "livraison", "urgent",
+        // DE
+        "schnelligkeit", "lieferzeit", "dringend",
+        // ES
+        "velocidad", "entrega", "urgente",
+        // KO
+        "속도", "납기", "긴급",
+        // JA
+        "スピード", "リードタイム", "緊急",
+        // ZH
+        "速度", "交期", "紧急",
+    ]),
+    ("resilience", &[
+        // EN
+        "resilience", "risk", "disruption", "continuity", "dual source", "buffer stock",
+        "backup", "redundancy", "contingency", "recovery", "bcp", "drp", "disaster",
+        "shortage", "scarcity", "geopolitical", "vulnerability", "exposure", "volatility",
+        "diversification", "nearshoring", "reshoring", "friendshoring",
+        // AR
+        "مرونة", "مخاطر", "استمرارية", "نقص",
+        // FR
+        "résilience", "risque", "continuité", "pénurie", "rupture",
+        // DE
+        "resilienz", "risiko", "kontinuität", "versorgungsengpass",
+        // ES
+        "resiliencia", "riesgo", "continuidad",
+        // HE
+        "חוסן", "סיכון",
+        // KO
+        "회복력", "위험", "연속성",
+        // ZH
+        "弹性", "风险", "供应中断",
+    ]),
+    ("compliance", &[
+        // EN
+        "compliance", "audit", "regulation", "standard", "certification", "gdpr",
+        "sox", "hipaa", "iso", "itar", "ear", "sanctions", "aml", "kyc", "esg",
+        "csrd", "due diligence", "reporting", "transparency", "governance", "fiduciary",
+        "regulatory", "licensing", "accreditation",
+        // AR
+        "امتثال", "تدقيق", "تنظيم", "شهادة",
+        // FR
+        "conformité", "audit", "réglementation", "certification",
+        // DE
+        "compliance", "regulierung", "zertifizierung",
+        // ES
+        "cumplimiento", "auditoría", "regulación",
+        // HE
+        "ציות", "ביקורת", "רגולציה",
+        // KO
+        "준수", "감사", "규정",
+        // ZH
+        "合规", "审计", "监管",
+    ]),
+    ("security", &[
+        // EN
+        "security", "cyber", "dmarc", "breach", "zero trust", "soc2", "pentest",
+        "ransomware", "phishing", "intrusion", "vulnerability", "patch", "cve",
+        "ciso", "siem", "iam", "encryption", "privacy", "data loss", "dlp",
+        "national security", "defense", "classified", "clearance", "intelligence",
+        // AR
+        "أمن", "سيبراني", "اختراق", "دفاع",
+        // FR
+        "sécurité", "cyber", "violation", "défense",
+        // DE
+        "sicherheit", "cyber", "datenschutz",
+        // ES
+        "seguridad", "ciberseguridad", "privacidad",
+        // HE
+        "אבטחה", "סייבר", "ביטחון",
+        // KO
+        "보안", "사이버", "방어",
+        // ZH
+        "安全", "网络安全", "防御",
+    ]),
 ];
 
 /// Locale-specific keyword extensions for priority vector (B130).
@@ -265,6 +390,212 @@ pub fn infer_change_appetite(role_history: &[RoleHistoryEntry]) -> ChangeAppetit
     } else {
         ChangeAppetite::Laggard
     }
+}
+
+// ─── Seniority mapping helper ──────────────────────────────────────────────
+
+fn seniority_level_for_title(title: &str) -> u8 {
+    let t = title.to_lowercase();
+    if t.contains("chief") || t.contains("ceo") || t.contains("coo") || t.contains("cfo")
+        || t.contains("cto") || t.contains("ciso") || t.contains("president")
+        || t.contains("founder")
+    {
+        9
+    } else if t.contains("evp") || t.contains("svp") || t.contains("executive vice") {
+        8
+    } else if t.contains("vp") || t.contains("vice president") {
+        7
+    } else if t.contains("principal") || t.contains("fellow") || t.contains("partner") {
+        7
+    } else if t.contains("director") || t.contains("managing director") {
+        6
+    } else if t.contains("head of") || t.contains("gm") || t.contains("general manager") {
+        6
+    } else if t.contains("senior manager") || t.contains("senior director") {
+        5
+    } else if t.contains("manager") || t.contains("lead") {
+        4
+    } else if t.contains("senior") || t.contains("principal engineer") {
+        3
+    } else if t.contains("engineer") || t.contains("analyst") || t.contains("specialist") {
+        2
+    } else {
+        1
+    }
+}
+
+/// Compute career velocity: average seniority-level gain per year of career history.
+/// Returns a value in [0, 4] where ≥1.0 is fast-track, ≥0.5 is steady growth.
+pub fn compute_career_velocity(role_history: &[RoleHistoryEntry], now_utc: i64) -> f64 {
+    if role_history.len() < 2 {
+        return 0.0;
+    }
+
+    // Use earliest start as career start
+    let career_start = role_history.iter().map(|r| r.start_ts).min().unwrap_or(now_utc);
+    let career_years = ((now_utc - career_start) as f64 / (365.25 * 86_400.0)).max(0.25);
+
+    // Calculate max seniority reached minus lowest seniority held
+    let seniorities: Vec<u8> = role_history
+        .iter()
+        .map(|r| seniority_level_for_title(&r.title))
+        .collect();
+    let min_s = *seniorities.iter().min().unwrap_or(&1) as f64;
+    let max_s = *seniorities.iter().max().unwrap_or(&1) as f64;
+    let seniority_gain = (max_s - min_s).max(0.0);
+
+    (seniority_gain / career_years).min(4.0)
+}
+
+/// Count distinct artifact mentions in the trailing `window_days`, normalised to [0, 1].
+/// 100 or more mentions in the window scores 1.0.
+pub fn compute_public_recurrence_from_artifacts(
+    artifacts: &[PoiArtifact],
+    now_utc: i64,
+    window_days: i64,
+) -> f64 {
+    let cutoff = now_utc - window_days * 86_400;
+    let count = artifacts
+        .iter()
+        .filter(|a| a.ts_utc >= cutoff && a.ts_utc <= now_utc + 86_400)
+        .count();
+    (count as f64 / 100.0).min(1.0)
+}
+
+/// Return the top pain themes as `(topic_label, weight)` pairs, sorted descending by weight.
+/// At most 6 themes are returned; weights are normalised so the best category = 1.0.
+pub fn infer_pain_themes(artifacts: &[PoiArtifact], now_utc: i64) -> Vec<(String, f64)> {
+    // theme keyword sets → same decay logic as compute_pain_index but per category
+    const THEMES: &[(&str, &[&str])] = &[
+        ("supply_disruption",  &["shortage", "disruption", "stockout", "out of stock", "delay", "backlog"]),
+        ("financial_stress",   &["budget cut", "layoff", "downturn", "loss", "deficit", "cash flow"]),
+        ("quality_crisis",     &["defect", "recall", "failure", "reject", "ppm spike", "complaint"]),
+        ("talent_gap",         &["talent", "hiring", "attrition", "skills gap", "understaffed", "headcount"]),
+        ("regulatory_burden",  &["fine", "penalty", "audit finding", "non-compliance", "litigation", "sec", "gdpr"]),
+        ("cyber_threat",       &["breach", "ransomware", "attack", "vulnerability", "data leak", "phishing"]),
+    ];
+
+    let half_life_secs = 90.0 * 86_400.0_f64; // 90-day half-life
+    let mut scores: Vec<f64> = vec![0.0; THEMES.len()];
+
+    for artifact in artifacts {
+        let age = (now_utc - artifact.ts_utc).max(0) as f64;
+        if age > 365.0 * 86_400.0 {
+            continue;
+        }
+        let decay = (-age / half_life_secs).exp();
+        let text = format!(
+            "{} {}",
+            artifact.title.to_lowercase(),
+            artifact.content_summary.to_lowercase()
+        );
+        for (i, (_label, kws)) in THEMES.iter().enumerate() {
+            for kw in *kws {
+                if text.contains(kw) {
+                    scores[i] += decay;
+                    break; // only one hit per artifact per theme
+                }
+            }
+        }
+    }
+
+    let max_score = scores.iter().cloned().fold(0.0_f64, f64::max).max(1e-9);
+    let mut themes: Vec<(String, f64)> = THEMES
+        .iter()
+        .zip(scores.iter())
+        .filter(|(_, &s)| s > 0.0)
+        .map(|((label, _), &s)| (label.to_string(), (s / max_score).min(1.0)))
+        .collect();
+    themes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    themes.truncate(6);
+    themes
+}
+
+/// Count distinct priority-vector categories that carry significant weight (≥10%).
+pub fn compute_topic_diversity(pv: &PriorityVector) -> u8 {
+    let weights = [pv.cost, pv.quality, pv.speed, pv.resilience, pv.compliance, pv.security];
+    weights.iter().filter(|&&w| w >= 0.10).count() as u8
+}
+
+// Assertive/directive language markers
+const DIRECTIVE_MARKERS: &[&str] = &[
+    "we will", "we must", "i will", "i expect", "we are committed",
+    "non-negotiable", "mandatory", "zero tolerance", "immediate",
+    "take action", "drive", "execute", "deliver", "require",
+];
+// Hedging/passive language markers
+const HEDGING_MARKERS: &[&str] = &[
+    "perhaps", "maybe", "consider", "might", "could be worth",
+    "it depends", "we'll see", "hopefully", "try to", "look into",
+    "it's complicated", "nuanced", "in theory", "ideally",
+];
+
+/// Infer communication assertiveness from quote / speech artifacts.
+/// Returns a score in [0, 1]: 1.0 = very assertive/directive, 0.0 = very passive/hedging.
+pub fn infer_communication_assertiveness(artifacts: &[PoiArtifact]) -> f64 {
+    let mut directive_hits = 0usize;
+    let mut hedging_hits = 0usize;
+    let mut quote_count = 0usize;
+
+    for artifact in artifacts {
+        if artifact.artifact_type != "quote" && artifact.artifact_type != "speech" {
+            continue;
+        }
+        quote_count += 1;
+        let text = format!(
+            "{} {}",
+            artifact.title.to_lowercase(),
+            artifact.content_summary.to_lowercase()
+        );
+        for m in DIRECTIVE_MARKERS {
+            if text.contains(m) {
+                directive_hits += 1;
+            }
+        }
+        for m in HEDGING_MARKERS {
+            if text.contains(m) {
+                hedging_hits += 1;
+            }
+        }
+    }
+
+    if quote_count == 0 {
+        return 0.5; // neutral default when no quotes
+    }
+
+    let total = (directive_hits + hedging_hits) as f64;
+    if total < 1.0 {
+        return 0.5;
+    }
+    (directive_hits as f64 / total).clamp(0.0, 1.0)
+}
+
+/// Detect the number of distinct organisations the person appears to hold
+/// board-level roles in, based on artifact text (a proxy for cross-board influence).
+pub fn infer_cross_board_count(artifacts: &[PoiArtifact]) -> u32 {
+    const BOARD_SIGNALS: &[&str] = &[
+        "board member", "board of directors", "director at", "advisory board",
+        "non-executive", "independent director", "trustee", "governor",
+    ];
+    use std::collections::HashSet;
+    let mut orgs: HashSet<String> = HashSet::new();
+    for artifact in artifacts {
+        let text = format!(
+            "{} {}",
+            artifact.title.to_lowercase(),
+            artifact.content_summary.to_lowercase()
+        );
+        let has_board_signal = BOARD_SIGNALS.iter().any(|s| text.contains(s));
+        if has_board_signal {
+            // Heuristic: find the word after "at" / "of" / "for" near the board keyword
+            if let Some(pos) = BOARD_SIGNALS.iter().find_map(|s| text.find(s)) {
+                let snippet = &text[pos..pos.min(text.len())];
+                // Just record the artifact source as a distinct board seat proxy
+                orgs.insert(artifact.source_url.clone().unwrap_or_else(|| snippet.to_string()));
+            }
+        }
+    }
+    orgs.len() as u32
 }
 
 #[cfg(test)]

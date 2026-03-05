@@ -134,6 +134,24 @@ pub enum JobKind {
     CrossDomainMining,
     /// Outcome tracking — matches predictions against observed outcomes.
     OutcomeTracking,
+    /// Breach scan — checks monitored domains and emails against HIBP, IntelX, Pastebin.
+    BreachScan,
+    /// Sanctions screen — checks all tracked entities against OFAC SDN and EU consolidated lists.
+    SanctionsScreen,
+    /// SLA enforcement — re-escalates unacknowledged security warnings past their SLA deadline.
+    SlaEnforcement,
+    /// DNS posture scan — checks SPF/DKIM/DMARC for all tracked company domains.
+    DnsPostureScan,
+    /// KEV catalog fetch — downloads the CISA Known Exploited Vulnerabilities catalog.
+    KevCatalogFetch,
+    /// Lookalike domain scan — detects typosquat/lookalike domains for tracked companies.
+    LookalikeDomainScan,
+    /// Self-improvement cycle — runs SourceScoring + CrossDomainMining + OutcomeTracking in sequence.
+    SelfImprovementCycle,
+    /// Recipe fire — evaluates all active recipes against live observation data and generates insights/warnings.
+    RecipeFire,
+    /// POI discovery — network-expansion from existing seed POIs to find new contacts.
+    PoiDiscovery,
     Custom(String),
 }
 
@@ -151,7 +169,43 @@ impl JobKind {
             Self::SourceScoring => "source_scoring",
             Self::CrossDomainMining => "cross_domain_mining",
             Self::OutcomeTracking => "outcome_tracking",
+            Self::BreachScan => "breach_scan",
+            Self::SanctionsScreen => "sanctions_screen",
+            Self::SlaEnforcement => "sla_enforcement",
+            Self::DnsPostureScan => "dns_posture_scan",
+            Self::KevCatalogFetch => "kev_catalog_fetch",
+            Self::LookalikeDomainScan => "lookalike_domain_scan",
+            Self::SelfImprovementCycle => "self_improvement_cycle",
+            Self::RecipeFire => "recipe_fire",
+            Self::PoiDiscovery => "poi_discovery",
             Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// Parse a job kind from its string representation.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "crawl_cycle" => Self::CrawlCycle,
+            "pattern_mining" => Self::PatternMining,
+            "hypothesis_generation" => Self::HypothesisGeneration,
+            "poi_refresh" => Self::PoiRefresh,
+            "promotion_board" => Self::PromotionBoard,
+            "recipe_deprecation" => Self::RecipeDeprecation,
+            "strategy_memo" => Self::StrategyMemo,
+            "feature_drift_check" => Self::FeatureDriftCheck,
+            "source_scoring" => Self::SourceScoring,
+            "cross_domain_mining" => Self::CrossDomainMining,
+            "outcome_tracking" => Self::OutcomeTracking,
+            "breach_scan" => Self::BreachScan,
+            "sanctions_screen" => Self::SanctionsScreen,
+            "sla_enforcement" => Self::SlaEnforcement,
+            "dns_posture_scan" => Self::DnsPostureScan,
+            "kev_catalog_fetch" => Self::KevCatalogFetch,
+            "lookalike_domain_scan" => Self::LookalikeDomainScan,
+            "self_improvement_cycle" => Self::SelfImprovementCycle,
+            "recipe_fire" => Self::RecipeFire,
+            "poi_discovery" => Self::PoiDiscovery,
+            other => Self::Custom(other.to_string()),
         }
     }
 }
@@ -857,6 +911,16 @@ pub fn default_scheduler() -> Scheduler {
         .with_timeout(3600),
     );
 
+    // POI network expansion discovery: find new POIs from existing seeds (03:30 UTC)
+    s.register(
+        JobDef::new(
+            JobKind::PoiDiscovery,
+            Schedule::DailyAt { hour: 3, minute: 30 },
+        )
+        .with_jitter(180) // +3 min
+        .with_timeout(7200), // 2 h — network scraping can be slow
+    );
+
     s.register(
         JobDef::new(
             JobKind::FeatureDriftCheck,
@@ -948,6 +1012,94 @@ pub fn default_scheduler() -> Scheduler {
         )
         .with_jitter(60)
         .with_timeout(1800),
+    );
+
+    // ── Security compliance jobs ──────────────────────────────────────────────
+
+    // Breach scan: daily at 01:00 UTC — check all monitored domains/emails against HIBP + IntelX.
+    s.register(
+        JobDef::new(
+            JobKind::BreachScan,
+            Schedule::DailyAt { hour: 1, minute: 0 },
+        )
+        .with_jitter(0)
+        .with_timeout(3600), // 1h — HIBP/IntelX rate-limited
+    );
+
+    // Sanctions screen: daily at 01:30 UTC — fuzzy-match all tracked entities against sanctions lists.
+    s.register(
+        JobDef::new(
+            JobKind::SanctionsScreen,
+            Schedule::DailyAt { hour: 1, minute: 30 },
+        )
+        .with_jitter(120)
+        .with_timeout(1800), // 30 min
+    );
+
+    // Recipe fire: nightly at 02:15 UTC — run seed recipes against observation counts to generate insights.
+    s.register(
+        JobDef::new(
+            JobKind::RecipeFire,
+            Schedule::DailyAt { hour: 2, minute: 15 },
+        )
+        .with_jitter(60) // +1 min
+        .with_timeout(1800), // 30 min
+    );
+
+    // SLA enforcement: every 10 minutes — re-escalate unacknowledged warnings past SLA.
+    s.register(
+        JobDef::new(
+            JobKind::SlaEnforcement,
+            Schedule::IntervalSecs(600), // every 10 minutes
+        )
+        .with_jitter(0)
+        .with_timeout(120), // 2 min max
+    );
+
+    // ── Security scanning jobs ────────────────────────────────────────────────
+
+    // DNS posture scan: daily at 03:30 UTC — check SPF/DKIM/DMARC for all tracked domains.
+    s.register(
+        JobDef::new(
+            JobKind::DnsPostureScan,
+            Schedule::DailyAt { hour: 3, minute: 30 },
+        )
+        .with_jitter(120)
+        .with_timeout(1800), // 30 min
+    );
+
+    // KEV catalog fetch: daily at 04:30 UTC — download CISA KEV catalog.
+    s.register(
+        JobDef::new(
+            JobKind::KevCatalogFetch,
+            Schedule::DailyAt { hour: 4, minute: 30 },
+        )
+        .with_jitter(60)
+        .with_timeout(900), // 15 min
+    );
+
+    // Lookalike domain scan: daily at 05:00 UTC — detect typosquat/lookalike domains.
+    s.register(
+        JobDef::new(
+            JobKind::LookalikeDomainScan,
+            Schedule::DailyAt { hour: 5, minute: 0 },
+        )
+        .with_jitter(120)
+        .with_timeout(3600), // 1 h
+    );
+
+    // Self-improvement cycle: weekly Mon at 12:00 UTC — coordinated self-improvement run.
+    s.register(
+        JobDef::new(
+            JobKind::SelfImprovementCycle,
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Mon,
+                hour: 12,
+                minute: 0,
+            },
+        )
+        .with_jitter(0)
+        .with_timeout(10800), // 3 h
     );
 
     s

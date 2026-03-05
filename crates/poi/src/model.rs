@@ -115,6 +115,9 @@ impl PriorityVector {
             ("compliance", self.compliance),
             ("security", self.security),
         ];
+        if pairs.iter().all(|(_, value)| !value.is_finite()) {
+            return "unknown";
+        }
         let mut best = pairs[0];
         for &p in &pairs[1..] {
             if p.1.is_nan() {

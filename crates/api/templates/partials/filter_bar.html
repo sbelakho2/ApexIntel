@@ -1,0 +1,11 @@
+{# ── Filter bar partial ── wraps filter chips with search ─────────────── #}
+{# Variables: base_url, search_query, filters (rendered as child content) #}
+
+<div class="flex flex-wrap items-center gap-2 mb-4" role="search" aria-label="Filter results">
+  {{ filters }}
+  <input type="search" name="q" value="{{ search_query }}" placeholder="Search…"
+    hx-get="{{ base_url }}" hx-trigger="input changed delay:300ms"
+    hx-target="#main-results" hx-push-url="true" hx-indicator=".htmx-indicator"
+    class="rounded-sm border border-border bg-secondary/40 px-3 py-1 text-[11px] w-48 focus:outline-none focus:ring-1 focus:ring-border placeholder:text-muted-foreground">
+  <span class="htmx-indicator text-[10px] text-muted-foreground">Loading…</span>
+</div>

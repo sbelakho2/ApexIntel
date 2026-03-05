@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}{{ name }} — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li><a href="/persons" class="hover:text-foreground">Persons</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">{{ name }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("POI Profile", "users", "Full POI profile, priority vector, and engagement guide.", "") %}
+
+<div class="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+  <span class="font-bold uppercase tracking-[0.1em]">ID:</span>
+  <span id="person-id-value" class="max-w-[320px] truncate font-mono" title="{{ id }}">{{ id }}</span>
+  <button type="button" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('person-id-value').textContent)">Copy</button>
+</div>
+
+<nav aria-label="In-page sections" class="mb-4 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">
+  <span>Jump to:</span>
+  <a href="#poi-profile" class="rounded-sm border border-border bg-secondary px-2 py-1 hover:text-foreground">POI Profile</a>
+</nav>
+
+<div class="space-y-6" id="poi-profile">
+  <div>
+    <h1>{{ name }}</h1>
+    <div class="mt-2 flex items-center gap-2">
+      <span class="text-[11px] text-muted-foreground">{{ title }}</span>
+      {% call m::region_badge(region) %}
+      <span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ priority_tier }}</span>
+    </div>
+  </div>
+
+  <div class="apex-card p-4">
+    <p class="text-sm leading-relaxed">{{ bio }}</p>
+    <div class="mt-4 grid grid-cols-2 gap-4 text-[11px]">
+      <div><span class="font-black uppercase text-muted-foreground">Warnings</span><br>{{ warning_count_person }}</div>
+      <div><span class="font-black uppercase text-muted-foreground">Insights</span><br>{{ insight_count }}</div>
+    </div>
+  </div>
+
+  {# ── Priority vector ── #}
+  <div class="apex-card p-4">
+    <h2 class="mb-3 text-xs font-black uppercase tracking-[0.12em]">Priority Vector</h2>
+    <div class="space-y-2">
+      {% call m::progress_bar(priority_vector.influence, 100, "#D62D2D", "Influence") %}
+      {% call m::progress_bar(priority_vector.connectivity, 100, "#4A90E2", "Connectivity") %}
+      {% call m::progress_bar(priority_vector.activity, 100, "#FFBE00", "Activity") %}
+      {% call m::progress_bar(priority_vector.risk, 100, "#F97316", "Risk") %}
+    </div>
+    <p class="mt-3 text-[11px] font-bold tabular-nums">Overall: {{ priority_vector.overall }}</p>
+  </div>
+
+  {% if !affiliations.is_empty() %}
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3 flex items-center gap-4">
+      <span class="text-xs font-black uppercase tracking-[0.12em]">Affiliations</span>
+    </div>
+    <div class="divide-y divide-border">
+      {% for a in affiliations %}
+      <div class="px-4 py-3 flex items-center justify-between">
+        <div>
+          {% if a.company_id.is_empty() %}
+          <span class="text-sm font-semibold">{{ a.company_name }}</span>
+          {% else %}
+          <a href="/companies/{{ a.company_id }}" class="text-sm font-semibold hover:underline">{{ a.company_name }}</a>
+          {% endif %}
+          <span class="ml-2 text-[11px] text-muted-foreground">{{ a.role }}</span>
+        </div>
+        <span class="text-[10px] text-muted-foreground">{{ a.since }}{% if let Some(u) = a.until %} – {{ u }}{% endif %}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── HTMX Tab Section ── #}
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3 flex items-center gap-4">
+      <button class="text-[10px] font-black uppercase tracking-[0.12em] text-foreground"
+              onclick="document.getElementById('person-tab-affiliations').classList.remove('hidden');document.getElementById('person-tab-history').classList.add('hidden');document.getElementById('person-tab-peers').classList.add('hidden');">
+        Affiliations
+      </button>
+      <button class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+              onclick="document.getElementById('person-tab-history').classList.remove('hidden');document.getElementById('person-tab-affiliations').classList.add('hidden');document.getElementById('person-tab-peers').classList.add('hidden');">
+        Role History
+      </button>
+      <button class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+              onclick="document.getElementById('person-tab-peers').classList.remove('hidden');document.getElementById('person-tab-affiliations').classList.add('hidden');document.getElementById('person-tab-history').classList.add('hidden');">
+        Peers
+      </button>
+    </div>
+
+    <div id="person-tab-affiliations" class="divide-y divide-border">
+      {% for a in affiliations %}
+      <div class="px-4 py-3 flex items-center justify-between">
+        <div>
+          {% if a.company_id.is_empty() %}
+          <span class="text-sm font-semibold">{{ a.company_name }}</span>
+          {% else %}
+          <a href="/companies/{{ a.company_id }}" class="text-sm font-semibold hover:underline">{{ a.company_name }}</a>
+          {% endif %}
+          <span class="ml-2 text-[11px] text-muted-foreground">{{ a.role }}</span>
+        </div>
+        <span class="text-[10px] text-muted-foreground">{{ a.since }}{% if let Some(u) = a.until %} – {{ u }}{% endif %}</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div id="person-tab-history" class="hidden divide-y divide-border">
+      {% for rh in role_history %}
+      <div class="px-4 py-3">
+        <span class="text-sm font-semibold">{{ rh.role }}</span>
+        <span class="ml-2 text-[11px] text-muted-foreground">at {{ rh.company_name }}</span>
+        <p class="text-[10px] text-muted-foreground">{{ rh.start_date }}{% if let Some(end) = rh.end_date %} – {{ end }}{% else %} – present{% endif %}</p>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div id="person-tab-peers" class="hidden divide-y divide-border">
+      {% for p in peers %}
+      <a href="/persons/{{ p.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+        <span class="text-sm font-semibold">{{ p.name }}</span>
+        <span class="ml-2 text-[11px] text-muted-foreground">{{ p.role }} at {{ p.shared_company }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if !recent_events.is_empty() %}
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Events</h2>
+    </div>
+    <div class="divide-y divide-border">
+      {% for e in recent_events %}
+      <div class="px-4 py-3">
+        <p class="text-sm font-semibold">{{ e.kind }}</p>
+        <p class="mt-1 text-xs text-muted-foreground">{{ e.description }}</p>
+        <p class="mt-1 text-[10px] text-muted-foreground">{{ e.date }} · {{ e.source }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

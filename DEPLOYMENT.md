@@ -1,8 +1,8 @@
 # ApexIntel – Production Deployment Guide
 
 **Audience**: DevOps, System Administrator  
-**Revision**: July 2025  
-**Status**: 🚀 Initial deployment  
+**Revision**: March 2026  
+**Status**: 🚀 Deployed (single-binary architecture)  
 **Domain**: https://starzerp.fi
 
 ---
@@ -14,8 +14,9 @@
 | **Domain** | [https://starzerp.fi](https://starzerp.fi) |
 | **VPS Provider** | Hetzner |
 | **VPS IPv4** | `77.42.65.89` |
-| **OS** | Ubuntu 24.04 LTS (expected) |
-| **SSH User** | `root` (initial) |
+| **OS** | Ubuntu 24.04 LTS (aarch64 / ARM64) |
+| **Arch** | Ampere Altra (Neoverse-N1) |
+| **SSH User** | `root` |
 | **Colocated with** | CRM-v2 (Starz Morocco CRM) — **completely separate** |
 
 ### 0.1 SSH Key Setup
@@ -25,38 +26,47 @@
 | **Private key** | `~/.ssh/hetzner-db-mac` (local machine) |
 | **Public key** | `~/.ssh/hetzner-db-mac.pub` |
 
-**Connect to server:**
 ```bash
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
 ```
 
 ---
 
-### 0.2 Application Stack
+### 0.2 Application Architecture
+
+ApexIntel runs as a **single Rust binary** (`apex-api`) that serves:
+- **HTML pages** via Askama templates + HTMX (no JavaScript framework)
+- **REST API** (`/api/*`) with JSON responses
+- **WebSocket** (`/ws/*`) for live updates
+- **Static assets** (CSS, JS, fonts, icons) – served by nginx directly
+
+There is **no Node.js frontend**. The entire web UI is compiled into the binary.
+
+### 0.3 Application Stack
 
 | Component | Version | Purpose |
 |-----------|---------|---------|
-| **Rust** | 1.80+ | Backend API + Worker (compiled binaries) |
-| **Node.js** | 20.x LTS | Frontend build (Next.js SSR) |
+| **Rust** | 1.80+ | API server + Worker (compiled binaries) |
 | **PostgreSQL** | 16+ | Primary database |
-| **Redis** | 7+ | Cache + session |
+| **Redis** | 7+ | Cache + rate limiting |
 | **NATS** | 2.10+ | Message queue (inter-crate async messaging) |
 | **MinIO** | Latest | S3-compatible object storage |
 | **llama-server** | Latest (llama.cpp) | LLM inference for trained Qwen3-30B-A3B |
-| **Nginx** | 1.24+ | Reverse proxy + TLS termination |
+| **Nginx** | 1.24+ | Reverse proxy + TLS termination + static file serving |
 | **Certbot** | Latest | Let's Encrypt SSL auto-renewal |
 
-### 0.3 Separation from CRM-v2
+> **Note**: Node.js is **not required**. The Next.js frontend was fully replaced by
+> server-rendered Askama/HTMX templates compiled into the Rust binary (March 2026).
 
-The CRM-v2 system may coexist on this server. **Everything must be isolated:**
+### 0.4 Separation from CRM-v2
 
 | Resource | CRM-v2 | ApexIntel |
 |----------|--------|-----------|
 | **App directory** | `/var/www/crm-starz-morocco/` | `/opt/apexintel/` |
 | **Nginx vhost** | `/etc/nginx/sites-available/starzcrm` | `/etc/nginx/sites-available/apexintel` |
 | **Database** | MySQL `starz_crm` | PostgreSQL `apexintel` |
-| **Systemd services** | `starz-messenger` | `apexintel-api`, `apexintel-worker`, `apexintel-frontend`, `apexintel-llm` |
-| **Ports (internal)** | PHP-FPM socket | API: 8080, Frontend: 3000, LLM: 8081, NATS: 4222, MinIO: 9000, Redis: 6379, PG: 5432 |
+| **Systemd services** | `starz-messenger` | `apexintel-api`, `apexintel-worker`, `apexintel-llm` |
+| **Ports (internal)** | PHP-FPM socket | API: 8080, LLM: 8081, NATS: 4222, MinIO: 9000, Redis: 6379, PG: 5432 |
 | **Domain** | starzcrm.com | starzerp.fi |
 | **User** | www-data | apexintel |
 
@@ -72,8 +82,6 @@ The CRM-v2 system may coexist on this server. **Everything must be isolated:**
 
 ### 1.2 Hetzner Cloud Firewall
 
-**CRITICAL**: Open the following inbound rules in the Hetzner Cloud Console firewall:
-
 | Protocol | Port | Source | Purpose |
 |----------|------|--------|---------|
 | TCP | 22 | Any (or your IP) | SSH access |
@@ -84,8 +92,10 @@ The CRM-v2 system may coexist on this server. **Everything must be isolated:**
 
 ```bash
 useradd -r -m -d /opt/apexintel -s /bin/bash apexintel
-mkdir -p /opt/apexintel/{bin,data,logs,model,config}
+mkdir -p /opt/apexintel/{bin,data,logs,model,config,static}
 chown -R apexintel:apexintel /opt/apexintel
+# Allow nginx (www-data) to traverse to /opt/apexintel/static
+chmod o+x /opt/apexintel
 ```
 
 ### 1.4 Install System Packages
@@ -101,7 +111,7 @@ sudo apt install -y \
   cmake gcc g++
 ```
 
-### 1.5 Install Rust
+### 1.5 Install Rust (only needed if building on server)
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -109,30 +119,24 @@ source $HOME/.cargo/env
 rustup default stable
 ```
 
-### 1.6 Install Node.js 20.x
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-```
-
-### 1.7 Install NATS Server
+### 1.6 Install NATS Server
 
 ```bash
 curl -sf https://binaries.nats.dev/nats-io/nats-server/v2@latest | sh
 sudo mv nats-server /usr/local/bin/
 ```
 
-### 1.8 Install MinIO
+### 1.7 Install MinIO
 
 ```bash
-wget https://dl.min.io/server/minio/release/linux-amd64/minio
+# For ARM64 (Hetzner Ampere):
+wget https://dl.min.io/server/minio/release/linux-arm64/minio
 chmod +x minio
 sudo mv minio /usr/local/bin/
 mkdir -p /opt/apexintel/data/minio
 ```
 
-### 1.9 Install llama.cpp (llama-server)
+### 1.8 Install llama.cpp (llama-server)
 
 ```bash
 cd /tmp
@@ -143,7 +147,7 @@ cmake --build build --config Release -j$(nproc)
 sudo cp build/bin/llama-server /usr/local/bin/
 ```
 
-> **Note**: For CPU-only inference, OpenBLAS provides adequate performance.
+> For CPU-only inference, OpenBLAS provides adequate performance.
 > If the server has a GPU, use `-DGGML_CUDA=ON` instead.
 
 ---
@@ -152,13 +156,11 @@ sudo cp build/bin/llama-server /usr/local/bin/
 
 ### 2.1 PostgreSQL
 
-**⚠️ SECURITY: Generate a strong password before running these commands.**
-
 ```bash
-# Generate a secure password (copy this output):
+# Generate a secure password:
 openssl rand -base64 32
 
-# Create the database with YOUR generated password:
+# Create database:
 sudo -u postgres psql <<'SQL'
 CREATE USER apexintel WITH PASSWORD '<YOUR_GENERATED_PASSWORD>';
 CREATE DATABASE apexintel OWNER apexintel;
@@ -169,20 +171,14 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 SQL
 ```
 
-**Connection string template:**
-```
-postgresql://apexintel:<YOUR_GENERATED_PASSWORD>@127.0.0.1:5432/apexintel
-```
-
-**Store this password securely** — you'll need it for the `.env` file in Section 4.
+**Connection string**: `postgresql://apexintel:<PASSWORD>@127.0.0.1:5432/apexintel`
 
 ### 2.2 Redis
 
-Default config is fine. Verify:
 ```bash
 sudo systemctl enable redis-server
 sudo systemctl start redis-server
-redis-cli ping  # should return PONG
+redis-cli ping  # → PONG
 ```
 
 ---
@@ -194,18 +190,26 @@ redis-cli ping  # should return PONG
 ```
 /opt/apexintel/                          ← Application root (owner: apexintel)
 ├── bin/
-│   ├── apex-api                         ← Rust API server binary
-│   └── apex-worker                      ← Rust worker binary
+│   ├── apex-api                         ← Rust API + web UI binary (single binary)
+│   └── apex-worker                      ← Rust background worker binary
 ├── config/
-│   └── .env                             ← Production environment (secrets)
+│   └── .env                             ← Production environment (secrets + auth)
 ├── data/
 │   ├── search/                          ← Tantivy full-text index
 │   └── minio/                           ← MinIO object storage data
-├── frontend/                            ← Next.js production build
-│   ├── .next/                           ← Compiled Next.js output
-│   ├── node_modules/                    ← Dependencies
-│   ├── package.json
-│   └── ...
+├── static/                              ← Static assets (served by nginx)
+│   ├── css/
+│   │   ├── tailwind.css                 ← Compiled Tailwind CSS
+│   │   └── globals.css                  ← Custom styles
+│   ├── js/
+│   │   ├── htmx.min.js                 ← HTMX library
+│   │   ├── app.js                       ← App-level JS (theme, search, sidebar)
+│   │   ├── graph.js                     ← D3 graph visualization
+│   │   └── recipe-builder.js            ← Recipe pipeline builder
+│   ├── fonts/
+│   │   └── InterVariable*.woff2/ttf     ← Inter font family
+│   └── icons/
+│       └── sprite.svg                   ← SVG icon sprite
 ├── model/                               ← LLM model weights (GGUF)
 │   └── Qwen3-30B-A3B-Q4_K_M.gguf       ← Quantized model (~17 GB)
 └── logs/
@@ -214,69 +218,50 @@ redis-cli ping  # should return PONG
     └── llm.log
 ```
 
-### 3.2 Build on Server
+### 3.2 Build & Deploy (Recommended: Cross-compile locally)
 
-#### Option A: Build on server (recommended for first deploy)
-
-```bash
-# Clone repository
-cd /opt/apexintel
-sudo -u apexintel git clone <repository-url> /opt/apexintel/src
-cd /opt/apexintel/src
-
-# Build Rust binaries (release mode, with LLM feature)
-cargo build --release -p apex-api --features llm
-cargo build --release -p apex-worker --features llm
-
-# Copy binaries
-cp target/release/apex-api /opt/apexintel/bin/
-cp target/release/apex-worker /opt/apexintel/bin/
-chown apexintel:apexintel /opt/apexintel/bin/*
-
-# Build frontend
-cd frontend
-npm ci
-NEXT_PUBLIC_API_BASE_URL=https://starzerp.fi npm run build
-cp -r . /opt/apexintel/frontend/
-chown -R apexintel:apexintel /opt/apexintel/frontend/
-```
-
-#### Option B: Upload tarball from local machine
+The preferred method is cross-compiling on your local machine and uploading the binary:
 
 ```bash
-# On local machine:
+# On local machine (macOS with cargo-zigbuild):
 cd ~/IdeaProjects/ApexIntel
 
-tar czf /tmp/apexintel-deploy.tar.gz \
-  --exclude='./target' \
-  --exclude='./frontend/node_modules' \
-  --exclude='./frontend/.next' \
-  --exclude='./.git' \
-  --exclude='./training' \
-  --exclude='./training_data' \
-  --exclude='./.env' \
-  --exclude='./.env.local' \
-  .
+# Install cross-compilation tools (one time):
+cargo install cargo-zigbuild
+brew install zig  # or equivalent for your OS
 
-# Upload
-scp -i ~/.ssh/hetzner-db-mac /tmp/apexintel-deploy.tar.gz root@77.42.65.89:/tmp/
+# Build release binary for ARM64 Linux:
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
 
-# On server:
-sudo -u apexintel mkdir -p /opt/apexintel/src
-cd /opt/apexintel/src
-sudo -u apexintel tar xzf /tmp/apexintel-deploy.tar.gz
+# Upload binary (~15 MB):
+scp -i ~/.ssh/hetzner-db-mac \
+  target/aarch64-unknown-linux-gnu/release/apex-api \
+  root@77.42.65.89:/opt/apexintel/bin/apex-api
 
-# Build as above
+# Upload static assets:
+scp -i ~/.ssh/hetzner-db-mac -r \
+  crates/api/static/* \
+  root@77.42.65.89:/opt/apexintel/static/
+
+# Set permissions on server:
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
+  "chmod 700 /opt/apexintel/bin/apex-api && \
+   chown -R apexintel:apexintel /opt/apexintel/bin /opt/apexintel/static && \
+   systemctl restart apexintel-api"
 ```
 
-### 3.3 Run Database Migrations
-
-Migrations are embedded in the `apex-store` crate and run automatically when the API starts (`store.run_migrations().await`). They can also be triggered manually:
+### 3.3 Build on Server (Alternative)
 
 ```bash
-# The API binary runs migrations at startup automatically.
-# First start will create all tables (companies, sites, warnings, insights, etc.)
+cd /opt/apexintel/src
+cargo build --release -p apex-api --features llm
+cp target/release/apex-api /opt/apexintel/bin/
+chown apexintel:apexintel /opt/apexintel/bin/apex-api
 ```
+
+### 3.4 Database Migrations
+
+Migrations are embedded in the `apex-store` crate and run automatically when the API starts (`store.run_migrations().await`). No manual migration step needed.
 
 ---
 
@@ -288,36 +273,41 @@ Create `/opt/apexintel/config/.env`:
 # ══════════════════════════════════════════════════════════════════════════════
 # ApexIntel Production Environment Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-# ⚠️ SECURITY: This file contains sensitive credentials. Ensure:
-#   1. File permissions are 600 (chmod 600 .env)
-#   2. File is owned by apexintel user
-#   3. Never commit this file to version control
-#   4. Generate ALL secrets fresh for production (see commands below)
+# ⚠️ SECURITY: chmod 600, owned by apexintel. Never commit to VCS.
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ─── Required (MUST CONFIGURE) ───────────────────────────────────────────────
-# Generate database password: openssl rand -base64 32
+# ─── Database ─────────────────────────────────────────────────────────────────
+# Generate password: openssl rand -base64 32
 DATABASE_URL=postgresql://apexintel:<DB_PASSWORD>@127.0.0.1:5432/apexintel
 
-# ─── Service URLs (local defaults) ───────────────────────────────────────────
+# ─── Service URLs ─────────────────────────────────────────────────────────────
 REDIS_URL=redis://127.0.0.1:6379
 NATS_URL=nats://127.0.0.1:4222
 MINIO_URL=http://127.0.0.1:9000
 MINIO_BUCKET=apexintel
 
-# ─── LLM (local llama-server) ────────────────────────────────────────────────
+# ─── LLM ──────────────────────────────────────────────────────────────────────
 LLM_BASE_URL=http://127.0.0.1:8081
 LLM_MODEL=Qwen3-30B-A3B-Q4_K_M
 
-# ─── API Server ──────────────────────────────────────────────────────────────
+# ─── API Server ───────────────────────────────────────────────────────────────
 HOST=127.0.0.1
 PORT=8080
 CORS_ORIGIN=https://starzerp.fi
 API_LOG_LEVEL=info
 SEARCH_INDEX_PATH=/opt/apexintel/data/search
 
-# ─── API Authentication ──────────────────────────────────────────────────────
-# Generate API key: openssl rand -hex 32 | sed 's/^/sk-apex-/'
+# ─── Web Authentication (built-in login) ─────────────────────────────────────
+# The API binary serves the login page and handles session cookies directly.
+# Username: choose an admin username
+APEX_ADMIN_USERNAME=<YOUR_ADMIN_USERNAME>
+# Password hash: echo -n 'yourpassword' | sha256sum | cut -d' ' -f1
+APEX_ADMIN_PASSWORD_HASH=<SHA256_OF_YOUR_PASSWORD>
+# Session secret: openssl rand -hex 32
+SESSION_SECRET=<GENERATE_64_CHAR_HEX_SECRET>
+
+# ─── API Key Authentication (for external API consumers) ─────────────────────
+# Generate: openssl rand -hex 32 | sed 's/^/sk-apex-/'
 # Format: <raw_key>,<display_name>,<role>
 # Roles: admin, analyst, viewer, service
 API_KEY_1=<GENERATE_API_KEY>,Production Admin,admin
@@ -347,48 +337,21 @@ chmod 600 /opt/apexintel/config/.env
 chown apexintel:apexintel /opt/apexintel/config/.env
 ```
 
-### 4.1 Frontend Environment Requirements
-
-The frontend requires these environment variables (set in systemd service or `.env.local`):
-
-| Variable | Required | Description | Generation Command |
-|----------|----------|-------------|-------------------|
-| `APEX_ADMIN_USERNAME` | ✅ | Admin login username | Choose a username |
-| `APEX_ADMIN_PASSWORD_HASH` | ✅ | SHA-256 hash of password | `echo -n 'password' \| sha256sum \| cut -d' ' -f1` |
-| `SESSION_SECRET` | ✅ | 64-char hex for HMAC signing | `openssl rand -hex 32` |
-| `APEX_API_KEY` | ✅ | Backend API key (raw, no prefix) | Must match `API_KEY_1` raw key |
-| `APEX_API_BASE_URL` | ✅ | Internal backend URL | `http://127.0.0.1:8080` |
-| `NEXT_PUBLIC_API_BASE_URL` | ✅ | Public base URL | `https://starzerp.fi` |
-
-### 4.2 Startup Validation Behavior
-
-**Production mode (`NODE_ENV=production`)**:
-- Missing/invalid auth credentials → Server exits with code 1
-- Missing `APEX_API_KEY` → Server exits with code 1
-- Startup fails fast to prevent running with insecure defaults
-
-**Development mode**:
-- Missing credentials → Console warnings only
-- Server starts but authentication may be misconfigured
-- Useful for local development with mock auth
-
-**Validation log examples**:
-```
-✅ Auth config valid             # All credentials configured
-⚠️ Auth not configured           # Dev mode warning
-❌ FATAL: Auth config invalid    # Production failure
-```
-
-### 4.3 Backend Environment Requirements Summary
+### 4.1 Environment Variables Reference
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | ✅ | PostgreSQL connection string |
-| `API_KEY_1` | ✅ | API key in format: `<raw_key>,<name>,<role>` |
 | `REDIS_URL` | ✅ | Redis connection URL |
 | `NATS_URL` | ✅ | NATS messaging URL |
+| `HOST` / `PORT` | ✅ | Bind address (127.0.0.1:8080) |
+| `CORS_ORIGIN` | ✅ | Allowed CORS origin (`https://starzerp.fi`) |
+| `APEX_ADMIN_USERNAME` | ✅ | Web login username |
+| `APEX_ADMIN_PASSWORD_HASH` | ✅ | SHA-256 hash of web login password |
+| `SESSION_SECRET` | ✅ | 64-char hex for HMAC cookie signing |
+| `API_KEY_1` | ✅ | API key for external consumers |
 | `LLM_BASE_URL` | ✅ | Local LLM inference endpoint |
-| `CORS_ORIGIN` | ✅ | Allowed CORS origin |
+| `SEARCH_INDEX_PATH` | ✅ | Tantivy index directory |
 
 ---
 
@@ -396,7 +359,7 @@ The frontend requires these environment variables (set in systemd service or `.e
 
 ### 5.1 NATS Server
 
-Create `/etc/systemd/system/nats.service`:
+`/etc/systemd/system/nats.service`:
 
 ```ini
 [Unit]
@@ -417,7 +380,7 @@ WantedBy=multi-user.target
 
 ### 5.2 MinIO Object Storage
 
-Create `/etc/systemd/system/minio.service`:
+`/etc/systemd/system/minio.service`:
 
 ```ini
 [Unit]
@@ -428,7 +391,6 @@ After=network.target
 Type=simple
 User=apexintel
 Environment="MINIO_ROOT_USER=apexintel"
-# ⚠️ SECURITY: Generate a unique password: openssl rand -base64 24
 Environment="MINIO_ROOT_PASSWORD=<GENERATE_MINIO_PASSWORD>"
 ExecStart=/usr/local/bin/minio server /opt/apexintel/data/minio --address 127.0.0.1:9000 --console-address 127.0.0.1:9001
 Restart=on-failure
@@ -438,13 +400,13 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-### 5.3 ApexIntel API Server
+### 5.3 ApexIntel API Server (serves web UI + API)
 
-Create `/etc/systemd/system/apexintel-api.service`:
+`/etc/systemd/system/apexintel-api.service`:
 
 ```ini
 [Unit]
-Description=ApexIntel API Server (Rust/Axum)
+Description=ApexIntel API Server (Rust/Axum — serves HTML + API)
 After=network.target postgresql.service redis.service nats.service minio.service
 Requires=postgresql.service
 
@@ -458,6 +420,11 @@ Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
 
+# Security hardening
+ProtectSystem=strict
+ReadWritePaths=/opt/apexintel/data /opt/apexintel/logs
+ReadOnlyPaths=/opt/apexintel/static
+
 # Logging
 StandardOutput=append:/opt/apexintel/logs/api.log
 StandardError=append:/opt/apexintel/logs/api.log
@@ -468,7 +435,7 @@ WantedBy=multi-user.target
 
 ### 5.4 ApexIntel Worker
 
-Create `/etc/systemd/system/apexintel-worker.service`:
+`/etc/systemd/system/apexintel-worker.service`:
 
 ```ini
 [Unit]
@@ -493,46 +460,9 @@ StandardError=append:/opt/apexintel/logs/worker.log
 WantedBy=multi-user.target
 ```
 
-### 5.5 ApexIntel Frontend (Next.js)
+### 5.5 LLM Inference Server (llama-server)
 
-Create `/etc/systemd/system/apexintel-frontend.service`:
-
-```ini
-[Unit]
-Description=ApexIntel Frontend (Next.js SSR)
-After=network.target apexintel-api.service
-
-[Service]
-Type=simple
-User=apexintel
-WorkingDirectory=/opt/apexintel/frontend
-Environment="NODE_ENV=production"
-Environment="PORT=3000"
-Environment="NEXT_PUBLIC_API_BASE_URL=https://starzerp.fi"
-Environment="APEX_API_BASE_URL=http://127.0.0.1:8080"
-# ⚠️ Auth credentials - generate all values before deployment:
-#   Username: your admin username
-#   Password hash: echo -n 'yourpassword' | sha256sum | cut -d' ' -f1
-#   Session secret: openssl rand -hex 32
-#   API key: must match API_KEY_1 in backend .env (the raw key part)
-Environment="APEX_ADMIN_USERNAME=<YOUR_ADMIN_USERNAME>"
-Environment="APEX_ADMIN_PASSWORD_HASH=<SHA256_OF_YOUR_PASSWORD>"
-Environment="SESSION_SECRET=<GENERATE_64_CHAR_HEX_SECRET>"
-Environment="APEX_API_KEY=<SAME_AS_API_KEY_1_RAW_KEY>"
-ExecStart=/usr/bin/node node_modules/.bin/next start -p 3000
-Restart=on-failure
-RestartSec=5
-
-StandardOutput=append:/opt/apexintel/logs/frontend.log
-StandardError=append:/opt/apexintel/logs/frontend.log
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 5.6 LLM Inference Server (llama-server)
-
-Create `/etc/systemd/system/apexintel-llm.service`:
+`/etc/systemd/system/apexintel-llm.service`:
 
 ```ini
 [Unit]
@@ -562,15 +492,14 @@ StandardError=append:/opt/apexintel/logs/llm.log
 WantedBy=multi-user.target
 ```
 
-### 5.7 Enable All Services
+### 5.6 Enable All Services
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable nats minio apexintel-api apexintel-worker apexintel-frontend apexintel-llm
+sudo systemctl enable nats minio apexintel-api apexintel-worker apexintel-llm
 sudo systemctl start nats minio
 sudo systemctl start apexintel-api
 sudo systemctl start apexintel-worker
-sudo systemctl start apexintel-frontend
 sudo systemctl start apexintel-llm
 ```
 
@@ -578,87 +507,118 @@ sudo systemctl start apexintel-llm
 
 ## 6. Nginx Configuration
 
+The nginx config is maintained in the repository at `config/runtime/nginx-apexintel.conf`.
+
 Create `/etc/nginx/sites-available/apexintel`:
 
 ```nginx
-# ApexIntel — HTTPS (port 443)
+# ApexIntel – starzerp.fi
+# Rust/Axum serves HTML + API + static (no more Next.js)
+
+upstream apexintel_api {
+    server 127.0.0.1:8080;
+    keepalive 16;
+}
+
 server {
     server_name starzerp.fi www.starzerp.fi;
 
-    # Frontend (Next.js SSR)
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-        proxy_read_timeout 300s;
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Logging
+    access_log /var/log/nginx/apexintel_access.log;
+    error_log  /var/log/nginx/apexintel_error.log;
+
+    # Static assets — served by nginx directly with long cache
+    location /static/ {
+        alias /opt/apexintel/static/;
+        expires 1y;
+        add_header Cache-Control "public, immutable, max-age=31536000";
+        access_log off;
     }
 
-    # API (Rust/Axum) — Next.js rewrites /api/* → backend
-    # This catches direct API calls that bypass the frontend
-    location /api/ {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-        client_max_body_size 64k;
-    }
-
-    # WebSocket (live updates)
+    # WebSocket support
     location /ws/ {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://apexintel_api;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 3600s;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400s;
     }
 
-    # Static assets with long cache
-    location /_next/static/ {
-        proxy_pass http://127.0.0.1:3000;
-        add_header Cache-Control "public, max-age=31536000, immutable";
+    # API routes (JSON endpoints)
+    location /api/ {
+        proxy_pass http://apexintel_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 60s;
+        client_max_body_size 64k;
+
+        # CORS
+        add_header Access-Control-Allow-Origin $http_origin always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Api-Key" always;
+        add_header Access-Control-Allow-Credentials "true" always;
+
+        if ($request_method = OPTIONS) {
+            return 204;
+        }
     }
 
-    error_log /var/log/nginx/apexintel_error.log;
-    access_log /var/log/nginx/apexintel_access.log;
-    client_max_body_size 20M;
+    # Everything else — Rust/Axum (HTML pages + login/logout)
+    location / {
+        proxy_pass http://apexintel_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_read_timeout 30s;
+    }
 
-    # SSL will be added by Certbot
-    listen 443 ssl;
+    # Deny access to dotfiles
+    location ~ /\. {
+        deny all;
+    }
+
     listen [::]:443 ssl;
-    # ssl_certificate /etc/letsencrypt/live/starzerp.fi/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/starzerp.fi/privkey.pem;
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/starzerp.fi/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/starzerp.fi/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
 
-# HTTP → HTTPS redirect
 server {
+    if ($host = starzerp.fi) {
+        return 301 https://$host$request_uri;
+    }
     listen 80;
     listen [::]:80;
     server_name starzerp.fi www.starzerp.fi;
-
-    if ($host = starzerp.fi) { return 301 https://$host$request_uri; }
-    if ($host = www.starzerp.fi) { return 301 https://$host$request_uri; }
     return 404;
 }
 ```
 
 Enable site:
 ```bash
-sudo ln -s /etc/nginx/sites-available/apexintel /etc/nginx/sites-enabled/
-# Do NOT remove default or CRM config — they must coexist
-sudo nginx -t
-sudo systemctl reload nginx
+ln -sf /etc/nginx/sites-available/apexintel /etc/nginx/sites-enabled/apexintel
+nginx -t && systemctl reload nginx
 ```
 
 ### 6.1 SSL Certificate
@@ -673,60 +633,30 @@ sudo certbot --nginx -d starzerp.fi -d www.starzerp.fi
 
 ### 7.1 Model Weight Transfer
 
-The trained Qwen3-30B-A3B model weights are on the vast.ai instance. Two approaches:
-
-#### Approach A: Quantize on vast.ai, transfer GGUF (~17 GB)
+The trained Qwen3-30B-A3B model weights are on the vast.ai instance.
 
 ```bash
-# On vast.ai instance (has the full fp16 merged model):
-ssh -p 39097 -i ~/.ssh/vastai_new root@198.53.64.194
-
-# Install llama.cpp on vast.ai
+# On vast.ai: Quantize to GGUF Q4_K_M
 cd /tmp && git clone https://github.com/ggerganov/llama.cpp.git
 cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build -j$(nproc)
 
-# Convert merged model to GGUF
 python3 convert_hf_to_gguf.py /workspace/outputs/merged_phase1/ \
-  --outfile /workspace/outputs/Qwen3-30B-A3B-f16.gguf \
-  --outtype f16
+  --outfile /workspace/outputs/Qwen3-30B-A3B-f16.gguf --outtype f16
 
-# Quantize to Q4_K_M
 ./build/bin/llama-quantize \
   /workspace/outputs/Qwen3-30B-A3B-f16.gguf \
-  /workspace/outputs/Qwen3-30B-A3B-Q4_K_M.gguf \
-  Q4_K_M
+  /workspace/outputs/Qwen3-30B-A3B-Q4_K_M.gguf Q4_K_M
 ```
 
-Then transfer to Hetzner:
+Transfer to Hetzner:
 ```bash
-# From vast.ai → Hetzner (need SSH key on vast.ai, or use local as jump)
-# Option 1: Direct (if vast.ai has Hetzner key)
 scp -i /path/to/hetzner-key /workspace/outputs/Qwen3-30B-A3B-Q4_K_M.gguf \
   root@77.42.65.89:/opt/apexintel/model/
-
-# Option 2: Via local machine as jump host
-ssh -p 39097 -i ~/.ssh/vastai_new root@198.53.64.194 \
-  "cat /workspace/outputs/Qwen3-30B-A3B-Q4_K_M.gguf" | \
-  ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
-  "cat > /opt/apexintel/model/Qwen3-30B-A3B-Q4_K_M.gguf"
-```
-
-#### Approach B: Transfer full safetensors + quantize on Hetzner
-
-```bash
-# Transfer merged model (57 GB) from vast.ai → Hetzner
-# Then quantize on Hetzner using CPU (slower but works)
 ```
 
 ### 7.2 Verify Model
 
 ```bash
-# Quick test
-/usr/local/bin/llama-server \
-  --model /opt/apexintel/model/Qwen3-30B-A3B-Q4_K_M.gguf \
-  --host 127.0.0.1 --port 8081 --ctx-size 512 --threads 4
-
-# Test inference
 curl http://127.0.0.1:8081/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -738,112 +668,60 @@ curl http://127.0.0.1:8081/v1/chat/completions \
 
 ---
 
-## 8. Full Deployment Procedure (from local machine)
+## 8. Full Deployment Procedure (Quick Reference)
 
-### Step 1: Open Hetzner Firewall
-
-In Hetzner Cloud Console → Firewalls → Add inbound rules for TCP 22, 80, 443.
-
-### Step 2: Initial Server Setup
+### First-Time Deployment
 
 ```bash
+# 1. Server setup (sections 1.3–1.8)
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
 
-# Run sections 1.3 through 1.9 from above
-# Run section 2 (database setup)
+# 2. Database setup (section 2)
+# 3. Environment config (section 4)
+# 4. Install systemd services (section 5)
+# 5. Cross-compile and upload:
+# (on local machine)
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
+scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-api root@77.42.65.89:/opt/apexintel/bin/
+scp -i ~/.ssh/hetzner-db-mac -r crates/api/static/* root@77.42.65.89:/opt/apexintel/static/
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "chown -R apexintel:apexintel /opt/apexintel && chmod 700 /opt/apexintel/bin/apex-api"
+
+# 6. Configure nginx + SSL (section 6)
+# 7. Start services
+systemctl start nats minio apexintel-api apexintel-worker
 ```
 
-### Step 3: Deploy Application Code
+### Routine Update (code changes)
 
 ```bash
 # On local machine:
 cd ~/IdeaProjects/ApexIntel
 
-tar czf /tmp/apexintel-deploy.tar.gz \
-  --exclude='./target' \
-  --exclude='./frontend/node_modules' \
-  --exclude='./frontend/.next' \
-  --exclude='./.git' \
-  --exclude='./training' \
-  --exclude='./training_data' \
-  --exclude='./docs' \
-  .
+# 1. Build
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
 
-ls -lh /tmp/apexintel-deploy.tar.gz  # Should be ~5-15 MB
+# 2. Upload
+scp -i ~/.ssh/hetzner-db-mac \
+  target/aarch64-unknown-linux-gnu/release/apex-api \
+  root@77.42.65.89:/tmp/apex-api-new
 
-scp -i ~/.ssh/hetzner-db-mac /tmp/apexintel-deploy.tar.gz root@77.42.65.89:/tmp/
-```
-
-### Step 4: Build on Server
-
-```bash
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
-
-# Extract source
-mkdir -p /opt/apexintel/src
-cd /opt/apexintel/src
-tar xzf /tmp/apexintel-deploy.tar.gz
-
-# Build Rust (release + LLM)
-source $HOME/.cargo/env
-cargo build --release -p apex-api --features llm
-cargo build --release -p apex-worker --features llm
-
-# Install binaries
-cp target/release/apex-api /opt/apexintel/bin/
-cp target/release/apex-worker /opt/apexintel/bin/
-
-# Build frontend
-cd /opt/apexintel/src/frontend
-npm ci
-NEXT_PUBLIC_API_BASE_URL=https://starzerp.fi npm run build
-
-# Copy frontend to production path
-cp -r /opt/apexintel/src/frontend /opt/apexintel/frontend
-
-# Set ownership
-chown -R apexintel:apexintel /opt/apexintel
-```
-
-### Step 5: Configure Environment
-
-```bash
-# Create .env (see Section 4 above)
-nano /opt/apexintel/config/.env
-chmod 600 /opt/apexintel/config/.env
-chown apexintel:apexintel /opt/apexintel/config/.env
-```
-
-### Step 6: Install Systemd Services
-
-```bash
-# Copy service files (see Section 5 above) to /etc/systemd/system/
-# Then:
-systemctl daemon-reload
-systemctl enable nats minio apexintel-api apexintel-worker apexintel-frontend
-systemctl start nats minio
+# 3. Install & restart
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 << 'EOF'
+systemctl stop apexintel-api
+cp /tmp/apex-api-new /opt/apexintel/bin/apex-api
+chmod 700 /opt/apexintel/bin/apex-api
+chown apexintel:apexintel /opt/apexintel/bin/apex-api
 systemctl start apexintel-api
-systemctl start apexintel-worker
-systemctl start apexintel-frontend
+curl -sf http://127.0.0.1:8080/api/health | jq
+EOF
 ```
 
-### Step 7: Configure Nginx + SSL
+### Updating Static Assets Only
 
 ```bash
-# Copy nginx config (Section 6) to /etc/nginx/sites-available/apexintel
-ln -s /etc/nginx/sites-available/apexintel /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
-
-# Get SSL certificate
-certbot --nginx -d starzerp.fi -d www.starzerp.fi
-```
-
-### Step 8: Transfer & Start LLM Model
-
-```bash
-# See Section 7 for model transfer
-# After model is in place:
-systemctl start apexintel-llm
+scp -i ~/.ssh/hetzner-db-mac -r crates/api/static/* root@77.42.65.89:/opt/apexintel/static/
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "chown -R apexintel:apexintel /opt/apexintel/static"
+# No service restart needed — nginx serves static files directly
 ```
 
 ---
@@ -853,24 +731,31 @@ systemctl start apexintel-llm
 ### 9.1 Service Health
 
 ```bash
-systemctl status apexintel-api apexintel-worker apexintel-frontend apexintel-llm nats minio postgresql redis
+systemctl status apexintel-api apexintel-worker apexintel-llm nats minio postgresql redis
 ```
 
 ### 9.2 API Health Check
 
 ```bash
 curl -s https://starzerp.fi/api/health | jq
-# Expected: {"status":"ok","version":"0.1.0",...}
+# Expected: {"status":"Healthy","version":"0.1.0","checks":[...]}
 ```
 
-### 9.3 Frontend
+### 9.3 Web UI
 
 ```bash
-curl -sI https://starzerp.fi | head -5
-# Expected: HTTP/2 200
+curl -sI https://starzerp.fi/login
+# Expected: HTTP/2 200, content-type: text/html
 ```
 
-### 9.4 LLM
+### 9.4 Static Assets
+
+```bash
+curl -sI https://starzerp.fi/static/css/tailwind.css
+# Expected: HTTP/2 200, Cache-Control: public, immutable, max-age=31536000
+```
+
+### 9.5 LLM
 
 ```bash
 curl -s http://127.0.0.1:8081/v1/chat/completions \
@@ -889,14 +774,12 @@ ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
 # ─── Service Management ────────────────────────────────────
 sudo systemctl restart apexintel-api
 sudo systemctl restart apexintel-worker
-sudo systemctl restart apexintel-frontend
 sudo systemctl restart apexintel-llm
-sudo systemctl status apexintel-api apexintel-worker apexintel-frontend apexintel-llm
+sudo systemctl status apexintel-api apexintel-worker apexintel-llm
 
 # ─── Logs ──────────────────────────────────────────────────
 tail -f /opt/apexintel/logs/api.log
 tail -f /opt/apexintel/logs/worker.log
-tail -f /opt/apexintel/logs/frontend.log
 tail -f /opt/apexintel/logs/llm.log
 tail -f /var/log/nginx/apexintel_error.log
 tail -f /var/log/nginx/apexintel_access.log
@@ -904,15 +787,6 @@ tail -f /var/log/nginx/apexintel_access.log
 # ─── Database ─────────────────────────────────────────────
 sudo -u postgres psql apexintel
 sudo -u postgres psql apexintel -c "SELECT COUNT(*) FROM companies;"
-
-# ─── Update Code ──────────────────────────────────────────
-# On local machine:
-scp -i ~/.ssh/hetzner-db-mac /tmp/apexintel-deploy.tar.gz root@77.42.65.89:/tmp/
-# On server:
-cd /opt/apexintel/src && tar xzf /tmp/apexintel-deploy.tar.gz
-cargo build --release -p apex-api --features llm
-cp target/release/apex-api /opt/apexintel/bin/
-systemctl restart apexintel-api
 
 # ─── Backup ───────────────────────────────────────────────
 sudo -u postgres pg_dump apexintel | gzip > /opt/apexintel/backups/db_$(date +%Y%m%d).sql.gz
@@ -935,7 +809,7 @@ sudo ufw enable
 
 ### 11.2 Bind Internal Services to Localhost
 
-All internal services (PostgreSQL, Redis, NATS, MinIO, llama-server) listen on `127.0.0.1` only — not exposed to the internet.
+All internal services (PostgreSQL, Redis, NATS, MinIO, llama-server) listen on `127.0.0.1` only.
 
 ### 11.3 File Permissions
 
@@ -943,13 +817,14 @@ All internal services (PostgreSQL, Redis, NATS, MinIO, llama-server) listen on `
 chmod 600 /opt/apexintel/config/.env
 chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker
 chown -R apexintel:apexintel /opt/apexintel
+chmod o+x /opt/apexintel  # allow nginx to traverse to static/
 ```
 
 ---
 
 ## 12. Monitoring
 
-### 12.1 Daily Health Check Script
+### 12.1 Health Check Script
 
 Create `/opt/apexintel/bin/health-check.sh`:
 
@@ -957,8 +832,7 @@ Create `/opt/apexintel/bin/health-check.sh`:
 #!/bin/bash
 echo "=== ApexIntel Health Check $(date) ==="
 
-curl -sf http://127.0.0.1:8080/api/health >/dev/null && echo "✅ API" || echo "❌ API"
-curl -sf http://127.0.0.1:3000 >/dev/null && echo "✅ Frontend" || echo "❌ Frontend"
+curl -sf http://127.0.0.1:8080/api/health >/dev/null && echo "✅ API + Web UI" || echo "❌ API + Web UI"
 redis-cli ping | grep -q PONG && echo "✅ Redis" || echo "❌ Redis"
 sudo -u postgres psql apexintel -c "SELECT 1" >/dev/null 2>&1 && echo "✅ PostgreSQL" || echo "❌ PostgreSQL"
 curl -sf http://127.0.0.1:8081/health >/dev/null && echo "✅ LLM Server" || echo "❌ LLM Server"
@@ -970,7 +844,6 @@ echo "Memory: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
 ### 12.2 Cron Jobs
 
 ```bash
-# Crontab for apexintel user
 0 */6 * * * /opt/apexintel/bin/health-check.sh >> /opt/apexintel/logs/health.log 2>&1
 0 3 * * * sudo -u postgres pg_dump apexintel | gzip > /opt/apexintel/backups/db_$(date +\%Y\%m\%d).sql.gz
 7 3 * * * find /opt/apexintel/backups -name "db_*.sql.gz" -mtime +30 -delete
@@ -985,39 +858,41 @@ echo "Memory: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
 | **SSH** | `ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89` | |
 | **Vast.ai** | `ssh -p 39097 -i ~/.ssh/vastai_new root@198.53.64.194` | Model weights source |
 | **HTTPS** | `https://starzerp.fi` | Production URL |
-| **API** | `http://127.0.0.1:8080` (internal) | Axum server |
-| **Frontend** | `http://127.0.0.1:3000` (internal) | Next.js |
+| **API + Web UI** | `http://127.0.0.1:8080` (internal) | Single Axum server |
 | **LLM** | `http://127.0.0.1:8081` (internal) | llama-server |
 | **PostgreSQL** | `127.0.0.1:5432` | DB: `apexintel` |
 | **Redis** | `127.0.0.1:6379` | |
 | **NATS** | `127.0.0.1:4222` | |
 | **MinIO** | `127.0.0.1:9000` (API), `127.0.0.1:9001` (console) | |
 
-## Appendix B – Model Weights Inventory (vast.ai)
+## Appendix B – Architecture Change Log
 
-| Path | Size | Purpose |
-|------|------|---------|
-| `merged_phase1/` | 57 GB | Full fp16 model (2× safetensors) |
-| `phase2_sft/best_adapter_v3/` | 828 MB | LoRA adapter (Phase 2 SFT) |
-| `phase1_dapt/` | 1.1 GB | Phase 1 DAPT adapter |
+### March 2026 — Single-Binary Migration
 
-The `merged_phase1/` already has Phase 1 merged. Phase 2 best adapter needs to be merged on top, then the result quantized to GGUF Q4_K_M for deployment.
+The Next.js frontend was fully replaced by Askama (Jinja2-like) templates + HTMX,
+compiled into the Rust `apex-api` binary:
+
+- **Removed**: Node.js, Next.js, `apexintel-frontend` systemd service, `/opt/apexintel/frontend/`
+- **Added**: 45 HTML templates in `crates/api/templates/`, 11 static assets in `crates/api/static/`
+- **Added**: Cookie-based session auth in the API binary (login/logout endpoints)
+- **Changed**: Nginx now routes all traffic to single upstream (port 8080)
+- **Changed**: Static assets served directly by nginx from `/opt/apexintel/static/`
+- **Result**: ~764 MB freed on server, single 16 MB binary serves everything
 
 ## Appendix C – Deployment Status
 
-- [x] Deployment guide created
-- [ ] Hetzner firewall opened (ports 22, 80, 443)
-- [ ] Server setup (packages, users, directories)
-- [ ] PostgreSQL + Redis configured
-- [ ] NATS + MinIO installed
-- [ ] Rust toolchain installed
-- [ ] Node.js 20 installed
-- [ ] Application code deployed and built
-- [ ] Environment configured (.env)
-- [ ] Systemd services installed
-- [ ] Nginx configured
-- [ ] SSL certificate obtained
-- [ ] Model quantized (GGUF Q4_K_M)
-- [ ] Model transferred to server
-- [ ] llama-server running with model
-- [ ] Full system verified
+- [x] Deployment guide updated for single-binary architecture
+- [x] Hetzner firewall opened (ports 22, 80, 443)
+- [x] Server setup (packages, users, directories)
+- [x] PostgreSQL + Redis configured
+- [x] NATS installed
+- [x] MinIO installed
+- [x] Rust binary deployed (apex-api, 16 MB ARM64)
+- [x] Static assets deployed (/opt/apexintel/static/)
+- [x] Environment configured (.env with auth credentials)
+- [x] Systemd service updated (ReadOnlyPaths for static)
+- [x] Nginx updated (single upstream, static alias)
+- [x] SSL certificate active
+- [x] Old Next.js frontend removed from server
+- [x] Old frontend systemd service removed
+- [x] Full system verified (Mar 4, 2026 — API healthy, 45 endpoints, static serving OK)

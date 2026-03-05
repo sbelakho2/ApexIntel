@@ -1,0 +1,31 @@
+# ────────────────────────────────────────────────────────────────────────────
+# Dockerfile.worker — ApexIntel Worker (crawler, miner, scheduler)
+# Build:  docker build -f Dockerfile.worker -t apexintel-worker .
+# Run:    docker run --env-file .env apexintel-worker
+# ────────────────────────────────────────────────────────────────────────────
+
+FROM rust:1.80-bookworm AS builder
+WORKDIR /build
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo build --release --bin apex-worker --features llm 2>&1
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates libssl3 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r apexintel && useradd -r -g apexintel -d /opt/apexintel apexintel
+WORKDIR /opt/apexintel
+
+COPY --from=builder /build/target/release/apex-worker /usr/local/bin/apex-worker
+COPY config/ /opt/apexintel/config/
+
+RUN mkdir -p /opt/apexintel/data /opt/apexintel/logs && \
+    chown -R apexintel:apexintel /opt/apexintel
+
+USER apexintel
+ENV RUST_LOG=info
+
+CMD ["apex-worker"]

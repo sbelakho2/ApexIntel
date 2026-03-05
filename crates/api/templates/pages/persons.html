@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Persons — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Persons</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("POI Browser", "users", "Searchable person-of-interest profiles filtered by region and role.", "") %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Persons Tracked</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ total_persons }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Priority A</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ priority_a }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Priority B</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ priority_b }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Influence</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_influence }}</p>
+  </div>
+</div>
+
+<div class="apex-card p-4 mb-6">
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Influence Score Distribution</h2>
+    <span class="text-[10px] uppercase font-bold text-muted-foreground">Influence band</span>
+  </div>
+  <div class="grid grid-cols-5 gap-3 items-end h-40">
+    {% for g in influence_groups %}
+    <div class="flex h-full flex-col justify-end">
+      <div class="rounded-sm bg-blue-500/70" style="height:{{ g.pct }}%"></div>
+      <p class="mt-2 text-[10px] text-center font-bold text-muted-foreground">{{ g.range }}</p>
+      <p class="text-[10px] text-center text-muted-foreground">{{ g.count }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Refine POI list:</span>
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
+    {% for r in region_filters %}
+      <a href="{{ r.href }}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if r.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ r.label }}</a>
+    {% endfor %}
+    <span class="mx-2 h-4 w-px bg-border"></span>
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Priority:</span>
+    {% for p in priority_filters %}
+      <a href="{{ p.href }}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if p.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ p.label }}</a>
+    {% endfor %}
+    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
+    <a href="{{ reset_href }}" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+  </div>
+</div>
+
+<div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {% if persons.is_empty() %}
+    {% call m::empty_state("No persons match current filters", "Try broadening region/priority filters or reset filters to review all tracked POIs.") %}
+  {% else %}
+    {% for p in persons %}
+    <a href="/persons/{{ p.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-bold text-sm truncate">{{ p.name }}</p>
+          <p class="mt-1 text-[10px] uppercase text-muted-foreground truncate">{{ p.role }} · {{ p.organization }}</p>
+        </div>
+        <span class="text-[10px] font-black uppercase rounded-sm border border-border bg-secondary px-2 py-1">{{ p.priority }}</span>
+      </div>
+      <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{{ p.region }}</span>
+        <span class="font-bold">{{ p.influence_score }}</span>
+      </div>
+      {% if !p.tags.is_empty() %}
+      <div class="mt-2 flex flex-wrap gap-1.5">
+        {% for tag in p.tags %}
+        <span class="rounded-sm border border-border bg-secondary px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">{{ tag }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </a>
+    {% endfor %}
+  {% endif %}
+</div>
+{% endblock %}

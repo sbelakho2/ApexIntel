@@ -18,6 +18,9 @@ pub struct ListInsightsQuery {
     pub date_from: Option<String>,
     pub date_to: Option<String>,
     pub search: Option<String>,
+    pub insight_type: Option<String>,
+    /// When "true", only return bookmarked insights.
+    pub bookmarked: Option<String>,
 }
 
 // ────────────────────────────────────────────
@@ -38,6 +41,8 @@ pub struct InsightResponse {
     pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bookmarked: Option<bool>,
 }
 
 /// Weekly strategy memo response.
@@ -149,6 +154,7 @@ mod tests {
             tags: tags.into_iter().map(|t| t.to_string()).collect(),
             created_at: ts,
             updated_at: ts,
+            bookmarked: None,
         }
     }
 

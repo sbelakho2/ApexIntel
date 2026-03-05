@@ -325,6 +325,7 @@ pub fn compute_stability(
             min_required = MIN_VALID_TIME_SLICES,
             "compute_stability: valid time slices below minimum required"
         );
+        return 0.0;
     }
 
     positive_splits as f64 / valid_splits as f64
@@ -372,8 +373,8 @@ pub fn sweep_lags(
     }
 
     best.map(|(lag, effect, p, contingency)| PatternCandidate {
-        outcome: String::new(),
-        signals: Vec::new(),
+        outcome: "unknown_outcome".to_string(),
+        signals: vec!["unknown_signal".to_string()],
         best_lag_days: lag,
         effect_size: effect,
         p_value: p,
@@ -474,6 +475,7 @@ pub fn deduplicate_candidates(candidates: &mut Vec<PatternCandidate>) {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     fn make_events(entity_id: &str, timestamps: &[i64]) -> Vec<EventRecord> {
         timestamps
             .iter()
@@ -757,16 +759,16 @@ mod tests {
     #[test]
     fn test_build_contingency_empty_outcomes() {
         let signals = vec![("A".to_string(), 100i64)];
-        let (a, b, c, d) = build_contingency(&[], &signals, 0, 30, 0);
+        let (a, b, c, _d) = build_contingency(&[], &signals, 0, 30, 0);
         assert_eq!(a, 0);
         assert_eq!(c, 0);
-        assert!(b >= 1 || d >= 0); // A is signal-only
+        assert!(b >= 1); // A is signal-only
     }
 
     #[test]
     fn test_build_contingency_empty_signals() {
         let outcomes = vec![("A".to_string(), 100i64)];
-        let (a, b, c, d) = build_contingency(&outcomes, &[], 0, 30, 0);
+        let (a, b, _c, _d) = build_contingency(&outcomes, &[], 0, 30, 0);
         assert_eq!(a, 0);
         assert_eq!(b, 0);
     }
@@ -779,7 +781,7 @@ mod tests {
 
     #[test]
     fn test_build_contingency_both_empty_with_population() {
-        let (a, b, c, d) = build_contingency(&[], &[], 0, 30, 100);
+        let (a, _b, _c, d) = build_contingency(&[], &[], 0, 30, 100);
         assert_eq!(a, 0);
         assert_eq!(d, 100); // all population goes to d
     }

@@ -16,6 +16,12 @@ pub mod nightly;
 pub mod weekly;
 pub mod self_improvement;
 pub mod storage;
+pub mod notifications;
+pub mod webhooks;
+pub mod recipe_loader;
+pub mod sla_predictor;
+pub mod holiday_calendar;
 
 // Re-export commonly used types for external callers
 pub use storage::StorageContext;
+pub use recipe_loader::{load_default_seed_recipes, SeedRecipe};

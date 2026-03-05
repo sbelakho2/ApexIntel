@@ -1,0 +1,23 @@
+{# ── Person role history tab partial ───────────────────────────────────── #}
+
+<div id="person-history-tab">
+  {% if !role_history.is_empty() %}
+  <div class="divide-y divide-border">
+    {% for rh in role_history %}
+    <div class="px-4 py-3 hover:bg-muted/30 transition-colors">
+      <div class="flex items-center justify-between">
+        <div>
+          <span class="text-sm font-semibold">{{ rh.role }}</span>
+          <span class="ml-2 text-[11px] text-muted-foreground">at {{ rh.company_name }}</span>
+        </div>
+        <span class="text-[10px] text-muted-foreground tabular-nums">
+          {{ rh.start_date }}{% if let Some(end) = rh.end_date %} – {{ end }}{% else %} – present{% endif %}
+        </span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No role history available</p>
+  {% endif %}
+</div>

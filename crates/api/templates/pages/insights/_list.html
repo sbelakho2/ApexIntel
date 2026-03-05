@@ -1,0 +1,147 @@
+{# ── HTMX partial: insights list results fragment ─────────────────────── #}
+{% import "macros.html" as m %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Total Insights</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ total }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">High Impact</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ high_impact_count }}</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Confidence</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_confidence_pct }}%</p>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Medium Impact</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ medium_impact_count }}</p>
+  </div>
+</div>
+
+{# ── Insight Generation Trend (30d) ── #}
+<div class="apex-card p-4 mb-6">
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Insight Generation (30d)</h2>
+  </div>
+  <div style="height:200px;position:relative">
+    <canvas id="insight-trend-chart"></canvas>
+  </div>
+  <script>
+  (function(){
+    var ctx = document.getElementById('insight-trend-chart');
+    if (!ctx) return;
+    if (ctx._chart) { ctx._chart.destroy(); }
+    ctx._chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: [{% for d in insight_trend %}'{{ d.date_label }}',{% endfor %}],
+        datasets: [
+          { label: 'Demand',      data: [{% for d in insight_trend %}{{ d.demand }},{% endfor %}],      backgroundColor: '#FF8C00', stack: 'i' },
+          { label: 'Competitive', data: [{% for d in insight_trend %}{{ d.competitive }},{% endfor %}], backgroundColor: '#D62D2D', stack: 'i' },
+          { label: 'Supply',      data: [{% for d in insight_trend %}{{ d.supply }},{% endfor %}],      backgroundColor: '#FFBE00', stack: 'i' },
+          { label: 'Security',    data: [{% for d in insight_trend %}{{ d.security }},{% endfor %}],    backgroundColor: '#4A90E2', stack: 'i' },
+          { label: 'Macro',       data: [{% for d in insight_trend %}{{ d.macro_s }},{% endfor %}],     backgroundColor: '#2D8C3C', stack: 'i' }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 12, padding: 6 } },
+          tooltip: {
+            mode: 'index',
+            callbacks: {
+              label: function(c) { return c.dataset.label + ': ' + c.raw + ' insights'; }
+            }
+          }
+        },
+        scales: {
+          x: {
+            stacked: true,
+            ticks: { font: { size: 9 }, maxRotation: 45, maxTicksLimit: 10 },
+            grid: { display: false },
+            border: { display: false },
+            title: { display: true, text: 'Date', font: { size: 10, weight: 'bold' } }
+          },
+          y: {
+            stacked: true,
+            beginAtZero: true,
+            ticks: { font: { size: 9 } },
+            grid: { color: 'rgba(153,153,153,0.18)' },
+            border: { display: false },
+            title: { display: true, text: 'Insights', font: { size: 10, weight: 'bold' } }
+          }
+        }
+      }
+    });
+  })();
+  </script>
+</div>
+
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Type:</span>
+    <a href="/insights" hx-get="/insights" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
+    <a href="/insights?category=demand_signal{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=demand_signal{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "demand_signal" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">demand signal</a>
+    <a href="/insights?category=supply_risk{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=supply_risk{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "supply_risk" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">supply risk</a>
+    <a href="/insights?category=competitive_intel{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=competitive_intel{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "competitive_intel" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">competitive intel</a>
+    <a href="/insights?category=security_posture{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=security_posture{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "security_posture" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">security posture</a>
+    <a href="/insights?category=macro_shift{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=macro_shift{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "macro_shift" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">macro shift</a>
+    <a href="/insights?category=poi_movement{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=poi_movement{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "poi_movement" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">poi movement</a>
+    <span class="mx-2 h-4 w-px bg-border"></span>
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Impact:</span>
+    <a href="/insights?impact=high{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-get="/insights?impact=high{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_impact == "high" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">high</a>
+    <a href="/insights?impact=medium{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-get="/insights?impact=medium{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_impact == "medium" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">medium</a>
+    <a href="/insights?impact=low{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-get="/insights?impact=low{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_impact == "low" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">low</a>
+    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_category.is_empty() %}0{% else %}1{% endif %}{% if !active_impact.is_empty() %} + 1{% endif %}</span>
+    <a href="/insights" hx-get="/insights" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+  </div>
+</div>
+
+<div class="space-y-3">
+  {% if insights.is_empty() %}
+  {% call m::empty_state("No insights available", "Try adjusting filters.") %}
+  {% else %}
+    {% for i in insights %}
+    <div class="apex-card p-4 hover:bg-muted/30 transition-colors" id="insight-card-{{ i.id }}">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <a href="/insights/{{ i.id }}" class="text-sm font-semibold hover:underline">{{ i.title }}</a>
+          <div class="mt-1.5 flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span>
+              <span class="text-xs font-bold tabular-nums text-muted-foreground">{{ i.confidence_pct }}%</span>
+          </div>
+        </div>
+        <button hx-post="/insights/{{ i.id }}/bookmark" hx-target="#insight-card-{{ i.id }}" hx-swap="outerHTML"
+          class="shrink-0 rounded-sm border border-border p-1.5 hover:bg-muted {% if i.bookmarked %}text-yellow-500{% else %}text-muted-foreground{% endif %}"
+          title="{% if i.bookmarked %}Remove bookmark{% else %}Bookmark{% endif %}">
+          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="{% if i.bookmarked %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        </button>
+      </div>
+      <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{{ i.company_name }}</span>
+        <span class="tabular-nums">{{ i.created_at }}</span>
+      </div>
+      {% if !i.tags.is_empty() %}
+      <div class="mt-2 flex flex-wrap gap-1">{% for tag in i.tags %}{% call m::tag_pill(tag) %}{% endfor %}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% endif %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 flex items-center justify-between">
+  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <div class="flex gap-1">
+    {% if page > 1 %}<a href="/insights?page={{ page - 1 }}" hx-get="/insights?page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="/insights?page={{ page + 1 }}" hx-get="/insights?page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+  </div>
+</div>
+{% endif %}

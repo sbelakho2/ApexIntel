@@ -1,0 +1,123 @@
+{# ── HTMX partial: warnings list results fragment ────────────────────── #}
+{% import "macros.html" as m %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Critical</p><p class="mt-1.5 apex-metric-number text-2xl">{{ critical_count }}</p></div>
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#FF8C00"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">High</p><p class="mt-1.5 apex-metric-number text-2xl">{{ high_count }}</p></div>
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Medium</p><p class="mt-1.5 apex-metric-number text-2xl">{{ medium_count }}</p></div>
+  <div class="apex-card p-4 relative overflow-hidden"><div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div><p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Low</p><p class="mt-1.5 apex-metric-number text-2xl">{{ low_count }}</p></div>
+</div>
+
+<div class="apex-card p-4 mb-6">
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Warning Trend (30d)</h2>
+    <a href="/api/warnings" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Export JSON</a>
+  </div>
+  <div style="height:200px;position:relative">
+    <canvas id="warning-trend-chart"></canvas>
+  </div>
+  <script>
+  (function(){
+    var ctx = document.getElementById('warning-trend-chart');
+    if (!ctx) return;
+    if (ctx._chart) { ctx._chart.destroy(); }
+    ctx._chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: [{% for d in warning_trend %}'{{ d.date_label }}',{% endfor %}],
+        datasets: [
+          { label: 'Critical', data: [{% for d in warning_trend %}{{ d.critical }},{% endfor %}], backgroundColor: '#D62D2D', stack: 'w' },
+          { label: 'High',     data: [{% for d in warning_trend %}{{ d.high }},{% endfor %}],     backgroundColor: '#FF8C00', stack: 'w' },
+          { label: 'Medium',   data: [{% for d in warning_trend %}{{ d.medium }},{% endfor %}],   backgroundColor: '#FFBE00', stack: 'w' },
+          { label: 'Low',      data: [{% for d in warning_trend %}{{ d.low }},{% endfor %}],      backgroundColor: '#4A90E2', stack: 'w' }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 12, padding: 6 } },
+          tooltip: {
+            mode: 'index',
+            callbacks: {
+              label: function(c) { return c.dataset.label + ': ' + c.raw + ' events'; }
+            }
+          }
+        },
+        scales: {
+          x: {
+            stacked: true,
+            ticks: { font: { size: 9 }, maxRotation: 45, maxTicksLimit: 10 },
+            grid: { display: false },
+            border: { display: false },
+            title: { display: true, text: 'Date', font: { size: 10, weight: 'bold' } }
+          },
+          y: {
+            stacked: true,
+            beginAtZero: true,
+            ticks: { font: { size: 9 } },
+            grid: { color: 'rgba(153,153,153,0.18)' },
+            border: { display: false },
+            title: { display: true, text: 'Warnings', font: { size: 10, weight: 'bold' } }
+          }
+        }
+      }
+    });
+  })();
+  </script>
+</div>
+
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Severity:</span>
+    <a href="/warnings" hx-get="/warnings" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_severity.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
+    <a href="/warnings?severity=critical{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-get="/warnings?severity=critical{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_severity == "critical" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">critical</a>
+    <a href="/warnings?severity=high{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-get="/warnings?severity=high{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_severity == "high" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">high</a>
+    <a href="/warnings?severity=medium{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-get="/warnings?severity=medium{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_severity == "medium" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">medium</a>
+    <a href="/warnings?severity=low{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-get="/warnings?severity=low{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_severity == "low" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">low</a>
+    <span class="mx-2 h-4 w-px bg-border"></span>
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Status:</span>
+    <a href="/warnings" hx-get="/warnings" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
+    <a href="/warnings?status=active{% if !active_severity.is_empty() %}&severity={{ active_severity }}{% endif %}" hx-get="/warnings?status=active{% if !active_severity.is_empty() %}&severity={{ active_severity }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "active" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">active</a>
+    <a href="/warnings?status=acknowledged{% if !active_severity.is_empty() %}&severity={{ active_severity }}{% endif %}" hx-get="/warnings?status=acknowledged{% if !active_severity.is_empty() %}&severity={{ active_severity }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "acknowledged" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">acknowledged</a>
+    <a href="/warnings?status=resolved{% if !active_severity.is_empty() %}&severity={{ active_severity }}{% endif %}" hx-get="/warnings?status=resolved{% if !active_severity.is_empty() %}&severity={{ active_severity }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "resolved" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">resolved</a>
+    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_severity.is_empty() %}{% if active_status.is_empty() %}0{% else %}1{% endif %}{% else %}{% if active_status.is_empty() %}1{% else %}2{% endif %}{% endif %}</span>
+    <a href="/warnings" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+  </div>
+</div>
+
+<div class="space-y-3">
+  {% if warnings.is_empty() %}
+  {% call m::empty_state("No warnings match the current filters", "Try adjusting filters or reset.") %}
+  {% else %}
+    {% for w in warnings %}
+    <div class="apex-card p-4 hover:bg-muted/30 transition-colors" id="warning-card-{{ w.id }}">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <a href="/warnings/{{ w.id }}" class="text-sm font-semibold hover:underline">{{ w.title }}</a>
+          <div class="mt-1.5 flex flex-wrap items-center gap-2">
+            {% call m::severity_badge(w.severity) %}
+            {% call m::region_badge(w.region) %}
+            {% if w.acknowledged %}<span class="text-[10px] font-bold text-green-600 uppercase">Acknowledged</span>{% endif %}
+          </div>
+        </div>
+        <span class="text-xs font-bold tabular-nums text-muted-foreground">{{ w.confidence_pct }}%</span>
+      </div>
+      <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{{ w.company_name }} · {{ w.warning_type }}</span>
+        <span class="tabular-nums">{{ w.created_at }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  {% endif %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 flex items-center justify-between">
+  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <div class="flex gap-1">
+    {% if page > 1 %}<a href="/warnings?page={{ page - 1 }}" hx-get="/warnings?page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="/warnings?page={{ page + 1 }}" hx-get="/warnings?page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+  </div>
+</div>
+{% endif %}

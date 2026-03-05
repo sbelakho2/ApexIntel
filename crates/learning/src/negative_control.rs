@@ -235,6 +235,20 @@ pub fn filter_by_negative_controls(
     signals: &[EventRecord],
     config: &NegativeControlConfig,
 ) -> Vec<PatternCandidate> {
+    let distinct_signals = candidates
+        .iter()
+        .filter_map(|c| c.signals.first())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    if distinct_signals > 1 {
+        tracing::warn!(
+            distinct_signals,
+            "filter_by_negative_controls received mixed signal labels with a shared signal event set; returning empty set to avoid cross-signal contamination"
+        );
+        return Vec::new();
+    }
+
     candidates
         .iter()
         .filter(|c| passes_negative_controls(c, outcomes, signals, config))

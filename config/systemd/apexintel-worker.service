@@ -1,0 +1,29 @@
+[Unit]
+Description=ApexIntel Worker (Crawler, Miner, Scheduler)
+After=network.target postgresql.service redis-server.service nats.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=apexintel
+Group=apexintel
+WorkingDirectory=/opt/apexintel
+ExecStart=/opt/apexintel/bin/apex-worker
+EnvironmentFile=/opt/apexintel/config/.env
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apexintel-worker
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/apexintel/data /opt/apexintel/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,92 @@
+{
+  "staged_recipes": [
+    {
+      "recipe_id": "competitor-capacity-expansion",
+      "staged_at": "2026-02-15T00:00:00Z",
+      "weeks_in_staging": 2,
+      "precision": 0.82,
+      "recall": 0.55,
+      "false_positive_rate": 0.04,
+      "alerts_fired": 45,
+      "true_positives": 37
+    },
+    {
+      "recipe_id": "executive-movement-detector",
+      "staged_at": "2026-02-01T00:00:00Z",
+      "weeks_in_staging": 4,
+      "precision": 0.91,
+      "recall": 0.42,
+      "false_positive_rate": 0.02,
+      "alerts_fired": 18,
+      "true_positives": 16
+    }
+  ],
+  "production_recipes": [
+    {
+      "recipe_id": "competitor-news-monitor",
+      "promoted_at": "2026-01-15T00:00:00Z",
+      "weeks_in_production": 6,
+      "precision_history": [0.88, 0.87, 0.86, 0.85, 0.84, 0.83],
+      "recall_history": [0.62, 0.61, 0.59, 0.58, 0.56, 0.55],
+      "false_positive_rate": 0.05,
+      "alerts_fired_total": 234
+    },
+    {
+      "recipe_id": "supply-chain-disruption",
+      "promoted_at": "2026-02-01T00:00:00Z",
+      "weeks_in_production": 4,
+      "precision_history": [0.79, 0.81, 0.80, 0.82],
+      "recall_history": [0.48, 0.50, 0.51, 0.52],
+      "false_positive_rate": 0.06,
+      "alerts_fired_total": 89
+    }
+  ],
+  "memo_inputs": {
+    "top_warnings": [
+      {
+        "id": "warn-kitron-expansion",
+        "headline": "Kitron reports record Q4 revenue, expanding Nordic capacity",
+        "impact": "Direct competitive threat to Nordic defense contracts",
+        "confidence": 0.85
+      },
+      {
+        "id": "warn-lacroix-morocco",
+        "headline": "Lacroix Group accelerates Morocco plant ramp-up",
+        "impact": "Increased MENA competition for French OEM contracts",
+        "confidence": 0.78
+      }
+    ],
+    "new_recipes_staged": 12,
+    "recipes_promoted": 2,
+    "recipes_deprecated": 1,
+    "pipeline_health_pct": 0.87,
+    "top_drift_features": [["competitor_threat_score", 0.12], ["warning_frequency", 0.18]],
+    "poi_changes": [
+      {
+        "person_name": "Marie Dupont",
+        "change_type": "role_change",
+        "details": "Appointed as COO at Lacroix Electronics Tunisia"
+      },
+      {
+        "person_name": "Hassan El Amrani",
+        "change_type": "new_employer",
+        "details": "Joined ACTIA Group as VP Supply Chain from Coficab"
+      }
+    ],
+    "period_start": "2026-02-20T00:00:00Z",
+    "period_end": "2026-02-27T00:00:00Z"
+  },
+  "promotion_policy": {
+    "min_weeks_staged": 4,
+    "min_precision": 0.85,
+    "min_recall": 0.3,
+    "max_false_positive_rate": 0.05,
+    "min_alerts_fired": 3
+  },
+  "deprecation_policy": {
+    "precision_threshold": 0.5,
+    "min_weeks_declining": 3,
+    "max_false_positive_rate": 0.15,
+    "inactivity_weeks": 8
+  }
+}

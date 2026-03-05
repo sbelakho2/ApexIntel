@@ -9,3 +9,5 @@ pub mod trade_show;
 pub mod press;
 pub mod person;
 pub mod commodity;
+pub mod sentiment;
+pub mod transliteration;

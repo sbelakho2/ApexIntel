@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Search — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Search</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("Search", "search", "Search across all entities", "") %}
+
+<form action="/search" method="get" class="mb-4">
+  <div class="flex gap-2">
+    <input type="search" name="q" value="{{ query }}" placeholder="Search companies, persons, warnings, insights…"
+      class="flex-1 rounded-sm border border-border bg-secondary/40 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-border"
+      hx-get="/search" hx-trigger="input changed delay:300ms" hx-target="#main-results" hx-push-url="true">
+  </div>
+</form>
+
+{% if !query.is_empty() %}
+<div class="flex items-center gap-2 mb-4">
+  {% for f in facets %}
+  <a href="/search?q={{ query }}&entity_type={{ f.label|lower }}"
+    class="rounded-sm border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] {% if f.active %}border-primary bg-primary/10 text-primary{% else %}border-border text-muted-foreground hover:text-foreground{% endif %}">
+    {{ f.label }} ({{ f.count }})
+  </a>
+  {% endfor %}
+</div>
+
+<div class="space-y-2">
+  {% for r in results %}
+  <a href="{{ r.url }}" class="apex-card block px-4 py-3 hover:bg-muted/30 transition-colors">
+    <div class="flex items-center gap-2">
+      <span class="inline-flex items-center rounded-sm bg-muted/60 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ r.entity_type }}</span>
+      <span class="text-sm font-semibold">{{ r.title }}</span>
+    </div>
+    <p class="mt-1 text-[11px] text-muted-foreground">{{ r.subtitle }}</p>
+    {% if !r.snippet.is_empty() %}
+    <p class="mt-1 text-[11px]">{{ r.snippet }}</p>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+
+{% if results.is_empty() %}
+  {% call m::empty_state("No Results", "No results found for your search query.") %}
+{% endif %}
+
+<p class="mt-4 text-[10px] text-muted-foreground text-right">{{ total }} results in {{ took_ms }}ms</p>
+{% endif %}
+{% endblock %}

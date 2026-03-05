@@ -69,6 +69,17 @@ static RE_SPEAKERS: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+/// Patterns that introduce a session/presentation topic near a speaker mention.
+static RE_TOPIC: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r#"(?i)(?:speaking\s+on|presenting|session[:\s]+|topic[:\s]+|talk[:\s]+|presentation[:\s]+)["\u2018\u201c]?([^\n"\u2019\u201d.;]{5,120})["\u2019\u201d]?"#
+    )
+    .size_limit(200_000)
+    .dfa_size_limit(200_000)
+    .build()
+    .unwrap()
+});
+
 /// Extracted exhibitor or speaker from a trade show / conference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExhibitorExtract {
@@ -139,7 +150,7 @@ fn extract_date_range(text: &str) -> Option<String> {
             if normalizer::is_valid_date_range(&raw) {
                 return Some(raw);
             }
-            return None;
+            continue;
         }
     }
     None
@@ -203,16 +214,31 @@ pub fn extract_speakers(text: &str) -> Vec<SpeakerExtract> {
         let name = normalizer::normalize_whitespace(caps.get(1).unwrap().as_str());
         let title = caps.get(2).map(|m| normalizer::normalize_whitespace(m.as_str()));
         let company = caps.get(3).map(|m| normalizer::normalize_whitespace(m.as_str()));
+        let topic = extract_speaker_topic(text, &name);
 
         speakers.push(SpeakerExtract {
             name,
             title,
             company,
-            topic: None,
+            topic,
         });
     }
 
     speakers
+}
+
+/// Look for a session topic within the same paragraph or nearby lines as the
+/// speaker's name.  Returns the trimmed topic string if found.
+fn extract_speaker_topic(text: &str, name: &str) -> Option<String> {
+    // Grab up to 300 chars of context after the name's first occurrence.
+    let start = text.find(name)?;
+    let context_end = (start + 300).min(text.len());
+    let context = &text[start..context_end];
+
+    RE_TOPIC.captures(context)
+        .and_then(|c| c.get(1))
+        .map(|m| normalizer::normalize_whitespace(m.as_str()))
+        .filter(|s| !s.is_empty())
 }
 
 /// Known EMS-relevant trade shows.

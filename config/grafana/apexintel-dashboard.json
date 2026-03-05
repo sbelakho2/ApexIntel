@@ -1,0 +1,172 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "apexintel-ops",
+    "title": "ApexIntel Operations",
+    "tags": ["apexintel", "operations", "monitoring"],
+    "timezone": "utc",
+    "refresh": "30s",
+    "time": { "from": "now-24h", "to": "now" },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Crawl Success Rate (24h)",
+        "type": "gauge",
+        "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+        "targets": [
+          { "expr": "sum(rate(crawl_success_total[24h])) / sum(rate(crawl_attempts_total[24h])) * 100", "legendFormat": "Success %" }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": 0, "color": "red" },
+                { "value": 90, "color": "yellow" },
+                { "value": 98, "color": "green" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Warning Latency p95",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 },
+        "targets": [
+          { "expr": "histogram_quantile(0.95, rate(warning_latency_seconds_bucket[1h]))", "legendFormat": "p95 latency" },
+          { "expr": "histogram_quantile(0.50, rate(warning_latency_seconds_bucket[1h]))", "legendFormat": "p50 latency" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      },
+      {
+        "id": 3,
+        "title": "Recipe Precision (Production)",
+        "type": "bargauge",
+        "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+        "targets": [
+          { "expr": "recipe_precision{status='production'}", "legendFormat": "{{recipe_id}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+      },
+      {
+        "id": 4,
+        "title": "Observations Ingested (1h)",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+        "targets": [
+          { "expr": "sum(increase(observations_ingested_total[1h]))", "legendFormat": "Ingested" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "short" } }
+      },
+      {
+        "id": 5,
+        "title": "Active Warnings",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 4 },
+        "targets": [
+          { "expr": "sum(warning_active_count)", "legendFormat": "Active" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "short" } }
+      },
+      {
+        "id": 6,
+        "title": "POI Coverage by Region",
+        "type": "piechart",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+        "targets": [
+          { "expr": "sum by (region) (poi_count)", "legendFormat": "{{region}}" }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "LLM Request Latency",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+        "targets": [
+          { "expr": "histogram_quantile(0.50, rate(llm_request_duration_seconds_bucket[1h]))", "legendFormat": "p50" },
+          { "expr": "histogram_quantile(0.95, rate(llm_request_duration_seconds_bucket[1h]))", "legendFormat": "p95" },
+          { "expr": "histogram_quantile(0.99, rate(llm_request_duration_seconds_bucket[1h]))", "legendFormat": "p99" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      },
+      {
+        "id": 8,
+        "title": "Active Warnings by Severity",
+        "type": "bargauge",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+        "targets": [
+          { "expr": "sum by (severity) (warning_active_count)", "legendFormat": "{{severity}}" }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": 0, "color": "green" },
+                { "value": 5, "color": "yellow" },
+                { "value": 20, "color": "red" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "API Request Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+        "targets": [
+          { "expr": "sum(rate(http_requests_total[5m]))", "legendFormat": "Total RPS" },
+          { "expr": "sum(rate(http_requests_total{status=~'5..'}[5m]))", "legendFormat": "5xx RPS" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "reqps" } }
+      },
+      {
+        "id": 10,
+        "title": "Database Connection Pool",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+        "targets": [
+          { "expr": "pg_pool_active_connections", "legendFormat": "Active" },
+          { "expr": "pg_pool_idle_connections", "legendFormat": "Idle" },
+          { "expr": "pg_pool_max_connections", "legendFormat": "Max" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "short" } }
+      },
+      {
+        "id": 11,
+        "title": "Crawl Sources by Type",
+        "type": "piechart",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+        "targets": [
+          { "expr": "sum by (source_type) (crawl_sources_total)", "legendFormat": "{{source_type}}" }
+        ]
+      },
+      {
+        "id": 12,
+        "title": "Social Signal Volume",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+        "targets": [
+          { "expr": "sum by (platform) (rate(social_signals_total[1h]))", "legendFormat": "{{platform}}" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "short" } }
+      },
+      {
+        "id": 13,
+        "title": "Worker Job Durations",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+        "targets": [
+          { "expr": "histogram_quantile(0.95, rate(worker_job_duration_seconds_bucket[1h]))", "legendFormat": "{{job_name}} p95" }
+        ],
+        "fieldConfig": { "defaults": { "unit": "s" } }
+      }
+    ]
+  }
+}

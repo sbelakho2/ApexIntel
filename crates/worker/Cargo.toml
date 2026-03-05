@@ -7,8 +7,11 @@ edition = "2021"
 # Feature flags
 #
 # `llm` — enables the LLM-powered hypothesis generation stage in the nightly
-#   pipeline.  When active, the worker can call the `apex_learning::generate`
-#   module to produce recipe hypotheses from mined pattern candidates.
+#   pipeline, cross-domain mining, outcome tracking, source scoring (advanced),
+#   and the full insights weekly pipeline with LLM narration.
+#
+#   Enables: apex-llm, apex-learning (+ experimental modules), apex-insights,
+#            apex-parse, apex-poi
 #
 # Usage:
 #   cargo build -p apex-worker --features llm
@@ -16,14 +19,28 @@ edition = "2021"
 # ─────────────────────────────────────────────────────────────────────────────
 [features]
 default = []
-llm = ["apex-llm", "apex-learning"]
+# `parse` — enables apex-parse for HTML/content extraction without the full LLM stack.
+#   Use when you want crawl-cycle content parsing but don't have an LLM configured.
+parse = ["apex-parse"]
+llm = [
+    "apex-llm",
+    "apex-learning",
+    "apex-learning/experimental",
+    "apex-insights",
+    "parse",
+    "apex-poi",
+]
 
 [dependencies]
 apex-core = { path = "../core" }
 apex-store = { path = "../store" }
 apex-crawl = { path = "../crawl" }
+apex-recipes = { path = "../recipes" }
 apex-llm = { path = "../llm", optional = true }
 apex-learning = { path = "../learning", optional = true }
+apex-insights = { path = "../insights", optional = true }
+apex-parse = { path = "../parse", optional = true }
+apex-poi = { path = "../poi", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 chrono = { workspace = true }
@@ -35,3 +52,9 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+sqlx = { workspace = true }
+serde_yaml = "0.9"
+redis = { workspace = true }
+regex = "1"
+lazy_static = "1"

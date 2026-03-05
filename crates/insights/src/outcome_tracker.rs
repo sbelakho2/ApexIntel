@@ -575,7 +575,7 @@ mod tests {
         let mut predictions = Vec::new();
 
         // 7 confirmed, 3 expired → precision 0.7.
-        for i in 0..7 {
+        for _ in 0..7 {
             let mut p = make_prediction(0.8, 30);
             p.recipe_id = recipe_id();
             p.recipe_code = "A001".into();

@@ -12,3 +12,6 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+apex-stats = { path = "../stats" }
+apex-llm = { path = "../llm" }
+tokio = { workspace = true }

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en" class="{% if theme == "dark" %}dark{% endif %}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"historyCacheSize": 10}'>
+  <title>{% block title %}ApexIntel{% endblock %}</title>
+
+  <!-- Fonts -->
+  <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+  <style>
+    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable.woff2') format('woff2-variations'); font-weight: 100 900; font-display: swap; }
+    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable-Italic.woff2') format('woff2-variations'); font-weight: 100 900; font-style: italic; font-display: swap; }
+    @font-face { font-family: 'JetBrainsMono'; src: url('/static/fonts/JetBrainsMono-Variable.ttf') format('truetype-variations'); font-weight: 100 800; font-display: swap; }
+    :root { --font-apex: 'ApexIntel', ui-sans-serif, system-ui, sans-serif; --font-mono: 'JetBrainsMono', ui-monospace, monospace; }
+  </style>
+
+  <!-- Dark mode FOUC prevention -->
+  <script>
+    (function(){var t=localStorage.getItem("apex-theme");if(t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme:dark)").matches)){document.documentElement.classList.add("dark");document.documentElement.setAttribute("data-theme","dark")}})();
+  </script>
+
+  <!-- CSS (compiled via Tailwind standalone CLI from globals.css) -->
+  <link rel="stylesheet" href="/static/css/tailwind.css">
+
+  <!-- HTMX + App JS -->
+  <script src="/static/js/htmx.min.js" defer></script>
+  <script src="/static/js/app.js" defer></script>
+  <!-- Chart.js – interactive charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script>
+    if (window.Chart) {
+      Chart.defaults.font.family = "'ApexIntel', ui-sans-serif, system-ui, sans-serif";
+      Chart.defaults.font.size = 10;
+    }
+  </script>
+  {% block head %}{% endblock %}
+</head>
+<body hx-boost="true" data-ws-warnings>
+  <!-- Skip link -->
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <div class="fixed inset-0 border-[8px] border-rams-chassis pointer-events-none z-[100] hidden md:block" aria-hidden="true"></div>
+
+  <!-- Icon sprite (hidden) -->
+  {% include "sprite_include.html" %}
+
+  <div class="min-h-screen bg-background">
+    <div id="route-progress" class="route-progress" aria-hidden="true"></div>
+    <p class="sr-only" aria-live="polite">Page loaded</p>
+    <div class="pointer-events-none fixed inset-0 z-40 hidden border-[6px] border-background lg:block" aria-hidden="true"></div>
+
+    <!-- Offline banner -->
+    <div id="offline-banner" class="hidden border-b border-border bg-destructive/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-destructive sm:px-6 lg:px-8" role="status" aria-live="polite">
+      Offline: showing cached or local data only
+    </div>
+
+    <div class="flex">
+      <!-- Desktop sidebar -->
+      <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-border lg:bg-card" aria-label="Main navigation">
+        <div class="min-h-16 border-b border-border px-4 flex flex-col justify-center">
+          <p class="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
+          <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Competitive Intelligence</p>
+        </div>
+        <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
+          {% call nav_item("/", "Overview", "bar-chart-3") %}
+          {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
+          {% call nav_item("/insights", "Insights", "eye") %}
+          {% call nav_item("/memos", "Memos", "file-text") %}
+          {% call nav_item("/companies", "Companies", "boxes") %}
+          {% call nav_item("/persons", "Persons", "users") %}
+          {% call nav_item("/competitors", "Competitors", "target") %}
+          {% call nav_item("/security", "Security", "shield") %}
+          {% call nav_item("/graph", "Graph", "radio") %}
+          {% call nav_item("/recipes", "Recipes", "zap") %}
+          {% call nav_item("/search", "Search", "search") %}
+          {% call nav_item("/settings", "Settings", "server") %}
+        </nav>
+        <div class="border-t border-border p-3">
+          <div class="px-2">
+            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
+            <p class="text-xs font-bold text-foreground">{{ username }}</p>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main content -->
+      <!-- Mobile overlay -->
+      <div id="mobile-nav-overlay" class="fixed inset-0 z-50 bg-black/40 lg:hidden opacity-0 pointer-events-none transition-opacity duration-200" onclick="closeMobileNav()" aria-hidden="true"></div>
+
+      <!-- Mobile nav drawer -->
+      <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-card transition-transform duration-200 lg:hidden -translate-x-full" aria-label="Mobile navigation">
+        <div class="flex items-center justify-between px-4 py-5 border-b border-border">
+          <div>
+            <p class="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
+            <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Competitive Intelligence</p>
+          </div>
+          <button onclick="closeMobileNav()"
+            class="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+            aria-label="Close navigation">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <nav class="flex-1 overflow-y-auto p-3 space-y-1">
+          {% call nav_item("/", "Overview", "bar-chart-3") %}
+          {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
+          {% call nav_item("/insights", "Insights", "eye") %}
+          {% call nav_item("/memos", "Memos", "file-text") %}
+          {% call nav_item("/companies", "Companies", "boxes") %}
+          {% call nav_item("/persons", "Persons", "users") %}
+          {% call nav_item("/competitors", "Competitors", "target") %}
+          {% call nav_item("/security", "Security", "shield") %}
+          {% call nav_item("/graph", "Graph", "radio") %}
+          {% call nav_item("/recipes", "Recipes", "zap") %}
+          {% call nav_item("/search", "Search", "search") %}
+          {% call nav_item("/settings", "Settings", "server") %}
+        </nav>
+        <div class="border-t border-border p-3">
+          <div class="px-2">
+            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
+            <p class="text-xs font-bold text-foreground">{{ username }}</p>
+          </div>
+        </div>
+      </aside>
+
+      <main id="main-content" class="flex-1 min-w-0 pb-8 md:pb-10" tabindex="-1">
+        <header class="sticky top-0 z-20 bg-background/95">
+          <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div class="min-h-16 border-b border-border flex items-center justify-between gap-2">
+              <div class="flex items-center gap-3">
+                <!-- Mobile menu button -->
+                <button onclick="openMobileNav()"
+                  class="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-sm text-muted-foreground hover:text-foreground lg:hidden"
+                  aria-label="Open navigation">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                </button>
+                <p class="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">Operational Intelligence for EMS, Supply Chain, and Security</p>
+                <p class="hidden text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground md:block">Data freshness: near real-time</p>
+              </div>
+              <div class="flex items-center gap-3">
+                <button onclick="toggleDarkMode()" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground" title="Toggle dark mode">
+                  Theme
+                </button>
+                <span class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Live</span>
+                <span class="hidden sm:inline text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ username }}</span>
+                <form action="/logout" method="post" class="inline">
+                  <button type="submit"
+                    class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:text-destructive hover:border-destructive/40 whitespace-nowrap"
+                    title="Sign out">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    <span>Sign Out</span>
+                  </button>
+                </form>
+              </div>
+            </div>
+            {% block breadcrumbs %}{% endblock %}
+          </div>
+        </header>
+        <div class="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8" id="main-results">
+          {% block content %}{% endblock %}
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    function openMobileNav() {
+      var nav = document.getElementById('mobile-nav');
+      var overlay = document.getElementById('mobile-nav-overlay');
+      if (!nav || !overlay) return;
+      nav.classList.remove('-translate-x-full');
+      nav.classList.add('translate-x-0');
+      overlay.classList.remove('opacity-0', 'pointer-events-none');
+      overlay.classList.add('opacity-100', 'pointer-events-auto');
+      document.body.style.overflow = 'hidden';
+      requestAnimationFrame(function() {
+        var closeBtn = nav.querySelector('button');
+        if (closeBtn) closeBtn.focus();
+      });
+    }
+    function closeMobileNav() {
+      var nav = document.getElementById('mobile-nav');
+      var overlay = document.getElementById('mobile-nav-overlay');
+      if (!nav || !overlay) return;
+      nav.classList.add('-translate-x-full');
+      nav.classList.remove('translate-x-0');
+      overlay.classList.add('opacity-0', 'pointer-events-none');
+      overlay.classList.remove('opacity-100', 'pointer-events-auto');
+      document.body.style.overflow = '';
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeMobileNav();
+    });
+  </script>
+</body>
+</html>
+
+{# ── Navigation macros (use template fields: current_path, warning_count) ── #}
+
+{% macro icon(name, class) %}
+<svg class="{{ class }}"><use href="/static/icons/sprite.svg#icon-{{ name }}"/></svg>
+{% endmacro %}
+
+{% macro nav_item(href, label, icon_name) %}
+<a href="{{ href }}"
+   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
+  {% if href == "/graph" %}hx-boost="false"{% endif %}
+   {% if current_path == href %}aria-current="page"{% endif %}>
+  <span class="h-1.5 w-1.5 rounded-full {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}bg-primary{% else %}bg-border{% endif %}" aria-hidden="true"></span>
+  {{ label }}
+</a>
+{% endmacro %}
+
+{% macro nav_item_badge(href, label, icon_name) %}
+<a href="{{ href }}"
+   class="sidebar-item {% if current_path == href || current_path.starts_with(href) %}active{% endif %}"
+   {% if current_path == href %}aria-current="page"{% endif %}>
+  <span class="h-1.5 w-1.5 rounded-full {% if current_path == href || current_path.starts_with(href) %}bg-primary{% else %}bg-border{% endif %}" aria-hidden="true"></span>
+  {{ label }}
+  <span id="warning-badge"
+    class="ml-auto rounded-full bg-destructive px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}"
+    hx-get="/api/warnings/unread-count" hx-trigger="every 30s" hx-swap="innerHTML">
+    {{ warning_count }}
+  </span>
+</a>
+{% endmacro %}

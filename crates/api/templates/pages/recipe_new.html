@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}New Recipe — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li><a href="/recipes" class="hover:text-foreground">Recipes</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">New</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl">
+  {% call m::page_header("Create Recipe", "sparkles", "Build a custom signal detection recipe, or let AI generate one.", "") %}
+
+  {# ── AI Assist ─────────────────────────────────────────────────────── #}
+  <div class="rounded-sm border border-border bg-card p-4 mb-4">
+    <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">
+      {% call m::icon("sparkles", 14) %} AI Recipe Generator
+    </h3>
+    <div class="flex gap-2">
+      <input type="text" id="ai-prompt"
+        placeholder="Describe the signal you want to detect…"
+        class="flex-1 rounded-sm border border-border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary">
+      <button type="button" id="ai-generate-btn"
+        class="rounded-sm bg-primary px-4 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors whitespace-nowrap">
+        Generate with AI
+      </button>
+    </div>
+    <p class="text-[9px] text-muted-foreground mt-1">
+      AI will populate the form below. Review and adjust before saving.
+    </p>
+  </div>
+
+  <form id="recipe-form" class="space-y-4">
+    {# ── Basic Info ────────────────────────────────────────────────────── #}
+    <div class="rounded-sm border border-border bg-card p-4">
+      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-3">Basic Information</h3>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-0.5">
+          <span class="text-[9px] font-bold uppercase text-muted-foreground">Recipe Name</span>
+          <input type="text" name="name" required placeholder="e.g. Competitor Patent Surge"
+            class="rounded-sm border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary w-full">
+        </label>
+        <div class="flex gap-3">
+          <label class="flex flex-col gap-0.5">
+            <span class="text-[9px] font-bold uppercase text-muted-foreground">Severity</span>
+            <select name="severity" class="rounded-sm border border-border bg-background px-2 py-1 text-xs">
+              <option value="critical">critical</option>
+              <option value="high">high</option>
+              <option value="medium" selected>medium</option>
+              <option value="low">low</option>
+              <option value="info">info</option>
+            </select>
+          </label>
+          <label class="flex flex-col gap-0.5">
+            <span class="text-[9px] font-bold uppercase text-muted-foreground">Cooldown (hrs)</span>
+            <input type="number" name="cooldown_hours" value="24" min="1" max="720"
+              class="rounded-sm border border-border bg-background px-2 py-1 text-xs w-20">
+          </label>
+          <label class="flex flex-col gap-0.5 justify-end">
+            <span class="text-[9px] font-bold uppercase text-muted-foreground">Enabled</span>
+            <input type="checkbox" name="enabled" checked class="h-4 w-4 rounded border-border">
+          </label>
+        </div>
+      </div>
+      <label class="flex flex-col gap-0.5 mt-2">
+        <span class="text-[9px] font-bold uppercase text-muted-foreground">Description</span>
+        <textarea name="description" rows="3" placeholder="What does this recipe detect?"
+          class="rounded-sm border border-border bg-background px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-primary"></textarea>
+      </label>
+    </div>
+
+    {# ── Signals ───────────────────────────────────────────────────────── #}
+    <div class="rounded-sm border border-border bg-card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground">
+          Signals (<span data-count="signals">0</span>)
+        </h3>
+        <button type="button" data-add="signals"
+          class="rounded-sm bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary hover:bg-primary/20 transition-colors">
+          + Add
+        </button>
+      </div>
+      <div id="signals-list" class="space-y-2"></div>
+    </div>
+
+    {# ── Transforms ────────────────────────────────────────────────────── #}
+    <div class="rounded-sm border border-border bg-card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground">
+          Transforms (<span data-count="transforms">0</span>)
+        </h3>
+        <button type="button" data-add="transforms"
+          class="rounded-sm bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary hover:bg-primary/20 transition-colors">
+          + Add
+        </button>
+      </div>
+      <div id="transforms-list" class="space-y-2"></div>
+    </div>
+
+    {# ── Thresholds ────────────────────────────────────────────────────── #}
+    <div class="rounded-sm border border-border bg-card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground">
+          Thresholds (<span data-count="thresholds">0</span>)
+        </h3>
+        <button type="button" data-add="thresholds"
+          class="rounded-sm bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary hover:bg-primary/20 transition-colors">
+          + Add
+        </button>
+      </div>
+      <div id="thresholds-list" class="space-y-2"></div>
+    </div>
+
+    {# ── Narrative Template ────────────────────────────────────────────── #}
+    <div class="rounded-sm border border-border bg-card p-4">
+      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">Narrative Template</h3>
+      <textarea name="narrative_template" rows="3"
+        class="rounded-sm border border-border bg-background px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-primary">{% raw %}{{entity_name}} triggered {{recipe_name}}: {{summary}}{% endraw %}</textarea>
+      <p class="text-[9px] text-muted-foreground mt-1">
+        Variables: <code class="text-[9px]">{% raw %}{{entity_name}}{% endraw %}</code>,
+        <code class="text-[9px]">{% raw %}{{recipe_name}}{% endraw %}</code>,
+        <code class="text-[9px]">{% raw %}{{summary}}{% endraw %}</code>,
+        <code class="text-[9px]">{% raw %}{{severity}}{% endraw %}</code>,
+        <code class="text-[9px]">{% raw %}{{timestamp}}{% endraw %}</code>,
+        <code class="text-[9px]">{% raw %}{{metric_value}}{% endraw %}</code>
+      </p>
+    </div>
+
+    {# ── Actions ───────────────────────────────────────────────────────── #}
+    <div class="rounded-sm border border-border bg-card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground">
+          Actions (<span data-count="actions">0</span>)
+        </h3>
+        <button type="button" data-add="actions"
+          class="rounded-sm bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary hover:bg-primary/20 transition-colors">
+          + Add
+        </button>
+      </div>
+      <div id="actions-list" class="space-y-2"></div>
+    </div>
+
+    {# ── Test Results ──────────────────────────────────────────────────── #}
+    <div id="test-results" class="hidden rounded-md border border-green-600/30 bg-green-950/20 p-3"></div>
+
+    {# ── Submit ────────────────────────────────────────────────────────── #}
+    <div class="flex items-center gap-3 pt-2 pb-8">
+      <button type="button" id="test-recipe-btn"
+        class="rounded-sm border border-yellow-600/40 px-4 py-1.5 text-xs font-bold text-yellow-400 hover:bg-yellow-600/10 disabled:opacity-40 transition-colors">
+        Test Recipe
+      </button>
+      <button type="submit"
+        class="rounded-sm bg-primary px-6 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors">
+        Create Recipe
+      </button>
+      <a href="/recipes"
+        class="rounded-sm border border-border px-4 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted/50 transition-colors">
+        Cancel
+      </a>
+    </div>
+  </form>
+</div>
+
+<script src="/static/js/recipe-builder.js"></script>
+{% endblock %}

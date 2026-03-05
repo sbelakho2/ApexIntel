@@ -1,7 +1,10 @@
 pub mod bounded_queue;
 pub mod config;
 pub mod entities;
+pub mod geospatial;
+pub mod hs_codes;
 pub mod provenance;
+pub mod quality_score;
 pub mod schemas;
 pub mod outcomes;
 pub mod errors;

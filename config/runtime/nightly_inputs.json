@@ -1,0 +1,32 @@
+{
+  "crawl": {
+    "sources_attempted": 1646,
+    "sources_succeeded": 345,
+    "sources_failed": 1301,
+    "new_observations": 1789,
+    "changed_pages": 156,
+    "bytes_fetched": 89456320,
+    "errors": []
+  },
+  "mining": {
+    "candidates_found": 841,
+    "candidates_passed_gates": 420,
+    "hypotheses_generated": 85,
+    "recipes_staged": 12,
+    "errors": []
+  },
+  "poi": {
+    "profiles_scanned": 54,
+    "profiles_updated": 18,
+    "new_pois_discovered": 3,
+    "role_changes_detected": 5,
+    "errors": []
+  },
+  "drift": {
+    "features_checked": 102,
+    "features_drifted": 8,
+    "drift_scores": [["competitor_threat_score", 0.12], ["warning_frequency", 0.18], ["capability_overlap", 0.09]],
+    "alerts_raised": 2,
+    "errors": []
+  }
+}

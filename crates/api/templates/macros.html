@@ -1,0 +1,152 @@
+{# ── Shared macros for ApexIntel page templates ──────────────────────────── #}
+
+{% macro icon(name, class) %}
+<svg class="{{ class }}"><use href="/static/icons/sprite.svg#icon-{{ name }}"/></svg>
+{% endmacro %}
+
+{% macro page_header(title, icon_name, subtitle, actions) %}
+<div class="mb-6 flex items-start justify-between gap-4 border-b border-border pb-4">
+  <div class="flex items-start gap-3">
+    <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+      {% call icon(icon_name, "h-4 w-4") %}
+    </div>
+    <div>
+      <h1>{{ title }}</h1>
+      {% if !subtitle.is_empty() %}<p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{{ subtitle }}</p>{% endif %}
+    </div>
+  </div>
+  {{ actions|safe }}
+</div>
+{% endmacro %}
+
+{% macro severity_badge(severity) %}
+{% if severity == "critical" %}
+<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-red-500/10 text-red-600 border-red-500/20">
+  <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>critical
+</span>
+{% else if severity == "high" %}
+<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-orange-500/10 text-orange-600 border-orange-500/20">
+  <span class="h-1.5 w-1.5 rounded-full bg-orange-500"></span>high
+</span>
+{% else if severity == "medium" %}
+<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-yellow-500/10 text-yellow-700 border-yellow-500/20">
+  <span class="h-1.5 w-1.5 rounded-full bg-yellow-500"></span>medium
+</span>
+{% else %}
+<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-blue-400/10 text-blue-600 border-blue-400/20">
+  <span class="h-1.5 w-1.5 rounded-full bg-blue-400"></span>low
+</span>
+{% endif %}
+{% endmacro %}
+
+{% macro status_badge(status, variant) %}
+{% if variant == "success" %}
+<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-green-500/10 text-green-700 border-green-500/20">{{ status }}</span>
+{% else if variant == "warning" %}
+<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-yellow-500/10 text-yellow-700 border-yellow-500/20">{{ status }}</span>
+{% else if variant == "error" %}
+<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-red-500/10 text-red-600 border-red-500/20">{{ status }}</span>
+{% else if variant == "info" %}
+<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-blue-500/10 text-blue-600 border-blue-500/20">{{ status }}</span>
+{% else %}
+<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-muted/50 text-muted-foreground border-border">{{ status }}</span>
+{% endif %}
+{% endmacro %}
+
+{% macro region_badge(region) %}
+<span class="inline-flex items-center gap-1 rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+  {% call icon("globe", "h-2.5 w-2.5") %}{{ region }}
+</span>
+{% endmacro %}
+
+{% macro score_ring(score, size) %}
+<div class="inline-flex items-center justify-center rounded-full border-2 {% if score >= 85 %}border-red-500 text-red-600{% else if score >= 65 %}border-yellow-500 text-yellow-700{% else %}border-blue-400 text-blue-600{% endif %}" style="width: {{ size }}px; height: {{ size }}px;">
+  <span class="text-[10px] font-black">{{ score }}</span>
+</div>
+{% endmacro %}
+
+{% macro progress_bar(value, max, color, label) %}
+<div class="w-full">
+  {% if !label.is_empty() %}
+  <div class="flex items-center justify-between mb-1">
+    <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ label }}</span>
+    <span class="text-[11px] font-bold tabular-nums text-foreground">{{ value }}/{{ max }}</span>
+  </div>
+  {% endif %}
+  <div class="intel-score-bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{ max }}">
+    <div class="intel-score-fill" style="width: {{ value }}%; background-color: {{ color }}"></div>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro empty_state(title, description) %}
+<div class="apex-card p-8 text-center">
+  <div class="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-sm border border-border bg-secondary text-muted-foreground">
+    {% call icon("boxes", "h-5 w-5") %}
+  </div>
+  <p class="text-lg font-black uppercase tracking-[0.08em]">{{ title }}</p>
+  <p class="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">{{ description }}</p>
+</div>
+{% endmacro %}
+
+{% macro confidence_meter(value, label) %}
+<div class="flex items-center gap-2">
+  {% if !label.is_empty() %}<span class="text-[10px] font-bold uppercase text-muted-foreground">{{ label }}</span>{% endif %}
+  <div class="h-2 w-24 rounded-full bg-secondary overflow-hidden">
+    <div class="h-full rounded-full {% if value >= 70 %}bg-green-600{% else if value >= 40 %}bg-yellow-500{% else %}bg-red-500{% endif %}" style="width: {{ value }}%"></div>
+  </div>
+  <span class="text-xs font-bold tabular-nums">{{ value }}%</span>
+</div>
+{% endmacro %}
+
+{% macro tag_pill(tag) %}
+<span class="inline-flex items-center rounded-sm bg-muted/60 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ tag }}</span>
+{% endmacro %}
+
+{# ── SVG donut chart (replaces recharts) ─────────────────────────────── #}
+{# segments: Vec<DonutSegment> with precomputed dash_array, dash_offset  #}
+{# size: i32, stroke_width: i32, half: i32 (= size/2), radius: i32      #}
+{% macro donut_chart(segments, size, stroke_width, half, radius) %}
+<div class="inline-flex flex-col items-center gap-2">
+  <svg width="{{ size }}" height="{{ size }}" viewBox="0 0 {{ size }} {{ size }}" class="transform -rotate-90">
+    {# Background ring #}
+    <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
+      fill="none" stroke="currentColor" stroke-width="{{ stroke_width }}"
+      class="text-border" opacity="0.3"/>
+    {# Segments — dash_array and dash_offset precomputed in Rust #}
+    {% for seg in segments %}
+    <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
+      fill="none" stroke="{{ seg.color }}" stroke-width="{{ stroke_width }}"
+      stroke-dasharray="{{ seg.dash_array }}"
+      stroke-dashoffset="{{ seg.dash_offset }}"
+      stroke-linecap="butt">
+      <title>{{ seg.label }}: {{ seg.count }}</title>
+    </circle>
+    {% endfor %}
+  </svg>
+  {# Legend #}
+  <div class="flex flex-wrap justify-center gap-x-3 gap-y-1">
+    {% for seg in segments %}
+    <span class="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+      <span class="h-2 w-2 rounded-full" style="background-color: {{ seg.color }}"></span>
+      {{ seg.label }} ({{ seg.count }})
+    </span>
+    {% endfor %}
+  </div>
+</div>
+{% endmacro %}
+
+{# ── Country flag emoji helper ───────────────────────────────────────── #}
+{% macro country_flag(code) %}
+{% if code == "TN" %}🇹🇳{% else if code == "MA" %}🇲🇦{% else if code == "IL" %}🇮🇱{% else if code == "CN" %}🇨🇳{% else if code == "US" %}🇺🇸{% else if code == "EU" %}🇪🇺{% else if code == "GB" %}🇬🇧{% else if code == "FR" %}🇫🇷{% else if code == "DE" %}🇩🇪{% else if code == "KE" %}🇰🇪{% else %}🌍{% endif %}
+{% endmacro %}
+
+{# ── Tier color class helper ─────────────────────────────────────────── #}
+{% macro tier_color_class(tier) %}
+{% if tier == "critical" %}text-red-600{% else if tier == "high" %}text-orange-500{% else if tier == "medium" %}text-yellow-600{% else %}text-blue-500{% endif %}
+{% endmacro %}
+
+{# ── Role family color class helper ──────────────────────────────────── #}
+{% macro role_family_color_class(family) %}
+{% if family == "Executive" %}text-red-600{% else if family == "Technical" %}text-blue-600{% else if family == "Operations" %}text-green-600{% else if family == "Legal" %}text-purple-600{% else if family == "Finance" %}text-amber-600{% else %}text-muted-foreground{% endif %}
+{% endmacro %}

@@ -1,0 +1,33 @@
+{# ── Security DNS posture tab partial ─────────────────────────────────── #}
+{% import "macros.html" as m %}
+
+<div id="security-dns-tab">
+  {% if !dns_posture.is_empty() %}
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-border">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Domain</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">SPF</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">DKIM</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">DMARC</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">DNSSEC</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">Score</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-border">
+      {% for d in dns_posture %}
+      <tr class="hover:bg-muted/30 transition-colors">
+        <td class="px-4 py-2 text-sm">{{ d.domain }}</td>
+        <td class="px-4 py-2 text-center {% if d.has_spf %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_spf %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center {% if d.has_dkim %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_dkim %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center {% if d.has_dmarc %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_dmarc %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center {% if d.has_dnssec %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_dnssec %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center font-bold tabular-nums">{{ d.score }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No DNS posture data available</p>
+  {% endif %}
+</div>

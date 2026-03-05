@@ -20,6 +20,13 @@ pub struct ListPersonsQuery {
     pub min_priority: Option<f64>,
     pub roles: Option<String>,
     pub sort_by: Option<PersonSortField>,
+    /// Named tier filter: "critical" | "high" | "medium" | "low"
+    /// Converts to min/max priority bounds server-side.
+    pub tier: Option<String>,
+    /// Legacy list filter used by pre-migration UI: "A" | "B" | "C".
+    pub priority: Option<String>,
+    /// Legacy single region filter alias used by pre-migration list page.
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,10 +60,19 @@ pub struct PersonListItem {
     pub id: String,
     pub name: String,
     pub role: String,
+    pub role_family: String,
     pub organization: String,
     pub region: String,
+    pub country: String,
     pub priority_score: f64,
+    /// Legacy 0-100 influence score expected by pre-migration cards/charts.
+    pub influence_score: i64,
+    /// Legacy priority band used by pre-migration filters.
+    pub priority: String,
+    pub influence_tier: String,
     pub engagement_status: String,
+    pub tags: Vec<String>,
+    pub last_signal: String,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -65,19 +81,42 @@ pub struct PersonListItem {
 pub struct PersonDetail {
     pub id: String,
     pub name: String,
+    pub name_alt: Vec<String>,
     pub role: String,
+    pub role_family: String,
     pub organization: String,
+    pub org_id: Option<String>,
     pub region: String,
     pub country: String,
+    pub bio: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
     pub linkedin: Option<String>,
     pub priority_score: f64,
+    pub influence_score: i64,
+    pub priority: String,
     pub priority_vector: PriorityVector,
+    pub influence_tier: String,
     pub engagement_status: String,
+    pub engagement_readiness: f64,
+    pub data_completeness: f64,
     pub tags: Vec<String>,
+    pub trigger_topics: Vec<String>,
+    pub decision_style: Option<String>,
+    pub risk_tolerance: Option<String>,
+    pub change_appetite: Option<String>,
+    pub communication_style: Option<String>,
+    pub decision_mode: Option<String>,
+    pub preferred_proof_type: Option<String>,
+    pub pain_index: Option<f64>,
+    pub change_risk: Option<f64>,
+    pub role_drift_score: Option<f64>,
     pub affiliations: Vec<Affiliation>,
     pub timeline: Vec<PersonEvent>,
+    pub role_history: Vec<RoleHistoryEntry>,
+    pub peers: Vec<PeerSummary>,
+    pub warning_count: i64,
+    pub insight_count: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -120,6 +159,28 @@ pub struct PersonEvent {
     pub description: String,
     pub date: DateTime<Utc>,
     pub source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleHistoryEntry {
+    pub organization: String,
+    pub role: String,
+    pub role_family: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub is_current: bool,
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerSummary {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub organization: String,
+    pub region: String,
+    pub priority_score: f64,
+    pub influence_tier: String,
 }
 
 /// Engagement guide response.
@@ -231,9 +292,12 @@ mod tests {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
             role: role.to_string(),
+            role_family: "C-Suite".to_string(),
             organization: "Test Org".to_string(),
             region: region.to_string(),
+            country: "US".to_string(),
             priority_score: priority,
+            influence_tier: super::priority_tier(priority).to_string(),
             engagement_status: "new".to_string(),
             updated_at: Utc::now(),
         }

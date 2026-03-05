@@ -14,13 +14,28 @@
 /// when either variable has insufficient variance, or when there are fewer
 /// than `2 × bins` paired finite observations.
 pub fn estimate(x: &[f64], y: &[f64], bins: usize) -> f64 {
-    let n = x.len().min(y.len());
+    let finite_pairs: Vec<(f64, f64)> = x
+        .iter()
+        .zip(y.iter())
+        .filter_map(|(&xv, &yv)| {
+            if xv.is_finite() && yv.is_finite() {
+                Some((xv, yv))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let n = finite_pairs.len();
     if n < bins * 2 || bins == 0 {
         return 0.0;
     }
 
-    let (x_min, x_max) = min_max(&x[..n]);
-    let (y_min, y_max) = min_max(&y[..n]);
+    let x_only: Vec<f64> = finite_pairs.iter().map(|(xv, _)| *xv).collect();
+    let y_only: Vec<f64> = finite_pairs.iter().map(|(_, yv)| *yv).collect();
+
+    let (x_min, x_max) = min_max(&x_only);
+    let (y_min, y_max) = min_max(&y_only);
     let x_step = (x_max - x_min) / bins as f64;
     let y_step = (y_max - y_min) / bins as f64;
 
@@ -32,9 +47,9 @@ pub fn estimate(x: &[f64], y: &[f64], bins: usize) -> f64 {
     let mut mx = vec![0u64; bins];
     let mut my = vec![0u64; bins];
 
-    for i in 0..n {
-        let xi = ((x[i] - x_min) / x_step).min((bins - 1) as f64) as usize;
-        let yi = ((y[i] - y_min) / y_step).min((bins - 1) as f64) as usize;
+    for (xv, yv) in finite_pairs {
+        let xi = ((xv - x_min) / x_step).clamp(0.0, (bins - 1) as f64) as usize;
+        let yi = ((yv - y_min) / y_step).clamp(0.0, (bins - 1) as f64) as usize;
         joint[xi][yi] += 1;
         mx[xi] += 1;
         my[yi] += 1;
@@ -70,20 +85,21 @@ pub fn normalized_mi(x: &[f64], y: &[f64], bins: usize) -> f64 {
 
 /// Compute Shannon entropy of a variable via binning.
 fn entropy_binned(data: &[f64], bins: usize) -> f64 {
-    let n = data.len();
+    let finite: Vec<f64> = data.iter().copied().filter(|v| v.is_finite()).collect();
+    let n = finite.len();
     if n < bins || bins == 0 {
         return 0.0;
     }
 
-    let (min_val, max_val) = min_max(data);
+    let (min_val, max_val) = min_max(&finite);
     let step = (max_val - min_val) / bins as f64;
     if step < 1e-12 {
         return 0.0;
     }
 
     let mut counts = vec![0u64; bins];
-    for &v in data {
-        let idx = ((v - min_val) / step).min((bins - 1) as f64) as usize;
+    for &v in &finite {
+        let idx = ((v - min_val) / step).clamp(0.0, (bins - 1) as f64) as usize;
         counts[idx] += 1;
     }
 
@@ -252,5 +268,14 @@ mod tests {
         let y = vec![5.0; 100];
         let nmi = normalized_mi(&x, &y, 10);
         assert!((nmi - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_mi_ignores_non_finite_pairs() {
+        let x = vec![1.0, 2.0, f64::NAN, 4.0, f64::INFINITY, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let y = vec![1.0, 2.0, 3.0, f64::NAN, 5.0, 6.0, 7.0, f64::NEG_INFINITY, 9.0, 10.0];
+        let mi = estimate(&x, &y, 3);
+        assert!(mi.is_finite());
+        assert!(mi >= 0.0);
     }
 }

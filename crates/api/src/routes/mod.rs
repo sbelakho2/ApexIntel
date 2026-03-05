@@ -9,13 +9,18 @@ use serde::{Deserialize, Serialize};
 pub mod admin;
 pub mod companies;
 pub mod dossiers;
+pub mod export;
 pub mod graph;
+pub mod health;
 pub mod insights;
 pub mod llm;
 pub mod persons;
+pub mod preferences;
 pub mod recipes;
+pub mod replay;
 pub mod search;
 pub mod security;
+pub mod semantic_search;
 pub mod warnings;
 pub mod ws;
 
@@ -36,10 +41,16 @@ pub mod paths {
     pub const GRAPH: &str = "/api/graph";
     pub const SECURITY: &str = "/api/security";
     pub const ADMIN: &str = "/api/admin";
+    pub const HEALTH_DEEP: &str = "/api/health/deep";
     pub const LLM_EXTRACT_ENTITIES: &str = "/api/llm/extract-entities";
     pub const LLM_GENERATE_RECIPE: &str = "/api/llm/generate-recipe";
     pub const LLM_SYNTHESIZE_POI: &str = "/api/llm/synthesize-poi";
     pub const LLM_GENERATE_MEMO: &str = "/api/llm/generate-memo";
+    pub const EXPORT: &str = "/api/export";
+    pub const PREFERENCES: &str = "/api/preferences";
+    pub const SEMANTIC_SEARCH: &str = "/api/semantic-search";
+    pub const REPLAY: &str = "/api/replay";
+    pub const REPLAY_STATUS: &str = "/api/replay/:id/status";
 }
 
 // ─── Endpoint catalogue ─────────────────────────────────────────────────
@@ -206,6 +217,213 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "analyst",
         },
+        // Entity list endpoints
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/sites",
+            description: "List manufacturing/operational sites",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/capabilities",
+            description: "List company capabilities",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/certifications",
+            description: "List certifications",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/observations",
+            description: "List intelligence observations",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/product-families",
+            description: "List product families",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/logistics-nodes",
+            description: "List logistics nodes",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/regulations",
+            description: "List tracked regulations",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/poi-artifacts",
+            description: "List person-of-interest artifacts",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/dashboard",
+            description: "Dashboard aggregated statistics",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Warning detail
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/warnings/:id",
+            description: "Get a single warning by ID",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Weekly memo
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/insights/weekly-memo",
+            description: "Latest weekly intelligence memo",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Company dossier
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/companies/:id/dossier",
+            description: "Full company dossier with sites, capabilities, certifications",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Person dossier & engagement
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/persons/:id/dossier",
+            description: "Full POI dossier with artifacts and observations",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/persons/:id/engagement",
+            description: "POI engagement guide with talking points",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        // Competitors
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/competitors",
+            description: "List competitor companies",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/competitors/changes",
+            description: "All competitor changes across all competitors",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/competitors/:id/changes",
+            description: "Recent changes for a competitor",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Graph sub-endpoints
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/graph/neighborhood/:id",
+            description: "Graph neighborhood around an entity",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/graph/path/:from/:to",
+            description: "Shortest path between two entities",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Recipes staging / promote
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/recipes/staging",
+            description: "List staging (unpromoted) recipes",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: "/api/recipes/:id/promote",
+            description: "Promote a staging recipe to active",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        // Security sub-endpoints
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/security/dns-posture",
+            description: "DNS security posture analysis",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/security/lookalike-domains",
+            description: "Lookalike domain detection results",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/security/kev-relevance",
+            description: "KEV relevance analysis",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        // Admin endpoints
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/admin/crawl-status",
+            description: "Crawl pipeline status overview",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/admin/recipe-performance",
+            description: "Recipe performance metrics",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/admin/poi-coverage",
+            description: "Person-of-interest data coverage stats",
+            auth_required: true,
+            min_role: "admin",
+        },
+        // WebSocket
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/ws/warnings",
+            description: "Real-time warning stream via WebSocket",
+            auth_required: true,
+            min_role: "viewer",
+        },
     ]
 }
 
@@ -216,7 +434,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 17);
+        assert_eq!(eps.len(), 44);
     }
 
     #[test]
@@ -240,13 +458,18 @@ mod tests {
     #[test]
     fn test_admin_endpoints_require_admin() {
         let eps = all_endpoints();
-        assert!(eps.iter().all(|e| !e.path.starts_with("/api/admin")));
+        for ep in &eps {
+            if ep.path.starts_with("/api/admin") {
+                assert_eq!(ep.min_role, "admin", "Admin endpoint {} should require admin role", ep.path);
+            }
+        }
     }
 
     #[test]
     fn test_promote_is_post() {
         let eps = all_endpoints();
-        assert!(eps.iter().all(|e| !e.path.contains("promote")));
+        let promote = eps.iter().find(|e| e.path.contains("promote")).unwrap();
+        assert!(matches!(promote.method, HttpMethod::Post));
     }
 
     #[test]

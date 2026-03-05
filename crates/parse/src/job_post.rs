@@ -16,6 +16,16 @@ static RE_SALARY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:salary|compensation|r\u{00e9}mun\u{00e9}ration)[:\s]*([^\n.]+)").unwrap()
 });
 
+/// og:site_name — both attribute orderings.
+static RE_OG_SITE_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(?:property=["']og:site_name["'][^>]*content=["']([^"']+)["']|content=["']([^"']+)["'][^>]*property=["']og:site_name["'])"#).unwrap()
+});
+
+/// JSON-LD "name" inside an Organization/JobPosting node.
+static RE_JSONLD_ORG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)["'](?:@type)["']\s*:\s*["'](?:Organization|JobPosting|EmployerAggregateRating)["'][^}]*?["']name["']\s*:\s*["']([^"']{2,80})["']"#).unwrap()
+});
+
 /// Extracted job posting data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobPosting {
@@ -219,7 +229,7 @@ pub fn extract_job_posting(
 
     JobPosting {
         title: normalizer::normalize_whitespace(title),
-        company_name: None, // Caller should set from context
+        company_name: extract_company_name(&normalized_body, source_url),
         location,
         role_family,
         seniority,
@@ -233,6 +243,61 @@ pub fn extract_job_posting(
 fn extract_location(text: &str) -> Option<String> {
     RE_JOB_LOCATION.captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+}
+
+/// Attempt to extract company name from HTML metadata, JSON-LD, or the URL domain.
+fn extract_company_name(body_text: &str, source_url: &str) -> Option<String> {
+    // 1. Try og:site_name meta tag.
+    if let Some(caps) = RE_OG_SITE_NAME.captures(body_text) {
+        let name = caps.get(1).or_else(|| caps.get(2))
+            .map(|m| m.as_str().trim().to_string())
+            .filter(|s| !s.is_empty());
+        if name.is_some() {
+            return name;
+        }
+    }
+
+    // 2. Try JSON-LD Organization/JobPosting "name".
+    if let Some(caps) = RE_JSONLD_ORG.captures(body_text) {
+        let name = caps.get(1)
+            .map(|m| m.as_str().trim().to_string())
+            .filter(|s| !s.is_empty());
+        if name.is_some() {
+            return name;
+        }
+    }
+
+    // 3. Fall back to second-level domain of the URL, title-cased.
+    extract_domain_company(source_url)
+}
+
+/// Extract and title-case a company hint from the URL's second-level domain.
+/// Strips common TLDs, suffixes (inc, corp, ltd, llc), and hyphens.
+fn extract_domain_company(url: &str) -> Option<String> {
+    // Find the host part between :// and the next /
+    let after_scheme = url.split("://").nth(1)?;
+    let host = after_scheme.split('/').next()?;
+    // Remove port and leading www.
+    let host = host.split(':').next().unwrap_or(host);
+    let host = host.strip_prefix("www.").unwrap_or(host);
+
+    // Extract the SLD (part before last dot).
+    let sld = host.rsplit_once('.').map(|(prefix, _)| prefix).unwrap_or(host);
+    // If there's still a dot (e.g. jobs.company), take the last component.
+    let sld = sld.rsplit('.').next().unwrap_or(sld);
+
+    let words: Vec<String> = sld.split(&['-', '_'][..])
+        .filter(|w| !matches!(*w, "jobs" | "careers" | "hr" | "talent"))
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect();
+
+    if words.is_empty() { None } else { Some(words.join(" ")) }
 }
 
 fn extract_salary(text: &str) -> Option<String> {

@@ -1,0 +1,19 @@
+{# ── Competitor card partial ───────────────────────────────────────────── #}
+{% import "macros.html" as m %}
+
+<a href="/companies/{{ id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block" id="competitor-card-{{ id }}">
+  <div class="flex items-start justify-between">
+    <div>
+      <p class="text-sm font-semibold">{{ name }}</p>
+      <p class="text-[11px] text-muted-foreground">{{ sector }} · {{ region }}</p>
+    </div>
+    {% call m::score_ring(risk_score, 36) %}
+  </div>
+  <div class="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+    <div><span class="font-black uppercase text-muted-foreground">Warnings</span><br>{{ warning_count }}</div>
+    <div><span class="font-black uppercase text-muted-foreground">Insights</span><br>{{ insight_count }}</div>
+  </div>
+  {% if let Some(change) = recent_change %}
+  <p class="mt-2 text-[10px] text-muted-foreground">Latest: {{ change }}</p>
+  {% endif %}
+</a>

@@ -1,0 +1,37 @@
+{# ── Security KEV tab partial ──────────────────────────────────────────── #}
+{% import "macros.html" as m %}
+
+<div id="security-kev-tab">
+  {% if !kev_items.is_empty() %}
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-border">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">CVE</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Name</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Vendor</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Due Date</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Affected</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-border">
+      {% for k in kev_items %}
+      <tr class="hover:bg-muted/30 transition-colors">
+        <td class="px-4 py-2 text-sm font-mono font-bold">{{ k.cve_id }}</td>
+        <td class="px-4 py-2 text-sm">{{ k.name }}</td>
+        <td class="px-4 py-2 text-[11px]">{{ k.vendor }} / {{ k.product }}</td>
+        <td class="px-4 py-2 text-[11px] tabular-nums text-muted-foreground">{{ k.due_date }}</td>
+        <td class="px-4 py-2">
+          <div class="flex flex-wrap gap-1">
+            {% for co in k.relevant_companies %}
+            {% call m::tag_pill(co) %}
+            {% endfor %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No known exploited vulnerabilities tracked</p>
+  {% endif %}
+</div>

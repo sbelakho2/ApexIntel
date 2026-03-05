@@ -168,12 +168,12 @@ pub fn classify_patent_relevance(patent: &PatentExtract) -> f32 {
 
     // IPC code relevance
     for code in &patent.ipc_codes {
-        let prefix = &code[..3.min(code.len())];
+        let prefix: String = code.chars().take(3).collect();
         match prefix {
-            "H05" | "H01" | "H02" | "H03" | "H04" => score += 0.3, // Electrical
-            "B23" => score += 0.2, // Machine tools / soldering
-            "C25" => score += 0.15, // Electrolytic processes
-            "G01" => score += 0.1, // Measuring / testing
+            ref value if value == "H05" || value == "H01" || value == "H02" || value == "H03" || value == "H04" => score += 0.3, // Electrical
+            ref value if value == "B23" => score += 0.2, // Machine tools / soldering
+            ref value if value == "C25" => score += 0.15, // Electrolytic processes
+            ref value if value == "G01" => score += 0.1, // Measuring / testing
             _ => {}
         }
     }

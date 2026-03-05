@@ -103,13 +103,65 @@ pub fn ems_keywords(lang: &str) -> Vec<&'static str> {
     }
 }
 
-/// Certification/quality keywords.
-pub fn certification_keywords(_lang: &str) -> Vec<&'static str> {
-    vec![
-        "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
-        "IPC-A-610", "J-STD-001", "NADCAP", "UL", "CE marking",
-        "RoHS", "REACH", "conflict minerals",
-    ]
+/// Certification/quality keywords, localised per language.
+pub fn certification_keywords(lang: &str) -> Vec<&'static str> {
+    match lang {
+        "fr" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "marquage CE", "RoHS", "REACH",
+            "minéraux de conflit", "certification qualité", "système de management qualité",
+            "accréditation", "COFRAC",
+        ],
+        "ar" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "علامة CE", "RoHS", "REACH",
+            "المعادن المتنازع عليها", "شهادة الجودة", "نظام إدارة الجودة",
+            "الاعتماد", "هيئة الاعتماد",
+        ],
+        "zh" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "CE认证", "RoHS", "REACH",
+            "冲突矿物", "质量认证", "质量管理体系", "认可", "国家认证",
+        ],
+        "ja" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "CEマーキング", "RoHS", "REACH",
+            "紛争鉱物", "品質認証", "品質管理システム", "認定", "JIS規格",
+        ],
+        "ko" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "CE인증", "RoHS", "REACH",
+            "분쟁광물", "품질인증", "품질경영시스템", "인정", "KS인증",
+        ],
+        "de" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "CE-Kennzeichnung", "RoHS", "REACH",
+            "Konfliktmineralien", "Qualitätszertifizierung", "Qualitätsmanagementsystem",
+            "Akkreditierung", "DAkkS",
+        ],
+        "es" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "marcado CE", "RoHS", "REACH",
+            "minerales de conflicto", "certificación de calidad", "sistema de gestión",
+            "acreditación",
+        ],
+        "it" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "marcatura CE", "RoHS", "REACH",
+            "minerali di conflitto", "certificazione qualità", "sistema qualità",
+            "accreditamento",
+        ],
+        "pt" => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "NADCAP", "marcação CE", "RoHS", "REACH",
+            "minerais de conflito", "certificação de qualidade", "sistema de gestão",
+        ],
+        _ => vec![
+            "ISO 9001", "IATF 16949", "AS9100", "ISO 13485", "ISO 14001",
+            "IPC-A-610", "J-STD-001", "NADCAP", "UL", "CE marking",
+            "RoHS", "REACH", "conflict minerals",
+        ],
+    }
 }
 
 /// Check if text contains any of the given keywords (case-insensitive).

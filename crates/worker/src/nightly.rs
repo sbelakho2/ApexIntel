@@ -219,6 +219,39 @@ impl HypothesisGenerationStageResult {
 // Nightly pipeline
 // ────────────────────────────────────────────
 
+/// Results from the POI network-expansion discovery stage.
+///
+/// The expansion engine queries multiple OSINT sources (org leadership pages,
+/// GDELT co-mentions, OpenCorporates boards, conference speaker directories,
+/// and optionally Tor onion sources) using existing seed POIs as starting points.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryStageResult {
+    /// Number of existing seed POIs that were used as starting points.
+    pub seeds_processed: u64,
+    /// Number of candidate new POIs found.
+    pub candidates_found: u64,
+    /// Number of candidates inserted or upserted into the database.
+    pub new_pois_inserted: u64,
+    /// Number of existing persons whose contact details were enriched.
+    pub contacts_enriched: u64,
+    /// Whether the Tor dark-web sources were included in this run.
+    pub tor_sources_used: bool,
+    pub errors: Vec<String>,
+}
+
+impl DiscoveryStageResult {
+    pub fn empty() -> Self {
+        Self {
+            seeds_processed: 0,
+            candidates_found: 0,
+            new_pois_inserted: 0,
+            contacts_enriched: 0,
+            tor_sources_used: false,
+            errors: vec![],
+        }
+    }
+}
+
 /// Identifies one stage in the nightly pipeline.
 ///
 /// Used as a discriminant in [`StageOutcome`] and as the argument to
@@ -238,6 +271,8 @@ pub enum NightlyStage {
     HypothesisGeneration,
     PoiRefresh,
     DriftCheck,
+    /// Network-expansion discovery — finds new POI candidates from existing seeds.
+    PoiDiscovery,
 }
 
 impl NightlyStage {
@@ -248,6 +283,7 @@ impl NightlyStage {
             NightlyStage::HypothesisGeneration,
             NightlyStage::PoiRefresh,
             NightlyStage::DriftCheck,
+            NightlyStage::PoiDiscovery,
         ]
     }
 
@@ -258,6 +294,7 @@ impl NightlyStage {
             Self::HypothesisGeneration => "hypothesis_generation",
             Self::PoiRefresh => "poi_refresh",
             Self::DriftCheck => "drift_check",
+            Self::PoiDiscovery => "poi_discovery",
         }
     }
 
@@ -268,6 +305,7 @@ impl NightlyStage {
             Self::HypothesisGeneration => JobKind::HypothesisGeneration,
             Self::PoiRefresh => JobKind::PoiRefresh,
             Self::DriftCheck => JobKind::FeatureDriftCheck,
+            Self::PoiDiscovery => JobKind::PoiDiscovery,
         }
     }
 }
@@ -572,12 +610,51 @@ pub fn process_hypothesis_generation_stage(result: &HypothesisGenerationStageRes
     }
 }
 
+/// Process a POI discovery stage result into a StageOutcome.
+pub fn process_discovery_stage(result: &DiscoveryStageResult) -> StageOutcome {
+    let mut run = JobRun::new(JobKind::PoiDiscovery);
+    run.start();
+
+    let items = result.new_pois_inserted + result.contacts_enriched;
+    let error_count = result.errors.len() as u64;
+
+    if result.seeds_processed == 0 {
+        run.skip("no seed POIs available for expansion");
+    } else if !result.errors.is_empty() && result.candidates_found == 0 {
+        run.fail(&format!(
+            "discovery failed: {}",
+            result.errors.join("; ")
+        ));
+    } else {
+        let tor_note = if result.tor_sources_used { " (tor enabled)" } else { "" };
+        let msg = format!(
+            "{} seeds → {} candidates → {} inserted, {} contacts enriched{}",
+            result.seeds_processed,
+            result.candidates_found,
+            result.new_pois_inserted,
+            result.contacts_enriched,
+            tor_note
+        );
+        run.succeed(items, &msg);
+    }
+
+    StageOutcome {
+        stage: NightlyStage::PoiDiscovery,
+        run,
+        items,
+        error_count,
+    }
+}
+
 /// Run the full nightly pipeline from pre-computed stage results.
 /// This is the pure orchestration function — no I/O.
 ///
 /// The `hypothesis` parameter is optional: when the `llm` feature is disabled
 /// (or no candidates passed mining), pass `None` and the stage will be recorded
 /// as Skipped.
+///
+/// The `discovery` parameter is optional: pass `None` to skip the POI
+/// network-expansion stage (e.g. lightweight runs or when the crawl stage failed).
 ///
 /// Emits structured tracing events at each stage boundary with batch-size
 /// and error-count fields to enable downstream alerting and dashboards (B285).
@@ -588,6 +665,18 @@ pub fn run_nightly_pipeline(
     hypothesis: Option<&HypothesisGenerationStageResult>,
     poi: &PoiRefreshStageResult,
     drift: &DriftCheckStageResult,
+) -> NightlyReport {
+    run_nightly_pipeline_full(crawl, mining, hypothesis, poi, drift, None)
+}
+
+/// Extended variant that also runs the optional POI network-expansion discovery stage.
+pub fn run_nightly_pipeline_full(
+    crawl: &CrawlStageResult,
+    mining: &MiningStageResult,
+    hypothesis: Option<&HypothesisGenerationStageResult>,
+    poi: &PoiRefreshStageResult,
+    drift: &DriftCheckStageResult,
+    discovery: Option<&DiscoveryStageResult>,
 ) -> NightlyReport {
     let mut report = NightlyReport::new();
 
@@ -701,6 +790,29 @@ pub fn run_nightly_pipeline(
     );
     report.add_stage(drift_outcome);
 
+    // ── Stage 6: POI Discovery (optional) ──
+    if let Some(disc) = discovery {
+        tracing::info!(
+            stage = "poi_discovery",
+            seeds_processed = disc.seeds_processed,
+            candidates_found = disc.candidates_found,
+            new_pois_inserted = disc.new_pois_inserted,
+            contacts_enriched = disc.contacts_enriched,
+            tor_sources_used = disc.tor_sources_used,
+            error_count = disc.errors.len(),
+            "nightly_stage_begin"
+        );
+        let disc_outcome = process_discovery_stage(disc);
+        tracing::info!(
+            stage = "poi_discovery",
+            items = disc_outcome.items,
+            error_count = disc_outcome.error_count,
+            status = ?disc_outcome.run.status,
+            "nightly_stage_complete"
+        );
+        report.add_stage(disc_outcome);
+    }
+
     report.finish();
 
     // ── Pipeline summary ──
@@ -742,6 +854,7 @@ pub fn should_proceed(report: &NightlyReport, next_stage: NightlyStage) -> bool 
         }
         NightlyStage::PoiRefresh => true, // independent
         NightlyStage::DriftCheck => true,  // independent
+        NightlyStage::PoiDiscovery => true, // independent; runs after POI refresh if available
     }
 }
 
@@ -1197,9 +1310,10 @@ mod tests {
     #[test]
     fn test_nightly_stage_all() {
         let stages = NightlyStage::all();
-        assert_eq!(stages.len(), 5);
+        assert_eq!(stages.len(), 6);
         assert_eq!(stages[0], NightlyStage::Crawl);
         assert_eq!(stages[4], NightlyStage::DriftCheck);
+        assert_eq!(stages[5], NightlyStage::PoiDiscovery);
     }
 
     #[test]
