@@ -60,56 +60,176 @@ pub enum GapType {
 pub fn get_sector_requirements(sector: &str) -> Vec<SectorRequirement> {
     match sector.to_lowercase().as_str() {
         "automotive" => vec![
-            req("IATF 16949", "Automotive quality management", true, 12, 50000),
+            req(
+                "IATF 16949",
+                "Automotive quality management",
+                true,
+                12,
+                50000,
+            ),
             req("ISO 9001", "Quality management system", true, 6, 15000),
             req("ISO 14001", "Environmental management", false, 6, 12000),
             req("ISO 45001", "Occupational health & safety", false, 6, 12000),
             req("VDA 6.3", "Process audit standard", false, 3, 8000),
             req("AIAG CQI-9", "Heat treat system assessment", false, 2, 5000),
-            req("IPC-A-610", "Acceptability of electronic assemblies", true, 1, 3000),
-            req("AEC-Q100", "Automotive IC qualification (if applicable)", false, 6, 25000),
+            req(
+                "IPC-A-610",
+                "Acceptability of electronic assemblies",
+                true,
+                1,
+                3000,
+            ),
+            req(
+                "AEC-Q100",
+                "Automotive IC qualification (if applicable)",
+                false,
+                6,
+                25000,
+            ),
         ],
         "aerospace" | "defense_aero" => vec![
             req("AS9100", "Aerospace quality management", true, 12, 60000),
             req("ISO 9001", "Quality management system", true, 6, 15000),
-            req("NADCAP", "National Aerospace & Defense Accreditation", true, 12, 40000),
+            req(
+                "NADCAP",
+                "National Aerospace & Defense Accreditation",
+                true,
+                12,
+                40000,
+            ),
             req("ISO 14001", "Environmental management", false, 6, 12000),
-            req("IPC J-STD-001 Space", "Space-level soldering", false, 3, 8000),
-            req("IPC-A-620", "Wire and cable harness acceptability", false, 1, 3000),
-            req("ITAR Compliance", "International Traffic in Arms Regulations", true, 6, 20000),
+            req(
+                "IPC J-STD-001 Space",
+                "Space-level soldering",
+                false,
+                3,
+                8000,
+            ),
+            req(
+                "IPC-A-620",
+                "Wire and cable harness acceptability",
+                false,
+                1,
+                3000,
+            ),
+            req(
+                "ITAR Compliance",
+                "International Traffic in Arms Regulations",
+                true,
+                6,
+                20000,
+            ),
         ],
         "medical" => vec![
-            req("ISO 13485", "Medical device quality management", true, 12, 55000),
+            req(
+                "ISO 13485",
+                "Medical device quality management",
+                true,
+                12,
+                55000,
+            ),
             req("ISO 9001", "Quality management system", true, 6, 15000),
-            req("FDA 21 CFR 820", "FDA Quality System Regulation", true, 9, 30000),
-            req("IEC 60601", "Medical electrical equipment safety", true, 6, 20000),
-            req("ISO 14971", "Risk management for medical devices", true, 3, 10000),
+            req(
+                "FDA 21 CFR 820",
+                "FDA Quality System Regulation",
+                true,
+                9,
+                30000,
+            ),
+            req(
+                "IEC 60601",
+                "Medical electrical equipment safety",
+                true,
+                6,
+                20000,
+            ),
+            req(
+                "ISO 14971",
+                "Risk management for medical devices",
+                true,
+                3,
+                10000,
+            ),
             req("ISO 14001", "Environmental management", false, 6, 12000),
-            req("IPC-A-610 Class 3", "High-reliability assembly", false, 1, 3000),
+            req(
+                "IPC-A-610 Class 3",
+                "High-reliability assembly",
+                false,
+                1,
+                3000,
+            ),
         ],
         "defense" | "military" => vec![
-            req("ITAR Compliance", "International Traffic in Arms Regulations", true, 6, 20000),
-            req("MIL-STD-883", "Test methods for microelectronics", true, 6, 15000),
-            req("MIL-PRF-38534", "Hybrid microcircuit general spec", false, 9, 25000),
+            req(
+                "ITAR Compliance",
+                "International Traffic in Arms Regulations",
+                true,
+                6,
+                20000,
+            ),
+            req(
+                "MIL-STD-883",
+                "Test methods for microelectronics",
+                true,
+                6,
+                15000,
+            ),
+            req(
+                "MIL-PRF-38534",
+                "Hybrid microcircuit general spec",
+                false,
+                9,
+                25000,
+            ),
             req("ISO 9001", "Quality management system", true, 6, 15000),
-            req("NADCAP", "National Aerospace & Defense Accreditation", true, 12, 40000),
+            req(
+                "NADCAP",
+                "National Aerospace & Defense Accreditation",
+                true,
+                12,
+                40000,
+            ),
             req("AS9100", "Aerospace quality management", false, 12, 60000),
-            req("NIST SP 800-171", "Cybersecurity for controlled info", true, 6, 30000),
+            req(
+                "NIST SP 800-171",
+                "Cybersecurity for controlled info",
+                true,
+                6,
+                30000,
+            ),
         ],
         "telecom" => vec![
             req("TL 9000", "Telecom quality management", true, 9, 35000),
             req("ISO 9001", "Quality management system", true, 6, 15000),
             req("ISO 14001", "Environmental management", false, 6, 12000),
-            req("IPC-A-610", "Electronic assembly acceptability", true, 1, 3000),
+            req(
+                "IPC-A-610",
+                "Electronic assembly acceptability",
+                true,
+                1,
+                3000,
+            ),
         ],
         _ => vec![
             // General electronics manufacturing
             req("ISO 9001", "Quality management system", true, 6, 15000),
             req("ISO 14001", "Environmental management", false, 6, 12000),
             req("ISO 45001", "Occupational health & safety", false, 6, 12000),
-            req("IPC-A-610", "Electronic assembly acceptability", true, 1, 3000),
+            req(
+                "IPC-A-610",
+                "Electronic assembly acceptability",
+                true,
+                1,
+                3000,
+            ),
             req("IPC J-STD-001", "Soldering requirements", true, 1, 3000),
-            req("UL Certification", "Product safety listing", false, 3, 10000),
+            req(
+                "UL Certification",
+                "Product safety listing",
+                false,
+                3,
+                10000,
+            ),
         ],
     }
 }
@@ -142,8 +262,7 @@ pub fn analyze_cert_gaps(
 
     for req in &requirements {
         let is_held = held_lower.iter().any(|h| {
-            h.contains(&req.standard.to_lowercase())
-                || req.standard.to_lowercase().contains(h)
+            h.contains(&req.standard.to_lowercase()) || req.standard.to_lowercase().contains(h)
         });
 
         if is_held {
@@ -183,7 +302,10 @@ pub fn analyze_cert_gaps(
         (met_count as f64 / requirements.len() as f64) * 100.0
     };
 
-    let blocking = gaps.iter().filter(|g| g.gap_type == GapType::BlockingGap).count();
+    let blocking = gaps
+        .iter()
+        .filter(|g| g.gap_type == GapType::BlockingGap)
+        .count();
     let assessment = if blocking == 0 && coverage >= 80.0 {
         format!(
             "Strong position for {} sector. {:.0}% coverage, no blocking gaps.",

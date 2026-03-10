@@ -30,8 +30,10 @@
 //! ```
 
 use anyhow::{Context, Result};
+use apex_core::person_names::looks_like_person_name as unicode_person_name;
 use chrono::Utc;
 use regex::Regex;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -46,9 +48,8 @@ use crate::proxy::ProxyRotator;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Matches typical Western full-name patterns (2–4 capitalised words).
-static RE_FULL_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20}){1,3})\b").unwrap()
-});
+static RE_FULL_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20}){1,3})\b").unwrap());
 
 /// Capitalised job title with trailing preposition — "Chief Executive Officer at".
 static RE_TITLE_AT: LazyLock<Regex> = LazyLock::new(|| {
@@ -61,15 +62,96 @@ static RE_TITLE_AT: LazyLock<Regex> = LazyLock::new(|| {
 /// HTML tag stripper.
 static RE_HTML_TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 
+/// Anchor href extractor.
+static RE_HREF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"href\s*=\s*["']([^"'#]+)["']"#).unwrap());
+
 /// Email regex.
-static RE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap()
-});
+static RE_EMAIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap());
 
 /// LinkedIn profile URL.
 static RE_LINKEDIN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_%]+)").unwrap()
 });
+
+/// Downstream worker logic drops GDELT candidates below 0.55 before LLM validation.
+const GDELT_BASE_CONFIDENCE: f32 = 0.55;
+
+/// Common GDELT headline phrases that usually yield market/news fragments, not people.
+static GDELT_NON_PERSON_TITLE_PHRASES: &[&str] = &[
+    "price target",
+    "financial results",
+    "shares purchased",
+    "shares gap down",
+    "trading up",
+    "should you buy",
+    "breaking news",
+    "newsflow drives markets",
+    "million deal",
+    "raises investments",
+    "stock price",
+    "erratic futures",
+];
+
+/// Individual words that are especially noisy in GDELT title-derived false positives.
+static GDELT_NON_PERSON_WORDS: &[&str] = &[
+    "beam",
+    "capital",
+    "deal",
+    "financial",
+    "futures",
+    "high",
+    "industrial",
+    "infineon",
+    "investments",
+    "iron",
+    "israel",
+    "israeli",
+    "japan",
+    "klasse",
+    "markets",
+    "million",
+    "ministry",
+    "news",
+    "newsflow",
+    "partners",
+    "performance",
+    "price",
+    "production",
+    "purchased",
+    "raises",
+    "results",
+    "shares",
+    "stock",
+    "system",
+    "systems",
+    "target",
+    "trading",
+    "urges",
+];
+
+/// Multi-word headline fragments that often match the full-name regex but are not people.
+static GDELT_NON_PERSON_NAME_PHRASES: &[&str] = &[
+    "human history",
+    "is on fire",
+    "chips will show up",
+    "not expecting any press",
+    "investment might be the",
+    "last before",
+    "on the rise",
+    "under pressure",
+    "in focus",
+    "at risk",
+];
+
+/// Function words that should not appear inside a capitalized GDELT person candidate.
+static GDELT_NON_PERSON_CONNECTOR_WORDS: &[&str] = &[
+    "is", "are", "was", "were", "be", "been", "being", "on", "in", "at", "for", "with", "from",
+    "into", "onto", "under", "over", "up", "down", "off", "out", "to", "of", "by", "as", "will",
+    "would", "can", "could", "may", "might", "should", "shall", "must", "not", "no", "any", "the",
+    "a", "an", "before", "after",
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -135,7 +217,10 @@ impl PoiExpansionEngine {
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .context("PoiExpansionEngine: build client")?;
-        Ok(Self { client, proxy_rotator })
+        Ok(Self {
+            client,
+            proxy_rotator,
+        })
     }
 
     /// Run all expansion strategies against a slice of seed POIs and return
@@ -149,10 +234,8 @@ impl PoiExpansionEngine {
         limit: usize,
     ) -> Vec<DiscoveredPoi> {
         let mut all: Vec<DiscoveredPoi> = vec![];
-        let mut seen_names: HashSet<String> = known_names
-            .iter()
-            .map(|n| normalise_name(n))
-            .collect();
+        let mut seen_names: HashSet<String> =
+            known_names.iter().map(|n| normalise_name(n)).collect();
 
         for seed in seeds {
             if all.len() >= limit {
@@ -232,17 +315,23 @@ impl PoiExpansionEngine {
             Some(w) if !w.is_empty() => w.to_string(),
             _ => return vec![],
         };
-        // Try common leadership page paths.
-        let paths = [
-            "/leadership", "/team", "/management", "/about/team",
-            "/about/leadership", "/about/management", "/about/executives",
-            "/company/leadership", "/who-we-are/leadership",
-        ];
         let base = website.trim_end_matches('/');
         let mut results = vec![];
+        let mut candidate_urls = default_leadership_urls(base);
 
-        for path in &paths {
-            let url = format!("{base}{path}");
+        if let Ok(homepage_html) = self.get_text(base).await {
+            let homepage_candidates = extract_candidate_leadership_urls(base, &homepage_html);
+            if !homepage_candidates.is_empty() {
+                let mut seen = HashSet::new();
+                candidate_urls = homepage_candidates
+                    .into_iter()
+                    .chain(candidate_urls.into_iter())
+                    .filter(|url| seen.insert(url.to_ascii_lowercase()))
+                    .collect();
+            }
+        }
+
+        for url in &candidate_urls {
             match self.get_text(&url).await {
                 Ok(html) => {
                     let names = extract_names_from_leadership_html(&html, &seed.organization);
@@ -416,7 +505,7 @@ static RE_HEADING_NAME: LazyLock<Regex> = LazyLock::new(|| {
 /// Prefers names found inside heading/bold/span.name tags for higher precision.
 fn extract_names_from_leadership_html(
     html: &str,
-    _org: &str,
+    org: &str,
 ) -> Vec<(String, Option<String>, Option<String>, Option<String>)> {
     let mut results = vec![];
     let mut seen = HashSet::new();
@@ -430,17 +519,19 @@ fn extract_names_from_leadership_html(
             if name.len() < 5 || seen.contains(&name) {
                 continue;
             }
-            if !looks_like_person_name(&name) {
+            if !is_plausible_org_leadership_candidate(&name, org) {
                 continue;
             }
             // Find role, email, linkedin in surrounding HTML.
             let start = cap.get(0).map(|m| m.start()).unwrap_or(0);
             let vicinity = &html[start.saturating_sub(200)..std::cmp::min(start + 500, html.len())];
-            let role = RE_TITLE_AT
-                .captures(vicinity)
-                .map(|c| c[1].to_string());
+            let role = RE_TITLE_AT.captures(vicinity).map(|c| c[1].to_string());
             let role = infer_target_role(vicinity).or(role);
-            if !role.as_deref().map(is_target_decision_role).unwrap_or(false) {
+            if !role
+                .as_deref()
+                .map(is_target_decision_role)
+                .unwrap_or(false)
+            {
                 continue;
             }
             let email = RE_EMAIL.find(vicinity).map(|m| m.as_str().to_lowercase());
@@ -465,7 +556,7 @@ fn extract_names_from_leadership_html(
                 if name.len() < 5 || seen.contains(&name) {
                     continue;
                 }
-                if !looks_like_person_name(&name) {
+                if !is_plausible_org_leadership_candidate(&name, org) {
                     continue;
                 }
                 // Require a title keyword within 3 lines — avoids matching random
@@ -476,11 +567,16 @@ fn extract_names_from_leadership_html(
                     continue; // Skip names not followed by a recognizable title
                 }
                 let role = infer_target_role(&context).or(role);
-                if !role.as_deref().map(is_target_decision_role).unwrap_or(false) {
+                if !role
+                    .as_deref()
+                    .map(is_target_decision_role)
+                    .unwrap_or(false)
+                {
                     continue;
                 }
 
-                let vicinity: String = lines[i.saturating_sub(2)..std::cmp::min(i + 6, lines.len())].join(" ");
+                let vicinity: String =
+                    lines[i.saturating_sub(2)..std::cmp::min(i + 6, lines.len())].join(" ");
                 let email = RE_EMAIL.find(&vicinity).map(|m| m.as_str().to_lowercase());
                 let linkedin = RE_LINKEDIN
                     .captures(&vicinity)
@@ -515,12 +611,18 @@ fn parse_gdelt_response(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
         .collect();
 
     for (i, title) in titles.iter().enumerate() {
+        if !is_plausible_gdelt_title(title, &seed_name_lower) {
+            continue;
+        }
         for cap in RE_FULL_NAME.captures_iter(title) {
             let name = cap[1].to_string();
             if name.to_lowercase() == seed_name_lower || seen.contains(&name) || name.len() < 5 {
                 continue;
             }
             if !looks_like_person_name(&name) {
+                continue;
+            }
+            if !is_plausible_gdelt_person_candidate(title, &name, &seed_name_lower) {
                 continue;
             }
             seen.insert(name.clone());
@@ -533,7 +635,7 @@ fn parse_gdelt_response(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
                 discovery_method: "gdelt_co_mention".to_string(),
                 contact_email: None,
                 contact_linkedin: None,
-                confidence: 0.45,
+                confidence: GDELT_BASE_CONFIDENCE,
                 seed_person_id: seed.id.clone(),
                 ts_discovered: Utc::now().timestamp(),
             });
@@ -542,13 +644,148 @@ fn parse_gdelt_response(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
     results
 }
 
+fn is_plausible_gdelt_title(title: &str, seed_name_lower: &str) -> bool {
+    let title_lower = title.to_lowercase();
+    title_lower.contains(seed_name_lower)
+        && !GDELT_NON_PERSON_TITLE_PHRASES
+            .iter()
+            .any(|phrase| title_lower.contains(phrase))
+}
+
+fn is_plausible_gdelt_person_candidate(title: &str, name: &str, seed_name_lower: &str) -> bool {
+    let title_lower = title.to_lowercase();
+    let name_lower = name.to_lowercase();
+    if !title_lower.contains(seed_name_lower) {
+        return false;
+    }
+    if name_lower.contains(seed_name_lower) {
+        return false;
+    }
+    if GDELT_NON_PERSON_NAME_PHRASES
+        .iter()
+        .any(|phrase| name_lower == *phrase)
+    {
+        return false;
+    }
+    if name_lower
+        .split_whitespace()
+        .any(|word| GDELT_NON_PERSON_CONNECTOR_WORDS.contains(&word))
+    {
+        return false;
+    }
+    !name_lower
+        .split_whitespace()
+        .any(|word| GDELT_NON_PERSON_WORDS.contains(&word))
+}
+
+fn default_leadership_urls(base: &str) -> Vec<String> {
+    [
+        "/leadership",
+        "/team",
+        "/management",
+        "/about/team",
+        "/about/leadership",
+        "/about/management",
+        "/about/executives",
+        "/company/leadership",
+        "/who-we-are/leadership",
+        "/leadership-team",
+        "/executives",
+        "/about-us/team",
+        "/about-us/leadership",
+        "/company/team",
+        "/board",
+    ]
+    .iter()
+    .map(|path| format!("{base}{path}"))
+    .collect()
+}
+
+fn leadership_path_matches(path: &str) -> bool {
+    let normalized = path.trim_matches('/').to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let segments: Vec<&str> = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let exact_segments = [
+        "leadership",
+        "team",
+        "management",
+        "executive",
+        "executives",
+        "board",
+        "about",
+        "company",
+        "who-we-are",
+        "about-us",
+    ];
+
+    let joined = segments.join("/");
+    joined.contains("leadership")
+        || segments
+            .iter()
+            .any(|segment| exact_segments.contains(segment))
+}
+
+fn extract_candidate_leadership_urls(base: &str, html: &str) -> Vec<String> {
+    let Ok(base_url) = Url::parse(base) else {
+        return default_leadership_urls(base);
+    };
+    const MAX_DISCOVERED_LEADERSHIP_URLS: usize = 12;
+
+    let mut urls = Vec::new();
+    let mut seen = HashSet::new();
+    for default_url in default_leadership_urls(base) {
+        if seen.insert(default_url.to_ascii_lowercase()) {
+            urls.push(default_url);
+        }
+    }
+
+    for cap in RE_HREF.captures_iter(html) {
+        let href = cap[1].trim();
+        let href_lower = href.to_ascii_lowercase();
+        if href_lower.starts_with("mailto:") || href_lower.starts_with("tel:") {
+            continue;
+        }
+
+        let Ok(joined) = base_url.join(href) else {
+            continue;
+        };
+        if joined.scheme() != "http" && joined.scheme() != "https" {
+            continue;
+        }
+        if joined.host_str() != base_url.host_str() {
+            continue;
+        }
+        if joined.query().is_some() {
+            continue;
+        }
+        if !leadership_path_matches(joined.path()) {
+            continue;
+        }
+
+        let normalized = joined.to_string();
+        if seen.insert(normalized.to_ascii_lowercase()) {
+            urls.push(normalized);
+            if urls.len() >= MAX_DISCOVERED_LEADERSHIP_URLS {
+                break;
+            }
+        }
+    }
+
+    urls
+}
+
 /// Parse OpenCorporates search JSON, drill into officer lists.
 fn parse_opencorporates_officers(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
     // Extract officer names from the nested JSON without a full parser.
     // "name":"Jane Smith","position":"director"
     let officer_re =
-        Regex::new(r#""name"\s*:\s*"([^"]{3,80})"\s*,\s*"position"\s*:\s*"([^"]{3,50})""#)
-            .unwrap();
+        Regex::new(r#""name"\s*:\s*"([^"]{3,80})"\s*,\s*"position"\s*:\s*"([^"]{3,50})""#).unwrap();
 
     let seed_name_lower = seed.name.to_lowercase();
     let mut results = vec![];
@@ -637,10 +874,8 @@ fn extract_speakers_from_html(html: &str) -> Vec<(String, Option<String>)> {
 #[allow(dead_code)]
 fn parse_semantic_scholar_coauthors(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
     // Response: { "data": [ { "authorId": "...", "name": "...", "affiliations": ["..."] } ] }
-    let author_re =
-        Regex::new(r#""name"\s*:\s*"([^"]{3,80})""#).unwrap();
-    let affil_re =
-        Regex::new(r#""affiliations"\s*:\s*\[([^\]]*)\]"#).unwrap();
+    let author_re = Regex::new(r#""name"\s*:\s*"([^"]{3,80})""#).unwrap();
+    let affil_re = Regex::new(r#""affiliations"\s*:\s*\[([^\]]*)\]"#).unwrap();
 
     let seed_name_lower = seed.name.to_lowercase();
     let mut results = vec![];
@@ -652,7 +887,11 @@ fn parse_semantic_scholar_coauthors(json: &str, seed: &SeedPoi) -> Vec<Discovere
             c[1].split(',')
                 .filter_map(|s| {
                     let s = s.trim().trim_matches('"');
-                    if s.is_empty() { None } else { Some(s.to_string()) }
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
                 })
                 .collect::<Vec<_>>()
         })
@@ -699,6 +938,42 @@ fn normalise_name(name: &str) -> String {
         .join(" ")
 }
 
+fn normalize_org_tokens(org: &str) -> HashSet<String> {
+    org.split(|c: char| !c.is_alphabetic())
+        .filter(|token| token.len() >= 3)
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn is_plausible_org_leadership_candidate(name: &str, org: &str) -> bool {
+    if !looks_like_person_name(name) {
+        return false;
+    }
+
+    let candidate_words: Vec<String> = name
+        .split_whitespace()
+        .map(|word| word.to_ascii_lowercase())
+        .collect();
+    if candidate_words
+        .iter()
+        .any(|word| ORG_ENTITY_WORDS.contains(&word.as_str()))
+    {
+        return false;
+    }
+
+    let org_tokens = normalize_org_tokens(org);
+    if org_tokens.is_empty() {
+        return true;
+    }
+
+    let overlapping = candidate_words
+        .iter()
+        .filter(|word| org_tokens.contains(word.as_str()))
+        .count();
+
+    overlapping < 2 && overlapping < candidate_words.len()
+}
+
 fn infer_target_role(context: &str) -> Option<String> {
     let lc = context.to_ascii_lowercase();
     let patterns: [(&str, &str); 25] = [
@@ -740,9 +1015,25 @@ fn is_target_decision_role(role: &str) -> bool {
     let r = role.to_ascii_lowercase();
     // Exclude top-level executive and ceremonial positions.
     let top_level = [
-        "ceo", "chief executive", "chairman", "chairwoman", "board", "president",
-        "founder", "co-founder", "owner", "managing partner", "minister", "secretary of state",
-        "governor", "ambassador", "prime minister", "senator", "mayor", "admiral", "general",
+        "ceo",
+        "chief executive",
+        "chairman",
+        "chairwoman",
+        "board",
+        "president",
+        "founder",
+        "co-founder",
+        "owner",
+        "managing partner",
+        "minister",
+        "secretary of state",
+        "governor",
+        "ambassador",
+        "prime minister",
+        "senator",
+        "mayor",
+        "admiral",
+        "general",
     ];
     if top_level.iter().any(|k| r.contains(k)) {
         return false;
@@ -750,28 +1041,238 @@ fn is_target_decision_role(role: &str) -> bool {
 
     // Prioritize middle-management decision makers in government and companies.
     let target = [
-        "director", "deputy director", "director general", "deputy", "department head", "head of",
-        "manager", "program", "policy", "procurement", "purchasing", "sourcing", "buyer",
-        "category", "commodity", "operations", "supply chain", "compliance", "regulatory",
-        "licensing", "quality", "engineering", "contracts", "tender", "acquisition",
+        "director",
+        "deputy director",
+        "director general",
+        "deputy",
+        "department head",
+        "head of",
+        "manager",
+        "program",
+        "policy",
+        "procurement",
+        "purchasing",
+        "sourcing",
+        "buyer",
+        "category",
+        "commodity",
+        "operations",
+        "supply chain",
+        "compliance",
+        "regulatory",
+        "licensing",
+        "quality",
+        "engineering",
+        "contracts",
+        "tender",
+        "acquisition",
     ];
     target.iter().any(|k| r.contains(k))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gdelt_candidates_meet_worker_minimum_confidence() {
+        let seed = SeedPoi {
+            id: "seed-1".to_string(),
+            name: "Jane Smith".to_string(),
+            organization: "Acme Corp".to_string(),
+            org_website: None,
+            region: None,
+            role_family: "procurement".to_string(),
+        };
+
+        let json = r#"{
+            "articles": [
+                {
+                    "title": "Jane Smith and John Carter discuss sourcing plans",
+                    "url": "https://example.com/story"
+                }
+            ]
+        }"#;
+
+        let discoveries = parse_gdelt_response(json, &seed);
+        assert_eq!(discoveries.len(), 1);
+        assert_eq!(discoveries[0].name, "John Carter");
+        assert_eq!(discoveries[0].discovery_method, "gdelt_co_mention");
+        assert!(discoveries[0].confidence >= GDELT_BASE_CONFIDENCE);
+    }
+
+    #[test]
+    fn gdelt_rejects_titles_without_seed_name() {
+        let seed = SeedPoi {
+            id: "seed-1".to_string(),
+            name: "Jane Smith".to_string(),
+            organization: "Acme Corp".to_string(),
+            org_website: None,
+            region: None,
+            role_family: "procurement".to_string(),
+        };
+
+        let json = r#"{
+            "articles": [
+                {
+                    "title": "John Carter discusses sourcing plans",
+                    "url": "https://example.com/story"
+                }
+            ]
+        }"#;
+
+        let discoveries = parse_gdelt_response(json, &seed);
+        assert!(discoveries.is_empty());
+    }
+
+    #[test]
+    fn gdelt_rejects_headline_fragments_and_organization_phrases() {
+        let seed = SeedPoi {
+            id: "seed-1".to_string(),
+            name: "Jane Smith".to_string(),
+            organization: "Acme Corp".to_string(),
+            org_website: None,
+            region: None,
+            role_family: "procurement".to_string(),
+        };
+
+        let json = r#"{
+            "articles": [
+                {
+                    "title": "Jane Smith reviews Financial Results and market updates",
+                    "url": "https://example.com/results"
+                },
+                {
+                    "title": "Jane Smith meets Glen Capital Partners on sourcing strategy",
+                    "url": "https://example.com/partners"
+                },
+                {
+                    "title": "Jane Smith and John Carter discuss sourcing plans",
+                    "url": "https://example.com/people"
+                }
+            ]
+        }"#;
+
+        let discoveries = parse_gdelt_response(json, &seed);
+        assert_eq!(discoveries.len(), 1);
+        assert_eq!(discoveries[0].name, "John Carter");
+    }
+
+    #[test]
+    fn gdelt_rejects_capitalized_headline_fragments_like_is_on_fire() {
+        let seed = SeedPoi {
+            id: "seed-1".to_string(),
+            name: "Steve Sanghi".to_string(),
+            organization: "Microchip Technology".to_string(),
+            org_website: None,
+            region: None,
+            role_family: "procurement".to_string(),
+        };
+
+        let json = r#"{
+            "articles": [
+                {
+                    "title": "Steve Sanghi Is On Fire after semiconductor rally",
+                    "url": "https://example.com/fire"
+                }
+            ]
+        }"#;
+
+        let discoveries = parse_gdelt_response(json, &seed);
+        assert!(discoveries.is_empty());
+    }
+
+    #[test]
+    fn gdelt_rejects_recent_sentence_fragments_seen_in_production() {
+        let seed = SeedPoi {
+            id: "seed-1".to_string(),
+            name: "Steve Sanghi".to_string(),
+            organization: "Microchip Technology".to_string(),
+            org_website: None,
+            region: None,
+            role_family: "procurement".to_string(),
+        };
+
+        let json = r#"{
+            "articles": [
+                {
+                    "title": "Steve Sanghi reflects on Human History and industrial policy",
+                    "url": "https://example.com/history"
+                },
+                {
+                    "title": "Steve Sanghi says Chips Will Show Up after supply crunch",
+                    "url": "https://example.com/chips"
+                },
+                {
+                    "title": "Steve Sanghi is Not Expecting Any Press during launch week",
+                    "url": "https://example.com/press"
+                },
+                {
+                    "title": "Steve Sanghi warns Investment Might Be The next bottleneck",
+                    "url": "https://example.com/investment"
+                },
+                {
+                    "title": "Steve Sanghi says Last Before marks the final pre-brief",
+                    "url": "https://example.com/before"
+                }
+            ]
+        }"#;
+
+        let discoveries = parse_gdelt_response(json, &seed);
+        assert!(discoveries.is_empty());
+    }
+
+    #[test]
+    fn leadership_extraction_rejects_org_labels_but_keeps_people() {
+        let html = r#"
+            <section>
+                <h2>Glen Capital Partners</h2>
+                <p>Investment platform overview</p>
+                <h3>Jane Smith</h3>
+                <p>Procurement Director</p>
+            </section>
+        "#;
+
+        let people = extract_names_from_leadership_html(html, "Glen Capital Partners");
+        assert_eq!(people.len(), 1);
+        assert_eq!(people[0].0, "Jane Smith");
+    }
+
+    #[test]
+    fn homepage_link_discovery_finds_same_host_leadership_pages() {
+        let html = r#"
+            <html>
+                <body>
+                    <a href="/about/leadership">Leadership</a>
+                    <a href="https://example.com/company/team">Team</a>
+                    <a href="https://example.com/products/steam-controller">Steam</a>
+                    <a href="https://external.example.org/leadership">External</a>
+                    <a href="/products">Products</a>
+                </body>
+            </html>
+        "#;
+
+        let urls = extract_candidate_leadership_urls("https://example.com", html);
+
+        assert!(urls
+            .iter()
+            .any(|url| url == "https://example.com/about/leadership"));
+        assert!(urls
+            .iter()
+            .any(|url| url == "https://example.com/company/team"));
+        assert!(!urls.iter().any(|url| url.contains("steam-controller")));
+        assert!(!urls.iter().any(|url| url.contains("external.example.org")));
+    }
 }
 
 /// Reject obvious non-person strings (all-caps acronyms, single word, numbers,
 /// common website/navigation phrases, topic labels, error messages, etc.).
 fn looks_like_person_name(s: &str) -> bool {
-    let words: Vec<&str> = s.split_whitespace().collect();
-    if words.len() < 2 || words.len() > 5 {
+    if !unicode_person_name(s) {
         return false;
     }
-    // All words should start with a capital letter and contain only alphabetic chars.
-    let all_alpha = words.iter().all(|w| {
-        let mut chars = w.chars();
-        chars.next().map(|c| c.is_uppercase()).unwrap_or(false)
-            && w.chars().all(|c| c.is_alphabetic() || c == '-' || c == '\'')
-    });
-    if !all_alpha {
+    let words: Vec<&str> = s.split_whitespace().collect();
+    if words.len() > 5 {
         return false;
     }
     // Reject names where every word is very short (likely acronyms or labels).
@@ -785,7 +1286,10 @@ fn looks_like_person_name(s: &str) -> bool {
         return false;
     }
     // Reject if ANY word is a common non-person keyword.
-    if words.iter().any(|w| NON_PERSON_WORDS.contains(&w.to_lowercase().as_str())) {
+    if words
+        .iter()
+        .any(|w| NON_PERSON_WORDS.contains(&w.to_lowercase().as_str()))
+    {
         return false;
     }
     true
@@ -794,71 +1298,282 @@ fn looks_like_person_name(s: &str) -> bool {
 /// Common capitalized phrases that are NOT person names.
 static NON_PERSON_PHRASES: &[&str] = &[
     // Website navigation / UI elements
-    "session entity", "menu main", "public speaking", "health care",
-    "too many requests", "unhandled promise rejection", "social change",
-    "personal growth", "climate change", "mental health", "urban planning",
-    "global issues", "medical research", "product design", "cognitive science",
-    "open source", "social media", "alternative energy", "interface design",
-    "mission blue", "data commons", "big bang", "dark matter", "string theory",
-    "solar system", "human origins", "human rights", "body language",
-    "gender equality", "nuclear energy", "world cultures", "ancient world",
-    "foreign policy", "extreme sports", "disaster relief", "global development",
-    "medical imaging", "augmented reality", "behavioral psychology",
-    "biological warfare", "computer programming", "criminal justice",
-    "developmental science", "risk taking", "artificial intelligence",
-    "autism spectrum disorder", "computer science", "crisis management",
-    "data protection", "digital media", "live music", "behavioral economics",
-    "spoken word", "decision making", "public spaces", "extraterrestrial life",
-    "macarthur grant", "goal setting", "women in business", "charter for compassion",
-    "new york", "performance art", "industrial design", "online video",
-    "big problems", "audacious projects", "third world", "middle east",
-    "united states", "session replay", "new relic warning",
+    "session entity",
+    "menu main",
+    "public speaking",
+    "health care",
+    "too many requests",
+    "unhandled promise rejection",
+    "social change",
+    "personal growth",
+    "climate change",
+    "mental health",
+    "urban planning",
+    "global issues",
+    "medical research",
+    "product design",
+    "cognitive science",
+    "open source",
+    "social media",
+    "alternative energy",
+    "interface design",
+    "mission blue",
+    "data commons",
+    "big bang",
+    "dark matter",
+    "string theory",
+    "solar system",
+    "human origins",
+    "human rights",
+    "body language",
+    "gender equality",
+    "nuclear energy",
+    "world cultures",
+    "ancient world",
+    "foreign policy",
+    "extreme sports",
+    "disaster relief",
+    "global development",
+    "medical imaging",
+    "augmented reality",
+    "behavioral psychology",
+    "biological warfare",
+    "computer programming",
+    "criminal justice",
+    "developmental science",
+    "risk taking",
+    "artificial intelligence",
+    "autism spectrum disorder",
+    "computer science",
+    "crisis management",
+    "data protection",
+    "digital media",
+    "live music",
+    "behavioral economics",
+    "spoken word",
+    "decision making",
+    "public spaces",
+    "extraterrestrial life",
+    "macarthur grant",
+    "goal setting",
+    "women in business",
+    "charter for compassion",
+    "new york",
+    "performance art",
+    "industrial design",
+    "online video",
+    "big problems",
+    "audacious projects",
+    "third world",
+    "middle east",
+    "united states",
+    "session replay",
+    "new relic warning",
     // Generic labels
-    "read more", "learn more", "sign up", "log in", "sign in", "watch now",
-    "view all", "show more", "load more", "click here", "find out",
-    "get started", "contact us", "about us", "terms service",
-    "privacy policy", "cookie policy", "copyright notice",
+    "read more",
+    "learn more",
+    "sign up",
+    "log in",
+    "sign in",
+    "watch now",
+    "view all",
+    "show more",
+    "load more",
+    "click here",
+    "find out",
+    "get started",
+    "contact us",
+    "about us",
+    "terms service",
+    "privacy policy",
+    "cookie policy",
+    "copyright notice",
 ];
 
 /// Individual words that strongly indicate a non-person phrase.
 static NON_PERSON_WORDS: &[&str] = &[
     // Website UI / navigation
-    "menu", "session", "login", "logout", "signup", "subscribe", "unsubscribe",
-    "download", "upload", "install", "configure", "settings", "dashboard",
-    "analytics", "requests", "rejection", "error", "warning", "undefined",
-    "null", "nan", "true", "false", "cookie", "cookies", "copyright",
-    "newsletter", "podcast", "webinar", "blog", "search", "filter",
-    "translate", "initiatives", "membership", "courses", "speakers",
-    "participate", "nominate", "recommend", "discover", "browse",
-    "fellows", "updates", "topics", "explore", "inspiration",
-    "clearance", "mixpanel", "relic", "replay", "bcg",
+    "menu",
+    "session",
+    "login",
+    "logout",
+    "signup",
+    "subscribe",
+    "unsubscribe",
+    "download",
+    "upload",
+    "install",
+    "configure",
+    "settings",
+    "dashboard",
+    "analytics",
+    "requests",
+    "rejection",
+    "error",
+    "warning",
+    "undefined",
+    "null",
+    "nan",
+    "true",
+    "false",
+    "cookie",
+    "cookies",
+    "copyright",
+    "newsletter",
+    "podcast",
+    "webinar",
+    "blog",
+    "search",
+    "filter",
+    "translate",
+    "initiatives",
+    "membership",
+    "courses",
+    "speakers",
+    "participate",
+    "nominate",
+    "recommend",
+    "discover",
+    "browse",
+    "fellows",
+    "updates",
+    "topics",
+    "explore",
+    "inspiration",
+    "clearance",
+    "mixpanel",
+    "relic",
+    "replay",
+    "bcg",
     // Font / CSS / tech
-    "emoji", "sans", "serif", "mono", "arial", "helvetica", "verdana",
-    "noto", "roboto", "inter", "lato", "montserrat",
+    "emoji",
+    "sans",
+    "serif",
+    "mono",
+    "arial",
+    "helvetica",
+    "verdana",
+    "noto",
+    "roboto",
+    "inter",
+    "lato",
+    "montserrat",
     // Supply chain / industry terms
-    "supply", "chain", "logistics", "manufacturing", "semiconductor",
-    "semiconductors", "automotive", "aerospace", "defense", "electronics",
-    "embedded", "modular", "busway", "switchgear", "capacitors",
-    "interconnect", "mechanicals", "circuits", "cooling", "modules",
-    "fulfillment", "aftermarket", "procurement", "warehouse",
+    "supply",
+    "chain",
+    "logistics",
+    "manufacturing",
+    "semiconductor",
+    "semiconductors",
+    "automotive",
+    "aerospace",
+    "defense",
+    "electronics",
+    "embedded",
+    "modular",
+    "busway",
+    "switchgear",
+    "capacitors",
+    "interconnect",
+    "mechanicals",
+    "circuits",
+    "cooling",
+    "modules",
+    "fulfillment",
+    "aftermarket",
+    "procurement",
+    "warehouse",
     // Product / business terms
-    "products", "solutions", "services", "technology", "technologies",
-    "devices", "systems", "components", "materials", "equipment",
-    "software", "hardware", "platform", "infrastructure",
+    "products",
+    "solutions",
+    "services",
+    "technology",
+    "technologies",
+    "devices",
+    "systems",
+    "components",
+    "materials",
+    "equipment",
+    "software",
+    "hardware",
+    "platform",
+    "infrastructure",
     // Website section labels
-    "overview", "careers", "investor", "investors", "financials",
-    "governance", "locations", "leadership", "announcements", "announces",
-    "insights", "resources", "capabilities", "sustainability",
-    "compliance", "diversity", "inclusion",
+    "overview",
+    "careers",
+    "investor",
+    "investors",
+    "financials",
+    "governance",
+    "locations",
+    "leadership",
+    "announcements",
+    "announces",
+    "insights",
+    "resources",
+    "capabilities",
+    "sustainability",
+    "compliance",
+    "diversity",
+    "inclusion",
     // Place names
-    "silicon", "valley", "global", "americas", "pacific", "atlantic",
+    "silicon",
+    "valley",
+    "global",
+    "americas",
+    "pacific",
+    "atlantic",
     // Generic words that never appear in person names
-    "critical", "power", "advanced", "flexible", "liquid", "consumer",
-    "industrial", "commercial", "technical", "digital", "strategic",
-    "operational", "corporate", "executive", "professional",
-    "integrated", "innovative", "creative", "dynamic",
-    "crown", "added", "center", "group", "network",
-    "marksmen", "tag", "manager",
+    "critical",
+    "power",
+    "advanced",
+    "flexible",
+    "liquid",
+    "consumer",
+    "industrial",
+    "commercial",
+    "technical",
+    "digital",
+    "strategic",
+    "operational",
+    "corporate",
+    "executive",
+    "professional",
+    "integrated",
+    "innovative",
+    "creative",
+    "dynamic",
+    "crown",
+    "added",
+    "center",
+    "group",
+    "network",
+    "marksmen",
+    "tag",
+    "manager",
+];
+
+static ORG_ENTITY_WORDS: &[&str] = &[
+    "capital",
+    "partners",
+    "partner",
+    "group",
+    "holdings",
+    "holding",
+    "ventures",
+    "venture",
+    "management",
+    "advisors",
+    "advisor",
+    "associates",
+    "company",
+    "corporation",
+    "corp",
+    "inc",
+    "llc",
+    "ltd",
+    "limited",
+    "plc",
 ];
 
 mod urlencoding {
@@ -870,8 +1585,9 @@ mod urlencoding {
         let mut out = String::with_capacity(s.len() * 3);
         for b in s.bytes() {
             match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-                | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char)
+                }
                 b' ' => out.push('+'),
                 _ => out.push_str(&format!("%{b:02X}")),
             }

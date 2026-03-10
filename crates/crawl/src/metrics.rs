@@ -21,7 +21,9 @@ pub struct DomainByteMetrics {
 impl DomainByteMetrics {
     /// Create a new, empty counter map.
     pub fn new() -> Self {
-        Self { bytes_by_domain: HashMap::new() }
+        Self {
+            bytes_by_domain: HashMap::new(),
+        }
     }
 
     /// Accumulate `bytes` for `domain` using saturating addition.
@@ -100,7 +102,9 @@ pub struct SharedDomainByteMetrics {
 impl SharedDomainByteMetrics {
     /// Create a new shared counter.
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(DomainByteMetrics::new())) }
+        Self {
+            inner: Arc::new(Mutex::new(DomainByteMetrics::new())),
+        }
     }
 
     /// Accumulate `bytes` for `domain`.
@@ -109,27 +113,42 @@ impl SharedDomainByteMetrics {
     /// Panics if the internal mutex is poisoned (only possible if another
     /// thread panicked while holding the lock — i.e., a programmer error).
     pub fn record_bytes(&self, domain: &str, bytes: u64) {
-        self.inner.lock().expect("DomainByteMetrics mutex poisoned").record_bytes(domain, bytes);
+        self.inner
+            .lock()
+            .expect("DomainByteMetrics mutex poisoned")
+            .record_bytes(domain, bytes);
     }
 
     /// Return the total bytes recorded for `domain` (0 if unseen).
     pub fn get(&self, domain: &str) -> u64 {
-        self.inner.lock().expect("DomainByteMetrics mutex poisoned").get(domain)
+        self.inner
+            .lock()
+            .expect("DomainByteMetrics mutex poisoned")
+            .get(domain)
     }
 
     /// Return the top `limit` domains by total bytes.
     pub fn top_domains(&self, limit: usize) -> Vec<(String, u64)> {
-        self.inner.lock().expect("DomainByteMetrics mutex poisoned").top_domains(limit)
+        self.inner
+            .lock()
+            .expect("DomainByteMetrics mutex poisoned")
+            .top_domains(limit)
     }
 
     /// Return total bytes across all domains.
     pub fn total_bytes(&self) -> u64 {
-        self.inner.lock().expect("DomainByteMetrics mutex poisoned").total_bytes()
+        self.inner
+            .lock()
+            .expect("DomainByteMetrics mutex poisoned")
+            .total_bytes()
     }
 
     /// Return the number of distinct domains recorded.
     pub fn domain_count(&self) -> usize {
-        self.inner.lock().expect("DomainByteMetrics mutex poisoned").domain_count()
+        self.inner
+            .lock()
+            .expect("DomainByteMetrics mutex poisoned")
+            .domain_count()
     }
 
     /// Take a consistent point-in-time snapshot.
@@ -137,7 +156,10 @@ impl SharedDomainByteMetrics {
     /// Acquires the lock once and returns a cloned copy, allowing the caller
     /// to inspect multiple fields without racing against concurrent writers.
     pub fn snapshot(&self) -> DomainByteMetrics {
-        self.inner.lock().expect("DomainByteMetrics mutex poisoned").clone()
+        self.inner
+            .lock()
+            .expect("DomainByteMetrics mutex poisoned")
+            .clone()
     }
 }
 
@@ -227,7 +249,10 @@ mod tests {
         m.record_bytes("a.com", 100);
         m.record_bytes("z.com", 100);
         let top = m.top_domains(3);
-        assert_eq!(top[0].0, "a.com", "first tiebreak should be alphabetically first");
+        assert_eq!(
+            top[0].0, "a.com",
+            "first tiebreak should be alphabetically first"
+        );
         assert_eq!(top[1].0, "b.com");
         assert_eq!(top[2].0, "z.com");
     }
@@ -241,6 +266,9 @@ mod tests {
         // Calling top_domains twice must return the same order
         let first = m.top_domains(3);
         let second = m.top_domains(3);
-        assert_eq!(first, second, "top_domains must be deterministic across repeated calls");
+        assert_eq!(
+            first, second,
+            "top_domains must be deterministic across repeated calls"
+        );
     }
 }

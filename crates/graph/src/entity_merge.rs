@@ -149,11 +149,13 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<String> {
     for source_id in &event.source_ids {
         stmts.push(format!(
             "UPDATE graph_edges SET source_id = '{}' WHERE source_id = '{}';",
-            esc(&event.target_id), esc(source_id)
+            esc(&event.target_id),
+            esc(source_id)
         ));
         stmts.push(format!(
             "UPDATE graph_edges SET target_id = '{}' WHERE target_id = '{}';",
-            esc(&event.target_id), esc(source_id)
+            esc(&event.target_id),
+            esc(source_id)
         ));
     }
 
@@ -161,7 +163,8 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<String> {
     for source_id in &event.source_ids {
         stmts.push(format!(
             "UPDATE observations SET entity_id = '{}' WHERE entity_id = '{}';",
-            esc(&event.target_id), esc(source_id)
+            esc(&event.target_id),
+            esc(source_id)
         ));
     }
 
@@ -171,14 +174,18 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<String> {
          VALUES ('entity_merge', '{}', '{}', '{}');",
         format!("{:?}", event.entity_type).to_lowercase(),
         esc(&event.target_id),
-        serde_json::to_string(event).unwrap_or_default().replace('\'', "''")
+        serde_json::to_string(event)
+            .unwrap_or_default()
+            .replace('\'', "''")
     ));
 
     // 5. Soft-delete source entities (mark as merged)
     for source_id in &event.source_ids {
         stmts.push(format!(
             "UPDATE {} SET metadata = metadata || '{{\"merged_into\": \"{}\"}}' WHERE id = '{}';",
-            table, esc(&event.target_id), esc(source_id)
+            table,
+            esc(&event.target_id),
+            esc(source_id)
         ));
     }
 

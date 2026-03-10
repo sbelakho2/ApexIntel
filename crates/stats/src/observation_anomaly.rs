@@ -4,7 +4,7 @@
 //! below 50% of its 30-day moving average — indicating a possible data
 //! source failure, page structure change, or blocking event.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -26,6 +26,7 @@ pub struct VolumeAnomaly {
     pub observation_type: String,
     pub current_count: u64,
     pub moving_average: f64,
+    pub seasonal_expected: f64,
     pub drop_pct: f64,
     pub severity: AnomalySeverity,
     pub message: String,
@@ -53,12 +54,19 @@ pub fn detect_volume_anomalies(
     threshold_pct: f64,
 ) -> Vec<VolumeAnomaly> {
     let window = if window_days == 0 { 30 } else { window_days };
-    let threshold = if threshold_pct == 0.0 { 0.5 } else { threshold_pct };
+    let threshold = if threshold_pct == 0.0 {
+        0.5
+    } else {
+        threshold_pct
+    };
 
     // Group by observation type
     let mut by_type: HashMap<&str, Vec<&DailyObsCount>> = HashMap::new();
     for count in counts {
-        by_type.entry(&count.observation_type).or_default().push(count);
+        by_type
+            .entry(&count.observation_type)
+            .or_default()
+            .push(count);
     }
 
     let mut anomalies = Vec::new();
@@ -73,18 +81,29 @@ pub fn detect_volume_anomalies(
         let history = &type_counts[type_counts.len() - 1 - window..type_counts.len() - 1];
 
         let avg: f64 = history.iter().map(|c| c.count as f64).sum::<f64>() / history.len() as f64;
+        let matching_weekday: Vec<&DailyObsCount> = history
+            .iter()
+            .copied()
+            .filter(|count| count.date.weekday() == current.date.weekday())
+            .collect();
+        let seasonal_expected = if matching_weekday.len() >= 3 {
+            matching_weekday.iter().map(|c| c.count as f64).sum::<f64>()
+                / matching_weekday.len() as f64
+        } else {
+            avg
+        };
 
-        if avg < 1.0 {
+        if seasonal_expected < 1.0 {
             continue; // Type has minimal volume, skip
         }
 
-        let drop_pct = if avg > 0.0 {
-            (1.0 - current.count as f64 / avg) * 100.0
+        let drop_pct = if seasonal_expected > 0.0 {
+            (1.0 - current.count as f64 / seasonal_expected) * 100.0
         } else {
             0.0
         };
 
-        if current.count as f64 <= avg * threshold {
+        if current.count as f64 <= seasonal_expected * threshold {
             let severity = if current.count == 0 {
                 AnomalySeverity::Outage
             } else if drop_pct >= 75.0 {
@@ -95,16 +114,16 @@ pub fn detect_volume_anomalies(
 
             let message = match severity {
                 AnomalySeverity::Outage => format!(
-                    "OUTAGE: Zero '{}' observations — data source may be offline (avg: {:.0}/day)",
-                    obs_type, avg
+                    "OUTAGE: Zero '{}' observations — data source may be offline (seasonal baseline: {:.0}/day, rolling avg: {:.0}/day)",
+                    obs_type, seasonal_expected, avg
                 ),
                 AnomalySeverity::Critical => format!(
-                    "CRITICAL DROP: '{}' observations at {} vs {:.0}-day average of {:.0} ({:.1}% drop)",
-                    obs_type, current.count, window, avg, drop_pct
+                    "CRITICAL DROP: '{}' observations at {} vs seasonal expectation of {:.0} (rolling avg {:.0}, {:.1}% drop)",
+                    obs_type, current.count, seasonal_expected, avg, drop_pct
                 ),
                 AnomalySeverity::Warning => format!(
-                    "Volume drop: '{}' observations at {} vs {:.0}-day average of {:.0} ({:.1}% drop)",
-                    obs_type, current.count, window, avg, drop_pct
+                    "Volume drop: '{}' observations at {} vs seasonal expectation of {:.0} (rolling avg {:.0}, {:.1}% drop)",
+                    obs_type, current.count, seasonal_expected, avg, drop_pct
                 ),
             };
 
@@ -112,6 +131,7 @@ pub fn detect_volume_anomalies(
                 observation_type: obs_type.to_string(),
                 current_count: current.count,
                 moving_average: (avg * 10.0).round() / 10.0,
+                seasonal_expected: (seasonal_expected * 10.0).round() / 10.0,
                 drop_pct: (drop_pct * 10.0).round() / 10.0,
                 severity,
                 message,
@@ -131,7 +151,7 @@ pub fn detect_volume_anomalies(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use chrono::{Datelike, Duration};
 
     fn make_counts(obs_type: &str, daily_counts: &[u64]) -> Vec<DailyObsCount> {
         let now = Utc::now();
@@ -190,5 +210,29 @@ mod tests {
         let data = make_counts("short", &[10, 20, 30]);
         let anomalies = detect_volume_anomalies(&data, 30, 0.5);
         assert!(anomalies.is_empty());
+    }
+
+    #[test]
+    fn weekday_baseline_prevents_false_alert_on_weekend_pattern() {
+        let now = Utc::now();
+        let mut data = Vec::new();
+        for offset in 0..35 {
+            let date = now - Duration::days((34 - offset) as i64);
+            let count = if matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) {
+                12
+            } else {
+                100
+            };
+            data.push(DailyObsCount {
+                observation_type: "web_scrape".into(),
+                date,
+                count,
+            });
+        }
+        let anomalies = detect_volume_anomalies(&data, 30, 0.5);
+        assert!(
+            anomalies.is_empty(),
+            "seasonal weekday baseline should suppress routine weekend dips"
+        );
     }
 }

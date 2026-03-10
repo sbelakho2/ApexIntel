@@ -1,11 +1,10 @@
-pub mod model;
-pub mod features;
-pub mod engagement;
-pub mod updater;
-pub mod resolver;
-pub mod llm_enricher;
 pub mod background;
 pub mod conflict_detector;
-pub mod photo_detector;
+pub mod engagement;
 pub mod engagement_tracker;
-
+pub mod features;
+pub mod llm_enricher;
+pub mod model;
+pub mod photo_detector;
+pub mod resolver;
+pub mod updater;

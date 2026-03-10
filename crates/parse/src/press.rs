@@ -18,20 +18,36 @@ static RE_SOURCE: LazyLock<Regex> = LazyLock::new(|| {
 static RE_AUTHOR: LazyLock<Regex> = LazyLock::new(|| {
     // Use (?-i:...) around the name capture so that [A-Z]/[a-z] retain
     // case-sensitivity — the outer (?i) is only for the keyword prefix.
-    RegexBuilder::new(r"(?i)(?:by|author|par|auteur)[:\s]+(?-i:([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3}))")
-        .size_limit(200_000)
-        .dfa_size_limit(200_000)
-        .build()
-        .unwrap()
+    RegexBuilder::new(
+        r"(?i)(?:by|author|par|auteur)[:\s]+(?-i:([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3}))",
+    )
+    .size_limit(200_000)
+    .dfa_size_limit(200_000)
+    .build()
+    .unwrap()
 });
 
 /// Pre-compiled company mention regex — avoids O(n) recompilation per article parse.
 static RE_COMPANY_MENTION: LazyLock<Regex> = LazyLock::new(|| {
     let suffix_pattern = [
-        "Inc", "Corp", "Ltd", "SARL", "SA", "GmbH", "AG", "SAS",
-        "LLC", "Co", "Group", "Holdings", "Technologies", "Electronics",
-        "Manufacturing", "Services",
-    ].join("|");
+        "Inc",
+        "Corp",
+        "Ltd",
+        "SARL",
+        "SA",
+        "GmbH",
+        "AG",
+        "SAS",
+        "LLC",
+        "Co",
+        "Group",
+        "Holdings",
+        "Technologies",
+        "Electronics",
+        "Manufacturing",
+        "Services",
+    ]
+    .join("|");
     let pattern = format!(
         r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){{0,3}})\s+(?:{})\b",
         suffix_pattern
@@ -94,11 +110,7 @@ pub enum PressTopicTag {
 }
 
 /// Extract a press release / news article from body text.
-pub fn extract_press(
-    body_text: &str,
-    title: &str,
-    url: &str,
-) -> PressExtract {
+pub fn extract_press(body_text: &str, title: &str, url: &str) -> PressExtract {
     let normalized_body = normalizer::normalize_whitespace(body_text);
     let source = extract_source(&normalized_body);
     let author = extract_author(&normalized_body);
@@ -126,12 +138,14 @@ pub fn extract_press(
 }
 
 fn extract_source(text: &str) -> Option<String> {
-    RE_SOURCE.captures(text)
+    RE_SOURCE
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_author(text: &str) -> Option<String> {
-    RE_AUTHOR.captures(text)
+    RE_AUTHOR
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
@@ -148,19 +162,16 @@ fn extract_article_date(text: &str) -> Option<String> {
 }
 
 fn is_valid_date(raw: &str) -> bool {
-    let patterns = [
-        "%B %d, %Y",
-        "%B %d %Y",
-        "%d %B %Y",
-        "%Y-%m-%d",
-        "%Y/%m/%d",
-    ];
-    patterns.iter().any(|p| chrono::NaiveDate::parse_from_str(raw, p).is_ok())
+    let patterns = ["%B %d, %Y", "%B %d %Y", "%d %B %Y", "%Y-%m-%d", "%Y/%m/%d"];
+    patterns
+        .iter()
+        .any(|p| chrono::NaiveDate::parse_from_str(raw, p).is_ok())
 }
 
 fn extract_lead(text: &str) -> String {
     // First paragraph or first 500 chars
-    let paragraphs: Vec<&str> = text.split("\n\n")
+    let paragraphs: Vec<&str> = text
+        .split("\n\n")
         .map(|p| p.trim())
         .filter(|p| p.len() > 20)
         .collect();
@@ -188,9 +199,20 @@ pub fn extract_company_mentions(text: &str) -> Vec<String> {
 
     // Also look for known EMS companies
     let known = [
-        "Foxconn", "Jabil", "Flex", "Celestica", "Benchmark Electronics",
-        "Starz Electronics", "Plexus", "Sanmina", "Venture",
-        "Pegatron", "Wistron", "Compal", "Quanta", "USI",
+        "Foxconn",
+        "Jabil",
+        "Flex",
+        "Celestica",
+        "Benchmark Electronics",
+        "Starz Electronics",
+        "Plexus",
+        "Sanmina",
+        "Venture",
+        "Pegatron",
+        "Wistron",
+        "Compal",
+        "Quanta",
+        "USI",
     ];
     for company in &known {
         if text.contains(company) && !seen.contains(*company) {
@@ -208,18 +230,73 @@ pub fn classify_topics(body: &str, title: &str) -> Vec<PressTopicTag> {
     let mut topics = Vec::new();
 
     let rules: &[(&[&str], PressTopicTag)] = &[
-        (&["expansion", "new facility", "new plant", "nouvelle usine", "construction"], PressTopicTag::NewPlant),
-        (&["acqui", "merger", "rachat", "fusion"], PressTopicTag::Acquisition),
-        (&["partnership", "partenariat", "collaboration", "joint venture", "alliance"], PressTopicTag::Partnership),
-        (&["contract", "contrat", "award", "win", "won"], PressTopicTag::Contract),
-        (&["revenue", "profit", "earnings", "chiffre d'affaires", "quarterly", "annual report"], PressTopicTag::Financial),
-        (&["certif", "iso", "iatf", "accredit"], PressTopicTag::Certification),
-        (&["launch", "new product", "nouveau produit", "release"], PressTopicTag::Product),
-        (&["appoint", "hire", "nomm", "ceo", "cto", "vp", "director"], PressTopicTag::Personnel),
-        (&["restructur", "layoff", "fermeture", "closure", "downsize"], PressTopicTag::Restructuring),
-        (&["regulat", "compliance", "law", "loi", "directive"], PressTopicTag::Regulatory),
-        (&["technolog", "innovat", "r&d", "patent", "brevet"], PressTopicTag::Technology),
-        (&["expand", "growth", "croissance", "invest"], PressTopicTag::Expansion),
+        (
+            &[
+                "expansion",
+                "new facility",
+                "new plant",
+                "nouvelle usine",
+                "construction",
+            ],
+            PressTopicTag::NewPlant,
+        ),
+        (
+            &["acqui", "merger", "rachat", "fusion"],
+            PressTopicTag::Acquisition,
+        ),
+        (
+            &[
+                "partnership",
+                "partenariat",
+                "collaboration",
+                "joint venture",
+                "alliance",
+            ],
+            PressTopicTag::Partnership,
+        ),
+        (
+            &["contract", "contrat", "award", "win", "won"],
+            PressTopicTag::Contract,
+        ),
+        (
+            &[
+                "revenue",
+                "profit",
+                "earnings",
+                "chiffre d'affaires",
+                "quarterly",
+                "annual report",
+            ],
+            PressTopicTag::Financial,
+        ),
+        (
+            &["certif", "iso", "iatf", "accredit"],
+            PressTopicTag::Certification,
+        ),
+        (
+            &["launch", "new product", "nouveau produit", "release"],
+            PressTopicTag::Product,
+        ),
+        (
+            &["appoint", "hire", "nomm", "ceo", "cto", "vp", "director"],
+            PressTopicTag::Personnel,
+        ),
+        (
+            &["restructur", "layoff", "fermeture", "closure", "downsize"],
+            PressTopicTag::Restructuring,
+        ),
+        (
+            &["regulat", "compliance", "law", "loi", "directive"],
+            PressTopicTag::Regulatory,
+        ),
+        (
+            &["technolog", "innovat", "r&d", "patent", "brevet"],
+            PressTopicTag::Technology,
+        ),
+        (
+            &["expand", "growth", "croissance", "invest"],
+            PressTopicTag::Expansion,
+        ),
     ];
 
     for (keywords, tag) in rules {
@@ -245,7 +322,11 @@ mod tests {
                     Starz Electronics SARL announced today the opening of a new manufacturing \
                     facility in Sousse, Tunisia. The expansion will create 500 new jobs and \
                     increase SMT assembly capacity by 40%.";
-        let press = extract_press(body, "Starz Electronics Opens New Plant", "https://news.com/123");
+        let press = extract_press(
+            body,
+            "Starz Electronics Opens New Plant",
+            "https://news.com/123",
+        );
 
         assert_eq!(press.headline, "Starz Electronics Opens New Plant");
         assert!(press.author.is_some());

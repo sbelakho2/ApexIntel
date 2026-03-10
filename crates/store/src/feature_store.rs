@@ -70,7 +70,10 @@ impl FeatureAccumulator {
 
     /// Increment a signal counter.
     pub fn count_signal(&mut self, signal_type: &str) {
-        *self.signal_counts.entry(signal_type.to_string()).or_insert(0.0) += 1.0;
+        *self
+            .signal_counts
+            .entry(signal_type.to_string())
+            .or_insert(0.0) += 1.0;
     }
 
     /// Record a topic mention with a score.
@@ -109,9 +112,7 @@ pub fn compute_diffs(previous: &FeatureRow, current: &mut FeatureRow) {
         current.diffs.insert(signal.clone(), diff);
 
         if prev_val.abs() > f64::EPSILON {
-            current
-                .pct_changes
-                .insert(signal.clone(), diff / prev_val);
+            current.pct_changes.insert(signal.clone(), diff / prev_val);
         }
     }
 
@@ -127,10 +128,7 @@ pub fn compute_diffs(previous: &FeatureRow, current: &mut FeatureRow) {
 }
 
 /// Compute rolling volatility over a window of feature rows (by standard deviation of counts).
-pub fn compute_volatility(
-    history: &[FeatureRow],
-    current: &mut FeatureRow,
-) {
+pub fn compute_volatility(history: &[FeatureRow], current: &mut FeatureRow) {
     if history.is_empty() {
         return;
     }
@@ -204,9 +202,7 @@ pub fn compute_topic_drift(previous: &FeatureRow, current: &mut FeatureRow) {
     let drift = 1.0 - cosine_sim;
 
     // Store overall drift as a special key
-    current
-        .topic_drift
-        .insert("__drift__".to_string(), drift);
+    current.topic_drift.insert("__drift__".to_string(), drift);
 }
 
 #[cfg(test)]
@@ -250,12 +246,8 @@ mod tests {
     #[test]
     fn test_feature_accumulator_basic() {
         let entity_id = "test-entity-001".to_string();
-        let mut acc = FeatureAccumulator::new(
-            entity_id.clone(),
-            "company",
-            1700000000,
-            BucketSize::Weekly,
-        );
+        let mut acc =
+            FeatureAccumulator::new(entity_id.clone(), "company", 1700000000, BucketSize::Weekly);
 
         acc.count_signal("JobPost");
         acc.count_signal("JobPost");

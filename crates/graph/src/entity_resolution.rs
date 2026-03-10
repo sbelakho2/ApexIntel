@@ -1,17 +1,13 @@
+use apex_core::company_names::normalize_company_name;
+use apex_core::similarity::trigram_similarity;
 use std::collections::HashMap;
-use std::sync::LazyLock;
-use regex::Regex;
 use tracing::debug;
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 /// Default similarity threshold for entity clustering (B160).
 /// A Jaccard trigram similarity of 0.6 captures common spelling variations
 /// while avoiding false merges between distinct entities.
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.6;
 const FALSE_POSITIVE_AUDIT_THRESHOLD: f64 = 0.85;
-
-static RE_NON_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\w\s]").unwrap());
-static RE_MULTI_WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 /// Canonical form for entity name resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,108 +24,6 @@ pub struct EntityResolutionMetrics {
     pub merged_pairs: usize,
     pub potential_false_positive_pairs: usize,
     pub potential_false_positive_rate: f64,
-}
-
-/// Normalize a company name for fuzzy matching.
-pub fn normalize_company_name(name: &str) -> String {
-    let stripped = strip_diacritics(name);
-    let normalized_script = normalize_mixed_script_confusables(&stripped);
-    let lower = normalized_script.to_lowercase().trim().to_string();
-
-    // Remove common suffixes
-    // Keep suffix stripping conservative to avoid over-merging distinct firms.
-    let suffixes = [
-        " inc.", " inc", " ltd.", " ltd", " llc", " corp.", " corp",
-        " s.a.", " sa", " sarl", " s.a.r.l.", " gmbh", " ag", " sas",
-        " co.", " co", " plc",
-    ];
-
-    let mut result = lower;
-    // Loop until no more suffixes can be stripped (handles compound suffixes)
-    loop {
-        let prev_len = result.len();
-        for suffix in &suffixes {
-            if result.ends_with(suffix) {
-                result = result[..result.len() - suffix.len()].trim().to_string();
-                break; // restart scan after each match
-            }
-        }
-        if result.len() == prev_len {
-            break;
-        }
-    }
-
-    // Normalize whitespace + punctuation
-    result = RE_NON_WORD.replace_all(&result, "").to_string();
-    result = RE_MULTI_WS.replace_all(&result, " ").trim().to_string();
-
-    result
-}
-
-fn strip_diacritics(input: &str) -> String {
-    input
-        .nfd()
-        .filter(|ch| !is_combining_mark(*ch))
-        .collect()
-}
-
-fn normalize_mixed_script_confusables(input: &str) -> String {
-    input
-        .chars()
-        .map(|ch| match ch {
-            'А' | 'а' => 'a',
-            'В' | 'в' => 'b',
-            'С' | 'с' => 'c',
-            'Е' | 'е' => 'e',
-            'Н' | 'н' => 'h',
-            'І' | 'і' => 'i',
-            'К' | 'к' => 'k',
-            'М' | 'м' => 'm',
-            'О' | 'о' => 'o',
-            'Р' | 'р' => 'p',
-            'Т' | 'т' => 't',
-            'Х' | 'х' => 'x',
-            'Υ' | 'υ' => 'y',
-            _ => ch,
-        })
-        .collect()
-}
-
-/// Compute string similarity using trigram overlap (Jaccard).
-pub fn trigram_similarity(a: &str, b: &str) -> f64 {
-    let trig_a = trigrams(a);
-    let trig_b = trigrams(b);
-
-    if trig_a.is_empty() && trig_b.is_empty() {
-        return 0.0;
-    }
-
-    let intersection = trig_a.intersection(&trig_b).count();
-    let union = trig_a.union(&trig_b).count();
-
-    if union == 0 {
-        return 0.0;
-    }
-
-    intersection as f64 / union as f64
-}
-
-fn trigrams(s: &str) -> std::collections::HashSet<String> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut set = std::collections::HashSet::new();
-    if chars.len() < 3 {
-        // Pad short strings with spaces to produce valid trigrams instead of
-        // inserting the whole string (which yields 0.0 Jaccard vs real trigrams).
-        let padded: Vec<char> = format!(" {} ", s).chars().collect();
-        for w in padded.windows(3) {
-            set.insert(w.iter().collect());
-        }
-        return set;
-    }
-    for w in chars.windows(3) {
-        set.insert(w.iter().collect());
-    }
-    set
 }
 
 /// Detect duplicate entity names after normalization (B331).
@@ -322,8 +216,14 @@ mod tests {
     #[test]
     fn test_normalize_company_name() {
         // Now we only strip legal suffixes, preserving descriptive words
-        assert_eq!(normalize_company_name("Starz Electronics SARL"), "starz electronics");
-        assert_eq!(normalize_company_name("Foxconn Technology Group"), "foxconn technology group");
+        assert_eq!(
+            normalize_company_name("Starz Electronics SARL"),
+            "starz electronics"
+        );
+        assert_eq!(
+            normalize_company_name("Foxconn Technology Group"),
+            "foxconn technology group"
+        );
         assert_eq!(normalize_company_name("Jabil Inc."), "jabil");
     }
 
@@ -395,10 +295,7 @@ mod tests {
         assert!(clusters.len() >= 2);
 
         // Find the Starz cluster
-        let starz_cluster = clusters
-            .iter()
-            .find(|c| c.contains(&0))
-            .unwrap();
+        let starz_cluster = clusters.iter().find(|c| c.contains(&0)).unwrap();
         assert!(starz_cluster.contains(&1));
     }
 
@@ -436,7 +333,10 @@ mod tests {
 
     #[test]
     fn test_normalize_preserves_core_name() {
-        assert_eq!(normalize_company_name("Samsung Electronics"), "samsung electronics");
+        assert_eq!(
+            normalize_company_name("Samsung Electronics"),
+            "samsung electronics"
+        );
     }
 
     #[test]
@@ -463,13 +363,21 @@ mod tests {
     #[test]
     fn test_trigram_similarity_unicode_chinese() {
         let sim = trigram_similarity("华为技术有限公司", "华为技术公司");
-        assert!(sim > 0.2, "Chinese names should have partial overlap: {}", sim);
+        assert!(
+            sim > 0.2,
+            "Chinese names should have partial overlap: {}",
+            sim
+        );
     }
 
     #[test]
     fn test_trigram_similarity_unicode_korean() {
         let sim = trigram_similarity("삼성전자", "삼성전자주식회사");
-        assert!(sim > 0.2, "Korean names should have partial overlap: {}", sim);
+        assert!(
+            sim > 0.2,
+            "Korean names should have partial overlap: {}",
+            sim
+        );
     }
 
     #[test]
@@ -521,16 +429,20 @@ mod tests {
 
         // Verify trigram similarity reflects this
         let sim = trigram_similarity(&a, &b);
-        assert!((sim - 1.0).abs() < f64::EPSILON, "Identical after normalization");
+        assert!(
+            (sim - 1.0).abs() < f64::EPSILON,
+            "Identical after normalization"
+        );
     }
 
     #[test]
     fn test_punctuation_in_find_best_match() {
-        let candidates = vec![
-            "A.B.C. Electronics Inc.".to_string(),
-        ];
+        let candidates = vec!["A.B.C. Electronics Inc.".to_string()];
         let result = find_best_match("ABC Electronics", &candidates, 0.5);
-        assert!(result.is_some(), "Should match despite punctuation differences");
+        assert!(
+            result.is_some(),
+            "Should match despite punctuation differences"
+        );
         assert!((result.unwrap().1 - 1.0).abs() < f64::EPSILON);
     }
 
@@ -611,9 +523,12 @@ mod tests {
             "Name-C".to_string(),
         ];
         let clusters = cluster_entities(&names, 0.999); // high threshold → no merges
-        // With no merges, every name is its own cluster, sorted by index
+                                                        // With no merges, every name is its own cluster, sorted by index
         let first_min = clusters.first().map(|c| c[0]).unwrap_or(0);
-        assert_eq!(first_min, 0, "first cluster must have smallest canonical index");
+        assert_eq!(
+            first_min, 0,
+            "first cluster must have smallest canonical index"
+        );
     }
 
     #[test]

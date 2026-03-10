@@ -69,7 +69,11 @@ pub fn extract_page(html_content: &str) -> Result<PageContent> {
         } else {
             // Lower confidence if description came from fallback (first <p>)
             let has_meta = has_meta_description(&doc);
-            if has_meta { 1.0 } else { 0.5 }
+            if has_meta {
+                1.0
+            } else {
+                0.5
+            }
         },
         body_text: if effective_body.is_empty() {
             0.0
@@ -198,30 +202,27 @@ fn extract_body_text(doc: &Html) -> String {
     // with JavaScript code, CSS rules, or fallback content.
     let body_sel = Selector::parse("body").unwrap();
     let skip_sel = Selector::parse("script, style, noscript").unwrap();
-    
+
     match doc.select(&body_sel).next() {
         Some(body) => {
             // Collect IDs of elements to skip (use ego_tree::NodeId via type inference)
-            let skip_ids: std::collections::HashSet<_> = body
-                .select(&skip_sel)
-                .map(|el| el.id())
-                .collect();
-            
+            let skip_ids: std::collections::HashSet<_> =
+                body.select(&skip_sel).map(|el| el.id()).collect();
+
             // Collect text from nodes not dominated by skip elements
             let mut parts = Vec::new();
             for node_ref in body.descendants() {
                 if let scraper::node::Node::Text(ref t) = node_ref.value() {
                     // Check if any ancestor is a skipped element
-                    let dominated = node_ref
-                        .ancestors()
-                        .any(|a| skip_ids.contains(&a.id()));
+                    let dominated = node_ref.ancestors().any(|a| skip_ids.contains(&a.id()));
                     if !dominated {
                         parts.push(t.text.as_ref());
                     }
                 }
             }
             let text = parts.join(" ");
-            let normalized = normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&text));
+            let normalized =
+                normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&text));
             if normalized.is_empty() {
                 let fallback = doc.root_element().text().collect::<Vec<_>>().join(" ");
                 normalizer::normalize_whitespace(&normalizer::remove_boilerplate(&fallback))
@@ -246,7 +247,10 @@ fn extract_links(doc: &Html) -> Vec<ExtractedLink> {
                 return None;
             }
             let normalized = normalize_url(&href).unwrap_or(href);
-            Some(ExtractedLink { text, href: normalized })
+            Some(ExtractedLink {
+                text,
+                href: normalized,
+            })
         })
         .collect()
 }
@@ -336,7 +340,9 @@ mod tests {
     #[test]
     fn test_extract_page_emails() {
         let page = extract_page(SAMPLE_HTML).unwrap();
-        assert!(page.emails.contains(&"info@starz-electronics.com".to_string()));
+        assert!(page
+            .emails
+            .contains(&"info@starz-electronics.com".to_string()));
     }
 
     #[test]

@@ -146,11 +146,7 @@ impl SlaPredictor {
     }
 
     /// Batch-evaluate all unacknowledged warnings.
-    pub fn evaluate_batch(
-        &self,
-        warnings: &[WarningState],
-        now: DateTime<Utc>,
-    ) -> Vec<SlaStatus> {
+    pub fn evaluate_batch(&self, warnings: &[WarningState], now: DateTime<Utc>) -> Vec<SlaStatus> {
         warnings
             .iter()
             .filter(|w| !w.acknowledged)
@@ -159,11 +155,7 @@ impl SlaPredictor {
     }
 
     /// Get only warnings that need action (reminder or escalation).
-    pub fn actionable(
-        &self,
-        warnings: &[WarningState],
-        now: DateTime<Utc>,
-    ) -> Vec<SlaStatus> {
+    pub fn actionable(&self, warnings: &[WarningState], now: DateTime<Utc>) -> Vec<SlaStatus> {
         self.evaluate_batch(warnings, now)
             .into_iter()
             .filter(|s| !matches!(s.action, SlaAction::Ok | SlaAction::Acknowledged))
@@ -194,11 +186,7 @@ mod tests {
             severity: severity.into(),
             created_at: Utc::now() - Duration::hours(hours_ago),
             acknowledged,
-            acknowledged_at: if acknowledged {
-                Some(Utc::now())
-            } else {
-                None
-            },
+            acknowledged_at: if acknowledged { Some(Utc::now()) } else { None },
             escalated: false,
             escalation_level: 0,
             reminder_sent: false,
@@ -253,11 +241,11 @@ mod tests {
     fn test_batch_actionable() {
         let predictor = SlaPredictor::with_defaults();
         let warnings = vec![
-            make_warning("critical", 1, false),  // ok
-            make_warning("critical", 3, false),  // needs escalation
-            make_warning("high", 6, false),      // reminder
-            make_warning("medium", 50, false),   // breached
-            make_warning("low", 100, true),      // acknowledged
+            make_warning("critical", 1, false), // ok
+            make_warning("critical", 3, false), // needs escalation
+            make_warning("high", 6, false),     // reminder
+            make_warning("medium", 50, false),  // breached
+            make_warning("low", 100, true),     // acknowledged
         ];
         let actionable = predictor.actionable(&warnings, Utc::now());
         assert_eq!(actionable.len(), 3); // escalation + reminder + breached

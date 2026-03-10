@@ -10,6 +10,8 @@ DATE=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="${DEST}/${DATE}"
 RETENTION_DAYS=30
 
+: "${DATABASE_URL:?Set DATABASE_URL before running scripts/backup.sh}"
+
 mkdir -p "${BACKUP_DIR}"
 
 echo "[$(date)] Starting ApexIntel backup to ${BACKUP_DIR}"
@@ -17,12 +19,12 @@ echo "[$(date)] Starting ApexIntel backup to ${BACKUP_DIR}"
 # 1. PostgreSQL full dump (custom format for parallel restore)
 echo "[$(date)] Dumping PostgreSQL..."
 pg_dump -Fc -Z 6 -f "${BACKUP_DIR}/apexintel.pgdump" \
-    "${DATABASE_URL:-postgres://apexintel:apexintel_dev@localhost:5432/apexintel}" 2>&1
+    "${DATABASE_URL}" 2>&1
 
 # 2. Schema-only dump (human-readable, for reference)
 echo "[$(date)] Dumping schema..."
 pg_dump --schema-only -f "${BACKUP_DIR}/schema.sql" \
-    "${DATABASE_URL:-postgres://apexintel:apexintel_dev@localhost:5432/apexintel}" 2>&1
+    "${DATABASE_URL}" 2>&1
 
 # 3. Config files
 echo "[$(date)] Backing up config..."

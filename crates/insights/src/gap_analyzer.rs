@@ -38,7 +38,7 @@ impl From<&Capability> for CapabilityTag {
     fn from(c: &Capability) -> Self {
         Self {
             code: c.capability.clone(),
-            label: c.capability.clone(),   // capability slug doubles as label
+            label: c.capability.clone(), // capability slug doubles as label
             category: c.proof_grade.as_str().to_string(),
         }
     }
@@ -62,8 +62,10 @@ impl EntityCapabilityProfile {
         capabilities: &[Capability],
         certifications: &[Certification],
     ) -> Self {
-        let cap_tags: HashSet<CapabilityTag> = capabilities.iter().map(CapabilityTag::from).collect();
-        let cert_stds: HashSet<String> = certifications.iter().map(|c| c.standard.clone()).collect();
+        let cap_tags: HashSet<CapabilityTag> =
+            capabilities.iter().map(CapabilityTag::from).collect();
+        let cert_stds: HashSet<String> =
+            certifications.iter().map(|c| c.standard.clone()).collect();
         Self {
             entity_id: entity_id.into(),
             entity_name: entity_name.into(),
@@ -83,7 +85,11 @@ impl EntityCapabilityProfile {
             .into_iter()
             .map(|s| {
                 let code = s.into();
-                CapabilityTag { label: code.clone(), category: String::new(), code }
+                CapabilityTag {
+                    label: code.clone(),
+                    category: String::new(),
+                    code,
+                }
             })
             .collect();
         Self {
@@ -240,7 +246,10 @@ impl GapAnalyzer {
 
         // ── LLM narrative ──────────────────────────────────────────
         let narrative = if let Some(ref llm) = self.llm {
-            match self.generate_narrative(llm.as_ref(), target, &defensive_gaps, &differentiators).await {
+            match self
+                .generate_narrative(llm.as_ref(), target, &defensive_gaps, &differentiators)
+                .await
+            {
                 Ok(narr) => Some(narr),
                 Err(e) => {
                     warn!(entity=%target.entity_name, error=%e, "Gap narrative generation failed");
@@ -294,8 +303,16 @@ impl GapAnalyzer {
             Differentiators (unique to this entity):\n{}\n\
             Write a gap analysis paragraph with strategic implications.",
             target.entity_name,
-            if gap_list.is_empty() { "  (none identified)".to_string() } else { gap_list },
-            if diff_list.is_empty() { "  (none identified)".to_string() } else { diff_list },
+            if gap_list.is_empty() {
+                "  (none identified)".to_string()
+            } else {
+                gap_list
+            },
+            if diff_list.is_empty() {
+                "  (none identified)".to_string()
+            } else {
+                diff_list
+            },
         );
 
         llm.generate_text(system, &user)
@@ -360,10 +377,14 @@ mod tests {
     #[tokio::test]
     async fn gap_identified_correctly() {
         let target = make_profile("t1", "Target Corp", &[("CAP_A", "Capability A", "Defence")]);
-        let competitor = make_profile("c1", "Competitor Inc", &[
-            ("CAP_A", "Capability A", "Defence"),
-            ("CAP_B", "Capability B", "Electronics"),
-        ]);
+        let competitor = make_profile(
+            "c1",
+            "Competitor Inc",
+            &[
+                ("CAP_A", "Capability A", "Defence"),
+                ("CAP_B", "Capability B", "Electronics"),
+            ],
+        );
 
         let analyzer = GapAnalyzer::new();
         let result = analyzer.analyse(&target, &[competitor]).await;
@@ -375,12 +396,16 @@ mod tests {
 
     #[tokio::test]
     async fn differentiator_identified() {
-        let target = make_profile("t1", "Target", &[
-            ("UNIQUE_CAP", "Unique Capability", "Tech"),
-        ]);
-        let competitor = make_profile("c1", "Competitor", &[
-            ("DIFFERENT_CAP", "Different", "Tech"),
-        ]);
+        let target = make_profile(
+            "t1",
+            "Target",
+            &[("UNIQUE_CAP", "Unique Capability", "Tech")],
+        );
+        let competitor = make_profile(
+            "c1",
+            "Competitor",
+            &[("DIFFERENT_CAP", "Different", "Tech")],
+        );
 
         let analyzer = GapAnalyzer::new();
         let result = analyzer.analyse(&target, &[competitor]).await;
@@ -401,11 +426,15 @@ mod tests {
     #[tokio::test]
     async fn gap_score_between_zero_and_one() {
         let target = make_profile("t1", "Target", &[]);
-        let competitors: Vec<_> = (0..5).map(|i| {
-            make_profile(&format!("c{}", i), &format!("Comp{}", i), &[
-                (&format!("CAP_{}", i), &format!("Cap {}", i), "Defence"),
-            ])
-        }).collect();
+        let competitors: Vec<_> = (0..5)
+            .map(|i| {
+                make_profile(
+                    &format!("c{}", i),
+                    &format!("Comp{}", i),
+                    &[(&format!("CAP_{}", i), &format!("Cap {}", i), "Defence")],
+                )
+            })
+            .collect();
 
         let analyzer = GapAnalyzer::new();
         let result = analyzer.analyse(&target, &competitors).await;

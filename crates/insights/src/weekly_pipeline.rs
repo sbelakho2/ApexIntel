@@ -15,7 +15,7 @@
 //! without narrative enrichment (degrades gracefully).
 
 use crate::memo::{generate_weekly_memo, WeeklyMemo};
-use crate::renderer::{InsightCard, group_by_region};
+use crate::renderer::{group_by_region, InsightCard};
 use anyhow::{Context, Result};
 use apex_llm::LlmClient;
 use chrono::Utc;
@@ -86,7 +86,10 @@ pub struct WeeklyPipelineRunner {
 impl WeeklyPipelineRunner {
     /// Create a runner with an LLM client.
     pub fn new(config: WeeklyPipelineConfig, llm: Arc<dyn LlmClient>) -> Self {
-        Self { config, llm: Some(llm) }
+        Self {
+            config,
+            llm: Some(llm),
+        }
     }
 
     /// Create a runner without LLM (rule-based narration only).
@@ -108,7 +111,11 @@ impl WeeklyPipelineRunner {
 
         // Stage 2: Sort by score descending (highest priority first)
         let mut ranked = qualified;
-        ranked.sort_by(|a, b| b.priority_score.partial_cmp(&a.priority_score).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.priority_score
+                .partial_cmp(&a.priority_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         ranked.truncate(self.config.max_body_cards);
 
         // Stage 3: Extract top executive-level cards
@@ -138,9 +145,12 @@ impl WeeklyPipelineRunner {
         let mut enriched_cards = ranked.clone();
         let llm_narrated = if self.config.enable_llm_narration {
             if let Some(ref llm) = self.llm {
-                match self.enrich_section_leads(llm.as_ref(), &mut enriched_cards).await {
+                match self
+                    .enrich_section_leads(llm.as_ref(), &mut enriched_cards)
+                    .await
+                {
                     Ok(count) => {
-                        info!(enriched_sections=count, "LLM section leads generated");
+                        info!(enriched_sections = count, "LLM section leads generated");
                         true
                     }
                     Err(e) => {
@@ -163,10 +173,7 @@ impl WeeklyPipelineRunner {
 
         info!(
             cards_processed = total,
-            cards_discarded,
-            llm_narrated,
-            duration_ms,
-            "Weekly pipeline complete"
+            cards_discarded, llm_narrated, duration_ms, "Weekly pipeline complete"
         );
 
         Ok(PipelineOutput {
@@ -187,7 +194,15 @@ impl WeeklyPipelineRunner {
     ) -> Result<String> {
         let card_text = cards
             .iter()
-            .map(|c| format!("- [{}] {}: {} (confidence: {:.0}%)", c.region.as_deref().unwrap_or("GLB"), c.entity_name, c.title, c.confidence * 100.0))
+            .map(|c| {
+                format!(
+                    "- [{}] {}: {} (confidence: {:.0}%)",
+                    c.region.as_deref().unwrap_or("GLB"),
+                    c.entity_name,
+                    c.title,
+                    c.confidence * 100.0
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -242,9 +257,10 @@ impl WeeklyPipelineRunner {
 
             match llm.generate_text(system, &user).await {
                 Ok(lead) => {
-                    if let Some(first_card) = cards.iter_mut().find(|card| {
-                        card.region.as_deref().unwrap_or("global") == region
-                    }) {
+                    if let Some(first_card) = cards
+                        .iter_mut()
+                        .find(|card| card.region.as_deref().unwrap_or("global") == region)
+                    {
                         let lead = lead.trim();
                         if !lead.is_empty() && !first_card.narrative.starts_with(lead) {
                             first_card.narrative = format!("{}\n\n{}", lead, first_card.narrative);
@@ -264,7 +280,10 @@ impl WeeklyPipelineRunner {
     fn rule_based_exec_summary(&self, cards: &[&InsightCard]) -> String {
         let now = Utc::now();
         let critical: Vec<_> = cards.iter().filter(|c| c.priority_score >= 0.8).collect();
-        let high: Vec<_> = cards.iter().filter(|c| c.priority_score >= 0.6 && c.priority_score < 0.8).collect();
+        let high: Vec<_> = cards
+            .iter()
+            .filter(|c| c.priority_score >= 0.6 && c.priority_score < 0.8)
+            .collect();
 
         let mut summary = format!(
             "Weekly Intelligence Briefing — {}. ",
@@ -281,7 +300,10 @@ impl WeeklyPipelineRunner {
         }
 
         if !high.is_empty() {
-            summary += &format!("{} high-priority signal(s) require attention this week. ", high.len());
+            summary += &format!(
+                "{} high-priority signal(s) require attention this week. ",
+                high.len()
+            );
         }
 
         if cards.is_empty() {
@@ -335,7 +357,9 @@ mod tests {
     async fn headless_pipeline_runs() {
         let cfg = WeeklyPipelineConfig::default();
         let runner = WeeklyPipelineRunner::headless(cfg);
-        let cards: Vec<InsightCard> = (0..10).map(|i| make_card("Acme", &format!("Signal {}", i), 0.5 + i as f64 * 0.04)).collect();
+        let cards: Vec<InsightCard> = (0..10)
+            .map(|i| make_card("Acme", &format!("Signal {}", i), 0.5 + i as f64 * 0.04))
+            .collect();
         let result = runner.run(cards).await;
         assert!(result.is_ok());
         let output = result.unwrap();

@@ -3,20 +3,16 @@
 //! Covers: dashboard page with KPI cards, recent warnings, top insights,
 //! and activity timeline.
 
-use std::sync::Arc;
-use std::collections::{BTreeMap, HashSet};
 use chrono::{DateTime, Duration, Utc};
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
 use askama::Template;
-use axum::{
-    http::HeaderMap,
-    response::IntoResponse,
-    Extension,
-};
+use axum::{response::IntoResponse, Extension};
 
-use apex_store::postgres::{PgStore, WarningListFilters, InsightListFilters};
-use super::{is_htmx_request, PageContext};
+use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_store::postgres::{InsightListFilters, PgStore, WarningListFilters};
 
 // ─── Template structs ───────────────────────────────────────────────────────
 
@@ -112,20 +108,23 @@ pub fn compute_donut_segments(counts: &[SeverityCount], radius: f64) -> Vec<Donu
         return vec![];
     }
     let mut offset = 0.0f64;
-    counts.iter().map(|s| {
-        let pct = s.count as f64 / total;
-        let dash = pct * circumference;
-        let gap = circumference - dash;
-        let seg = DonutSegment {
-            label: s.label.clone(),
-            count: s.count,
-            color: s.color.clone(),
-            dash_array: format!("{:.1} {:.1}", dash, gap),
-            dash_offset: format!("{:.1}", -offset),
-        };
-        offset += dash;
-        seg
-    }).collect()
+    counts
+        .iter()
+        .map(|s| {
+            let pct = s.count as f64 / total;
+            let dash = pct * circumference;
+            let gap = circumference - dash;
+            let seg = DonutSegment {
+                label: s.label.clone(),
+                count: s.count,
+                color: s.color.clone(),
+                dash_array: format!("{:.1} {:.1}", dash, gap),
+                dash_offset: format!("{:.1}", -offset),
+            };
+            offset += dash;
+            seg
+        })
+        .collect()
 }
 
 #[derive(Template)]
@@ -157,7 +156,6 @@ pub struct DashboardPage {
 
 /// GET / — render the main dashboard.
 pub async fn dashboard(
-    headers: HeaderMap,
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
@@ -172,36 +170,47 @@ pub async fn dashboard(
 
     // Fetch recent warnings (last 5)
     let warning_filters = WarningListFilters::default();
-    let recent_warning_rows = store.list_warnings(&warning_filters, None, true, 5, 0).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch recent warnings: {e}");
-        vec![]
-    });
-    let recent_warnings: Vec<RecentWarning> = recent_warning_rows.iter().map(|w| {
-        RecentWarning {
+    let recent_warning_rows = store
+        .list_warnings(&warning_filters, None, true, 5, 0)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to fetch recent warnings: {e}");
+            vec![]
+        });
+    let recent_warnings: Vec<RecentWarning> = recent_warning_rows
+        .iter()
+        .map(|w| RecentWarning {
             id: w.id.to_string(),
             title: w.title.clone(),
             severity: w.severity.clone(),
             company_name: String::new(),
             created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
-        }
-    }).collect();
+        })
+        .collect();
 
     // Fetch top insights (last 5)
     let insight_filters = InsightListFilters::default();
-    let top_insight_rows = store.list_insights(&insight_filters, 5, 0).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch top insights: {e}");
-        vec![]
-    });
-    let top_insights: Vec<TopInsight> = top_insight_rows.iter().map(|i| {
-        TopInsight {
+    let top_insight_rows = store
+        .list_insights(&insight_filters, 5, 0)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to fetch top insights: {e}");
+            vec![]
+        });
+    let top_insights: Vec<TopInsight> = top_insight_rows
+        .iter()
+        .map(|i| TopInsight {
             id: i.id.to_string(),
             title: i.title.clone(),
             category: i.insight_type.clone().unwrap_or_default(),
             confidence: i.confidence.unwrap_or(0.0),
             confidence_pct: ((i.confidence.unwrap_or(0.0) * 100.0).round() as i64),
-            created_at: i.created_at.map(|d| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default(),
-        }
-    }).collect();
+            created_at: i
+                .created_at
+                .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default(),
+        })
+        .collect();
 
     // Build severity breakdown from dashboard stats
     let severity_breakdown = {
@@ -219,10 +228,26 @@ pub async fn dashboard(
             }
         }
         vec![
-            SeverityCount { label: "Critical".into(), count: critical, color: "#D62D2D".into() },
-            SeverityCount { label: "High".into(),     count: high,     color: "#F97316".into() },
-            SeverityCount { label: "Medium".into(),   count: medium,   color: "#FFBE00".into() },
-            SeverityCount { label: "Low".into(),      count: low,      color: "#4A90E2".into() },
+            SeverityCount {
+                label: "Critical".into(),
+                count: critical,
+                color: "#D62D2D".into(),
+            },
+            SeverityCount {
+                label: "High".into(),
+                count: high,
+                color: "#F97316".into(),
+            },
+            SeverityCount {
+                label: "Medium".into(),
+                count: medium,
+                color: "#FFBE00".into(),
+            },
+            SeverityCount {
+                label: "Low".into(),
+                count: low,
+                color: "#4A90E2".into(),
+            },
         ]
     };
 
@@ -335,10 +360,10 @@ pub async fn dashboard(
     // Build real timestamped activity feed from warnings + insights
     #[derive(sqlx::FromRow)]
     struct ActivityRow {
-         event_id: String,
+        event_id: String,
         event_kind: String,
         description: String,
-         ts: DateTime<Utc>,
+        ts: DateTime<Utc>,
     }
 
     let activity_rows: Vec<ActivityRow> = sqlx::query_as::<_, ActivityRow>(
@@ -386,16 +411,32 @@ pub async fn dashboard(
                 value: stats_data.unacknowledged_warnings.to_string(),
                 icon: "alert-triangle".into(),
                 accent: "var(--rams-orange)".into(),
-                delta: if new_warnings_24h > 0 { Some(format!("+{}", new_warnings_24h)) } else { None },
-                direction: if new_warnings_24h > 0 { "up".into() } else { "flat".into() },
+                delta: if new_warnings_24h > 0 {
+                    Some(format!("+{}", new_warnings_24h))
+                } else {
+                    None
+                },
+                direction: if new_warnings_24h > 0 {
+                    "up".into()
+                } else {
+                    "flat".into()
+                },
             },
             StatCard {
                 label: "Insights (7d)".into(),
                 value: stats_data.total_insights.to_string(),
                 icon: "eye".into(),
                 accent: "var(--rams-blue)".into(),
-                delta: if new_insights_24h > 0 { Some(format!("+{}", new_insights_24h)) } else { None },
-                direction: if new_insights_24h > 0 { "up".into() } else { "flat".into() },
+                delta: if new_insights_24h > 0 {
+                    Some(format!("+{}", new_insights_24h))
+                } else {
+                    None
+                },
+                direction: if new_insights_24h > 0 {
+                    "up".into()
+                } else {
+                    "flat".into()
+                },
             },
             StatCard {
                 label: "Companies".into(),
@@ -428,7 +469,6 @@ pub async fn dashboard(
         data_freshness: "Live".into(),
     };
 
-    let _ = is_htmx_request(&headers);
     page.into_response()
 }
 
@@ -447,8 +487,8 @@ fn region_color(region: &str, index: usize) -> &'static str {
         "germany" | "de" => "#A3E635",
         _ => {
             const PALETTE: [&str; 8] = [
-                "#4A90E2", "#2D8C3C", "#FFBE00", "#D62D2D",
-                "#8B5CF6", "#14B8A6", "#F97316", "#06B6D4",
+                "#4A90E2", "#2D8C3C", "#FFBE00", "#D62D2D", "#8B5CF6", "#14B8A6", "#F97316",
+                "#06B6D4",
             ];
             PALETTE[index % PALETTE.len()]
         }
@@ -457,8 +497,7 @@ fn region_color(region: &str, index: usize) -> &'static str {
 
 fn palette_color(index: usize) -> &'static str {
     const PALETTE: [&str; 12] = [
-        "#4A90E2", "#2D8C3C", "#FFBE00", "#D62D2D",
-        "#8B5CF6", "#14B8A6", "#F97316", "#06B6D4",
+        "#4A90E2", "#2D8C3C", "#FFBE00", "#D62D2D", "#8B5CF6", "#14B8A6", "#F97316", "#06B6D4",
         "#E94F87", "#A3E635", "#6366F1", "#10B981",
     ];
     PALETTE[index % PALETTE.len()]

@@ -25,12 +25,9 @@ use urlencoding::encode as urlencode;
 // Regex helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-static RE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap()
-});
-static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\+?[\d\s\-\(\)]{8,20}").unwrap()
-});
+static RE_EMAIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap());
+static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\+?[\d\s\-\(\)]{8,20}").unwrap());
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Output types
@@ -193,12 +190,10 @@ impl TorClient {
             return vec![];
         }
         // Aggregated leak index (known working as of 2024-Q4).
-        let sites = [
-            format!(
-                "http://ransomwarebugsctmseqejbm7dlgm4lol2eahrr2r2iyctba2d6vlxxad.onion/search?q={}",
-                urlencode(org_name)
-            ),
-        ];
+        let sites = [format!(
+            "http://ransomwarebugsctmseqejbm7dlgm4lol2eahrr2r2iyctba2d6vlxxad.onion/search?q={}",
+            urlencode(org_name)
+        )];
         let mut results = vec![];
         for url in &sites {
             if let Ok(html) = self.get_text(url, 60).await {
@@ -280,7 +275,10 @@ impl TorClient {
             .client
             .get(url)
             .timeout(Duration::from_secs(timeout_secs))
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0",
+            )
             .send()
             .await
             .context("tor GET failed")?;
@@ -309,15 +307,12 @@ pub struct DarkWebPersonIntel {
 impl DarkWebPersonIntel {
     /// Best email guess: first matched breach email, then first contact email.
     pub fn best_email(&self) -> Option<&str> {
-        self.matched_emails
-            .first()
-            .map(String::as_str)
-            .or_else(|| {
-                self.contact_records
-                    .iter()
-                    .filter_map(|r| r.email.as_deref())
-                    .next()
-            })
+        self.matched_emails.first().map(String::as_str).or_else(|| {
+            self.contact_records
+                .iter()
+                .filter_map(|r| r.email.as_deref())
+                .next()
+        })
     }
 }
 
@@ -366,7 +361,11 @@ fn parse_pwndb_html(html: &str, domain: &str) -> Vec<BreachRecord> {
 
 /// Generic extractor: scan `html` for email addresses and phone numbers,
 /// return as `OnionContactRecord` items.
-fn extract_onion_contacts(html: &str, source_url: &str, confidence: f32) -> Vec<OnionContactRecord> {
+fn extract_onion_contacts(
+    html: &str,
+    source_url: &str,
+    confidence: f32,
+) -> Vec<OnionContactRecord> {
     let now = Utc::now().timestamp();
     let emails: Vec<String> = RE_EMAIL
         .find_iter(html)

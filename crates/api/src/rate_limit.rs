@@ -194,9 +194,9 @@ impl RateLimiter {
 
         // Periodic cleanup of stale buckets (every 5 minutes)
         if inner.last_cleanup.elapsed() > Duration::from_secs(300) {
-            inner.buckets.retain(|_, bucket| {
-                bucket.last_refill.elapsed() < Duration::from_secs(600)
-            });
+            inner
+                .buckets
+                .retain(|_, bucket| bucket.last_refill.elapsed() < Duration::from_secs(600));
             inner.last_cleanup = Instant::now();
         }
 
@@ -222,16 +222,10 @@ impl RateLimiter {
     pub fn headers(result: &RateLimitResult) -> Vec<(String, String)> {
         let mut headers = vec![
             ("X-RateLimit-Limit".into(), result.limit.to_string()),
-            (
-                "X-RateLimit-Remaining".into(),
-                result.remaining.to_string(),
-            ),
+            ("X-RateLimit-Remaining".into(), result.remaining.to_string()),
         ];
         if !result.allowed {
-            headers.push((
-                "Retry-After".into(),
-                result.retry_after_secs.to_string(),
-            ));
+            headers.push(("Retry-After".into(), result.retry_after_secs.to_string()));
         }
         headers
     }
@@ -262,12 +256,24 @@ mod tests {
 
     #[test]
     fn test_classify_endpoint() {
-        assert_eq!(classify_endpoint("/api/admin/replay", "POST"), RateTier::Strict);
-        assert_eq!(classify_endpoint("/api/auth/login", "POST"), RateTier::Strict);
+        assert_eq!(
+            classify_endpoint("/api/admin/replay", "POST"),
+            RateTier::Strict
+        );
+        assert_eq!(
+            classify_endpoint("/api/auth/login", "POST"),
+            RateTier::Strict
+        );
         assert_eq!(classify_endpoint("/api/search", "GET"), RateTier::Search);
         assert_eq!(classify_endpoint("/api/health", "GET"), RateTier::Internal);
-        assert_eq!(classify_endpoint("/api/warnings", "GET"), RateTier::Generous);
-        assert_eq!(classify_endpoint("/api/companies", "POST"), RateTier::Standard);
+        assert_eq!(
+            classify_endpoint("/api/warnings", "GET"),
+            RateTier::Generous
+        );
+        assert_eq!(
+            classify_endpoint("/api/companies", "POST"),
+            RateTier::Standard
+        );
     }
 
     #[test]

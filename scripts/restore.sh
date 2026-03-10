@@ -6,6 +6,8 @@ set -euo pipefail
 
 BACKUP_DIR="${1:?Usage: restore.sh /path/to/backup/dir}"
 
+: "${DATABASE_URL:?Set DATABASE_URL before running scripts/restore.sh}"
+
 if [[ ! -f "${BACKUP_DIR}/apexintel.pgdump" ]]; then
     echo "ERROR: ${BACKUP_DIR}/apexintel.pgdump not found"
     exit 1
@@ -13,7 +15,7 @@ fi
 
 echo "[$(date)] Restoring ApexIntel from ${BACKUP_DIR}"
 
-DB_URL="${DATABASE_URL:-postgres://apexintel:apexintel_dev@localhost:5432/apexintel}"
+DB_URL="${DATABASE_URL}"
 
 echo "[$(date)] WARNING: This will drop and recreate the apexintel database."
 read -p "Continue? [y/N] " -n 1 -r

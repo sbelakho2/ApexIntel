@@ -5,8 +5,10 @@
 //! Actual HTTP wiring (Axum extractors, Router) is done in the binary.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 pub mod admin;
+pub mod collaboration;
 pub mod companies;
 pub mod dossiers;
 pub mod export;
@@ -24,33 +26,66 @@ pub mod semantic_search;
 pub mod warnings;
 pub mod ws;
 
+pub const API_VERSION: &str = "v1";
+
 // ─── Path constants ─────────────────────────────────────────────────────
 
 pub mod paths {
     pub const API_PREFIX: &str = "/api";
+    pub const API_V1_PREFIX: &str = "/api/v1";
     pub const HEALTH: &str = "/api/health";
+    pub const HEALTH_LIVE: &str = "/api/health/live";
+    pub const HEALTH_READY: &str = "/api/health/ready";
+    pub const HEALTH_DEEP: &str = "/api/health/deep";
     pub const ENDPOINTS: &str = "/api/endpoints";
+    pub const OPENAPI_JSON: &str = "/api/openapi.json";
+    pub const DOCS: &str = "/api/docs";
     pub const WARNINGS: &str = "/api/warnings";
+    pub const WARNING_DETAIL: &str = "/api/warnings/:id";
+    pub const WARNING_ACKNOWLEDGE: &str = "/api/warnings/:id/acknowledge";
+    pub const WARNING_ANALYZE: &str = "/api/warnings/:id/analyze";
+    pub const WARNING_BULK_DELETE: &str = "/api/warnings/bulk-delete";
     pub const INSIGHTS: &str = "/api/insights";
+    pub const INSIGHT_DETAIL: &str = "/api/insights/:id";
+    pub const INSIGHT_ANALYZE: &str = "/api/insights/:id/analyze";
+    pub const INSIGHT_BOOKMARK: &str = "/api/insights/:id/bookmark";
+    pub const INSIGHTS_EXPORT: &str = "/api/insights/export";
+    pub const MEMOS: &str = "/api/memos";
+    pub const WEEKLY_MEMO: &str = "/api/insights/weekly-memo";
     pub const COMPANIES: &str = "/api/companies";
+    pub const COMPANIES_EXPORT: &str = "/api/companies/export";
     pub const COMPANY_DETAIL: &str = "/api/companies/:id";
     pub const SEARCH: &str = "/api/search";
+    pub const SEMANTIC_SEARCH: &str = "/api/search/semantic";
     pub const PERSONS: &str = "/api/persons";
+    pub const PERSONS_EXPORT: &str = "/api/persons/export";
     pub const PERSON_DETAIL: &str = "/api/persons/:id";
     pub const RECIPES: &str = "/api/recipes";
     pub const GRAPH: &str = "/api/graph";
     pub const SECURITY: &str = "/api/security";
     pub const ADMIN: &str = "/api/admin";
-    pub const HEALTH_DEEP: &str = "/api/health/deep";
+    pub const ADMIN_CRAWL_STATUS: &str = "/api/admin/crawl-status";
+    pub const ADMIN_RECIPE_PERFORMANCE: &str = "/api/admin/recipe-performance";
+    pub const ADMIN_POI_COVERAGE: &str = "/api/admin/poi-coverage";
+    pub const ADMIN_LLM_GOVERNANCE: &str = "/api/admin/llm-governance";
+    pub const ADMIN_TRIGGER_SCAN: &str = "/api/admin/trigger-scan";
+    pub const REPLAY: &str = "/api/admin/replay";
+    pub const REPLAY_STATUS: &str = "/api/admin/replay/:job_id";
     pub const LLM_EXTRACT_ENTITIES: &str = "/api/llm/extract-entities";
     pub const LLM_GENERATE_RECIPE: &str = "/api/llm/generate-recipe";
     pub const LLM_SYNTHESIZE_POI: &str = "/api/llm/synthesize-poi";
     pub const LLM_GENERATE_MEMO: &str = "/api/llm/generate-memo";
     pub const EXPORT: &str = "/api/export";
     pub const PREFERENCES: &str = "/api/preferences";
-    pub const SEMANTIC_SEARCH: &str = "/api/semantic-search";
-    pub const REPLAY: &str = "/api/replay";
-    pub const REPLAY_STATUS: &str = "/api/replay/:id/status";
+    pub const USERS: &str = "/api/users";
+    pub const USER_DETAIL: &str = "/api/users/:id";
+    pub const SAVED_SEARCHES: &str = "/api/saved-searches";
+    pub const SAVED_SEARCH_DETAIL: &str = "/api/saved-searches/:id";
+    pub const WATCHLISTS: &str = "/api/watchlists";
+    pub const WATCHLIST_DETAIL: &str = "/api/watchlists/:id";
+    pub const ANNOTATIONS: &str = "/api/annotations";
+    pub const ANNOTATION_DETAIL: &str = "/api/annotations/:id";
+    pub const EXPORT_HISTORY: &str = "/api/export-history";
 }
 
 // ─── Endpoint catalogue ─────────────────────────────────────────────────
@@ -84,6 +119,26 @@ pub struct EndpointDef {
     pub min_role: &'static str,
 }
 
+pub fn strip_version_prefix(path: &str) -> &str {
+    if let Some(suffix) = path.strip_prefix(paths::API_V1_PREFIX) {
+        if suffix.is_empty() {
+            paths::API_PREFIX
+        } else {
+            suffix
+        }
+    } else {
+        path
+    }
+}
+
+pub fn versioned_path(path: &'static str) -> String {
+    if let Some(suffix) = path.strip_prefix(paths::API_PREFIX) {
+        format!("{}{}", paths::API_V1_PREFIX, suffix)
+    } else {
+        format!("{}{}", paths::API_V1_PREFIX, path)
+    }
+}
+
 /// Returns the full list of endpoints that the API exposes.
 /// Keep this in sync with the actual Axum router in `main.rs`.
 pub fn all_endpoints() -> Vec<EndpointDef> {
@@ -91,52 +146,115 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         // Health / meta
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/health",
+            path: paths::HEALTH,
             description: "Service health check",
             auth_required: false,
             min_role: "public",
         },
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/endpoints",
+            path: paths::HEALTH_LIVE,
+            description: "Liveness probe",
+            auth_required: false,
+            min_role: "public",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::HEALTH_READY,
+            description: "Readiness probe",
+            auth_required: false,
+            min_role: "public",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::ENDPOINTS,
             description: "List available API endpoints",
+            auth_required: false,
+            min_role: "public",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::OPENAPI_JSON,
+            description: "OpenAPI 3.1 JSON document",
+            auth_required: false,
+            min_role: "public",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::DOCS,
+            description: "Human-readable API documentation",
             auth_required: false,
             min_role: "public",
         },
         // Warnings
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/warnings",
+            path: paths::WARNINGS,
             description: "List warnings with filters",
             auth_required: true,
             min_role: "viewer",
         },
         EndpointDef {
             method: HttpMethod::Post,
-            path: "/api/warnings/:id/acknowledge",
+            path: paths::WARNING_ACKNOWLEDGE,
             description: "Acknowledge a warning",
             auth_required: true,
             min_role: "analyst",
         },
+        EndpointDef {
+            method: HttpMethod::Delete,
+            path: paths::WARNING_DETAIL,
+            description: "Delete a warning",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::WARNING_BULK_DELETE,
+            description: "Delete warnings in bulk",
+            auth_required: true,
+            min_role: "admin",
+        },
         // Insights
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/insights",
+            path: paths::INSIGHTS,
             description: "List insights with filters",
             auth_required: true,
             min_role: "viewer",
         },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::INSIGHTS_EXPORT,
+            description: "Export insights as CSV",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::INSIGHT_BOOKMARK,
+            description: "Bookmark or unbookmark an insight",
+            auth_required: true,
+            min_role: "analyst",
+        },
         // Companies
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/companies",
+            path: paths::COMPANIES,
             description: "List companies with filters",
             auth_required: true,
             min_role: "viewer",
         },
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/companies/:id",
+            path: paths::COMPANIES_EXPORT,
+            description: "Export companies as CSV",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::COMPANY_DETAIL,
             description: "Get a company profile",
             auth_required: true,
             min_role: "viewer",
@@ -144,14 +262,21 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         // Persons
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/persons",
+            path: paths::PERSONS,
             description: "List persons of interest with filters",
             auth_required: true,
             min_role: "viewer",
         },
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/persons/:id",
+            path: paths::PERSONS_EXPORT,
+            description: "Export persons as CSV",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::PERSON_DETAIL,
             description: "Get a person-of-interest profile",
             auth_required: true,
             min_role: "viewer",
@@ -159,15 +284,22 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         // Search
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/search",
+            path: paths::SEARCH,
             description: "Full-text search across all entities",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::SEMANTIC_SEARCH,
+            description: "Ranked semantic-style search with boosting and facets",
             auth_required: true,
             min_role: "viewer",
         },
         // Graph
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/graph",
+            path: paths::GRAPH,
             description: "Graph overview counts",
             auth_required: true,
             min_role: "viewer",
@@ -175,7 +307,7 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         // Recipes
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/recipes",
+            path: paths::RECIPES,
             description: "List recipe signals and metadata",
             auth_required: true,
             min_role: "viewer",
@@ -183,39 +315,214 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         // Security
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/security",
+            path: paths::SECURITY,
             description: "Security overview",
             auth_required: true,
             min_role: "viewer",
         },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::HEALTH_DEEP,
+            description: "Deep health checks for dependent services",
+            auth_required: true,
+            min_role: "admin",
+        },
         // LLM
         EndpointDef {
             method: HttpMethod::Post,
-            path: "/api/llm/extract-entities",
+            path: paths::LLM_EXTRACT_ENTITIES,
             description: "Extract named entities from freeform text",
             auth_required: true,
             min_role: "analyst",
         },
         EndpointDef {
             method: HttpMethod::Post,
-            path: "/api/llm/generate-recipe",
+            path: paths::LLM_GENERATE_RECIPE,
             description: "Generate a recipe hypothesis from a pattern description",
             auth_required: true,
             min_role: "analyst",
         },
         EndpointDef {
             method: HttpMethod::Post,
-            path: "/api/llm/synthesize-poi",
+            path: paths::LLM_SYNTHESIZE_POI,
             description: "Synthesize a POI dossier from fragments",
             auth_required: true,
             min_role: "analyst",
         },
         EndpointDef {
             method: HttpMethod::Post,
-            path: "/api/llm/generate-memo",
+            path: paths::LLM_GENERATE_MEMO,
             description: "Generate a strategic intelligence memo",
             auth_required: true,
             min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::PREFERENCES,
+            description: "Read caller preferences",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::PREFERENCES,
+            description: "Update caller preferences",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::USERS,
+            description: "List analyst users",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::USERS,
+            description: "Create or update an analyst user",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Put,
+            path: paths::USER_DETAIL,
+            description: "Update an analyst user",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::SAVED_SEARCHES,
+            description: "List saved searches for the caller",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::SAVED_SEARCHES,
+            description: "Create a saved search",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Put,
+            path: paths::SAVED_SEARCH_DETAIL,
+            description: "Update a saved search",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Delete,
+            path: paths::SAVED_SEARCH_DETAIL,
+            description: "Delete a saved search",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::WATCHLISTS,
+            description: "List watchlists for the caller",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::WATCHLISTS,
+            description: "Create a watchlist",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Put,
+            path: paths::WATCHLIST_DETAIL,
+            description: "Update a watchlist",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Delete,
+            path: paths::WATCHLIST_DETAIL,
+            description: "Delete a watchlist",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::ANNOTATIONS,
+            description: "List annotations with optional entity filters",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::ANNOTATIONS,
+            description: "Create an annotation",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Put,
+            path: paths::ANNOTATION_DETAIL,
+            description: "Update an annotation",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Delete,
+            path: paths::ANNOTATION_DETAIL,
+            description: "Delete an annotation",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::EXPORT_HISTORY,
+            description: "List export history for the caller",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::ADMIN_CRAWL_STATUS,
+            description: "Inspect crawl pipeline status",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::ADMIN_RECIPE_PERFORMANCE,
+            description: "Inspect recipe performance",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::ADMIN_POI_COVERAGE,
+            description: "Inspect POI coverage",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::ADMIN_TRIGGER_SCAN,
+            description: "Queue an admin scan",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::REPLAY,
+            description: "Replay historical observations through recipes",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::REPLAY_STATUS,
+            description: "Fetch replay job status",
+            auth_required: true,
+            min_role: "admin",
         },
         // Entity list endpoints
         EndpointDef {
@@ -416,6 +723,13 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "admin",
         },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/admin/llm-governance",
+            description: "LLM governance overview for prompts, runs, and datasets",
+            auth_required: true,
+            min_role: "admin",
+        },
         // WebSocket
         EndpointDef {
             method: HttpMethod::Get,
@@ -427,6 +741,93 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
     ]
 }
 
+pub fn openapi_spec() -> Value {
+    let mut paths = Map::new();
+    for endpoint in all_endpoints() {
+        let method = endpoint.method.label().to_ascii_lowercase();
+        let versioned_method = method.clone();
+        let mut operation = Map::new();
+        operation.insert(
+            "summary".to_string(),
+            Value::String(endpoint.description.to_string()),
+        );
+        operation.insert(
+            "operationId".to_string(),
+            Value::String(
+                endpoint
+                    .description
+                    .to_ascii_lowercase()
+                    .replace(' ', "_")
+                    .replace('-', "_"),
+            ),
+        );
+        operation.insert(
+            "tags".to_string(),
+            json!([endpoint
+                .path
+                .trim_start_matches("/api/")
+                .split('/')
+                .next()
+                .unwrap_or("meta")]),
+        );
+        if endpoint.auth_required {
+            operation.insert(
+                "security".to_string(),
+                json!([{"bearerAuth": []}, {"apiKeyAuth": []}]),
+            );
+            operation.insert(
+                "x-min-role".to_string(),
+                Value::String(endpoint.min_role.to_string()),
+            );
+        }
+        operation.insert(
+            "responses".to_string(),
+            json!({
+                "200": {"description": "Successful response"},
+                "400": {"description": "Bad request"},
+                "401": {"description": "Unauthorized"},
+                "403": {"description": "Forbidden"},
+                "500": {"description": "Internal error"}
+            }),
+        );
+
+        paths
+            .entry(endpoint.path.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(obj) = paths.get_mut(endpoint.path).and_then(Value::as_object_mut) {
+            obj.insert(method, Value::Object(operation.clone()));
+        }
+
+        let versioned = versioned_path(endpoint.path);
+        paths
+            .entry(versioned.clone())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(obj) = paths.get_mut(&versioned).and_then(Value::as_object_mut) {
+            obj.insert(versioned_method, Value::Object(operation));
+        }
+    }
+
+    json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "ApexIntel API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Operational intelligence API with versioned aliases at /api/v1"
+        },
+        "servers": [
+            {"url": "/api", "description": "Current API surface"},
+            {"url": "/api/v1", "description": "Stable v1 alias"}
+        ],
+        "components": {
+            "securitySchemes": {
+                "bearerAuth": {"type": "http", "scheme": "bearer"},
+                "apiKeyAuth": {"type": "apiKey", "in": "header", "name": "Authorization"}
+            }
+        },
+        "paths": Value::Object(paths)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,7 +835,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 44);
+        assert_eq!(eps.len(), 81);
     }
 
     #[test]
@@ -460,7 +861,11 @@ mod tests {
         let eps = all_endpoints();
         for ep in &eps {
             if ep.path.starts_with("/api/admin") {
-                assert_eq!(ep.min_role, "admin", "Admin endpoint {} should require admin role", ep.path);
+                assert_eq!(
+                    ep.min_role, "admin",
+                    "Admin endpoint {} should require admin role",
+                    ep.path
+                );
             }
         }
     }

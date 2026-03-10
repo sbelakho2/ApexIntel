@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
 
 const BASE_DELAY_SECS: f64 = 3.0;
 const MIN_DELAY_SECS: f64 = 0.5;
@@ -73,7 +73,8 @@ impl RateLimitManager {
     }
 
     pub fn record_success(&mut self, engine: &str) {
-        if self.engine_states.len() >= self.max_tracked && !self.engine_states.contains_key(engine) {
+        if self.engine_states.len() >= self.max_tracked && !self.engine_states.contains_key(engine)
+        {
             self.evict_stale();
         }
         let state = self.engine_states.entry(engine.to_string()).or_default();
@@ -128,7 +129,10 @@ impl RateLimitManager {
     }
 
     /// Parse Retry-After header value (seconds or HTTP-date) into a delay.
-    pub fn retry_after_delay(header_value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    pub fn retry_after_delay(
+        header_value: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<Duration> {
         let trimmed = header_value.trim();
         if let Ok(secs) = trimmed.parse::<u64>() {
             return Some(Duration::from_secs(secs));
@@ -161,7 +165,10 @@ impl RateLimitManager {
             .filter(|e| self.is_available(e.as_str()))
             .cloned()
             .collect();
-        available.sort_by(|a, b| self.health_score(b.as_str()).cmp(&self.health_score(a.as_str())));
+        available.sort_by(|a, b| {
+            self.health_score(b.as_str())
+                .cmp(&self.health_score(a.as_str()))
+        });
         available
     }
 
@@ -312,8 +319,8 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:27:00 GMT")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let delay = RateLimitManager::retry_after_delay("Wed, 21 Oct 2015 07:28:00 GMT", now)
-            .unwrap();
+        let delay =
+            RateLimitManager::retry_after_delay("Wed, 21 Oct 2015 07:28:00 GMT", now).unwrap();
         assert_eq!(delay.as_secs(), 60);
     }
 }

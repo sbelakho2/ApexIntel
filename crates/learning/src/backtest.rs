@@ -6,8 +6,7 @@
 //! predictions on the test fold.  No future information ever leaks.
 
 use crate::miner::{
-    build_contingency, fisher_p_value, odds_ratio, EventRecord, MinerConfig,
-    PatternCandidate,
+    build_contingency, fisher_p_value, odds_ratio, EventRecord, MinerConfig, PatternCandidate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -269,8 +268,7 @@ pub fn walk_forward_backtest(
         return None;
     }
 
-    let initial_train_end =
-        min_ts + (total_span as f64 * config.initial_train_fraction) as i64;
+    let initial_train_end = min_ts + (total_span as f64 * config.initial_train_fraction) as i64;
     let remaining = max_ts - initial_train_end;
     let fold_size = remaining / config.folds as i64;
 
@@ -322,16 +320,16 @@ pub fn walk_forward_backtest(
         );
 
         // Evaluate on test fold
-        let confusion = evaluate_on_fold(
-            &test_outcomes,
-            &test_signals,
-            lag_days,
-            config.window_days,
-        );
+        let confusion =
+            evaluate_on_fold(&test_outcomes, &test_signals, lag_days, config.window_days);
 
         // Include low-data folds in count (as unfound) to avoid inflating pass rate
         if confusion.tp < config.min_tp_per_fold {
-            tracing::warn!(fold = i, tp = confusion.tp, "backtest fold has insufficient TP, skipping"); // B230
+            tracing::warn!(
+                fold = i,
+                tp = confusion.tp,
+                "backtest fold has insufficient TP, skipping"
+            ); // B230
             fold_results.push(FoldResult {
                 fold_index: i,
                 train_start,
@@ -393,11 +391,7 @@ pub fn walk_forward_backtest(
 
     Some(BacktestResult {
         outcome: candidate.outcome.clone(),
-        signal: candidate
-            .signals
-            .first()
-            .cloned()
-            .unwrap_or_default(),
+        signal: candidate.signals.first().cloned().unwrap_or_default(),
         lag_days,
         fold_results,
         aggregate,
@@ -462,10 +456,7 @@ mod tests {
     fn make_events(entities: &[(&str, &[i64])]) -> Vec<EventRecord> {
         entities
             .iter()
-            .flat_map(|(eid, days)| {
-                days.iter()
-                    .map(move |d| (eid.to_string(), d * 86400))
-            })
+            .flat_map(|(eid, days)| days.iter().map(move |d| (eid.to_string(), d * 86400)))
             .collect()
     }
 
@@ -616,12 +607,7 @@ mod tests {
     #[test]
     fn test_single_fold_evaluate() {
         // Create clear signal-outcome relationship at lag=0
-        let outcomes = make_events(&[
-            ("A", &[10]),
-            ("B", &[15]),
-            ("C", &[20]),
-            ("D", &[25]),
-        ]);
+        let outcomes = make_events(&[("A", &[10]), ("B", &[15]), ("C", &[20]), ("D", &[25])]);
         let signals = make_events(&[
             ("A", &[10]),
             ("B", &[15]),
@@ -753,7 +739,8 @@ mod tests {
         };
         let miner = MinerConfig::default();
 
-        let result = walk_forward_backtest(&candidate, &outcomes, &signals, &config, &miner).unwrap();
+        let result =
+            walk_forward_backtest(&candidate, &outcomes, &signals, &config, &miner).unwrap();
 
         // Verify non-overlapping: each fold's test_start == previous fold's test_end
         for i in 1..result.fold_results.len() {
@@ -829,9 +816,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = walk_forward_backtest(
-            &candidate, &outcomes, &signals, &config, &miner,
-        );
+        let result = walk_forward_backtest(&candidate, &outcomes, &signals, &config, &miner);
         assert!(result.is_some());
         let r = result.unwrap();
         // With a perfect pattern, aggregate recall and precision should be high
@@ -868,13 +853,7 @@ mod tests {
         let bt_config = BacktestConfig::default();
         let miner = MinerConfig::default();
 
-        let results = backtest_candidates(
-            &[good, bad],
-            &outcomes,
-            &signals,
-            &bt_config,
-            &miner,
-        );
+        let results = backtest_candidates(&[good, bad], &outcomes, &signals, &bt_config, &miner);
         // Bad candidate should not produce a passing backtest
         assert!(results.iter().all(|r| r.passed));
     }
@@ -943,7 +922,10 @@ mod tests {
 
     #[test]
     fn test_backtest_config_validate_zero_folds() {
-        let cfg = BacktestConfig { folds: 0, ..Default::default() };
+        let cfg = BacktestConfig {
+            folds: 0,
+            ..Default::default()
+        };
         let issues = cfg.validate();
         assert!(issues.iter().any(|i| i.contains("folds")));
     }

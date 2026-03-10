@@ -277,7 +277,11 @@ impl SelfImprovementLoop {
             }
         }
 
-        let avg_critique_score = if scored > 0 { total_score / scored as f64 } else { 0.0 };
+        let avg_critique_score = if scored > 0 {
+            total_score / scored as f64
+        } else {
+            0.0
+        };
 
         let examples_qualifying = self
             .history
@@ -289,7 +293,9 @@ impl SelfImprovementLoop {
 
         // Prompt improvement proposals
         let prompt_improvements = if self.config.generate_prompt_proposals {
-            self.generate_prompt_improvements().await.unwrap_or_default()
+            self.generate_prompt_improvements()
+                .await
+                .unwrap_or_default()
         } else {
             vec![]
         };
@@ -324,7 +330,10 @@ impl SelfImprovementLoop {
 
     /// Export training examples from current history.
     pub fn export_training_examples(&self) -> Vec<TrainingExample> {
-        ImprovementCycleReport::export_training_examples(&self.history, self.config.min_quality_score)
+        ImprovementCycleReport::export_training_examples(
+            &self.history,
+            self.config.min_quality_score,
+        )
     }
 
     // ── Internal methods ──────────────────────────────────────────────────────
@@ -332,7 +341,8 @@ impl SelfImprovementLoop {
     async fn critique_capture(&self, idx: usize) -> Result<(f64, String)> {
         let capture = &self.history[idx];
 
-        let system = "You are a strict LLM output quality reviewer for an OSINT intelligence system. \
+        let system =
+            "You are a strict LLM output quality reviewer for an OSINT intelligence system. \
             Rate the following response on: (1) Factual accuracy/coherence [0-1], \
             (2) Task adherence [0-1], (3) Conciseness [0-1], (4) OSINT relevance [0-1]. \
             Return JSON: { \"score\": float (0-1 average), \"critique\": \"brief rationale\" }";
@@ -344,14 +354,25 @@ impl SelfImprovementLoop {
             crate::truncate_utf8(&capture.response, 800),
         );
 
-        let json = self.llm.generate_json(system, &user).await
+        let json = self
+            .llm
+            .generate_json(system, &user)
+            .await
             .context("Critique LLM call failed")?;
 
-        let v: serde_json::Value = serde_json::from_str(&json)
-            .context("Failed to parse critique JSON")?;
+        let v: serde_json::Value =
+            serde_json::from_str(&json).context("Failed to parse critique JSON")?;
 
-        let score = v.get("score").and_then(|s| s.as_f64()).unwrap_or(0.5).clamp(0.0, 1.0);
-        let text = v.get("critique").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let score = v
+            .get("score")
+            .and_then(|s| s.as_f64())
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+        let text = v
+            .get("critique")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
 
         debug!(capture_id=%capture.id, score=%score, "Critique complete");
         Ok((score, text))
@@ -372,13 +393,15 @@ impl SelfImprovementLoop {
 
         let examples_text = low_quality
             .iter()
-            .map(|c| format!(
-                "[{}] Score {:.2}\nSystem: {}...\nResponse: {}...",
-                c.category.as_str(),
-                c.critique_score.unwrap_or(0.0),
-                crate::truncate_utf8(&c.system_prompt, 200),
-                crate::truncate_utf8(&c.response, 300),
-            ))
+            .map(|c| {
+                format!(
+                    "[{}] Score {:.2}\nSystem: {}...\nResponse: {}...",
+                    c.category.as_str(),
+                    c.critique_score.unwrap_or(0.0),
+                    crate::truncate_utf8(&c.system_prompt, 200),
+                    crate::truncate_utf8(&c.response, 300),
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
@@ -392,11 +415,13 @@ impl SelfImprovementLoop {
         let improvement = PromptImprovement {
             category: low_quality[0].category.as_str().to_string(),
             original_system_prompt: low_quality[0].system_prompt.clone(),
-            improved_system_prompt: v.get("improved_system_prompt")
+            improved_system_prompt: v
+                .get("improved_system_prompt")
                 .and_then(|s| s.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            rationale: v.get("rationale")
+            rationale: v
+                .get("rationale")
                 .and_then(|s| s.as_str())
                 .unwrap_or_default()
                 .to_string(),
@@ -421,12 +446,14 @@ impl SelfImprovementLoop {
 
         let failure_text = failures
             .iter()
-            .map(|c| format!(
-                "Category: {} | Score: {:.2} | Critique: {}",
-                c.category.as_str(),
-                c.critique_score.unwrap_or(0.0),
-                c.critique.as_deref().unwrap_or("no critique"),
-            ))
+            .map(|c| {
+                format!(
+                    "Category: {} | Score: {:.2} | Critique: {}",
+                    c.category.as_str(),
+                    c.critique_score.unwrap_or(0.0),
+                    c.critique.as_deref().unwrap_or("no critique"),
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -438,17 +465,23 @@ impl SelfImprovementLoop {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
 
         let hypothesis = FailureHypothesis {
-            pattern_description: v.get("pattern")
+            pattern_description: v
+                .get("pattern")
                 .and_then(|s| s.as_str())
                 .unwrap_or("Unidentified pattern")
                 .to_string(),
-            affected_categories: failures.iter().map(|c| c.category.as_str().to_string()).collect(),
+            affected_categories: failures
+                .iter()
+                .map(|c| c.category.as_str().to_string())
+                .collect(),
             observed_failure_count: failures.len(),
-            root_cause_hypothesis: v.get("root_cause")
+            root_cause_hypothesis: v
+                .get("root_cause")
                 .and_then(|s| s.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            proposed_fix: v.get("proposed_fix")
+            proposed_fix: v
+                .get("proposed_fix")
                 .and_then(|s| s.as_str())
                 .unwrap_or_default()
                 .to_string(),
@@ -507,7 +540,8 @@ mod tests {
         }];
 
         let jsonl = ImprovementCycleReport::to_jsonl(&examples);
-        let _: serde_json::Value = serde_json::from_str(&jsonl).expect("JSONL line should be valid JSON");
+        let _: serde_json::Value =
+            serde_json::from_str(&jsonl).expect("JSONL line should be valid JSON");
     }
 
     #[test]
@@ -526,7 +560,10 @@ mod tests {
 
         let mut loop_runner = SelfImprovementLoop::new(
             Arc::new(StubLlm),
-            SelfImprovementConfig { max_history_size: 3, ..Default::default() },
+            SelfImprovementConfig {
+                max_history_size: 3,
+                ..Default::default()
+            },
         );
 
         for i in 0..5 {
@@ -538,7 +575,10 @@ mod tests {
 
     #[test]
     fn task_category_as_str_works() {
-        assert_eq!(TaskCategory::InsightGeneration.as_str(), "insight_generation");
+        assert_eq!(
+            TaskCategory::InsightGeneration.as_str(),
+            "insight_generation"
+        );
         assert_eq!(TaskCategory::Other("custom".into()).as_str(), "custom");
     }
 }

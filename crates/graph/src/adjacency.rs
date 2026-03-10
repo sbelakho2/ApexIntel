@@ -1,5 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use apex_core::similarity::shared_member_count;
+
+use apex_core::graph_risk::propagate_weighted_risk;
+
 /// An adjacency list representation for the entity graph.
 #[derive(Debug, Clone)]
 pub struct AdjacencyGraph {
@@ -18,7 +22,11 @@ impl AdjacencyGraph {
     ///
     /// B152: negative weights are clamped to 0.0.
     pub fn add_edge(&mut self, from: &str, to: &str, weight: f64) {
-        let w = if !weight.is_finite() || weight < 0.0 { 0.0 } else { weight };
+        let w = if !weight.is_finite() || weight < 0.0 {
+            0.0
+        } else {
+            weight
+        };
         self.edges
             .entry(from.to_string())
             .or_default()
@@ -74,40 +82,7 @@ impl AdjacencyGraph {
         hops: u8,
         decay: f64,
     ) -> HashMap<String, f64> {
-        if hops == 0 {
-            return initial_risk.clone();
-        }
-        let effective_decay = decay.clamp(0.0, 1.0);
-        let mut risk = initial_risk.clone();
-        let mut frontier: HashSet<String> = initial_risk.keys().cloned().collect();
-
-        for _ in 0..hops {
-            let mut next_frontier = HashSet::new();
-            let mut updates: HashMap<String, f64> = HashMap::new();
-            for node in &frontier {
-                let node_risk = risk.get(node).copied().unwrap_or(0.0);
-                if node_risk <= 0.0 {
-                    continue;
-                }
-                for (neighbor, weight) in self.neighbors(node) {
-                    let clamped_w = weight.clamp(0.0, 1.0); // B151
-                    let propagated = node_risk * clamped_w * effective_decay;
-                    let entry = updates.entry(neighbor.clone()).or_insert(0.0);
-                    // Take max rather than sum to avoid additive inflation
-                    if propagated > *entry {
-                        *entry = propagated;
-                    }
-                    next_frontier.insert(neighbor.clone());
-                }
-            }
-            // Apply updates: only increase risk, never decrease
-            for (node, new_val) in updates {
-                let entry = risk.entry(node).or_insert(0.0);
-                *entry = entry.max(new_val).min(1.0);
-            }
-            frontier = next_frontier;
-        }
-        risk
+        propagate_weighted_risk(&self.edges, initial_risk, hops, decay)
     }
 
     /// Compute PageRank-style centrality scores.
@@ -121,7 +96,8 @@ impl AdjacencyGraph {
         }
 
         let init_score = 1.0 / n as f64;
-        let mut scores: HashMap<String, f64> = nodes.iter().map(|n| (n.clone(), init_score)).collect();
+        let mut scores: HashMap<String, f64> =
+            nodes.iter().map(|n| (n.clone(), init_score)).collect();
 
         for _ in 0..iterations {
             let base = (1.0 - damping) / n as f64;
@@ -250,7 +226,7 @@ impl AdjacencyGraph {
             self.neighbors(a).iter().map(|(n, _)| n.clone()).collect();
         let neighbors_b: HashSet<String> =
             self.neighbors(b).iter().map(|(n, _)| n.clone()).collect();
-        neighbors_a.intersection(&neighbors_b).count()
+        shared_member_count(&neighbors_a, &neighbors_b)
     }
 }
 
@@ -368,6 +344,21 @@ mod tests {
     }
 
     #[test]
+    fn test_propagate_risk_accumulates_overlapping_sources() {
+        let mut g = AdjacencyGraph::new();
+        g.add_edge("a", "c", 1.0);
+        g.add_edge("b", "c", 1.0);
+
+        let mut initial = HashMap::new();
+        initial.insert("a".to_string(), 0.6);
+        initial.insert("b".to_string(), 0.5);
+
+        let result = g.propagate_risk(&initial, 1, 1.0);
+
+        assert_eq!(result.get("c").copied(), Some(1.0));
+    }
+
+    #[test]
     fn test_pagerank_converges() {
         let g = sample_graph();
         let scores = g.pagerank(20, 0.85);
@@ -455,7 +446,10 @@ mod tests {
         g.add_edge("a", "b", -0.5);
         let neighbors = g.neighbors("a");
         assert_eq!(neighbors.len(), 1);
-        assert!((neighbors[0].1 - 0.0).abs() < f64::EPSILON, "Negative weight should be clamped to 0");
+        assert!(
+            (neighbors[0].1 - 0.0).abs() < f64::EPSILON,
+            "Negative weight should be clamped to 0"
+        );
     }
 
     // ── B153: self-loop tests ──

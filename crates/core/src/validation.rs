@@ -19,10 +19,14 @@ pub fn validate_nonempty_id(id: &str, field: &str) -> Result<()> {
         return Err(ApexError::validation(format!("{field} must not be empty")));
     }
     if trimmed.chars().count() > MAX_ID_LEN {
-        return Err(ApexError::validation(format!("{field} must be <= {MAX_ID_LEN} chars")));
+        return Err(ApexError::validation(format!(
+            "{field} must be <= {MAX_ID_LEN} chars"
+        )));
     }
     if !is_safe_id(trimmed) {
-        return Err(ApexError::validation(format!("{field} contains unsafe characters")));
+        return Err(ApexError::validation(format!(
+            "{field} contains unsafe characters"
+        )));
     }
     Ok(())
 }
@@ -79,7 +83,9 @@ pub fn normalize_url(raw: &str) -> Option<String> {
     url.set_fragment(None);
 
     // Strip default ports
-    if (scheme == "http" && url.port() == Some(80)) || (scheme == "https" && url.port() == Some(443)) {
+    if (scheme == "http" && url.port() == Some(80))
+        || (scheme == "https" && url.port() == Some(443))
+    {
         let _ = url.set_port(None);
     }
 
@@ -120,7 +126,9 @@ pub fn redact_secrets(message: &str, secrets: &[&str]) -> String {
 
 pub fn validate_map_size<K, V>(map: &HashMap<K, V>, max_entries: usize, name: &str) -> Result<()> {
     if map.len() > max_entries {
-        return Err(ApexError::validation(format!("{name} exceeds max size {max_entries}")));
+        return Err(ApexError::validation(format!(
+            "{name} exceeds max size {max_entries}"
+        )));
     }
     Ok(())
 }
@@ -138,7 +146,10 @@ pub fn validate_region_code(code: &str) -> Result<()> {
     if trimmed.len() < 2 || trimmed.len() > 4 {
         return Err(ApexError::validation("invalid region code"));
     }
-    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
         return Err(ApexError::validation("invalid region code"));
     }
     Ok(())
@@ -341,7 +352,9 @@ pub fn safe_concat(parts: &[&str], separator: &str, max_chars: usize) -> Result<
     // Now safe to allocate — capacity == byte length, which may exceed
     // char count for multi-byte code points, but is always an upper bound.
     let byte_cap: usize = parts.iter().map(|p| p.len()).sum::<usize>()
-        + separator.len().saturating_mul(parts.len().saturating_sub(1));
+        + separator
+            .len()
+            .saturating_mul(parts.len().saturating_sub(1));
     let mut result = String::with_capacity(byte_cap);
     for (i, part) in parts.iter().enumerate() {
         if i > 0 {
@@ -388,7 +401,10 @@ mod tests {
 
     #[test]
     fn test_normalize_email() {
-        assert_eq!(normalize_email(" Test@Example.COM "), Some("test@example.com".to_string()));
+        assert_eq!(
+            normalize_email(" Test@Example.COM "),
+            Some("test@example.com".to_string())
+        );
         assert_eq!(normalize_email("   "), None);
     }
 

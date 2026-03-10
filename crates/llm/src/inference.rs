@@ -60,13 +60,22 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: content.into() }
+        Self {
+            role: Role::System,
+            content: content.into(),
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into() }
+        Self {
+            role: Role::User,
+            content: content.into(),
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: content.into() }
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+        }
     }
 }
 
@@ -185,13 +194,12 @@ impl CompletionResponse {
         let clean = strip_think_tags(&self.text);
         let extracted = crate::validators::extract_json(&clean)
             .ok_or_else(|| anyhow!("No JSON found in LLM response"))?;
-        serde_json::from_str(&extracted)
-            .with_context(|| {
-                format!(
-                    "Failed to deserialize JSON from LLM response: {}",
-                    crate::truncate_utf8(&extracted, 200)
-                )
-            })
+        serde_json::from_str(&extracted).with_context(|| {
+            format!(
+                "Failed to deserialize JSON from LLM response: {}",
+                crate::truncate_utf8(&extracted, 200)
+            )
+        })
     }
 }
 
@@ -253,7 +261,11 @@ pub struct LlmClient {
 
 impl LlmClient {
     /// Construct a client from explicit parameters.
-    pub fn new(base_url: impl Into<String>, api_key: Option<String>, config: InferenceConfig) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: Option<String>,
+        config: InferenceConfig,
+    ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
@@ -271,11 +283,10 @@ impl LlmClient {
     /// - `LLM_API_KEY`  (optional)
     /// - `LLM_MODEL`    (optional, default `Qwen3-30B-A3B-Q4_K_M`)
     pub fn from_env() -> Result<Self> {
-        let base_url = std::env::var("LLM_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:8080".into());
+        let base_url =
+            std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
         let api_key = std::env::var("LLM_API_KEY").ok();
-        let model = std::env::var("LLM_MODEL")
-            .unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
+        let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
         let mut config = InferenceConfig::default();
         config.model = model;
         Ok(Self::new(base_url, api_key, config))
@@ -300,7 +311,9 @@ impl LlmClient {
         };
 
         let response_format = if config.json_mode {
-            Some(ResponseFormat { kind: "json_object" })
+            Some(ResponseFormat {
+                kind: "json_object",
+            })
         } else {
             None
         };
@@ -338,8 +351,7 @@ impl LlmClient {
                 }
                 Ok(resp) => {
                     let status = resp.status();
-                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || status.is_server_error()
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
                     {
                         last_err = anyhow!("HTTP {} on attempt {}", status, attempt);
                         continue;
@@ -354,7 +366,9 @@ impl LlmClient {
                     }
 
                     let latency = t0.elapsed();
-                    let chat_resp: ChatResponse = resp.json().await
+                    let chat_resp: ChatResponse = resp
+                        .json()
+                        .await
                         .with_context(|| "Failed to deserialize OpenAI response")?;
 
                     let raw_text = chat_resp
@@ -395,7 +409,8 @@ impl LlmClient {
 
     /// Complete with the client's default configuration.
     pub async fn complete(&self, messages: Vec<ChatMessage>) -> Result<CompletionResponse> {
-        self.complete_with_config(messages, &self.default_config.clone()).await
+        self.complete_with_config(messages, &self.default_config.clone())
+            .await
     }
 
     /// Convenience: single-turn user prompt with default config.
@@ -412,10 +427,7 @@ impl LlmClient {
         user: impl Into<String>,
     ) -> Result<T> {
         let config = InferenceConfig::json_structured();
-        let messages = vec![
-            ChatMessage::system(system),
-            ChatMessage::user(user),
-        ];
+        let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
         let resp = self.complete_with_config(messages, &config).await?;
         resp.parse_json::<T>()
     }
@@ -504,9 +516,7 @@ fn inject_no_think(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     // No system message — prepend one.
     messages.insert(
         0,
-        ChatMessage::system(
-            "You are a precise intelligence analysis assistant.\n/no_think",
-        ),
+        ChatMessage::system("You are a precise intelligence analysis assistant.\n/no_think"),
     );
     messages
 }

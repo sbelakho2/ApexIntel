@@ -244,7 +244,11 @@ impl InsightsLlmEnricher {
                 .gen
                 .generate_exec_memo_section(
                     region,
-                    &[(region.to_string(), industry_context.to_string(), "info".to_string())],
+                    &[(
+                        region.to_string(),
+                        industry_context.to_string(),
+                        "info".to_string(),
+                    )],
                     0u32,
                     0i32,
                 )

@@ -168,9 +168,8 @@ impl ArbitrageDetector {
         let abs_advantage = advantage_pct.abs();
 
         // Decompose advantage into contributing factors
-        let labor_diff = (disadvantaged.labor_cost_usd - advantaged.labor_cost_usd)
-            / cost_b
-            * 100.0;
+        let labor_diff =
+            (disadvantaged.labor_cost_usd - advantaged.labor_cost_usd) / cost_b * 100.0;
         let tariff_a = self.tariff_for(region_a, target_market);
         let tariff_b = self.tariff_for(region_b, target_market);
         let tariff_diff = (tariff_b - tariff_a) / cost_b * 100.0;
@@ -239,10 +238,7 @@ impl ArbitrageDetector {
     }
 
     /// Scan all region pairs for all target markets.
-    pub fn scan_all(
-        &self,
-        profiles: &[RegionCostProfile],
-    ) -> Vec<ArbitrageOpportunity> {
+    pub fn scan_all(&self, profiles: &[RegionCostProfile]) -> Vec<ArbitrageOpportunity> {
         let markets = vec!["EU", "US"];
         let mut opportunities = Vec::new();
 

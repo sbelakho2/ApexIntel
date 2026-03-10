@@ -558,7 +558,10 @@ mod tests {
                 "observation",
                 &Uuid::new_v4().to_string(),
                 &format!("Observation {}", i),
-                &format!("Body content for observation number {} about electronics manufacturing", i),
+                &format!(
+                    "Body content for observation number {} about electronics manufacturing",
+                    i
+                ),
                 &format!("https://example.com/{}", i),
                 if i % 2 == 0 { "TN" } else { "MA" },
                 &["observation".into()],

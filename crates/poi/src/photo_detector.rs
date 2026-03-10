@@ -130,8 +130,7 @@ impl PhotoDetector {
             ),
         };
 
-        let days_since = last_change_date
-            .map(|d| (change.detected_at - d).num_days());
+        let days_since = last_change_date.map(|d| (change.detected_at - d).num_days());
 
         PhotoChangeArtifact {
             person_id: change.person_id.clone(),

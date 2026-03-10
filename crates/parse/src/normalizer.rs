@@ -1,5 +1,5 @@
-use regex::{Regex, RegexBuilder};
 use chrono::NaiveDate;
+use regex::{Regex, RegexBuilder};
 use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
@@ -52,7 +52,12 @@ pub fn normalize_whitespace(text: &str) -> String {
     let cleaned: String = text
         .chars()
         .map(|c| {
-            if c == '\u{0000}' || c == '\u{FEFF}' || c == '\u{200B}' || c == '\u{200C}' || c == '\u{200D}' {
+            if c == '\u{0000}'
+                || c == '\u{FEFF}'
+                || c == '\u{200B}'
+                || c == '\u{200C}'
+                || c == '\u{200D}'
+            {
                 ' '
             } else {
                 c
@@ -65,7 +70,9 @@ pub fn normalize_whitespace(text: &str) -> String {
 /// Strip HTML tags from text content.
 pub fn strip_html_tags(html: &str) -> String {
     let without_script_style = RE_SCRIPT_STYLE_BLOCK.replace_all(html, " ");
-    RE_HTML_TAG.replace_all(&without_script_style, "").to_string()
+    RE_HTML_TAG
+        .replace_all(&without_script_style, "")
+        .to_string()
 }
 
 /// Normalize Unicode characters: NFC normalization + collapse whitespace.
@@ -96,7 +103,11 @@ pub fn parse_number(text: &str) -> Option<f64> {
     if s.is_empty() {
         return None;
     }
-    if s.eq_ignore_ascii_case("nan") || s.eq_ignore_ascii_case("inf") || s.eq_ignore_ascii_case("infinity") || s == "∞" {
+    if s.eq_ignore_ascii_case("nan")
+        || s.eq_ignore_ascii_case("inf")
+        || s.eq_ignore_ascii_case("infinity")
+        || s == "∞"
+    {
         return None;
     }
 
@@ -146,7 +157,10 @@ pub fn parse_number(text: &str) -> Option<f64> {
         return None;
     }
 
-    if !s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+') {
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
+    {
         return None;
     }
 
@@ -174,7 +188,9 @@ pub fn is_valid_date(text: &str) -> bool {
         "%b %d, %Y",
         "%d %b %Y",
     ];
-    patterns.iter().any(|p| NaiveDate::parse_from_str(raw, p).is_ok())
+    patterns
+        .iter()
+        .any(|p| NaiveDate::parse_from_str(raw, p).is_ok())
 }
 
 /// Validate a date range string by checking for at least one valid date token.
@@ -396,8 +412,14 @@ mod tests {
     // B101: Entity name normalization consistency
     #[test]
     fn test_normalize_entity_name() {
-        assert_eq!(normalize_entity_name("Starz  Electronics"), "starz electronics");
-        assert_eq!(normalize_entity_name("Résistances Électroniques"), "resistances electroniques");
+        assert_eq!(
+            normalize_entity_name("Starz  Electronics"),
+            "starz electronics"
+        );
+        assert_eq!(
+            normalize_entity_name("Résistances Électroniques"),
+            "resistances electroniques"
+        );
         assert_eq!(normalize_entity_name("  FOXCONN  "), "foxconn");
         // Same entity with diacritical variants produces same key
         assert_eq!(
@@ -472,7 +494,10 @@ mod tests {
         // Null bytes are valid Rust chars; function must not panic
         let input = "hello\u{0000}world";
         let result = normalize_whitespace(input);
-        assert!(!result.contains('\u{0000}'), "null byte should be collapsed into a space");
+        assert!(
+            !result.contains('\u{0000}'),
+            "null byte should be collapsed into a space"
+        );
     }
 
     #[test]

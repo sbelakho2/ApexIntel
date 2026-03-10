@@ -56,6 +56,17 @@
 </div>
 
 <div class="mb-4 apex-card p-3">
+  <form method="get" action="/persons" class="mb-3 flex flex-wrap items-center gap-2">
+    <label for="persons-search" class="text-[10px] font-bold uppercase text-muted-foreground">Search</label>
+    <input id="persons-search" name="q" type="text" value="{{ search_query }}"
+           placeholder="Name, role, organization"
+           class="w-full sm:min-w-[220px] rounded-sm border border-border bg-background px-2 py-1 text-xs" />
+    <button type="submit" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Apply</button>
+    {% if !search_query.is_empty() %}
+    <a href="/persons" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Clear</a>
+    {% endif %}
+  </form>
+
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Refine POI list:</span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
@@ -72,10 +83,51 @@
   </div>
 </div>
 
+<div class="apex-card overflow-hidden mb-4">
+  <div class="flex items-center justify-between border-b border-border px-4 py-3">
+    <div>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
+      <p class="mt-1 text-[11px] text-muted-foreground">Dense POI review for influence ranking, organization coverage, and tag scanning.</p>
+    </div>
+    <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
+      <a href="/api/persons/export" class="rounded-sm border border-border bg-secondary px-2 py-1 text-muted-foreground hover:text-foreground">CSV</a>
+    </div>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-left text-xs" data-dense-table data-table-name="persons">
+      <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+        <tr>
+          <th class="px-4 py-3">Name</th>
+          <th class="px-4 py-3">Role</th>
+          <th class="px-4 py-3">Organization</th>
+          <th class="px-4 py-3">Region</th>
+          <th class="px-4 py-3">Priority</th>
+          <th class="px-4 py-3 text-right">Influence</th>
+          <th class="px-4 py-3">Tags</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in persons %}
+        <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/persons/{{ p.id }}">
+          <td class="px-4 py-3 font-semibold">{{ p.name }}</td>
+          <td class="px-4 py-3 text-muted-foreground">{{ p.role }}</td>
+          <td class="px-4 py-3 text-muted-foreground">{{ p.organization }}</td>
+          <td class="px-4 py-3">{{ p.region }}</td>
+          <td class="px-4 py-3"><span class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase">{{ p.priority }}</span></td>
+          <td class="px-4 py-3 text-right font-bold tabular-nums">{{ p.influence_score }}</td>
+          <td class="px-4 py-3 text-muted-foreground">{% if p.tags.is_empty() %}—{% else %}{% for tag in p.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
   {% if persons.is_empty() %}
     {% call m::empty_state("No persons match current filters", "Try broadening region/priority filters or reset filters to review all tracked POIs.") %}
   {% else %}
+    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</div>
     {% for p in persons %}
     <a href="/persons/{{ p.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
       <div class="flex items-start justify-between gap-3">

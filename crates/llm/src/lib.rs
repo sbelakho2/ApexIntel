@@ -25,13 +25,14 @@
 //! without external services.  Async HTTP is hidden behind the `LlmClient`
 //! trait — provide a mock impl in tests.
 
-pub mod validators;
+pub mod evaluation;
 pub mod inference;
-pub mod poi_profiler;
 pub mod insight_gen;
+pub mod poi_profiler;
+pub mod prompt_registry;
 pub mod recipe_hypothesis;
 pub mod self_improvement;
-pub mod evaluation;
+pub mod validators;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Experimental modules (B290)
@@ -451,7 +452,8 @@ pub fn extract_usage(body: &serde_json::Value) -> Option<UsageStats> {
     let usage = body.get("usage")?;
     Some(UsageStats {
         prompt_tokens: u32::try_from(usage.get("prompt_tokens")?.as_u64()?).unwrap_or(u32::MAX),
-        completion_tokens: u32::try_from(usage.get("completion_tokens")?.as_u64()?).unwrap_or(u32::MAX),
+        completion_tokens: u32::try_from(usage.get("completion_tokens")?.as_u64()?)
+            .unwrap_or(u32::MAX),
         total_tokens: u32::try_from(usage.get("total_tokens")?.as_u64()?).unwrap_or(u32::MAX),
     })
 }
@@ -653,7 +655,8 @@ impl OpenAiCompatibleClient {
             return Ok(crate::inference::strip_think_tags(&raw));
         }
 
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM call failed after {} retries", MAX_RETRIES)))
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("LLM call failed after {} retries", MAX_RETRIES)))
     }
 }
 
@@ -720,19 +723,28 @@ mod tests {
     #[test]
     fn test_chat_endpoint_llamacpp() {
         let cfg = ModelConfig::llamacpp_default();
-        assert_eq!(cfg.chat_endpoint(), "http://localhost:8080/v1/chat/completions");
+        assert_eq!(
+            cfg.chat_endpoint(),
+            "http://localhost:8080/v1/chat/completions"
+        );
     }
 
     #[test]
     fn test_chat_endpoint_openai() {
         let cfg = ModelConfig::openai_default();
-        assert_eq!(cfg.chat_endpoint(), "https://api.openai.com/v1/chat/completions");
+        assert_eq!(
+            cfg.chat_endpoint(),
+            "https://api.openai.com/v1/chat/completions"
+        );
     }
 
     #[test]
     fn test_chat_endpoint_llamacpp_lightweight() {
         let cfg = ModelConfig::llamacpp_lightweight();
-        assert_eq!(cfg.chat_endpoint(), "http://localhost:8080/v1/chat/completions");
+        assert_eq!(
+            cfg.chat_endpoint(),
+            "http://localhost:8080/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -740,8 +752,12 @@ mod tests {
         let cfg = RoutingConfig::default();
         assert_eq!(cfg.local_only_tasks.len(), 3);
         assert!(cfg.local_only_tasks.contains(&"poi_synthesis".to_string()));
-        assert!(cfg.local_only_tasks.contains(&"entity_extraction".to_string()));
-        assert!(cfg.local_only_tasks.contains(&"competitive_analysis".to_string()));
+        assert!(cfg
+            .local_only_tasks
+            .contains(&"entity_extraction".to_string()));
+        assert!(cfg
+            .local_only_tasks
+            .contains(&"competitive_analysis".to_string()));
         assert_eq!(cfg.api_fallback_tasks.len(), 3);
         assert_eq!(cfg.max_api_concurrent, 5);
         assert!((cfg.monthly_api_budget_usd - 500.0).abs() < 0.01);
@@ -809,8 +825,14 @@ mod tests {
     #[test]
     fn test_route_task_unknown_task() {
         let routing = RoutingConfig::default();
-        assert_eq!(route_task("custom_task", &routing, true), ProviderChoice::Local);
-        assert_eq!(route_task("custom_task", &routing, false), ProviderChoice::ApiFallback);
+        assert_eq!(
+            route_task("custom_task", &routing, true),
+            ProviderChoice::Local
+        );
+        assert_eq!(
+            route_task("custom_task", &routing, false),
+            ProviderChoice::ApiFallback
+        );
     }
 
     #[test]
@@ -820,7 +842,10 @@ mod tests {
         assert!(cfg.fallback.is_some());
         assert_eq!(cfg.fallback.as_ref().unwrap().provider, LlmProvider::OpenAi);
         assert!(cfg.lightweight.is_some());
-        assert_eq!(cfg.lightweight.as_ref().unwrap().provider, LlmProvider::LlamaCpp);
+        assert_eq!(
+            cfg.lightweight.as_ref().unwrap().provider,
+            LlmProvider::LlamaCpp
+        );
         assert_eq!(cfg.lightweight.as_ref().unwrap().max_tokens, 1024);
     }
 
@@ -876,7 +901,10 @@ mod tests {
                 }
             ]
         });
-        assert_eq!(extract_response_content(&resp), Some("Hello, world!".to_string()));
+        assert_eq!(
+            extract_response_content(&resp),
+            Some("Hello, world!".to_string())
+        );
     }
 
     #[test]

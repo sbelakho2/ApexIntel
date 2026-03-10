@@ -53,6 +53,46 @@
     var d = document.createElement("div"); d.textContent = s; return d.innerHTML;
   }
 
+  function getCookie(name) {
+    var prefix = name + "=";
+    var cookies = document.cookie ? document.cookie.split(";") : [];
+    for (var index = 0; index < cookies.length; index += 1) {
+      var cookie = cookies[index].trim();
+      if (cookie.indexOf(prefix) === 0) {
+        return decodeURIComponent(cookie.slice(prefix.length));
+      }
+    }
+    return "";
+  }
+
+  function getCsrfToken() {
+    return getCookie("apex_csrf");
+  }
+
+  function ensureCsrfField(form) {
+    if (!form) return;
+    var method = (form.getAttribute("method") || "get").toUpperCase();
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
+    var token = getCsrfToken();
+    if (!token) return;
+    var input = form.querySelector('input[name="csrf_token"]');
+    if (!input) {
+      input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "csrf_token";
+      form.appendChild(input);
+    }
+    input.value = token;
+  }
+
+  function applyCsrfToForms(rootNode) {
+    var rootNodeOrDocument = rootNode || document;
+    var forms = rootNodeOrDocument.querySelectorAll ? rootNodeOrDocument.querySelectorAll("form") : [];
+    forms.forEach(ensureCsrfField);
+  }
+
+  window.apexCsrfToken = getCsrfToken;
+
   /* ── WebSocket Warning Listener ─────────────────────────────────────────── */
   var wsRetryDelay = 1000;
   function connectWarningsWs() {
@@ -106,6 +146,46 @@
   window.addEventListener("online", updateOnlineStatus);
   window.addEventListener("offline", updateOnlineStatus);
   document.addEventListener("DOMContentLoaded", updateOnlineStatus);
+  document.addEventListener("DOMContentLoaded", function () {
+    applyCsrfToForms(document);
+  });
+
+  document.addEventListener("submit", function (evt) {
+    ensureCsrfField(evt.target);
+  }, true);
+
+  /* ── Dense Table Navigation ────────────────────────────────────────────── */
+  document.addEventListener("click", function (evt) {
+    var row = evt.target.closest ? evt.target.closest("[data-row-link]") : null;
+    if (!row) return;
+    if (evt.target.closest("a, button, input, select, textarea")) return;
+    var href = row.getAttribute("data-row-link");
+    if (href) { window.location.href = href; }
+  });
+
+  document.addEventListener("keydown", function (evt) {
+    var row = evt.target.closest ? evt.target.closest("[data-row-link]") : null;
+    if (!row) return;
+    if (evt.key === "Enter") {
+      evt.preventDefault();
+      var href = row.getAttribute("data-row-link");
+      if (href) window.location.href = href;
+      return;
+    }
+    if (evt.key !== "ArrowDown" && evt.key !== "ArrowUp") return;
+    var table = row.closest("[data-dense-table]");
+    if (!table) return;
+    var rows = Array.prototype.slice.call(table.querySelectorAll("tbody [data-row-link]"));
+    var index = rows.indexOf(row);
+    if (index === -1) return;
+    evt.preventDefault();
+    var delta = evt.key === "ArrowDown" ? 1 : -1;
+    var next = rows[index + delta];
+    if (next) {
+      next.focus();
+      next.scrollIntoView({ block: "nearest" });
+    }
+  });
 
   /* ── CSV Export ─────────────────────────────────────────────────────────── */
   window.exportCSV = function (url, filename) {
@@ -156,10 +236,22 @@
   };
 
   /* ── HTMX Event Hooks ──────────────────────────────────────────────────── */
+  document.addEventListener("htmx:configRequest", function (evt) {
+    var verb = String(evt.detail.verb || "GET").toUpperCase();
+    if (verb === "GET" || verb === "HEAD" || verb === "OPTIONS") return;
+    var token = getCsrfToken();
+    if (!token) return;
+    evt.detail.headers["X-CSRF-Token"] = token;
+  });
+
   document.addEventListener("htmx:afterRequest", function (evt) {
     if (evt.detail.failed) {
       showToast("Request failed: " + (evt.detail.xhr.status || "network error"), "error");
     }
+  });
+
+  document.addEventListener("htmx:afterSwap", function (evt) {
+    applyCsrfToForms(evt.target || document);
   });
 
   /* ── Route progress bar ─────────────────────────────────────────────────── */

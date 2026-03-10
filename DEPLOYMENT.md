@@ -308,9 +308,9 @@ SESSION_SECRET=<GENERATE_64_CHAR_HEX_SECRET>
 
 # ─── API Key Authentication (for external API consumers) ─────────────────────
 # Generate: openssl rand -hex 32 | sed 's/^/sk-apex-/'
-# Format: <raw_key>,<display_name>,<role>
+# Format: <raw_key>,<display_name>,<role>[,<user_id>]
 # Roles: admin, analyst, viewer, service
-API_KEY_1=<GENERATE_API_KEY>,Production Admin,admin
+API_KEY_1=<GENERATE_API_KEY>,Production Admin,admin,usr-production-admin
 
 # ─── Crawl & Scheduling ──────────────────────────────────────────────────────
 CRAWL_INTERVAL_SECS=21600

@@ -174,7 +174,11 @@ pub fn rank_observations(
         .enumerate()
         .map(|(i, input)| (i, compute_quality(input, config, now)))
         .collect();
-    scored.sort_by(|a, b| b.1.total.partial_cmp(&a.1.total).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.1.total
+            .partial_cmp(&a.1.total)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored
 }
 

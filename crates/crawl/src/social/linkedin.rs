@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::debug;
 
+use crate::browser::BoundedBrowserRunner;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Output types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,14 +94,23 @@ pub struct LinkedInPersonProfile {
 pub struct LinkedInScraper {
     client: Client,
     proxy_url: Option<String>,
+    browser_runner: Option<BoundedBrowserRunner>,
 }
 
 impl LinkedInScraper {
     pub fn new(proxy_url: Option<&str>) -> Result<Self> {
+        Self::with_browser_runner(proxy_url, BoundedBrowserRunner::from_env()?)
+    }
+
+    pub fn with_browser_runner(
+        proxy_url: Option<&str>,
+        browser_runner: Option<BoundedBrowserRunner>,
+    ) -> Result<Self> {
         let client = Self::build_client(proxy_url)?;
         Ok(Self {
             client,
             proxy_url: proxy_url.map(|s| s.to_string()),
+            browser_runner,
         })
     }
 
@@ -163,6 +174,13 @@ impl LinkedInScraper {
                 Err(e) => return Err(e.into()),
             }
         }
+        if let Some(browser_runner) = &self.browser_runner {
+            if BoundedBrowserRunner::supports_url(url) {
+                debug!(url = %url, "LinkedIn HTTP retries exhausted; trying bounded browser fallback");
+                return Ok(browser_runner.fetch(url).await?.html);
+            }
+        }
+
         anyhow::bail!("All LinkedIn retry attempts exhausted for {url}")
     }
 
@@ -213,11 +231,14 @@ impl LinkedInScraper {
     fn parse_company_page(&self, slug: &str, html: &str) -> LinkedInCompanyProfile {
         LinkedInCompanyProfile {
             slug: slug.to_string(),
-            name: self.extract_og_tag(html, "og:title").unwrap_or_else(|| slug.to_string()),
+            name: self
+                .extract_og_tag(html, "og:title")
+                .unwrap_or_else(|| slug.to_string()),
             tagline: self.extract_meta_content(html, "description"),
             employee_count: self.extract_between(html, "employees", 150, true),
             industry: self.extract_between(html, "industry\":", 80, false),
-            headquarters: self.extract_og_tag(html, "og:locale")
+            headquarters: self
+                .extract_og_tag(html, "og:locale")
                 .or_else(|| self.extract_between(html, "headquarters", 100, true)),
             website: self.extract_between(html, "companyPageUrl", 200, false),
             about: self.extract_meta_content(html, "og:description"),
@@ -232,7 +253,9 @@ impl LinkedInScraper {
     fn parse_person_page(&self, slug: &str, html: &str) -> LinkedInPersonProfile {
         // LinkedIn og:title format: "Full Name - Job Title at Company | LinkedIn"
         // Parse name, current_title, and current_company from this single field.
-        let og_title = self.extract_og_tag(html, "og:title").unwrap_or_else(|| slug.to_string());
+        let og_title = self
+            .extract_og_tag(html, "og:title")
+            .unwrap_or_else(|| slug.to_string());
         let title_without_suffix = og_title
             .split(" | ")
             .next()
@@ -275,8 +298,12 @@ impl LinkedInScraper {
         let marker = "feed-shared-text";
 
         for (idx, block) in html.split(marker).enumerate() {
-            if idx == 0 { continue; }
-            if posts.len() >= max { break; }
+            if idx == 0 {
+                continue;
+            }
+            if posts.len() >= max {
+                break;
+            }
 
             if let Some(end) = block.find("</span>") {
                 let raw = strip_html_tags(&block[..end]);
@@ -478,7 +505,13 @@ impl LinkedInScraper {
         Some(decode_html_entities(&after[content_pos..content_pos + end]))
     }
 
-    fn extract_between(&self, html: &str, marker: &str, len: usize, strip_quotes: bool) -> Option<String> {
+    fn extract_between(
+        &self,
+        html: &str,
+        marker: &str,
+        len: usize,
+        strip_quotes: bool,
+    ) -> Option<String> {
         let start = html.find(marker)?;
         let slice = &html[start + marker.len()..];
         // Skip any :, =, " etc.
@@ -489,7 +522,11 @@ impl LinkedInScraper {
         } else {
             trimmed[..end].trim().to_string()
         };
-        if result.is_empty() { None } else { Some(result) }
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     fn extract_job_titles(&self, html: &str) -> Vec<String> {
@@ -526,14 +563,23 @@ fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
     for c in html.chars() {
-        match c { '<' => in_tag = true, '>' => in_tag = false, _ if !in_tag => result.push(c), _ => {} }
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
     }
     decode_html_entities(&result)
 }
 
 fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-     .replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -543,6 +589,8 @@ fn decode_html_entities(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::HashMap;
 
     #[test]
     fn scraper_builds() {
@@ -565,5 +613,29 @@ mod tests {
         let jobs = s.extract_job_titles(html);
         // May or may not find due to HTML structure differences, but should not panic
         let _ = jobs;
+    }
+
+    #[tokio::test]
+    async fn recorded_browser_fixture_parses_dynamic_company_page() {
+        let url = "https://www.linkedin.com/company/apexintel/";
+        let runner = BoundedBrowserRunner::from_recorded_pages(HashMap::from([(
+            url.to_string(),
+            include_str!("fixtures/linkedin_company_dynamic.html").to_string(),
+        )]));
+        let scraper = LinkedInScraper::with_browser_runner(None, Some(runner.clone())).unwrap();
+
+        let page = runner.fetch(url).await.unwrap();
+        assert_eq!(page.url, url);
+        let profile = scraper.parse_company_page("apexintel", &page.html);
+
+        assert_eq!(profile.name, "ApexIntel");
+        assert!(profile
+            .open_jobs
+            .iter()
+            .any(|job| job.contains("Procurement Analyst")));
+        assert!(profile
+            .recent_posts
+            .iter()
+            .any(|post| post.text.contains("supply chain")));
     }
 }

@@ -118,18 +118,17 @@ impl StalePruner {
             return None; // still fresh
         }
 
-        let recommendation = if days_since >= self.config.archive_threshold_days
-            && entity.observation_count < 5
-        {
-            StaleRecommendation::Archive
-        } else if days_since >= self.config.archive_threshold_days {
-            StaleRecommendation::Review
-        } else if entity.observation_count > 20 {
-            // High-activity entity that went quiet — probably worth refreshing
-            StaleRecommendation::RefreshNow
-        } else {
-            StaleRecommendation::Review
-        };
+        let recommendation =
+            if days_since >= self.config.archive_threshold_days && entity.observation_count < 5 {
+                StaleRecommendation::Archive
+            } else if days_since >= self.config.archive_threshold_days {
+                StaleRecommendation::Review
+            } else if entity.observation_count > 20 {
+                // High-activity entity that went quiet — probably worth refreshing
+                StaleRecommendation::RefreshNow
+            } else {
+                StaleRecommendation::Review
+            };
 
         Some(StaleEntity {
             id: entity.id.clone(),
@@ -160,8 +159,10 @@ impl StalePruner {
             .collect();
 
         // Build summary
-        let mut by_type: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut by_region: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_type: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut by_region: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for entity in &stale {
             *by_type.entry(entity.entity_type.clone()).or_default() += 1;
             if let Some(ref region) = entity.region {
@@ -288,10 +289,10 @@ mod tests {
     fn test_batch_report() {
         let pruner = StalePruner::with_defaults();
         let entities = vec![
-            make_entity("e-1", "company", 30, 10),  // fresh
-            make_entity("e-2", "company", 100, 5),  // stale
-            make_entity("e-3", "person", 200, 2),   // archive
-            make_entity("e-4", "company", 50, 15),  // fresh
+            make_entity("e-1", "company", 30, 10), // fresh
+            make_entity("e-2", "company", 100, 5), // stale
+            make_entity("e-3", "person", 200, 2),  // archive
+            make_entity("e-4", "company", 50, 15), // fresh
         ];
         let report = pruner.analyze(&entities, Utc::now());
         assert_eq!(report.summary.total_entities_checked, 4);

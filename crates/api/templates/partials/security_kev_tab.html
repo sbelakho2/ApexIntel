@@ -3,7 +3,8 @@
 
 <div id="security-kev-tab">
   {% if !kev_items.is_empty() %}
-  <table class="w-full">
+  <div class="overflow-x-auto">
+  <table class="w-full min-w-[44rem]">
     <thead>
       <tr class="border-b border-border">
         <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">CVE</th>
@@ -31,6 +32,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="px-4 py-6 text-center text-sm text-muted-foreground">No known exploited vulnerabilities tracked</p>
   {% endif %}

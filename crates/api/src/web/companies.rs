@@ -13,11 +13,12 @@ use axum::{
     Extension,
 };
 use serde::Deserialize;
+use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
 
-use apex_store::postgres::{PgStore, CompanyListFilters, CompanyOrderBy, WarningListFilters};
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_store::postgres::{CompanyListFilters, CompanyOrderBy, PgStore, WarningListFilters};
 
 // ─── Query params ───────────────────────────────────────────────────────────
 
@@ -117,6 +118,13 @@ pub struct CompanyQuickLink {
     pub tier: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct CompanyFilterChip {
+    pub label: String,
+    pub href: String,
+    pub active: bool,
+}
+
 // ─── Templates ──────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -143,6 +151,11 @@ pub struct CompaniesListPage {
     pub avg_risk: i64,
     pub region_slices: Vec<RegionSlice>,
     pub quick_links: Vec<CompanyQuickLink>,
+    pub region_filters: Vec<CompanyFilterChip>,
+    pub tier_filters: Vec<CompanyFilterChip>,
+    pub active_filters: i64,
+    pub reset_href: String,
+    pub page_base_href: String,
 }
 
 /// HTMX partial — just the results fragment.
@@ -165,6 +178,44 @@ pub struct CompaniesListPartial {
     pub avg_risk: i64,
     pub region_slices: Vec<RegionSlice>,
     pub quick_links: Vec<CompanyQuickLink>,
+    pub region_filters: Vec<CompanyFilterChip>,
+    pub tier_filters: Vec<CompanyFilterChip>,
+    pub active_filters: i64,
+    pub reset_href: String,
+    pub page_base_href: String,
+}
+
+fn url_encode_component(input: &str) -> String {
+    byte_serialize(input.as_bytes()).collect::<String>()
+}
+
+fn build_companies_href(
+    region: Option<&str>,
+    sector: Option<&str>,
+    q: Option<&str>,
+    sort: Option<&str>,
+    dir: Option<&str>,
+) -> String {
+    let mut params: Vec<String> = Vec::new();
+    for (k, v) in [
+        ("region", region),
+        ("sector", sector),
+        ("q", q),
+        ("sort", sort),
+        ("dir", dir),
+    ] {
+        if let Some(v) = v {
+            let v = v.trim();
+            if !v.is_empty() {
+                params.push(format!("{}={}", k, url_encode_component(v)));
+            }
+        }
+    }
+    if params.is_empty() {
+        "/companies".to_string()
+    } else {
+        format!("/companies?{}", params.join("&"))
+    }
 }
 
 /// Company dossier entry for the dossier tab.
@@ -197,6 +248,7 @@ pub struct CompanyDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub briefing_mode: bool,
 
     pub id: String,
     pub name: String,
@@ -217,6 +269,11 @@ pub struct CompanyDetailPage {
     pub financials: Vec<CompanyFinancial>,
     pub total_warnings: i64,
     pub total_insights: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CompanyDetailQuery {
+    pub briefing: Option<bool>,
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -240,7 +297,11 @@ pub async fn list_companies(
 
     let filters = CompanyListFilters {
         regions: vec![],
-        search: if search_query.is_empty() { None } else { Some(search_query.clone()) },
+        search: if search_query.is_empty() {
+            None
+        } else {
+            Some(search_query.clone())
+        },
         is_competitor: params.is_competitor,
     };
 
@@ -252,29 +313,40 @@ pub async fn list_companies(
     };
     let desc = sort_dir_str != "asc";
 
-    let company_rows = store.list_companies(&filters, order_by, desc, 2000, 0).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to list companies: {e}");
-        vec![]
-    });
+    let company_rows = store
+        .list_companies(&filters, order_by, desc, 2000, 0)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to list companies: {e}");
+            vec![]
+        });
 
-    let mut all_companies: Vec<CompanyListItem> = company_rows.iter().map(|c| {
-        let is_comp = c.metadata.as_ref()
-            .and_then(|m| m.get("is_competitor"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let risk_score = c.risk_score.map(|s| (s * 100.0) as i64).unwrap_or(0);
-        CompanyListItem {
-            id: c.id.to_string(),
-            name: c.name.clone(),
-            sector: c.company_type.clone().unwrap_or_default(),
-            region: canonical_region(c.region.as_deref().unwrap_or("")),
-            risk_score,
-            warning_count: 0,
-            insight_count: 0,
-            is_competitor: is_comp,
-            updated_at: c.updated_at.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
-        }
-    }).collect();
+    let mut all_companies: Vec<CompanyListItem> = company_rows
+        .iter()
+        .map(|c| {
+            let is_comp = c
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("is_competitor"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let risk_score = c.risk_score.map(|s| (s * 100.0) as i64).unwrap_or(0);
+            CompanyListItem {
+                id: c.id.to_string(),
+                name: c.name.clone(),
+                sector: c.company_type.clone().unwrap_or_default(),
+                region: canonical_region(c.region.as_deref().unwrap_or("")),
+                risk_score,
+                warning_count: 0,
+                insight_count: 0,
+                is_competitor: is_comp,
+                updated_at: c
+                    .updated_at
+                    .map(|d| d.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
 
     if !active_region.is_empty() {
         let selected = canonical_region(&active_region);
@@ -286,7 +358,11 @@ pub async fn list_companies(
     }
 
     let total = all_companies.len() as i64;
-    let total_pages = if total == 0 { 0 } else { (total + per_page - 1) / per_page };
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + per_page - 1) / per_page
+    };
 
     let companies: Vec<CompanyListItem> = all_companies
         .iter()
@@ -308,8 +384,16 @@ pub async fn list_companies(
         regions.len() as i64
     };
     let avg_risk = {
-        let scored: Vec<i64> = all_companies.iter().map(|c| c.risk_score).filter(|s| *s > 0).collect();
-        if scored.is_empty() { 0 } else { scored.iter().sum::<i64>() / scored.len() as i64 }
+        let scored: Vec<i64> = all_companies
+            .iter()
+            .map(|c| c.risk_score)
+            .filter(|s| *s > 0)
+            .collect();
+        if scored.is_empty() {
+            0
+        } else {
+            scored.iter().sum::<i64>() / scored.len() as i64
+        }
     };
 
     let region_slices = {
@@ -319,19 +403,25 @@ pub async fn list_companies(
             let key = canonical_region(&c.region);
             *counts.entry(key).or_insert(0) += 1;
         }
-        let mut slices: Vec<RegionSlice> = counts.into_iter().map(|(name, count)| RegionSlice {
-            color: String::new(),
-            name,
-            count,
-            dash_array: String::new(),
-            dash_offset: String::new(),
-        }).collect();
+        let mut slices: Vec<RegionSlice> = counts
+            .into_iter()
+            .map(|(name, count)| RegionSlice {
+                color: String::new(),
+                name,
+                count,
+                dash_array: String::new(),
+                dash_offset: String::new(),
+            })
+            .collect();
         slices.sort_by(|a, b| b.count.cmp(&a.count));
         let mut used_colors = std::collections::HashSet::<String>::new();
         for (index, slice) in slices.iter_mut().enumerate() {
             let mut color = region_color(&slice.name, index).to_string();
             if used_colors.contains(&color) {
-                if let Some(candidate) = REGION_PALETTE.iter().find(|candidate| !used_colors.contains(**candidate)) {
+                if let Some(candidate) = REGION_PALETTE
+                    .iter()
+                    .find(|candidate| !used_colors.contains(**candidate))
+                {
                     color = (*candidate).to_string();
                 } else {
                     color = REGION_PALETTE[index % REGION_PALETTE.len()].to_string();
@@ -356,13 +446,82 @@ pub async fn list_companies(
         slices
     };
 
-    let quick_links: Vec<CompanyQuickLink> = all_companies.iter().take(5).map(|c| CompanyQuickLink {
-        id: c.id.clone(),
-        name: c.name.clone(),
-        tier: risk_tier(c.risk_score).to_string(),
-    }).collect();
+    let quick_links: Vec<CompanyQuickLink> = all_companies
+        .iter()
+        .take(5)
+        .map(|c| CompanyQuickLink {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            tier: risk_tier(c.risk_score).to_string(),
+        })
+        .collect();
 
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let regions = ["Tunisia", "Morocco", "Israel", "EU", "China", "Global"];
+    let mut region_filters = vec![CompanyFilterChip {
+        label: "All".to_string(),
+        href: build_companies_href(
+            None,
+            Some(&active_sector),
+            Some(&search_query),
+            Some(&sort_field),
+            Some(&sort_dir_str),
+        ),
+        active: active_region.is_empty(),
+    }];
+    for region in regions {
+        region_filters.push(CompanyFilterChip {
+            label: region.to_string(),
+            href: build_companies_href(
+                Some(region),
+                Some(&active_sector),
+                Some(&search_query),
+                Some(&sort_field),
+                Some(&sort_dir_str),
+            ),
+            active: active_region.eq_ignore_ascii_case(region),
+        });
+    }
+
+    let tiers = ["T1", "T2", "T3", "T4", "T5"];
+    let mut tier_filters: Vec<CompanyFilterChip> = Vec::new();
+    for tier in tiers {
+        tier_filters.push(CompanyFilterChip {
+            label: tier.to_string(),
+            href: build_companies_href(
+                Some(&active_region),
+                Some(tier),
+                Some(&search_query),
+                Some(&sort_field),
+                Some(&sort_dir_str),
+            ),
+            active: active_sector == tier,
+        });
+    }
+
+    let active_filters = i64::from(!active_region.is_empty())
+        + i64::from(!active_sector.is_empty())
+        + i64::from(!search_query.is_empty());
+    let reset_href = build_companies_href(None, None, None, Some(&sort_field), Some(&sort_dir_str));
+    let current_filters_href = build_companies_href(
+        Some(&active_region),
+        Some(&active_sector),
+        Some(&search_query),
+        Some(&sort_field),
+        Some(&sort_dir_str),
+    );
+    let page_base_href = if current_filters_href.contains('?') {
+        format!("{}&", current_filters_href)
+    } else {
+        format!("{}?", current_filters_href)
+    };
+
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/companies", unack);
 
     let tpl = CompaniesListPage {
@@ -386,15 +545,45 @@ pub async fn list_companies(
         avg_risk,
         region_slices,
         quick_links,
+        region_filters,
+        tier_filters,
+        active_filters,
+        reset_href,
+        page_base_href,
     };
 
-    let _ = is_htmx_request(&headers);
-    tpl.into_response()
+    if is_htmx_request(&headers) {
+        let partial = CompaniesListPartial {
+            companies: tpl.companies.clone(),
+            total: tpl.total,
+            page: tpl.page,
+            per_page: tpl.per_page,
+            total_pages: tpl.total_pages,
+            active_region: tpl.active_region.clone(),
+            active_sector: tpl.active_sector.clone(),
+            search_query: tpl.search_query.clone(),
+            sort_field: tpl.sort_field.clone(),
+            sort_dir: tpl.sort_dir.clone(),
+            competitor_count: tpl.competitor_count,
+            high_risk_count: tpl.high_risk_count,
+            regions_count: tpl.regions_count,
+            avg_risk: tpl.avg_risk,
+            region_slices: tpl.region_slices.clone(),
+            quick_links: tpl.quick_links.clone(),
+            region_filters: tpl.region_filters.clone(),
+            tier_filters: tpl.tier_filters.clone(),
+            active_filters: tpl.active_filters,
+            reset_href: tpl.reset_href.clone(),
+            page_base_href: tpl.page_base_href.clone(),
+        };
+        partial.into_response()
+    } else {
+        tpl.into_response()
+    }
 }
 
 const REGION_PALETTE: [&str; 8] = [
-    "#4A90E2", "#2D8C3C", "#FFBE00", "#D62D2D",
-    "#8B5CF6", "#14B8A6", "#F97316", "#06B6D4",
+    "#4A90E2", "#2D8C3C", "#FFBE00", "#D62D2D", "#8B5CF6", "#14B8A6", "#F97316", "#06B6D4",
 ];
 
 fn region_color(region: &str, index: usize) -> &'static str {
@@ -443,58 +632,95 @@ pub async fn get_company(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<CompanyDetailQuery>,
 ) -> impl IntoResponse {
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/companies", unack);
 
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => {
-            return super::errors::not_found_with_context(&ctx.username, "/companies", ctx.warning_count);
+            return super::errors::not_found_with_context(
+                &ctx.username,
+                "/companies",
+                ctx.warning_count,
+            );
         }
     };
 
     let company = match store.get_company(uuid).await {
         Ok(Some(c)) => c,
         Ok(None) => {
-            return super::errors::not_found_with_context(&ctx.username, "/companies", ctx.warning_count);
+            return super::errors::not_found_with_context(
+                &ctx.username,
+                "/companies",
+                ctx.warning_count,
+            );
         }
         Err(e) => {
             tracing::error!("Failed to fetch company {id}: {e}");
-            return super::errors::not_found_with_context(&ctx.username, "/companies", ctx.warning_count);
+            return super::errors::not_found_with_context(
+                &ctx.username,
+                "/companies",
+                ctx.warning_count,
+            );
         }
     };
 
     // Fetch sites for this company
     let site_rows = store.get_sites_for_company(uuid).await.unwrap_or_default();
-    let sites: Vec<CompanySite> = site_rows.iter().map(|s| {
-        CompanySite {
+    let sites: Vec<CompanySite> = site_rows
+        .iter()
+        .map(|s| CompanySite {
             name: s.name.clone(),
-            location: format!("{}, {}", s.city.clone().unwrap_or_default(), s.country_code.clone().unwrap_or_default()),
+            location: format!(
+                "{}, {}",
+                s.city.clone().unwrap_or_default(),
+                s.country_code.clone().unwrap_or_default()
+            ),
             site_type: s.site_type.clone().unwrap_or_default(),
-        }
-    }).collect();
+        })
+        .collect();
 
     // Fetch persons for this company
     let person_rows = store.list_persons_by_org(uuid).await.unwrap_or_default();
-    let key_persons: Vec<CompanyKeyPerson> = person_rows.iter().take(10).map(|p| {
-        CompanyKeyPerson {
+    let key_persons: Vec<CompanyKeyPerson> = person_rows
+        .iter()
+        .take(10)
+        .map(|p| CompanyKeyPerson {
             person_id: p.id.to_string(),
             name: p.name.clone(),
             role: p.current_role.clone().unwrap_or_default(),
-            since: p.created_at.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
-        }
-    }).collect();
+            since: p
+                .created_at
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default(),
+        })
+        .collect();
 
     // Fetch product families
-    let product_rows = store.list_product_families(Some(uuid), 50, 0).await.unwrap_or_default();
-    let products: Vec<CompanyProduct> = product_rows.iter().map(|pf| {
-        CompanyProduct {
+    let product_rows = store
+        .list_product_families(Some(uuid), 50, 0)
+        .await
+        .unwrap_or_default();
+    let products: Vec<CompanyProduct> = product_rows
+        .iter()
+        .map(|pf| CompanyProduct {
             name: pf.name.clone(),
-            family: pf.tech_tags.as_ref().map(|t| t.join(", ")).unwrap_or_default(),
+            family: pf
+                .tech_tags
+                .as_ref()
+                .map(|t| t.join(", "))
+                .unwrap_or_default(),
             status: "active".into(),
-        }
-    }).collect();
+        })
+        .collect();
 
     let recent_events = store
         .get_company_changes(uuid, 50)
@@ -503,7 +729,11 @@ pub async fn get_company(
         .into_iter()
         .map(|c| CompanyEvent {
             kind: c.change_type,
-            description: c.description.or(c.new_value).or(c.old_value).unwrap_or_default(),
+            description: c
+                .description
+                .or(c.new_value)
+                .or(c.old_value)
+                .unwrap_or_default(),
             date: c
                 .detected_at
                 .or(c.created_at)
@@ -520,7 +750,10 @@ pub async fn get_company(
         .map(|e| DossierEntry {
             field_name: e.title,
             value: e.content,
-            source: e.source_urls.and_then(|urls| urls.first().cloned()).unwrap_or_default(),
+            source: e
+                .source_urls
+                .and_then(|urls| urls.first().cloned())
+                .unwrap_or_default(),
             verified: e.verified.unwrap_or(false),
         })
         .collect::<Vec<_>>();
@@ -528,7 +761,9 @@ pub async fn get_company(
     let website = company.domain.clone().unwrap_or_default();
     let website_url = normalize_website_url(&website);
 
-    let is_comp = company.metadata.as_ref()
+    let is_comp = company
+        .metadata
+        .as_ref()
         .and_then(|m| m.get("is_competitor"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
@@ -538,6 +773,7 @@ pub async fn get_company(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        briefing_mode: query.briefing.unwrap_or(false),
         id: company.id.to_string(),
         name: company.name.clone(),
         sector: company.company_type.clone().unwrap_or_default(),
@@ -547,8 +783,14 @@ pub async fn get_company(
         website_url,
         risk_score: company.risk_score.map(|s| (s * 100.0) as i64).unwrap_or(0),
         is_competitor: is_comp,
-        created_at: company.created_at.map(|d| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default(),
-        updated_at: company.updated_at.map(|d| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default(),
+        created_at: company
+            .created_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default(),
+        updated_at: company
+            .updated_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default(),
         key_persons,
         sites,
         products,
@@ -569,17 +811,30 @@ pub async fn company_changes_tab(
 ) -> impl IntoResponse {
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, Html("Invalid company ID".to_string())).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid company ID".to_string()),
+            )
+                .into_response()
+        }
     };
 
-    let change_rows = store.get_company_changes(uuid, 50).await.unwrap_or_default();
-    let events: Vec<CompanyEvent> = change_rows.iter().map(|c| {
-        CompanyEvent {
+    let change_rows = store
+        .get_company_changes(uuid, 50)
+        .await
+        .unwrap_or_default();
+    let events: Vec<CompanyEvent> = change_rows
+        .iter()
+        .map(|c| CompanyEvent {
             kind: c.change_type.clone(),
             description: c.description.clone().unwrap_or_default(),
-            date: c.detected_at.map(|d| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default(),
-        }
-    }).collect();
+            date: c
+                .detected_at
+                .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default(),
+        })
+        .collect();
 
     let partial = CompanyChangesTabPartial { events };
     partial.into_response()
@@ -592,18 +847,33 @@ pub async fn company_dossier_tab(
 ) -> impl IntoResponse {
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, Html("Invalid company ID".to_string())).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid company ID".to_string()),
+            )
+                .into_response()
+        }
     };
 
-    let entries_raw = store.get_dossier_entries("company", uuid, None, 100).await.unwrap_or_default();
-    let dossier_entries: Vec<DossierEntry> = entries_raw.iter().map(|e| {
-        DossierEntry {
+    let entries_raw = store
+        .get_dossier_entries("company", uuid, None, 100)
+        .await
+        .unwrap_or_default();
+    let dossier_entries: Vec<DossierEntry> = entries_raw
+        .iter()
+        .map(|e| DossierEntry {
             field_name: e.title.clone(),
             value: e.content.clone(),
-            source: e.source_urls.as_ref().and_then(|u| u.first()).cloned().unwrap_or_default(),
+            source: e
+                .source_urls
+                .as_ref()
+                .and_then(|u| u.first())
+                .cloned()
+                .unwrap_or_default(),
             verified: e.verified.unwrap_or(false),
-        }
-    }).collect();
+        })
+        .collect();
 
     let partial = CompanyDossierTabPartial { dossier_entries };
     partial.into_response()

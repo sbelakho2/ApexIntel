@@ -13,8 +13,16 @@ pub const MAX_LAG_DAYS: i32 = 365;
 
 /// Known top-level JSON fields in a hypothesis response (B212).
 const KNOWN_FIELDS: &[&str] = &[
-    "id", "join", "outcome", "signals", "transforms", "test",
-    "thresholds", "narrative_template", "action_playbook", "applicability",
+    "id",
+    "join",
+    "outcome",
+    "signals",
+    "transforms",
+    "test",
+    "thresholds",
+    "narrative_template",
+    "action_playbook",
+    "applicability",
 ];
 
 fn normalize_signal_name(raw: &str) -> String {
@@ -112,7 +120,14 @@ fn sanitize_for_prompt(s: &str) -> String {
 
 pub fn build_user_prompt(candidate: &PatternCandidate, existing_ids: &[String]) -> String {
     let outcome = sanitize_for_prompt(&candidate.outcome);
-    let signals_str = format!("{:?}", candidate.signals.iter().map(|s| sanitize_for_prompt(s)).collect::<Vec<_>>());
+    let signals_str = format!(
+        "{:?}",
+        candidate
+            .signals
+            .iter()
+            .map(|s| sanitize_for_prompt(s))
+            .collect::<Vec<_>>()
+    );
     let segments: Vec<String> = if candidate.segments.is_empty() {
         vec!["global".to_string()]
     } else {
@@ -342,10 +357,7 @@ fn strip_code_fences(s: &str) -> String {
         .strip_prefix("```json")
         .or_else(|| trimmed.strip_prefix("```JSON"))
     {
-        rest.strip_suffix("```")
-            .unwrap_or(rest)
-            .trim()
-            .to_string()
+        rest.strip_suffix("```").unwrap_or(rest).trim().to_string()
     } else if let Some(rest) = trimmed.strip_prefix("```") {
         // Strip any remaining language tag up to the first newline
         let content = rest.find('\n').map(|i| &rest[i + 1..]).unwrap_or(rest);
@@ -384,7 +396,8 @@ pub fn validate_hypothesis(
     }
 
     // Check thresholds are consistent with candidate stats
-    if candidate.effect_size.is_finite() && hyp.thresholds.min_effect > candidate.effect_size * 1.5 {
+    if candidate.effect_size.is_finite() && hyp.thresholds.min_effect > candidate.effect_size * 1.5
+    {
         issues.push(format!(
             "min_effect threshold ({:.2}) too high for candidate effect ({:.2})",
             hyp.thresholds.min_effect, candidate.effect_size
@@ -455,7 +468,10 @@ mod tests {
     #[test]
     fn test_normalize_signal_name_convention() {
         assert_eq!(normalize_signal_name(" Late Filing "), "late_filing");
-        assert_eq!(normalize_signal_name("supply-chain/shock"), "supply_chain_shock");
+        assert_eq!(
+            normalize_signal_name("supply-chain/shock"),
+            "supply_chain_shock"
+        );
     }
 
     #[test]
@@ -715,7 +731,8 @@ mod tests {
 
     #[test]
     fn test_parse_hypothesis_signals_not_array() {
-        let json = r#"{"id":"t","signals":"not_array","narrative_template":"t","action_playbook":["a"]}"#;
+        let json =
+            r#"{"id":"t","signals":"not_array","narrative_template":"t","action_playbook":["a"]}"#;
         assert!(parse_hypothesis_response(json).is_err());
     }
 

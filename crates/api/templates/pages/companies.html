@@ -104,24 +104,76 @@
 {% endif %}
 
 <div class="mb-4 apex-card p-3">
+    <form method="get" action="/companies" class="mb-3 flex flex-wrap items-center gap-2"
+      hx-get="/companies" hx-target="#main-results" hx-push-url="true">
+    <label for="companies-search" class="text-[10px] font-bold uppercase text-muted-foreground">Search</label>
+    <input id="companies-search" name="q" type="text" value="{{ search_query }}"
+           placeholder="Company, sector, region"
+           class="w-full sm:min-w-[220px] rounded-sm border border-border bg-background px-2 py-1 text-xs" />
+    <input type="hidden" name="region" value="{{ active_region }}" />
+    <input type="hidden" name="sector" value="{{ active_sector }}" />
+    <input type="hidden" name="sort" value="{{ sort_field }}" />
+    <input type="hidden" name="dir" value="{{ sort_dir }}" />
+    <button type="submit" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Apply</button>
+    {% if !search_query.is_empty() %}
+    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Clear</a>
+    {% endif %}
+  </form>
+
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
-    <a href="/companies" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
-    <a href="/companies?region=Tunisia{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Tunisia" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Tunisia</a>
-    <a href="/companies?region=Morocco{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Morocco" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Morocco</a>
-    <a href="/companies?region=Israel{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Israel" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Israel</a>
-    <a href="/companies?region=EU{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "EU" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">EU</a>
-    <a href="/companies?region=China{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "China" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">China</a>
-    <a href="/companies?region=Global{% if !active_sector.is_empty() %}&sector={{ active_sector }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_region == "Global" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">Global</a>
+    {% for chip in region_filters %}
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    {% endfor %}
     <span class="mx-2 h-4 w-px bg-border"></span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Tier:</span>
-    <a href="/companies?sector=T1{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T1" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T1</a>
-    <a href="/companies?sector=T2{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T2" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T2</a>
-    <a href="/companies?sector=T3{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T3" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T3</a>
-    <a href="/companies?sector=T4{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T4" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T4</a>
-    <a href="/companies?sector=T5{% if !active_region.is_empty() %}&region={{ active_region }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_sector == "T5" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">T5</a>
-    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_region.is_empty() %}{% if active_sector.is_empty() %}0{% else %}1{% endif %}{% else %}{% if active_sector.is_empty() %}1{% else %}2{% endif %}{% endif %}</span>
-    <a href="/companies" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+    {% for chip in tier_filters %}
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    {% endfor %}
+    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
+    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+  </div>
+</div>
+
+<div class="apex-card overflow-hidden mb-4">
+  <div class="flex items-center justify-between border-b border-border px-4 py-3">
+    <div>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
+      <p class="mt-1 text-[11px] text-muted-foreground">Compact company view for ranking by threat, region coverage, and recent updates.</p>
+    </div>
+    <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
+      <a href="/api/companies/export" class="rounded-sm border border-border bg-secondary px-2 py-1 text-muted-foreground hover:text-foreground">CSV</a>
+    </div>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-left text-xs" data-dense-table data-table-name="companies">
+      <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+        <tr>
+          <th class="px-4 py-3"><a href="{{ page_base_href }}sort=name&dir={% if sort_field == "name" && sort_dir == "asc" %}desc{% else %}asc{% endif %}">Company</a></th>
+          <th class="px-4 py-3"><a href="{{ page_base_href }}sort=region&dir={% if sort_field == "region" && sort_dir == "asc" %}desc{% else %}asc{% endif %}">Region</a></th>
+          <th class="px-4 py-3">Sector</th>
+          <th class="px-4 py-3 text-right"><a href="{{ page_base_href }}sort=threat_score&dir={% if sort_field == "threat_score" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Threat</a></th>
+          <th class="px-4 py-3 text-right">Warnings</th>
+          <th class="px-4 py-3 text-right">Insights</th>
+          <th class="px-4 py-3">Tier</th>
+          <th class="px-4 py-3"><a href="{{ page_base_href }}sort=updated_at&dir={% if sort_field == "updated_at" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Updated</a></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in companies %}
+        <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/companies/{{ c.id }}">
+          <td class="px-4 py-3 font-semibold">{{ c.name }}</td>
+          <td class="px-4 py-3 text-muted-foreground">{{ c.region }}</td>
+          <td class="px-4 py-3 text-muted-foreground">{{ c.sector }}</td>
+          <td class="px-4 py-3 text-right font-bold tabular-nums">{% if c.risk_score > 0 %}{{ c.risk_score }}{% else %}—{% endif %}</td>
+          <td class="px-4 py-3 text-right tabular-nums text-muted-foreground">{{ c.warning_count }}</td>
+          <td class="px-4 py-3 text-right tabular-nums text-muted-foreground">{{ c.insight_count }}</td>
+          <td class="px-4 py-3">{% if c.is_competitor %}<span class="text-orange-600">Competitor</span>{% else %}<span class="text-muted-foreground">Tracked</span>{% endif %}</td>
+          <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ c.updated_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -129,6 +181,7 @@
   {% if companies.is_empty() %}
     <div class="col-span-full">{% call m::empty_state("No companies found", "Try broadening your filter.") %}</div>
   {% else %}
+    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</div>
     {% for c in companies %}
     <a href="/companies/{{ c.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
       <div class="flex items-start justify-between gap-2">
@@ -148,8 +201,8 @@
 <div class="mt-4 flex items-center justify-between">
   <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
   <div class="flex gap-1">
-    {% if page > 1 %}<a href="/companies?page={{ page - 1 }}" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
-    {% if page < total_pages %}<a href="/companies?page={{ page + 1 }}" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" hx-get="{{ page_base_href }}page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" hx-get="{{ page_base_href }}page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
   </div>
 </div>
 {% endif %}

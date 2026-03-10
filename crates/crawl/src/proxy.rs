@@ -89,7 +89,11 @@ impl ProxyHealth {
     /// An unused proxy scores ~0.5 (neutral prior). A proxy in active backoff
     /// scores 0.0.
     pub fn score(&self) -> f64 {
-        if self.backoff_until.map(|u| Instant::now() < u).unwrap_or(false) {
+        if self
+            .backoff_until
+            .map(|u| Instant::now() < u)
+            .unwrap_or(false)
+        {
             return 0.0;
         }
         // Laplace-smoothed success rate
@@ -124,12 +128,20 @@ struct PaidEndpoint {
 
 impl PaidEndpoint {
     fn new(url: String) -> Self {
-        Self { url, failures: 0, success_count: 0, backoff_until: None }
+        Self {
+            url,
+            failures: 0,
+            success_count: 0,
+            backoff_until: None,
+        }
     }
 
     fn is_available(&self) -> bool {
         self.failures < 8
-            && !self.backoff_until.map(|u| Instant::now() < u).unwrap_or(false)
+            && !self
+                .backoff_until
+                .map(|u| Instant::now() < u)
+                .unwrap_or(false)
     }
 }
 
@@ -199,8 +211,12 @@ impl ProxyRotator {
         h.country = country;
     }
 
-    pub fn proxy_count(&self) -> usize { self.proxies.len() }
-    pub fn is_enabled(&self) -> bool { self.enabled }
+    pub fn proxy_count(&self) -> usize {
+        self.proxies.len()
+    }
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     // ── Session affinity ──────────────────────────────────────────
 
@@ -209,10 +225,18 @@ impl ProxyRotator {
     /// Returns the same proxy on repeated calls with the same `session_id`
     /// until `release_session` is called or the pinned proxy goes unhealthy.
     pub fn get_for_session(&mut self, session_id: &str) -> Option<String> {
-        if !self.enabled { return None; }
+        if !self.enabled {
+            return None;
+        }
         if let Some(pinned) = self.sessions.get(session_id) {
-            let ok = self.health.get(pinned.as_str()).map(|h| h.score() > 0.0).unwrap_or(true);
-            if ok { return Some(pinned.clone()); }
+            let ok = self
+                .health
+                .get(pinned.as_str())
+                .map(|h| h.score() > 0.0)
+                .unwrap_or(true);
+            if ok {
+                return Some(pinned.clone());
+            }
             self.sessions.remove(session_id);
         }
         let proxy = self.get_next()?;
@@ -229,7 +253,9 @@ impl ProxyRotator {
 
     /// Return the best available proxy.
     pub fn get_next(&mut self) -> Option<String> {
-        if !self.enabled { return None; }
+        if !self.enabled {
+            return None;
+        }
 
         // 1. Try paid endpoints (round-robin, skip degraded)
         if !self.paid_endpoints.is_empty() {
@@ -243,13 +269,20 @@ impl ProxyRotator {
             }
         }
 
-        if self.proxies.is_empty() { return None; }
+        if self.proxies.is_empty() {
+            return None;
+        }
 
         // 2. Weighted random selection from free pool
         let weights: Vec<f64> = self
             .proxies
             .iter()
-            .map(|p| self.health.get(p.as_str()).map(|h| h.weight()).unwrap_or(1.0))
+            .map(|p| {
+                self.health
+                    .get(p.as_str())
+                    .map(|h| h.weight())
+                    .unwrap_or(1.0)
+            })
             .collect();
         let total: f64 = weights.iter().sum();
 
@@ -275,18 +308,31 @@ impl ProxyRotator {
     ///
     /// Falls back to `get_next()` if no matching proxy is available.
     pub fn get_for_country(&mut self, country_code: &str) -> Option<String> {
-        if !self.enabled { return None; }
+        if !self.enabled {
+            return None;
+        }
         let cc = country_code.to_uppercase();
-        let best = self.proxies.iter()
+        let best = self
+            .proxies
+            .iter()
             .filter(|p| {
-                self.health.get(p.as_str())
+                self.health
+                    .get(p.as_str())
                     .and_then(|h| h.country.as_ref())
                     .map(|c| c.eq_ignore_ascii_case(&cc))
                     .unwrap_or(false)
             })
             .max_by(|a, b| {
-                let wa = self.health.get(a.as_str()).map(|h| h.weight()).unwrap_or(0.0);
-                let wb = self.health.get(b.as_str()).map(|h| h.weight()).unwrap_or(0.0);
+                let wa = self
+                    .health
+                    .get(a.as_str())
+                    .map(|h| h.weight())
+                    .unwrap_or(0.0);
+                let wb = self
+                    .health
+                    .get(b.as_str())
+                    .map(|h| h.weight())
+                    .unwrap_or(0.0);
                 wa.partial_cmp(&wb).unwrap_or(std::cmp::Ordering::Equal)
             })
             .cloned();
@@ -295,16 +341,29 @@ impl ProxyRotator {
 
     /// Return the best healthy proxy of the given `kind`.
     pub fn get_of_kind(&mut self, kind: ProxyKind) -> Option<String> {
-        if !self.enabled { return None; }
-        let best = self.proxies.iter()
+        if !self.enabled {
+            return None;
+        }
+        let best = self
+            .proxies
+            .iter()
             .filter(|p| {
-                self.health.get(p.as_str())
+                self.health
+                    .get(p.as_str())
                     .map(|h| h.kind == kind && h.score() > 0.0)
                     .unwrap_or(false)
             })
             .max_by(|a, b| {
-                let wa = self.health.get(a.as_str()).map(|h| h.weight()).unwrap_or(0.0);
-                let wb = self.health.get(b.as_str()).map(|h| h.weight()).unwrap_or(0.0);
+                let wa = self
+                    .health
+                    .get(a.as_str())
+                    .map(|h| h.weight())
+                    .unwrap_or(0.0);
+                let wb = self
+                    .health
+                    .get(b.as_str())
+                    .map(|h| h.weight())
+                    .unwrap_or(0.0);
                 wa.partial_cmp(&wb).unwrap_or(std::cmp::Ordering::Equal)
             })
             .cloned();
@@ -324,17 +383,22 @@ impl ProxyRotator {
         let existing = self.health.get(proxy);
         let prev_count = existing.map(|h| h.success_count).unwrap_or(0);
         let prev_total_fail = existing.map(|h| h.total_failures).unwrap_or(0);
-        let prev_kind = existing.map(|h| h.kind.clone()).unwrap_or(ProxyKind::Unknown);
+        let prev_kind = existing
+            .map(|h| h.kind.clone())
+            .unwrap_or(ProxyKind::Unknown);
         let prev_country = existing.and_then(|h| h.country.clone());
-        self.health.insert(proxy.to_string(), ProxyHealth {
-            failures: 0,
-            total_failures: prev_total_fail,
-            backoff_until: None,
-            last_success: Some(Instant::now()),
-            success_count: prev_count + 1,
-            kind: prev_kind,
-            country: prev_country,
-        });
+        self.health.insert(
+            proxy.to_string(),
+            ProxyHealth {
+                failures: 0,
+                total_failures: prev_total_fail,
+                backoff_until: None,
+                last_success: Some(Instant::now()),
+                success_count: prev_count + 1,
+                kind: prev_kind,
+                country: prev_country,
+            },
+        );
     }
 
     pub fn report_failure(&mut self, proxy: &str) {
@@ -350,19 +414,24 @@ impl ProxyRotator {
         let total_failures = existing.map(|h| h.total_failures + 1).unwrap_or(1);
         let prev_success = existing.and_then(|h| h.last_success);
         let prev_count = existing.map(|h| h.success_count).unwrap_or(0);
-        let prev_kind = existing.map(|h| h.kind.clone()).unwrap_or(ProxyKind::Unknown);
+        let prev_kind = existing
+            .map(|h| h.kind.clone())
+            .unwrap_or(ProxyKind::Unknown);
         let prev_country = existing.and_then(|h| h.country.clone());
 
         let backoff_secs = (30 * 2u64.pow(failures.min(5) - 1)).min(1800);
-        self.health.insert(proxy.to_string(), ProxyHealth {
-            failures,
-            total_failures,
-            backoff_until: Some(Instant::now() + Duration::from_secs(backoff_secs)),
-            last_success: prev_success,
-            success_count: prev_count,
-            kind: prev_kind,
-            country: prev_country,
-        });
+        self.health.insert(
+            proxy.to_string(),
+            ProxyHealth {
+                failures,
+                total_failures,
+                backoff_until: Some(Instant::now() + Duration::from_secs(backoff_secs)),
+                last_success: prev_success,
+                success_count: prev_count,
+                kind: prev_kind,
+                country: prev_country,
+            },
+        );
 
         if failures >= 5 {
             self.proxies.retain(|p| p != proxy);
@@ -373,9 +442,11 @@ impl ProxyRotator {
     // ── Stats ─────────────────────────────────────────────────────
 
     pub fn healthy_count(&self) -> usize {
-        self.proxies.iter()
+        self.proxies
+            .iter()
             .filter(|p| {
-                self.health.get(p.as_str())
+                self.health
+                    .get(p.as_str())
                     .map(|h| h.failures < 3 && h.score() > 0.0)
                     .unwrap_or(true)
             })
@@ -384,15 +455,20 @@ impl ProxyRotator {
 
     /// Number of healthy paid endpoints.
     pub fn paid_healthy_count(&self) -> usize {
-        self.paid_endpoints.iter().filter(|e| e.is_available()).count()
+        self.paid_endpoints
+            .iter()
+            .filter(|e| e.is_available())
+            .count()
     }
 
     /// One-line health summary for logging.
     pub fn health_summary(&self) -> String {
         format!(
             "free={}/{} paid={}/{} sessions={}",
-            self.healthy_count(), self.proxies.len(),
-            self.paid_healthy_count(), self.paid_endpoints.len(),
+            self.healthy_count(),
+            self.proxies.len(),
+            self.paid_healthy_count(),
+            self.paid_endpoints.len(),
             self.sessions.len(),
         )
     }
@@ -406,8 +482,11 @@ impl ProxyRotator {
             .filter(|l| !l.is_empty() && l.contains(':'))
             .map(|l| {
                 let url_part = l.split('|').next().unwrap_or(l).trim();
-                if url_part.starts_with("http") { url_part.to_string() }
-                else { format!("http://{}", url_part) }
+                if url_part.starts_with("http") {
+                    url_part.to_string()
+                } else {
+                    format!("http://{}", url_part)
+                }
             })
             .filter(|proxy| Url::parse(proxy).is_ok())
             .collect()
@@ -421,18 +500,30 @@ impl ProxyRotator {
         let mut result = Vec::new();
         for line in text.lines() {
             let line = line.trim();
-            if line.is_empty() || !line.contains(':') { continue; }
+            if line.is_empty() || !line.contains(':') {
+                continue;
+            }
             let parts: Vec<&str> = line.splitn(3, '|').collect();
             let raw = parts[0].trim();
-            let url = if raw.starts_with("http") { raw.to_string() } else { format!("http://{}", raw) };
-            if Url::parse(&url).is_err() { continue; }
-            let kind = parts.get(1).map(|s| match s.trim().to_lowercase().as_str() {
-                "residential" | "res" => ProxyKind::Residential,
-                "mobile" | "mob" => ProxyKind::Mobile,
-                "datacenter" | "dc" => ProxyKind::Datacenter,
-                _ => ProxyKind::Unknown,
-            }).unwrap_or(ProxyKind::Unknown);
-            let country = parts.get(2)
+            let url = if raw.starts_with("http") {
+                raw.to_string()
+            } else {
+                format!("http://{}", raw)
+            };
+            if Url::parse(&url).is_err() {
+                continue;
+            }
+            let kind = parts
+                .get(1)
+                .map(|s| match s.trim().to_lowercase().as_str() {
+                    "residential" | "res" => ProxyKind::Residential,
+                    "mobile" | "mob" => ProxyKind::Mobile,
+                    "datacenter" | "dc" => ProxyKind::Datacenter,
+                    _ => ProxyKind::Unknown,
+                })
+                .unwrap_or(ProxyKind::Unknown);
+            let country = parts
+                .get(2)
                 .map(|s| s.trim().to_uppercase())
                 .filter(|s| s.len() == 2);
             result.push((url, kind, country));
@@ -470,7 +561,10 @@ mod tests {
     fn test_paid_proxy_override() {
         let mut rotator = ProxyRotator::new(true, Some("http://paid.proxy:8080".to_string()));
         rotator.add_proxies(vec!["http://free1:8080".to_string()]);
-        assert_eq!(rotator.get_next(), Some("http://paid.proxy:8080".to_string()));
+        assert_eq!(
+            rotator.get_next(),
+            Some("http://paid.proxy:8080".to_string())
+        );
     }
 
     #[test]
@@ -483,7 +577,9 @@ mod tests {
         ]);
         let mut seen = std::collections::HashSet::new();
         for _ in 0..30 {
-            if let Some(p) = rotator.get_next() { seen.insert(p); }
+            if let Some(p) = rotator.get_next() {
+                seen.insert(p);
+            }
         }
         assert!(seen.len() >= 2);
     }
@@ -504,7 +600,9 @@ mod tests {
         let mut rotator = ProxyRotator::new(true, None);
         let proxy = "http://bad.proxy:8080";
         rotator.add_proxies(vec![proxy.to_string()]);
-        for _ in 0..5 { rotator.report_failure(proxy); }
+        for _ in 0..5 {
+            rotator.report_failure(proxy);
+        }
         assert_eq!(rotator.proxy_count(), 0);
     }
 
@@ -526,7 +624,10 @@ mod tests {
     #[test]
     fn test_healthy_count() {
         let mut rotator = ProxyRotator::new(true, None);
-        rotator.add_proxies(vec!["http://good:8080".to_string(), "http://bad:8080".to_string()]);
+        rotator.add_proxies(vec![
+            "http://good:8080".to_string(),
+            "http://bad:8080".to_string(),
+        ]);
         rotator.report_failure("http://bad:8080");
         rotator.report_failure("http://bad:8080");
         rotator.report_failure("http://bad:8080");
@@ -550,15 +651,28 @@ mod tests {
 
     #[test]
     fn test_residential_weighted_higher_than_dc() {
-        let dc = ProxyHealth { kind: ProxyKind::Datacenter, success_count: 5, last_success: Some(Instant::now()), ..Default::default() };
-        let res = ProxyHealth { kind: ProxyKind::Residential, success_count: 5, last_success: Some(Instant::now()), ..Default::default() };
+        let dc = ProxyHealth {
+            kind: ProxyKind::Datacenter,
+            success_count: 5,
+            last_success: Some(Instant::now()),
+            ..Default::default()
+        };
+        let res = ProxyHealth {
+            kind: ProxyKind::Residential,
+            success_count: 5,
+            last_success: Some(Instant::now()),
+            ..Default::default()
+        };
         assert!(res.weight() > dc.weight());
     }
 
     #[test]
     fn test_session_affinity_sticky() {
         let mut rotator = ProxyRotator::new(true, None);
-        rotator.add_proxies(vec!["http://a:8080".to_string(), "http://b:8080".to_string()]);
+        rotator.add_proxies(vec![
+            "http://a:8080".to_string(),
+            "http://b:8080".to_string(),
+        ]);
         let p1 = rotator.get_for_session("s1").unwrap();
         let p2 = rotator.get_for_session("s1").unwrap();
         assert_eq!(p1, p2);

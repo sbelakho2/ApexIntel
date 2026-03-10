@@ -10,11 +10,11 @@ use crate::errors::{ApexError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RecipeStatus {
-    Seed,       // hand-written, unvalidated
-    Candidate,  // discovered by pattern miner
-    Staged,     // passed statistical gates, awaiting human review
-    Promoted,   // live in production
-    Retired,    // deactivated
+    Seed,      // hand-written, unvalidated
+    Candidate, // discovered by pattern miner
+    Staged,    // passed statistical gates, awaiting human review
+    Promoted,  // live in production
+    Retired,   // deactivated
 }
 
 impl RecipeStatus {
@@ -33,7 +33,7 @@ impl RecipeStatus {
 pub struct SignalSpec {
     pub observation_type: String,
     pub field: String,
-    pub operator: String,  // "increase", "decrease", "above", "below", "equals", "contains"
+    pub operator: String, // "increase", "decrease", "above", "below", "equals", "contains"
     pub threshold: Option<f64>,
     pub window_days: Option<i32>,
     pub value: Option<String>,
@@ -63,7 +63,7 @@ pub struct Applicability {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recipe {
     pub id: Uuid,
-    pub code: String,           // e.g. "A001", "B023"
+    pub code: String, // e.g. "A001", "B023"
     pub name: String,
     pub description: String,
     pub status: RecipeStatus,
@@ -145,7 +145,9 @@ impl Recipe {
             return Err(ApexError::validation("recipe name cannot be empty"));
         }
         if self.signals.is_empty() {
-            return Err(ApexError::validation("recipe must have at least one signal"));
+            return Err(ApexError::validation(
+                "recipe must have at least one signal",
+            ));
         }
         Ok(())
     }
@@ -341,7 +343,11 @@ mod tests {
         r.severity = "critical".to_string();
         r.category = "supply_chain".to_string();
 
-        let w = Warning::new(&r, "Port congestion at Tanger Med".into(), vec!["Alert ops team".into()]);
+        let w = Warning::new(
+            &r,
+            "Port congestion at Tanger Med".into(),
+            vec!["Alert ops team".into()],
+        );
         assert_eq!(w.recipe_code, "B005");
         assert_eq!(w.severity, "critical");
         assert!(!w.acknowledged);

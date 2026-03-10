@@ -169,10 +169,7 @@ pub fn match_predictions(
 /// Expire all predictions whose window has elapsed.
 ///
 /// Returns the IDs of predictions that were expired.
-pub fn expire_overdue(
-    predictions: &mut [TrackedPrediction],
-    now: DateTime<Utc>,
-) -> Vec<Uuid> {
+pub fn expire_overdue(predictions: &mut [TrackedPrediction], now: DateTime<Utc>) -> Vec<Uuid> {
     let mut expired = Vec::new();
     for pred in predictions.iter_mut() {
         if pred.is_pending() && now > pred.expected_by {
@@ -342,10 +339,8 @@ pub struct CalibrationBin {
 /// Useful for detecting overconfident or underconfident recipes.
 /// Returns 10 bins [0.0–0.1), [0.1–0.2), …, [0.9–1.0].
 pub fn calibration_curve(predictions: &[TrackedPrediction]) -> Vec<CalibrationBin> {
-    let resolved: Vec<&TrackedPrediction> = predictions
-        .iter()
-        .filter(|p| !p.is_pending())
-        .collect();
+    let resolved: Vec<&TrackedPrediction> =
+        predictions.iter().filter(|p| !p.is_pending()).collect();
 
     let mut bins: Vec<(f64, u64, u64)> = (0..10).map(|i| (i as f64 * 0.1 + 0.05, 0, 0)).collect();
 
@@ -361,7 +356,11 @@ pub fn calibration_curve(predictions: &[TrackedPrediction]) -> Vec<CalibrationBi
         .map(|&(centre, total, confirmed)| CalibrationBin {
             bin_centre: centre,
             mean_confidence: centre, // approximate
-            observed_frequency: if total > 0 { confirmed as f64 / total as f64 } else { 0.0 },
+            observed_frequency: if total > 0 {
+                confirmed as f64 / total as f64
+            } else {
+                0.0
+            },
             count: total as usize,
         })
         .collect()
@@ -409,7 +408,10 @@ pub fn generate_outcome_feedback(accuracy: &[RecipeAccuracy]) -> Vec<OutcomeFeed
             let (feedback_type, detail) = if resolved < 5 {
                 (
                     OutcomeFeedbackType::InsufficientData,
-                    format!("Only {} resolved predictions — need ≥5 for evaluation", resolved),
+                    format!(
+                        "Only {} resolved predictions — need ≥5 for evaluation",
+                        resolved
+                    ),
                 )
             } else if a.precision < 0.3 && resolved >= 10 {
                 (
@@ -665,7 +667,10 @@ mod tests {
             bayesian_ci_95: (0.3, 0.9),
         };
         let feedback = generate_outcome_feedback(&[acc]);
-        assert_eq!(feedback[0].feedback_type, OutcomeFeedbackType::InsufficientData);
+        assert_eq!(
+            feedback[0].feedback_type,
+            OutcomeFeedbackType::InsufficientData
+        );
     }
 
     #[test]
@@ -686,6 +691,9 @@ mod tests {
             bayesian_ci_95: (0.7, 0.88),
         };
         let feedback = generate_outcome_feedback(&[acc]);
-        assert_eq!(feedback[0].feedback_type, OutcomeFeedbackType::WellCalibrated);
+        assert_eq!(
+            feedback[0].feedback_type,
+            OutcomeFeedbackType::WellCalibrated
+        );
     }
 }

@@ -16,6 +16,23 @@
 {% block content %}
 {% call m::page_header("Security Center", "shield", "DNS posture, lookalike domains, and KEV relevance monitoring.", "") %}
 
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center justify-between gap-2">
+    <p class="text-[11px] text-muted-foreground">Run an on-demand security crawl job and refresh posture findings.</p>
+    <button
+      type="button"
+      hx-post="/security/trigger-scan"
+      hx-vals='{"job_kind":"dns_posture_scan"}'
+      hx-target="#security-trigger-status"
+      hx-swap="innerHTML"
+      class="rounded-sm border border-border bg-secondary px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.1em] text-foreground hover:bg-muted"
+    >
+      Run Security Scan
+    </button>
+  </div>
+  <div id="security-trigger-status" class="mt-2"></div>
+</div>
+
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
@@ -98,9 +115,10 @@
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Refine security findings:</span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Signal:</span>
-    <a href="/security?signal=dns%20posture{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_signal == "dns posture" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">dns posture</a>
-    <a href="/security?signal=lookalike{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_signal == "lookalike" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">lookalike</a>
-    <a href="/security?signal=kev{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_signal == "kev" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">kev</a>
+    <a href="/security?signal=dns{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_signal == "dns" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">DNS posture</a>
+    <a href="/security?signal=lookalike{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_signal == "lookalike" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">Lookalike domain</a>
+    <a href="/security?signal=kev{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_signal == "kev" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">Known exploited vulnerabilities</a>
+    <a href="/security?signal=security{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_signal == "security" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">General security</a>
     <span class="mx-2 h-4 w-px bg-border"></span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Risk:</span>
     <a href="/security?risk=critical{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_risk == "critical" %}border-primary bg-primary/15 text-foreground{% else %}border-border bg-secondary text-muted-foreground{% endif %}">critical</a>
@@ -122,16 +140,25 @@
     <div class="apex-card p-4 hover:bg-muted/30 transition-colors">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-semibold">{{ f.title }}</p>
+          <p class="text-sm font-semibold">
+            <a href="{{ f.detail_href }}" class="hover:text-primary underline-offset-2 hover:underline">{{ f.title }}</a>
+          </p>
+          <p class="mt-1 text-xs text-muted-foreground">{{ f.summary }}</p>
           <div class="mt-1.5 flex flex-wrap items-center gap-2">
             {% call m::severity_badge(f.severity) %}
             {% call m::region_badge(f.region) %}
+            <span class="rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">{{ f.signal }}</span>
           </div>
         </div>
       </div>
       <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{{ f.finding_type }}</span>
-        <span class="tabular-nums">{{ f.created_at }}</span>
+        <div class="flex items-center gap-3">
+          <span class="tabular-nums">{{ f.created_at }}</span>
+          {% if let Some(src) = f.source_href %}
+          <a href="{{ src }}" target="_blank" rel="noopener" class="hover:text-foreground underline-offset-2 hover:underline">Source</a>
+          {% endif %}
+        </div>
+        <a href="{{ f.detail_href }}" class="hover:text-foreground underline-offset-2 hover:underline">Open warning</a>
       </div>
     </div>
     {% endif %}

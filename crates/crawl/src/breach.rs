@@ -60,13 +60,30 @@ impl BreachSeverity {
 
     fn from_data_classes(classes: &[String]) -> Self {
         let s: Vec<&str> = classes.iter().map(|s| s.as_str()).collect();
-        if s.iter().any(|c| matches!(*c, "Passwords" | "Password hints" | "Credit cards" | "Bank account numbers" | "Government issued IDs" | "Passport numbers")) {
+        if s.iter().any(|c| {
+            matches!(
+                *c,
+                "Passwords"
+                    | "Password hints"
+                    | "Credit cards"
+                    | "Bank account numbers"
+                    | "Government issued IDs"
+                    | "Passport numbers"
+            )
+        }) {
             return Self::Critical;
         }
-        if s.iter().any(|c| matches!(*c, "Email addresses" | "Phone numbers" | "Physical addresses" | "Dates of birth")) {
+        if s.iter().any(|c| {
+            matches!(
+                *c,
+                "Email addresses" | "Phone numbers" | "Physical addresses" | "Dates of birth"
+            )
+        }) {
             return Self::High;
         }
-        if s.iter().any(|c| matches!(*c, "Usernames" | "Names" | "Social media profiles")) {
+        if s.iter()
+            .any(|c| matches!(*c, "Usernames" | "Names" | "Social media profiles"))
+        {
             return Self::Medium;
         }
         Self::Low
@@ -216,7 +233,12 @@ impl BreachMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io)")
             .build()
             .context("Build reqwest client")?;
-        Ok(Self { client, hibp_api_key, intelx_api_key, pastebin_api_key })
+        Ok(Self {
+            client,
+            hibp_api_key,
+            intelx_api_key,
+            pastebin_api_key,
+        })
     }
 
     // ── HIBP domain breach lookup ─────────────────────────────────────────────
@@ -229,7 +251,10 @@ impl BreachMonitor {
         let key = match &self.hibp_api_key {
             Some(k) => k.clone(),
             None => {
-                warn!("HIBP_API_KEY not set — skipping domain breach check for {}", domain);
+                warn!(
+                    "HIBP_API_KEY not set — skipping domain breach check for {}",
+                    domain
+                );
                 return Ok(vec![]);
             }
         };
@@ -241,7 +266,8 @@ impl BreachMonitor {
 
         debug!(domain = %domain, "HIBP domain breach lookup");
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("hibp-api-key", &key)
             .header("Accept", "application/json")
@@ -265,10 +291,7 @@ impl BreachMonitor {
             anyhow::bail!("HIBP domain breach API returned {}: {}", status, body);
         }
 
-        let breaches: Vec<HibpBreach> = resp
-            .json()
-            .await
-            .context("Parse HIBP breach response")?;
+        let breaches: Vec<HibpBreach> = resp.json().await.context("Parse HIBP breach response")?;
 
         let mut events: Vec<BreachEvent> = breaches
             .into_iter()
@@ -276,8 +299,13 @@ impl BreachMonitor {
             .map(|b| {
                 let data_classes = b.data_classes.unwrap_or_default();
                 let severity = BreachSeverity::from_data_classes(&data_classes);
-                let breach_date = b.breach_date.as_deref().and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
-                let added_at = b.added_date.as_deref()
+                let breach_date = b
+                    .breach_date
+                    .as_deref()
+                    .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+                let added_at = b
+                    .added_date
+                    .as_deref()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc));
 
@@ -293,7 +321,10 @@ impl BreachMonitor {
                     is_verified: b.is_verified.unwrap_or(false),
                     is_sensitive: b.is_sensitive.unwrap_or(false),
                     description: b.description,
-                    source_url: Some(format!("https://haveibeenpwned.com/PwnedWebsites#{}", urlencoding::encode(&b.title))),
+                    source_url: Some(format!(
+                        "https://haveibeenpwned.com/PwnedWebsites#{}",
+                        urlencoding::encode(&b.title)
+                    )),
                     paste_snippet: None,
                 }
             })
@@ -301,7 +332,8 @@ impl BreachMonitor {
 
         // Sort by severity descending, then by pwn_count
         events.sort_unstable_by(|a, b| {
-            b.severity.cmp(&a.severity)
+            b.severity
+                .cmp(&a.severity)
                 .then(b.pwn_count.cmp(&a.pwn_count))
         });
 
@@ -329,7 +361,8 @@ impl BreachMonitor {
             urlencoding::encode(email)
         );
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("hibp-api-key", &key)
             .header("Accept", "application/json")
@@ -351,7 +384,10 @@ impl BreachMonitor {
             anyhow::bail!("HIBP email breach API returned {}", status);
         }
 
-        let breaches: Vec<HibpBreach> = resp.json().await.context("Parse HIBP email breach response")?;
+        let breaches: Vec<HibpBreach> = resp
+            .json()
+            .await
+            .context("Parse HIBP email breach response")?;
 
         let domain = email.split('@').nth(1).unwrap_or("unknown").to_string();
         let events = breaches
@@ -359,7 +395,10 @@ impl BreachMonitor {
             .map(|b| {
                 let data_classes = b.data_classes.unwrap_or_default();
                 let severity = BreachSeverity::from_data_classes(&data_classes);
-                let breach_date = b.breach_date.as_deref().and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+                let breach_date = b
+                    .breach_date
+                    .as_deref()
+                    .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
                 BreachEvent {
                     source: "hibp".into(),
                     breach_name: b.name,
@@ -389,10 +428,7 @@ impl BreachMonitor {
     /// The caller should hash the password with SHA-1 and pass the first 5 hex chars.
     ///
     /// Returns the number of times the full hash appears in the response, or 0.
-    pub async fn check_password_hash_prefix(
-        &self,
-        sha1_hash: &str,
-    ) -> Result<u64> {
+    pub async fn check_password_hash_prefix(&self, sha1_hash: &str) -> Result<u64> {
         if sha1_hash.len() < 5 {
             anyhow::bail!("SHA-1 prefix must be at least 5 characters");
         }
@@ -401,7 +437,8 @@ impl BreachMonitor {
 
         let url = format!("https://api.pwnedpasswords.com/range/{}", prefix);
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Add-Padding", "true")
             .send()
@@ -456,7 +493,8 @@ impl BreachMonitor {
             "terminate": []
         });
 
-        let search_resp = self.client
+        let search_resp = self
+            .client
             .post(search_url)
             .header("x-key", &key)
             .header("Content-Type", "application/json")
@@ -488,7 +526,8 @@ impl BreachMonitor {
             search_id
         );
 
-        let result_resp = self.client
+        let result_resp = self
+            .client
             .get(&results_url)
             .header("x-key", &key)
             .send()
@@ -509,8 +548,12 @@ impl BreachMonitor {
         let events: Vec<BreachEvent> = records
             .into_iter()
             .filter_map(|r| {
-                let name = r.name.unwrap_or_else(|| format!("intelx-{}", r.system_id.as_deref().unwrap_or("unknown")));
-                let added_at = r.date.as_deref()
+                let name = r.name.unwrap_or_else(|| {
+                    format!("intelx-{}", r.system_id.as_deref().unwrap_or("unknown"))
+                });
+                let added_at = r
+                    .date
+                    .as_deref()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc));
                 Some(BreachEvent {
@@ -524,8 +567,13 @@ impl BreachMonitor {
                     severity: BreachSeverity::Medium,
                     is_verified: false,
                     is_sensitive: true,
-                    description: Some(format!("Intelligence X leaked record (type {})", r.record_type.unwrap_or(0))),
-                    source_url: r.system_id.map(|id| format!("https://intelx.io/?did={}", id)),
+                    description: Some(format!(
+                        "Intelligence X leaked record (type {})",
+                        r.record_type.unwrap_or(0)
+                    )),
+                    source_url: r
+                        .system_id
+                        .map(|id| format!("https://intelx.io/?did={}", id)),
                     paste_snippet: None,
                 })
             })
@@ -571,7 +619,8 @@ impl BreachMonitor {
             format!("https://scrape.pastebin.com/api_scraping.php?limit=25")
         };
 
-        let list_resp = self.client
+        let list_resp = self
+            .client
             .get(&api_url)
             .send()
             .await
@@ -635,13 +684,14 @@ impl BreachMonitor {
                     None
                 };
 
-                let created_at = paste.date.as_deref()
+                let created_at = paste
+                    .date
+                    .as_deref()
                     .and_then(|s| s.parse::<i64>().ok())
                     .and_then(|ts| DateTime::from_timestamp(ts, 0))
                     .map(|dt| dt.with_timezone(&Utc));
 
-                let size_bytes = paste.size.as_deref()
-                    .and_then(|s| s.parse::<u64>().ok());
+                let size_bytes = paste.size.as_deref().and_then(|s| s.parse::<u64>().ok());
 
                 matches.push(PasteMatch {
                     platform: "pastebin".into(),
@@ -684,7 +734,9 @@ impl BreachMonitor {
         // Deduplicate by (source, breach_name) — must sort on these keys first
         // because dedup_by only removes *consecutive* duplicates.
         events.sort_unstable_by(|a, b| {
-            a.source.cmp(&b.source).then(a.breach_name.cmp(&b.breach_name))
+            a.source
+                .cmp(&b.source)
+                .then(a.breach_name.cmp(&b.breach_name))
         });
         events.dedup_by(|a, b| a.source == b.source && a.breach_name == b.breach_name);
 
@@ -729,19 +781,28 @@ mod tests {
     #[test]
     fn severity_from_data_classes_critical() {
         let classes = vec!["Passwords".to_string(), "Email addresses".to_string()];
-        assert_eq!(BreachSeverity::from_data_classes(&classes), BreachSeverity::Critical);
+        assert_eq!(
+            BreachSeverity::from_data_classes(&classes),
+            BreachSeverity::Critical
+        );
     }
 
     #[test]
     fn severity_from_data_classes_high() {
         let classes = vec!["Email addresses".to_string(), "Phone numbers".to_string()];
-        assert_eq!(BreachSeverity::from_data_classes(&classes), BreachSeverity::High);
+        assert_eq!(
+            BreachSeverity::from_data_classes(&classes),
+            BreachSeverity::High
+        );
     }
 
     #[test]
     fn severity_from_data_classes_low() {
         let classes = vec!["Avatars".to_string()];
-        assert_eq!(BreachSeverity::from_data_classes(&classes), BreachSeverity::Low);
+        assert_eq!(
+            BreachSeverity::from_data_classes(&classes),
+            BreachSeverity::Low
+        );
     }
 
     #[test]

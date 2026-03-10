@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 // ─── Request / response types ───────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayRequest {
     /// Start date (inclusive) for replay window
     pub from_date: NaiveDate,
@@ -77,13 +77,35 @@ pub struct ReplayProgress {
     pub progress_pct: f64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ReplayStatus {
     Queued,
     Running,
     Completed,
     Failed,
     Cancelled,
+}
+
+impl ReplayStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "running" => Self::Running,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            _ => Self::Queued,
+        }
+    }
 }
 
 // ─── SQL generators ─────────────────────────────────────────────────────
@@ -100,10 +122,7 @@ pub fn replay_observations_sql(request: &ReplayRequest) -> String {
 
     if let Some(ref types) = request.observation_types {
         if !types.is_empty() {
-            sql.push_str(&format!(
-                " AND observation_type = ANY(${})",
-                param_idx
-            ));
+            sql.push_str(&format!(" AND observation_type = ANY(${})", param_idx));
             param_idx += 1;
         }
     }

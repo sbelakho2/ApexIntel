@@ -109,9 +109,18 @@ pub fn compute_diff(old: &str, new: &str) -> DiffResult {
     }
 
     // Count stats
-    let added = diff_lines.iter().filter(|l| l.kind == DiffKind::Added).count();
-    let removed = diff_lines.iter().filter(|l| l.kind == DiffKind::Removed).count();
-    let unchanged = diff_lines.iter().filter(|l| l.kind == DiffKind::Context).count();
+    let added = diff_lines
+        .iter()
+        .filter(|l| l.kind == DiffKind::Added)
+        .count();
+    let removed = diff_lines
+        .iter()
+        .filter(|l| l.kind == DiffKind::Removed)
+        .count();
+    let unchanged = diff_lines
+        .iter()
+        .filter(|l| l.kind == DiffKind::Context)
+        .count();
 
     let total_change = added + removed;
     let total_lines = old_lines.len().max(new_lines.len()).max(1);
@@ -239,7 +248,10 @@ pub fn summarize_changes(old: &str, new: &str, max_lines: usize) -> String {
             }
         }
         if hunk.lines.len() > max_lines {
-            summary.push(format!("  ... ({} more changes)", hunk.lines.len() - max_lines));
+            summary.push(format!(
+                "  ... ({} more changes)",
+                hunk.lines.len() - max_lines
+            ));
         }
     }
 

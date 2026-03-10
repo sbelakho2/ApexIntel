@@ -3,7 +3,6 @@
 /// All time values must be non-negative.  Functions that accept a time axis
 /// silently filter out negative-time observations (Kaplan-Meier) or treat
 /// negative interval widths as degenerate inputs (hazard rate).
-
 use crate::utils::safe_div;
 
 /// Kaplan-Meier survival function.
@@ -23,11 +22,7 @@ pub fn kaplan_meier(events: &[(f64, bool)]) -> Vec<(f64, f64)> {
 
     // B261: reject negative-time observations rather than silently including
     // them at the front of the survival curve where they corrupt at-risk counts.
-    let mut sorted: Vec<(f64, bool)> = events
-        .iter()
-        .filter(|(t, _)| *t >= 0.0)
-        .cloned()
-        .collect();
+    let mut sorted: Vec<(f64, bool)> = events.iter().filter(|(t, _)| *t >= 0.0).cloned().collect();
 
     // If all observations had negative times, return empty rather than panic.
     if sorted.is_empty() {
@@ -132,11 +127,7 @@ mod tests {
 
     #[test]
     fn test_kaplan_meier_all_censored() {
-        let events = vec![
-            (1.0, false),
-            (2.0, false),
-            (3.0, false),
-        ];
+        let events = vec![(1.0, false), (2.0, false), (3.0, false)];
         let km = kaplan_meier(&events);
         // No events → survival stays at 1.0
         for (_, s) in &km {
@@ -184,12 +175,7 @@ mod tests {
 
     #[test]
     fn test_median_survival() {
-        let curve = vec![
-            (1.0, 0.9),
-            (2.0, 0.7),
-            (3.0, 0.4),
-            (4.0, 0.2),
-        ];
+        let curve = vec![(1.0, 0.9), (2.0, 0.7), (3.0, 0.4), (4.0, 0.2)];
         let median = median_survival(&curve);
         assert!(median.is_some());
         let m = median.unwrap();
@@ -220,7 +206,7 @@ mod tests {
         // Negative-time observations must not corrupt at-risk counts or
         // appear in the output curve.
         let events = vec![
-            (-1.0, true),  // invalid — negative time
+            (-1.0, true), // invalid — negative time
             (1.0, true),
             (2.0, false),
             (3.0, true),
@@ -234,7 +220,10 @@ mod tests {
         }
         // At-risk count at t=1 should be 3 (not 4), so S(1) = 1 - 1/3 ≈ 0.667
         let s1 = km.iter().find(|(t, _)| (*t - 1.0).abs() < 1e-12).unwrap().1;
-        assert!((s1 - 2.0 / 3.0).abs() < 1e-10, "S(1) should be 2/3 when negative obs dropped; got {s1}");
+        assert!(
+            (s1 - 2.0 / 3.0).abs() < 1e-10,
+            "S(1) should be 2/3 when negative obs dropped; got {s1}"
+        );
     }
 
     #[test]
@@ -288,7 +277,11 @@ mod tests {
         ];
         let median = median_survival(&curve);
         assert!(median.is_some());
-        assert!((median.unwrap() - 4.0).abs() < 1e-10, "median should be 4.0; got {:?}", median);
+        assert!(
+            (median.unwrap() - 4.0).abs() < 1e-10,
+            "median should be 4.0; got {:?}",
+            median
+        );
     }
 
     #[test]
@@ -301,7 +294,11 @@ mod tests {
         ];
         let median = median_survival(&curve);
         assert!(median.is_some());
-        assert!((median.unwrap() - 2.0).abs() < 1e-10, "median should be 2.0; got {:?}", median);
+        assert!(
+            (median.unwrap() - 2.0).abs() < 1e-10,
+            "median should be 2.0; got {:?}",
+            median
+        );
     }
 
     #[test]

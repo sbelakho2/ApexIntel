@@ -41,41 +41,7 @@ use uuid::Uuid;
 // SLA configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Per-priority SLA deadlines for security alert acknowledgement.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CepSlaConfig {
-    /// P0 (critical) — must be acknowledged within this many seconds.
-    pub p0_seconds: i64,
-    /// P1 (high) — acknowledgement deadline.
-    pub p1_seconds: i64,
-    /// P2 (medium) — acknowledgement deadline.
-    pub p2_seconds: i64,
-    /// P3 (low/informational) — acknowledgement deadline.
-    pub p3_seconds: i64,
-}
-
-impl Default for CepSlaConfig {
-    fn default() -> Self {
-        Self {
-            p0_seconds: 900,    // 15 minutes
-            p1_seconds: 3600,   // 1 hour
-            p2_seconds: 14400,  // 4 hours
-            p3_seconds: 86400,  // 24 hours
-        }
-    }
-}
-
-impl CepSlaConfig {
-    /// Get the SLA deadline in seconds for a given priority string.
-    pub fn deadline_seconds(&self, priority: &str) -> i64 {
-        match priority {
-            "P0" | "p0" | "critical" => self.p0_seconds,
-            "P1" | "p1" | "high" => self.p1_seconds,
-            "P2" | "p2" | "medium" => self.p2_seconds,
-            _ => self.p3_seconds,
-        }
-    }
-}
+pub type CepSlaConfig = apex_core::sla::SeveritySlaConfig;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pattern definitions
@@ -157,7 +123,11 @@ impl CepRule {
         Self {
             id: id.into(),
             name: format!("{obs_type} threshold ({count}/{window_seconds}s)"),
-            pattern: PatternType::Threshold { obs_type: obs_type.clone(), count, window_seconds },
+            pattern: PatternType::Threshold {
+                obs_type: obs_type.clone(),
+                count,
+                window_seconds,
+            },
             priority,
             warning_type: obs_type,
             title_template: title,
@@ -189,7 +159,9 @@ impl CepRule {
             priority: priority.into(),
             warning_type: format!("{a}_{b}_correlation"),
             title_template: format!("Correlated: {{entity_id}} shows both {a} and {b}"),
-            description_template: format!("Correlation detected: {a} and {b} co-occurred within {window_seconds}s"),
+            description_template: format!(
+                "Correlation detected: {a} and {b} co-occurred within {window_seconds}s"
+            ),
             confidence: 0.9,
             enabled: true,
         }
@@ -208,11 +180,19 @@ impl CepRule {
         Self {
             id: id.into(),
             name: format!("{obs_type} per-entity threshold ({count}/{window_seconds}s)"),
-            pattern: PatternType::PerEntityThreshold { obs_type: obs_type.clone(), count, window_seconds },
+            pattern: PatternType::PerEntityThreshold {
+                obs_type: obs_type.clone(),
+                count,
+                window_seconds,
+            },
             priority: priority.clone(),
             warning_type: format!("{obs_type}_entity_threshold"),
-            title_template: format!("Entity exceeded {count} {obs_type} events in {window_seconds}s"),
-            description_template: format!("Per-entity threshold: {{entity_id}} triggered {count}+ {obs_type} observations"),
+            title_template: format!(
+                "Entity exceeded {count} {obs_type} events in {window_seconds}s"
+            ),
+            description_template: format!(
+                "Per-entity threshold: {{entity_id}} triggered {count}+ {obs_type} observations"
+            ),
             confidence: 0.88,
             enabled: true,
         }
@@ -552,7 +532,12 @@ impl CepEngine {
 
         // Evict events older than window_duration
         let cutoff = Utc::now() - self.window_duration;
-        while self.event_window.front().map(|e| e.ts_utc < cutoff).unwrap_or(false) {
+        while self
+            .event_window
+            .front()
+            .map(|e| e.ts_utc < cutoff)
+            .unwrap_or(false)
+        {
             self.event_window.pop_front();
         }
 
@@ -567,7 +552,11 @@ impl CepEngine {
         }
 
         if !new_alerts.is_empty() {
-            info!(count = new_alerts.len(), "CEP engine fired {} alert(s)", new_alerts.len());
+            info!(
+                count = new_alerts.len(),
+                "CEP engine fired {} alert(s)",
+                new_alerts.len()
+            );
         }
 
         self.pending_alerts.extend(new_alerts.clone());
@@ -602,21 +591,30 @@ impl CepEngine {
 
     fn evaluate_rule(&mut self, rule: &CepRule) -> Option<CepAlert> {
         match &rule.pattern.clone() {
-            PatternType::Threshold { obs_type, count, window_seconds } => {
-                self.eval_threshold(rule, obs_type, *count, *window_seconds, None)
-            }
-            PatternType::PerEntityThreshold { obs_type, count, window_seconds } => {
-                self.eval_per_entity_threshold(rule, obs_type, *count, *window_seconds)
-            }
-            PatternType::Correlation { obs_type_a, obs_type_b, window_seconds } => {
-                self.eval_correlation(rule, obs_type_a, obs_type_b, *window_seconds)
-            }
-            PatternType::Sequence { obs_type_first, obs_type_second, window_seconds } => {
-                self.eval_sequence(rule, obs_type_first, obs_type_second, *window_seconds)
-            }
-            PatternType::Absence { obs_type, max_gap_seconds } => {
-                self.eval_absence(rule, obs_type, *max_gap_seconds)
-            }
+            PatternType::Threshold {
+                obs_type,
+                count,
+                window_seconds,
+            } => self.eval_threshold(rule, obs_type, *count, *window_seconds, None),
+            PatternType::PerEntityThreshold {
+                obs_type,
+                count,
+                window_seconds,
+            } => self.eval_per_entity_threshold(rule, obs_type, *count, *window_seconds),
+            PatternType::Correlation {
+                obs_type_a,
+                obs_type_b,
+                window_seconds,
+            } => self.eval_correlation(rule, obs_type_a, obs_type_b, *window_seconds),
+            PatternType::Sequence {
+                obs_type_first,
+                obs_type_second,
+                window_seconds,
+            } => self.eval_sequence(rule, obs_type_first, obs_type_second, *window_seconds),
+            PatternType::Absence {
+                obs_type,
+                max_gap_seconds,
+            } => self.eval_absence(rule, obs_type, *max_gap_seconds),
         }
     }
 
@@ -643,7 +641,9 @@ impl CepEngine {
         entity_filter: Option<Uuid>,
     ) -> Option<CepAlert> {
         let cutoff = Utc::now() - Duration::seconds(window_seconds);
-        let entity_key = entity_filter.map(|u| u.to_string()).unwrap_or_else(|| "global".into());
+        let entity_key = entity_filter
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "global".into());
 
         if self.is_in_cooldown(rule, &entity_key) {
             return None;
@@ -652,12 +652,15 @@ impl CepEngine {
         // Collect owned data first to release the immutable borrow of event_window
         // before calling record_fire() (which mutably borrows self).
         let (matching_ids, entity_id, matched_count) = {
-            let matching: Vec<&SecurityEvent> = self.event_window
+            let matching: Vec<&SecurityEvent> = self
+                .event_window
                 .iter()
                 .filter(|e| {
                     e.event_type == obs_type
                         && e.ts_utc >= cutoff
-                        && entity_filter.map(|id| e.entity_id == Some(id)).unwrap_or(true)
+                        && entity_filter
+                            .map(|id| e.entity_id == Some(id))
+                            .unwrap_or(true)
                 })
                 .collect();
             let ids: Vec<Uuid> = matching.iter().map(|e| e.observation_id).collect();
@@ -670,19 +673,38 @@ impl CepEngine {
             self.record_fire(rule, &entity_key);
             let sla_secs = self.sla_config.deadline_seconds(&rule.priority);
 
-            let title = rule.title_template
+            let title = rule
+                .title_template
                 .replace("{count}", &matched_count.to_string())
-                .replace("{entity_id}", &entity_id.map(|u| u.to_string()).unwrap_or_else(|| "N/A".into()))
+                .replace(
+                    "{entity_id}",
+                    &entity_id
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| "N/A".into()),
+                )
                 .replace("{obs_type}", obs_type)
                 .replace("{window}", &window_seconds.to_string());
 
-            let description = rule.description_template
+            let description = rule
+                .description_template
                 .replace("{count}", &matched_count.to_string())
-                .replace("{entity_id}", &entity_id.map(|u| u.to_string()).unwrap_or_else(|| "N/A".into()))
+                .replace(
+                    "{entity_id}",
+                    &entity_id
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| "N/A".into()),
+                )
                 .replace("{obs_type}", obs_type);
 
             debug!(rule_id = %rule.id, count = matched_count, "CEP threshold rule fired");
-            Some(CepAlert::new(rule, entity_id, matching_ids, sla_secs, title, description))
+            Some(CepAlert::new(
+                rule,
+                entity_id,
+                matching_ids,
+                sla_secs,
+                title,
+                description,
+            ))
         } else {
             None
         }
@@ -717,17 +739,26 @@ impl CepEngine {
                 self.record_fire(rule, &entity_key);
                 let sla_secs = self.sla_config.deadline_seconds(&rule.priority);
 
-                let title = rule.title_template
+                let title = rule
+                    .title_template
                     .replace("{entity_id}", &entity_id.to_string())
                     .replace("{count}", &obs_ids.len().to_string())
                     .replace("{obs_type}", obs_type);
 
-                let description = rule.description_template
+                let description = rule
+                    .description_template
                     .replace("{entity_id}", &entity_id.to_string())
                     .replace("{count}", &obs_ids.len().to_string());
 
                 debug!(rule_id = %rule.id, entity = %entity_id, "CEP per-entity threshold fired");
-                return Some(CepAlert::new(rule, Some(entity_id), obs_ids, sla_secs, title, description));
+                return Some(CepAlert::new(
+                    rule,
+                    Some(entity_id),
+                    obs_ids,
+                    sla_secs,
+                    title,
+                    description,
+                ));
             }
         }
         None
@@ -747,7 +778,9 @@ impl CepEngine {
         let mut entities_b: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
 
         for e in &self.event_window {
-            if e.ts_utc < cutoff { continue; }
+            if e.ts_utc < cutoff {
+                continue;
+            }
             if let Some(eid) = e.entity_id {
                 if e.event_type == obs_type_a {
                     entities_a.entry(eid).or_default().push(e.observation_id);
@@ -769,13 +802,20 @@ impl CepEngine {
                 self.record_fire(rule, &entity_key);
                 let sla_secs = self.sla_config.deadline_seconds(&rule.priority);
 
-                let title = rule.title_template
-                    .replace("{entity_id}", &eid.to_string());
-                let description = rule.description_template
+                let title = rule.title_template.replace("{entity_id}", &eid.to_string());
+                let description = rule
+                    .description_template
                     .replace("{entity_id}", &eid.to_string());
 
                 debug!(rule_id = %rule.id, entity = %eid, "CEP correlation rule fired");
-                return Some(CepAlert::new(rule, Some(eid), contributing, sla_secs, title, description));
+                return Some(CepAlert::new(
+                    rule,
+                    Some(eid),
+                    contributing,
+                    sla_secs,
+                    title,
+                    description,
+                ));
             }
         }
         None
@@ -793,10 +833,13 @@ impl CepEngine {
         // Collect earliest timestamps AND observation IDs for obs_type_first per entity (owned).
         let mut entity_first: HashMap<Uuid, (DateTime<Utc>, Uuid)> = HashMap::new();
         for e in &self.event_window {
-            if e.ts_utc < cutoff { continue; }
+            if e.ts_utc < cutoff {
+                continue;
+            }
             if let Some(eid) = e.entity_id {
                 if e.event_type == obs_type_first {
-                    entity_first.entry(eid)
+                    entity_first
+                        .entry(eid)
                         .and_modify(|(t, id)| {
                             if e.ts_utc < *t {
                                 *t = e.ts_utc;
@@ -810,7 +853,9 @@ impl CepEngine {
 
         // Find a second event that follows a first for the same entity.
         // Carry both event IDs for the contributing_events list.
-        let trigger: Option<(Uuid, Uuid, Uuid)> = self.event_window.iter()
+        let trigger: Option<(Uuid, Uuid, Uuid)> = self
+            .event_window
+            .iter()
             .filter(|e| e.ts_utc >= cutoff && e.event_type == obs_type_second)
             .find_map(|e| {
                 if let Some(eid) = e.entity_id {
@@ -828,9 +873,20 @@ impl CepEngine {
             if !self.is_in_cooldown(rule, &entity_key) {
                 self.record_fire(rule, &entity_key);
                 let sla_secs = self.sla_config.deadline_seconds(&rule.priority);
-                let title = rule.title_template.replace("{entity_id}", &entity_id.to_string());
-                let description = rule.description_template.replace("{entity_id}", &entity_id.to_string());
-                return Some(CepAlert::new(rule, Some(entity_id), vec![first_obs_id, second_obs_id], sla_secs, title, description));
+                let title = rule
+                    .title_template
+                    .replace("{entity_id}", &entity_id.to_string());
+                let description = rule
+                    .description_template
+                    .replace("{entity_id}", &entity_id.to_string());
+                return Some(CepAlert::new(
+                    rule,
+                    Some(entity_id),
+                    vec![first_obs_id, second_obs_id],
+                    sla_secs,
+                    title,
+                    description,
+                ));
             }
         }
         None
@@ -846,7 +902,8 @@ impl CepEngine {
         let cutoff = now - Duration::seconds(max_gap_seconds);
 
         // Check if there's been at least one event of this type within the expected window
-        let has_recent = self.event_window
+        let has_recent = self
+            .event_window
             .iter()
             .any(|e| e.event_type == obs_type && e.ts_utc >= cutoff);
 
@@ -856,13 +913,22 @@ impl CepEngine {
             }
             self.record_fire(rule, "absence");
             let sla_secs = self.sla_config.deadline_seconds(&rule.priority);
-            let title = rule.title_template
+            let title = rule
+                .title_template
                 .replace("{obs_type}", obs_type)
                 .replace("{gap}", &max_gap_seconds.to_string());
-            let description = rule.description_template
+            let description = rule
+                .description_template
                 .replace("{obs_type}", obs_type)
                 .replace("{gap}", &max_gap_seconds.to_string());
-            return Some(CepAlert::new(rule, None, vec![], sla_secs, title, description));
+            return Some(CepAlert::new(
+                rule,
+                None,
+                vec![],
+                sla_secs,
+                title,
+                description,
+            ));
         }
         None
     }
@@ -948,7 +1014,13 @@ mod tests {
     #[test]
     fn per_entity_threshold_fires_for_specific_entity() {
         let mut engine = CepEngine::new(CepSlaConfig::default());
-        engine.register_rule(CepRule::per_entity_threshold("e1", "breach_detected", 2, 3600, "P0"));
+        engine.register_rule(CepRule::per_entity_threshold(
+            "e1",
+            "breach_detected",
+            2,
+            3600,
+            "P0",
+        ));
 
         let entity = Uuid::new_v4();
         let other_entity = Uuid::new_v4();
@@ -971,11 +1043,7 @@ mod tests {
     fn correlation_rule_fires_on_both_types() {
         let mut engine = CepEngine::new(CepSlaConfig::default());
         engine.register_rule(CepRule::correlation(
-            "corr1",
-            "type_a",
-            "type_b",
-            3600,
-            "P0",
+            "corr1", "type_a", "type_b", 3600, "P0",
         ));
 
         let entity = Uuid::new_v4();
@@ -987,7 +1055,10 @@ mod tests {
 
         // Adding type_b should trigger correlation
         let b = engine.process_event(make_event("type_b", Some(entity), now));
-        assert!(!b.is_empty(), "Correlation should fire with both types present");
+        assert!(
+            !b.is_empty(),
+            "Correlation should fire with both types present"
+        );
         assert_eq!(b[0].rule_id, "corr1");
     }
 
@@ -1002,11 +1073,17 @@ mod tests {
 
     #[test]
     fn sla_seconds_remaining_future() {
-        let mut engine = CepEngine::new(CepSlaConfig { p0_seconds: 900, ..Default::default() });
+        let mut config = CepSlaConfig::default();
+        config.critical_seconds = 900;
+        let mut engine = CepEngine::new(config);
         engine.register_rule(CepRule {
             id: "r0".into(),
             name: "test".into(),
-            pattern: PatternType::Threshold { obs_type: "x".into(), count: 1, window_seconds: 3600 },
+            pattern: PatternType::Threshold {
+                obs_type: "x".into(),
+                count: 1,
+                window_seconds: 3600,
+            },
             priority: "P0".into(),
             warning_type: "xw".into(),
             title_template: "T".into(),
@@ -1025,7 +1102,10 @@ mod tests {
     #[test]
     fn default_rules_registered() {
         let engine = CepEngine::with_default_rules(CepSlaConfig::default());
-        assert!(engine.rule_count() > 8, "Default rules should include 8+ rules");
+        assert!(
+            engine.rule_count() > 8,
+            "Default rules should include 8+ rules"
+        );
     }
 
     #[test]

@@ -91,11 +91,7 @@ impl CertExpiryChecker {
     }
 
     /// Check a single cert for expiry warnings.
-    pub fn check_cert(
-        &self,
-        cert: &CertRecord,
-        today: NaiveDate,
-    ) -> Option<CertExpiryWarning> {
+    pub fn check_cert(&self, cert: &CertRecord, today: NaiveDate) -> Option<CertExpiryWarning> {
         let days_until = (cert.expiry_date - today).num_days();
 
         // Skip already-expired or far-future certs
@@ -141,22 +137,14 @@ impl CertExpiryChecker {
             format!(
                 "The {} certification (issued by {}) for {} expires on {}. \
                  Scope: {}. Renewal action required to avoid business disruption.",
-                cert.cert_type,
-                cert.cert_body,
-                cert.company_name,
-                cert.expiry_date,
-                cert.scope
+                cert.cert_type, cert.cert_body, cert.company_name, cert.expiry_date, cert.scope
             )
         } else {
             format!(
                 "{}'s {} certification (issued by {}) expires on {}. \
                  Scope: {}. This creates a potential opportunity if they fail to renew — \
                  their customers may seek certified alternatives.",
-                cert.company_name,
-                cert.cert_type,
-                cert.cert_body,
-                cert.expiry_date,
-                cert.scope
+                cert.company_name, cert.cert_type, cert.cert_body, cert.expiry_date, cert.scope
             )
         };
 
@@ -176,11 +164,7 @@ impl CertExpiryChecker {
     }
 
     /// Batch-check all certs and return warnings.
-    pub fn check_all(
-        &self,
-        certs: &[CertRecord],
-        today: NaiveDate,
-    ) -> Vec<CertExpiryWarning> {
+    pub fn check_all(&self, certs: &[CertRecord], today: NaiveDate) -> Vec<CertExpiryWarning> {
         certs
             .iter()
             .filter_map(|cert| self.check_cert(cert, today))
@@ -221,11 +205,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-    fn make_cert(
-        cert_type: &str,
-        days_until_expiry: i64,
-        is_own: bool,
-    ) -> CertRecord {
+    fn make_cert(cert_type: &str, days_until_expiry: i64, is_own: bool) -> CertRecord {
         let today = Utc::now().date_naive();
         CertRecord {
             company_id: "comp-001".into(),

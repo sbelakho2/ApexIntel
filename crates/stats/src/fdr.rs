@@ -87,7 +87,12 @@ mod tests {
         let q = bh_correct(&pvals);
         // When original p-values are sorted, q-values should also be monotonic
         for w in q.windows(2) {
-            assert!(w[0] <= w[1] + 1e-10, "q-values not monotonic: {} > {}", w[0], w[1]);
+            assert!(
+                w[0] <= w[1] + 1e-10,
+                "q-values not monotonic: {} > {}",
+                w[0],
+                w[1]
+            );
         }
     }
 
@@ -158,7 +163,11 @@ mod tests {
         let q = bh_correct(&pvals);
 
         assert_eq!(q.len(), 4, "output length must equal input length");
-        assert!(q[1].is_nan(), "NaN at position 1 must be preserved, got {}", q[1]);
+        assert!(
+            q[1].is_nan(),
+            "NaN at position 1 must be preserved, got {}",
+            q[1]
+        );
 
         // Non-NaN positions must be finite
         for (i, &qv) in q.iter().enumerate() {
@@ -183,7 +192,8 @@ mod tests {
         assert!(
             (q_nan[0] - q_clean[0]).abs() < 1e-10,
             "NaN must not inflate m; q_nan[0]={}, q_clean[0]={}",
-            q_nan[0], q_clean[0]
+            q_nan[0],
+            q_clean[0]
         );
     }
 

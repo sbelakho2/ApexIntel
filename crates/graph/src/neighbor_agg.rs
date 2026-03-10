@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::adjacency::AdjacencyGraph;
+use std::collections::HashMap;
 
 /// Influence score formula from IMPLEMENTATION.md:
 /// 0.3 × GraphCentrality + 0.4 × RoleSeniority + 0.3 × PublicRecurrence
@@ -399,7 +399,11 @@ mod tests {
         let leverage = network_leverage(&g, "alice", &ecosystem);
         // "shared" appears via both eco nodes, but should only appear once
         let unique: std::collections::HashSet<_> = leverage.iter().collect();
-        assert_eq!(unique.len(), leverage.len(), "network_leverage should not contain duplicates");
+        assert_eq!(
+            unique.len(),
+            leverage.len(),
+            "network_leverage should not contain duplicates"
+        );
     }
 
     #[test]
@@ -418,13 +422,20 @@ mod tests {
     #[test]
     fn test_recurrence_score_very_large() {
         let score = recurrence_score(1_000_000);
-        assert!((score - 100.0).abs() < 0.01, "Very large count should saturate at 100");
+        assert!(
+            (score - 100.0).abs() < 0.01,
+            "Very large count should saturate at 100"
+        );
     }
 
     #[test]
     fn test_recurrence_score_zero() {
         let score = recurrence_score(0);
-        assert!(score < 10.0, "Zero appearances should yield low score: {}", score);
+        assert!(
+            score < 10.0,
+            "Zero appearances should yield low score: {}",
+            score
+        );
     }
 
     // ── B164: centrality rounding ──
@@ -450,6 +461,10 @@ mod tests {
         let history = vec![(3000, 95.0), (1000, 30.0), (2000, 70.0)];
         let drift = role_drift_score(&history);
         // After sorting: (1000,30), (2000,70), (3000,95) → delta = |95-70|/100 = 0.25
-        assert!((drift - 0.25).abs() < 0.01, "Drift should be 0.25, got {}", drift);
+        assert!(
+            (drift - 0.25).abs() < 0.01,
+            "Drift should be 0.25, got {}",
+            drift
+        );
     }
 }

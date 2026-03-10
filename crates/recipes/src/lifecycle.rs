@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::gates::{all_gates_pass, GateConfig, GateEvidence};
 use apex_core::schemas::RecipeStatus;
-use crate::gates::{GateConfig, GateEvidence, all_gates_pass};
 
 // ────────────────────────────────────────────
 // Recipe performance tracking
@@ -178,7 +178,9 @@ pub fn should_deprecate(
     }
 
     // Deprecate for low evidence coverage
-    if perf.evidence_coverage < criteria.max_evidence_coverage_for_deprecation && perf.total_fires > 5 {
+    if perf.evidence_coverage < criteria.max_evidence_coverage_for_deprecation
+        && perf.total_fires > 5
+    {
         return true;
     }
 
@@ -549,7 +551,11 @@ mod tests {
             perf.record_fire(false);
         }
         // precision = 0.3, below 0.5
-        assert!(should_deprecate(&perf, &DeprecationCriteria::default(), Utc::now()));
+        assert!(should_deprecate(
+            &perf,
+            &DeprecationCriteria::default(),
+            Utc::now()
+        ));
     }
 
     #[test]
@@ -561,7 +567,11 @@ mod tests {
         }
         perf.record_fire(false);
         // precision = 0.9, good
-        assert!(!should_deprecate(&perf, &DeprecationCriteria::default(), Utc::now()));
+        assert!(!should_deprecate(
+            &perf,
+            &DeprecationCriteria::default(),
+            Utc::now()
+        ));
     }
 
     #[test]
@@ -570,7 +580,11 @@ mod tests {
         for _ in 0..10 {
             perf.record_fire(false);
         }
-        assert!(!should_deprecate(&perf, &DeprecationCriteria::default(), Utc::now()));
+        assert!(!should_deprecate(
+            &perf,
+            &DeprecationCriteria::default(),
+            Utc::now()
+        ));
     }
 
     #[test]
@@ -715,11 +729,21 @@ mod tests {
         let id = perf.recipe_id;
         registry.register(perf);
 
-        let snapshot = registry.to_json_snapshot().expect("snapshot serialization must work");
-        let restored = RecipeRegistry::from_json_snapshot(&snapshot).expect("snapshot restore must work");
+        let snapshot = registry
+            .to_json_snapshot()
+            .expect("snapshot serialization must work");
+        let restored =
+            RecipeRegistry::from_json_snapshot(&snapshot).expect("snapshot restore must work");
 
         assert!(restored.get_performance(&id).is_some());
-        assert_eq!(restored.status_counts().get("candidate").copied().unwrap_or(0), 1);
+        assert_eq!(
+            restored
+                .status_counts()
+                .get("candidate")
+                .copied()
+                .unwrap_or(0),
+            1
+        );
     }
 
     #[test]
@@ -840,7 +864,10 @@ mod tests {
         perf.evidence_coverage = 0.8;
 
         let result = should_deprecate(&perf, &DeprecationCriteria::default(), Utc::now());
-        assert!(result, "Should deprecate when last_fired is None and staged_at is old");
+        assert!(
+            result,
+            "Should deprecate when last_fired is None and staged_at is old"
+        );
     }
 
     #[test]

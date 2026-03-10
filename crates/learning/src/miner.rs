@@ -184,7 +184,10 @@ pub fn build_contingency(
         .collect();
 
     // Compute study observation period from signal timestamps for c-cell symmetry
-    let all_signal_times: Vec<i64> = signal_map.values().flat_map(|v| v.iter().copied()).collect();
+    let all_signal_times: Vec<i64> = signal_map
+        .values()
+        .flat_map(|v| v.iter().copied())
+        .collect();
     let study_start = all_signal_times.iter().copied().min().unwrap_or(0) + lag_secs;
     let study_end = all_signal_times.iter().copied().max().unwrap_or(0) + lag_secs + window_secs;
 
@@ -205,9 +208,9 @@ pub fn build_contingency(
             })
         } else {
             // No signal: require outcome within the study observation period
-            outcome_map
-                .get(*entity)
-                .map_or(false, |o_ts| o_ts.iter().any(|ot| *ot >= study_start && *ot <= study_end))
+            outcome_map.get(*entity).map_or(false, |o_ts| {
+                o_ts.iter().any(|ot| *ot >= study_start && *ot <= study_end)
+            })
         };
 
         match (has_signal, has_outcome_in_window) {
@@ -287,7 +290,11 @@ pub fn compute_stability(
     for i in 0..splits {
         let start = min_ts + i as i64 * split_size;
         // Last split extends to max_ts+1 to include boundary events.
-        let end = if i == splits - 1 { max_ts + 1 } else { start + split_size };
+        let end = if i == splits - 1 {
+            max_ts + 1
+        } else {
+            start + split_size
+        };
 
         let split_outcomes: Vec<EventRecord> = outcomes
             .iter()
@@ -366,7 +373,10 @@ pub fn sweep_lags(
         let effect = odds_ratio(a, b, c, d);
 
         if effect >= config.min_effect && p <= config.max_p {
-            if best.as_ref().map_or(true, |(_, best_effect, _, _)| effect > *best_effect) {
+            if best
+                .as_ref()
+                .map_or(true, |(_, best_effect, _, _)| effect > *best_effect)
+            {
                 best = Some((lag, effect, p, (a, b, c, d)));
             }
         }
@@ -401,7 +411,12 @@ pub fn mine_one_pair(
     let mut candidate = sweep_lags(outcomes, signals, config, 30)?;
 
     // Check stability
-    let stability = compute_stability(outcomes, signals, candidate.best_lag_days, config.time_splits);
+    let stability = compute_stability(
+        outcomes,
+        signals,
+        candidate.best_lag_days,
+        config.time_splits,
+    );
     if stability < config.min_stability {
         return None;
     }
@@ -511,10 +526,19 @@ mod tests {
     fn test_miner_config_default_values_are_in_valid_ranges() {
         let cfg = MinerConfig::default();
         assert!(cfg.max_lag_days > 0, "max_lag_days must be positive");
-        assert!(cfg.min_effect > 1.0, "min_effect must be > 1.0 (odds ratio uplift)");
+        assert!(
+            cfg.min_effect > 1.0,
+            "min_effect must be > 1.0 (odds ratio uplift)"
+        );
         assert!(cfg.max_p > 0.0 && cfg.max_p < 1.0, "max_p must be in (0,1)");
-        assert!(cfg.min_stability >= 0.0 && cfg.min_stability <= 1.0, "min_stability in [0,1]");
-        assert!(cfg.time_splits >= 2, "time_splits must be >= 2 for meaningful cross-validation");
+        assert!(
+            cfg.min_stability >= 0.0 && cfg.min_stability <= 1.0,
+            "min_stability in [0,1]"
+        );
+        assert!(
+            cfg.time_splits >= 2,
+            "time_splits must be >= 2 for meaningful cross-validation"
+        );
         assert!(cfg.entity_min_count >= 1, "entity_min_count must be >= 1");
     }
 
@@ -524,14 +548,8 @@ mod tests {
         // Entity B: has signal but no outcome
         // Entity C: has outcome but no signal
         // Entity D: neither
-        let outcomes = vec![
-            ("A".to_string(), 1000i64),
-            ("C".to_string(), 2000i64),
-        ];
-        let signals = vec![
-            ("A".to_string(), 1000i64),
-            ("B".to_string(), 3000i64),
-        ];
+        let outcomes = vec![("A".to_string(), 1000i64), ("C".to_string(), 2000i64)];
+        let signals = vec![("A".to_string(), 1000i64), ("B".to_string(), 3000i64)];
         // With lag=0, window=30 days (2592000 seconds)
         // 4 entities known in population: A, B, C, D (D has neither)
         let (a, b, c, d) = build_contingency(&outcomes, &signals, 0, 30, 4);
@@ -545,7 +563,7 @@ mod tests {
     fn test_build_contingency_with_lag() {
         // Signal at day 0, outcome at day 10 — with lag=10 they should match
         let outcomes = vec![("A".to_string(), 864000i64)]; // day 10
-        let signals = vec![("A".to_string(), 0i64)];       // day 0
+        let signals = vec![("A".to_string(), 0i64)]; // day 0
         let (a, _b, _c, _d) = build_contingency(&outcomes, &signals, 10, 5, 0);
         assert_eq!(a, 1);
     }
@@ -752,7 +770,10 @@ mod tests {
         let observed = build_contingency(&outcomes, &signals, 0, 30, 0);
         let undersized = build_contingency(&outcomes, &signals, 0, 30, 1);
 
-        assert_eq!(observed, undersized, "undersized total_entities must not distort counts");
+        assert_eq!(
+            observed, undersized,
+            "undersized total_entities must not distort counts"
+        );
     }
 
     // ── B216: build_contingency with empty data ──────────
@@ -849,7 +870,7 @@ mod tests {
     fn test_sweep_lags_large_max_lag_clamped() {
         let mut cfg = MinerConfig::default();
         cfg.max_lag_days = 10_000; // exceeds MAX_SWEEP_LAG_DAYS
-        // Should not panic or take forever — clamped to MAX_SWEEP_LAG_DAYS
+                                   // Should not panic or take forever — clamped to MAX_SWEEP_LAG_DAYS
         let result = sweep_lags(&[], &[], &cfg, 30);
         assert!(result.is_none());
     }
@@ -881,35 +902,50 @@ mod tests {
 
     #[test]
     fn test_miner_config_zero_lag_is_invalid() {
-        let cfg = MinerConfig { max_lag_days: 0, ..MinerConfig::default() };
+        let cfg = MinerConfig {
+            max_lag_days: 0,
+            ..MinerConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("max_lag_days")));
     }
 
     #[test]
     fn test_miner_config_min_effect_exactly_one_is_invalid() {
-        let cfg = MinerConfig { min_effect: 1.0, ..MinerConfig::default() };
+        let cfg = MinerConfig {
+            min_effect: 1.0,
+            ..MinerConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("min_effect")));
     }
 
     #[test]
     fn test_miner_config_max_p_zero_is_invalid() {
-        let cfg = MinerConfig { max_p: 0.0, ..MinerConfig::default() };
+        let cfg = MinerConfig {
+            max_p: 0.0,
+            ..MinerConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("max_p")));
     }
 
     #[test]
     fn test_miner_config_min_stability_above_one_is_invalid() {
-        let cfg = MinerConfig { min_stability: 1.01, ..MinerConfig::default() };
+        let cfg = MinerConfig {
+            min_stability: 1.01,
+            ..MinerConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("min_stability")));
     }
 
     #[test]
     fn test_miner_config_one_time_split_is_invalid() {
-        let cfg = MinerConfig { time_splits: 1, ..MinerConfig::default() };
+        let cfg = MinerConfig {
+            time_splits: 1,
+            ..MinerConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("time_splits")));
     }
@@ -952,8 +988,8 @@ mod tests {
             contingency: (10, 5, 5, 80),
         };
         let mut candidates = vec![
-            make("zzz_outcome", "signal_a"),  // same score, should sort last
-            make("aaa_outcome", "signal_a"),  // same score, should sort first
+            make("zzz_outcome", "signal_a"), // same score, should sort last
+            make("aaa_outcome", "signal_a"), // same score, should sort first
         ];
         rank_candidates(&mut candidates);
         assert_eq!(
@@ -982,6 +1018,9 @@ mod tests {
         rank_candidates(&mut c2);
         let outcomes1: Vec<&str> = c1.iter().map(|c| c.outcome.as_str()).collect();
         let outcomes2: Vec<&str> = c2.iter().map(|c| c.outcome.as_str()).collect();
-        assert_eq!(outcomes1, outcomes2, "rank_candidates must be deterministic");
+        assert_eq!(
+            outcomes1, outcomes2,
+            "rank_candidates must be deterministic"
+        );
     }
 }

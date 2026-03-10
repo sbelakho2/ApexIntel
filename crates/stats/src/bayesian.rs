@@ -62,7 +62,12 @@ impl BetaUpdater {
 
     /// Create with custom prior parameters.
     pub fn new(alpha: f64, beta: f64) -> Self {
-        Self { alpha, beta, prior_alpha: alpha, prior_beta: beta }
+        Self {
+            alpha,
+            beta,
+            prior_alpha: alpha,
+            prior_beta: beta,
+        }
     }
 
     /// Update with a success observation.
@@ -141,14 +146,22 @@ mod tests {
     fn test_fuse_signals_strong_evidence() {
         // Strong evidence for the hypothesis
         let posterior = fuse_signals(0.5, &[(0.9, 0.1), (0.8, 0.2)]);
-        assert!(posterior > 0.9, "Strong evidence should push posterior high, got {}", posterior);
+        assert!(
+            posterior > 0.9,
+            "Strong evidence should push posterior high, got {}",
+            posterior
+        );
     }
 
     #[test]
     fn test_fuse_signals_against() {
         // Evidence against the hypothesis
         let posterior = fuse_signals(0.5, &[(0.1, 0.9), (0.2, 0.8)]);
-        assert!(posterior < 0.1, "Counter-evidence should push posterior low, got {}", posterior);
+        assert!(
+            posterior < 0.1,
+            "Counter-evidence should push posterior low, got {}",
+            posterior
+        );
     }
 
     #[test]
@@ -259,8 +272,12 @@ mod tests {
         // 8 successes + 2 failures on uniform prior → alpha=9, beta=3, ab=12
         // variance = (9*3) / (12^2 * 13) = 27 / 1872 ≈ 0.01442
         let mut u = BetaUpdater::uniform_prior();
-        for _ in 0..8 { u.observe_success(); }
-        for _ in 0..2 { u.observe_failure(); }
+        for _ in 0..8 {
+            u.observe_success();
+        }
+        for _ in 0..2 {
+            u.observe_failure();
+        }
         let expected = (9.0 * 3.0) / (12.0_f64.powi(2) * 13.0);
         assert!(
             (u.variance() - expected).abs() < 1e-10,
@@ -274,12 +291,20 @@ mod tests {
     fn test_beta_updater_variance_symmetric_peak() {
         // Symmetric Beta(50,50): variance peaks near mean=0.5
         let mut u = BetaUpdater::uniform_prior();
-        for _ in 0..49 { u.observe_success(); }
-        for _ in 0..49 { u.observe_failure(); }
+        for _ in 0..49 {
+            u.observe_success();
+        }
+        for _ in 0..49 {
+            u.observe_failure();
+        }
         // Both mean and variance should be close to symmetric values
         assert!((u.mean() - 0.5).abs() < 1e-10);
         // variance should be small (concentrated distribution)
-        assert!(u.variance() < 0.005, "variance should be small for n=99, got {}", u.variance());
+        assert!(
+            u.variance() < 0.005,
+            "variance should be small for n=99, got {}",
+            u.variance()
+        );
     }
 
     #[test]
@@ -296,8 +321,12 @@ mod tests {
     #[test]
     fn test_beta_updater_total_observations_counts_both() {
         let mut u = BetaUpdater::uniform_prior();
-        for _ in 0..7 { u.observe_success(); }
-        for _ in 0..3 { u.observe_failure(); }
+        for _ in 0..7 {
+            u.observe_success();
+        }
+        for _ in 0..3 {
+            u.observe_failure();
+        }
         assert!(
             (u.total_observations() - 10.0).abs() < 1e-10,
             "expected 10 observations, got {}",
@@ -310,13 +339,17 @@ mod tests {
         // Custom prior (alpha=2, beta=5) — observations start at 0
         let mut u = BetaUpdater::new(2.0, 5.0);
         assert!((u.total_observations() - 0.0).abs() < 1e-10);
-        for _ in 0..3 { u.observe_success(); }
+        for _ in 0..3 {
+            u.observe_success();
+        }
         assert!(
             (u.total_observations() - 3.0).abs() < 1e-10,
             "expected 3 obs after 3 successes, got {}",
             u.total_observations()
         );
-        for _ in 0..2 { u.observe_failure(); }
+        for _ in 0..2 {
+            u.observe_failure();
+        }
         assert!(
             (u.total_observations() - 5.0).abs() < 1e-10,
             "expected 5 total obs, got {}",

@@ -59,8 +59,12 @@ pub fn default_bom_mapping() -> Vec<BomEntry> {
         BomEntry {
             product_family: "PCBA_automotive".into(),
             component_families: vec![
-                "MLCC".into(), "MCU".into(), "MOSFET".into(), "resistor".into(),
-                "inductor".into(), "automotive_IC".into(),
+                "MLCC".into(),
+                "MCU".into(),
+                "MOSFET".into(),
+                "resistor".into(),
+                "inductor".into(),
+                "automotive_IC".into(),
             ],
             critical_components: vec!["STM32".into(), "NXP_S32".into(), "TI_TMS570".into()],
             alternative_sources: 2,
@@ -69,7 +73,10 @@ pub fn default_bom_mapping() -> Vec<BomEntry> {
         BomEntry {
             product_family: "PCBA_industrial".into(),
             component_families: vec![
-                "MLCC".into(), "MCU".into(), "power_IC".into(), "connector".into(),
+                "MLCC".into(),
+                "MCU".into(),
+                "power_IC".into(),
+                "connector".into(),
                 "relay".into(),
             ],
             critical_components: vec!["STM32".into(), "ESP32".into()],
@@ -79,8 +86,11 @@ pub fn default_bom_mapping() -> Vec<BomEntry> {
         BomEntry {
             product_family: "PCBA_telecom".into(),
             component_families: vec![
-                "RF_IC".into(), "FPGA".into(), "high_speed_connector".into(),
-                "oscillator".into(), "power_module".into(),
+                "RF_IC".into(),
+                "FPGA".into(),
+                "high_speed_connector".into(),
+                "oscillator".into(),
+                "power_module".into(),
             ],
             critical_components: vec!["Xilinx_Zynq".into(), "Qualcomm_QCA".into()],
             alternative_sources: 1,
@@ -89,7 +99,9 @@ pub fn default_bom_mapping() -> Vec<BomEntry> {
         BomEntry {
             product_family: "PCBA_medical".into(),
             component_families: vec![
-                "precision_ADC".into(), "medical_IC".into(), "MLCC".into(),
+                "precision_ADC".into(),
+                "medical_IC".into(),
+                "MLCC".into(),
                 "precision_resistor".into(),
             ],
             critical_components: vec!["TI_ADS1299".into(), "AD7768".into()],
@@ -99,7 +111,9 @@ pub fn default_bom_mapping() -> Vec<BomEntry> {
         BomEntry {
             product_family: "wire_harness".into(),
             component_families: vec![
-                "connector".into(), "terminal".into(), "wire".into(),
+                "connector".into(),
+                "terminal".into(),
+                "wire".into(),
                 "heat_shrink".into(),
             ],
             critical_components: vec!["TE_connector".into(), "Molex_connector".into()],
@@ -158,10 +172,8 @@ impl ShortageCorrelator {
             return None;
         }
 
-        let product_families: Vec<String> = affected
-            .iter()
-            .map(|b| b.product_family.clone())
-            .collect();
+        let product_families: Vec<String> =
+            affected.iter().map(|b| b.product_family.clone()).collect();
         let total_exposure: f64 = affected.iter().map(|b| b.revenue_exposure_pct).sum();
         let min_alternatives = affected
             .iter()
@@ -230,26 +242,16 @@ impl ShortageCorrelator {
     }
 
     /// Batch-correlate multiple shortage signals.
-    pub fn correlate_batch(
-        &self,
-        signals: &[ShortageSignal],
-    ) -> Vec<ShortageCorrelation> {
-        signals
-            .iter()
-            .filter_map(|s| self.correlate(s))
-            .collect()
+    pub fn correlate_batch(&self, signals: &[ShortageSignal]) -> Vec<ShortageCorrelation> {
+        signals.iter().filter_map(|s| self.correlate(s)).collect()
     }
 
     /// Aggregate exposure by product family across multiple shortages.
-    pub fn aggregate_exposure(
-        &self,
-        correlations: &[ShortageCorrelation],
-    ) -> HashMap<String, f64> {
+    pub fn aggregate_exposure(&self, correlations: &[ShortageCorrelation]) -> HashMap<String, f64> {
         let mut exposure: HashMap<String, f64> = HashMap::new();
         for corr in correlations {
             for pf in &corr.affected_product_families {
-                *exposure.entry(pf.clone()).or_default() +=
-                    corr.total_revenue_exposure_pct;
+                *exposure.entry(pf.clone()).or_default() += corr.total_revenue_exposure_pct;
             }
         }
         exposure
@@ -322,10 +324,7 @@ mod tests {
         let signal = make_signal("MCU", "STM32", "high");
         let result = correlator.correlate(&signal).unwrap();
         assert!(!result.recommended_actions.is_empty());
-        assert!(result
-            .recommended_actions
-            .iter()
-            .any(|a| a.contains("BOM")));
+        assert!(result.recommended_actions.iter().any(|a| a.contains("BOM")));
     }
 
     #[test]

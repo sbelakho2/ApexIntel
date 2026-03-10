@@ -99,9 +99,15 @@ pub fn default_regions() -> Vec<RegionConfig> {
                 "https://www.webmanagercenter.com/feed/".into(),
             ],
             relevance_keywords: vec![
-                "electronics".into(), "manufacturing".into(), "export".into(),
-                "investment".into(), "industry".into(), "Starz".into(),
-                "zone franche".into(), "automobile".into(), "câblage".into(),
+                "electronics".into(),
+                "manufacturing".into(),
+                "export".into(),
+                "investment".into(),
+                "industry".into(),
+                "Starz".into(),
+                "zone franche".into(),
+                "automobile".into(),
+                "câblage".into(),
             ],
         },
         RegionConfig {
@@ -112,9 +118,14 @@ pub fn default_regions() -> Vec<RegionConfig> {
                 "https://www.leseco.ma/feed/".into(),
             ],
             relevance_keywords: vec![
-                "electronics".into(), "automotive".into(), "Tanger".into(),
-                "free zone".into(), "manufacturing".into(), "cable".into(),
-                "aéronautique".into(), "industrie".into(),
+                "electronics".into(),
+                "automotive".into(),
+                "Tanger".into(),
+                "free zone".into(),
+                "manufacturing".into(),
+                "cable".into(),
+                "aéronautique".into(),
+                "industrie".into(),
             ],
         },
         RegionConfig {
@@ -125,44 +136,56 @@ pub fn default_regions() -> Vec<RegionConfig> {
                 "https://www.globes.co.il/news/rss/rss.technology.xml".into(),
             ],
             relevance_keywords: vec![
-                "electronics".into(), "semiconductor".into(), "defense".into(),
-                "technology".into(), "startup".into(), "manufacturing".into(),
+                "electronics".into(),
+                "semiconductor".into(),
+                "defense".into(),
+                "technology".into(),
+                "startup".into(),
+                "manufacturing".into(),
                 "high-tech".into(),
             ],
         },
         RegionConfig {
             code: "CN".into(),
             name: "China".into(),
-            feeds: vec![
-                "https://www.scmp.com/rss/4/feed".into(),
-            ],
+            feeds: vec!["https://www.scmp.com/rss/4/feed".into()],
             relevance_keywords: vec![
-                "electronics".into(), "semiconductor".into(), "PCB".into(),
-                "manufacturing".into(), "export".into(), "supply chain".into(),
-                "Shenzhen".into(), "Foxconn".into(),
+                "electronics".into(),
+                "semiconductor".into(),
+                "PCB".into(),
+                "manufacturing".into(),
+                "export".into(),
+                "supply chain".into(),
+                "Shenzhen".into(),
+                "Foxconn".into(),
             ],
         },
         RegionConfig {
             code: "EU".into(),
             name: "European Union".into(),
-            feeds: vec![
-                "https://www.eenewseurope.com/rss.xml".into(),
-            ],
+            feeds: vec!["https://www.eenewseurope.com/rss.xml".into()],
             relevance_keywords: vec![
-                "electronics".into(), "EMS".into(), "automotive".into(),
-                "semiconductor".into(), "regulation".into(), "REACH".into(),
-                "RoHS".into(), "tariff".into(),
+                "electronics".into(),
+                "EMS".into(),
+                "automotive".into(),
+                "semiconductor".into(),
+                "regulation".into(),
+                "REACH".into(),
+                "RoHS".into(),
+                "tariff".into(),
             ],
         },
         RegionConfig {
             code: "US".into(),
             name: "United States".into(),
-            feeds: vec![
-                "https://www.eetimes.com/feed/".into(),
-            ],
+            feeds: vec!["https://www.eetimes.com/feed/".into()],
             relevance_keywords: vec![
-                "electronics".into(), "semiconductor".into(), "CHIPS Act".into(),
-                "manufacturing".into(), "defense".into(), "supply chain".into(),
+                "electronics".into(),
+                "semiconductor".into(),
+                "CHIPS Act".into(),
+                "manufacturing".into(),
+                "defense".into(),
+                "supply chain".into(),
                 "reshoring".into(),
             ],
         },
@@ -172,11 +195,7 @@ pub fn default_regions() -> Vec<RegionConfig> {
 // ─── Relevance scoring ──────────────────────────────────────────────────
 
 /// Score an article's relevance for a region based on keyword matches.
-pub fn score_relevance(
-    title: &str,
-    summary: &str,
-    keywords: &[String],
-) -> f64 {
+pub fn score_relevance(title: &str, summary: &str, keywords: &[String]) -> f64 {
     let text = format!("{} {}", title, summary).to_lowercase();
     let mut matches = 0;
     for kw in keywords {
@@ -295,11 +314,7 @@ pub fn build_digest(
             }
         })
         .collect();
-    sections.sort_by(|a, b| {
-        b.stories
-            .len()
-            .cmp(&a.stories.len())
-    });
+    sections.sort_by(|a, b| b.stories.len().cmp(&a.stories.len()));
 
     let total_stories: usize = sections.iter().map(|s| s.stories.len()).sum();
     let num_categories = sections.len();
@@ -356,7 +371,11 @@ mod tests {
     #[test]
     fn test_score_relevance() {
         let keywords = vec!["electronics".into(), "manufacturing".into(), "PCB".into()];
-        let score = score_relevance("New electronics factory opens", "PCB manufacturing line", &keywords);
+        let score = score_relevance(
+            "New electronics factory opens",
+            "PCB manufacturing line",
+            &keywords,
+        );
         assert!(score > 0.5);
     }
 
@@ -410,7 +429,10 @@ mod tests {
 
     #[test]
     fn test_extract_domain() {
-        assert_eq!(extract_domain("https://www.reuters.com/article/foo"), "www.reuters.com");
+        assert_eq!(
+            extract_domain("https://www.reuters.com/article/foo"),
+            "www.reuters.com"
+        );
     }
 
     #[test]

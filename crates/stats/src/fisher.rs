@@ -65,27 +65,27 @@ fn log_factorial(n: u64) -> f64 {
     // Exact ln(k!) for small k avoids any Stirling error in the range that
     // matters most for P-value precision (small marginal sums).
     const LUT: &[f64] = &[
-        0.0,                      // 0! = 1
-        0.0,                      // 1! = 1
-        0.6931471805599453,       // 2!
-        1.791759469228327,        // 3!
-        3.178053830347946,        // 4!
-        4.787491742782046,        // 5!
-        6.579251212010101,        // 6!
-        8.525161361065415,        // 7!
-        10.60460290274525,        // 8!
-        12.801827480081469,       // 9!
-        15.104412573075518,       // 10!
-        17.502307845873887,       // 11!
-        19.987214495661885,       // 12!
-        22.55216385312342,        // 13!
-        25.19122118273868,        // 14!
-        27.899271383840894,       // 15!
-        30.671860106080675,       // 16!
-        33.50507345013689,        // 17!
-        36.39544520803305,        // 18!
-        39.339884187199495,       // 19!
-        42.335616460753485,       // 20!
+        0.0,                // 0! = 1
+        0.0,                // 1! = 1
+        0.6931471805599453, // 2!
+        1.791759469228327,  // 3!
+        3.178053830347946,  // 4!
+        4.787491742782046,  // 5!
+        6.579251212010101,  // 6!
+        8.525161361065415,  // 7!
+        10.60460290274525,  // 8!
+        12.801827480081469, // 9!
+        15.104412573075518, // 10!
+        17.502307845873887, // 11!
+        19.987214495661885, // 12!
+        22.55216385312342,  // 13!
+        25.19122118273868,  // 14!
+        27.899271383840894, // 15!
+        30.671860106080675, // 16!
+        33.50507345013689,  // 17!
+        36.39544520803305,  // 18!
+        39.339884187199495, // 19!
+        42.335616460753485, // 20!
     ];
     if n < LUT.len() as u64 {
         return LUT[n as usize];
@@ -95,10 +95,7 @@ fn log_factorial(n: u64) -> f64 {
     // Error < 1e-13 for n ≥ 21; negligible compared to f64 precision in log-
     // hypergeometric sums.  O(1) vs the previous O(n) loop.
     let x = n as f64;
-    x * x.ln()
-        - x
-        + 0.5 * (2.0 * std::f64::consts::PI * x).ln()
-        + 1.0 / (12.0 * x)
+    x * x.ln() - x + 0.5 * (2.0 * std::f64::consts::PI * x).ln() + 1.0 / (12.0 * x)
         - 1.0 / (360.0 * x.powi(3))
         + 1.0 / (1260.0 * x.powi(5))
 }
@@ -118,7 +115,11 @@ mod tests {
     fn test_fisher_strong_association() {
         // Very strong association
         let p = p_value(20, 0, 0, 20);
-        assert!(p < 0.001, "Strong association should have p < 0.001, got {}", p);
+        assert!(
+            p < 0.001,
+            "Strong association should have p < 0.001, got {}",
+            p
+        );
     }
 
     #[test]
@@ -149,7 +150,11 @@ mod tests {
     #[test]
     fn test_p_value_range() {
         let p = p_value(5, 3, 2, 8);
-        assert!(p >= 0.0 && p <= 1.0, "p-value should be in [0,1], got {}", p);
+        assert!(
+            p >= 0.0 && p <= 1.0,
+            "p-value should be in [0,1], got {}",
+            p
+        );
     }
 
     // ── B259: large counts ──────────────────────────────────────────────────
@@ -176,7 +181,10 @@ mod tests {
     fn test_fisher_large_counts_asymmetric() {
         // Strong association in a large table
         let p = p_value(100, 10, 10, 100);
-        assert!(p < 0.001, "strong 10:1 association should have p < 0.001, got {p}");
+        assert!(
+            p < 0.001,
+            "strong 10:1 association should have p < 0.001, got {p}"
+        );
         assert!(p >= 0.0 && p <= 1.0);
     }
 
@@ -185,7 +193,10 @@ mod tests {
         // Verify no NaN for moderate large tables
         for (a, b, c, d) in &[(200u64, 50, 30, 300), (1000, 1000, 1000, 1000)] {
             let p = p_value(*a, *b, *c, *d);
-            assert!(p.is_finite(), "p must not be NaN/inf for ({a},{b},{c},{d}): got {p}");
+            assert!(
+                p.is_finite(),
+                "p must not be NaN/inf for ({a},{b},{c},{d}): got {p}"
+            );
             assert!(p >= 0.0 && p <= 1.0);
         }
     }

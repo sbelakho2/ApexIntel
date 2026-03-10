@@ -210,10 +210,42 @@
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Frequency</span>
-        <select name="notification_frequency" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs">
+        <select id="notification_frequency" name="notification_frequency" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs">
           <option value="Daily" {% if notification_frequency == "Daily" %}selected{% endif %}>Daily</option>
           <option value="Weekly" {% if notification_frequency == "Weekly" %}selected{% endif %}>Weekly</option>
         </select>
+      </div>
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Send Time (CET)</span>
+        <input type="time" name="email_digest_time_cet" value="{{ email_digest_time_cet }}" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs" />
+      </div>
+      <div id="weekly_day_row" class="flex items-center justify-between px-4 py-3">
+        <span class="text-sm font-bold">Weekly Day</span>
+        <select name="email_digest_weekday" class="h-7 w-32 rounded border border-border bg-background px-2 text-xs">
+          <option value="Mon" {% if email_digest_weekday == "Mon" %}selected{% endif %}>Mon</option>
+          <option value="Tue" {% if email_digest_weekday == "Tue" %}selected{% endif %}>Tue</option>
+          <option value="Wed" {% if email_digest_weekday == "Wed" %}selected{% endif %}>Wed</option>
+          <option value="Thu" {% if email_digest_weekday == "Thu" %}selected{% endif %}>Thu</option>
+          <option value="Fri" {% if email_digest_weekday == "Fri" %}selected{% endif %}>Fri</option>
+          <option value="Sat" {% if email_digest_weekday == "Sat" %}selected{% endif %}>Sat</option>
+          <option value="Sun" {% if email_digest_weekday == "Sun" %}selected{% endif %}>Sun</option>
+        </select>
+      </div>
+      <div class="px-4 py-3">
+        <p class="mb-2 text-sm font-bold">Recipient Emails</p>
+        <p class="mb-2 text-[11px] text-muted-foreground">Comma, semicolon, or newline separated addresses.</p>
+        <textarea name="email_digest_recipients" rows="3" class="w-full rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder="ops@example.com, intel@example.com">{{ email_digest_recipients }}</textarea>
+      </div>
+      <div class="px-4 py-3">
+        <p class="mb-2 text-sm font-bold">Insight Categories</p>
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <label class="inline-flex items-center gap-2"><input type="checkbox" name="email_digest_categories" value="demand_signal" {% if digest_category_demand_signal %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />Demand signal</label>
+          <label class="inline-flex items-center gap-2"><input type="checkbox" name="email_digest_categories" value="supply_risk" {% if digest_category_supply_risk %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />Supply risk</label>
+          <label class="inline-flex items-center gap-2"><input type="checkbox" name="email_digest_categories" value="competitive_intel" {% if digest_category_competitive_intel %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />Competitive intel</label>
+          <label class="inline-flex items-center gap-2"><input type="checkbox" name="email_digest_categories" value="security_posture" {% if digest_category_security_posture %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />Security posture</label>
+          <label class="inline-flex items-center gap-2"><input type="checkbox" name="email_digest_categories" value="macro_shift" {% if digest_category_macro_shift %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />Macro shift</label>
+          <label class="inline-flex items-center gap-2"><input type="checkbox" name="email_digest_categories" value="poi_movement" {% if digest_category_poi_movement %}checked{% endif %} class="h-3.5 w-3.5 rounded border-border" />POI movement</label>
+        </div>
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Critical Only</span>
@@ -229,4 +261,19 @@
     <button type="submit" class="inline-flex min-h-[40px] items-center gap-2 rounded border border-border bg-primary px-4 py-2 text-xs font-bold uppercase text-primary-foreground">Save Changes</button>
   </div>
 </form>
+<script>
+  (function() {
+    const frequency = document.getElementById('notification_frequency');
+    const weeklyRow = document.getElementById('weekly_day_row');
+    if (!frequency || !weeklyRow) return;
+
+    const syncWeeklyVisibility = () => {
+      const isWeekly = String(frequency.value || '').toLowerCase() === 'weekly';
+      weeklyRow.style.display = isWeekly ? 'flex' : 'none';
+    };
+
+    frequency.addEventListener('change', syncWeeklyVisibility);
+    syncWeeklyVisibility();
+  })();
+</script>
 {% endblock %}

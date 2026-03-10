@@ -98,8 +98,7 @@ impl DiscordScraper {
             anyhow::bail!("Discord invite returned HTTP {}", resp.status());
         }
 
-        let invite: DiscordInviteResp =
-            resp.json().await.context("parsing Discord invite JSON")?;
+        let invite: DiscordInviteResp = resp.json().await.context("parsing Discord invite JSON")?;
 
         Ok(InvitePreview {
             guild_name: invite

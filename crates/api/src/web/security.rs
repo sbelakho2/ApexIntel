@@ -6,17 +6,12 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{
-    extract::Query,
-    http::HeaderMap,
-    response::{Html, IntoResponse},
-    Extension,
-};
+use axum::{extract::Query, http::HeaderMap, response::IntoResponse, Extension};
 use serde::Deserialize;
 
-use apex_store::postgres::{PgStore, WarningListFilters};
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 
 // ─── Template data ──────────────────────────────────────────────────────────
 
@@ -63,16 +58,42 @@ pub struct SecurityScore {
 pub struct SecurityFinding {
     pub severity: String,
     pub title: String,
+    pub summary: String,
     pub region: String,
-    pub finding_type: String,
+    pub signal: String,
     pub created_at: String,
     pub acknowledged: bool,
+    pub detail_href: String,
+    pub source_href: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SecurityQuery {
     pub signal: Option<String>,
     pub risk: Option<String>,
+}
+
+fn classify_security_signal(title: &str, description: Option<&str>) -> String {
+    let t = title.to_ascii_lowercase();
+    let d = description.unwrap_or_default().to_ascii_lowercase();
+    if t.contains("dns posture") || d.contains("dns posture") {
+        "dns".to_string()
+    } else if t.contains("lookalike") || d.contains("lookalike") || d.contains("typosquat") {
+        "lookalike".to_string()
+    } else if t.contains("kev") || t.contains("cisa") || d.contains("cve-") {
+        "kev".to_string()
+    } else {
+        "security".to_string()
+    }
+}
+
+fn signal_label(signal: &str) -> &'static str {
+    match signal {
+        "dns" => "DNS posture",
+        "lookalike" => "Lookalike domain",
+        "kev" => "Known exploited vulnerabilities",
+        _ => "Security",
+    }
 }
 
 // ─── Template ───────────────────────────────────────────────────────────────
@@ -116,63 +137,139 @@ pub async fn security_page(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<SecurityQuery>,
 ) -> impl IntoResponse {
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/security", unack);
 
     // DNS posture observations
-    let dns_obs = store.get_dns_posture_entries(100).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to load DNS posture: {e}");
-        vec![]
-    });
-    let dns_posture: Vec<DnsPostureItem> = dns_obs.iter().map(|o| {
-        let v = &o.value;
-        DnsPostureItem {
-            domain: v.get("domain").and_then(|d| d.as_str()).unwrap_or("unknown").to_string(),
-            has_spf: v.get("has_spf").and_then(|b| b.as_bool()).unwrap_or(false),
-            has_dkim: v.get("has_dkim").and_then(|b| b.as_bool()).unwrap_or(false),
-            has_dmarc: v.get("has_dmarc").and_then(|b| b.as_bool()).unwrap_or(false),
-            has_dnssec: v.get("has_dnssec").and_then(|b| b.as_bool()).unwrap_or(false),
-            score: v.get("posture_score").and_then(|s| s.as_f64()).map(|s| (s * 100.0) as i64).unwrap_or(0),
-        }
-    }).collect();
+    let dns_obs = store
+        .get_dns_posture_entries(100)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to load DNS posture: {e}");
+            vec![]
+        });
+    let dns_posture: Vec<DnsPostureItem> = dns_obs
+        .iter()
+        .map(|o| {
+            let v = &o.value;
+            DnsPostureItem {
+                domain: v
+                    .get("domain")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                has_spf: v.get("has_spf").and_then(|b| b.as_bool()).unwrap_or(false),
+                has_dkim: v.get("has_dkim").and_then(|b| b.as_bool()).unwrap_or(false),
+                has_dmarc: v
+                    .get("has_dmarc")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false),
+                has_dnssec: v
+                    .get("has_dnssec")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false),
+                score: v
+                    .get("posture_score")
+                    .and_then(|s| s.as_f64())
+                    .map(|s| (s * 100.0) as i64)
+                    .unwrap_or(0),
+            }
+        })
+        .collect();
 
     // KEV observations
     let kev_obs = store.get_kev_relevance(50).await.unwrap_or_else(|e| {
         tracing::error!("Failed to load KEV data: {e}");
         vec![]
     });
-    let kev_items: Vec<KevItem> = kev_obs.iter().map(|o| {
-        let v = &o.value;
-        KevItem {
-            cve_id: v.get("cve_id").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-            name: v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-            vendor: v.get("vendor").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            product: v.get("product").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            date_added: v.get("date_added").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            due_date: v.get("due_date").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            relevant_companies: v.get("relevant_companies")
-                .and_then(|a| a.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                .unwrap_or_default(),
-        }
-    }).collect();
+    let kev_items: Vec<KevItem> = kev_obs
+        .iter()
+        .map(|o| {
+            let v = &o.value;
+            KevItem {
+                cve_id: v
+                    .get("cve_id")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                name: v
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                vendor: v
+                    .get("vendor")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                product: v
+                    .get("product")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                date_added: v
+                    .get("date_added")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                due_date: v
+                    .get("due_date")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                relevant_companies: v
+                    .get("relevant_companies")
+                    .and_then(|a| a.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
 
     // Lookalike domains
     let lookalike_obs = store.get_lookalike_domains(50).await.unwrap_or_else(|e| {
         tracing::error!("Failed to load lookalike domains: {e}");
         vec![]
     });
-    let lookalike_domains: Vec<LookalikeDomain> = lookalike_obs.iter().map(|o| {
-        let v = &o.value;
-        LookalikeDomain {
-            domain: v.get("lookalike_domain").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            target_domain: v.get("original_domain").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-            similarity: v.get("similarity").and_then(|s| s.as_f64()).unwrap_or(0.0),
-            registered_at: v.get("registered_at").and_then(|s| s.as_str()).map(|s| s.to_string()),
-            is_active: v.get("active").and_then(|b| b.as_bool()).unwrap_or(false),
-            risk_level: v.get("risk_level").and_then(|s| s.as_str()).unwrap_or("low").to_string(),
-        }
-    }).collect();
+    let lookalike_domains: Vec<LookalikeDomain> = lookalike_obs
+        .iter()
+        .map(|o| {
+            let v = &o.value;
+            LookalikeDomain {
+                domain: v
+                    .get("lookalike_domain")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                target_domain: v
+                    .get("original_domain")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                similarity: v.get("similarity").and_then(|s| s.as_f64()).unwrap_or(0.0),
+                registered_at: v
+                    .get("registered_at")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()),
+                is_active: v.get("active").and_then(|b| b.as_bool()).unwrap_or(false),
+                risk_level: v
+                    .get("risk_level")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("low")
+                    .to_string(),
+            }
+        })
+        .collect();
 
     // Compute overall score from DNS posture
     let overall_score = if dns_posture.is_empty() {
@@ -182,49 +279,111 @@ pub async fn security_page(
     };
 
     let domains_monitored = dns_posture.len() as i64;
-    let last_scan_at = dns_obs.first()
+    let last_scan_at = dns_obs
+        .first()
         .map(|o| o.ts_utc.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "—".into());
 
-    let mut findings: Vec<SecurityFinding> = Vec::new();
-
-    for item in &kev_items {
-        findings.push(SecurityFinding {
-            severity: "high".into(),
-            title: format!("{} ({})", item.name, item.cve_id),
-            region: "Global".into(),
-            finding_type: "kev".into(),
-            created_at: item.date_added.clone(),
-            acknowledged: false,
+    let warning_findings = store
+        .list_warnings(
+            &WarningListFilters {
+                warning_types: vec!["security".to_string()],
+                ..Default::default()
+            },
+            Some(WarningOrderBy::CreatedAt),
+            true,
+            100,
+            0,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to load security warnings: {e}");
+            vec![]
         });
-    }
 
-    for item in &lookalike_domains {
-        findings.push(SecurityFinding {
-            severity: item.risk_level.clone(),
-            title: format!("Lookalike domain {}", item.domain),
-            region: "Global".into(),
-            finding_type: "lookalike".into(),
-            created_at: item.registered_at.clone().unwrap_or_else(|| "—".into()),
-            acknowledged: false,
-        });
-    }
+    let mut findings: Vec<SecurityFinding> = warning_findings
+        .into_iter()
+        .map(|w| {
+            let signal = classify_security_signal(&w.title, w.description.as_deref());
+            SecurityFinding {
+                severity: w.severity,
+                title: w.title,
+                summary: w
+                    .description
+                    .unwrap_or_else(|| "No additional details provided.".to_string()),
+                region: w.region.unwrap_or_else(|| "Global".to_string()),
+                signal: signal_label(&signal).to_string(),
+                created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
+                acknowledged: w.acknowledged,
+                detail_href: format!("/warnings/{}", w.id),
+                source_href: w
+                    .source_urls
+                    .and_then(|urls| urls.into_iter().find(|u| !u.is_empty())),
+            }
+        })
+        .collect();
 
-    for item in &dns_posture {
-        let mut issues = 0;
-        if !item.has_spf { issues += 1; }
-        if !item.has_dkim { issues += 1; }
-        if !item.has_dmarc { issues += 1; }
-        if issues > 0 {
-            let severity = if issues >= 3 { "high" } else if issues == 2 { "medium" } else { "low" };
+    // Fallback to synthesized findings if no security warnings exist yet.
+    if findings.is_empty() {
+        for item in &kev_items {
             findings.push(SecurityFinding {
-                severity: severity.into(),
-                title: format!("DNS posture issue on {}", item.domain),
+                severity: "high".into(),
+                title: format!("{} ({})", item.name, item.cve_id),
+                summary: "Potentially relevant known exploited vulnerability.".into(),
                 region: "Global".into(),
-                finding_type: "dns_posture".into(),
-                created_at: last_scan_at.clone(),
+                signal: signal_label("kev").into(),
+                created_at: item.date_added.clone(),
                 acknowledged: false,
+                detail_href: "/warnings".into(),
+                source_href: None,
             });
+        }
+
+        for item in &lookalike_domains {
+            findings.push(SecurityFinding {
+                severity: item.risk_level.clone(),
+                title: format!("Lookalike domain {}", item.domain),
+                summary: format!("Similar to monitored domain {}", item.target_domain),
+                region: "Global".into(),
+                signal: signal_label("lookalike").into(),
+                created_at: item.registered_at.clone().unwrap_or_else(|| "—".into()),
+                acknowledged: false,
+                detail_href: "/warnings".into(),
+                source_href: None,
+            });
+        }
+
+        for item in &dns_posture {
+            let mut issues = 0;
+            if !item.has_spf {
+                issues += 1;
+            }
+            if !item.has_dkim {
+                issues += 1;
+            }
+            if !item.has_dmarc {
+                issues += 1;
+            }
+            if issues > 0 {
+                let severity = if issues >= 3 {
+                    "high"
+                } else if issues == 2 {
+                    "medium"
+                } else {
+                    "low"
+                };
+                findings.push(SecurityFinding {
+                    severity: severity.into(),
+                    title: format!("DNS posture issue on {}", item.domain),
+                    summary: "Missing SPF, DKIM, or DMARC controls were detected.".into(),
+                    region: "Global".into(),
+                    signal: signal_label("dns").into(),
+                    created_at: last_scan_at.clone(),
+                    acknowledged: false,
+                    detail_href: "/warnings".into(),
+                    source_href: None,
+                });
+            }
         }
     }
 
@@ -232,10 +391,7 @@ pub async fn security_page(
     let active_risk = params.risk.unwrap_or_default();
 
     if !active_signal.is_empty() {
-        findings.retain(|f| {
-            let normalized = f.finding_type.replace('_', " ");
-            normalized.eq_ignore_ascii_case(&active_signal)
-        });
+        findings.retain(|f| f.signal.eq_ignore_ascii_case(signal_label(&active_signal)));
     }
 
     if !active_risk.is_empty() {
@@ -247,7 +403,9 @@ pub async fn security_page(
     let acknowledged_findings = findings.iter().filter(|f| f.acknowledged).count() as i64;
     let critical_high_count = findings
         .iter()
-        .filter(|f| f.severity.eq_ignore_ascii_case("critical") || f.severity.eq_ignore_ascii_case("high"))
+        .filter(|f| {
+            f.severity.eq_ignore_ascii_case("critical") || f.severity.eq_ignore_ascii_case("high")
+        })
         .count() as i64;
     let risk_critical_count = findings
         .iter()
@@ -304,20 +462,4 @@ pub async fn security_page(
     } else {
         tpl.into_response()
     }
-}
-
-/// POST /security/trigger-scan — trigger a security scan, return status HTML.
-pub async fn trigger_scan_html(
-    _session: Extension<WebSession>,
-    Extension(_store): Extension<Arc<PgStore>>,
-) -> impl IntoResponse {
-    // The actual scan is triggered via the API endpoint POST /api/admin/trigger-scan.
-    // This HTML route returns a status indicator.
-    Html(r#"<div class="apex-card p-4 border-green-500/30 bg-green-500/5">
-              <div class="flex items-center gap-2">
-                <span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
-                <p class="text-sm font-bold text-green-600">Security scan initiated</p>
-              </div>
-              <p class="mt-1 text-[10px] text-muted-foreground">The scan has been queued and will run in the background. Results will appear shortly.</p>
-            </div>"#.to_string()).into_response()
 }

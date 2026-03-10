@@ -3,14 +3,14 @@
 //! Takes InsightCandidate data (recipe template, evidence slots, entity context)
 //! and produces human-readable insight cards with narratives, actions, and citations.
 
-use chrono::{DateTime, Utc};
 use apex_core::validation::normalize_url;
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use uuid::Uuid;
 use tracing::warn;
+use uuid::Uuid;
 
 /// Maximum number of candidates accepted in a single [`render_batch`] call (B286).
 ///
@@ -219,7 +219,9 @@ pub fn build_slot_map(evidence: &[EvidenceSlot]) -> HashMap<String, String> {
 
 fn is_valid_slot_name(slot_name: &str) -> bool {
     let s = slot_name.trim();
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
 }
 
 /// Generate title from recipe code and entity name.
@@ -453,7 +455,8 @@ pub fn render_insight(candidate: &InsightCandidate) -> InsightCard {
 pub fn rank_insights(cards: &mut [InsightCard]) {
     cards.sort_by(|a, b| {
         // Primary: priority score DESC (higher is more important)
-        let score_order = b.priority_score
+        let score_order = b
+            .priority_score
             .partial_cmp(&a.priority_score)
             .unwrap_or_else(|| {
                 // NaN priority scores sort to the end (lowest priority)
@@ -484,20 +487,14 @@ pub fn filter_by_confidence(cards: &[InsightCard], min_confidence: f64) -> Vec<I
 
 /// Filter insights by category.
 pub fn filter_by_category<'a>(cards: &'a [InsightCard], category: &str) -> Vec<&'a InsightCard> {
-    cards
-        .iter()
-        .filter(|c| c.category == category)
-        .collect()
+    cards.iter().filter(|c| c.category == category).collect()
 }
 
 /// Group insights by category.
 pub fn group_by_category(cards: &[InsightCard]) -> HashMap<String, Vec<&InsightCard>> {
     let mut groups: HashMap<String, Vec<&InsightCard>> = HashMap::new();
     for card in cards {
-        groups
-            .entry(card.category.clone())
-            .or_default()
-            .push(card);
+        groups.entry(card.category.clone()).or_default().push(card);
     }
     groups
 }
@@ -544,7 +541,10 @@ pub fn render_batch(candidates: &[InsightCandidate]) -> Vec<InsightCard> {
             limit = MAX_RENDER_BATCH_SIZE,
             "render_batch: input exceeds MAX_RENDER_BATCH_SIZE — truncating to limit"
         );
-        unique_candidates.into_iter().take(MAX_RENDER_BATCH_SIZE).collect()
+        unique_candidates
+            .into_iter()
+            .take(MAX_RENDER_BATCH_SIZE)
+            .collect()
     } else {
         unique_candidates
     };
@@ -582,7 +582,10 @@ pub fn format_card_text(card: &InsightCard) -> String {
                 .observed_at
                 .map(|t| format!(", {}", t.format("%Y-%m-%d")))
                 .unwrap_or_default();
-            lines.push(format!("[{}] {} ({}{})", cite.index, cite.source_url, cite.source_domain, ts));
+            lines.push(format!(
+                "[{}] {} ({}{})",
+                cite.index, cite.source_url, cite.source_domain, ts
+            ));
         }
     }
 
@@ -661,7 +664,10 @@ mod tests {
         let evidence = sample_evidence();
         let map = build_slot_map(&evidence);
         assert_eq!(map.get("company").unwrap(), "Foxconn");
-        assert_eq!(map.get("signal").unwrap(), "3 new procurement job postings in 7 days");
+        assert_eq!(
+            map.get("signal").unwrap(),
+            "3 new procurement job postings in 7 days"
+        );
         assert_eq!(map.get("region").unwrap(), "Tunisia");
     }
 
@@ -815,8 +821,14 @@ mod tests {
 
     #[test]
     fn test_extract_domain() {
-        assert_eq!(extract_domain("https://www.foxconn.com/press"), "www.foxconn.com");
-        assert_eq!(extract_domain("http://example.com:8080/path"), "example.com");
+        assert_eq!(
+            extract_domain("https://www.foxconn.com/press"),
+            "www.foxconn.com"
+        );
+        assert_eq!(
+            extract_domain("http://example.com:8080/path"),
+            "example.com"
+        );
         assert_eq!(extract_domain("example.com/foo"), "example.com");
     }
 
@@ -848,8 +860,12 @@ mod tests {
         assert_eq!(card.severity, "warning");
         assert_eq!(card.category, "demand");
         assert_eq!(card.impact_label, "High");
-        assert!(card.narrative.contains("Foxconn shows signs of a new sourcing cycle"));
-        assert!(card.narrative.contains("3 new procurement job postings in 7 days"));
+        assert!(card
+            .narrative
+            .contains("Foxconn shows signs of a new sourcing cycle"));
+        assert!(card
+            .narrative
+            .contains("3 new procurement job postings in 7 days"));
         assert!(card.narrative.contains("[1][2]")); // citations appended
         assert_eq!(card.actions.len(), 3);
         assert!(card.actions[0].contains("Register on Foxconn supplier portal"));
@@ -982,7 +998,11 @@ mod tests {
         // Nested `{` should stop the placeholder scan
         let result = render_template("{{x}} and {x}", &slots);
         // First `{` hits another `{`, is emitted literally; then `x}` is remainder
-        assert!(result.contains("val"), "Outer {{x}} should still be replaced: {}", result);
+        assert!(
+            result.contains("val"),
+            "Outer {{x}} should still be replaced: {}",
+            result
+        );
     }
 
     #[test]
@@ -996,9 +1016,16 @@ mod tests {
 
     #[test]
     fn test_parse_actions_bounded() {
-        let huge_template: String = (0..200).map(|i| format!("Action {}", i)).collect::<Vec<_>>().join("\n");
+        let huge_template: String = (0..200)
+            .map(|i| format!("Action {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let actions = parse_actions(&huge_template, &HashMap::new());
-        assert!(actions.len() <= 50, "parse_actions should cap at MAX_ACTIONS=50, got {}", actions.len());
+        assert!(
+            actions.len() <= 50,
+            "parse_actions should cap at MAX_ACTIONS=50, got {}",
+            actions.len()
+        );
     }
 
     // ── B187: extract_domain with malformed URLs ──
@@ -1119,7 +1146,10 @@ mod tests {
         let template = "Alert for {company}: {signal} detected.";
         let result = render_template(template, &slots);
         // Exact string match, no truncation
-        assert_eq!(result, "Alert for Acme Corp Ltd: procurement spike detected.");
+        assert_eq!(
+            result,
+            "Alert for Acme Corp Ltd: procurement spike detected."
+        );
         assert!(result.len() <= template.len() + 13 + 17 + 10); // upper bound check
     }
 
@@ -1191,7 +1221,10 @@ mod tests {
     fn test_render_template_empty_template_returns_empty() {
         // An empty template string must produce an empty result
         let result = render_template("", &HashMap::new());
-        assert!(result.is_empty(), "render_template('', {{}}) must return empty string");
+        assert!(
+            result.is_empty(),
+            "render_template('', {{}}) must return empty string"
+        );
     }
 
     #[test]
@@ -1204,8 +1237,8 @@ mod tests {
     // B292: rank_insights deterministic tie-breaking
     #[test]
     fn test_rank_insights_equal_scores_stable_by_recipe_code() {
-        use uuid::Uuid;
         use chrono::Utc;
+        use uuid::Uuid;
         let make_card = |recipe_code: &str, entity_id: Uuid, score: f64| InsightCard {
             id: Uuid::new_v4(),
             recipe_code: recipe_code.to_string(),
@@ -1252,7 +1285,7 @@ mod tests {
         let unique_eid = Uuid::new_v4();
         let recipe_code = "TEST-001";
         let recipe_id = Uuid::new_v4();
-        
+
         let make_candidate = |entity_id: Uuid| InsightCandidate {
             recipe_id,
             recipe_code: recipe_code.to_string(),
@@ -1267,13 +1300,13 @@ mod tests {
             category: "test".to_string(),
             region: None,
         };
-        
+
         let candidates = vec![
             make_candidate(dup_eid),
             make_candidate(dup_eid), // duplicate pair
             make_candidate(unique_eid),
         ];
-        
+
         let result = render_batch(&candidates);
         // Should have 2 entries: first occurrence of dup + unique
         assert_eq!(

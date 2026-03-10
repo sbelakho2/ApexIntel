@@ -59,7 +59,12 @@ pub struct RawPersonArtifact {
 }
 
 impl RawPersonArtifact {
-    fn new(source: &str, artifact_type: &str, title: impl Into<String>, content: impl Into<String>) -> Self {
+    fn new(
+        source: &str,
+        artifact_type: &str,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             source: source.to_string(),
             artifact_type: artifact_type.to_string(),
@@ -166,41 +171,50 @@ impl PersonOsintScraper {
         let url = format!("https://en.wikipedia.org/api/rest_v1/page/summary/{}", slug);
         debug!(person=%name, url=%url, "Fetching Wikipedia summary");
 
-        match self.client.get(&url)
+        match self
+            .client
+            .get(&url)
             .header("Accept", "application/json")
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<WikipediaSummary>().await {
-                    Ok(summary) => {
-                        let mut arts = Vec::new();
-                        if let Some(extract) = summary.extract {
-                            if extract.len() > 50 {
-                                let mut a = RawPersonArtifact::new("wikipedia", "bio", format!("Wikipedia: {}", name), extract)
-                                    .with_confidence(0.95)
-                                    .with_lang("en");
-                                if let Some(ref u) = summary.content_urls {
-                                    if let Some(desktop) = u.get("desktop").and_then(|d| d.get("page")).and_then(|p| p.as_str()) {
-                                        a = a.with_url(desktop);
-                                    }
-                                } else {
-                                    a = a.with_url(format!("https://en.wikipedia.org/wiki/{}", slug));
+            Ok(resp) if resp.status().is_success() => match resp.json::<WikipediaSummary>().await {
+                Ok(summary) => {
+                    let mut arts = Vec::new();
+                    if let Some(extract) = summary.extract {
+                        if extract.len() > 50 {
+                            let mut a = RawPersonArtifact::new(
+                                "wikipedia",
+                                "bio",
+                                format!("Wikipedia: {}", name),
+                                extract,
+                            )
+                            .with_confidence(0.95)
+                            .with_lang("en");
+                            if let Some(ref u) = summary.content_urls {
+                                if let Some(desktop) = u
+                                    .get("desktop")
+                                    .and_then(|d| d.get("page"))
+                                    .and_then(|p| p.as_str())
+                                {
+                                    a = a.with_url(desktop);
                                 }
-                                if let Some(desc) = summary.description {
-                                    a = a.with_meta("description", desc);
-                                }
-                                arts.push(a);
+                            } else {
+                                a = a.with_url(format!("https://en.wikipedia.org/wiki/{}", slug));
                             }
+                            if let Some(desc) = summary.description {
+                                a = a.with_meta("description", desc);
+                            }
+                            arts.push(a);
                         }
-                        arts
                     }
-                    Err(e) => {
-                        warn!(person=%name, error=%e, "Wikipedia JSON parse error");
-                        vec![]
-                    }
+                    arts
                 }
-            }
+                Err(e) => {
+                    warn!(person=%name, error=%e, "Wikipedia JSON parse error");
+                    vec![]
+                }
+            },
             Ok(resp) => {
                 debug!(person=%name, status=%resp.status(), "Wikipedia returned non-200");
                 vec![]
@@ -221,7 +235,8 @@ impl PersonOsintScraper {
     pub async fn scrape_wikidata(&self, name: &str) -> Vec<RawPersonArtifact> {
         // SPARQL: search for person by label, retrieve key properties
         let escaped = name.replace('\'', "\\'").replace('"', "\\\"");
-        let sparql = format!(r#"
+        let sparql = format!(
+            r#"
 SELECT DISTINCT ?item ?itemLabel ?positionLabel ?employerLabel ?educationLabel
                 ?awardLabel ?countryLabel ?birthdate
 WHERE {{
@@ -237,12 +252,14 @@ WHERE {{
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
 }}
 LIMIT 25
-"#);
+"#
+        );
 
         let url = "https://query.wikidata.org/sparql";
         debug!(person=%name, "Querying Wikidata SPARQL");
 
-        let result = self.client
+        let result = self
+            .client
             .get(url)
             .query(&[("query", sparql.trim()), ("format", "json")])
             .header("Accept", "application/sparql-results+json")
@@ -252,13 +269,22 @@ LIMIT 25
 
         let resp = match result {
             Ok(r) if r.status().is_success() => r,
-            Ok(r) => { debug!(person=%name, status=%r.status(), "Wikidata non-200"); return vec![]; }
-            Err(e) => { warn!(person=%name, error=%e, "Wikidata request failed"); return vec![]; }
+            Ok(r) => {
+                debug!(person=%name, status=%r.status(), "Wikidata non-200");
+                return vec![];
+            }
+            Err(e) => {
+                warn!(person=%name, error=%e, "Wikidata request failed");
+                return vec![];
+            }
         };
 
         let parsed: WikidataSparqlResult = match resp.json().await {
             Ok(p) => p,
-            Err(e) => { warn!(person=%name, error=%e, "Wikidata parse failed"); return vec![]; }
+            Err(e) => {
+                warn!(person=%name, error=%e, "Wikidata parse failed");
+                return vec![];
+            }
         };
 
         let mut artifacts = Vec::new();
@@ -269,48 +295,69 @@ LIMIT 25
         for binding in &parsed.results.bindings {
             macro_rules! str_val {
                 ($key:expr) => {
-                    binding.get($key).and_then(|v| v.get("value")).and_then(|v| v.as_str())
+                    binding
+                        .get($key)
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_str())
                 };
             }
 
             if let Some(pos) = str_val!("positionLabel") {
                 if seen_positions.insert(pos.to_string()) {
-                    let a = RawPersonArtifact::new("wikidata", "role",
+                    let a = RawPersonArtifact::new(
+                        "wikidata",
+                        "role",
                         format!("{} — position: {}", name, pos),
-                        format!("{} held/holds the position: {}", name, pos))
-                        .with_confidence(0.95)
-                        .with_url(format!("https://www.wikidata.org/wiki/Special:Search/{}", name.replace(' ', "_")));
+                        format!("{} held/holds the position: {}", name, pos),
+                    )
+                    .with_confidence(0.95)
+                    .with_url(format!(
+                        "https://www.wikidata.org/wiki/Special:Search/{}",
+                        name.replace(' ', "_")
+                    ));
                     artifacts.push(a);
                 }
             }
             if let Some(edu) = str_val!("educationLabel") {
                 if seen_education.insert(edu.to_string()) {
-                    let a = RawPersonArtifact::new("wikidata", "education",
+                    let a = RawPersonArtifact::new(
+                        "wikidata",
+                        "education",
                         format!("{} — education: {}", name, edu),
-                        format!("{} studied at: {}", name, edu))
-                        .with_confidence(0.95)
-                        .with_meta("institution", edu);
+                        format!("{} studied at: {}", name, edu),
+                    )
+                    .with_confidence(0.95)
+                    .with_meta("institution", edu);
                     artifacts.push(a);
                 }
             }
             if let Some(award) = str_val!("awardLabel") {
                 if seen_awards.insert(award.to_string()) {
-                    let a = RawPersonArtifact::new("wikidata", "award",
+                    let a = RawPersonArtifact::new(
+                        "wikidata",
+                        "award",
                         format!("{} — awarded: {}", name, award),
-                        format!("{} received the award: {}", name, award))
-                        .with_confidence(0.95)
-                        .with_meta("award", award);
+                        format!("{} received the award: {}", name, award),
+                    )
+                    .with_confidence(0.95)
+                    .with_meta("award", award);
                     artifacts.push(a);
                 }
             }
             if let Some(country) = str_val!("countryLabel") {
-                let a = RawPersonArtifact::new("wikidata", "biography",
+                let a = RawPersonArtifact::new(
+                    "wikidata",
+                    "biography",
                     format!("{} — citizenship: {}", name, country),
-                    format!("{} is a citizen of: {}", name, country))
-                    .with_confidence(0.9)
-                    .with_meta("country", country);
+                    format!("{} is a citizen of: {}", name, country),
+                )
+                .with_confidence(0.9)
+                .with_meta("country", country);
                 // Only add once
-                if !artifacts.iter().any(|a: &RawPersonArtifact| a.meta.get("country").is_some()) {
+                if !artifacts
+                    .iter()
+                    .any(|a: &RawPersonArtifact| a.meta.get("country").is_some())
+                {
                     artifacts.push(a);
                 }
             }
@@ -333,28 +380,40 @@ LIMIT 25
         );
         debug!(person=%name, "Querying OpenCorporates officers");
 
-        let resp = match self.client.get(&url)
+        let resp = match self
+            .client
+            .get(&url)
             .header("Accept", "application/json")
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => r,
-            Ok(r) => { debug!(person=%name, status=%r.status(), "OpenCorporates non-200"); return vec![]; }
-            Err(e) => { warn!(person=%name, error=%e, "OpenCorporates failed"); return vec![]; }
+            Ok(r) => {
+                debug!(person=%name, status=%r.status(), "OpenCorporates non-200");
+                return vec![];
+            }
+            Err(e) => {
+                warn!(person=%name, error=%e, "OpenCorporates failed");
+                return vec![];
+            }
         };
 
         let json: serde_json::Value = match resp.json().await {
             Ok(j) => j,
-            Err(e) => { warn!(person=%name, error=%e, "OpenCorporates parse failed"); return vec![]; }
+            Err(e) => {
+                warn!(person=%name, error=%e, "OpenCorporates parse failed");
+                return vec![];
+            }
         };
 
         let mut artifacts = Vec::new();
-        if let Some(officers) = json
-            .pointer("/results/officers")
-            .and_then(|o| o.as_array())
-        {
+        if let Some(officers) = json.pointer("/results/officers").and_then(|o| o.as_array()) {
             for item in officers.iter().take(15) {
                 let officer = item.get("officer").unwrap_or(item);
-                let position = officer.get("position").and_then(|v| v.as_str()).unwrap_or("Officer");
+                let position = officer
+                    .get("position")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Officer");
                 let company_name = officer
                     .pointer("/company/name")
                     .and_then(|v| v.as_str())
@@ -367,13 +426,28 @@ LIMIT 25
                     .pointer("/company/opencorporates_url")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let start_date = officer.get("start_date").and_then(|v| v.as_str()).unwrap_or("");
-                let end_date = officer.get("end_date").and_then(|v| v.as_str()).unwrap_or("present");
+                let start_date = officer
+                    .get("start_date")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let end_date = officer
+                    .get("end_date")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("present");
 
-                let mut a = RawPersonArtifact::new("opencorporates", "board_seat",
-                    format!("{} — {} at {} ({})", name, position, company_name, jurisdiction),
-                    format!("{} served as {} at {} ({}) from {} to {}", name, position, company_name, jurisdiction, start_date, end_date))
-                    .with_confidence(0.9);
+                let mut a = RawPersonArtifact::new(
+                    "opencorporates",
+                    "board_seat",
+                    format!(
+                        "{} — {} at {} ({})",
+                        name, position, company_name, jurisdiction
+                    ),
+                    format!(
+                        "{} served as {} at {} ({}) from {} to {}",
+                        name, position, company_name, jurisdiction, start_date, end_date
+                    ),
+                )
+                .with_confidence(0.9);
                 if !oc_url.is_empty() {
                     a = a.with_url(oc_url);
                 }
@@ -402,18 +476,30 @@ LIMIT 25
         );
         debug!(person=%name, "Querying Semantic Scholar");
 
-        let resp = match self.client.get(&url)
+        let resp = match self
+            .client
+            .get(&url)
             .header("Accept", "application/json")
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => r,
-            Ok(r) => { debug!(person=%name, status=%r.status(), "Semantic Scholar non-200"); return vec![]; }
-            Err(e) => { warn!(person=%name, error=%e, "Semantic Scholar failed"); return vec![]; }
+            Ok(r) => {
+                debug!(person=%name, status=%r.status(), "Semantic Scholar non-200");
+                return vec![];
+            }
+            Err(e) => {
+                warn!(person=%name, error=%e, "Semantic Scholar failed");
+                return vec![];
+            }
         };
 
         let json: serde_json::Value = match resp.json().await {
             Ok(j) => j,
-            Err(e) => { warn!(person=%name, error=%e, "Semantic Scholar parse failed"); return vec![]; }
+            Err(e) => {
+                warn!(person=%name, error=%e, "Semantic Scholar parse failed");
+                return vec![];
+            }
         };
 
         let mut artifacts = Vec::new();
@@ -428,27 +514,35 @@ LIMIT 25
 
                 if let Some(papers) = author.get("papers").and_then(|p| p.as_array()) {
                     for paper in papers.iter().take(10) {
-                        let title = paper.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
-                        let abstract_text = paper
-                            .get("abstract")
+                        let title = paper
+                            .get("title")
                             .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                            .unwrap_or("Untitled");
+                        let abstract_text =
+                            paper.get("abstract").and_then(|v| v.as_str()).unwrap_or("");
                         let year = paper.get("year").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let citations = paper.get("citationCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let citations = paper
+                            .get("citationCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
 
                         let mut a = RawPersonArtifact::new(
-                            "semantic_scholar", "publication",
+                            "semantic_scholar",
+                            "publication",
                             format!("[Paper] {}", title),
-                            abstract_text)
-                            .with_confidence(0.85);
+                            abstract_text,
+                        )
+                        .with_confidence(0.85);
 
                         if year > 1970 {
                             // Approximate timestamp from year — compute fallback before move
                             let fallback_ts = a.ts_utc;
-                            a = a.with_ts(chrono::NaiveDate::from_ymd_opt(year as i32, 6, 15)
-                                .and_then(|d| d.and_hms_opt(0, 0, 0))
-                                .map(|dt| dt.and_utc().timestamp())
-                                .unwrap_or(fallback_ts));
+                            a = a.with_ts(
+                                chrono::NaiveDate::from_ymd_opt(year as i32, 6, 15)
+                                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+                                    .map(|dt| dt.and_utc().timestamp())
+                                    .unwrap_or(fallback_ts),
+                            );
                         }
                         a = a.with_meta("author", author_name);
                         a = a.with_meta("citations", citations.to_string());
@@ -479,34 +573,63 @@ LIMIT 25
         );
         debug!(person=%name, "Querying GDELT for mentions");
 
-        let resp = match self.client.get(&url)
+        let resp = match self
+            .client
+            .get(&url)
             .header("Accept", "application/json")
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => r,
-            Ok(r) => { debug!(person=%name, status=%r.status(), "GDELT non-200"); return vec![]; }
-            Err(e) => { warn!(person=%name, error=%e, "GDELT failed"); return vec![]; }
+            Ok(r) => {
+                debug!(person=%name, status=%r.status(), "GDELT non-200");
+                return vec![];
+            }
+            Err(e) => {
+                warn!(person=%name, error=%e, "GDELT failed");
+                return vec![];
+            }
         };
 
         let json: serde_json::Value = match resp.json().await {
             Ok(j) => j,
-            Err(e) => { warn!(person=%name, error=%e, "GDELT parse failed"); return vec![]; }
+            Err(e) => {
+                warn!(person=%name, error=%e, "GDELT parse failed");
+                return vec![];
+            }
         };
 
         let mut artifacts = Vec::new();
         if let Some(articles) = json.get("articles").and_then(|a| a.as_array()) {
             for article in articles.iter().take(max) {
-                let title = article.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
-                if title.is_empty() { continue; }
+                let title = article
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if title.is_empty() {
+                    continue;
+                }
                 let article_url = article.get("url").and_then(|v| v.as_str()).unwrap_or("");
                 let source_domain = article.get("domain").and_then(|v| v.as_str()).unwrap_or("");
-                let date_str = article.get("seendate").and_then(|v| v.as_str()).unwrap_or("");
+                let date_str = article
+                    .get("seendate")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let tone = article.get("tone").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let language = article.get("language").and_then(|v| v.as_str()).unwrap_or("English");
-                let lang_code = if language.starts_with("French") { "fr" }
-                    else if language.starts_with("Arabic") { "ar" }
-                    else if language.starts_with("German") { "de" }
-                    else { "en" };
+                let language = article
+                    .get("language")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("English");
+                let lang_code = if language.starts_with("French") {
+                    "fr"
+                } else if language.starts_with("Arabic") {
+                    "ar"
+                } else if language.starts_with("German") {
+                    "de"
+                } else {
+                    "en"
+                };
 
                 let ts = parse_gdelt_date(date_str).unwrap_or_else(|| Utc::now().timestamp());
 
@@ -540,7 +663,12 @@ LIMIT 25
     ///
     /// Looks for `"…" said NAME`, `NAME said "…"`, `NAME: "…"` patterns.
     /// Each extracted quote becomes a separate `RawPersonArtifact` of type `"quote"`.
-    pub fn extract_quotes(name: &str, source: &str, source_url: &str, text: &str) -> Vec<RawPersonArtifact> {
+    pub fn extract_quotes(
+        name: &str,
+        source: &str,
+        source_url: &str,
+        text: &str,
+    ) -> Vec<RawPersonArtifact> {
         let mut quotes = Vec::new();
         let name_lower = name.to_lowercase();
 
@@ -566,7 +694,9 @@ LIMIT 25
 
         for (start, end) in raw_quotes {
             let quote_text: String = chars[start..end].iter().collect();
-            if quote_text.len() < 15 || quote_text.len() > 800 { continue; }
+            if quote_text.len() < 15 || quote_text.len() > 800 {
+                continue;
+            }
 
             // Check window around the quote for the person's name
             let window_start = start.saturating_sub(120);
@@ -575,16 +705,31 @@ LIMIT 25
             let window_lower = window.to_lowercase();
 
             if window_lower.contains(&name_lower) {
-                let mut a = RawPersonArtifact::new(source, "quote",
+                let mut a = RawPersonArtifact::new(
+                    source,
+                    "quote",
                     format!("Quote: \"{}\"", &quote_text[..quote_text.len().min(80)]),
-                    quote_text.clone())
-                    .with_url(source_url)
-                    .with_confidence(0.8)
-                    .with_meta("speaker", name);
+                    quote_text.clone(),
+                )
+                .with_url(source_url)
+                .with_confidence(0.8)
+                .with_meta("speaker", name);
 
                 // Infer context keyword from surrounding text
-                let context_words = ["strategy", "growth", "security", "compliance", "cost", "innovation",
-                    "technology", "investment", "risk", "partnership", "challenge", "vision"];
+                let context_words = [
+                    "strategy",
+                    "growth",
+                    "security",
+                    "compliance",
+                    "cost",
+                    "innovation",
+                    "technology",
+                    "investment",
+                    "risk",
+                    "partnership",
+                    "challenge",
+                    "vision",
+                ];
                 for kw in &context_words {
                     if window_lower.contains(kw) {
                         a = a.with_meta("topic", *kw);
@@ -607,14 +752,26 @@ LIMIT 25
     pub async fn scrape_company_bio(&self, person_name: &str, url: &str) -> Vec<RawPersonArtifact> {
         debug!(person=%person_name, url=%url, "Scraping company bio page");
 
-        let html = match self.client.get(url)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        let html = match self
+            .client
+            .get(url)
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
             .header("Accept-Language", "en-US,en;q=0.9")
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
-            Ok(r) => { debug!(url=%url, status=%r.status(), "Company bio non-200"); return vec![]; }
-            Err(e) => { warn!(url=%url, error=%e, "Company bio request failed"); return vec![]; }
+            Ok(r) => {
+                debug!(url=%url, status=%r.status(), "Company bio non-200");
+                return vec![];
+            }
+            Err(e) => {
+                warn!(url=%url, error=%e, "Company bio request failed");
+                return vec![];
+            }
         };
 
         let mut artifacts = Vec::new();
@@ -626,18 +783,23 @@ LIMIT 25
             let text_lower = text.to_lowercase();
             if text_lower.contains(&name_lower) && text.len() > 60 {
                 let excerpt = &text[..text.len().min(500)];
-                let a = RawPersonArtifact::new("company_page", "bio",
+                let a = RawPersonArtifact::new(
+                    "company_page",
+                    "bio",
                     format!("Bio: {}", person_name),
-                    excerpt.trim())
-                    .with_url(url)
-                    .with_confidence(0.75);
+                    excerpt.trim(),
+                )
+                .with_url(url)
+                .with_confidence(0.75);
 
                 // Extract quotes within the bio
                 let quotes = Self::extract_quotes(person_name, "company_page", url, excerpt);
                 artifacts.extend(quotes);
                 artifacts.push(a);
 
-                if artifacts.len() >= 5 { break; }
+                if artifacts.len() >= 5 {
+                    break;
+                }
             }
         }
 
@@ -649,12 +811,19 @@ LIMIT 25
     /// Scan a speaker directory URL for talk titles associated with `name`.
     ///
     /// Extracts `<h2>`/`<h3>` tags near the person's name occurrence.
-    pub async fn scrape_speaker_page(&self, person_name: &str, url: &str) -> Vec<RawPersonArtifact> {
+    pub async fn scrape_speaker_page(
+        &self,
+        person_name: &str,
+        url: &str,
+    ) -> Vec<RawPersonArtifact> {
         debug!(person=%person_name, url=%url, "Scraping speaker page");
 
-        let html = match self.client.get(url)
+        let html = match self
+            .client
+            .get(url)
             .header("Accept-Language", "en-US,en;q=0.9")
-            .send().await
+            .send()
+            .await
         {
             Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
             _ => return vec![],
@@ -682,12 +851,18 @@ LIMIT 25
                         };
                         let heading_clean = heading_text.trim().to_string();
                         if heading_clean.len() > 10 && heading_clean.len() < 300 {
-                            let a = RawPersonArtifact::new("conference", "talk",
+                            let a = RawPersonArtifact::new(
+                                "conference",
+                                "talk",
                                 format!("Talk: {}", heading_clean),
-                                format!("{} presented: {}", person_name, heading_clean))
-                                .with_url(url)
-                                .with_confidence(0.7);
-                            if !artifacts.iter().any(|x: &RawPersonArtifact| x.title == a.title) {
+                                format!("{} presented: {}", person_name, heading_clean),
+                            )
+                            .with_url(url)
+                            .with_confidence(0.7);
+                            if !artifacts
+                                .iter()
+                                .any(|x: &RawPersonArtifact| x.title == a.title)
+                            {
                                 artifacts.push(a);
                             }
                         }
@@ -695,7 +870,9 @@ LIMIT 25
                 }
             }
             search_from = abs_pos + name_lower.len();
-            if artifacts.len() >= 8 { break; }
+            if artifacts.len() >= 8 {
+                break;
+            }
         }
 
         artifacts
@@ -748,18 +925,24 @@ LIMIT 25
         if let Ok(twitter) = TwitterScraper::from_env(proxy.clone()) {
             match twitter.search_recent(&query, 20).await {
                 Ok(posts) => {
-                    for post in posts.into_iter().filter(|p| {
-                        let text = p.raw_text.to_lowercase();
-                        let credibility = p.platform_credibility();
-                        let engaged = p.engagement_score() >= 20.0;
-                        let has_person = name
-                            .split_whitespace()
-                            .filter(|t| t.len() > 2)
-                            .all(|tok| text.contains(&tok.to_lowercase()));
-                        let has_company = company.trim().is_empty()
-                            || text.contains(&company.to_lowercase());
-                        (credibility >= 0.65 || (p.author_verified && engaged)) && has_person && has_company
-                    }).take(10) {
+                    for post in posts
+                        .into_iter()
+                        .filter(|p| {
+                            let text = p.raw_text.to_lowercase();
+                            let credibility = p.platform_credibility();
+                            let engaged = p.engagement_score() >= 20.0;
+                            let has_person = name
+                                .split_whitespace()
+                                .filter(|t| t.len() > 2)
+                                .all(|tok| text.contains(&tok.to_lowercase()));
+                            let has_company =
+                                company.trim().is_empty() || text.contains(&company.to_lowercase());
+                            (credibility >= 0.65 || (p.author_verified && engaged))
+                                && has_person
+                                && has_company
+                        })
+                        .take(10)
+                    {
                         let engagement = post.engagement_score();
                         let mut a = RawPersonArtifact::new(
                             "social_twitter",
@@ -787,18 +970,22 @@ LIMIT 25
         if let Ok(reddit) = RedditScraper::new(proxy.as_deref()) {
             match reddit.search(&query, None, 15).await {
                 Ok(posts) => {
-                    for post in posts.into_iter().filter(|p| {
-                        let text = p.raw_text.to_lowercase();
-                        let has_person = name
-                            .split_whitespace()
-                            .filter(|t| t.len() > 2)
-                            .all(|tok| text.contains(&tok.to_lowercase()));
-                        let has_company = company.trim().is_empty()
-                            || text.contains(&company.to_lowercase());
-                        let credibility = p.platform_credibility();
-                        let engaged = p.engagement_score() >= 30.0;
-                        (credibility >= 0.60 || engaged) && has_person && has_company
-                    }).take(8) {
+                    for post in posts
+                        .into_iter()
+                        .filter(|p| {
+                            let text = p.raw_text.to_lowercase();
+                            let has_person = name
+                                .split_whitespace()
+                                .filter(|t| t.len() > 2)
+                                .all(|tok| text.contains(&tok.to_lowercase()));
+                            let has_company =
+                                company.trim().is_empty() || text.contains(&company.to_lowercase());
+                            let credibility = p.platform_credibility();
+                            let engaged = p.engagement_score() >= 30.0;
+                            (credibility >= 0.60 || engaged) && has_person && has_company
+                        })
+                        .take(8)
+                    {
                         let engagement = post.engagement_score();
                         let a = RawPersonArtifact::new(
                             "social_reddit",
@@ -838,7 +1025,11 @@ fn strip_html_tags(html: &str) -> String {
         match c {
             '<' => in_tag = true,
             '>' => in_tag = false,
-            '&' if !in_tag => { in_entity = true; entity_buf.clear(); entity_buf.push('&'); }
+            '&' if !in_tag => {
+                in_entity = true;
+                entity_buf.clear();
+                entity_buf.push('&');
+            }
             ';' if in_entity => {
                 in_entity = false;
                 entity_buf.push(';');
@@ -857,7 +1048,9 @@ fn strip_html_tags(html: &str) -> String {
     let mut last_space = false;
     for c in out.chars() {
         if c.is_whitespace() {
-            if !last_space { result.push(' '); }
+            if !last_space {
+                result.push(' ');
+            }
             last_space = true;
         } else {
             result.push(c);
@@ -882,7 +1075,9 @@ fn decode_html_entity(entity: &str) -> String {
 /// Parse a GDELT date string like `"20240315T123045Z"` into a Unix timestamp.
 fn parse_gdelt_date(s: &str) -> Option<i64> {
     // GDELT format: YYYYMMDDTHHMMSSZ
-    if s.len() < 8 { return None; }
+    if s.len() < 8 {
+        return None;
+    }
     let year: i32 = s[0..4].parse().ok()?;
     let month: u32 = s[4..6].parse().ok()?;
     let day: u32 = s[6..8].parse().ok()?;
@@ -916,7 +1111,12 @@ impl PersonOsintScraper {
     /// Aggregate confirmed contact details for a person from open clearweb sources.
     ///
     /// Runs all sub-scrapers and merges results, preferring the highest-confidence signal.
-    pub async fn enrich_contacts(&self, name: &str, org: &str, domain: Option<&str>) -> ConfirmedContacts {
+    pub async fn enrich_contacts(
+        &self,
+        name: &str,
+        org: &str,
+        domain: Option<&str>,
+    ) -> ConfirmedContacts {
         let mut result = ConfirmedContacts::default();
 
         // 1. Hunter.io format-guess (no API key needed for public patterns).
@@ -964,7 +1164,11 @@ impl PersonOsintScraper {
     ///
     /// Tries: firstname.lastname, f.lastname, firstname, flastname — in
     /// priority order — and validates each against a disposable-domain blocklist.
-    async fn guess_email_by_hunter_pattern(&self, name: &str, domain: &str) -> (Option<String>, f32) {
+    async fn guess_email_by_hunter_pattern(
+        &self,
+        name: &str,
+        domain: &str,
+    ) -> (Option<String>, f32) {
         let parts: Vec<&str> = name.split_whitespace().collect();
         if parts.len() < 2 {
             return (None, 0.0);
@@ -982,9 +1186,18 @@ impl PersonOsintScraper {
 
         // Try common patterns in decreasing probability order.
         let candidates = [
-            (format!("{}.{}@{}", first_clean, last_clean, domain), 0.62_f32),
-            (format!("{}{}@{}", first_clean, last_clean, domain), 0.55_f32),
-            (format!("{}.{}@{}", &first_clean[..1], last_clean, domain), 0.50_f32),
+            (
+                format!("{}.{}@{}", first_clean, last_clean, domain),
+                0.62_f32,
+            ),
+            (
+                format!("{}{}@{}", first_clean, last_clean, domain),
+                0.55_f32,
+            ),
+            (
+                format!("{}.{}@{}", &first_clean[..1], last_clean, domain),
+                0.50_f32,
+            ),
             (format!("{}@{}", last_clean, domain), 0.35_f32),
             (format!("{}@{}", first_clean, domain), 0.30_f32),
         ];
@@ -1001,7 +1214,8 @@ impl PersonOsintScraper {
             "https://phonebook.cz/?term={}&type=2&target=1",
             name.replace(' ', "+")
         );
-        let html = self.client
+        let html = self
+            .client
             .get(&url)
             .header("Referer", "https://phonebook.cz/")
             .send()
@@ -1013,10 +1227,8 @@ impl PersonOsintScraper {
 
         // Look for `@domain` occurrences in the HTML.
         let pattern = format!("@{}", domain);
-        let email_re = regex::Regex::new(&format!(
-            r"([a-zA-Z0-9._%+\-]+{})",
-            regex::escape(&pattern)
-        )).ok()?;
+        let email_re =
+            regex::Regex::new(&format!(r"([a-zA-Z0-9._%+\-]+{})", regex::escape(&pattern))).ok()?;
 
         email_re.find(&html).map(|m| m.as_str().to_lowercase())
     }
@@ -1028,9 +1240,8 @@ impl PersonOsintScraper {
         domain: &str,
         org: &str,
     ) -> Option<(String, f32)> {
-        let email_re = regex::Regex::new(
-            &format!(r"([a-zA-Z0-9._%+\-]+@{})", regex::escape(domain))
-        ).ok()?;
+        let email_re =
+            regex::Regex::new(&format!(r"([a-zA-Z0-9._%+\-]+@{})", regex::escape(domain))).ok()?;
 
         // Google News search for bio page.
         let query = format!("{} {} email contact", name, org);
@@ -1038,9 +1249,13 @@ impl PersonOsintScraper {
             "https://www.google.com/search?q={}",
             query.replace(' ', "+")
         );
-        let html = self.client
+        let html = self
+            .client
             .get(&url)
-            .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+            )
             .send()
             .await
             .ok()?
@@ -1093,7 +1308,8 @@ mod tests {
     #[test]
     fn test_extract_quotes_finds_attribution() {
         let text = r#"The CEO spoke at the conference. "We are committed to innovation," said John Smith. Other people attended."#;
-        let quotes = PersonOsintScraper::extract_quotes("John Smith", "test", "http://example.com", text);
+        let quotes =
+            PersonOsintScraper::extract_quotes("John Smith", "test", "http://example.com", text);
         assert!(!quotes.is_empty(), "Expected at least one quote");
         assert!(quotes[0].content.contains("committed to innovation"));
     }
@@ -1101,7 +1317,8 @@ mod tests {
     #[test]
     fn test_extract_quotes_rejects_short_text() {
         let text = r#""Hi" said John Smith."#;
-        let quotes = PersonOsintScraper::extract_quotes("John Smith", "test", "http://example.com", text);
+        let quotes =
+            PersonOsintScraper::extract_quotes("John Smith", "test", "http://example.com", text);
         assert!(quotes.is_empty(), "Short quote should be rejected");
     }
 

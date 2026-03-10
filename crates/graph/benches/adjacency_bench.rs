@@ -9,8 +9,8 @@
 //! Benchmarks use a synthetic scale-free-like graph with ~200 nodes and ~800
 //! directed edges, representative of the entity graph seen in production.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use apex_graph::adjacency::AdjacencyGraph;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::collections::HashMap;
 
 // ────────────────────────────────────────────
@@ -64,9 +64,7 @@ fn bench_pagerank(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("hub_and_spoke", format!("{}n", node_count)),
             &g,
-            |b, g| {
-                b.iter(|| black_box(g.pagerank(black_box(30), black_box(0.85))))
-            },
+            |b, g| b.iter(|| black_box(g.pagerank(black_box(30), black_box(0.85)))),
         );
     }
 
@@ -92,7 +90,9 @@ fn bench_propagate_risk(c: &mut Criterion) {
             BenchmarkId::new("hub_and_spoke_210n", format!("hops_{hops}")),
             &(g, initial, hops),
             |b, (g, init, hops)| {
-                b.iter(|| black_box(g.propagate_risk(black_box(init), black_box(*hops), black_box(0.7))))
+                b.iter(|| {
+                    black_box(g.propagate_risk(black_box(init), black_box(*hops), black_box(0.7)))
+                })
             },
         );
     }

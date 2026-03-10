@@ -173,7 +173,12 @@ impl WebhookDispatcher {
                 "ts": chrono::Utc::now().timestamp()
             }]
         });
-        self.client.post(url).json(&payload).send().await?.error_for_status()?;
+        self.client
+            .post(url)
+            .json(&payload)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
@@ -202,14 +207,24 @@ impl WebhookDispatcher {
                 "targets": [{ "os": "default", "uri": &alert.dashboard_url }],
             }]
         });
-        self.client.post(url).json(&payload).send().await?.error_for_status()?;
+        self.client
+            .post(url)
+            .json(&payload)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
     // ── Generic webhook ─────────────────────────────────────
 
     async fn send_generic(&self, url: &str, alert: &AlertPayload) -> Result<()> {
-        self.client.post(url).json(alert).send().await?.error_for_status()?;
+        self.client
+            .post(url)
+            .json(alert)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 }

@@ -32,6 +32,15 @@ pub enum LlmTask {
     MemoGeneration,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmGovernanceMetadata {
+    pub workflow: String,
+    pub prompt_id: String,
+    pub prompt_version: String,
+    pub quality_gate_passed: bool,
+    pub validation_issues: Vec<String>,
+}
+
 impl LlmTask {
     pub fn as_str(&self) -> &str {
         match self {
@@ -101,6 +110,7 @@ pub struct ExtractEntitiesResponse {
     pub task: LlmTask,
     pub model_used: String,
     pub processing_ms: u64,
+    pub governance: LlmGovernanceMetadata,
 }
 
 // ────────────────────────────────────────────
@@ -158,6 +168,7 @@ pub struct GenerateRecipeResponse {
     pub task: LlmTask,
     pub model_used: String,
     pub processing_ms: u64,
+    pub governance: LlmGovernanceMetadata,
 }
 
 // ────────────────────────────────────────────
@@ -226,6 +237,7 @@ pub struct SynthesizePoiResponse {
     pub task: LlmTask,
     pub model_used: String,
     pub processing_ms: u64,
+    pub governance: LlmGovernanceMetadata,
 }
 
 // ────────────────────────────────────────────
@@ -299,6 +311,7 @@ pub struct GenerateMemoResponse {
     pub task: LlmTask,
     pub model_used: String,
     pub processing_ms: u64,
+    pub governance: LlmGovernanceMetadata,
 }
 
 /// A section within a generated memo.

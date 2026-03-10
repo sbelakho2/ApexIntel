@@ -7,7 +7,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ApexError {
     #[error("configuration error: {message}{}", hint_suffix(.hint))]
-    Config { message: String, hint: Option<String> },
+    Config {
+        message: String,
+        hint: Option<String>,
+    },
 
     #[error("entity not found: {kind} id={id}{}", hint_suffix(.hint))]
     NotFound {
@@ -17,10 +20,16 @@ pub enum ApexError {
     },
 
     #[error("validation error: {message}{}", hint_suffix(.hint))]
-    Validation { message: String, hint: Option<String> },
+    Validation {
+        message: String,
+        hint: Option<String>,
+    },
 
     #[error("parse error: {message}{}", hint_suffix(.hint))]
-    Parse { message: String, hint: Option<String> },
+    Parse {
+        message: String,
+        hint: Option<String>,
+    },
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -32,7 +41,10 @@ pub enum ApexError {
     Url(#[from] url::ParseError),
 
     #[error("internal error: {message}{}", hint_suffix(.hint))]
-    Internal { message: String, hint: Option<String> },
+    Internal {
+        message: String,
+        hint: Option<String>,
+    },
 }
 
 /// Format hint as a suffix if present.
@@ -189,10 +201,8 @@ mod tests {
 
     #[test]
     fn test_validation_with_hint() {
-        let e = ApexError::validation_with_hint(
-            "email format invalid",
-            "use format: user@domain.com",
-        );
+        let e =
+            ApexError::validation_with_hint("email format invalid", "use format: user@domain.com");
         assert!(e.to_string().contains("email format invalid"));
         assert!(e.to_string().contains("[hint:"));
         assert!(e.to_string().contains("user@domain.com"));
@@ -204,7 +214,10 @@ mod tests {
             .with_hint("check that database server is running on port 5432");
         assert!(e.to_string().contains("connection refused"));
         assert!(e.to_string().contains("port 5432"));
-        assert_eq!(e.hint(), Some("check that database server is running on port 5432"));
+        assert_eq!(
+            e.hint(),
+            Some("check that database server is running on port 5432")
+        );
     }
 
     #[test]

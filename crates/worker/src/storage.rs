@@ -21,7 +21,9 @@ use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::Row;
 
-use crate::nightly::{CrawlStageResult, DriftCheckStageResult, MiningStageResult, PoiRefreshStageResult};
+use crate::nightly::{
+    CrawlStageResult, DriftCheckStageResult, MiningStageResult, PoiRefreshStageResult,
+};
 use crate::weekly::{MemoInputs, ProductionRecipe, StagedRecipe};
 
 /// Context for building pipeline inputs from storage.
@@ -51,10 +53,10 @@ impl StorageContext {
 pub async fn build_crawl_result(ctx: &StorageContext) -> Result<CrawlStageResult> {
     // Get crawl stats from the last 24 hours
     let since = ctx.run_timestamp - Duration::hours(24);
-    
+
     // Query recent crawl activity
     let crawl_stats = ctx.store.get_crawl_stats(since).await?;
-    
+
     Ok(CrawlStageResult {
         sources_attempted: crawl_stats.sources_attempted,
         sources_succeeded: crawl_stats.sources_succeeded,
@@ -72,10 +74,10 @@ pub async fn build_crawl_result(ctx: &StorageContext) -> Result<CrawlStageResult
 /// the input for the mining stage processing.
 pub async fn build_mining_result(ctx: &StorageContext) -> Result<MiningStageResult> {
     let since = ctx.run_timestamp - Duration::hours(24);
-    
+
     // Query mining stats from the last 24 hours
     let mining_stats = ctx.store.get_mining_stats(since).await?;
-    
+
     Ok(MiningStageResult {
         candidates_found: mining_stats.candidates_found,
         candidates_passed_gates: mining_stats.candidates_passed_gates,
@@ -88,9 +90,9 @@ pub async fn build_mining_result(ctx: &StorageContext) -> Result<MiningStageResu
 /// Build PoiRefreshStageResult from recent POI scanning activity.
 pub async fn build_poi_result(ctx: &StorageContext) -> Result<PoiRefreshStageResult> {
     let since = ctx.run_timestamp - Duration::hours(24);
-    
+
     let poi_stats = ctx.store.get_poi_stats(since).await?;
-    
+
     Ok(PoiRefreshStageResult {
         profiles_scanned: poi_stats.profiles_scanned,
         profiles_updated: poi_stats.profiles_updated,
@@ -104,7 +106,7 @@ pub async fn build_poi_result(ctx: &StorageContext) -> Result<PoiRefreshStageRes
 pub async fn build_drift_result(ctx: &StorageContext) -> Result<DriftCheckStageResult> {
     // Get drift scores from feature store
     let drift_stats = ctx.store.get_drift_stats().await?;
-    
+
     Ok(DriftCheckStageResult {
         features_checked: drift_stats.features_checked,
         features_drifted: drift_stats.features_drifted,
@@ -122,33 +124,42 @@ pub async fn build_drift_result(ctx: &StorageContext) -> Result<DriftCheckStageR
 pub async fn load_staged_recipes(ctx: &StorageContext) -> Result<Vec<StagedRecipe>> {
     // Query recipes in 'staged' lifecycle state with sufficient history
     let recipes = ctx.store.get_staged_recipes_for_promotion().await?;
-    
-    Ok(recipes.into_iter().map(|r| StagedRecipe {
-        recipe_id: r.id.to_string(),
-        staged_at: r.created_at,
-        weeks_in_staging: (r.days_in_staging / 7) as u32,
-        precision: r.precision_observed,
-        recall: r.recall_observed,
-        false_positive_rate: r.false_positive_rate,
-        alerts_fired: r.sample_size as u64,
-        true_positives: (r.precision_observed * r.sample_size as f64) as u64,
-    }).collect())
+
+    Ok(recipes.into_iter().map(map_staged_recipe_row).collect())
 }
 
 /// Load production recipes for deprecation evaluation.
 pub async fn load_production_recipes(ctx: &StorageContext) -> Result<Vec<ProductionRecipe>> {
     // Query recipes in 'production' lifecycle state
     let recipes = ctx.store.get_production_recipes_for_deprecation().await?;
-    
-    Ok(recipes.into_iter().map(|r| ProductionRecipe {
-        recipe_id: r.id.to_string(),
-        promoted_at: r.created_at,
-        weeks_in_production: (r.days_inactive / 7) as u32,
-        precision_history: vec![r.precision_baseline, r.precision_current],
-        recall_history: vec![], // Not tracked in current schema
+
+    Ok(recipes.into_iter().map(map_production_recipe_row).collect())
+}
+
+fn map_staged_recipe_row(r: apex_store::postgres::StagedRecipeRow) -> StagedRecipe {
+    let alerts_fired = r.sample_size.max(0) as u64;
+    StagedRecipe {
+        recipe_id: r.recipe_code,
+        staged_at: r.created_at,
+        weeks_in_staging: (r.days_in_staging.max(0) / 7) as u32,
+        precision: r.precision_observed,
+        recall: r.recall_observed,
         false_positive_rate: r.false_positive_rate,
-        alerts_fired_total: r.warnings_generated_last_week as u64,
-    }).collect())
+        alerts_fired,
+        true_positives: (r.precision_observed * alerts_fired as f64) as u64,
+    }
+}
+
+fn map_production_recipe_row(r: apex_store::postgres::ProductionRecipeRow) -> ProductionRecipe {
+    ProductionRecipe {
+        recipe_id: r.recipe_code,
+        promoted_at: r.created_at,
+        weeks_in_production: (r.days_inactive.max(0) / 7) as u32,
+        precision_history: r.precision_history,
+        recall_history: vec![],
+        false_positive_rate: r.false_positive_rate,
+        alerts_fired_total: r.warnings_generated_last_week.max(0) as u64,
+    }
 }
 
 /// Build memo inputs from recent activity summaries.
@@ -186,7 +197,7 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
     .unwrap_or(0);
 
     let recipes_promoted: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM recipes WHERE status = 'production' AND updated_at >= $1",
+        "SELECT COUNT(*) FROM recipes WHERE status IN ('active', 'production') AND updated_at >= $1",
     )
     .bind(since)
     .fetch_one(&ctx.store.pool)
@@ -219,9 +230,15 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
     let poi_changes = poi_changes_rows
         .into_iter()
         .map(|row| crate::weekly::PoiChange {
-            person_name: row.try_get::<String, _>("person_name").unwrap_or_else(|_| "Unknown".to_string()),
-            change_type: row.try_get::<String, _>("change_type").unwrap_or_else(|_| "change".to_string()),
-            details: row.try_get::<String, _>("details").unwrap_or_else(|_| "change detected".to_string()),
+            person_name: row
+                .try_get::<String, _>("person_name")
+                .unwrap_or_else(|_| "Unknown".to_string()),
+            change_type: row
+                .try_get::<String, _>("change_type")
+                .unwrap_or_else(|_| "change".to_string()),
+            details: row
+                .try_get::<String, _>("details")
+                .unwrap_or_else(|_| "change detected".to_string()),
         })
         .collect();
 
@@ -246,4 +263,51 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
         period_start: since,
         period_end: ctx.run_timestamp,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apex_store::postgres::{ProductionRecipeRow, StagedRecipeRow};
+
+    #[test]
+    fn staged_recipe_mapping_uses_recipe_code_and_clamps_counts() {
+        let row = StagedRecipeRow {
+            recipe_code: "R-STAGE-1".to_string(),
+            name: "Staged Recipe".to_string(),
+            precision_observed: 0.9,
+            recall_observed: 0.55,
+            false_positive_rate: 0.04,
+            sample_size: 5,
+            days_in_staging: 29,
+            created_at: Utc::now(),
+        };
+
+        let recipe = map_staged_recipe_row(row);
+        assert_eq!(recipe.recipe_id, "R-STAGE-1");
+        assert_eq!(recipe.weeks_in_staging, 4);
+        assert_eq!(recipe.alerts_fired, 5);
+        assert_eq!(recipe.true_positives, 4);
+    }
+
+    #[test]
+    fn production_recipe_mapping_uses_recent_warning_volume() {
+        let row = ProductionRecipeRow {
+            recipe_code: "R-PROD-1".to_string(),
+            name: "Production Recipe".to_string(),
+            precision_history: vec![0.78, 0.62],
+            false_positive_rate: 0.11,
+            fpr_baseline: 0.09,
+            warnings_generated_last_week: 7,
+            last_triggered_at: Some(Utc::now()),
+            days_inactive: 13,
+            created_at: Utc::now(),
+        };
+
+        let recipe = map_production_recipe_row(row);
+        assert_eq!(recipe.recipe_id, "R-PROD-1");
+        assert_eq!(recipe.weeks_in_production, 1);
+        assert_eq!(recipe.precision_history, vec![0.78, 0.62]);
+        assert_eq!(recipe.alerts_fired_total, 7);
+    }
 }

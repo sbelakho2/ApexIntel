@@ -6,8 +6,8 @@
 //! 3. Backtest candidates against historical data (backtest)
 //! 4. Run negative controls to verify signal validity (negative_control)
 
-pub mod miner;
 pub mod backtest;
+pub mod miner;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Experimental modules (B290)

@@ -289,6 +289,9 @@ mod tests {
         // First should succeed
         assert!(matches!(&results[0], HypothesisResult::Success(_)));
         // Second should fail validation (duplicate ID "mock_recipe_01")
-        assert!(matches!(&results[1], HypothesisResult::ValidationFailed { .. }));
+        assert!(matches!(
+            &results[1],
+            HypothesisResult::ValidationFailed { .. }
+        ));
     }
 }

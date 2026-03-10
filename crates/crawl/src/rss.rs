@@ -11,9 +11,10 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use reqwest::Client;
 use std::time::Duration;
 use tracing::{debug, warn};
+
+use crate::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -33,33 +34,36 @@ pub struct FeedItem {
 
 /// RSS/Atom feed fetcher with built-in HTTP client.
 pub struct RssFetcher {
-    client: Client,
+    client: CrawlClient,
 }
 
 impl RssFetcher {
     /// Create a new fetcher with a given timeout.
     pub fn new(timeout_secs: u64) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .user_agent("ApexIntel/1.0 (+https://apexintel.io) RSS Reader")
-            .build()
-            .context("building RSS client")?;
+        let client = CrawlClient::new(CrawlClientConfig {
+            timeout: Duration::from_secs(timeout_secs),
+            user_agent: "ApexIntel/1.0 (+https://apexintel.io) RSS Reader".to_string(),
+            ..CrawlClientConfig::default()
+        })
+        .map_err(anyhow::Error::from)
+        .context("building RSS client")?;
         Ok(Self { client })
+    }
+
+    pub fn with_client(client: CrawlClient) -> Self {
+        Self { client }
     }
 
     /// Fetch and parse a feed from a URL.
     pub async fn fetch(&self, url: &str) -> Result<Vec<FeedItem>> {
         debug!(url, "Fetching RSS feed");
-        let xml = self
+        let response = self
             .client
-            .get(url)
-            .send()
+            .fetch_text(&CrawlRequest::new(url))
             .await
-            .context("RSS HTTP GET")?
-            .text()
-            .await
-            .context("reading RSS body")?;
-        parse_feed(&xml)
+            .map_err(anyhow::Error::from)
+            .context("RSS HTTP GET")?;
+        parse_feed(&response.body)
     }
 
     /// Fetch multiple feeds and merge results, sorted by date descending.
@@ -120,6 +124,19 @@ pub fn parse_feed(xml: &str) -> Result<Vec<FeedItem>> {
                     }
                 }
                 tag = name;
+            }
+            Ok(Event::Empty(ref e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if in_item && name == "link" {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"href" {
+                            let href = String::from_utf8_lossy(&attr.value).to_string();
+                            if link.is_empty() {
+                                link = href;
+                            }
+                        }
+                    }
+                }
             }
             Ok(Event::Text(ref e)) if in_item => {
                 let text = e.unescape().unwrap_or_default().to_string();
@@ -185,20 +202,29 @@ fn parse_date(s: &str) -> Option<DateTime<Utc>> {
     if s.is_empty() {
         return None;
     }
+    let normalized = s.trim();
     // RFC 2822 (RSS)
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(s) {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(normalized) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    // Relaxed RFC 2822 for feeds with an incorrect weekday token.
+    let relaxed_rfc2822 = normalized
+        .split_once(", ")
+        .map(|(_, rest)| rest)
+        .unwrap_or(normalized);
+    if let Ok(dt) = chrono::DateTime::parse_from_str(relaxed_rfc2822, "%d %b %Y %H:%M:%S %z") {
         return Some(dt.with_timezone(&Utc));
     }
     // RFC 3339 (Atom)
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(normalized) {
         return Some(dt.with_timezone(&Utc));
     }
     // ISO 8601 without timezone
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(normalized, "%Y-%m-%dT%H:%M:%S") {
         return Some(dt.and_utc());
     }
     // Common date format
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(normalized, "%Y-%m-%d %H:%M:%S") {
         return Some(dt.and_utc());
     }
     None

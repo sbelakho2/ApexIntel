@@ -277,14 +277,8 @@ mod tests {
 
     #[test]
     fn severity_classification() {
-        assert_eq!(
-            classify_severity("CEO", "CTO"),
-            ConflictSeverity::Critical
-        );
-        assert_eq!(
-            classify_severity("CEO", "Engineer"),
-            ConflictSeverity::High
-        );
+        assert_eq!(classify_severity("CEO", "CTO"), ConflictSeverity::Critical);
+        assert_eq!(classify_severity("CEO", "Engineer"), ConflictSeverity::High);
         assert_eq!(
             classify_severity("Board Member", "Consultant"),
             ConflictSeverity::Medium

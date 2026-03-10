@@ -33,7 +33,11 @@ pub struct SourceScoringStageResult {
 
 impl SourceScoringStageResult {
     pub fn validate(&self) -> Result<(), String> {
-        if self.sources_upgraded.saturating_add(self.sources_downgraded) > self.sources_scored {
+        if self
+            .sources_upgraded
+            .saturating_add(self.sources_downgraded)
+            > self.sources_scored
+        {
             return Err(format!(
                 "upgraded ({}) + downgraded ({}) > scored ({})",
                 self.sources_upgraded, self.sources_downgraded, self.sources_scored
@@ -205,7 +209,10 @@ pub fn process_source_scoring_stage(result: &SourceScoringStageResult) -> Improv
 
     if result.sources_scored > MAX_IMPROVEMENT_BATCH_SIZE {
         run.status = JobStatus::Failed {
-            error: format!("sources_scored {} exceeds batch limit {}", result.sources_scored, MAX_IMPROVEMENT_BATCH_SIZE),
+            error: format!(
+                "sources_scored {} exceeds batch limit {}",
+                result.sources_scored, MAX_IMPROVEMENT_BATCH_SIZE
+            ),
             duration_ms: 0,
         };
         return ImprovementStageOutcome {
@@ -217,7 +224,10 @@ pub fn process_source_scoring_stage(result: &SourceScoringStageResult) -> Improv
     }
 
     if let Err(e) = result.validate() {
-        run.status = JobStatus::Failed { error: e, duration_ms: 0 };
+        run.status = JobStatus::Failed {
+            error: e,
+            duration_ms: 0,
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::SourceScoring,
             run,
@@ -227,7 +237,9 @@ pub fn process_source_scoring_stage(result: &SourceScoringStageResult) -> Improv
     }
 
     if result.sources_scored == 0 {
-        run.status = JobStatus::Skipped { reason: "No sources to score".into() };
+        run.status = JobStatus::Skipped {
+            reason: "No sources to score".into(),
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::SourceScoring,
             run,
@@ -236,10 +248,16 @@ pub fn process_source_scoring_stage(result: &SourceScoringStageResult) -> Improv
         };
     }
 
-    run.succeed(result.sources_scored, &format!(
-        "Scored {} sources: {} upgraded, {} downgraded, {} coverage gaps",
-        result.sources_scored, result.sources_upgraded, result.sources_downgraded, result.coverage_gaps_found
-    ));
+    run.succeed(
+        result.sources_scored,
+        &format!(
+            "Scored {} sources: {} upgraded, {} downgraded, {} coverage gaps",
+            result.sources_scored,
+            result.sources_upgraded,
+            result.sources_downgraded,
+            result.coverage_gaps_found
+        ),
+    );
     ImprovementStageOutcome {
         stage: SelfImprovementStage::SourceScoring,
         run,
@@ -254,7 +272,10 @@ pub fn process_cross_domain_stage(result: &CrossDomainStageResult) -> Improvemen
 
     if result.pairs_evaluated > MAX_IMPROVEMENT_BATCH_SIZE {
         run.status = JobStatus::Failed {
-            error: format!("pairs_evaluated {} exceeds batch limit {}", result.pairs_evaluated, MAX_IMPROVEMENT_BATCH_SIZE),
+            error: format!(
+                "pairs_evaluated {} exceeds batch limit {}",
+                result.pairs_evaluated, MAX_IMPROVEMENT_BATCH_SIZE
+            ),
             duration_ms: 0,
         };
         return ImprovementStageOutcome {
@@ -266,7 +287,10 @@ pub fn process_cross_domain_stage(result: &CrossDomainStageResult) -> Improvemen
     }
 
     if let Err(e) = result.validate() {
-        run.status = JobStatus::Failed { error: e, duration_ms: 0 };
+        run.status = JobStatus::Failed {
+            error: e,
+            duration_ms: 0,
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::CrossDomainMining,
             run,
@@ -276,7 +300,9 @@ pub fn process_cross_domain_stage(result: &CrossDomainStageResult) -> Improvemen
     }
 
     if result.pairs_evaluated == 0 {
-        run.status = JobStatus::Skipped { reason: "No signal pairs to evaluate".into() };
+        run.status = JobStatus::Skipped {
+            reason: "No signal pairs to evaluate".into(),
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::CrossDomainMining,
             run,
@@ -285,10 +311,13 @@ pub fn process_cross_domain_stage(result: &CrossDomainStageResult) -> Improvemen
         };
     }
 
-    run.succeed(result.pairs_evaluated, &format!(
-        "Evaluated {} pairs: {} synergies found, {} new candidates",
-        result.pairs_evaluated, result.synergies_found, result.new_candidates_generated
-    ));
+    run.succeed(
+        result.pairs_evaluated,
+        &format!(
+            "Evaluated {} pairs: {} synergies found, {} new candidates",
+            result.pairs_evaluated, result.synergies_found, result.new_candidates_generated
+        ),
+    );
     ImprovementStageOutcome {
         stage: SelfImprovementStage::CrossDomainMining,
         run,
@@ -297,13 +326,18 @@ pub fn process_cross_domain_stage(result: &CrossDomainStageResult) -> Improvemen
     }
 }
 
-pub fn process_outcome_tracking_stage(result: &OutcomeTrackingStageResult) -> ImprovementStageOutcome {
+pub fn process_outcome_tracking_stage(
+    result: &OutcomeTrackingStageResult,
+) -> ImprovementStageOutcome {
     let mut run = JobRun::new(JobKind::OutcomeTracking);
     run.start();
 
     if result.predictions_checked > MAX_IMPROVEMENT_BATCH_SIZE {
         run.status = JobStatus::Failed {
-            error: format!("predictions_checked {} exceeds batch limit {}", result.predictions_checked, MAX_IMPROVEMENT_BATCH_SIZE),
+            error: format!(
+                "predictions_checked {} exceeds batch limit {}",
+                result.predictions_checked, MAX_IMPROVEMENT_BATCH_SIZE
+            ),
             duration_ms: 0,
         };
         return ImprovementStageOutcome {
@@ -315,7 +349,10 @@ pub fn process_outcome_tracking_stage(result: &OutcomeTrackingStageResult) -> Im
     }
 
     if let Err(e) = result.validate() {
-        run.status = JobStatus::Failed { error: e, duration_ms: 0 };
+        run.status = JobStatus::Failed {
+            error: e,
+            duration_ms: 0,
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::OutcomeTracking,
             run,
@@ -325,7 +362,9 @@ pub fn process_outcome_tracking_stage(result: &OutcomeTrackingStageResult) -> Im
     }
 
     if result.predictions_checked == 0 {
-        run.status = JobStatus::Skipped { reason: "No predictions to track".into() };
+        run.status = JobStatus::Skipped {
+            reason: "No predictions to track".into(),
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::OutcomeTracking,
             run,
@@ -334,11 +373,17 @@ pub fn process_outcome_tracking_stage(result: &OutcomeTrackingStageResult) -> Im
         };
     }
 
-    run.succeed(result.predictions_checked, &format!(
-        "Checked {} predictions: {} confirmed, {} expired, {} overconfident, {} poor accuracy",
-        result.predictions_checked, result.predictions_confirmed, result.predictions_expired,
-        result.overconfident_recipes, result.poor_accuracy_recipes
-    ));
+    run.succeed(
+        result.predictions_checked,
+        &format!(
+            "Checked {} predictions: {} confirmed, {} expired, {} overconfident, {} poor accuracy",
+            result.predictions_checked,
+            result.predictions_confirmed,
+            result.predictions_expired,
+            result.overconfident_recipes,
+            result.poor_accuracy_recipes
+        ),
+    );
     ImprovementStageOutcome {
         stage: SelfImprovementStage::OutcomeTracking,
         run,
@@ -352,7 +397,10 @@ pub fn process_meta_learning_stage(result: &MetaLearningStageResult) -> Improvem
     run.start();
 
     if let Err(e) = result.validate() {
-        run.status = JobStatus::Failed { error: e, duration_ms: 0 };
+        run.status = JobStatus::Failed {
+            error: e,
+            duration_ms: 0,
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::MetaLearning,
             run,
@@ -362,7 +410,9 @@ pub fn process_meta_learning_stage(result: &MetaLearningStageResult) -> Improvem
     }
 
     if result.recipes_analysed == 0 {
-        run.status = JobStatus::Skipped { reason: "No recipe history for meta-learning".into() };
+        run.status = JobStatus::Skipped {
+            reason: "No recipe history for meta-learning".into(),
+        };
         return ImprovementStageOutcome {
             stage: SelfImprovementStage::MetaLearning,
             run,
@@ -371,11 +421,14 @@ pub fn process_meta_learning_stage(result: &MetaLearningStageResult) -> Improvem
         };
     }
 
-    run.succeed(result.recipes_analysed, &format!(
+    run.succeed(
+        result.recipes_analysed,
+        &format!(
         "Analysed {} recipes: {} threshold adjustments, {} high-value signals, {} recommendations",
         result.recipes_analysed, result.threshold_adjustments_suggested,
         result.high_value_signal_types_found, result.collection_recommendations_generated
-    ));
+    ),
+    );
     ImprovementStageOutcome {
         stage: SelfImprovementStage::MetaLearning,
         run,

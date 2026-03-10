@@ -52,34 +52,19 @@ docker compose up -d
 # Wait for PostgreSQL health check (~10 seconds)
 sleep 10
 
-# 4. Run database migrations (in order)
-psql "$DATABASE_URL" < migrations/00000000_core_schema.sql
-psql "$DATABASE_URL" < migrations/20260228_dossier_and_role_history.sql
-psql "$DATABASE_URL" < migrations/20260228_weekly_memos_and_competitor_changes.sql
-psql "$DATABASE_URL" < migrations/20260301_data_retention.sql
-psql "$DATABASE_URL" < migrations/20260301_materialized_views.sql
-psql "$DATABASE_URL" < migrations/20260301_observation_dedup.sql
+# 4. Build Rust binaries
+cargo build --release
+# Produces: target/release/apex-api, target/release/apex-worker
 
 # 5. Seed initial data
 psql "$DATABASE_URL" < scripts/seed_data.sql
 psql "$DATABASE_URL" < scripts/seed_competitors_and_pois.sql
 
-# 6. Build Rust binaries
-cargo build --release
-# Produces: target/release/apex-api, target/release/apex-worker
-
-# 7. Build frontend
-cd frontend
-npm install
-npm run build
-cd ..
-
-# 8. Start services (or use systemd — see below)
+# 6. Start services (or use systemd — see below)
 ./target/release/apex-api &
 ./target/release/apex-worker &
-cd frontend && npm start &
 
-# 9. Verify
+# 7. Verify
 curl -s http://localhost:8080/api/health | jq .
 # Expected: {"status":"ok","version":"...","uptime_secs":...}
 
@@ -93,22 +78,24 @@ curl -s http://localhost:8080/api/health/deep | jq .
 # Copy service files
 sudo cp config/systemd/apexintel-api.service /etc/systemd/system/
 sudo cp config/systemd/apexintel-worker.service /etc/systemd/system/
-sudo cp config/systemd/apexintel-frontend.service /etc/systemd/system/
+sudo cp config/systemd/apexintel-backup.service /etc/systemd/system/
+sudo cp config/systemd/apexintel-backup.timer /etc/systemd/system/
 sudo cp config/systemd/apexintel-llm.service /etc/systemd/system/
 
 # Reload and enable
 sudo systemctl daemon-reload
-sudo systemctl enable --now apexintel-api apexintel-worker apexintel-frontend
+sudo systemctl enable --now apexintel-api apexintel-worker apexintel-backup.timer
 
 # Verify
 sudo systemctl status apexintel-api
 sudo systemctl status apexintel-worker
+sudo systemctl status apexintel-backup.timer
 ```
 
 ### Nginx Setup
 
 ```bash
-sudo cp config/nginx/apexintel.conf /etc/nginx/sites-available/apexintel
+sudo cp config/runtime/nginx-apexintel.conf /etc/nginx/sites-available/apexintel
 sudo ln -sf /etc/nginx/sites-available/apexintel /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -118,11 +105,11 @@ sudo nginx -t && sudo systemctl reload nginx
 ## Architecture Overview
 
 ```
-┌──────────────┐     ┌───────────┐     ┌──────────────┐
-│   Frontend   │────▶│   Nginx   │────▶│   API Server │
-│  (Next.js)   │     │  (proxy)  │     │  (Rust/Axum) │
-└──────────────┘     └───────────┘     └──────┬───────┘
-                                               │
+┌───────────┐     ┌──────────────┐
+│   Nginx   │────▶│   API Server │
+│  (proxy)  │     │  (Rust/Axum) │
+└───────────┘     └──────┬───────┘
+           │
                      ┌─────────────────────────┼─────────────────────────┐
                      │                         │                         │
               ┌──────▼──────┐          ┌───────▼──────┐          ┌──────▼──────┐
@@ -582,12 +569,28 @@ journalctl -u apexintel-api --since "24 hours ago" -p err --output=short | \
 ### Backup Schedule
 
 ```bash
-# Automated via cron (see scripts/backup.sh)
-# Default schedule: daily at 02:00 UTC
-0 2 * * * /opt/apexintel/scripts/backup.sh >> /var/log/apexintel-backup.log 2>&1
+# Automated via systemd timer (see config/systemd/apexintel-backup.timer)
+systemctl list-timers apexintel-backup.timer
+
+# Manual run
+sudo systemctl start apexintel-backup.service
 
 # Retention: 7 daily + 4 weekly + 3 monthly
 # Verify: ls -la /opt/apexintel/backups/
+```
+
+### Restore Validation
+
+```bash
+# Validate the most recent backup end-to-end on a scratch database
+DATABASE_URL=postgresql://... \
+RESTORE_VALIDATE_DATABASE_URL=postgresql://.../apexintel_restore_check \
+bash scripts/restore_validate.sh /opt/apexintel/backups/LATEST
+
+# Continuous uptime probe with paging webhook
+HEALTHCHECK_URL=https://starzerp.fi/api/health/deep \
+PAGE_WEBHOOK_URL=https://hooks.example.com/pager \
+bash scripts/uptime_check.sh
 ```
 
 ---
@@ -608,9 +611,10 @@ journalctl -u apexintel-api --since "24 hours ago" -p err --output=short | \
 | `SCRAPER_PROXY_URL` | No | — | HTTP proxy for crawling |
 | `CRAWL_CONCURRENCY` | No | `4` | Max parallel crawl tasks |
 | `API_PORT` | No | `8080` | API server port |
-| `FRONTEND_PORT` | No | `3000` | Next.js port |
 | `LOG_LEVEL` | No | `info` | Log level (trace/debug/info/warn/error) |
 | `BACKUP_DIR` | No | `/opt/apexintel/backups` | Backup directory |
+| `PAGE_WEBHOOK_URL` | No | — | Webhook used by uptime checks and restore validation failures |
+| `HEALTHCHECK_URL` | No | `http://127.0.0.1:8080/api/health/deep` | Endpoint probed by `scripts/uptime_check.sh` |
 | `DATA_RETENTION_DAYS` | No | `365` | Days before observation archival |
 
 ---

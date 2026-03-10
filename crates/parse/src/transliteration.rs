@@ -6,6 +6,7 @@
 
 use serde::Serialize;
 use std::collections::HashSet;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 // ─── Transliteration result ─────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ pub struct TransliterationResult {
 pub enum DetectedScript {
     Arabic,
     Hebrew,
+    Cyrillic,
     Chinese,
     Japanese,
     Korean,
@@ -36,6 +38,7 @@ pub enum DetectedScript {
 pub fn detect_script(name: &str) -> DetectedScript {
     let mut arabic = 0;
     let mut hebrew = 0;
+    let mut cyrillic = 0;
     let mut cjk = 0;
     let mut hangul = 0;
     let mut hiragana_katakana = 0;
@@ -54,6 +57,11 @@ pub fn detect_script(name: &str) -> DetectedScript {
             arabic += 1;
         } else if (0x0590..=0x05FF).contains(&cp) || (0xFB1D..=0xFB4F).contains(&cp) {
             hebrew += 1;
+        } else if (0x0400..=0x052F).contains(&cp)
+            || (0x2DE0..=0x2DFF).contains(&cp)
+            || (0xA640..=0xA69F).contains(&cp)
+        {
+            cyrillic += 1;
         } else if (0x4E00..=0x9FFF).contains(&cp) || (0x3400..=0x4DBF).contains(&cp) {
             cjk += 1;
         } else if (0xAC00..=0xD7AF).contains(&cp) || (0x1100..=0x11FF).contains(&cp) {
@@ -75,6 +83,8 @@ pub fn detect_script(name: &str) -> DetectedScript {
         DetectedScript::Arabic
     } else if hebrew > threshold {
         DetectedScript::Hebrew
+    } else if cyrillic > threshold {
+        DetectedScript::Cyrillic
     } else if hangul > threshold {
         DetectedScript::Korean
     } else if cjk > threshold && hiragana_katakana > 0 {
@@ -96,7 +106,10 @@ fn arabic_variants(name: &str) -> Vec<String> {
 
     // Common Arabic name mappings
     let patterns: &[(&str, &[&str])] = &[
-        ("محمد", &["Mohammed", "Muhammad", "Mohamed", "Mohamad", "Muhammed"]),
+        (
+            "محمد",
+            &["Mohammed", "Muhammad", "Mohamed", "Mohamad", "Muhammed"],
+        ),
         ("أحمد", &["Ahmed", "Ahmad", "Ahmet"]),
         ("علي", &["Ali", "Aly"]),
         ("حسن", &["Hassan", "Hasan", "Hasen"]),
@@ -249,6 +262,65 @@ fn basic_hebrew_transliterate(text: &str) -> String {
     result
 }
 
+fn cyrillic_variants(name: &str) -> Vec<String> {
+    let transliterated = name
+        .chars()
+        .map(|ch| match ch {
+            'А' | 'а' => "a",
+            'Б' | 'б' => "b",
+            'В' | 'в' => "v",
+            'Г' | 'г' => "g",
+            'Д' | 'д' => "d",
+            'Е' | 'е' | 'Ё' | 'ё' => "e",
+            'Ж' | 'ж' => "zh",
+            'З' | 'з' => "z",
+            'И' | 'и' => "i",
+            'Й' | 'й' => "y",
+            'К' | 'к' => "k",
+            'Л' | 'л' => "l",
+            'М' | 'м' => "m",
+            'Н' | 'н' => "n",
+            'О' | 'о' => "o",
+            'П' | 'п' => "p",
+            'Р' | 'р' => "r",
+            'С' | 'с' => "s",
+            'Т' | 'т' => "t",
+            'У' | 'у' => "u",
+            'Ф' | 'ф' => "f",
+            'Х' | 'х' => "kh",
+            'Ц' | 'ц' => "ts",
+            'Ч' | 'ч' => "ch",
+            'Ш' | 'ш' => "sh",
+            'Щ' | 'щ' => "shch",
+            'Ы' | 'ы' => "y",
+            'Э' | 'э' => "e",
+            'Ю' | 'ю' => "yu",
+            'Я' | 'я' => "ya",
+            'Ь' | 'ь' | 'Ъ' | 'ъ' => "",
+            ' ' => " ",
+            _ => "",
+        })
+        .collect::<String>();
+
+    let mut variants = HashSet::new();
+    if !transliterated.is_empty() {
+        let title_case = transliterated
+            .split_whitespace()
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        variants.insert(title_case);
+        variants.insert(transliterated.replace("ks", "x"));
+    }
+    variants.into_iter().collect()
+}
+
 // ─── Chinese/Japanese/Korean ─────────────────────────────────────────────
 
 fn cjk_variants(name: &str, _script: DetectedScript) -> Vec<String> {
@@ -301,15 +373,13 @@ pub fn transliterate(name: &str) -> TransliterationResult {
     let variants = match script {
         DetectedScript::Arabic => arabic_variants(name),
         DetectedScript::Hebrew => hebrew_variants(name),
+        DetectedScript::Cyrillic => cyrillic_variants(name),
         DetectedScript::Chinese | DetectedScript::Japanese | DetectedScript::Korean => {
             cjk_variants(name, script)
         }
         DetectedScript::Latin => {
             // For Latin names, generate normalized variants
-            vec![
-                name.to_lowercase(),
-                strip_diacritics(name),
-            ]
+            vec![name.to_lowercase(), strip_diacritics(name)]
         }
         _ => vec![name.to_string()],
     };
@@ -332,8 +402,8 @@ pub fn normalize_for_matching(name: &str) -> String {
 
     // Remove common titles
     let titles = [
-        "dr.", "dr ", "prof.", "prof ", "mr.", "mr ", "mrs.", "mrs ",
-        "ms.", "ms ", "ing.", "ing ", "eng.", "eng ",
+        "dr.", "dr ", "prof.", "prof ", "mr.", "mr ", "mrs.", "mrs ", "ms.", "ms ", "ing.", "ing ",
+        "eng.", "eng ",
     ];
     let mut result = lower;
     for title in &titles {
@@ -343,32 +413,17 @@ pub fn normalize_for_matching(name: &str) -> String {
     }
 
     // Collapse whitespace
-    result.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
+    result
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
 }
 
 /// Strip common diacritics from Latin text.
 fn strip_diacritics(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'ô' | 'ö' | 'õ' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ñ' => 'n',
-            'ç' => 'c',
-            'ş' => 's',
-            'ğ' => 'g',
-            'Á' | 'À' | 'Â' | 'Ä' | 'Ã' | 'Å' => 'A',
-            'É' | 'È' | 'Ê' | 'Ë' => 'E',
-            'Í' | 'Ì' | 'Î' | 'Ï' => 'I',
-            'Ó' | 'Ò' | 'Ô' | 'Ö' | 'Õ' => 'O',
-            'Ú' | 'Ù' | 'Û' | 'Ü' => 'U',
-            'Ñ' => 'N',
-            'Ç' => 'C',
-            _ => c,
-        })
-        .collect()
+    text.nfkd().filter(|ch| !is_combining_mark(*ch)).collect()
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────
@@ -385,6 +440,11 @@ mod tests {
     #[test]
     fn test_detect_hebrew() {
         assert_eq!(detect_script("משה דוד"), DetectedScript::Hebrew);
+    }
+
+    #[test]
+    fn test_detect_cyrillic() {
+        assert_eq!(detect_script("Алексей Иванов"), DetectedScript::Cyrillic);
     }
 
     #[test]
@@ -406,14 +466,30 @@ mod tests {
     fn test_arabic_transliteration() {
         let result = transliterate("محمد");
         assert_eq!(result.script, DetectedScript::Arabic);
-        assert!(result.variants.iter().any(|v| v == "Mohammed" || v == "Muhammad" || v == "Mohamed"));
+        assert!(result
+            .variants
+            .iter()
+            .any(|v| v == "Mohammed" || v == "Muhammad" || v == "Mohamed"));
     }
 
     #[test]
     fn test_hebrew_transliteration() {
         let result = transliterate("דוד");
         assert_eq!(result.script, DetectedScript::Hebrew);
-        assert!(result.variants.iter().any(|v| v == "David" || v == "Daveed"));
+        assert!(result
+            .variants
+            .iter()
+            .any(|v| v == "David" || v == "Daveed"));
+    }
+
+    #[test]
+    fn test_cyrillic_transliteration() {
+        let result = transliterate("Алексей Иванов");
+        assert_eq!(result.script, DetectedScript::Cyrillic);
+        assert!(result
+            .variants
+            .iter()
+            .any(|v| v.to_lowercase().contains("alek")));
     }
 
     #[test]
@@ -430,7 +506,10 @@ mod tests {
 
     #[test]
     fn test_normalize_strips_title() {
-        assert_eq!(normalize_for_matching("Dr. Ahmed Ben Salah"), "ahmed ben salah");
+        assert_eq!(
+            normalize_for_matching("Dr. Ahmed Ben Salah"),
+            "ahmed ben salah"
+        );
     }
 
     #[test]

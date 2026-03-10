@@ -66,11 +66,13 @@ static RE_ISSUE_DATE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_EXPIRY_DATE: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(r"(?i)(?:expiry|expiration|valid until|valid to)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2})")
-        .size_limit(200_000)
-        .dfa_size_limit(200_000)
-        .build()
-        .unwrap()
+    RegexBuilder::new(
+        r"(?i)(?:expiry|expiration|valid until|valid to)[:\s]+(\d{4}[-/]\d{2}[-/]\d{2})",
+    )
+    .size_limit(200_000)
+    .dfa_size_limit(200_000)
+    .build()
+    .unwrap()
 });
 
 static RE_SCOPE: LazyLock<Regex> = LazyLock::new(|| {
@@ -107,22 +109,54 @@ pub enum CertStandard {
 impl CertStandard {
     pub fn from_text(text: &str) -> Self {
         let t = text.to_uppercase().replace([' ', '-'], "");
-        if t.contains("ISO9001") { return CertStandard::Iso9001; }
-        if t.contains("ISO14001") { return CertStandard::Iso14001; }
-        if t.contains("ISO13485") { return CertStandard::Iso13485; }
-        if t.contains("ISO45001") { return CertStandard::Iso45001; }
-        if t.contains("IATF16949") || t.contains("16949") { return CertStandard::Iatf16949; }
-        if t.contains("AS9100") { return CertStandard::As9100; }
-        if t.contains("NADCAPELECTRONICS") { return CertStandard::NadcapElectronics; }
-        if t.contains("NADCAP") { return CertStandard::Nadcap; }
-        if t.contains("61340") { return CertStandard::Iec61340; }
-        if t.contains("IPCA610") || t.contains("A610") { return CertStandard::IpcA610; }
-        if t.contains("JSTD001") { return CertStandard::IpcJ_Std_001; }
-        if t.contains("ITAR") { return CertStandard::Itar; }
-        if t == "UL" || t.contains("UL94") || t.contains("ULCERTIF") { return CertStandard::Ul; }
-        if t == "CE" || t.contains("CEMARK") { return CertStandard::Ce; }
-        if t.contains("ROHS") { return CertStandard::RoHS; }
-        if t.contains("REACH") { return CertStandard::Reach; }
+        if t.contains("ISO9001") {
+            return CertStandard::Iso9001;
+        }
+        if t.contains("ISO14001") {
+            return CertStandard::Iso14001;
+        }
+        if t.contains("ISO13485") {
+            return CertStandard::Iso13485;
+        }
+        if t.contains("ISO45001") {
+            return CertStandard::Iso45001;
+        }
+        if t.contains("IATF16949") || t.contains("16949") {
+            return CertStandard::Iatf16949;
+        }
+        if t.contains("AS9100") {
+            return CertStandard::As9100;
+        }
+        if t.contains("NADCAPELECTRONICS") {
+            return CertStandard::NadcapElectronics;
+        }
+        if t.contains("NADCAP") {
+            return CertStandard::Nadcap;
+        }
+        if t.contains("61340") {
+            return CertStandard::Iec61340;
+        }
+        if t.contains("IPCA610") || t.contains("A610") {
+            return CertStandard::IpcA610;
+        }
+        if t.contains("JSTD001") {
+            return CertStandard::IpcJ_Std_001;
+        }
+        if t.contains("ITAR") {
+            return CertStandard::Itar;
+        }
+        if t == "UL" || t.contains("UL94") || t.contains("ULCERTIF") {
+            return CertStandard::Ul;
+        }
+        if t == "CE" || t.contains("CEMARK") {
+            return CertStandard::Ce;
+        }
+        if t.contains("ROHS") {
+            return CertStandard::RoHS;
+        }
+        if t.contains("REACH") {
+            return CertStandard::Reach;
+        }
         CertStandard::Other(text.to_string())
     }
 
@@ -217,26 +251,31 @@ pub fn extract_certifications(body_text: &str, url: &str) -> Vec<CertExtract> {
 }
 
 fn extract_holder(text: &str) -> Option<String> {
-    RE_HOLDER.captures(text)
+    RE_HOLDER
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_cert_number_near(text: &str, offset: usize) -> Option<String> {
     let remaining = &text[offset..];
-    RE_CERT_NUMBER.captures(remaining)
+    RE_CERT_NUMBER
+        .captures(remaining)
         .map(|c| c.get(1).unwrap().as_str().to_string())
 }
 
 fn extract_issuer(text: &str) -> Option<String> {
-    RE_ISSUER.captures(text)
+    RE_ISSUER
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_cert_dates(text: &str) -> (Option<String>, Option<String>) {
-    let issue = RE_ISSUE_DATE.captures(text)
+    let issue = RE_ISSUE_DATE
+        .captures(text)
         .map(|c| c.get(1).unwrap().as_str().to_string())
         .filter(|raw| normalizer::is_valid_date(raw));
-    let expiry = RE_EXPIRY_DATE.captures(text)
+    let expiry = RE_EXPIRY_DATE
+        .captures(text)
         .map(|c| c.get(1).unwrap().as_str().to_string())
         .filter(|raw| normalizer::is_valid_date(raw));
 
@@ -244,7 +283,8 @@ fn extract_cert_dates(text: &str) -> (Option<String>, Option<String>) {
 }
 
 fn extract_scope(text: &str) -> Option<String> {
-    RE_SCOPE.captures(text)
+    RE_SCOPE
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
@@ -267,8 +307,14 @@ mod tests {
 
     #[test]
     fn test_cert_standard_from_text() {
-        assert_eq!(CertStandard::from_text("ISO 9001:2015"), CertStandard::Iso9001);
-        assert_eq!(CertStandard::from_text("IATF 16949"), CertStandard::Iatf16949);
+        assert_eq!(
+            CertStandard::from_text("ISO 9001:2015"),
+            CertStandard::Iso9001
+        );
+        assert_eq!(
+            CertStandard::from_text("IATF 16949"),
+            CertStandard::Iatf16949
+        );
         assert_eq!(CertStandard::from_text("AS9100D"), CertStandard::As9100);
         assert_eq!(CertStandard::from_text("IPC-A-610"), CertStandard::IpcA610);
         assert_eq!(CertStandard::from_text("RoHS"), CertStandard::RoHS);
@@ -316,15 +362,28 @@ mod tests {
 
     #[test]
     fn test_detect_cert_status() {
-        assert_eq!(detect_cert_status("This certificate is active"), CertExtractionStatus::Active);
-        assert_eq!(detect_cert_status("Certificate expired on 2023-12-31"), CertExtractionStatus::Expired);
-        assert_eq!(detect_cert_status("Certification has been suspended"), CertExtractionStatus::Suspended);
-        assert_eq!(detect_cert_status("No status info"), CertExtractionStatus::Unknown);
+        assert_eq!(
+            detect_cert_status("This certificate is active"),
+            CertExtractionStatus::Active
+        );
+        assert_eq!(
+            detect_cert_status("Certificate expired on 2023-12-31"),
+            CertExtractionStatus::Expired
+        );
+        assert_eq!(
+            detect_cert_status("Certification has been suspended"),
+            CertExtractionStatus::Suspended
+        );
+        assert_eq!(
+            detect_cert_status("No status info"),
+            CertExtractionStatus::Unknown
+        );
     }
 
     #[test]
     fn test_extract_ems_specific_certs() {
-        let body = "Certifications: IPC-A-610 Class 3, IPC J-STD-001, Nadcap Electronics. All valid.";
+        let body =
+            "Certifications: IPC-A-610 Class 3, IPC J-STD-001, Nadcap Electronics. All valid.";
         let certs = extract_certifications(body, "https://example.com");
 
         let standards: Vec<&CertStandard> = certs.iter().map(|c| &c.parsed_standard).collect();

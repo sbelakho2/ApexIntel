@@ -135,8 +135,19 @@ pub fn extract_commodity_prices(body_text: &str, source: &str, url: &str) -> Vec
 
     // Pattern: "Commodity: $X.XX /unit" or "Commodity ... X.XX USD/unit"
     let commodities = [
-        "copper", "gold", "silver", "tin", "palladium", "aluminum",
-        "steel", "epoxy", "solder", "silicon", "neon", "fr4", "fr-4",
+        "copper",
+        "gold",
+        "silver",
+        "tin",
+        "palladium",
+        "aluminum",
+        "steel",
+        "epoxy",
+        "solder",
+        "silicon",
+        "neon",
+        "fr4",
+        "fr-4",
     ];
 
     for commodity in &commodities {
@@ -225,9 +236,13 @@ fn detect_unit(text: &str) -> String {
         "lb".to_string()
     } else if lower.contains("/kg") || lower.contains("per kg") {
         "kg".to_string()
-    } else if lower.contains("/oz") || lower.contains("per ounce") || lower.contains("per troy oz") {
+    } else if lower.contains("/oz") || lower.contains("per ounce") || lower.contains("per troy oz")
+    {
         "oz".to_string()
-    } else if lower.contains("/mt") || lower.contains("per metric ton") || lower.contains("per tonne") {
+    } else if lower.contains("/mt")
+        || lower.contains("per metric ton")
+        || lower.contains("per tonne")
+    {
         "mt".to_string()
     } else if lower.contains("/ton") {
         "ton".to_string()
@@ -329,7 +344,8 @@ mod tests {
 
     #[test]
     fn test_extract_commodity_prices() {
-        let text = "Market update 2025-01-15: copper $4.25/lb, gold $2025.50/oz, tin $28500 USD/mt.";
+        let text =
+            "Market update 2025-01-15: copper $4.25/lb, gold $2025.50/oz, tin $28500 USD/mt.";
         let prices = extract_commodity_prices(text, "MetalPrices.com", "https://example.com");
 
         assert!(prices.len() >= 2);

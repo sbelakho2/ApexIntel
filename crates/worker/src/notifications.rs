@@ -17,7 +17,11 @@
 //! LLM-enhanced alert bodies are available when the `llm` feature is active.
 
 use anyhow::{Context, Result};
+use apex_core::sla::SeveritySlaConfig;
 use chrono::{DateTime, Utc};
+use lettre::message::{header::ContentType, Mailbox, SinglePart};
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
@@ -108,7 +112,9 @@ impl PendingAlert {
 pub struct Notification {
     pub id: String,
     pub channel: String,
+    pub destination: Option<String>,
     pub alert: PendingAlert,
+    pub subject: Option<String>,
     pub formatted_body: String,
     pub dispatched_at: Option<DateTime<Utc>>,
     pub dispatch_success: Option<bool>,
@@ -118,9 +124,11 @@ pub struct Notification {
 impl Notification {
     fn new(channel: &str, alert: PendingAlert, formatted_body: String) -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: format!("{}:{}", channel, alert.source_id),
             channel: channel.to_string(),
+            destination: None,
             alert,
+            subject: None,
             formatted_body,
             dispatched_at: None,
             dispatch_success: None,
@@ -209,10 +217,12 @@ impl NotificationConfig {
             cfg.webhooks.push(WebhookConfig::slack(url));
         }
         if let Ok(url) = std::env::var("CRITICAL_WEBHOOK_URL") {
-            cfg.webhooks.push(WebhookConfig::critical_only(url, "critical-hook"));
+            cfg.webhooks
+                .push(WebhookConfig::critical_only(url, "critical-hook"));
         }
         if let Ok(to_raw) = std::env::var("ALERT_EMAIL_TO") {
-            let to_addresses: Vec<String> = to_raw.split(',').map(|s| s.trim().to_string()).collect();
+            let to_addresses: Vec<String> =
+                to_raw.split(',').map(|s| s.trim().to_string()).collect();
             let from = std::env::var("ALERT_EMAIL_FROM")
                 .unwrap_or_else(|_| "alerts@apexintel.io".to_string());
             cfg.email = Some(EmailConfig {
@@ -272,15 +282,18 @@ impl NotificationDispatcher {
 
             // Fire webhooks
             for webhook in &self.config.webhooks {
-                if alert.severity < webhook.min_severity || alert.priority_score < webhook.min_priority {
+                if alert.severity < webhook.min_severity
+                    || alert.priority_score < webhook.min_priority
+                {
                     debug!(webhook = %webhook.name, "Alert below webhook threshold — skipping");
                     continue;
                 }
 
                 let body = self.format_slack_message(&alert);
                 let mut notif = Notification::new(&webhook.name, alert.clone(), body.clone());
+                notif.destination = Some(webhook.url.clone());
 
-                match self.send_webhook(webhook, &body).await {
+                match self.send_webhook_with_retry(webhook, &body).await {
                     Ok(_) => {
                         notif.dispatched_at = Some(Utc::now());
                         notif.dispatch_success = Some(true);
@@ -295,9 +308,11 @@ impl NotificationDispatcher {
                 records.push(notif);
             }
 
-            // Prepare email notifications (actual SMTP send is caller's responsibility)
+            // Deliver alert emails through the same retrying dispatcher path.
             if let Some(ref email_cfg) = self.config.email {
-                if alert.severity >= email_cfg.min_severity && alert.priority_score >= email_cfg.min_priority {
+                if alert.severity >= email_cfg.min_severity
+                    && alert.priority_score >= email_cfg.min_priority
+                {
                     let subject = format!(
                         "{} [{}] {}",
                         email_cfg.subject_prefix,
@@ -305,12 +320,24 @@ impl NotificationDispatcher {
                         alert.title
                     );
                     let formatted = self.format_email_body(&alert);
-                    let notif = Notification::new("email", alert.clone(), formatted);
-                    info!(
-                        to = ?email_cfg.to_addresses,
-                        subject = %subject,
-                        "Email alert prepared (send via caller's SMTP)"
-                    );
+                    let mut notif = Notification::new("email", alert.clone(), formatted.clone());
+                    notif.destination = Some(email_cfg.to_addresses.join(","));
+                    notif.subject = Some(subject.clone());
+
+                    match self
+                        .send_email_with_retry(email_cfg, &subject, &formatted)
+                        .await
+                    {
+                        Ok(_) => {
+                            notif.dispatched_at = Some(Utc::now());
+                            notif.dispatch_success = Some(true);
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Email delivery failed");
+                            notif.dispatch_success = Some(false);
+                            notif.error_message = Some(e.to_string());
+                        }
+                    }
                     records.push(notif);
                 }
             }
@@ -339,6 +366,95 @@ impl NotificationDispatcher {
         }
 
         Ok(())
+    }
+
+    async fn send_webhook_with_retry(&self, cfg: &WebhookConfig, body: &str) -> Result<()> {
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match self.send_webhook(cfg, body).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt < 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(300 * attempt)).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("webhook delivery failed")))
+    }
+
+    async fn send_email(&self, cfg: &EmailConfig, subject: &str, text_body: &str) -> Result<()> {
+        let smtp_host =
+            std::env::var("ALERT_SMTP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let smtp_port = std::env::var("ALERT_SMTP_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(25);
+        let smtp_user = std::env::var("ALERT_SMTP_USER").unwrap_or_default();
+        let smtp_pass = std::env::var("ALERT_SMTP_PASS").unwrap_or_default();
+        let smtp_starttls = std::env::var("ALERT_SMTP_STARTTLS")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+
+        let mut builder = Message::builder()
+            .from(cfg.from_address.parse::<Mailbox>()?)
+            .subject(subject);
+        for to in &cfg.to_addresses {
+            builder = builder.to(to.parse::<Mailbox>()?);
+        }
+
+        let email = builder.singlepart(
+            SinglePart::builder()
+                .header(ContentType::TEXT_PLAIN)
+                .body(text_body.to_string()),
+        )?;
+
+        let mailer = if smtp_starttls {
+            let mut transport =
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)?.port(smtp_port);
+            if !smtp_user.trim().is_empty() {
+                transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
+            }
+            transport.build()
+        } else {
+            let mut transport =
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_host).port(smtp_port);
+            if !smtp_user.trim().is_empty() {
+                transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
+            }
+            transport.build()
+        };
+
+        mailer.send(email).await?;
+        Ok(())
+    }
+
+    async fn send_email_with_retry(
+        &self,
+        cfg: &EmailConfig,
+        subject: &str,
+        text_body: &str,
+    ) -> Result<()> {
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match self.send_email(cfg, subject, text_body).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt < 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(300 * attempt)).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("email delivery failed")))
     }
 
     // ── Formatters ────────────────────────────────────────────────────────────
@@ -421,59 +537,20 @@ impl NotificationDispatcher {
 // SLA enforcement
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Per-severity SLA windows (maximum seconds a warning may remain unacknowledged).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SlaWindows {
-    /// Critical (P0) — default 15 minutes.
-    pub critical_seconds: i64,
-    /// High (P1) — default 1 hour.
-    pub high_seconds: i64,
-    /// Medium (P2) — default 4 hours.
-    pub medium_seconds: i64,
-    /// Low (P3) — default 24 hours.
-    pub low_seconds: i64,
-}
-
-impl Default for SlaWindows {
-    fn default() -> Self {
-        Self {
-            critical_seconds: 900,
-            high_seconds: 3_600,
-            medium_seconds: 14_400,
-            low_seconds: 86_400,
-        }
-    }
-}
-
-impl SlaWindows {
-    /// Build from environment variables.
-    ///
-    /// Reads `SLA_CRITICAL_SECONDS`, `SLA_HIGH_SECONDS`, `SLA_MEDIUM_SECONDS`,
-    /// `SLA_LOW_SECONDS` — falls back to defaults for any missing value.
-    pub fn from_env() -> Self {
-        fn parse_env(key: &str, default: i64) -> i64 {
-            std::env::var(key)
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(default)
-        }
-        let defaults = Self::default();
-        Self {
-            critical_seconds: parse_env("SLA_CRITICAL_SECONDS", defaults.critical_seconds),
-            high_seconds: parse_env("SLA_HIGH_SECONDS", defaults.high_seconds),
-            medium_seconds: parse_env("SLA_MEDIUM_SECONDS", defaults.medium_seconds),
-            low_seconds: parse_env("SLA_LOW_SECONDS", defaults.low_seconds),
-        }
+fn shared_sla_config_from_env() -> SeveritySlaConfig {
+    fn parse_env(key: &str, default: i64) -> i64 {
+        std::env::var(key)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
     }
 
-    /// Return the SLA window in seconds for a given severity string.
-    pub fn window_for(&self, severity: &str) -> i64 {
-        match severity.to_lowercase().as_str() {
-            "critical" | "p0" => self.critical_seconds,
-            "high" | "p1" => self.high_seconds,
-            "medium" | "p2" => self.medium_seconds,
-            _ => self.low_seconds,
-        }
+    let defaults = SeveritySlaConfig::default();
+    SeveritySlaConfig {
+        critical_seconds: parse_env("SLA_CRITICAL_SECONDS", defaults.critical_seconds),
+        high_seconds: parse_env("SLA_HIGH_SECONDS", defaults.high_seconds),
+        medium_seconds: parse_env("SLA_MEDIUM_SECONDS", defaults.medium_seconds),
+        low_seconds: parse_env("SLA_LOW_SECONDS", defaults.low_seconds),
     }
 }
 
@@ -496,16 +573,16 @@ impl SlaWarningRecord {
     }
 
     /// Check whether this warning has breached its SLA given the configured windows.
-    pub fn is_sla_breached(&self, windows: &SlaWindows) -> bool {
+    pub fn is_sla_breached(&self, windows: &SeveritySlaConfig) -> bool {
         if self.acknowledged {
             return false;
         }
-        self.age_seconds() > windows.window_for(&self.severity)
+        self.age_seconds() > windows.deadline_seconds(&self.severity)
     }
 
     /// Seconds remaining until SLA breach (negative if already breached).
-    pub fn sla_seconds_remaining(&self, windows: &SlaWindows) -> i64 {
-        windows.window_for(&self.severity) - self.age_seconds()
+    pub fn sla_seconds_remaining(&self, windows: &SeveritySlaConfig) -> i64 {
+        windows.deadline_seconds(&self.severity) - self.age_seconds()
     }
 }
 
@@ -523,21 +600,96 @@ impl SlaWarningRecord {
 /// 3. Passing the returned `Vec<PendingAlert>` to `NotificationDispatcher::dispatch_batch()`.
 ///
 /// ```
-/// use apex_worker::notifications::{SlaEnforcer, SlaWindows, SlaWarningRecord};
-/// let enforcer = SlaEnforcer::new(SlaWindows::default());
+/// use apex_core::sla::SeveritySlaConfig;
+/// use apex_worker::notifications::{SlaEnforcer, SlaWarningRecord};
+/// let enforcer = SlaEnforcer::new(SeveritySlaConfig::default());
 /// // let violations = enforcer.check_sla_violations(&records);
 /// ```
 pub struct SlaEnforcer {
-    windows: SlaWindows,
+    windows: SeveritySlaConfig,
 }
 
 impl SlaEnforcer {
-    pub fn new(windows: SlaWindows) -> Self {
+    pub fn new(windows: SeveritySlaConfig) -> Self {
         Self { windows }
     }
 
     pub fn from_env() -> Self {
-        Self::new(SlaWindows::from_env())
+        Self::new(shared_sla_config_from_env())
+    }
+
+    pub fn build_breach_alert(&self, record: &SlaWarningRecord) -> Option<PendingAlert> {
+        if !record.is_sla_breached(&self.windows) {
+            return None;
+        }
+
+        let overdue_seconds =
+            record.age_seconds() - self.windows.deadline_seconds(&record.severity);
+        let overdue_minutes = overdue_seconds / 60;
+        let title = format!(
+            "SLA BREACH — {} unacknowledged warning: {}",
+            record.severity.to_uppercase(),
+            record.title
+        );
+        let body = format!(
+            "Warning ID {} has not been acknowledged and has breached its {} SLA by {}m. Original warning: '{}'. Severity: {}.",
+            record.id, record.severity, overdue_minutes, record.title, record.severity,
+        );
+
+        let severity = AlertSeverity::from_str(&record.severity);
+        let escalated_severity = severity.max(AlertSeverity::High);
+
+        let mut alert = PendingAlert::new(
+            format!("sla-breach:{}", record.id),
+            record.entity_id.clone().unwrap_or_else(|| "system".into()),
+            "SLA Enforcement",
+            title,
+            body,
+            escalated_severity,
+            0.95,
+        );
+        alert.category = "sla_breach".to_string();
+        Some(alert)
+    }
+
+    pub fn build_approaching_alert(
+        &self,
+        record: &SlaWarningRecord,
+        warn_ahead_seconds: i64,
+    ) -> Option<PendingAlert> {
+        if record.acknowledged {
+            return None;
+        }
+
+        let remaining = record.sla_seconds_remaining(&self.windows);
+        if remaining <= 0 || remaining > warn_ahead_seconds {
+            return None;
+        }
+
+        let title = format!(
+            "SLA reminder — {} warning nearing deadline: {}",
+            record.severity.to_uppercase(),
+            record.title
+        );
+        let body = format!(
+            "Warning ID {} is still unacknowledged and will breach its {} SLA in {}m. Original warning: '{}'.",
+            record.id,
+            record.severity,
+            (remaining / 60).max(1),
+            record.title,
+        );
+
+        let mut alert = PendingAlert::new(
+            format!("sla-reminder:{}", record.id),
+            record.entity_id.clone().unwrap_or_else(|| "system".into()),
+            "SLA Enforcement",
+            title,
+            body,
+            AlertSeverity::High,
+            0.8,
+        );
+        alert.category = "sla_reminder".to_string();
+        Some(alert)
     }
 
     /// Evaluate a slice of warning records and return `PendingAlert`s for
@@ -546,52 +698,14 @@ impl SlaEnforcer {
         let mut escalations = Vec::new();
 
         for record in records {
-            if !record.is_sla_breached(&self.windows) {
-                continue;
+            if let Some(alert) = self.build_breach_alert(record) {
+                info!(
+                    warning_id = %record.id,
+                    severity = %record.severity,
+                    "SLA breach escalation triggered"
+                );
+                escalations.push(alert);
             }
-
-            let overdue_seconds = record.age_seconds() - self.windows.window_for(&record.severity);
-            let overdue_minutes = overdue_seconds / 60;
-
-            let title = format!(
-                "SLA BREACH — {} unacknowledged warning: {}",
-                record.severity.to_uppercase(),
-                record.title
-            );
-            let body = format!(
-                "Warning ID {} has not been acknowledged and has breached its {} SLA by {}m. \
-                 Original warning: '{}'. Severity: {}.",
-                record.id,
-                record.severity,
-                overdue_minutes,
-                record.title,
-                record.severity,
-            );
-
-            let severity = AlertSeverity::from_str(&record.severity);
-            // Escalate to at least High regardless of original severity,
-            // since an SLA breach on any warning is high-priority.
-            let escalated_severity = severity.max(AlertSeverity::High);
-
-            let mut alert = PendingAlert::new(
-                format!("sla:{}", record.id),
-                record.entity_id.clone().unwrap_or_else(|| "system".into()),
-                "SLA Enforcement",
-                title,
-                body,
-                escalated_severity,
-                0.95,
-            );
-            alert.category = "sla_breach".to_string();
-
-            info!(
-                warning_id = %record.id,
-                severity = %record.severity,
-                overdue_minutes = overdue_minutes,
-                "SLA breach escalation triggered"
-            );
-
-            escalations.push(alert);
         }
 
         escalations
@@ -627,7 +741,15 @@ mod tests {
     use super::*;
 
     fn make_alert(severity: AlertSeverity, priority: f64) -> PendingAlert {
-        PendingAlert::new("src-001", "entity-1", "Test Corp", "Test Alert", "Body text.", severity, priority)
+        PendingAlert::new(
+            "src-001",
+            "entity-1",
+            "Test Corp",
+            "Test Alert",
+            "Body text.",
+            severity,
+            priority,
+        )
     }
 
     #[test]
@@ -651,7 +773,8 @@ mod tests {
         let dispatcher = NotificationDispatcher::new(cfg);
         let alert = make_alert(AlertSeverity::Critical, 0.95);
         let msg = dispatcher.format_slack_message(&alert);
-        let _parsed: serde_json::Value = serde_json::from_str(&msg).expect("slack message should be valid JSON");
+        let _parsed: serde_json::Value =
+            serde_json::from_str(&msg).expect("slack message should be valid JSON");
     }
 
     #[test]
@@ -706,24 +829,27 @@ mod tests {
 
     #[test]
     fn sla_windows_default_values() {
-        let w = SlaWindows::default();
-        assert_eq!(w.window_for("critical"), 900);
-        assert_eq!(w.window_for("high"), 3600);
-        assert_eq!(w.window_for("medium"), 14400);
-        assert_eq!(w.window_for("low"), 86400);
+        let w = SeveritySlaConfig::default();
+        assert_eq!(w.deadline_seconds("critical"), 900);
+        assert_eq!(w.deadline_seconds("high"), 3600);
+        assert_eq!(w.deadline_seconds("medium"), 14400);
+        assert_eq!(w.deadline_seconds("low"), 86400);
     }
 
     #[test]
     fn sla_windows_case_insensitive() {
-        let w = SlaWindows::default();
-        assert_eq!(w.window_for("CRITICAL"), 900);
-        assert_eq!(w.window_for("P0"), 900);
-        assert_eq!(w.window_for("P1"), 3600);
+        let w = SeveritySlaConfig::default();
+        assert_eq!(w.deadline_seconds("CRITICAL"), 900);
+        assert_eq!(w.deadline_seconds("P0"), 900);
+        assert_eq!(w.deadline_seconds("P1"), 3600);
     }
 
     #[test]
     fn sla_breach_detected_after_deadline() {
-        let windows = SlaWindows { critical_seconds: 60, ..Default::default() };
+        let windows = SeveritySlaConfig {
+            critical_seconds: 60,
+            ..Default::default()
+        };
         // Warning is 120s old with a 60s window — should be breached
         let record = make_warning("critical", 120, false);
         assert!(record.is_sla_breached(&windows));
@@ -731,25 +857,37 @@ mod tests {
 
     #[test]
     fn sla_not_breached_within_window() {
-        let windows = SlaWindows { critical_seconds: 3600, ..Default::default() };
+        let windows = SeveritySlaConfig {
+            critical_seconds: 3600,
+            ..Default::default()
+        };
         let record = make_warning("critical", 10, false);
         assert!(!record.is_sla_breached(&windows));
     }
 
     #[test]
     fn acknowledged_warning_never_breached() {
-        let windows = SlaWindows { critical_seconds: 0, ..Default::default() };
+        let windows = SeveritySlaConfig {
+            critical_seconds: 0,
+            ..Default::default()
+        };
         let record = make_warning("critical", 9999, /* acknowledged = */ true);
         assert!(!record.is_sla_breached(&windows));
     }
 
     #[test]
     fn sla_enforcer_emits_alert_for_breach() {
-        let windows = SlaWindows { critical_seconds: 10, ..Default::default() };
+        let windows = SeveritySlaConfig {
+            critical_seconds: 10,
+            ..Default::default()
+        };
         let enforcer = SlaEnforcer::new(windows);
         let records = vec![make_warning("critical", 60, false)];
         let alerts = enforcer.check_sla_violations(&records);
-        assert!(!alerts.is_empty(), "Should produce escalation for SLA breach");
+        assert!(
+            !alerts.is_empty(),
+            "Should produce escalation for SLA breach"
+        );
         assert_eq!(alerts[0].severity, AlertSeverity::Critical);
         assert!(alerts[0].title.contains("SLA BREACH"));
         assert_eq!(alerts[0].category, "sla_breach");
@@ -757,39 +895,61 @@ mod tests {
 
     #[test]
     fn sla_enforcer_escalates_low_to_high() {
-        let windows = SlaWindows { low_seconds: 10, ..Default::default() };
+        let windows = SeveritySlaConfig {
+            low_seconds: 10,
+            ..Default::default()
+        };
         let enforcer = SlaEnforcer::new(windows);
         // Low severity breached — should be escalated to High
         let records = vec![make_warning("low", 60, false)];
         let alerts = enforcer.check_sla_violations(&records);
         assert!(!alerts.is_empty());
-        assert_eq!(alerts[0].severity, AlertSeverity::High, "Low severity should escalate to High on SLA breach");
+        assert_eq!(
+            alerts[0].severity,
+            AlertSeverity::High,
+            "Low severity should escalate to High on SLA breach"
+        );
     }
 
     #[test]
     fn sla_enforcer_skips_acknowledged() {
-        let windows = SlaWindows { critical_seconds: 0, ..Default::default() };
+        let windows = SeveritySlaConfig {
+            critical_seconds: 0,
+            ..Default::default()
+        };
         let enforcer = SlaEnforcer::new(windows);
         let records = vec![make_warning("critical", 99999, true)];
         let alerts = enforcer.check_sla_violations(&records);
-        assert!(alerts.is_empty(), "Acknowledged warnings should not trigger SLA breach");
+        assert!(
+            alerts.is_empty(),
+            "Acknowledged warnings should not trigger SLA breach"
+        );
     }
 
     #[test]
     fn sla_enforcer_approaching_sla() {
-        let windows = SlaWindows { high_seconds: 3600, ..Default::default() };
+        let windows = SeveritySlaConfig {
+            high_seconds: 3600,
+            ..Default::default()
+        };
         let enforcer = SlaEnforcer::new(windows);
         // Warning that's 3300s old — 300s remaining — within 600s warn-ahead
         let record = make_warning("high", 3300, false);
         let record_cloned = record.clone();
         let record_arr = [record_cloned];
         let approaching = enforcer.approaching_sla(&record_arr, 600);
-        assert!(!approaching.is_empty(), "Should detect warning approaching SLA");
+        assert!(
+            !approaching.is_empty(),
+            "Should detect warning approaching SLA"
+        );
 
         // Warning that's only 10s old — far from deadline
         let fresh = make_warning("high", 10, false);
         let fresh_arr = [fresh];
         let not_approaching = enforcer.approaching_sla(&fresh_arr, 600);
-        assert!(not_approaching.is_empty(), "Fresh warning should not be flagged");
+        assert!(
+            not_approaching.is_empty(),
+            "Fresh warning should not be flagged"
+        );
     }
 }

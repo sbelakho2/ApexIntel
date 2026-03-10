@@ -25,29 +25,58 @@ const REDDIT_BASE: &str = "https://www.reddit.com";
 /// Default OSINT-relevant subreddits to monitor.
 pub const OSINT_SUBREDDITS: &[&str] = &[
     // Geopolitics & conflict
-    "worldnews", "geopolitics", "CredibleDefense",
-    "UkraineWarVideoReport", "europe", "MiddleEast",
-    "IsraelPalestine", "china", "geopol",
-    "IndoPacificRegion", "AfricaNews",
+    "worldnews",
+    "geopolitics",
+    "CredibleDefense",
+    "UkraineWarVideoReport",
+    "europe",
+    "MiddleEast",
+    "IsraelPalestine",
+    "china",
+    "geopol",
+    "IndoPacificRegion",
+    "AfricaNews",
     // Defense & military
-    "defense", "MilitaryProcurement", "drones",
-    "ArmyTech", "WarCollege",
+    "defense",
+    "MilitaryProcurement",
+    "drones",
+    "ArmyTech",
+    "WarCollege",
     // Security & cyber
-    "netsec", "cybersecurity", "Intelligence", "osint",
-    "SecurityAnalysis", "ReverseEngineering",
+    "netsec",
+    "cybersecurity",
+    "Intelligence",
+    "osint",
+    "SecurityAnalysis",
+    "ReverseEngineering",
     // Supply chain & manufacturing
-    "supplychain", "manufacturing", "EMS",
-    "pcbdesign", "Metalworking", "3Dprinting",
+    "supplychain",
+    "manufacturing",
+    "EMS",
+    "pcbdesign",
+    "Metalworking",
+    "3Dprinting",
     // Electronics & semiconductors
-    "electronics", "semiconductor", "FPGA",
-    "embedded", "RFelectronics",
+    "electronics",
+    "semiconductor",
+    "FPGA",
+    "embedded",
+    "RFelectronics",
     // Economy & trade
-    "investing", "economics", "sanction",
-    "ExportControls", "TradePolicy", "SanctionsCompliance",
+    "investing",
+    "economics",
+    "sanction",
+    "ExportControls",
+    "TradePolicy",
+    "SanctionsCompliance",
     // Technology & innovation
-    "technology", "artificial", "Automate",
+    "technology",
+    "artificial",
+    "Automate",
     // Energy & environment
-    "energy", "RenewableEnergy", "nuclear",
+    "energy",
+    "RenewableEnergy",
+    "nuclear",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,29 +140,55 @@ impl RedditScraper {
             builder = builder.proxy(reqwest::Proxy::all(proxy).context("Invalid proxy")?);
         }
 
-        Ok(Self { client: builder.build()? })
+        Ok(Self {
+            client: builder.build()?,
+        })
     }
 
     /// Fetch the hottest posts from a subreddit.
     pub async fn subreddit_hot(&self, subreddit: &str, limit: u32) -> Result<Vec<SocialPost>> {
-        let url = format!("{}/r/{}/.json?limit={}", REDDIT_BASE, subreddit, limit.min(100));
+        let url = format!(
+            "{}/r/{}/.json?limit={}",
+            REDDIT_BASE,
+            subreddit,
+            limit.min(100)
+        );
         self.fetch_listing(&url).await
     }
 
     /// Fetch the newest posts from a subreddit.
     pub async fn subreddit_new(&self, subreddit: &str, limit: u32) -> Result<Vec<SocialPost>> {
-        let url = format!("{}/r/{}/new.json?limit={}", REDDIT_BASE, subreddit, limit.min(100));
+        let url = format!(
+            "{}/r/{}/new.json?limit={}",
+            REDDIT_BASE,
+            subreddit,
+            limit.min(100)
+        );
         self.fetch_listing(&url).await
     }
 
     /// Full-text search across Reddit (experimental; only returns recent results).
-    pub async fn search(&self, query: &str, subreddit: Option<&str>, limit: u32) -> Result<Vec<SocialPost>> {
+    pub async fn search(
+        &self,
+        query: &str,
+        subreddit: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<SocialPost>> {
         let url = if let Some(sr) = subreddit {
-            format!("{}/r/{}/search.json?q={}&limit={}&restrict_sr=1&sort=new",
-                REDDIT_BASE, sr, urlencoding::encode(query), limit.min(100))
+            format!(
+                "{}/r/{}/search.json?q={}&limit={}&restrict_sr=1&sort=new",
+                REDDIT_BASE,
+                sr,
+                urlencoding::encode(query),
+                limit.min(100)
+            )
         } else {
-            format!("{}/search.json?q={}&limit={}&sort=new",
-                REDDIT_BASE, urlencoding::encode(query), limit.min(100))
+            format!(
+                "{}/search.json?q={}&limit={}&sort=new",
+                REDDIT_BASE,
+                urlencoding::encode(query),
+                limit.min(100)
+            )
         };
         self.fetch_listing(&url).await
     }
@@ -165,11 +220,17 @@ impl RedditScraper {
             .await
             .context("Reddit JSON parse failed")?;
 
-        Ok(resp.data.children.into_iter().map(|w| self.map_post(w.data)).collect())
+        Ok(resp
+            .data
+            .children
+            .into_iter()
+            .map(|w| self.map_post(w.data))
+            .collect())
     }
 
     fn map_post(&self, p: RedditPost) -> SocialPost {
-        let published_at = Utc.timestamp_opt(p.created_utc as i64, 0)
+        let published_at = Utc
+            .timestamp_opt(p.created_utc as i64, 0)
             .single()
             .unwrap_or_else(Utc::now);
 
@@ -181,15 +242,12 @@ impl RedditScraper {
             _ => p.title.clone(),
         };
 
-        let post_url = format!("https://www.reddit.com{}", p.permalink.trim_end_matches('/'));
-
-        let mut post = SocialPost::minimal(
-            "reddit",
-            &p.id,
-            &p.author,
-            &full_text,
-            published_at,
+        let post_url = format!(
+            "https://www.reddit.com{}",
+            p.permalink.trim_end_matches('/')
         );
+
+        let mut post = SocialPost::minimal("reddit", &p.id, &p.author, &full_text, published_at);
 
         post.like_count = p.score.unwrap_or(0).max(0) as u64;
         post.reply_count = p.num_comments.unwrap_or(0);

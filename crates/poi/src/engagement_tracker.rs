@@ -129,7 +129,9 @@ pub fn compute_summary(engagements: &[EngagementRecord]) -> EngagementSummary {
         .count();
     let negative = engagements
         .iter()
-        .filter(|e| e.outcome == EngagementOutcome::Negative || e.outcome == EngagementOutcome::Declined)
+        .filter(|e| {
+            e.outcome == EngagementOutcome::Negative || e.outcome == EngagementOutcome::Declined
+        })
         .count();
     let no_response = engagements
         .iter()
@@ -172,8 +174,7 @@ pub fn compute_summary(engagements: &[EngagementRecord]) -> EngagementSummary {
         .unwrap_or(0.0);
 
     let engagement_score =
-        (quantity_score * 0.3 + positivity_score * 0.4 + recency_score * 0.3)
-            .clamp(0.0, 1.0);
+        (quantity_score * 0.3 + positivity_score * 0.4 + recency_score * 0.3).clamp(0.0, 1.0);
 
     EngagementSummary {
         total_engagements: total,

@@ -60,7 +60,10 @@ pub fn map_product_to_hs(product_family: &str) -> HsMapping {
             ],
             "8534",
         )
-    } else if pf.contains("semiconductor") || pf.contains("ic ") || pf.contains("integrated circuit") {
+    } else if pf.contains("semiconductor")
+        || pf.contains("ic ")
+        || pf.contains("integrated circuit")
+    {
         (
             vec![
                 hs("8542.31", "Processors and controllers", 85),
@@ -230,30 +233,30 @@ pub fn lookup_tariff(hs4: &str) -> Vec<TariffRate> {
 
 fn tariff_mfn_eu(hs4: &str) -> f64 {
     match hs4 {
-        "8534" => 3.7,  // Printed circuits
-        "8542" => 0.0,  // ICs — ITA duty-free
-        "8536" => 2.7,  // Connectors
-        "8544" => 3.3,  // Cables
-        "8532" => 0.0,  // Capacitors — ITA
-        "8533" => 0.0,  // Resistors — ITA
-        "8504" => 2.5,  // Transformers
-        "8541" => 0.0,  // Semiconductors — ITA
-        "8543" => 2.2,  // Other electrical
-        _ => 3.0,       // Default EU electronics rate
+        "8534" => 3.7, // Printed circuits
+        "8542" => 0.0, // ICs — ITA duty-free
+        "8536" => 2.7, // Connectors
+        "8544" => 3.3, // Cables
+        "8532" => 0.0, // Capacitors — ITA
+        "8533" => 0.0, // Resistors — ITA
+        "8504" => 2.5, // Transformers
+        "8541" => 0.0, // Semiconductors — ITA
+        "8543" => 2.2, // Other electrical
+        _ => 3.0,      // Default EU electronics rate
     }
 }
 
 fn tariff_mfn_us(hs4: &str) -> f64 {
     match hs4 {
-        "8534" => 0.0,  // PCB — ITA
-        "8542" => 0.0,  // ICs — ITA
-        "8536" => 2.7,  // Connectors
-        "8544" => 3.5,  // Cables
-        "8532" => 0.0,  // Capacitors — ITA
-        "8533" => 0.0,  // Resistors — ITA
-        "8504" => 2.4,  // Transformers
-        "8541" => 0.0,  // Semiconductors — ITA
-        "8543" => 1.5,  // Other
+        "8534" => 0.0, // PCB — ITA
+        "8542" => 0.0, // ICs — ITA
+        "8536" => 2.7, // Connectors
+        "8544" => 3.5, // Cables
+        "8532" => 0.0, // Capacitors — ITA
+        "8533" => 0.0, // Resistors — ITA
+        "8504" => 2.4, // Transformers
+        "8541" => 0.0, // Semiconductors — ITA
+        "8543" => 1.5, // Other
         _ => 2.5,
     }
 }

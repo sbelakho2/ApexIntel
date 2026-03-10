@@ -5,9 +5,7 @@
 //! persists under permutation it is likely spurious (e.g., driven by
 //! confounding seasonality or entity clustering).
 
-use crate::miner::{
-    build_contingency, fisher_p_value, odds_ratio, EventRecord, PatternCandidate,
-};
+use crate::miner::{build_contingency, fisher_p_value, odds_ratio, EventRecord, PatternCandidate};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
@@ -206,10 +204,20 @@ pub fn run_full_negative_control(
     signals: &[EventRecord],
     config: &NegativeControlConfig,
 ) -> (Option<NegativeControlResult>, Option<NegativeControlResult>) {
-    let time_result =
-        run_permutation_test(candidate, outcomes, signals, config, ShuffleKind::TimeShuffle);
-    let entity_result =
-        run_permutation_test(candidate, outcomes, signals, config, ShuffleKind::EntityShuffle);
+    let time_result = run_permutation_test(
+        candidate,
+        outcomes,
+        signals,
+        config,
+        ShuffleKind::TimeShuffle,
+    );
+    let entity_result = run_permutation_test(
+        candidate,
+        outcomes,
+        signals,
+        config,
+        ShuffleKind::EntityShuffle,
+    );
     (time_result, entity_result)
 }
 
@@ -437,8 +445,13 @@ mod tests {
         let outcomes = vec![("A".to_string(), 86400i64)];
         let signals = vec![("A".to_string(), 0i64)];
         // total < 10 → None
-        let result =
-            run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle);
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            ShuffleKind::TimeShuffle,
+        );
         assert!(result.is_none());
     }
 
@@ -455,8 +468,13 @@ mod tests {
             seed: 42,
         };
 
-        let result =
-            run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle);
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            ShuffleKind::TimeShuffle,
+        );
         assert!(result.is_some());
         let r = result.unwrap();
         assert_eq!(r.permuted_effects.len(), 100);
@@ -521,16 +539,23 @@ mod tests {
             seed: 42,
         };
 
-        let result =
-            run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle);
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            ShuffleKind::TimeShuffle,
+        );
         // For noise, the result might be None (insufficient data) or the
         // test should not pass (effect doesn't reliably vanish).
         if let Some(r) = result {
             // We expect that for noise, permutation p is not significant
             // (effect doesn't reliably exceed permuted effects).
             // The key check: noise should not produce passed=true consistently.
-            assert!(!r.passed || r.permutation_p_value > 0.01,
-                "Noise should not pass negative control with high confidence");
+            assert!(
+                !r.passed || r.permutation_p_value > 0.01,
+                "Noise should not pass negative control with high confidence"
+            );
         }
     }
 
@@ -545,9 +570,14 @@ mod tests {
             seed: 42,
         };
 
-        let result =
-            run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle)
-                .unwrap();
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            ShuffleKind::TimeShuffle,
+        )
+        .unwrap();
         // p-value must be in [0, 1]
         assert!(result.permutation_p_value >= 0.0);
         assert!(result.permutation_p_value <= 1.0);
@@ -610,8 +640,7 @@ mod tests {
     fn test_full_negative_control_empty() {
         let candidate = sample_candidate(0);
         let config = NegativeControlConfig::default();
-        let (time_res, entity_res) =
-            run_full_negative_control(&candidate, &[], &[], &config);
+        let (time_res, entity_res) = run_full_negative_control(&candidate, &[], &[], &config);
         assert!(time_res.is_none());
         assert!(entity_res.is_none());
     }
@@ -658,7 +687,8 @@ mod tests {
             seed: 42,
         };
 
-        let filtered = filter_by_negative_controls(&[candidate.clone()], &outcomes, &signals, &config);
+        let filtered =
+            filter_by_negative_controls(&[candidate.clone()], &outcomes, &signals, &config);
         // If the candidate survived, verify its fields are intact
         for c in &filtered {
             assert_eq!(c.outcome, "my_outcome");
@@ -738,7 +768,9 @@ mod tests {
         // All signals at the exact same timestamp — shuffle should be a no-op
         let same_ts = 100 * 86400i64;
         let signals: Vec<EventRecord> = (0..20).map(|i| (format!("E{}", i), same_ts)).collect();
-        let outcomes: Vec<EventRecord> = (0..20).map(|i| (format!("E{}", i), same_ts + 86400)).collect();
+        let outcomes: Vec<EventRecord> = (0..20)
+            .map(|i| (format!("E{}", i), same_ts + 86400))
+            .collect();
         let candidate = sample_candidate(0);
         let config = NegativeControlConfig {
             permutations: 50,
@@ -747,7 +779,13 @@ mod tests {
             seed: 42,
         };
         // Should not panic; result may be None (if contingency < 10) or Some
-        let result = run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle);
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            ShuffleKind::TimeShuffle,
+        );
         if let Some(r) = result {
             assert!(!r.permutation_p_value.is_nan());
         }
@@ -765,7 +803,13 @@ mod tests {
             window_days: 5,
             seed: 42,
         };
-        let result = run_permutation_test(&candidate, &outcomes, &signals, &config, ShuffleKind::TimeShuffle);
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            ShuffleKind::TimeShuffle,
+        );
         let r = result.unwrap();
         // Should have MAX_PERMUTATIONS effects, not 50_000
         assert_eq!(r.permuted_effects.len(), MAX_PERMUTATIONS);
@@ -778,7 +822,13 @@ mod tests {
         let candidate = sample_candidate(0);
         let config = NegativeControlConfig::default();
         let outcomes = vec![("A".to_string(), 86400i64)];
-        let result = run_permutation_test(&candidate, &outcomes, &[], &config, ShuffleKind::TimeShuffle);
+        let result = run_permutation_test(
+            &candidate,
+            &outcomes,
+            &[],
+            &config,
+            ShuffleKind::TimeShuffle,
+        );
         assert!(result.is_none());
     }
 
@@ -787,7 +837,13 @@ mod tests {
         let candidate = sample_candidate(0);
         let config = NegativeControlConfig::default();
         let signals = vec![("A".to_string(), 86400i64)];
-        let result = run_permutation_test(&candidate, &[], &signals, &config, ShuffleKind::EntityShuffle);
+        let result = run_permutation_test(
+            &candidate,
+            &[],
+            &signals,
+            &config,
+            ShuffleKind::EntityShuffle,
+        );
         assert!(result.is_none());
     }
 

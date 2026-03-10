@@ -89,36 +89,36 @@ impl Default for SourceScoringWeights {
 /// Returns scores sorted descending by `composite`.  Sources with zero
 /// observations are scored conservatively at 0.0 (not penalised, not
 /// rewarded — giving new sources a neutral start).
-pub fn score_sources(
-    yields: &[SourceYield],
-    weights: &SourceScoringWeights,
-) -> Vec<SourceScore> {
-    let mut scores: Vec<SourceScore> = yields.iter().map(|y| {
-        let total = y.total_observations.max(1) as f64;
-        let promotion_yield = y.observations_in_promoted_recipes as f64 / total;
-        let fire_yield = y.observations_in_fired_recipes as f64 / total;
-        let retirement_drag = y.observations_in_retired_recipes as f64 / total;
-        // Freshness: 1.0 for perfectly fresh, decays to 0 at 720 hours (30 days).
-        let freshness_bonus = (1.0 - y.freshness_hours / 720.0).clamp(0.0, 1.0);
-        let diversity_bonus = y.diversity_score.clamp(0.0, 1.0);
+pub fn score_sources(yields: &[SourceYield], weights: &SourceScoringWeights) -> Vec<SourceScore> {
+    let mut scores: Vec<SourceScore> = yields
+        .iter()
+        .map(|y| {
+            let total = y.total_observations.max(1) as f64;
+            let promotion_yield = y.observations_in_promoted_recipes as f64 / total;
+            let fire_yield = y.observations_in_fired_recipes as f64 / total;
+            let retirement_drag = y.observations_in_retired_recipes as f64 / total;
+            // Freshness: 1.0 for perfectly fresh, decays to 0 at 720 hours (30 days).
+            let freshness_bonus = (1.0 - y.freshness_hours / 720.0).clamp(0.0, 1.0);
+            let diversity_bonus = y.diversity_score.clamp(0.0, 1.0);
 
-        let composite = weights.promotion_yield_w * promotion_yield
-            + weights.fire_yield_w * fire_yield
-            - weights.retirement_drag_w * retirement_drag
-            + weights.freshness_w * freshness_bonus
-            + weights.diversity_w * diversity_bonus;
+            let composite = weights.promotion_yield_w * promotion_yield
+                + weights.fire_yield_w * fire_yield
+                - weights.retirement_drag_w * retirement_drag
+                + weights.freshness_w * freshness_bonus
+                + weights.diversity_w * diversity_bonus;
 
-        SourceScore {
-            source_id: y.source_id.clone(),
-            domain: y.domain.clone(),
-            promotion_yield,
-            fire_yield,
-            retirement_drag,
-            freshness_bonus,
-            diversity_bonus,
-            composite,
-        }
-    }).collect();
+            SourceScore {
+                source_id: y.source_id.clone(),
+                domain: y.domain.clone(),
+                promotion_yield,
+                fire_yield,
+                retirement_drag,
+                freshness_bonus,
+                diversity_bonus,
+                composite,
+            }
+        })
+        .collect();
 
     // Deterministic sort: composite desc, source_id asc for ties (B292).
     scores.sort_by(|a, b| {
@@ -160,18 +160,21 @@ pub struct ObsTypeValue {
 ///
 /// Returns values sorted descending by `net_value`.
 pub fn rank_observation_types(stats: &[ObsTypeStats]) -> Vec<ObsTypeValue> {
-    let mut values: Vec<ObsTypeValue> = stats.iter().map(|s| {
-        let total = s.total_occurrences.max(1) as f64;
-        let promotion_rate = s.in_promoted_recipes as f64 / total;
-        let retirement_rate = s.in_retired_recipes as f64 / total;
-        let net_value = promotion_rate - 0.5 * retirement_rate;
-        ObsTypeValue {
-            obs_type: s.obs_type.clone(),
-            promotion_rate,
-            retirement_rate,
-            net_value,
-        }
-    }).collect();
+    let mut values: Vec<ObsTypeValue> = stats
+        .iter()
+        .map(|s| {
+            let total = s.total_occurrences.max(1) as f64;
+            let promotion_rate = s.in_promoted_recipes as f64 / total;
+            let retirement_rate = s.in_retired_recipes as f64 / total;
+            let net_value = promotion_rate - 0.5 * retirement_rate;
+            ObsTypeValue {
+                obs_type: s.obs_type.clone(),
+                promotion_rate,
+                retirement_rate,
+                net_value,
+            }
+        })
+        .collect();
 
     values.sort_by(|a, b| {
         b.net_value
@@ -232,21 +235,19 @@ pub struct MetaLearningInsight {
 /// Returns `None` if fewer than 3 promoted AND 3 retired records exist
 /// (not enough data for meaningful meta-learning).
 pub fn extract_meta_insights(records: &[RecipeTraitRecord]) -> Option<MetaLearningInsight> {
-    let promoted: Vec<&RecipeTraitRecord> = records
-        .iter()
-        .filter(|r| r.status == "promoted")
-        .collect();
-    let retired: Vec<&RecipeTraitRecord> = records
-        .iter()
-        .filter(|r| r.status == "retired")
-        .collect();
+    let promoted: Vec<&RecipeTraitRecord> =
+        records.iter().filter(|r| r.status == "promoted").collect();
+    let retired: Vec<&RecipeTraitRecord> =
+        records.iter().filter(|r| r.status == "retired").collect();
 
     if promoted.len() < 3 || retired.len() < 3 {
         return None;
     }
 
     let mean = |vals: &[f64]| -> f64 {
-        if vals.is_empty() { return 0.0; }
+        if vals.is_empty() {
+            return 0.0;
+        }
         vals.iter().sum::<f64>() / vals.len() as f64
     };
 
@@ -271,9 +272,7 @@ pub fn extract_meta_insights(records: &[RecipeTraitRecord]) -> Option<MetaLearni
     let suggested_min_effect = (promoted_mean_effect + 1.5) / 2.0;
 
     // Suggested max lag: promoted mean + 1 stddev, capped at 365.
-    let suggested_max_lag = (promoted_mean_lag + stddev(&prom_lags))
-        .round()
-        .min(365.0) as i32;
+    let suggested_max_lag = (promoted_mean_lag + stddev(&prom_lags)).round().min(365.0) as i32;
 
     // Signal type frequency analysis: types appearing ≥2× more in promoted than retired.
     let mut prom_type_freq: HashMap<String, usize> = HashMap::new();
@@ -368,22 +367,21 @@ pub fn discover_synergies(
     all_recipes: &[Vec<String>],
     min_uplift: f64,
 ) -> Vec<SignalSynergy> {
-    let pair_counts =
-        |recipes: &[Vec<String>]| -> HashMap<(String, String), usize> {
-            let mut counts = HashMap::new();
-            for recipe in recipes {
-                let mut types: Vec<&String> = recipe.iter().collect();
-                types.sort();
-                types.dedup();
-                for i in 0..types.len() {
-                    for j in (i + 1)..types.len() {
-                        let key = (types[i].clone(), types[j].clone());
-                        *counts.entry(key).or_insert(0) += 1;
-                    }
+    let pair_counts = |recipes: &[Vec<String>]| -> HashMap<(String, String), usize> {
+        let mut counts = HashMap::new();
+        for recipe in recipes {
+            let mut types: Vec<&String> = recipe.iter().collect();
+            types.sort();
+            types.dedup();
+            for i in 0..types.len() {
+                for j in (i + 1)..types.len() {
+                    let key = (types[i].clone(), types[j].clone());
+                    *counts.entry(key).or_insert(0) += 1;
                 }
             }
-            counts
-        };
+        }
+        counts
+    };
 
     let prom_counts = pair_counts(promoted_recipes);
     let all_counts = pair_counts(all_recipes);
@@ -404,14 +402,8 @@ pub fn discover_synergies(
             };
             if uplift >= min_uplift && prom_n >= 2 {
                 // Jaccard: |intersection| / |union| among promoted recipes.
-                let a_count = promoted_recipes
-                    .iter()
-                    .filter(|r| r.contains(a))
-                    .count();
-                let b_count = promoted_recipes
-                    .iter()
-                    .filter(|r| r.contains(b))
-                    .count();
+                let a_count = promoted_recipes.iter().filter(|r| r.contains(a)).count();
+                let b_count = promoted_recipes.iter().filter(|r| r.contains(b)).count();
                 let union = a_count + b_count - prom_n;
                 let jaccard = if union > 0 {
                     prom_n as f64 / union as f64
@@ -461,9 +453,17 @@ pub struct CollectionRecommendation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CollectionAction {
     /// Increase crawl frequency for a specific source.
-    IncreaseCrawlFrequency { source_id: String, current_hours: f64, suggested_hours: f64 },
+    IncreaseCrawlFrequency {
+        source_id: String,
+        current_hours: f64,
+        suggested_hours: f64,
+    },
     /// Decrease crawl frequency (low-value source).
-    DecreaseCrawlFrequency { source_id: String, current_hours: f64, suggested_hours: f64 },
+    DecreaseCrawlFrequency {
+        source_id: String,
+        current_hours: f64,
+        suggested_hours: f64,
+    },
     /// Add a new observation type to collection.
     AddObservationType { obs_type: String },
     /// Deprioritize an observation type.
@@ -471,7 +471,11 @@ pub enum CollectionAction {
     /// Explore cross-domain signal combination.
     ExploreSignalCombination { type_a: String, type_b: String },
     /// Tighten miner thresholds.
-    AdjustMinerThreshold { param: String, current: f64, suggested: f64 },
+    AdjustMinerThreshold {
+        param: String,
+        current: f64,
+        suggested: f64,
+    },
 }
 
 /// Generate collection strategy recommendations from source scores,
@@ -521,7 +525,9 @@ pub fn generate_recommendations(
     // 3. Observation types with negative net value.
     for v in obs_values.iter().filter(|v| v.net_value < 0.0) {
         recs.push(CollectionRecommendation {
-            action: CollectionAction::DeprioritizeObsType { obs_type: v.obs_type.clone() },
+            action: CollectionAction::DeprioritizeObsType {
+                obs_type: v.obs_type.clone(),
+            },
             reason: format!(
                 "Observation type '{}' has negative net value ({:.3}): \
                  more retirements than promotions",
@@ -642,7 +648,7 @@ mod tests {
         assert_eq!(scores.len(), 3);
         // reuters (high yield) should be first.
         assert_eq!(scores[0].source_id, "src-3"); // tenders — high promotion rate
-        // obscure blog should be last.
+                                                  // obscure blog should be last.
         assert_eq!(scores[2].source_id, "src-2");
     }
 
@@ -680,20 +686,18 @@ mod tests {
 
     #[test]
     fn test_meta_learning_min_records() {
-        let records = vec![
-            RecipeTraitRecord {
-                recipe_id: "r1".into(),
-                status: "promoted".into(),
-                signal_count: 2,
-                signal_types: vec!["JobPost".into()],
-                effect_size: 2.0,
-                p_value: 0.005,
-                best_lag_days: 30,
-                category: "demand".into(),
-                precision_at_retirement: None,
-                weeks_active: 12,
-            },
-        ];
+        let records = vec![RecipeTraitRecord {
+            recipe_id: "r1".into(),
+            status: "promoted".into(),
+            signal_count: 2,
+            signal_types: vec!["JobPost".into()],
+            effect_size: 2.0,
+            p_value: 0.005,
+            best_lag_days: 30,
+            category: "demand".into(),
+            precision_at_retirement: None,
+            weeks_active: 12,
+        }];
         // Not enough records (need 3 promoted + 3 retired).
         assert!(extract_meta_insights(&records).is_none());
     }
@@ -743,12 +747,20 @@ mod tests {
     fn test_synergy_discovery() {
         let promoted = vec![
             vec!["JobPost".into(), "CommodityPrice".into()],
-            vec!["JobPost".into(), "CommodityPrice".into(), "PortMetric".into()],
+            vec![
+                "JobPost".into(),
+                "CommodityPrice".into(),
+                "PortMetric".into(),
+            ],
             vec!["JobPost".into(), "CommodityPrice".into()],
         ];
         let all = vec![
             vec!["JobPost".into(), "CommodityPrice".into()],
-            vec!["JobPost".into(), "CommodityPrice".into(), "PortMetric".into()],
+            vec![
+                "JobPost".into(),
+                "CommodityPrice".into(),
+                "PortMetric".into(),
+            ],
             vec!["JobPost".into(), "CommodityPrice".into()],
             vec!["DnsPosture".into()],
             vec!["DnsPosture".into(), "VulnNotice".into()],
@@ -773,15 +785,13 @@ mod tests {
     fn test_generate_recommendations() {
         let yields = sample_yields();
         let scores = score_sources(&yields, &SourceScoringWeights::default());
-        let obs_values = rank_observation_types(&[
-            ObsTypeStats {
-                obs_type: "DnsPosture".into(),
-                total_occurrences: 200,
-                in_promoted_recipes: 5,
-                in_staged_recipes: 10,
-                in_retired_recipes: 80,
-            },
-        ]);
+        let obs_values = rank_observation_types(&[ObsTypeStats {
+            obs_type: "DnsPosture".into(),
+            total_occurrences: 200,
+            in_promoted_recipes: 5,
+            in_staged_recipes: 10,
+            in_retired_recipes: 80,
+        }]);
         let recs = generate_recommendations(&scores, &obs_values, &[], None);
         // Should recommend deprioritizing DnsPosture.
         assert!(recs.iter().any(|r| matches!(

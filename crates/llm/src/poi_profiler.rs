@@ -176,10 +176,14 @@ Respond ONLY with valid JSON matching this exact schema:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM psych profile failed for {}", poi_name))?;
 
-        let mut profile: LlmPsychProfile = resp.parse_json()
+        let mut profile: LlmPsychProfile = resp
+            .parse_json()
             .with_context(|| "Failed to parse psych profile JSON")?;
 
         // Clamp numeric values to valid ranges
@@ -258,10 +262,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM engagement copy failed for {}", poi_name))?;
 
-        resp.parse_json().with_context(|| "Failed to parse engagement copy JSON")
+        resp.parse_json()
+            .with_context(|| "Failed to parse engagement copy JSON")
     }
 
     /// Synthesize background intelligence summary from artifact corpus.
@@ -301,10 +309,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM background synthesis failed for {}", poi_name))?;
 
-        let mut summary: PoiBackgroundSummary = resp.parse_json()
+        let mut summary: PoiBackgroundSummary = resp
+            .parse_json()
             .with_context(|| "Failed to parse background summary JSON")?;
 
         summary.confidence = summary.confidence.clamp(0.0, 1.0);
@@ -353,7 +365,10 @@ mod tests {
             .map(|i| (format!("Article {}", i), "x".repeat(500)))
             .collect();
         let result = format_artifacts(&arts, 2000);
-        assert!(result.len() <= 2000 + 100, "Should be bounded near max_chars");
+        assert!(
+            result.len() <= 2000 + 100,
+            "Should be bounded near max_chars"
+        );
         assert!(result.contains("truncated"), "Should mention truncation");
     }
 

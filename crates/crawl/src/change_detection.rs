@@ -1,7 +1,7 @@
-use sha2::{Digest, Sha256};
-use regex::Regex;
-use std::sync::LazyLock;
 use apex_core::validation::normalize_url;
+use regex::Regex;
+use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
 use tracing::instrument;
 
 /// In-memory change detection using content hashing.
@@ -155,7 +155,11 @@ fn text_bigrams(text: &str) -> std::collections::HashSet<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut bigrams = std::collections::HashSet::new();
     for pair in words.windows(2) {
-        bigrams.insert(format!("{} {}", pair[0].to_lowercase(), pair[1].to_lowercase()));
+        bigrams.insert(format!(
+            "{} {}",
+            pair[0].to_lowercase(),
+            pair[1].to_lowercase()
+        ));
     }
     bigrams
 }
@@ -168,7 +172,7 @@ mod tests {
     fn test_content_hash() {
         let hash = ChangeDetector::content_hash(b"hello world");
         assert_eq!(hash.len(), 64); // SHA-256 is 32 bytes = 64 hex chars
-        // Same input = same hash
+                                    // Same input = same hash
         assert_eq!(hash, ChangeDetector::content_hash(b"hello world"));
         // Different input = different hash
         assert_ne!(hash, ChangeDetector::content_hash(b"hello world!"));
@@ -228,7 +232,10 @@ mod tests {
 
     #[test]
     fn test_text_similarity_identical() {
-        assert!((ChangeDetector::text_similarity("hello world foo", "hello world foo") - 1.0).abs() < f64::EPSILON);
+        assert!(
+            (ChangeDetector::text_similarity("hello world foo", "hello world foo") - 1.0).abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]

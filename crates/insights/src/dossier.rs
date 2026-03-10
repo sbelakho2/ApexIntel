@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use apex_core::entities::{
-    CertStatus, Company, Capability, Certification, Person, PoiArtifact, ProofGrade, Site,
+    Capability, CertStatus, Certification, Company, Person, PoiArtifact, ProofGrade, Site,
 };
 
 // ────────────────────────────────────────────
@@ -223,10 +223,8 @@ pub fn assess_capabilities(capabilities: &[Capability]) -> CapabilityAssessment 
 
     let total = capabilities.len();
     // Coverage score: weighted by proof grade (A=1.0, B=0.75, C=0.5, D=0.25)
-    let weighted_sum = grade_a as f64 * 1.0
-        + grade_b as f64 * 0.75
-        + grade_c as f64 * 0.5
-        + grade_d as f64 * 0.25;
+    let weighted_sum =
+        grade_a as f64 * 1.0 + grade_b as f64 * 0.75 + grade_c as f64 * 0.5 + grade_d as f64 * 0.25;
     let coverage = if total > 0 {
         weighted_sum / total as f64
     } else {
@@ -343,14 +341,20 @@ pub fn assess_risk(company: &Company) -> RiskAssessment {
         factors.push(RiskFactor {
             factor: "Elevated risk score".to_string(),
             severity: "High".to_string(),
-            description: format!("Risk score of {:.2} exceeds caution threshold", company.risk_score),
+            description: format!(
+                "Risk score of {:.2} exceeds caution threshold",
+                company.risk_score
+            ),
         });
     }
     if company.threat_score > 0.5 {
         factors.push(RiskFactor {
             factor: "Threat detected".to_string(),
             severity: "High".to_string(),
-            description: format!("Threat score of {:.2} indicates potential concerns", company.threat_score),
+            description: format!(
+                "Threat score of {:.2} indicates potential concerns",
+                company.threat_score
+            ),
         });
     }
 
@@ -370,10 +374,13 @@ pub fn analyze_opportunities(company: &Company) -> OpportunityAnalysis {
         opportunities.push("High capability overlap — potential for direct engagement".to_string());
     }
     if company.strategic_relevance > 0.7 {
-        opportunities.push("High strategic relevance — priority target for business development".to_string());
+        opportunities.push(
+            "High strategic relevance — priority target for business development".to_string(),
+        );
     }
     if company.revenue_estimate_usd.unwrap_or(0) > 100_000_000 {
-        opportunities.push("Large revenue base indicates significant procurement volume".to_string());
+        opportunities
+            .push("Large revenue base indicates significant procurement volume".to_string());
     }
     if company.employee_estimate.unwrap_or(0) > 500 {
         opportunities.push("Scale suggests multiple supply chain needs".to_string());
@@ -465,8 +472,14 @@ pub fn assess_competitive_position(
 pub fn render_company_dossier_text(dossier: &CompanyDossier) -> String {
     let mut lines = Vec::new();
 
-    lines.push(format!("# Company Intelligence Dossier: {}", dossier.company_name));
-    lines.push(format!("*Generated: {}*", dossier.generated_at.format("%Y-%m-%d %H:%M UTC")));
+    lines.push(format!(
+        "# Company Intelligence Dossier: {}",
+        dossier.company_name
+    ));
+    lines.push(format!(
+        "*Generated: {}*",
+        dossier.generated_at.format("%Y-%m-%d %H:%M UTC")
+    ));
     lines.push(String::new());
 
     // Profile
@@ -481,7 +494,10 @@ pub fn render_company_dossier_text(dossier: &CompanyDossier) -> String {
     if let Some(rev) = p.revenue_estimate_usd {
         lines.push(format!("- **Revenue (est.):** ${}", rev));
     }
-    lines.push(format!("- **Strategic Relevance:** {:.0}%", p.strategic_relevance * 100.0));
+    lines.push(format!(
+        "- **Strategic Relevance:** {:.0}%",
+        p.strategic_relevance * 100.0
+    ));
     lines.push(String::new());
 
     // Capabilities
@@ -489,11 +505,18 @@ pub fn render_company_dossier_text(dossier: &CompanyDossier) -> String {
     lines.push("## Capability Assessment".to_string());
     lines.push(format!(
         "{} capabilities identified (A:{}, B:{}, C:{}, D:{}). Coverage score: {:.0}%",
-        c.total_capabilities, c.grade_a_count, c.grade_b_count, c.grade_c_count, c.grade_d_count,
+        c.total_capabilities,
+        c.grade_a_count,
+        c.grade_b_count,
+        c.grade_c_count,
+        c.grade_d_count,
         c.coverage_score * 100.0
     ));
     for cap in &c.top_capabilities {
-        lines.push(format!("- **{}** [Grade {}] ({} evidence sources)", cap.capability, cap.proof_grade, cap.evidence_count));
+        lines.push(format!(
+            "- **{}** [Grade {}] ({} evidence sources)",
+            cap.capability, cap.proof_grade, cap.evidence_count
+        ));
     }
     lines.push(String::new());
 
@@ -502,7 +525,10 @@ pub fn render_company_dossier_text(dossier: &CompanyDossier) -> String {
     lines.push("## Certification Analysis".to_string());
     lines.push(format!(
         "{} certifications ({} active, {} expired, {} pending). Health: {:.0}%",
-        cert.total, cert.active, cert.expired, cert.pending,
+        cert.total,
+        cert.active,
+        cert.expired,
+        cert.pending,
         cert.cert_health_score * 100.0
     ));
     if !cert.gaps.is_empty() {
@@ -513,9 +539,15 @@ pub fn render_company_dossier_text(dossier: &CompanyDossier) -> String {
     // Risk
     let r = &dossier.risk_assessment;
     lines.push("## Risk Assessment".to_string());
-    lines.push(format!("**Overall:** {} ({:.2})", r.risk_label, r.overall_risk));
+    lines.push(format!(
+        "**Overall:** {} ({:.2})",
+        r.risk_label, r.overall_risk
+    ));
     for f in &r.factors {
-        lines.push(format!("- [{}] {} — {}", f.severity, f.factor, f.description));
+        lines.push(format!(
+            "- [{}] {} — {}",
+            f.severity, f.factor, f.description
+        ));
     }
     lines.push(String::new());
 
@@ -543,7 +575,10 @@ pub fn render_company_dossier_text(dossier: &CompanyDossier) -> String {
                 lines.push(format!("Capabilities: {}", site.capabilities.join(", ")));
             }
             if !site.certifications.is_empty() {
-                lines.push(format!("Certifications: {}", site.certifications.join(", ")));
+                lines.push(format!(
+                    "Certifications: {}",
+                    site.certifications.join(", ")
+                ));
             }
         }
         lines.push(String::new());
@@ -580,7 +615,10 @@ pub fn generate_company_dossier(
     let profile = CompanyProfile {
         name: company.name.clone(),
         company_type: company.company_type.as_str().to_string(),
-        country: company.country_code.clone().unwrap_or_else(|| "N/A".to_string()),
+        country: company
+            .country_code
+            .clone()
+            .unwrap_or_else(|| "N/A".to_string()),
         region: company.region.clone().unwrap_or_else(|| "N/A".to_string()),
         industry_tags: company.industry_tags.clone(),
         employee_estimate: company.employee_estimate,
@@ -641,11 +679,26 @@ pub fn analyze_priorities(person: &Person) -> PriorityAnalysis {
 
     let interpretation = match dominant.as_str() {
         "cost" => "Cost-focused decision maker — lead with ROI and TCO analysis".to_string(),
-        "quality" => "Quality-driven — emphasize certifications, audit readiness, zero-defect capability".to_string(),
-        "speed" => "Speed-oriented — highlight lead times, rapid prototyping, quick-turn capability".to_string(),
-        "resilience" => "Resilience-focused — stress dual sourcing, geographic diversity, business continuity".to_string(),
-        "compliance" => "Compliance-driven — lead with regulatory alignment, standards, documentation".to_string(),
-        "security" => "Security-conscious — emphasize ITAR readiness, data protection, facility security".to_string(),
+        "quality" => {
+            "Quality-driven — emphasize certifications, audit readiness, zero-defect capability"
+                .to_string()
+        }
+        "speed" => {
+            "Speed-oriented — highlight lead times, rapid prototyping, quick-turn capability"
+                .to_string()
+        }
+        "resilience" => {
+            "Resilience-focused — stress dual sourcing, geographic diversity, business continuity"
+                .to_string()
+        }
+        "compliance" => {
+            "Compliance-driven — lead with regulatory alignment, standards, documentation"
+                .to_string()
+        }
+        "security" => {
+            "Security-conscious — emphasize ITAR readiness, data protection, facility security"
+                .to_string()
+        }
         _ => "Balanced decision-making — present comprehensive value proposition".to_string(),
     };
 
@@ -689,7 +742,9 @@ pub fn assess_influence(person: &Person) -> InfluenceAssessment {
 pub fn summarize_artifacts(artifacts: &[PoiArtifact]) -> ArtifactSummarySection {
     let mut by_type: HashMap<String, usize> = HashMap::new();
     for art in artifacts {
-        *by_type.entry(art.artifact_type.as_str().to_string()).or_default() += 1;
+        *by_type
+            .entry(art.artifact_type.as_str().to_string())
+            .or_default() += 1;
     }
 
     // Highlights: most recent 5
@@ -781,7 +836,9 @@ pub fn generate_approach_guidance(person: &Person) -> ApproachGuidance {
     let channel = match person.change_appetite.as_deref() {
         Some("early_adopter") => "Direct outreach via email or conference meeting".to_string(),
         Some("pragmatist") => "Referral-based introduction or industry event".to_string(),
-        Some("conservative") => "Formal introduction through mutual connection or association".to_string(),
+        Some("conservative") => {
+            "Formal introduction through mutual connection or association".to_string()
+        }
         Some("laggard") => "Warm introduction with strong reference cases".to_string(),
         _ => "Professional email with concise value proposition".to_string(),
     };
@@ -821,7 +878,10 @@ pub fn render_poi_dossier_text(dossier: &PoiDossier) -> String {
     let mut lines = Vec::new();
 
     lines.push(format!("# Stakeholder Dossier: {}", dossier.person_name));
-    lines.push(format!("*Generated: {}*", dossier.generated_at.format("%Y-%m-%d %H:%M UTC")));
+    lines.push(format!(
+        "*Generated: {}*",
+        dossier.generated_at.format("%Y-%m-%d %H:%M UTC")
+    ));
     lines.push(String::new());
 
     // Professional profile
@@ -858,9 +918,15 @@ pub fn render_poi_dossier_text(dossier: &PoiDossier) -> String {
     // Influence
     let inf = &dossier.influence_assessment;
     lines.push("## Influence Assessment".to_string());
-    lines.push(format!("**Level:** {} ({:.0}%)", inf.influence_label, inf.influence_score * 100.0));
-    lines.push(format!("Pain Index: {:.2} | Role Drift: {:.2} | Change Risk: {:.2}",
-        inf.pain_index, inf.role_drift, inf.change_risk));
+    lines.push(format!(
+        "**Level:** {} ({:.0}%)",
+        inf.influence_label,
+        inf.influence_score * 100.0
+    ));
+    lines.push(format!(
+        "Pain Index: {:.2} | Role Drift: {:.2} | Change Risk: {:.2}",
+        inf.pain_index, inf.role_drift, inf.change_risk
+    ));
     if !inf.trigger_topics.is_empty() {
         lines.push(format!("Trigger Topics: {}", inf.trigger_topics.join(", ")));
     }
@@ -877,7 +943,12 @@ pub fn render_poi_dossier_text(dossier: &PoiDossier) -> String {
         lines.push("Recent highlights:".to_string());
         for h in &art.recent_highlights {
             let title = h.title.as_deref().unwrap_or("(untitled)");
-            lines.push(format!("- [{}] {} — {}", h.artifact_type, title, h.date.format("%Y-%m-%d")));
+            lines.push(format!(
+                "- [{}] {} — {}",
+                h.artifact_type,
+                title,
+                h.date.format("%Y-%m-%d")
+            ));
         }
     }
     lines.push(String::new());
@@ -885,7 +956,10 @@ pub fn render_poi_dossier_text(dossier: &PoiDossier) -> String {
     // Approach guidance
     let g = &dossier.approach_guidance;
     lines.push("## Approach Guidance".to_string());
-    lines.push(format!("**Engagement Priority:** {}", g.engagement_priority));
+    lines.push(format!(
+        "**Engagement Priority:** {}",
+        g.engagement_priority
+    ));
     lines.push(format!("**Best Channel:** {}", g.best_channel));
     lines.push(format!("**Timing:** {}", g.timing_recommendation));
     if let Some(ref proof) = g.recommended_proof_type {
@@ -953,7 +1027,11 @@ mod tests {
         c.threat_score = 0.2;
         c.overlap_score = 0.7;
         c.strategic_relevance = 0.85;
-        c.industry_tags = vec!["electronics".to_string(), "automotive".to_string(), "industrial".to_string()];
+        c.industry_tags = vec![
+            "electronics".to_string(),
+            "automotive".to_string(),
+            "industrial".to_string(),
+        ];
         c
     }
 
@@ -962,7 +1040,10 @@ mod tests {
         vec![
             {
                 let mut c = Capability::new(id, "SMT Assembly", ProofGrade::A);
-                c.evidence_urls = vec!["https://example.com/1".to_string(), "https://example.com/2".to_string()];
+                c.evidence_urls = vec![
+                    "https://example.com/1".to_string(),
+                    "https://example.com/2".to_string(),
+                ];
                 c
             },
             Capability::new(id, "PTH Assembly", ProofGrade::A),
@@ -1037,16 +1118,31 @@ mod tests {
         let now = Utc::now();
         vec![
             {
-                let mut a = PoiArtifact::new(person_id, ArtifactType::PressQuote, "https://example.com/press/1", now);
+                let mut a = PoiArtifact::new(
+                    person_id,
+                    ArtifactType::PressQuote,
+                    "https://example.com/press/1",
+                    now,
+                );
                 a.title = Some("Industry outlook interview".to_string());
                 a
             },
             {
-                let mut a = PoiArtifact::new(person_id, ArtifactType::SpeakerBio, "https://example.com/conf/speaker", now);
+                let mut a = PoiArtifact::new(
+                    person_id,
+                    ArtifactType::SpeakerBio,
+                    "https://example.com/conf/speaker",
+                    now,
+                );
                 a.title = Some("PCIM 2024 keynote".to_string());
                 a
             },
-            PoiArtifact::new(person_id, ArtifactType::Patent, "https://patents.example.com/123", now),
+            PoiArtifact::new(
+                person_id,
+                ArtifactType::Patent,
+                "https://patents.example.com/123",
+                now,
+            ),
         ]
     }
 
@@ -1158,7 +1254,9 @@ mod tests {
 
         assert_eq!(dossier.company_name, "Foxconn Technology");
         assert!(!dossier.full_text.is_empty());
-        assert!(dossier.full_text.contains("# Company Intelligence Dossier: Foxconn Technology"));
+        assert!(dossier
+            .full_text
+            .contains("# Company Intelligence Dossier: Foxconn Technology"));
         assert!(dossier.full_text.contains("## Capability Assessment"));
         assert!(dossier.full_text.contains("## Risk Assessment"));
         assert!(dossier.full_text.contains("## Opportunity Analysis"));
@@ -1229,7 +1327,10 @@ mod tests {
         assert_eq!(guidance.engagement_priority, "P0 — Critical");
         assert!(guidance.timing_recommendation.contains("Urgent"));
         assert!(guidance.best_channel.contains("Referral"));
-        assert_eq!(guidance.recommended_proof_type, Some("case_study".to_string()));
+        assert_eq!(
+            guidance.recommended_proof_type,
+            Some("case_study".to_string())
+        );
         // pain_index > 0.5 and risk_tolerance = "low"
         assert_eq!(guidance.avoid_topics.len(), 2);
     }
@@ -1258,14 +1359,19 @@ mod tests {
 
         assert_eq!(dossier.person_name, "Ahmed Ben Salah");
         assert!(!dossier.full_text.is_empty());
-        assert!(dossier.full_text.contains("# Stakeholder Dossier: Ahmed Ben Salah"));
+        assert!(dossier
+            .full_text
+            .contains("# Stakeholder Dossier: Ahmed Ben Salah"));
         assert!(dossier.full_text.contains("## Professional Profile"));
         assert!(dossier.full_text.contains("## Priority Analysis"));
         assert!(dossier.full_text.contains("## Influence Assessment"));
         assert!(dossier.full_text.contains("## Artifact Summary"));
         assert!(dossier.full_text.contains("## Approach Guidance"));
         assert_eq!(dossier.priority_analysis.dominant_priority, "cost");
-        assert_eq!(dossier.influence_assessment.influence_label, "Strong Influencer");
+        assert_eq!(
+            dossier.influence_assessment.influence_label,
+            "Strong Influencer"
+        );
         assert_eq!(dossier.artifact_summary.total_artifacts, 3);
     }
 
@@ -1334,9 +1440,19 @@ mod tests {
         let c = Certification::new(id, "FAKE");
         let analysis = analyze_certifications(
             &[c],
-            &["ISO_9001", "ISO_14001", "AS9100", "IATF_16949", "ISO_27001",
-              "ISO_13485", "AS9100D", "ISO_45001", "ISO_50001", "NADCAP",
-              "SO_17025"],
+            &[
+                "ISO_9001",
+                "ISO_14001",
+                "AS9100",
+                "IATF_16949",
+                "ISO_27001",
+                "ISO_13485",
+                "AS9100D",
+                "ISO_45001",
+                "ISO_50001",
+                "NADCAP",
+                "SO_17025",
+            ],
         );
         assert!(analysis.cert_health_score >= 0.0);
         assert!(analysis.cert_health_score <= 1.0);
@@ -1370,14 +1486,24 @@ mod tests {
     fn test_risk_label_ranges() {
         let mut c = sample_company();
         for (score, expected_label) in [
-            (0.0, "Minimal"), (0.19, "Minimal"), (0.2, "Low"), (0.39, "Low"),
-            (0.4, "Medium"), (0.59, "Medium"), (0.6, "High"), (0.79, "High"),
-            (0.8, "Critical"), (1.0, "Critical"),
+            (0.0, "Minimal"),
+            (0.19, "Minimal"),
+            (0.2, "Low"),
+            (0.39, "Low"),
+            (0.4, "Medium"),
+            (0.59, "Medium"),
+            (0.6, "High"),
+            (0.79, "High"),
+            (0.8, "Critical"),
+            (1.0, "Critical"),
         ] {
             c.risk_score = score;
             let risk = assess_risk(&c);
-            assert_eq!(risk.risk_label, expected_label,
-                "risk_score={} should map to '{}', got '{}'", score, expected_label, risk.risk_label);
+            assert_eq!(
+                risk.risk_label, expected_label,
+                "risk_score={} should map to '{}', got '{}'",
+                score, expected_label, risk.risk_label
+            );
         }
     }
 
@@ -1401,7 +1527,10 @@ mod tests {
         a.title = Some("No URL artifact".to_string());
         let summary = summarize_artifacts(&[a]);
         assert_eq!(summary.total_artifacts, 1);
-        assert!(summary.recent_highlights.is_empty(), "Artifacts with empty URL should be excluded from highlights");
+        assert!(
+            summary.recent_highlights.is_empty(),
+            "Artifacts with empty URL should be excluded from highlights"
+        );
     }
 
     // ── B178: artifact_summary counts match items ──

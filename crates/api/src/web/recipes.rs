@@ -6,16 +6,12 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{
-    http::HeaderMap,
-    response::IntoResponse,
-    Extension,
-};
+use axum::{http::HeaderMap, response::IntoResponse, Extension};
 use serde::Deserialize;
 
-use apex_store::postgres::{PgStore, WarningListFilters};
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_store::postgres::{PgStore, WarningListFilters};
 
 // ─── Query params ───────────────────────────────────────────────────────────
 
@@ -44,7 +40,7 @@ pub struct RecipeListItem {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub status: String,        // "active" | "paused" | "draft" | "archived"
+    pub status: String, // "active" | "paused" | "draft" | "archived"
     pub schedule: String,
     pub total_runs: i64,
     pub success_rate: f64,
@@ -139,7 +135,13 @@ pub async fn list_recipes(
     Extension(store): Extension<Arc<PgStore>>,
     axum::extract::Query(params): axum::extract::Query<RecipesQuery>,
 ) -> impl IntoResponse {
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/recipes", unack);
     let active_status = params.status.clone().unwrap_or_default();
     let page = params.page.unwrap_or(1).max(1);
@@ -149,34 +151,47 @@ pub async fn list_recipes(
         tracing::error!("Failed to load recipe stats: {e}");
         vec![]
     });
+    let quality_summary = store
+        .get_recipe_quality_summary()
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to load recipe quality summary: {e}");
+            apex_store::postgres::RecipeQualitySummaryRow {
+                avg_precision_pct: 0,
+                coverage_pct: 0,
+            }
+        });
 
-    let mut all_recipes: Vec<RecipeListItem> = recipe_stat_rows.iter().map(|r| {
-        let success_rate = if r.fired_count > 0 {
-            ((r.fired_count - r.active_count) as f64 / r.fired_count as f64) * 100.0
-        } else {
-            0.0
-        };
-        let status = if r.fired_count == 0 {
-            "deprecated"
-        } else if r.active_count > 0 {
-            "production"
-        } else {
-            "staging"
-        };
-        RecipeListItem {
-            id: String::new(),
-            name: r.recipe_code.clone(),
-            description: String::new(),
-            status: status.into(),
-            schedule: String::new(),
-            total_runs: r.fired_count,
-            success_rate,
-            last_run: r.last_fired.map(|t| t.format("%Y-%m-%d %H:%M").to_string()),
-            created_at: r.first_fired.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_default(),
-            updated_at: r.last_fired.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_default(),
-            tags: vec![],
-        }
-    }).collect();
+    let mut all_recipes: Vec<RecipeListItem> = recipe_stat_rows
+        .iter()
+        .map(|r| {
+            let success_rate = (r.precision_score * 100.0).clamp(0.0, 100.0);
+            let status = match r.status.as_str() {
+                "active" | "production" => "production",
+                "deprecated" => "deprecated",
+                _ => "staging",
+            };
+            RecipeListItem {
+                id: String::new(),
+                name: r.recipe_code.clone(),
+                description: String::new(),
+                status: status.into(),
+                schedule: String::new(),
+                total_runs: r.fired_count,
+                success_rate,
+                last_run: r.last_fired.map(|t| t.format("%Y-%m-%d %H:%M").to_string()),
+                created_at: r
+                    .first_fired
+                    .map(|t| t.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default(),
+                updated_at: r
+                    .last_fired
+                    .map(|t| t.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default(),
+                tags: vec![],
+            }
+        })
+        .collect();
 
     if !active_status.is_empty() {
         all_recipes.retain(|r| r.status == active_status);
@@ -192,39 +207,72 @@ pub async fn list_recipes(
     };
 
     let active_recipes_count = all_recipes.len() as i64;
-    let production_count = all_recipes.iter().filter(|r| r.status == "production").count() as i64;
+    let production_count = all_recipes
+        .iter()
+        .filter(|r| r.status == "production")
+        .count() as i64;
     let total_fired = all_recipes.iter().map(|r| r.total_runs).sum::<i64>();
     let total_runs_sum = total_fired;
     let avg_success_rate = if all_recipes.is_empty() {
         0
     } else {
-        (all_recipes.iter().map(|r| r.success_rate).sum::<f64>() / all_recipes.len() as f64).round() as i64
+        (all_recipes.iter().map(|r| r.success_rate).sum::<f64>() / all_recipes.len() as f64).round()
+            as i64
     };
-    let avg_precision = avg_success_rate;
-    let avg_recall = (avg_success_rate as f64 * 0.87).round() as i64;
+    // Use real persisted quality signals instead of unacknowledged-alert ratios.
+    let avg_precision = quality_summary.avg_precision_pct;
+    let avg_recall = quality_summary.coverage_pct;
 
     // Build 12-month performance trend (static seeded data)
-    let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    let recipe_perf_trend: Vec<RecipePerfRow> = months.iter().enumerate().map(|(i, &mo)| {
-        let s = (i + 1) as f64;
-        let prec = (avg_precision as f64 * (1.0 + (s * 0.5).sin() * 0.08)).clamp(0.0, 100.0).round() as i64;
-        let rec = (avg_recall as f64 * (1.0 + (s * 0.7).cos() * 0.07)).clamp(0.0, 100.0).round() as i64;
-        let fpr = ((10.0 + (s * 0.9).sin() * 4.0).abs()).round() as i64;
-        RecipePerfRow { month: mo.into(), precision_pct: prec, recall_pct: rec, fpr_pct: fpr }
-    }).collect();
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let recipe_perf_trend: Vec<RecipePerfRow> = months
+        .iter()
+        .enumerate()
+        .map(|(i, &mo)| {
+            let s = (i + 1) as f64;
+            let prec = (avg_precision as f64 * (1.0 + (s * 0.5).sin() * 0.08))
+                .clamp(0.0, 100.0)
+                .round() as i64;
+            let rec = (avg_recall as f64 * (1.0 + (s * 0.7).cos() * 0.07))
+                .clamp(0.0, 100.0)
+                .round() as i64;
+            let fpr = ((10.0 + (s * 0.9).sin() * 4.0).abs()).round() as i64;
+            RecipePerfRow {
+                month: mo.into(),
+                precision_pct: prec,
+                recall_pct: rec,
+                fpr_pct: fpr,
+            }
+        })
+        .collect();
 
     let recipe_chart_w = (recipe_perf_trend.len() as i64 * 22).max(22);
-    let precision_points: String = recipe_perf_trend.iter().enumerate()
+    let precision_points: String = recipe_perf_trend
+        .iter()
+        .enumerate()
         .map(|(i, r)| format!("{},{}", i as i64 * 22, 100 - r.precision_pct))
-        .collect::<Vec<_>>().join(" ");
-    let recall_points: String = recipe_perf_trend.iter().enumerate()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let recall_points: String = recipe_perf_trend
+        .iter()
+        .enumerate()
         .map(|(i, r)| format!("{},{}", i as i64 * 22, 100 - r.recall_pct))
-        .collect::<Vec<_>>().join(" ");
-    let fpr_points: String = recipe_perf_trend.iter().enumerate()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let fpr_points: String = recipe_perf_trend
+        .iter()
+        .enumerate()
         .map(|(i, r)| format!("{},{}", i as i64 * 22, 100 - r.fpr_pct))
-        .collect::<Vec<_>>().join(" ");
+        .collect::<Vec<_>>()
+        .join(" ");
 
-    let total_pages = if per_page > 0 { (total + per_page - 1) / per_page } else { 0 };
+    let total_pages = if per_page > 0 {
+        (total + per_page - 1) / per_page
+    } else {
+        0
+    };
 
     let tpl = RecipesListPage {
         current_path: ctx.current_path,
@@ -288,7 +336,13 @@ pub async fn new_recipe(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/recipes", unack);
 
     let tpl = RecipeNewPage {

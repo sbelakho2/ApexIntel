@@ -257,7 +257,11 @@ fn parse_relative_time(text: &str) -> Option<DateTime<Utc>> {
 
     if text.contains("min") || text.contains("دقيقة") {
         Some(now - chrono::Duration::minutes(n))
-    } else if text.contains("hr") || text.contains("hour") || text.contains("heure") || text.contains("ساعة") {
+    } else if text.contains("hr")
+        || text.contains("hour")
+        || text.contains("heure")
+        || text.contains("ساعة")
+    {
         Some(now - chrono::Duration::hours(n))
     } else if text.contains("day") || text.contains("jour") || text.contains("يوم") {
         Some(now - chrono::Duration::days(n))

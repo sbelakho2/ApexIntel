@@ -1,9 +1,10 @@
 //! Warnings route — request/response types and logic for the warnings endpoints.
 
+use apex_core::validation::{normalize_email, validate_uuid};
+use apex_store::postgres::WarningReviewOutcome;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use apex_core::validation::{normalize_email, validate_uuid};
 
 // ────────────────────────────────────────────
 // Request types
@@ -73,6 +74,7 @@ impl SortDirection {
 pub struct AcknowledgeRequest {
     pub user_id: String,
     pub note: Option<String>,
+    pub review_outcome: Option<WarningReviewOutcome>,
 }
 
 // ────────────────────────────────────────────
@@ -96,6 +98,9 @@ pub struct WarningResponse {
     pub acknowledged_by: Option<String>,
     pub acknowledged_at: Option<DateTime<Utc>>,
     pub acknowledged_note: Option<String>,
+    pub review_outcome: Option<String>,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<DateTime<Utc>>,
     pub ts_utc: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -108,6 +113,9 @@ pub struct AcknowledgeResponse {
     pub acknowledged: bool,
     pub acknowledged_by: String,
     pub acknowledged_at: DateTime<Utc>,
+    pub review_outcome: Option<String>,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<DateTime<Utc>>,
 }
 
 // ────────────────────────────────────────────
@@ -174,10 +182,21 @@ fn severity_rank(sev: &str) -> u8 {
 }
 
 /// Filter warnings by acknowledged status.
-pub fn filter_by_acknowledged(warnings: &[WarningResponse], acked: Option<bool>) -> Vec<WarningResponse> {
+pub fn filter_by_acknowledged(
+    warnings: &[WarningResponse],
+    acked: Option<bool>,
+) -> Vec<WarningResponse> {
     match acked {
-        Some(true) => warnings.iter().filter(|w| w.acknowledged).cloned().collect(),
-        Some(false) => warnings.iter().filter(|w| !w.acknowledged).cloned().collect(),
+        Some(true) => warnings
+            .iter()
+            .filter(|w| w.acknowledged)
+            .cloned()
+            .collect(),
+        Some(false) => warnings
+            .iter()
+            .filter(|w| !w.acknowledged)
+            .cloned()
+            .collect(),
         None => warnings.to_vec(),
     }
 }
@@ -197,7 +216,12 @@ pub fn count_by_severity(warnings: &[WarningResponse]) -> Vec<(String, usize)> {
 mod tests {
     use super::*;
 
-    fn make_warning(severity: &str, warning_type: &str, acked: bool, minutes_ago: i64) -> WarningResponse {
+    fn make_warning(
+        severity: &str,
+        warning_type: &str,
+        acked: bool,
+        minutes_ago: i64,
+    ) -> WarningResponse {
         let now = Utc::now();
         WarningResponse {
             id: Uuid::new_v4().to_string(),
@@ -214,6 +238,9 @@ mod tests {
             acknowledged_by: None,
             acknowledged_at: None,
             acknowledged_note: None,
+            review_outcome: None,
+            reviewed_by: None,
+            reviewed_at: None,
             ts_utc: now - chrono::Duration::minutes(minutes_ago),
             created_at: now - chrono::Duration::minutes(minutes_ago),
             updated_at: now,
@@ -236,6 +263,7 @@ mod tests {
         let req = AcknowledgeRequest {
             user_id: "user-1".to_string(),
             note: Some("Noted".to_string()),
+            review_outcome: Some(WarningReviewOutcome::FalsePositive),
         };
         assert!(validate_acknowledge(&req).is_ok());
     }
@@ -245,6 +273,7 @@ mod tests {
         let req = AcknowledgeRequest {
             user_id: "  ".to_string(),
             note: None,
+            review_outcome: None,
         };
         assert!(validate_acknowledge(&req).is_err());
     }
@@ -254,6 +283,7 @@ mod tests {
         let req = AcknowledgeRequest {
             user_id: "user-1".to_string(),
             note: Some("x".repeat(1001)),
+            review_outcome: None,
         };
         assert!(validate_acknowledge(&req).is_err());
     }
@@ -263,6 +293,7 @@ mod tests {
         let req = AcknowledgeRequest {
             user_id: "u".repeat(201),
             note: None,
+            review_outcome: None,
         };
         assert!(validate_acknowledge(&req).is_err());
     }
@@ -274,7 +305,11 @@ mod tests {
             make_warning("critical", "supply_chain", false, 5),
             make_warning("medium", "market", false, 20),
         ];
-        sort_warnings(&mut warnings, &WarningSortField::Severity, &SortDirection::Desc);
+        sort_warnings(
+            &mut warnings,
+            &WarningSortField::Severity,
+            &SortDirection::Desc,
+        );
         assert_eq!(warnings[0].severity, "critical");
         assert_eq!(warnings[1].severity, "medium");
         assert_eq!(warnings[2].severity, "low");
@@ -287,7 +322,11 @@ mod tests {
             make_warning("high", "security", false, 30), // older
             make_warning("high", "security", false, 15),
         ];
-        sort_warnings(&mut warnings, &WarningSortField::CreatedAt, &SortDirection::Asc);
+        sort_warnings(
+            &mut warnings,
+            &WarningSortField::CreatedAt,
+            &SortDirection::Asc,
+        );
         // oldest first
         assert!(warnings[0].created_at <= warnings[1].created_at);
         assert!(warnings[1].created_at <= warnings[2].created_at);
@@ -329,7 +368,10 @@ mod tests {
     #[test]
     fn test_sort_direction_from_str() {
         assert_eq!(SortDirection::from_str_loose("asc"), SortDirection::Asc);
-        assert_eq!(SortDirection::from_str_loose("ascending"), SortDirection::Asc);
+        assert_eq!(
+            SortDirection::from_str_loose("ascending"),
+            SortDirection::Asc
+        );
         assert_eq!(SortDirection::from_str_loose("desc"), SortDirection::Desc);
         assert_eq!(SortDirection::from_str_loose("xyz"), SortDirection::Desc);
     }

@@ -359,10 +359,7 @@ pub fn parse_date_range(input: &str) -> Option<DateRange> {
 
 /// Sanitize search text: trim, collapse whitespace, limit length.
 pub fn sanitize_search_text(input: &str, max_len: usize) -> Option<String> {
-    let trimmed: String = input
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
+    let trimmed: String = input.split_whitespace().collect::<Vec<&str>>().join(" ");
     if trimmed.is_empty() {
         None
     } else if trimmed.len() > max_len {
@@ -375,10 +372,7 @@ pub fn sanitize_search_text(input: &str, max_len: usize) -> Option<String> {
 
 /// Validate search text: enforce max length and reject empty input.
 pub fn validate_search_text(input: &str, max_len: usize) -> Result<Option<String>, String> {
-    let trimmed: String = input
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
+    let trimmed: String = input.split_whitespace().collect::<Vec<&str>>().join(" ");
     if trimmed.is_empty() {
         return Ok(None);
     }
@@ -390,13 +384,7 @@ pub fn validate_search_text(input: &str, max_len: usize) -> Result<Option<String
 
 /// Check if a minimum value filter is in a valid range.
 pub fn validate_min_value(val: Option<f64>, min: f64, max: f64) -> Option<f64> {
-    val.and_then(|v| {
-        if v >= min && v <= max {
-            Some(v)
-        } else {
-            None
-        }
-    })
+    val.and_then(|v| if v >= min && v <= max { Some(v) } else { None })
 }
 
 // ────────────────────────────────────────────
@@ -651,18 +639,21 @@ mod tests {
             Some("hello world".to_string())
         );
         assert_eq!(sanitize_search_text("   ", 100), None);
-        assert_eq!(
-            sanitize_search_text("abcdef", 3),
-            Some("abc".to_string())
-        );
+        assert_eq!(sanitize_search_text("abcdef", 3), Some("abc".to_string()));
     }
 
     #[test]
     fn test_validate_search_text() {
         // "hello world" is 11 chars; max_len must be >= 11 for it to pass
-        assert_eq!(validate_search_text("  hello world ", 11).unwrap(), Some("hello world".to_string()));
+        assert_eq!(
+            validate_search_text("  hello world ", 11).unwrap(),
+            Some("hello world".to_string())
+        );
         // Shorter input with smaller max
-        assert_eq!(validate_search_text("  hello  ", 10).unwrap(), Some("hello".to_string()));
+        assert_eq!(
+            validate_search_text("  hello  ", 10).unwrap(),
+            Some("hello".to_string())
+        );
         assert_eq!(validate_search_text("   ", 10).unwrap(), None);
         assert!(validate_search_text("x".repeat(11).as_str(), 10).is_err());
     }

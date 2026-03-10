@@ -182,10 +182,14 @@ Respond ONLY with the JSON array."#,
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| "LLM recipe generation failed")?;
 
-        let candidates: Vec<RecipeCandidate> = resp.parse_json()
+        let candidates: Vec<RecipeCandidate> = resp
+            .parse_json()
             .with_context(|| "Failed to parse recipe candidates JSON")?;
 
         // Validate and clamp
@@ -241,16 +245,9 @@ Respond ONLY with the JSON array."#,
         };
 
         let trend = if precision_history.len() >= 2 {
-            let recent_avg: f64 = precision_history
-                .iter()
-                .rev()
-                .take(3)
-                .sum::<f64>()
+            let recent_avg: f64 = precision_history.iter().rev().take(3).sum::<f64>()
                 / 3.0f64.min(precision_history.len() as f64);
-            let early_avg: f64 = precision_history
-                .iter()
-                .take(3)
-                .sum::<f64>()
+            let early_avg: f64 = precision_history.iter().take(3).sum::<f64>()
                 / 3.0f64.min(precision_history.len() as f64);
             if recent_avg > early_avg + 0.05 {
                 "improving"
@@ -305,10 +302,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM recipe evaluation failed for {}", recipe_code))?;
 
-        let mut eval: RecipeEvaluation = resp.parse_json()
+        let mut eval: RecipeEvaluation = resp
+            .parse_json()
             .with_context(|| "Failed to parse recipe evaluation JSON")?;
 
         eval.confidence = eval.confidence.clamp(0.0, 1.0);
@@ -367,10 +368,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM FP reduction failed for {}", recipe_code))?;
 
-        let mut batch: RecipeImprovementBatch = resp.parse_json()
+        let mut batch: RecipeImprovementBatch = resp
+            .parse_json()
             .with_context(|| "Failed to parse FP reduction JSON")?;
 
         batch.projected_fpr = batch.projected_fpr.clamp(0.0, 1.0);

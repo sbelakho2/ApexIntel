@@ -87,15 +87,15 @@ pub fn extract_patent(
     url: &str,
     jurisdiction: &str,
 ) -> PatentExtract {
-    let patent_number = extract_patent_number(body_text)
-        .unwrap_or_default();
-    let applicant = extract_applicant(body_text)
-        .unwrap_or_default();
+    let patent_number = extract_patent_number(body_text).unwrap_or_default();
+    let applicant = extract_applicant(body_text).unwrap_or_default();
     let inventors = extract_inventors(body_text);
-    let filing_date = RE_FILING_DATE.captures(body_text)
+    let filing_date = RE_FILING_DATE
+        .captures(body_text)
         .map(|c| c.get(1).unwrap().as_str().to_string())
         .filter(|raw| normalizer::is_valid_date(raw));
-    let publication_date = RE_PUBLICATION_DATE.captures(body_text)
+    let publication_date = RE_PUBLICATION_DATE
+        .captures(body_text)
         .map(|c| c.get(1).unwrap().as_str().to_string())
         .filter(|raw| normalizer::is_valid_date(raw));
     let ipc_codes = extract_ipc_codes(body_text);
@@ -124,12 +124,14 @@ pub fn extract_patent(
 
 fn extract_patent_number(text: &str) -> Option<String> {
     // Patterns: US12345678, EP1234567, WO2024/123456, TN2024001, MA12345
-    RE_PATENT_NUMBER.captures(text)
+    RE_PATENT_NUMBER
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_applicant(text: &str) -> Option<String> {
-    RE_APPLICANT.captures(text)
+    RE_APPLICANT
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
@@ -144,7 +146,6 @@ fn extract_inventors(text: &str) -> Vec<String> {
         vec![]
     }
 }
-
 
 fn extract_ipc_codes(text: &str) -> Vec<String> {
     // IPC codes like H05K 3/46, B23K 1/00
@@ -170,7 +171,15 @@ pub fn classify_patent_relevance(patent: &PatentExtract) -> f32 {
     for code in &patent.ipc_codes {
         let prefix: String = code.chars().take(3).collect();
         match prefix {
-            ref value if value == "H05" || value == "H01" || value == "H02" || value == "H03" || value == "H04" => score += 0.3, // Electrical
+            ref value
+                if value == "H05"
+                    || value == "H01"
+                    || value == "H02"
+                    || value == "H03"
+                    || value == "H04" =>
+            {
+                score += 0.3
+            } // Electrical
             ref value if value == "B23" => score += 0.2, // Machine tools / soldering
             ref value if value == "C25" => score += 0.15, // Electrolytic processes
             ref value if value == "G01" => score += 0.1, // Measuring / testing
@@ -180,7 +189,11 @@ pub fn classify_patent_relevance(patent: &PatentExtract) -> f32 {
 
     // Keyword relevance
     let ems_kws = crate::multilingual::ems_keywords("en");
-    let combined = format!("{} {} {}", patent.title, patent.abstract_text, patent.applicant).to_lowercase();
+    let combined = format!(
+        "{} {} {}",
+        patent.title, patent.abstract_text, patent.applicant
+    )
+    .to_lowercase();
     for kw in &ems_kws {
         if combined.contains(&kw.to_lowercase()) {
             score += 0.1;
@@ -227,7 +240,8 @@ mod tests {
     #[test]
     fn test_extract_filing_date() {
         let text = "Filing date: 2024-03-15. Publication date: 2024-09-15.";
-        let date = RE_FILING_DATE.captures(text)
+        let date = RE_FILING_DATE
+            .captures(text)
             .map(|c| c.get(1).unwrap().as_str().to_string());
         assert_eq!(date, Some("2024-03-15".to_string()));
     }
@@ -256,7 +270,12 @@ mod tests {
                     IPC: H05K 3/46. \
                     Abstract: Improved reflow soldering process for SMT assembly lines \
                     with reduced thermal stress on BGA components.";
-        let patent = extract_patent(body, "Reflow Soldering Process", "https://ep.espacenet.com/123", "EP");
+        let patent = extract_patent(
+            body,
+            "Reflow Soldering Process",
+            "https://ep.espacenet.com/123",
+            "EP",
+        );
 
         assert_eq!(patent.patent_number, "EP1234567");
         assert!(patent.applicant.contains("Foxconn"));

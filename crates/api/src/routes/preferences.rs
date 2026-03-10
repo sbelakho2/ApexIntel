@@ -219,10 +219,9 @@ mod tests {
     #[test]
     fn test_table_columns_merge() {
         let mut prefs = UserPreferences::default();
-        prefs.table_columns.insert(
-            "warnings".into(),
-            vec!["id".into(), "severity".into()],
-        );
+        prefs
+            .table_columns
+            .insert("warnings".into(), vec!["id".into(), "severity".into()]);
         prefs.apply_update(UpdatePreferencesRequest {
             theme: None,
             locale: None,

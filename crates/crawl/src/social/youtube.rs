@@ -36,18 +36,16 @@ impl YouTubeScraper {
 
     /// Build from environment variable `YOUTUBE_API_KEY`.
     pub fn from_env() -> Result<Self> {
-        let key = std::env::var("YOUTUBE_API_KEY").ok().filter(|k| !k.is_empty());
+        let key = std::env::var("YOUTUBE_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty());
         Self::new(key)
     }
 
     // ── Channel RSS (no API key) ────────────────────────────────
 
     /// Fetch latest videos from a channel via RSS (no API key required).
-    pub async fn fetch_channel_rss(
-        &self,
-        channel_id: &str,
-        max: usize,
-    ) -> Result<Vec<SocialPost>> {
+    pub async fn fetch_channel_rss(&self, channel_id: &str, max: usize) -> Result<Vec<SocialPost>> {
         let url = format!("{}?channel_id={}", YOUTUBE_RSS_BASE, channel_id);
         debug!(channel_id, "Fetching YouTube RSS");
 
@@ -67,11 +65,7 @@ impl YouTubeScraper {
     // ── API search (requires key) ───────────────────────────────
 
     /// Search videos by keyword via YouTube Data API v3.
-    pub async fn search_videos(
-        &self,
-        query: &str,
-        max: usize,
-    ) -> Result<Vec<SocialPost>> {
+    pub async fn search_videos(&self, query: &str, max: usize) -> Result<Vec<SocialPost>> {
         let key = self
             .api_key
             .as_deref()

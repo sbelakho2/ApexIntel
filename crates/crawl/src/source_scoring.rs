@@ -139,10 +139,7 @@ impl ScoringConfig {
 ///
 /// **Novelty** is computed globally: a source that is the *only* provider
 /// of an observation type gets a higher novelty bonus.
-pub fn score_and_rank(
-    telemetry: &[SourceTelemetry],
-    config: &ScoringConfig,
-) -> Vec<ScoredSource> {
+pub fn score_and_rank(telemetry: &[SourceTelemetry], config: &ScoringConfig) -> Vec<ScoredSource> {
     if telemetry.is_empty() {
         return Vec::new();
     }
@@ -156,61 +153,67 @@ pub fn score_and_rank(
     }
     let total_sources = telemetry.len();
 
-    let mut scored: Vec<ScoredSource> = telemetry.iter().map(|t| {
-        let ingested = t.observations_ingested.max(1) as f64;
+    let mut scored: Vec<ScoredSource> = telemetry
+        .iter()
+        .map(|t| {
+            let ingested = t.observations_ingested.max(1) as f64;
 
-        // Yield: fraction of observations that triggered recipe fires.
-        let yield_ratio = t.observations_in_fires as f64 / ingested;
+            // Yield: fraction of observations that triggered recipe fires.
+            let yield_ratio = t.observations_in_fires as f64 / ingested;
 
-        // Freshness: exponential decay from hours since last crawl.
-        let freshness = (-t.hours_since_last_crawl.max(0.0) * (2.0f64.ln())
-            / config.freshness_halflife_hours)
-            .exp()
-            .clamp(0.0, 1.0);
+            // Freshness: exponential decay from hours since last crawl.
+            let freshness = (-t.hours_since_last_crawl.max(0.0) * (2.0f64.ln())
+                / config.freshness_halflife_hours)
+                .exp()
+                .clamp(0.0, 1.0);
 
-        // Novelty: average "uniqueness" of the observation types this source produces.
-        // If a type is produced by only 1 source → novelty=1; by all sources → novelty→0.
-        let novelty = if t.observation_types_produced.is_empty() {
-            0.0
-        } else {
-            let sum: f64 = t.observation_types_produced.iter().map(|ot| {
-                let n = *type_source_count.get(ot.as_str()).unwrap_or(&1) as f64;
-                1.0 - (n - 1.0) / total_sources as f64
-            }).sum();
-            (sum / t.observation_types_produced.len() as f64).clamp(0.0, 1.0)
-        };
+            // Novelty: average "uniqueness" of the observation types this source produces.
+            // If a type is produced by only 1 source → novelty=1; by all sources → novelty→0.
+            let novelty = if t.observation_types_produced.is_empty() {
+                0.0
+            } else {
+                let sum: f64 = t
+                    .observation_types_produced
+                    .iter()
+                    .map(|ot| {
+                        let n = *type_source_count.get(ot.as_str()).unwrap_or(&1) as f64;
+                        1.0 - (n - 1.0) / total_sources as f64
+                    })
+                    .sum();
+                (sum / t.observation_types_produced.len() as f64).clamp(0.0, 1.0)
+            };
 
-        // Diversity: normalised count of distinct observation types.
-        // Cap denominator at 16 (total ObservationType variants).
-        let diversity = (t.observation_types_produced.len() as f64 / 16.0).clamp(0.0, 1.0);
+            // Diversity: normalised count of distinct observation types.
+            // Cap denominator at 16 (total ObservationType variants).
+            let diversity = (t.observation_types_produced.len() as f64 / 16.0).clamp(0.0, 1.0);
 
-        let error_rate = t.error_rate.clamp(0.0, 1.0);
+            let error_rate = t.error_rate.clamp(0.0, 1.0);
 
-        let score = (config.weight_yield * yield_ratio
-            + config.weight_freshness * freshness
-            + config.weight_novelty * novelty
-            + config.weight_diversity * diversity
-            - config.weight_error * error_rate)
-            .clamp(0.0, 1.0);
+            let score = (config.weight_yield * yield_ratio
+                + config.weight_freshness * freshness
+                + config.weight_novelty * novelty
+                + config.weight_diversity * diversity
+                - config.weight_error * error_rate)
+                .clamp(0.0, 1.0);
 
-        // Suggested interval: inversely proportional to score.
-        // score=1 → min_interval; score=0 → max_interval.
-        let interval_range = config.max_interval_hours - config.min_interval_hours;
-        let suggested_interval_hours =
-            config.max_interval_hours - score * interval_range;
+            // Suggested interval: inversely proportional to score.
+            // score=1 → min_interval; score=0 → max_interval.
+            let interval_range = config.max_interval_hours - config.min_interval_hours;
+            let suggested_interval_hours = config.max_interval_hours - score * interval_range;
 
-        ScoredSource {
-            source_id: t.source_id.clone(),
-            domain: t.domain.clone(),
-            yield_ratio,
-            freshness,
-            novelty,
-            diversity,
-            error_rate,
-            score,
-            suggested_interval_hours,
-        }
-    }).collect();
+            ScoredSource {
+                source_id: t.source_id.clone(),
+                domain: t.domain.clone(),
+                yield_ratio,
+                freshness,
+                novelty,
+                diversity,
+                error_rate,
+                score,
+                suggested_interval_hours,
+            }
+        })
+        .collect();
 
     // Sort descending by score, deterministic tiebreak by source_id (B292).
     scored.sort_by(|a, b| {
@@ -390,10 +393,7 @@ mod tests {
                 observations_in_promotions: 30,
                 median_ingest_latency_secs: 120.0,
                 error_rate: 0.05,
-                observation_types_produced: vec![
-                    "TenderPosted".into(),
-                    "ProcurementSignal".into(),
-                ],
+                observation_types_produced: vec!["TenderPosted".into(), "ProcurementSignal".into()],
                 hours_since_last_crawl: 6.0,
                 crawl_interval_hours: 12.0,
             },
@@ -424,23 +424,24 @@ mod tests {
     #[test]
     fn test_score_novelty() {
         // If a source is the only one providing a type, novelty should be high.
-        let tel = vec![
-            SourceTelemetry {
-                source_id: "unique".into(),
-                domain: "unique.com".into(),
-                observations_ingested: 100,
-                observations_in_fires: 10,
-                observations_in_promotions: 5,
-                median_ingest_latency_secs: 60.0,
-                error_rate: 0.0,
-                observation_types_produced: vec!["PatentPublished".into()], // unique type
-                hours_since_last_crawl: 1.0,
-                crawl_interval_hours: 4.0,
-            },
-        ];
+        let tel = vec![SourceTelemetry {
+            source_id: "unique".into(),
+            domain: "unique.com".into(),
+            observations_ingested: 100,
+            observations_in_fires: 10,
+            observations_in_promotions: 5,
+            median_ingest_latency_secs: 60.0,
+            error_rate: 0.0,
+            observation_types_produced: vec!["PatentPublished".into()], // unique type
+            hours_since_last_crawl: 1.0,
+            crawl_interval_hours: 4.0,
+        }];
         let scored = score_and_rank(&tel, &ScoringConfig::default());
         assert_eq!(scored.len(), 1);
-        assert!((scored[0].novelty - 1.0).abs() < 0.01, "Sole producer should get novelty ≈ 1.0");
+        assert!(
+            (scored[0].novelty - 1.0).abs() < 0.01,
+            "Sole producer should get novelty ≈ 1.0"
+        );
     }
 
     #[test]

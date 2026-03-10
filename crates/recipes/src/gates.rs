@@ -178,9 +178,9 @@ pub struct GateEvidence {
     pub time_slices_passed: u32,
     pub total_time_slices: u32,
     pub entities_passed: u32,
-    pub negative_control_effect: f64,  // effect size on shuffled data
+    pub negative_control_effect: f64, // effect size on shuffled data
     pub false_alarm_rate: f64,
-    pub counterfactual_change: f64,    // change in effect when signal removed
+    pub counterfactual_change: f64, // change in effect when signal removed
 }
 
 // ────────────────────────────────────────────
@@ -382,7 +382,7 @@ mod tests {
             time_slices_passed: 3,
             total_time_slices: 4,
             entities_passed: 8,
-            negative_control_effect: 0.3,  // < 50% of uplift 2.0
+            negative_control_effect: 0.3, // < 50% of uplift 2.0
             false_alarm_rate: 0.01,
             counterfactual_change: 0.2,
         }
@@ -390,16 +390,16 @@ mod tests {
 
     fn failing_evidence() -> GateEvidence {
         GateEvidence {
-            uplift: 1.0,          // below 1.5
+            uplift: 1.0,           // below 1.5
             mutual_info: 0.05,     // below 0.1
             p_value: 0.05,         // above 0.01
             q_value: 0.1,          // above 0.05
             time_slices_passed: 1, // below 3
             total_time_slices: 4,
-            entities_passed: 2,    // below 5
+            entities_passed: 2,           // below 5
             negative_control_effect: 0.8, // > 50% of uplift
-            false_alarm_rate: 0.05, // above 0.02
-            counterfactual_change: 0.05, // below 0.1
+            false_alarm_rate: 0.05,       // above 0.02
+            counterfactual_change: 0.05,  // below 0.1
         }
     }
 
@@ -560,7 +560,7 @@ mod tests {
         let config = GateConfig::default();
         let mut ev = passing_evidence();
         ev.p_value = 0.05; // only significance fails
-        ev.q_value = 0.1;  // and FDR fails
+        ev.q_value = 0.1; // and FDR fails
 
         assert!(!all_gates_pass(&ev, &config));
         assert_eq!(gates_passed_count(&ev, &config), 6);
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn test_custom_config() {
         let config = GateConfig {
-            min_uplift: 1.0,  // more lenient
+            min_uplift: 1.0, // more lenient
             min_mutual_info: 0.05,
             max_p_value: 0.05,
             max_q_value: 0.1,
@@ -651,27 +651,66 @@ mod tests {
         assert!((a.max_p_value - b.max_p_value).abs() < f64::EPSILON);
         assert_eq!(a.min_time_slices, b.min_time_slices);
         // Values are in valid ranges
-        assert!(a.min_uplift > 1.0, "min_uplift must be > 1.0 (represents uplift over baseline)");
-        assert!(a.max_p_value > 0.0 && a.max_p_value < 1.0, "max_p_value must be in (0,1)");
-        assert!(a.max_q_value > 0.0 && a.max_q_value < 1.0, "max_q_value must be in (0,1)");
-        assert!(a.max_p_value <= a.max_q_value, "p threshold should be ≤ q threshold");
-        assert!(a.min_time_slices <= a.total_time_slices, "min_time_slices must not exceed total");
-        assert!(a.max_false_alarm_rate > 0.0 && a.max_false_alarm_rate < 1.0, "FAR must be in (0,1)");
-        assert!(a.counterfactual_min_change > 0.0, "min counterfactual change must be positive");
+        assert!(
+            a.min_uplift > 1.0,
+            "min_uplift must be > 1.0 (represents uplift over baseline)"
+        );
+        assert!(
+            a.max_p_value > 0.0 && a.max_p_value < 1.0,
+            "max_p_value must be in (0,1)"
+        );
+        assert!(
+            a.max_q_value > 0.0 && a.max_q_value < 1.0,
+            "max_q_value must be in (0,1)"
+        );
+        assert!(
+            a.max_p_value <= a.max_q_value,
+            "p threshold should be ≤ q threshold"
+        );
+        assert!(
+            a.min_time_slices <= a.total_time_slices,
+            "min_time_slices must not exceed total"
+        );
+        assert!(
+            a.max_false_alarm_rate > 0.0 && a.max_false_alarm_rate < 1.0,
+            "FAR must be in (0,1)"
+        );
+        assert!(
+            a.counterfactual_min_change > 0.0,
+            "min counterfactual change must be positive"
+        );
     }
 
     #[test]
     fn test_gate_config_default_values_match_documentation() {
         let cfg = GateConfig::default();
-        assert!((cfg.min_uplift - 1.5).abs() < f64::EPSILON, "min_uplift default is 1.5");
-        assert!((cfg.min_mutual_info - 0.1).abs() < f64::EPSILON, "min_mutual_info default is 0.1");
-        assert!((cfg.max_p_value - 0.01).abs() < f64::EPSILON, "max_p_value default is 0.01");
-        assert!((cfg.max_q_value - 0.05).abs() < f64::EPSILON, "max_q_value default is 0.05");
+        assert!(
+            (cfg.min_uplift - 1.5).abs() < f64::EPSILON,
+            "min_uplift default is 1.5"
+        );
+        assert!(
+            (cfg.min_mutual_info - 0.1).abs() < f64::EPSILON,
+            "min_mutual_info default is 0.1"
+        );
+        assert!(
+            (cfg.max_p_value - 0.01).abs() < f64::EPSILON,
+            "max_p_value default is 0.01"
+        );
+        assert!(
+            (cfg.max_q_value - 0.05).abs() < f64::EPSILON,
+            "max_q_value default is 0.05"
+        );
         assert_eq!(cfg.min_time_slices, 3, "min_time_slices default is 3");
         assert_eq!(cfg.total_time_slices, 4, "total_time_slices default is 4");
         assert_eq!(cfg.min_entities, 5, "min_entities default is 5");
-        assert!((cfg.max_false_alarm_rate - 0.02).abs() < f64::EPSILON, "max_false_alarm_rate default is 0.02");
-        assert!((cfg.counterfactual_min_change - 0.1).abs() < f64::EPSILON, "counterfactual_min_change default is 0.1");
+        assert!(
+            (cfg.max_false_alarm_rate - 0.02).abs() < f64::EPSILON,
+            "max_false_alarm_rate default is 0.02"
+        );
+        assert!(
+            (cfg.counterfactual_min_change - 0.1).abs() < f64::EPSILON,
+            "counterfactual_min_change default is 0.1"
+        );
     }
 
     // B291: GateConfig::validate
@@ -685,7 +724,10 @@ mod tests {
 
     #[test]
     fn test_gate_config_p_value_at_one_is_invalid() {
-        let cfg = GateConfig { max_p_value: 1.0, ..GateConfig::default() };
+        let cfg = GateConfig {
+            max_p_value: 1.0,
+            ..GateConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("max_p_value")));
     }
@@ -693,24 +735,36 @@ mod tests {
     #[test]
     fn test_gate_config_p_greater_than_q_cross_field_error() {
         // p=0.1 > q=0.05 violates BH correction ordering
-        let cfg = GateConfig { max_p_value: 0.1, max_q_value: 0.05, ..GateConfig::default() };
+        let cfg = GateConfig {
+            max_p_value: 0.1,
+            max_q_value: 0.05,
+            ..GateConfig::default()
+        };
         let errs = cfg.validate();
         assert!(
-            errs.iter().any(|e| e.contains("max_p_value") && e.contains("max_q_value")),
+            errs.iter()
+                .any(|e| e.contains("max_p_value") && e.contains("max_q_value")),
             "cross-field error must mention both fields"
         );
     }
 
     #[test]
     fn test_gate_config_total_slices_below_min_is_invalid() {
-        let cfg = GateConfig { min_time_slices: 5, total_time_slices: 3, ..GateConfig::default() };
+        let cfg = GateConfig {
+            min_time_slices: 5,
+            total_time_slices: 3,
+            ..GateConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("total_time_slices")));
     }
 
     #[test]
     fn test_gate_config_infinite_uplift_is_invalid() {
-        let cfg = GateConfig { min_uplift: f64::INFINITY, ..GateConfig::default() };
+        let cfg = GateConfig {
+            min_uplift: f64::INFINITY,
+            ..GateConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("min_uplift")));
     }
@@ -718,14 +772,14 @@ mod tests {
     #[test]
     fn test_gate_config_all_invalid_all_reported() {
         let cfg = GateConfig {
-            min_uplift: 0.5,          // <= 1.0
-            min_mutual_info: -1.0,    // <= 0
-            max_p_value: 0.0,         // <= 0
-            max_q_value: 1.1,         // >= 1
-            min_time_slices: 0,       // < 1
-            total_time_slices: 0,     // < min
-            min_entities: 0,          // < 1
-            max_false_alarm_rate: 0.0,// <= 0
+            min_uplift: 0.5,                // <= 1.0
+            min_mutual_info: -1.0,          // <= 0
+            max_p_value: 0.0,               // <= 0
+            max_q_value: 1.1,               // >= 1
+            min_time_slices: 0,             // < 1
+            total_time_slices: 0,           // < min
+            min_entities: 0,                // < 1
+            max_false_alarm_rate: 0.0,      // <= 0
             counterfactual_min_change: 0.0, // <= 0
         };
         let errs = cfg.validate();

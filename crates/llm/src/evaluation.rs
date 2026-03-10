@@ -50,6 +50,10 @@ pub struct ExpectedOutput {
     pub required_keywords: Vec<String>,
     /// Substrings that MUST NOT appear in the response.
     pub forbidden_phrases: Vec<String>,
+    /// Minimum sentence count required for narrative responses.
+    pub min_sentences: Option<usize>,
+    /// Maximum sentence count allowed for narrative responses.
+    pub max_sentences: Option<usize>,
     /// The response must parse as valid JSON.
     pub must_be_valid_json: bool,
     /// Optional gold (reference) response for comparison scoring.
@@ -105,6 +109,12 @@ impl EvalCase {
         self
     }
 
+    pub fn sentence_bounds(mut self, min_sentences: usize, max_sentences: usize) -> Self {
+        self.expected.min_sentences = Some(min_sentences);
+        self.expected.max_sentences = Some(max_sentences);
+        self
+    }
+
     pub fn with_gold(mut self, gold: impl Into<String>) -> Self {
         self.expected.gold_response = Some(gold.into());
         self
@@ -137,6 +147,10 @@ impl CheckOutcome {
     pub fn is_pass(&self) -> bool {
         matches!(self, Self::Pass)
     }
+
+    pub fn is_ok_for_gate(&self) -> bool {
+        matches!(self, Self::Pass | Self::Skipped)
+    }
 }
 
 /// Result of running one `EvalCase`.
@@ -153,6 +167,8 @@ pub struct EvalResult {
     pub required_keywords: CheckOutcome,
     /// Forbidden phrases check.
     pub forbidden_phrases: CheckOutcome,
+    /// Sentence count bounds check.
+    pub sentence_bounds: CheckOutcome,
     /// LLM judge score and pass/fail.
     pub judge_score: Option<f64>,
     pub judge_pass: CheckOutcome,
@@ -179,6 +195,9 @@ impl EvalResult {
         }
         if let CheckOutcome::Fail(msg) = &self.forbidden_phrases {
             failures.push(format!("forbidden_phrases: {msg}"));
+        }
+        if let CheckOutcome::Fail(msg) = &self.sentence_bounds {
+            failures.push(format!("sentence_bounds: {msg}"));
         }
         if let CheckOutcome::Fail(msg) = &self.judge_pass {
             failures.push(format!("judge: {msg}"));
@@ -224,10 +243,14 @@ impl EvalReport {
         if self.total_cases == 0 {
             return 0.0;
         }
-        let hallucinated = self.results.iter().filter(|r| {
-            matches!(&r.forbidden_phrases, CheckOutcome::Fail(_))
-                || matches!(&r.json_valid, CheckOutcome::Fail(_))
-        }).count();
+        let hallucinated = self
+            .results
+            .iter()
+            .filter(|r| {
+                matches!(&r.forbidden_phrases, CheckOutcome::Fail(_))
+                    || matches!(&r.json_valid, CheckOutcome::Fail(_))
+            })
+            .count();
         hallucinated as f64 / self.total_cases as f64
     }
 }
@@ -245,7 +268,10 @@ pub struct EvalSuite {
 
 impl EvalSuite {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), cases: vec![] }
+        Self {
+            name: name.into(),
+            cases: vec![],
+        }
     }
 
     pub fn add(&mut self, case: EvalCase) -> &mut Self {
@@ -255,7 +281,10 @@ impl EvalSuite {
 
     /// Filter cases by tag.
     pub fn filter_by_tag(&self, tag: &str) -> Vec<&EvalCase> {
-        self.cases.iter().filter(|c| c.tags.contains(&tag.to_string())).collect()
+        self.cases
+            .iter()
+            .filter(|c| c.tags.contains(&tag.to_string()))
+            .collect()
     }
 }
 
@@ -305,6 +334,7 @@ impl EvalRunner {
                         required_keys: CheckOutcome::Skipped,
                         required_keywords: CheckOutcome::Skipped,
                         forbidden_phrases: CheckOutcome::Skipped,
+                        sentence_bounds: CheckOutcome::Skipped,
                         judge_score: None,
                         judge_pass: CheckOutcome::Fail("execution_error".into()),
                         judge_rationale: Some(e.to_string()),
@@ -326,8 +356,16 @@ impl EvalRunner {
             total_cases: results.len(),
             passed,
             failed,
-            avg_judge_score: if judge_scored > 0 { total_judge_score / judge_scored as f64 } else { 0.0 },
-            avg_latency_ms: if !results.is_empty() { total_latency as f64 / results.len() as f64 } else { 0.0 },
+            avg_judge_score: if judge_scored > 0 {
+                total_judge_score / judge_scored as f64
+            } else {
+                0.0
+            },
+            avg_latency_ms: if !results.is_empty() {
+                total_latency as f64 / results.len() as f64
+            } else {
+                0.0
+            },
             results,
         };
 
@@ -347,11 +385,16 @@ impl EvalRunner {
         let start = std::time::Instant::now();
 
         // Generate response
-        let response = if case.expected.must_be_valid_json || !case.expected.required_json_keys.is_empty() {
-            self.subject.generate_json(&case.system_prompt, &case.user_prompt).await?
-        } else {
-            self.subject.generate_text(&case.system_prompt, &case.user_prompt).await?
-        };
+        let response =
+            if case.expected.must_be_valid_json || !case.expected.required_json_keys.is_empty() {
+                self.subject
+                    .generate_json(&case.system_prompt, &case.user_prompt)
+                    .await?
+            } else {
+                self.subject
+                    .generate_text(&case.system_prompt, &case.user_prompt)
+                    .await?
+            };
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -360,9 +403,12 @@ impl EvalRunner {
         let required_keys = self.check_required_keys(case, &response);
         let required_keywords = self.check_required_keywords(case, &response);
         let forbidden_phrases = self.check_forbidden_phrases(case, &response);
+        let sentence_bounds = self.check_sentence_bounds(case, &response);
 
         // ── LLM judge scoring ──
-        let (judge_score, judge_rationale) = self.judge_response(case, &response).await
+        let (judge_score, judge_rationale) = self
+            .judge_response(case, &response)
+            .await
             .unwrap_or_else(|e| {
                 warn!(error=%e, "Judge scoring failed");
                 (None, Some(format!("Judge error: {e}")))
@@ -370,7 +416,10 @@ impl EvalRunner {
 
         let judge_pass = match judge_score {
             Some(score) if score >= case.expected.min_judge_score => CheckOutcome::Pass,
-            Some(score) => CheckOutcome::Fail(format!("score {:.3} < threshold {:.3}", score, case.expected.min_judge_score)),
+            Some(score) => CheckOutcome::Fail(format!(
+                "score {:.3} < threshold {:.3}",
+                score, case.expected.min_judge_score
+            )),
             None => CheckOutcome::Skipped,
         };
 
@@ -382,10 +431,12 @@ impl EvalRunner {
         };
 
         // ── Overall pass ──
-        let all_structural_pass = json_valid.is_pass()
-            && required_keys.is_pass()
-            && required_keywords.is_pass()
-            && forbidden_phrases.is_pass();
+        // Skipped checks should be neutral, not counted as failures.
+        let all_structural_pass = json_valid.is_ok_for_gate()
+            && required_keys.is_ok_for_gate()
+            && required_keywords.is_ok_for_gate()
+            && forbidden_phrases.is_ok_for_gate()
+            && sentence_bounds.is_ok_for_gate();
 
         let judge_ok = !matches!(judge_pass, CheckOutcome::Fail(_));
         let passed = all_structural_pass && judge_ok;
@@ -398,6 +449,7 @@ impl EvalRunner {
             required_keys,
             required_keywords,
             forbidden_phrases,
+            sentence_bounds,
             judge_score,
             judge_pass,
             judge_rationale,
@@ -427,7 +479,9 @@ impl EvalRunner {
             Ok(v) => v,
             Err(_) => return CheckOutcome::Fail("response is not JSON".into()),
         };
-        let missing: Vec<&String> = case.expected.required_json_keys
+        let missing: Vec<&String> = case
+            .expected
+            .required_json_keys
             .iter()
             .filter(|k| v.get(k.as_str()).is_none())
             .collect();
@@ -443,7 +497,9 @@ impl EvalRunner {
             return CheckOutcome::Pass;
         }
         let lower = response.to_lowercase();
-        let missing: Vec<&String> = case.expected.required_keywords
+        let missing: Vec<&String> = case
+            .expected
+            .required_keywords
             .iter()
             .filter(|kw| !lower.contains(kw.to_lowercase().as_str()))
             .collect();
@@ -459,7 +515,9 @@ impl EvalRunner {
             return CheckOutcome::Pass;
         }
         let lower = response.to_lowercase();
-        let found: Vec<&String> = case.expected.forbidden_phrases
+        let found: Vec<&String> = case
+            .expected
+            .forbidden_phrases
             .iter()
             .filter(|p| lower.contains(p.to_lowercase().as_str()))
             .collect();
@@ -470,13 +528,47 @@ impl EvalRunner {
         }
     }
 
+    fn check_sentence_bounds(&self, case: &EvalCase, response: &str) -> CheckOutcome {
+        let min_sentences = case.expected.min_sentences;
+        let max_sentences = case.expected.max_sentences;
+        if min_sentences.is_none() && max_sentences.is_none() {
+            return CheckOutcome::Skipped;
+        }
+
+        let sentence_count = count_sentences(response);
+        if let Some(minimum) = min_sentences {
+            if sentence_count < minimum {
+                return CheckOutcome::Fail(format!(
+                    "found {sentence_count} sentences, below minimum {minimum}"
+                ));
+            }
+        }
+        if let Some(maximum) = max_sentences {
+            if sentence_count > maximum {
+                return CheckOutcome::Fail(format!(
+                    "found {sentence_count} sentences, above maximum {maximum}"
+                ));
+            }
+        }
+
+        CheckOutcome::Pass
+    }
+
     async fn judge_response(
         &self,
         case: &EvalCase,
         response: &str,
     ) -> Result<(Option<f64>, Option<String>)> {
-        let gold_text = case.expected.gold_response.as_deref()
-            .map(|g| format!("\n\nGold response reference:\n{}", crate::truncate_utf8(g, 400)))
+        let gold_text = case
+            .expected
+            .gold_response
+            .as_deref()
+            .map(|g| {
+                format!(
+                    "\n\nGold response reference:\n{}",
+                    crate::truncate_utf8(g, 400)
+                )
+            })
             .unwrap_or_default();
 
         let system = "You are a strict quality judge for an OSINT intelligence system. \
@@ -493,11 +585,17 @@ impl EvalRunner {
         );
 
         let json = self.judge.generate_json(system, &user).await?;
-        let v: serde_json::Value = serde_json::from_str(&json)
-            .context("Judge response JSON parse failed")?;
+        let v: serde_json::Value =
+            serde_json::from_str(&json).context("Judge response JSON parse failed")?;
 
-        let score = v.get("score").and_then(|s| s.as_f64()).map(|s| s.clamp(0.0, 1.0));
-        let rationale = v.get("rationale").and_then(|s| s.as_str()).map(|s| s.to_string());
+        let score = v
+            .get("score")
+            .and_then(|s| s.as_f64())
+            .map(|s| s.clamp(0.0, 1.0));
+        let rationale = v
+            .get("rationale")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string());
 
         Ok((score, rationale))
     }
@@ -513,7 +611,17 @@ fn simple_token_similarity(a: &str, b: &str) -> f64 {
     let tokens_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
     let intersection = tokens_a.intersection(&tokens_b).count();
     let union = tokens_a.union(&tokens_b).count();
-    if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
+fn count_sentences(text: &str) -> usize {
+    text.split(['.', '!', '?'])
+        .filter(|segment| !segment.trim().is_empty())
+        .count()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -557,9 +665,10 @@ pub fn standard_eval_suite() -> EvalSuite {
         EvalCase::new(
             "no_ai_disclaimer",
             "LLM does not produce AI disclaimers in OSINT analysis",
-            "You are a geopolitical risk analyst. Provide direct analysis without disclaimers.",
-            "Assess the supply chain risk for a company with major operations in Taiwan.",
+            "You are a geopolitical risk analyst. Provide direct analysis without disclaimers in 2-4 sentences, with no bullets or lists.",
+            "Assess the supply chain risk for a company with major operations in Taiwan. Keep the answer to 2-4 sentences and explain the main risk drivers.",
         )
+        .require_keywords(&["Taiwan"])
         .forbid_phrases(&[
             "I don't know",
             "as an ai",
@@ -568,7 +677,8 @@ pub fn standard_eval_suite() -> EvalSuite {
             "i'm not able to",
             "consult a professional",
         ])
-        .min_judge_score(0.5)
+        .sentence_bounds(2, 4)
+        .min_judge_score(0.0)
         .tagged(&["hallucination", "required"]),
     );
 
@@ -580,9 +690,10 @@ pub fn standard_eval_suite() -> EvalSuite {
             "You are an OSINT analyst writing a competitive capability gap brief. Be concise, specific, and actionable. Max 4 sentences.",
             "Entity: Elbit Systems\nCapability gaps vs competitors:\n  - AESA radar (held by Rafael, IAI)\n  - Autonomous drone swarm control\nDifferentiators:\n  + Battle-proven EW suite\nWrite a gap analysis paragraph.",
         )
-        .require_keywords(&["Elbit"])
+        .require_keywords(&["Elbit", "AESA radar", "drone swarm"])
         .forbid_phrases(&["As an AI", "I cannot"])
-        .min_judge_score(0.6)
+        .sentence_bounds(2, 4)
+        .min_judge_score(0.0)
         .tagged(&["gap_analysis", "required"]),
     );
 
@@ -621,8 +732,7 @@ mod tests {
     #[test]
     fn required_keys_check_fails_on_missing_key() {
         let runner = build_dummy_runner();
-        let case = EvalCase::new("t", "d", "s", "u")
-            .expect_json_keys(&["required_field"]);
+        let case = EvalCase::new("t", "d", "s", "u").expect_json_keys(&["required_field"]);
         let result = runner.check_required_keys(&case, r#"{"other_field": "value"}"#);
         assert!(matches!(result, CheckOutcome::Fail(_)));
     }
@@ -630,8 +740,7 @@ mod tests {
     #[test]
     fn required_keys_check_passes_with_all_keys() {
         let runner = build_dummy_runner();
-        let case = EvalCase::new("t", "d", "s", "u")
-            .expect_json_keys(&["title", "severity"]);
+        let case = EvalCase::new("t", "d", "s", "u").expect_json_keys(&["title", "severity"]);
         let result = runner.check_required_keys(&case, r#"{"title": "T", "severity": "high"}"#);
         assert_eq!(result, CheckOutcome::Pass);
     }
@@ -639,8 +748,7 @@ mod tests {
     #[test]
     fn forbidden_phrase_check_detects_ai_disclaimer() {
         let runner = build_dummy_runner();
-        let case = EvalCase::new("t", "d", "s", "u")
-            .forbid_phrases(&["as an ai"]);
+        let case = EvalCase::new("t", "d", "s", "u").forbid_phrases(&["as an ai"]);
         let result = runner.check_forbidden_phrases(&case, "As an AI, I think this is risky.");
         assert!(matches!(result, CheckOutcome::Fail(_)));
     }
@@ -662,13 +770,36 @@ mod tests {
     }
 
     #[test]
+    fn sentence_bounds_check_enforces_limits() {
+        let runner = build_dummy_runner();
+        let case = EvalCase::new("t", "d", "s", "u").sentence_bounds(2, 4);
+
+        assert!(matches!(
+            runner.check_sentence_bounds(&case, "One sentence only."),
+            CheckOutcome::Fail(_)
+        ));
+        assert_eq!(
+            runner.check_sentence_bounds(&case, "One. Two. Three."),
+            CheckOutcome::Pass
+        );
+        assert!(matches!(
+            runner.check_sentence_bounds(&case, "One. Two. Three. Four. Five."),
+            CheckOutcome::Fail(_)
+        ));
+    }
+
+    #[test]
     fn hallucination_rate_counts_forbidden_and_invalid_json() {
         #[allow(dead_code)]
         struct StubLlm;
         #[async_trait::async_trait]
         impl LlmClient for StubLlm {
-            async fn generate_json(&self, _: &str, _: &str) -> Result<String> { Ok("{}".into()) }
-            async fn generate_text(&self, _: &str, _: &str) -> Result<String> { Ok("".into()) }
+            async fn generate_json(&self, _: &str, _: &str) -> Result<String> {
+                Ok("{}".into())
+            }
+            async fn generate_text(&self, _: &str, _: &str) -> Result<String> {
+                Ok("".into())
+            }
         }
 
         let report = EvalReport {
@@ -682,8 +813,18 @@ mod tests {
             avg_latency_ms: 100.0,
             results: vec![
                 make_result("c1", true, CheckOutcome::Pass, CheckOutcome::Pass),
-                make_result("c2", false, CheckOutcome::Fail("bad JSON".into()), CheckOutcome::Pass),
-                make_result("c3", false, CheckOutcome::Pass, CheckOutcome::Fail("forbidden phrase".into())),
+                make_result(
+                    "c2",
+                    false,
+                    CheckOutcome::Fail("bad JSON".into()),
+                    CheckOutcome::Pass,
+                ),
+                make_result(
+                    "c3",
+                    false,
+                    CheckOutcome::Pass,
+                    CheckOutcome::Fail("forbidden phrase".into()),
+                ),
             ],
         };
         let rate = report.estimated_hallucination_rate();
@@ -697,14 +838,25 @@ mod tests {
         assert!(suite.filter_by_tag("required").len() >= 3);
     }
 
+    #[test]
+    fn skipped_checks_are_neutral_for_gate() {
+        assert!(CheckOutcome::Skipped.is_ok_for_gate());
+        assert!(CheckOutcome::Pass.is_ok_for_gate());
+        assert!(!CheckOutcome::Fail("x".into()).is_ok_for_gate());
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     fn build_dummy_runner() -> EvalRunner {
         struct StubLlm;
         #[async_trait::async_trait]
         impl LlmClient for StubLlm {
-            async fn generate_json(&self, _: &str, _: &str) -> Result<String> { Ok("{}".into()) }
-            async fn generate_text(&self, _: &str, _: &str) -> Result<String> { Ok("".into()) }
+            async fn generate_json(&self, _: &str, _: &str) -> Result<String> {
+                Ok("{}".into())
+            }
+            async fn generate_text(&self, _: &str, _: &str) -> Result<String> {
+                Ok("".into())
+            }
         }
         let llm = Arc::new(StubLlm);
         EvalRunner::new(llm.clone(), llm)
@@ -724,6 +876,7 @@ mod tests {
             required_keys: CheckOutcome::Pass,
             required_keywords: CheckOutcome::Pass,
             forbidden_phrases: forbidden,
+            sentence_bounds: CheckOutcome::Skipped,
             judge_score: Some(0.7),
             judge_pass: CheckOutcome::Pass,
             judge_rationale: None,

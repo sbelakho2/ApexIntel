@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 // ────────────────────────────────────────────
@@ -87,6 +88,57 @@ pub struct CoverageGap {
     pub region: String,
     pub description: String,
     pub severity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminPromptVersionSummary {
+    pub prompt_id: String,
+    pub version: String,
+    pub workflow: String,
+    pub metadata: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminLlmWorkflowRunSummary {
+    pub id: String,
+    pub workflow: String,
+    pub prompt_id: String,
+    pub prompt_version: String,
+    pub model_name: String,
+    pub quality_gate_passed: bool,
+    pub validation_issue_count: usize,
+    pub duration_ms: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminLlmImprovementRunSummary {
+    pub id: String,
+    pub run_kind: String,
+    pub run_key: String,
+    pub metrics: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminLlmTrainingDatasetSummary {
+    pub id: String,
+    pub dataset_name: String,
+    pub dataset_version: String,
+    pub source_run_kind: String,
+    pub source_run_key: String,
+    pub manifest: Value,
+    pub example_count: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminLlmGovernanceResponse {
+    pub prompt_versions: Vec<AdminPromptVersionSummary>,
+    pub workflow_runs: Vec<AdminLlmWorkflowRunSummary>,
+    pub improvement_runs: Vec<AdminLlmImprovementRunSummary>,
+    pub training_datasets: Vec<AdminLlmTrainingDatasetSummary>,
 }
 
 // ────────────────────────────────────────────
@@ -308,7 +360,7 @@ mod tests {
         pois.insert("EA".to_string(), 0);
         let gaps = identify_gaps(&pois, 5);
         assert_eq!(gaps.len(), 2); // MA and EA
-        // sorted alphabetically
+                                   // sorted alphabetically
         assert_eq!(gaps[0].region, "EA");
         assert_eq!(gaps[0].severity, "critical"); // 0 POIs
         assert_eq!(gaps[1].region, "MA");
@@ -318,9 +370,9 @@ mod tests {
     #[test]
     fn test_identify_gaps_severity() {
         let mut pois = HashMap::new();
-        pois.insert("TN".to_string(), 0);  // critical (0)
-        pois.insert("MA".to_string(), 2);  // high (< 10/2 = 5)
-        pois.insert("EU".to_string(), 7);  // medium (>= 5, < 10)
+        pois.insert("TN".to_string(), 0); // critical (0)
+        pois.insert("MA".to_string(), 2); // high (< 10/2 = 5)
+        pois.insert("EU".to_string(), 7); // medium (>= 5, < 10)
         let gaps = identify_gaps(&pois, 10);
         assert_eq!(gaps.len(), 3);
         let tn = gaps.iter().find(|g| g.region == "TN").unwrap();

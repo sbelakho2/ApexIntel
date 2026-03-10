@@ -177,8 +177,15 @@ mod tests {
         let cps = detect_changepoints(&data, &config);
         assert!(!cps.is_empty(), "Should detect shift");
         // The changepoint should be near index 30
-        let closest = cps.iter().min_by_key(|&&cp| (cp as i64 - 30).unsigned_abs()).unwrap();
-        assert!((*closest as i64 - 30).unsigned_abs() <= 5, "Changepoint at {} not near 30", closest);
+        let closest = cps
+            .iter()
+            .min_by_key(|&&cp| (cp as i64 - 30).unsigned_abs())
+            .unwrap();
+        assert!(
+            (*closest as i64 - 30).unsigned_abs() <= 5,
+            "Changepoint at {} not near 30",
+            closest
+        );
     }
 
     #[test]
@@ -236,14 +243,25 @@ mod tests {
         assert_eq!(a.min_segment, b.min_segment);
         assert!((a.penalty - b.penalty).abs() < f64::EPSILON);
         // Values are in valid ranges
-        assert!(a.penalty > 0.0, "penalty must be positive; got {}", a.penalty);
-        assert!(a.min_segment >= 1, "min_segment must be >= 1; got {}", a.min_segment);
+        assert!(
+            a.penalty > 0.0,
+            "penalty must be positive; got {}",
+            a.penalty
+        );
+        assert!(
+            a.min_segment >= 1,
+            "min_segment must be >= 1; got {}",
+            a.min_segment
+        );
     }
 
     #[test]
     fn test_pelt_config_default_values_match_documented_defaults() {
         let cfg = PeltConfig::default();
-        assert!((cfg.penalty - 3.0).abs() < f64::EPSILON, "default penalty should be 3.0");
+        assert!(
+            (cfg.penalty - 3.0).abs() < f64::EPSILON,
+            "default penalty should be 3.0"
+        );
         assert_eq!(cfg.min_segment, 2, "default min_segment should be 2");
     }
 
@@ -258,35 +276,50 @@ mod tests {
 
     #[test]
     fn test_pelt_config_zero_penalty_is_invalid() {
-        let cfg = PeltConfig { penalty: 0.0, ..PeltConfig::default() };
+        let cfg = PeltConfig {
+            penalty: 0.0,
+            ..PeltConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("penalty")));
     }
 
     #[test]
     fn test_pelt_config_negative_penalty_is_invalid() {
-        let cfg = PeltConfig { penalty: -1.0, ..PeltConfig::default() };
+        let cfg = PeltConfig {
+            penalty: -1.0,
+            ..PeltConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("penalty")));
     }
 
     #[test]
     fn test_pelt_config_nan_penalty_is_invalid() {
-        let cfg = PeltConfig { penalty: f64::NAN, ..PeltConfig::default() };
+        let cfg = PeltConfig {
+            penalty: f64::NAN,
+            ..PeltConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("penalty")));
     }
 
     #[test]
     fn test_pelt_config_min_segment_one_is_invalid() {
-        let cfg = PeltConfig { min_segment: 1, ..PeltConfig::default() };
+        let cfg = PeltConfig {
+            min_segment: 1,
+            ..PeltConfig::default()
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("min_segment")));
     }
 
     #[test]
     fn test_pelt_config_all_invalid_fields_all_reported() {
-        let cfg = PeltConfig { penalty: f64::NEG_INFINITY, min_segment: 0 };
+        let cfg = PeltConfig {
+            penalty: f64::NEG_INFINITY,
+            min_segment: 0,
+        };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("penalty")));
         assert!(errs.iter().any(|e| e.contains("min_segment")));

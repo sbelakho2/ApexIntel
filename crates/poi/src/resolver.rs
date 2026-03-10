@@ -1,9 +1,9 @@
 //! POI resolver — match and merge person entities from different sources.
 
 use crate::model::*;
+use apex_core::validation::normalize_email as normalize_email_core;
 use regex::Regex;
 use std::sync::LazyLock;
-use apex_core::validation::normalize_email as normalize_email_core;
 use tracing::{debug, warn};
 
 /// Maximum number of profiles accepted in a single [`resolve_batch`] call.
@@ -210,7 +210,8 @@ fn resolve_batch_with_limit(
         }
     }
 
-    let mut clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    let mut clusters: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
     for i in 0..n {
         clusters.entry(parent[i]).or_default().push(profiles[i].0);
     }
@@ -312,8 +313,18 @@ mod tests {
 
     #[test]
     fn test_match_same_person_exact() {
-        let a = make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn"));
-        let b = make_poi("p2", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn"));
+        let a = make_poi(
+            "p1",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("ahmed@foxconn.tn"),
+        );
+        let b = make_poi(
+            "p2",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("ahmed@foxconn.tn"),
+        );
         let m = match_profiles(&a, &b);
         assert!(m.is_some());
         assert!(m.unwrap().confidence > 0.8);
@@ -337,11 +348,24 @@ mod tests {
 
     #[test]
     fn test_match_email_only() {
-        let a = make_poi("p1", "A. Ben Ali", "Foxconn", Some("ahmed.benali@company.com"));
-        let b = make_poi("p2", "Ahmed Benali", "Other Corp", Some("ahmed.benali@company.com"));
+        let a = make_poi(
+            "p1",
+            "A. Ben Ali",
+            "Foxconn",
+            Some("ahmed.benali@company.com"),
+        );
+        let b = make_poi(
+            "p2",
+            "Ahmed Benali",
+            "Other Corp",
+            Some("ahmed.benali@company.com"),
+        );
         let m = match_profiles(&a, &b);
         assert!(m.is_some());
-        assert!(m.unwrap().match_reasons.contains(&"email_match".to_string()));
+        assert!(m
+            .unwrap()
+            .match_reasons
+            .contains(&"email_match".to_string()));
     }
 
     #[test]
@@ -357,9 +381,24 @@ mod tests {
     #[test]
     fn test_resolve_batch() {
         let profiles = vec![
-            make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn")),
-            make_poi("p2", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn")),
-            make_poi("p3", "John Smith", "Samsung Korea", Some("john@samsung.com")),
+            make_poi(
+                "p1",
+                "Ahmed Ben Ali",
+                "Foxconn Tunisia",
+                Some("ahmed@foxconn.tn"),
+            ),
+            make_poi(
+                "p2",
+                "Ahmed Ben Ali",
+                "Foxconn Tunisia",
+                Some("ahmed@foxconn.tn"),
+            ),
+            make_poi(
+                "p3",
+                "John Smith",
+                "Samsung Korea",
+                Some("john@samsung.com"),
+            ),
         ];
         let clusters = resolve_batch(&profiles, 0.5);
         // p1 and p2 should cluster, p3 alone
@@ -392,16 +431,56 @@ mod tests {
     fn test_resolve_batch_large() {
         // Use very distinct names to avoid trigram overlap
         let names = [
-            "Ahmed", "Brigitte", "Chen", "Dmitri", "Esperanza",
-            "François", "Greta", "Hiroshi", "Ingrid", "Javier",
-            "Karim", "Leila", "Marco", "Nadia", "Oscar",
-            "Priya", "Qasim", "Rosa", "Sven", "Tariq",
-            "Ulrike", "Viktor", "Wendy", "Xiang", "Yuki",
-            "Zara", "Boris", "Carla", "Dieter", "Elena",
-            "Felix", "Gloria", "Hugo", "Irene", "Jorge",
-            "Keira", "Ludwig", "Maria", "Niklas", "Olga",
-            "Pablo", "Quinn", "Renata", "Stefan", "Tanya",
-            "Umberto", "Vera", "Walter", "Xena", "Yusuf",
+            "Ahmed",
+            "Brigitte",
+            "Chen",
+            "Dmitri",
+            "Esperanza",
+            "François",
+            "Greta",
+            "Hiroshi",
+            "Ingrid",
+            "Javier",
+            "Karim",
+            "Leila",
+            "Marco",
+            "Nadia",
+            "Oscar",
+            "Priya",
+            "Qasim",
+            "Rosa",
+            "Sven",
+            "Tariq",
+            "Ulrike",
+            "Viktor",
+            "Wendy",
+            "Xiang",
+            "Yuki",
+            "Zara",
+            "Boris",
+            "Carla",
+            "Dieter",
+            "Elena",
+            "Felix",
+            "Gloria",
+            "Hugo",
+            "Irene",
+            "Jorge",
+            "Keira",
+            "Ludwig",
+            "Maria",
+            "Niklas",
+            "Olga",
+            "Pablo",
+            "Quinn",
+            "Renata",
+            "Stefan",
+            "Tanya",
+            "Umberto",
+            "Vera",
+            "Walter",
+            "Xena",
+            "Yusuf",
         ];
         let profiles: Vec<PoiProfile> = names
             .iter()
@@ -451,13 +530,26 @@ mod tests {
         let m = match_profiles(&a, &b).expect("profiles should match");
         // Variant contribution should increase confidence by at most +0.3.
         let delta = m.confidence - baseline.confidence;
-        assert!(delta <= 0.300_001, "variant contribution should be capped; delta={delta}");
+        assert!(
+            delta <= 0.300_001,
+            "variant contribution should be capped; delta={delta}"
+        );
     }
 
     #[test]
     fn test_match_identical_profiles_mismatched_emails_penalized() {
-        let a = make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn"));
-        let b = make_poi("p2", "Ahmed Ben Ali", "Foxconn Tunisia", Some("different@foxconn.tn"));
+        let a = make_poi(
+            "p1",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("ahmed@foxconn.tn"),
+        );
+        let b = make_poi(
+            "p2",
+            "Ahmed Ben Ali",
+            "Foxconn Tunisia",
+            Some("different@foxconn.tn"),
+        );
         let m = match_profiles(&a, &b).expect("still similar enough to produce a candidate");
         assert!(m.match_reasons.contains(&"email_mismatch".to_string()));
         assert!(m.confidence < 0.8);
@@ -466,8 +558,18 @@ mod tests {
     #[test]
     fn test_resolve_batch_threshold_above_one_no_merges() {
         let profiles = vec![
-            make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn")),
-            make_poi("p2", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn")),
+            make_poi(
+                "p1",
+                "Ahmed Ben Ali",
+                "Foxconn Tunisia",
+                Some("ahmed@foxconn.tn"),
+            ),
+            make_poi(
+                "p2",
+                "Ahmed Ben Ali",
+                "Foxconn Tunisia",
+                Some("ahmed@foxconn.tn"),
+            ),
         ];
         let clusters = resolve_batch(&profiles, 1.1);
         assert_eq!(clusters.len(), 2);
@@ -476,8 +578,18 @@ mod tests {
     #[test]
     fn test_resolve_batch_threshold_below_zero_merges_all_candidates() {
         let profiles = vec![
-            make_poi("p1", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn")),
-            make_poi("p2", "Ahmed Ben Ali", "Foxconn Tunisia", Some("ahmed@foxconn.tn")),
+            make_poi(
+                "p1",
+                "Ahmed Ben Ali",
+                "Foxconn Tunisia",
+                Some("ahmed@foxconn.tn"),
+            ),
+            make_poi(
+                "p2",
+                "Ahmed Ben Ali",
+                "Foxconn Tunisia",
+                Some("ahmed@foxconn.tn"),
+            ),
         ];
         let clusters = resolve_batch(&profiles, -0.1);
         assert_eq!(clusters.len(), 1);
@@ -530,7 +642,10 @@ mod tests {
     fn test_resolve_batch_empty_input_returns_empty_vec() {
         // resolve_batch([]) must return an empty cluster vec, not panic
         let clusters = resolve_batch(&[], 0.5);
-        assert!(clusters.is_empty(), "resolve_batch([]) must return empty vec");
+        assert!(
+            clusters.is_empty(),
+            "resolve_batch([]) must return empty vec"
+        );
     }
 
     // ── B288: boundary condition tests ──
@@ -556,7 +671,7 @@ mod tests {
         // Use profiles that match below threshold → should NOT merge
         let a = make_poi("p1", "Ahmed Ben Ali", "Foxconn", None); // no email
         let b = make_poi("p2", "Boris Petrov", "Foxconn", None); // completely different name
-        // With threshold 0.99, no match should be above it → 2 clusters
+                                                                 // With threshold 0.99, no match should be above it → 2 clusters
         let clusters = resolve_batch(&[a, b], 0.99);
         assert_eq!(
             clusters.len(),
@@ -571,10 +686,10 @@ mod tests {
         let dup_person1 = make_poi("dup123", "Alice Smith", "OrgA", Some("alice1@example.com"));
         let mut dup_person2 = make_poi("dup123", "Alice Jones", "OrgB", Some("alice2@example.com"));
         let unique_person = make_poi("unique456", "Bob Brown", "OrgC", Some("bob@example.com"));
-        
+
         // Make sure dup_person2 has different name to avoid natural matching
         dup_person2.name = "Completely Different Name".to_string();
-        
+
         let batch = vec![dup_person1, dup_person2, unique_person];
         // Use threshold that would NOT match them by name (0.99999)
         let clusters = resolve_batch(&batch, 0.99999);

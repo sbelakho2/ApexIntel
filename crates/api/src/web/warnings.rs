@@ -3,22 +3,24 @@
 //! Covers: warning list with filters/pagination, warning detail with
 //! evidence timeline and acknowledgment status.
 
-use std::sync::Arc;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use askama::Template;
 use axum::{
+    extract::Form,
     extract::Path,
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Redirect},
     Extension,
 };
 use serde::Deserialize;
+use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
 
-use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 
 // ─── Query params ───────────────────────────────────────────────────────────
 
@@ -48,8 +50,8 @@ pub struct WarningTrendDay {
     pub low: i64,
     pub total: i64,
     // precomputed for div-based chart
-    pub bar_h: i64,        // 0-100 pct of max-day total
-    pub critical_h: i64,   // 0-100 pct of this day's total
+    pub bar_h: i64,      // 0-100 pct of max-day total
+    pub critical_h: i64, // 0-100 pct of this day's total
     pub high_h: i64,
     pub medium_h: i64,
     pub low_h: i64,
@@ -80,12 +82,83 @@ pub struct EvidenceItem {
     pub found_at: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct WarningFilterChip {
+    pub label: String,
+    pub href: String,
+    pub active: bool,
+}
+
+fn url_encode_component(input: &str) -> String {
+    byte_serialize(input.as_bytes()).collect::<String>()
+}
+
+fn build_warnings_href(
+    severity: Option<&str>,
+    status: Option<&str>,
+    warning_type: Option<&str>,
+    region: Option<&str>,
+    q: Option<&str>,
+    sort: Option<&str>,
+    dir: Option<&str>,
+) -> String {
+    let mut params: Vec<String> = Vec::new();
+    for (k, v) in [
+        ("severity", severity),
+        ("status", status),
+        ("warning_type", warning_type),
+        ("region", region),
+        ("q", q),
+        ("sort", sort),
+        ("dir", dir),
+    ] {
+        if let Some(v) = v {
+            let v = v.trim();
+            if !v.is_empty() {
+                params.push(format!("{}={}", k, url_encode_component(v)));
+            }
+        }
+    }
+    if params.is_empty() {
+        "/warnings".to_string()
+    } else {
+        format!("/warnings?{}", params.join("&"))
+    }
+}
+
 /// Related entity link shown on warning detail.
 #[derive(Clone, Debug)]
 pub struct RelatedEntity {
-    pub kind: String,   // "company" | "person"
+    pub kind: String, // "company" | "person"
     pub id: String,
     pub name: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AnalystNoteItem {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub visibility: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct WarningReviewForm {
+    pub note: Option<String>,
+    pub review_outcome: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct WarningNoteForm {
+    pub body: String,
+    pub tags: Option<String>,
+    pub visibility: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct WarningDetailQuery {
+    pub briefing: Option<bool>,
 }
 
 // ─── Templates ──────────────────────────────────────────────────────────────
@@ -116,6 +189,11 @@ pub struct WarningsListPage {
     pub low_count: i64,
     pub warning_trend: Vec<WarningTrendDay>,
     pub active_status: String,
+    pub severity_filters: Vec<WarningFilterChip>,
+    pub status_filters: Vec<WarningFilterChip>,
+    pub active_filters: i64,
+    pub reset_href: String,
+    pub page_base_href: String,
 }
 
 /// HTMX partial — just the results fragment (no base layout).
@@ -139,6 +217,11 @@ pub struct WarningsListPartial {
     pub low_count: i64,
     pub warning_trend: Vec<WarningTrendDay>,
     pub active_status: String,
+    pub severity_filters: Vec<WarningFilterChip>,
+    pub status_filters: Vec<WarningFilterChip>,
+    pub active_filters: i64,
+    pub reset_href: String,
+    pub page_base_href: String,
 }
 
 #[derive(Template)]
@@ -149,6 +232,7 @@ pub struct WarningDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub briefing_mode: bool,
     // detail-specific
     pub id: String,
     pub title: String,
@@ -164,9 +248,21 @@ pub struct WarningDetailPage {
     pub acknowledged: bool,
     pub acknowledged_by: Option<String>,
     pub acknowledged_at: Option<String>,
+    pub acknowledged_note: Option<String>,
+    pub review_outcome: Option<String>,
     pub evidence: Vec<EvidenceItem>,
     pub related_entities: Vec<RelatedEntity>,
+    pub annotations: Vec<AnalystNoteItem>,
     pub ai_analysis: Option<String>,
+}
+
+fn parse_tags(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -186,6 +282,124 @@ pub async fn list_warnings(
     let sort_field = params.sort.clone().unwrap_or_else(|| "created_at".into());
     let sort_dir_str = params.dir.clone().unwrap_or_else(|| "desc".into());
 
+    let severity_values = ["", "critical", "high", "medium", "low"];
+    let status_values = ["", "active", "acknowledged", "resolved"];
+
+    let severity_filters = severity_values
+        .iter()
+        .map(|value| WarningFilterChip {
+            label: if value.is_empty() { "All" } else { value }.to_string(),
+            href: build_warnings_href(
+                if value.is_empty() { None } else { Some(*value) },
+                if active_status.is_empty() {
+                    None
+                } else {
+                    Some(active_status.as_str())
+                },
+                if active_type.is_empty() {
+                    None
+                } else {
+                    Some(active_type.as_str())
+                },
+                if active_region.is_empty() {
+                    None
+                } else {
+                    Some(active_region.as_str())
+                },
+                if search_query.is_empty() {
+                    None
+                } else {
+                    Some(search_query.as_str())
+                },
+                Some(sort_field.as_str()),
+                Some(sort_dir_str.as_str()),
+            ),
+            active: active_severity == *value,
+        })
+        .collect::<Vec<_>>();
+
+    let status_filters = status_values
+        .iter()
+        .map(|value| WarningFilterChip {
+            label: if value.is_empty() { "All" } else { value }.to_string(),
+            href: build_warnings_href(
+                if active_severity.is_empty() {
+                    None
+                } else {
+                    Some(active_severity.as_str())
+                },
+                if value.is_empty() { None } else { Some(*value) },
+                if active_type.is_empty() {
+                    None
+                } else {
+                    Some(active_type.as_str())
+                },
+                if active_region.is_empty() {
+                    None
+                } else {
+                    Some(active_region.as_str())
+                },
+                if search_query.is_empty() {
+                    None
+                } else {
+                    Some(search_query.as_str())
+                },
+                Some(sort_field.as_str()),
+                Some(sort_dir_str.as_str()),
+            ),
+            active: active_status == *value,
+        })
+        .collect::<Vec<_>>();
+
+    let active_filters = i64::from(!active_severity.is_empty())
+        + i64::from(!active_status.is_empty())
+        + i64::from(!search_query.is_empty())
+        + i64::from(!active_type.is_empty())
+        + i64::from(!active_region.is_empty());
+    let reset_href = build_warnings_href(
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(sort_field.as_str()),
+        Some(sort_dir_str.as_str()),
+    );
+    let current_filters_href = build_warnings_href(
+        if active_severity.is_empty() {
+            None
+        } else {
+            Some(active_severity.as_str())
+        },
+        if active_status.is_empty() {
+            None
+        } else {
+            Some(active_status.as_str())
+        },
+        if active_type.is_empty() {
+            None
+        } else {
+            Some(active_type.as_str())
+        },
+        if active_region.is_empty() {
+            None
+        } else {
+            Some(active_region.as_str())
+        },
+        if search_query.is_empty() {
+            None
+        } else {
+            Some(search_query.as_str())
+        },
+        Some(sort_field.as_str()),
+        Some(sort_dir_str.as_str()),
+    );
+    let page_base_href = if current_filters_href.contains('?') {
+        format!("{}&", current_filters_href)
+    } else {
+        format!("{}?", current_filters_href)
+    };
+
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(25).clamp(1, 100);
     let offset = (page - 1) * per_page;
@@ -197,11 +411,27 @@ pub async fn list_warnings(
     };
 
     let filters = WarningListFilters {
-        regions: if active_region.is_empty() { vec![] } else { vec![active_region.clone()] },
-        severities: if active_severity.is_empty() { vec![] } else { vec![active_severity.clone()] },
-        warning_types: if active_type.is_empty() { vec![] } else { vec![active_type.clone()] },
+        regions: if active_region.is_empty() {
+            vec![]
+        } else {
+            vec![active_region.clone()]
+        },
+        severities: if active_severity.is_empty() {
+            vec![]
+        } else {
+            vec![active_severity.clone()]
+        },
+        warning_types: if active_type.is_empty() {
+            vec![]
+        } else {
+            vec![active_type.clone()]
+        },
         acknowledged: status_ack,
-        search: if search_query.is_empty() { None } else { Some(search_query.clone()) },
+        search: if search_query.is_empty() {
+            None
+        } else {
+            Some(search_query.clone())
+        },
         ..Default::default()
     };
 
@@ -216,20 +446,31 @@ pub async fn list_warnings(
         tracing::error!("Failed to count warnings: {e}");
         0
     });
-    let total_pages = if total == 0 { 0 } else { (total + per_page - 1) / per_page };
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + per_page - 1) / per_page
+    };
 
-    let warning_rows = store.list_warnings(&filters, order_by, desc, per_page, offset).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to list warnings: {e}");
-        vec![]
-    });
+    let warning_rows = store
+        .list_warnings(&filters, order_by, desc, per_page, offset)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to list warnings: {e}");
+            vec![]
+        });
 
-    let all_warning_rows = store.list_warnings(&filters, order_by, desc, 1500, 0).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to list warning aggregates: {e}");
-        vec![]
-    });
+    let all_warning_rows = store
+        .list_warnings(&filters, order_by, desc, 1500, 0)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to list warning aggregates: {e}");
+            vec![]
+        });
 
-    let warnings: Vec<WarningListItem> = warning_rows.iter().map(|w| {
-        WarningListItem {
+    let warnings: Vec<WarningListItem> = warning_rows
+        .iter()
+        .map(|w| WarningListItem {
             id: w.id.to_string(),
             title: w.title.clone(),
             severity: w.severity.clone(),
@@ -240,33 +481,50 @@ pub async fn list_warnings(
             confidence_pct: confidence_to_pct(w.confidence.unwrap_or(0.0)),
             created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
             acknowledged: w.acknowledged,
-        }
-    }).collect();
+        })
+        .collect();
 
-    let critical_count = all_warning_rows.iter().filter(|w| w.severity == "critical" && !w.acknowledged).count() as i64;
-    let high_count = all_warning_rows.iter().filter(|w| w.severity == "high" && !w.acknowledged).count() as i64;
-    let medium_count = all_warning_rows.iter().filter(|w| w.severity == "medium" && !w.acknowledged).count() as i64;
-    let low_count = all_warning_rows.iter().filter(|w| w.severity == "low" && !w.acknowledged).count() as i64;
+    let critical_count = all_warning_rows
+        .iter()
+        .filter(|w| w.severity == "critical" && !w.acknowledged)
+        .count() as i64;
+    let high_count = all_warning_rows
+        .iter()
+        .filter(|w| w.severity == "high" && !w.acknowledged)
+        .count() as i64;
+    let medium_count = all_warning_rows
+        .iter()
+        .filter(|w| w.severity == "medium" && !w.acknowledged)
+        .count() as i64;
+    let low_count = all_warning_rows
+        .iter()
+        .filter(|w| w.severity == "low" && !w.acknowledged)
+        .count() as i64;
 
     // Generate real 30-day trend data from warnings in DB.
     let warning_trend: Vec<WarningTrendDay> = {
         use chrono::{Duration, Utc};
         let mut by_day: BTreeMap<String, WarningTrendDay> = BTreeMap::new();
         for i in 0..30 {
-            let label = (Utc::now() - Duration::days(29 - i)).format("%b %d").to_string();
-            by_day.insert(label.clone(), WarningTrendDay {
-                date_label: label,
-                critical: 0,
-                high: 0,
-                medium: 0,
-                low: 0,
-                total: 0,
-                bar_h: 0,
-                critical_h: 0,
-                high_h: 0,
-                medium_h: 0,
-                low_h: 0,
-            });
+            let label = (Utc::now() - Duration::days(29 - i))
+                .format("%b %d")
+                .to_string();
+            by_day.insert(
+                label.clone(),
+                WarningTrendDay {
+                    date_label: label,
+                    critical: 0,
+                    high: 0,
+                    medium: 0,
+                    low: 0,
+                    total: 0,
+                    bar_h: 0,
+                    critical_h: 0,
+                    high_h: 0,
+                    medium_h: 0,
+                    low_h: 0,
+                },
+            );
         }
         for w in &all_warning_rows {
             let key = w.ts_utc.format("%b %d").to_string();
@@ -280,7 +538,12 @@ pub async fn list_warnings(
             }
         }
         let mut trend: Vec<WarningTrendDay> = by_day.into_values().collect();
-        let max_total = trend.iter().map(|d| d.critical + d.high + d.medium + d.low).max().unwrap_or(1).max(1);
+        let max_total = trend
+            .iter()
+            .map(|d| d.critical + d.high + d.medium + d.low)
+            .max()
+            .unwrap_or(1)
+            .max(1);
         for day in &mut trend {
             day.total = day.critical + day.high + day.medium + day.low;
             day.bar_h = day.total * 100 / max_total;
@@ -294,7 +557,13 @@ pub async fn list_warnings(
         trend
     };
 
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/warnings", unack);
 
     let tpl = WarningsListPage {
@@ -319,6 +588,11 @@ pub async fn list_warnings(
         low_count,
         warning_trend,
         active_status,
+        severity_filters,
+        status_filters,
+        active_filters,
+        reset_href,
+        page_base_href,
     };
 
     if is_htmx_request(&headers) {
@@ -340,6 +614,11 @@ pub async fn list_warnings(
             low_count: tpl.low_count,
             warning_trend: tpl.warning_trend.clone(),
             active_status: tpl.active_status.clone(),
+            severity_filters: tpl.severity_filters.clone(),
+            status_filters: tpl.status_filters.clone(),
+            active_filters: tpl.active_filters,
+            reset_href: tpl.reset_href.clone(),
+            page_base_href: tpl.page_base_href.clone(),
         };
         partial.into_response()
     } else {
@@ -361,44 +640,83 @@ pub async fn get_warning(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<WarningDetailQuery>,
 ) -> impl IntoResponse {
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/warnings", unack);
 
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => {
-            return super::errors::not_found_with_context(&ctx.username, "/warnings", ctx.warning_count);
+            return super::errors::not_found_with_context(
+                &ctx.username,
+                "/warnings",
+                ctx.warning_count,
+            );
         }
     };
 
     let warning = match store.get_warning(uuid).await {
         Ok(Some(w)) => w,
         Ok(None) => {
-            return super::errors::not_found_with_context(&ctx.username, "/warnings", ctx.warning_count);
+            return super::errors::not_found_with_context(
+                &ctx.username,
+                "/warnings",
+                ctx.warning_count,
+            );
         }
         Err(e) => {
             tracing::error!("Failed to fetch warning {id}: {e}");
-            return super::errors::not_found_with_context(&ctx.username, "/warnings", ctx.warning_count);
+            return super::errors::not_found_with_context(
+                &ctx.username,
+                "/warnings",
+                ctx.warning_count,
+            );
         }
     };
 
     // Build evidence from source URLs
-    let evidence: Vec<EvidenceItem> = warning.source_urls.as_deref().unwrap_or(&[]).iter().enumerate().map(|(i, url)| {
-        EvidenceItem {
+    let evidence: Vec<EvidenceItem> = warning
+        .source_urls
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .map(|(i, url)| EvidenceItem {
             id: i.to_string(),
             source: url.split('/').nth(2).unwrap_or("unknown").to_string(),
             url: url.clone(),
             snippet: String::new(),
             found_at: warning.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
-        }
-    }).collect();
+        })
+        .collect();
+
+    let annotations = store
+        .list_annotations(&session.username, Some("warning"), Some(&id))
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|annotation| AnalystNoteItem {
+            author: annotation.user_id,
+            body: annotation.body,
+            created_at: annotation.updated_at.format("%Y-%m-%d %H:%M").to_string(),
+            visibility: annotation.visibility,
+            tags: annotation.tags,
+        })
+        .collect();
 
     let tpl = WarningDetailPage {
         current_path: ctx.current_path,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        briefing_mode: query.briefing.unwrap_or(false),
         id: warning.id.to_string(),
         title: warning.title.clone(),
         severity: warning.severity.clone(),
@@ -408,13 +726,24 @@ pub async fn get_warning(
         company_id: String::new(),
         region: warning.region.clone().unwrap_or_default(),
         confidence: warning.confidence.unwrap_or(0.0),
-        created_at: warning.created_at.map(|d| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default(),
-        updated_at: warning.updated_at.map(|d| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default(),
+        created_at: warning
+            .created_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default(),
+        updated_at: warning
+            .updated_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default(),
         acknowledged: warning.acknowledged,
         acknowledged_by: warning.acknowledged_by.clone(),
-        acknowledged_at: warning.acknowledged_at.map(|d| d.format("%Y-%m-%d %H:%M").to_string()),
+        acknowledged_at: warning
+            .acknowledged_at
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string()),
+        acknowledged_note: warning.acknowledged_note.clone(),
+        review_outcome: warning.review_outcome.clone(),
         evidence,
         related_entities: vec![],
+        annotations,
         ai_analysis: None,
     };
 
@@ -431,12 +760,32 @@ pub async fn acknowledge_warning_html(
 ) -> impl IntoResponse {
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, Html("Invalid warning ID".to_string())).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid warning ID".to_string()),
+            )
+                .into_response()
+        }
     };
 
-    let result = store.acknowledge_warning(uuid, &session.username, None).await;
+    let result = store
+        .acknowledge_warning(uuid, &session.username, None, None)
+        .await;
     match result {
-        Ok(Some(true)) => {
+        Ok(apex_store::postgres::AcknowledgeWarningResult::Acknowledged)
+        | Ok(apex_store::postgres::AcknowledgeWarningResult::ReviewedExisting) => {
+            let _ = store
+                .create_notification(
+                    &session.username,
+                    "warning_review",
+                    "Warning acknowledged",
+                    &format!("Warning {} was acknowledged by {}.", id, session.username),
+                    Some("warning"),
+                    Some(&id),
+                    Some(&format!("/warnings/{id}")),
+                )
+                .await;
             Html(format!(
                 r#"<div class="apex-card p-4 border-green-500/30 bg-green-500/5">
                      <p class="text-sm font-bold text-green-600">Warning acknowledged by {}</p>
@@ -445,10 +794,12 @@ pub async fn acknowledge_warning_html(
                 session.username
             )).into_response()
         }
-        Ok(Some(false)) => {
+        Ok(apex_store::postgres::AcknowledgeWarningResult::AlreadyAcknowledged) => {
             Html(r#"<div class="apex-card p-4"><p class="text-sm text-muted-foreground">Already acknowledged</p></div>"#.to_string()).into_response()
         }
-        Ok(None) => (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response(),
+        Ok(apex_store::postgres::AcknowledgeWarningResult::NotFound) => {
+            (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response()
+        }
         Err(e) => {
             tracing::error!("Failed to acknowledge warning {id}: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Html("Failed to acknowledge warning".to_string())).into_response()
@@ -461,10 +812,13 @@ pub async fn unread_count(
     _session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let count = store.count_warnings(&WarningListFilters {
-        acknowledged: Some(false),
-        ..Default::default()
-    }).await.unwrap_or(0);
+    let count = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     Html(format!("{}", count))
 }
 /// POST /warnings/:id/analyze — trigger AI analysis, return rendered panel.
@@ -475,7 +829,13 @@ pub async fn analyze_warning_html(
 ) -> impl IntoResponse {
     let uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, Html("Invalid warning ID".to_string())).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid warning ID".to_string()),
+            )
+                .into_response()
+        }
     };
 
     // Check the warning exists
@@ -502,7 +862,131 @@ pub async fn analyze_warning_html(
         Ok(None) => (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response(),
         Err(e) => {
             tracing::error!("Failed to fetch warning for analysis {id}: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Html("Failed to start analysis".to_string())).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to start analysis".to_string()),
+            )
+                .into_response()
         }
     }
+}
+
+pub async fn review_warning_html(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Path(id): Path<String>,
+    Form(form): Form<WarningReviewForm>,
+) -> impl IntoResponse {
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid warning ID".to_string()),
+            )
+                .into_response()
+        }
+    };
+
+    let note = form
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let review_outcome = form
+        .review_outcome
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match store
+        .acknowledge_warning(uuid, &session.username, note, review_outcome)
+        .await
+    {
+        Ok(apex_store::postgres::AcknowledgeWarningResult::Acknowledged)
+        | Ok(apex_store::postgres::AcknowledgeWarningResult::ReviewedExisting) => {
+            let detail = match (review_outcome, note) {
+                (Some(outcome), Some(note)) => format!("Marked as {outcome} with note: {note}"),
+                (Some(outcome), None) => format!("Marked as {outcome}"),
+                (None, Some(note)) => format!("Added resolution note: {note}"),
+                (None, None) => "Reviewed warning".to_string(),
+            };
+            let _ = store
+                .create_notification(
+                    &session.username,
+                    "warning_review",
+                    "Warning review recorded",
+                    &detail,
+                    Some("warning"),
+                    Some(&id),
+                    Some(&format!("/warnings/{id}")),
+                )
+                .await;
+            Html(format!(
+                r#"<div class="apex-card p-4 border-primary/30 bg-primary/5">
+                     <p class="text-sm font-bold text-primary">Review saved</p>
+                     <p class="mt-1 text-[10px] text-muted-foreground">{detail}</p>
+                   </div>"#
+            ))
+            .into_response()
+        }
+        Ok(apex_store::postgres::AcknowledgeWarningResult::AlreadyAcknowledged) => Html(
+            r#"<div class="apex-card p-4"><p class="text-sm text-muted-foreground">Warning already acknowledged; note not changed.</p></div>"#.to_string(),
+        )
+        .into_response(),
+        Ok(apex_store::postgres::AcknowledgeWarningResult::NotFound) => {
+            (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response()
+        }
+        Err(error) => {
+            tracing::error!(warning_id = %id, error = %error, "failed to save warning review");
+            (StatusCode::INTERNAL_SERVER_ERROR, Html("Failed to save review".to_string())).into_response()
+        }
+    }
+}
+
+pub async fn create_warning_note(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Path(id): Path<String>,
+    Form(form): Form<WarningNoteForm>,
+) -> impl IntoResponse {
+    let body = form.body.trim();
+    if body.len() < 3 {
+        return Redirect::to(&format!("/warnings/{id}")).into_response();
+    }
+
+    let tags = parse_tags(form.tags.as_deref());
+    let visibility = form.visibility.as_deref().unwrap_or("team");
+
+    match store
+        .upsert_annotation(
+            None,
+            &session.username,
+            "warning",
+            &id,
+            body,
+            &tags,
+            visibility,
+        )
+        .await
+    {
+        Ok(_) => {
+            let _ = store
+                .create_notification(
+                    &session.username,
+                    "annotation",
+                    "Warning note added",
+                    body,
+                    Some("warning"),
+                    Some(&id),
+                    Some(&format!("/warnings/{id}")),
+                )
+                .await;
+        }
+        Err(error) => {
+            tracing::error!(warning_id = %id, error = %error, "failed to create warning note");
+        }
+    }
+
+    axum::response::Redirect::to(&format!("/warnings/{id}")).into_response()
 }

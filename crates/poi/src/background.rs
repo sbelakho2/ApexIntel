@@ -44,9 +44,8 @@ static RE_DEGREE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Captures a 4-digit graduation/class year (1960-2030).
-static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(19[6-9]\d|20[0-3]\d)\b").unwrap()
-});
+static RE_YEAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(19[6-9]\d|20[0-3]\d)\b").unwrap());
 
 /// Flexible date: DD/MM/YYYY, MM-DD-YYYY, "Month DD, YYYY", "DD Month YYYY".
 static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
@@ -120,11 +119,21 @@ impl PoiBackground {
     fn compute_completeness(&self) -> f64 {
         let sections = 5.0_f64;
         let mut filled = 0.0_f64;
-        if !self.education_history.is_empty() { filled += 1.0; }
-        if !self.work_history.is_empty() { filled += 1.0; }
-        if !self.public_records.is_empty() { filled += 1.0; }
-        if !self.known_associates.is_empty() { filled += 1.0; }
-        if self.narrative.is_some() { filled += 1.0; }
+        if !self.education_history.is_empty() {
+            filled += 1.0;
+        }
+        if !self.work_history.is_empty() {
+            filled += 1.0;
+        }
+        if !self.public_records.is_empty() {
+            filled += 1.0;
+        }
+        if !self.known_associates.is_empty() {
+            filled += 1.0;
+        }
+        if self.narrative.is_some() {
+            filled += 1.0;
+        }
         filled / sections
     }
 }
@@ -159,7 +168,15 @@ impl<'a> BackgroundBuilder<'a> {
 
         // LLM enrichment
         let (narrative, risk_flags) = if let Some(ref llm) = self.llm {
-            match self.generate_narrative_and_flags(llm.as_ref(), &education_history, &public_records, &known_associates).await {
+            match self
+                .generate_narrative_and_flags(
+                    llm.as_ref(),
+                    &education_history,
+                    &public_records,
+                    &known_associates,
+                )
+                .await
+            {
                 Ok(result) => result,
                 Err(e) => {
                     warn!(person=%self.profile.name, error=%e, "Background LLM enrichment failed");
@@ -200,15 +217,19 @@ impl<'a> BackgroundBuilder<'a> {
                 let summary = &a.content_summary;
 
                 // Parse degree + optional field.
-                let (degree, field) = RE_DEGREE.captures(summary)
-                    .map(|c| (
-                        Some(c.get(1).unwrap().as_str().to_string()),
-                        c.get(2).map(|m| m.as_str().trim().to_string()),
-                    ))
+                let (degree, field) = RE_DEGREE
+                    .captures(summary)
+                    .map(|c| {
+                        (
+                            Some(c.get(1).unwrap().as_str().to_string()),
+                            c.get(2).map(|m| m.as_str().trim().to_string()),
+                        )
+                    })
                     .unwrap_or((None, None));
 
                 // Parse any 4-digit year present in the summary.
-                let year_graduation = RE_YEAR.find(summary)
+                let year_graduation = RE_YEAR
+                    .find(summary)
                     .and_then(|m| m.as_str().parse::<u32>().ok())
                     .filter(|&y| y >= 1960 && y <= 2030);
 
@@ -237,7 +258,8 @@ impl<'a> BackgroundBuilder<'a> {
             })
             .map(|a| {
                 // Parse a date string from the content summary.
-                let date_str = RE_DATE.find(&a.content_summary)
+                let date_str = RE_DATE
+                    .find(&a.content_summary)
                     .map(|m| m.as_str().to_string());
 
                 PublicRecord {
@@ -298,7 +320,11 @@ impl<'a> BackgroundBuilder<'a> {
         let edu_text = if education.is_empty() {
             "No education records on file.".to_string()
         } else {
-            education.iter().map(|e| format!("- {}", e.institution)).collect::<Vec<_>>().join("\n")
+            education
+                .iter()
+                .map(|e| format!("- {}", e.institution))
+                .collect::<Vec<_>>()
+                .join("\n")
         };
 
         let work_text = if self.profile.role_history.is_empty() {
@@ -362,8 +388,8 @@ impl<'a> BackgroundBuilder<'a> {
             .await
             .context("Background LLM call failed")?;
 
-        let parsed: serde_json::Value = serde_json::from_str(&json_str)
-            .context("Failed to parse LLM background JSON")?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_str).context("Failed to parse LLM background JSON")?;
 
         let narrative = parsed
             .get("narrative")
@@ -429,11 +455,14 @@ pub fn build_background_sync(profile: &PoiProfile) -> PoiBackground {
 mod tests {
     use super::*;
     use crate::model::{
-        InfluenceProfile, PoiArtifact, PoiProfile, PriorityVector, PsychProfile,
-        RoleFamily, RoleHistoryEntry,
+        InfluenceProfile, PoiArtifact, PoiProfile, PriorityVector, PsychProfile, RoleFamily,
+        RoleHistoryEntry,
     };
 
-    fn make_profile(artifacts: Vec<PoiArtifact>, role_history: Vec<RoleHistoryEntry>) -> PoiProfile {
+    fn make_profile(
+        artifacts: Vec<PoiArtifact>,
+        role_history: Vec<RoleHistoryEntry>,
+    ) -> PoiProfile {
         PoiProfile {
             person_id: "p-001".into(),
             name: "Alice Test".into(),

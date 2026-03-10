@@ -16,7 +16,20 @@
 {% endblock %}
 
 {% block content %}
+{% if briefing_mode %}
+<div class="mb-4 flex items-center justify-between gap-4 no-print">
+  <div>
+    <h1>POI Briefing</h1>
+    <p class="mt-2 text-sm text-muted-foreground">Linear dossier layout for print and PDF export.</p>
+  </div>
+  <div class="flex items-center gap-2">
+    <a href="/persons/{{ id }}" class="rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Interactive View</a>
+    <button type="button" onclick="window.print()" class="rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
+  </div>
+</div>
+{% else %}
 {% call m::page_header("POI Profile", "users", "Full POI profile, priority vector, and engagement guide.", "") %}
+{% endif %}
 
 <div class="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
   <span class="font-bold uppercase tracking-[0.1em]">ID:</span>
@@ -29,13 +42,16 @@
   <a href="#poi-profile" class="rounded-sm border border-border bg-secondary px-2 py-1 hover:text-foreground">POI Profile</a>
 </nav>
 
-<div class="space-y-6" id="poi-profile">
+<div class="briefing-page space-y-6" id="poi-profile">
   <div>
     <h1>{{ name }}</h1>
     <div class="mt-2 flex items-center gap-2">
       <span class="text-[11px] text-muted-foreground">{{ title }}</span>
       {% call m::region_badge(region) %}
       <span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ priority_tier }}</span>
+      {% if !briefing_mode %}
+      <a href="/persons/{{ id }}?briefing=true" class="no-print rounded-sm border border-border bg-secondary px-3 py-1 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing</a>
+      {% endif %}
     </div>
   </div>
 
@@ -59,20 +75,16 @@
     <p class="mt-3 text-[11px] font-bold tabular-nums">Overall: {{ priority_vector.overall }}</p>
   </div>
 
-  {% if !affiliations.is_empty() %}
-  <div class="apex-card">
-    <div class="border-b border-border px-4 py-3 flex items-center gap-4">
-      <span class="text-xs font-black uppercase tracking-[0.12em]">Affiliations</span>
+  {% if briefing_mode %}
+  <div class="apex-card page-break-before">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Affiliations</h2>
     </div>
     <div class="divide-y divide-border">
       {% for a in affiliations %}
       <div class="px-4 py-3 flex items-center justify-between">
         <div>
-          {% if a.company_id.is_empty() %}
           <span class="text-sm font-semibold">{{ a.company_name }}</span>
-          {% else %}
-          <a href="/companies/{{ a.company_id }}" class="text-sm font-semibold hover:underline">{{ a.company_name }}</a>
-          {% endif %}
           <span class="ml-2 text-[11px] text-muted-foreground">{{ a.role }}</span>
         </div>
         <span class="text-[10px] text-muted-foreground">{{ a.since }}{% if let Some(u) = a.until %} – {{ u }}{% endif %}</span>
@@ -80,21 +92,48 @@
       {% endfor %}
     </div>
   </div>
-  {% endif %}
 
-  {# ── HTMX Tab Section ── #}
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Role History</h2>
+    </div>
+    <div class="divide-y divide-border">
+      {% for rh in role_history %}
+      <div class="px-4 py-3">
+        <span class="text-sm font-semibold">{{ rh.role }}</span>
+        <span class="ml-2 text-[11px] text-muted-foreground">at {{ rh.company_name }}</span>
+        <p class="text-[10px] text-muted-foreground">{{ rh.start_date }}{% if let Some(end) = rh.end_date %} – {{ end }}{% else %} – present{% endif %}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Peers</h2>
+    </div>
+    <div class="divide-y divide-border">
+      {% for p in peers %}
+      <div class="px-4 py-3">
+        <span class="text-sm font-semibold">{{ p.name }}</span>
+        <span class="ml-2 text-[11px] text-muted-foreground">{{ p.role }} at {{ p.shared_company }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
   <div class="apex-card">
     <div class="border-b border-border px-4 py-3 flex items-center gap-4">
-      <button class="text-[10px] font-black uppercase tracking-[0.12em] text-foreground"
-              onclick="document.getElementById('person-tab-affiliations').classList.remove('hidden');document.getElementById('person-tab-history').classList.add('hidden');document.getElementById('person-tab-peers').classList.add('hidden');">
+      <button id="person-tab-btn-affiliations" class="text-[10px] font-black uppercase tracking-[0.12em] text-foreground"
+              onclick="switchPersonTab('affiliations')">
         Affiliations
       </button>
-      <button class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
-              onclick="document.getElementById('person-tab-history').classList.remove('hidden');document.getElementById('person-tab-affiliations').classList.add('hidden');document.getElementById('person-tab-peers').classList.add('hidden');">
+      <button id="person-tab-btn-history" class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+              onclick="switchPersonTab('history')">
         Role History
       </button>
-      <button class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
-              onclick="document.getElementById('person-tab-peers').classList.remove('hidden');document.getElementById('person-tab-affiliations').classList.add('hidden');document.getElementById('person-tab-history').classList.add('hidden');">
+      <button id="person-tab-btn-peers" class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
+              onclick="switchPersonTab('peers')">
         Peers
       </button>
     </div>
@@ -134,6 +173,7 @@
       {% endfor %}
     </div>
   </div>
+  {% endif %}
 
   {% if !recent_events.is_empty() %}
   <div class="apex-card">
@@ -152,4 +192,29 @@
   </div>
   {% endif %}
 </div>
+
+{% if !briefing_mode %}
+<script>
+  function switchPersonTab(tab) {
+    var tabs = {
+      affiliations: document.getElementById('person-tab-affiliations'),
+      history: document.getElementById('person-tab-history'),
+      peers: document.getElementById('person-tab-peers')
+    };
+    var buttons = {
+      affiliations: document.getElementById('person-tab-btn-affiliations'),
+      history: document.getElementById('person-tab-btn-history'),
+      peers: document.getElementById('person-tab-btn-peers')
+    };
+
+    Object.keys(tabs).forEach(function (k) {
+      if (!tabs[k] || !buttons[k]) return;
+      var active = k === tab;
+      tabs[k].classList.toggle('hidden', !active);
+      buttons[k].classList.toggle('text-foreground', active);
+      buttons[k].classList.toggle('text-muted-foreground', !active);
+    });
+  }
+</script>
+{% endif %}
 {% endblock %}

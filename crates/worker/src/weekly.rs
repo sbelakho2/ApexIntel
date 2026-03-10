@@ -198,10 +198,7 @@ pub fn evaluate_promotion(recipe: &StagedRecipe, policy: &PromotionPolicy) -> Pr
 
     if recipe.recall < policy.min_recall {
         return PromotionDecision::Reject {
-            reason: format!(
-                "recall {:.2} < {:.2}",
-                recipe.recall, policy.min_recall
-            ),
+            reason: format!("recall {:.2} < {:.2}", recipe.recall, policy.min_recall),
         };
     }
 
@@ -424,9 +421,7 @@ impl MemoInputs {
                 self.period_start.format("%Y-%m-%dT%H:%M:%SZ")
             ));
         }
-        if !(0.0..=1.0).contains(&self.pipeline_health_pct)
-            || self.pipeline_health_pct.is_nan()
-        {
+        if !(0.0..=1.0).contains(&self.pipeline_health_pct) || self.pipeline_health_pct.is_nan() {
             return Err(format!(
                 "pipeline_health_pct {} must be in [0.0, 1.0]",
                 self.pipeline_health_pct
@@ -589,7 +584,10 @@ fn build_recipe_section(inputs: &MemoInputs) -> String {
 }
 
 fn build_health_section(inputs: &MemoInputs) -> String {
-    let mut out = format!("Pipeline health: {:.0}%\n", inputs.pipeline_health_pct * 100.0);
+    let mut out = format!(
+        "Pipeline health: {:.0}%\n",
+        inputs.pipeline_health_pct * 100.0
+    );
     if !inputs.top_drift_features.is_empty() {
         out.push_str("\nDrifted features:\n");
         for (feat, score) in &inputs.top_drift_features {
@@ -654,10 +652,7 @@ impl WeeklyReport {
         } else {
             "PARTIAL FAILURE"
         };
-        format!(
-            "Weekly [{}]: {}/{} stages OK",
-            status, succeeded, total
-        )
+        format!("Weekly [{}]: {}/{} stages OK", status, succeeded, total)
     }
 
     /// Return structured audit log lines for all stages (B248).
@@ -670,7 +665,11 @@ impl WeeklyReport {
         lines.push(format!(
             "event=weekly_report started_at={} overall={}",
             self.started_at.format("%Y-%m-%dT%H:%M:%SZ"),
-            if self.overall_success { "success" } else { "failure" },
+            if self.overall_success {
+                "success"
+            } else {
+                "failure"
+            },
         ));
         for outcome in &self.stages {
             let status_str = match &outcome.run.status {
@@ -1183,6 +1182,22 @@ mod tests {
     }
 
     #[test]
+    fn test_keep_low_precision_without_declining_history() {
+        let recipe = ProductionRecipe {
+            recipe_id: "P005".to_string(),
+            promoted_at: utc(2025, 6, 1, 0, 0, 0),
+            weeks_in_production: 4,
+            precision_history: vec![0.0, 0.0],
+            recall_history: vec![],
+            false_positive_rate: 0.0,
+            alerts_fired_total: 0,
+        };
+        let policy = DeprecationPolicy::default();
+        let decision = evaluate_deprecation(&recipe, &policy);
+        assert_eq!(decision, DeprecationDecision::Keep);
+    }
+
+    #[test]
     fn test_deprecation_check_mixed() {
         let recipes = vec![
             sample_prod_healthy(),
@@ -1332,7 +1347,10 @@ mod tests {
     #[test]
     fn test_weekly_stage_as_str() {
         assert_eq!(WeeklyStage::PromotionBoard.as_str(), "promotion_board");
-        assert_eq!(WeeklyStage::RecipeDeprecation.as_str(), "recipe_deprecation");
+        assert_eq!(
+            WeeklyStage::RecipeDeprecation.as_str(),
+            "recipe_deprecation"
+        );
         assert_eq!(WeeklyStage::StrategyMemo.as_str(), "strategy_memo");
     }
 
@@ -1413,7 +1431,12 @@ mod tests {
 
         assert!(report.overall_success);
         assert_eq!(report.stages.len(), 3);
-        assert!(report.promotion_result.as_ref().unwrap().promoted.is_empty());
+        assert!(report
+            .promotion_result
+            .as_ref()
+            .unwrap()
+            .promoted
+            .is_empty());
     }
 
     #[test]
@@ -1525,12 +1548,34 @@ mod tests {
             &PromotionPolicy::default(),
             &DeprecationPolicy::default(),
         );
-        assert!(report.overall_success, "empty pipeline should still succeed");
-        assert_eq!(report.stages.len(), 3, "all three stages must run even with empty inputs");
-        assert!(report.promotion_result.as_ref().unwrap().promoted.is_empty());
+        assert!(
+            report.overall_success,
+            "empty pipeline should still succeed"
+        );
+        assert_eq!(
+            report.stages.len(),
+            3,
+            "all three stages must run even with empty inputs"
+        );
+        assert!(report
+            .promotion_result
+            .as_ref()
+            .unwrap()
+            .promoted
+            .is_empty());
         assert!(report.promotion_result.as_ref().unwrap().kept.is_empty());
-        assert!(report.promotion_result.as_ref().unwrap().rejected.is_empty());
-        assert!(report.deprecation_result.as_ref().unwrap().deprecated.is_empty());
+        assert!(report
+            .promotion_result
+            .as_ref()
+            .unwrap()
+            .rejected
+            .is_empty());
+        assert!(report
+            .deprecation_result
+            .as_ref()
+            .unwrap()
+            .deprecated
+            .is_empty());
         assert!(report.deprecation_result.as_ref().unwrap().kept.is_empty());
         assert!(report.memo.is_some(), "memo must always be generated");
     }
@@ -1597,10 +1642,7 @@ mod tests {
         let mut inputs = sample_memo_inputs();
         inputs.pipeline_health_pct = -0.1;
         let err = inputs.validate().unwrap_err();
-        assert!(
-            err.contains("pipeline_health_pct"),
-            "got: {err}"
-        );
+        assert!(err.contains("pipeline_health_pct"), "got: {err}");
     }
 
     #[test]
@@ -1624,10 +1666,7 @@ mod tests {
         let mut inputs = sample_memo_inputs();
         inputs.top_warnings[0].confidence = 1.5;
         let err = inputs.validate().unwrap_err();
-        assert!(
-            err.contains("confidence"),
-            "got: {err}"
-        );
+        assert!(err.contains("confidence"), "got: {err}");
     }
 
     #[test]
@@ -1643,10 +1682,7 @@ mod tests {
         let mut inputs = sample_memo_inputs();
         inputs.top_warnings[0].headline = String::new();
         let err = inputs.validate().unwrap_err();
-        assert!(
-            err.contains("headline"),
-            "got: {err}"
-        );
+        assert!(err.contains("headline"), "got: {err}");
     }
 
     #[test]
@@ -1672,7 +1708,11 @@ mod tests {
         );
         let lines = report.audit_lines();
         // Must have at least one line per stage plus a footer
-        assert!(lines.len() >= 4, "expected ≥4 audit lines, got {}", lines.len());
+        assert!(
+            lines.len() >= 4,
+            "expected ≥4 audit lines, got {}",
+            lines.len()
+        );
     }
 
     #[test]
@@ -1687,9 +1727,18 @@ mod tests {
         );
         let lines = report.audit_lines();
         let joined = lines.join("\n");
-        assert!(joined.contains("promotion_board"), "missing promotion_board stage");
-        assert!(joined.contains("recipe_deprecation"), "missing recipe_deprecation stage");
-        assert!(joined.contains("strategy_memo"), "missing strategy_memo stage");
+        assert!(
+            joined.contains("promotion_board"),
+            "missing promotion_board stage"
+        );
+        assert!(
+            joined.contains("recipe_deprecation"),
+            "missing recipe_deprecation stage"
+        );
+        assert!(
+            joined.contains("strategy_memo"),
+            "missing strategy_memo stage"
+        );
     }
 
     #[test]
@@ -1724,10 +1773,7 @@ mod tests {
         let lines = report.audit_lines();
         // Every line must be non-empty and contain at least one '='
         for line in &lines {
-            assert!(
-                !line.is_empty(),
-                "audit_lines must not emit blank lines"
-            );
+            assert!(!line.is_empty(), "audit_lines must not emit blank lines");
             assert!(
                 line.contains('='),
                 "audit line must use key=value format: {line}"
@@ -1772,8 +1818,16 @@ mod tests {
             &PromotionPolicy::default(),
             &DeprecationPolicy::default(),
         );
-        let ids1: Vec<_> = report1.stages.iter().map(|s| s.run.run_id.clone()).collect();
-        let ids2: Vec<_> = report2.stages.iter().map(|s| s.run.run_id.clone()).collect();
+        let ids1: Vec<_> = report1
+            .stages
+            .iter()
+            .map(|s| s.run.run_id.clone())
+            .collect();
+        let ids2: Vec<_> = report2
+            .stages
+            .iter()
+            .map(|s| s.run.run_id.clone())
+            .collect();
         // run_ids from two different invocations must all be different
         for id1 in &ids1 {
             assert!(
@@ -1822,10 +1876,19 @@ mod tests {
         assert!(json.contains("\"started_at\""), "missing started_at");
         assert!(json.contains("\"finished_at\""), "missing finished_at");
         assert!(json.contains("\"stages\""), "missing stages");
-        assert!(json.contains("\"overall_success\""), "missing overall_success");
+        assert!(
+            json.contains("\"overall_success\""),
+            "missing overall_success"
+        );
         // Optional output fields
-        assert!(json.contains("\"promotion_result\""), "missing promotion_result");
-        assert!(json.contains("\"deprecation_result\""), "missing deprecation_result");
+        assert!(
+            json.contains("\"promotion_result\""),
+            "missing promotion_result"
+        );
+        assert!(
+            json.contains("\"deprecation_result\""),
+            "missing deprecation_result"
+        );
         assert!(json.contains("\"memo\""), "missing memo");
     }
 
@@ -1844,8 +1907,14 @@ mod tests {
         assert_eq!(back.overall_success, report.overall_success);
         assert_eq!(back.stages.len(), report.stages.len());
         // Promotion/deprecation/memo presence preserved
-        assert_eq!(back.promotion_result.is_some(), report.promotion_result.is_some());
-        assert_eq!(back.deprecation_result.is_some(), report.deprecation_result.is_some());
+        assert_eq!(
+            back.promotion_result.is_some(),
+            report.promotion_result.is_some()
+        );
+        assert_eq!(
+            back.deprecation_result.is_some(),
+            report.deprecation_result.is_some()
+        );
         assert_eq!(back.memo.is_some(), report.memo.is_some());
     }
 
@@ -1895,4 +1964,3 @@ mod tests {
         assert!((back.precision - r.precision).abs() < 1e-9);
     }
 }
-

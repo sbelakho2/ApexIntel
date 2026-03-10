@@ -54,6 +54,8 @@
         color: node.color || NODE_COLORS[type] || "#888",
         x: Number.isFinite(Number(node.x)) ? Number(node.x) : undefined,
         y: Number.isFinite(Number(node.y)) ? Number(node.y) : undefined,
+        clusterKey: String(node.clusterKey || type),
+        activityDays: Number(node.activityDays || 3650),
         _index: index,
       };
       nodeMap[normalized.id] = normalized;
@@ -127,6 +129,8 @@
   function init() {
     const container = document.getElementById("graph-container");
     if (!container) return;
+    if (container.__graphInitialized) return;
+    container.__graphInitialized = true;
 
     const embeddedRaw = container.dataset.graphJson;
     if (embeddedRaw) {
@@ -151,18 +155,39 @@
   function initWithData(container, payload) {
     const all = normalizePayload(payload || {});
     let activeType = null;
+    let searchText = "";
+    let clusterMode = false;
+    let activityWindow = "all";
 
     const filterChips = Array.from(document.querySelectorAll(".graph-filter-chip"));
     const resetBtn = document.getElementById("graph-reset-filters");
+    const searchInput = document.getElementById("graph-search-input");
+    const activityFilter = document.getElementById("graph-activity-filter");
+    const clusterToggle = document.getElementById("graph-cluster-toggle");
+    const exportJsonBtn = document.getElementById("graph-export-json");
+    const exportSvgBtn = document.getElementById("graph-export-svg");
+    const visibleCountEl = document.getElementById("graph-visible-count");
 
     const rerender = function () {
-      const nodes = activeType
+      let nodes = activeType
         ? all.nodes.filter((node) => node.type === activeType)
         : all.nodes.slice();
+
+      if (searchText) {
+        const lowered = searchText.toLowerCase();
+        nodes = nodes.filter((node) => node.label.toLowerCase().includes(lowered) || node.id.toLowerCase().includes(lowered));
+      }
+
+      if (activityWindow !== "all") {
+        const maxDays = Number(activityWindow);
+        nodes = nodes.filter((node) => Number(node.activityDays || 3650) <= maxDays);
+      }
+
       const nodeSet = new Set(nodes.map((node) => node.id));
       const edges = all.edges.filter((edge) => nodeSet.has(edge.source) && nodeSet.has(edge.target));
+      if (visibleCountEl) visibleCountEl.textContent = "Visible: " + nodes.length;
       updateFilterUI(activeType);
-      render(container, nodes, edges);
+      render(container, nodes, edges, { clusterMode });
     };
 
     filterChips.forEach((chip) => {
@@ -177,16 +202,61 @@
     if (resetBtn) {
       resetBtn.addEventListener("click", function () {
         activeType = null;
+        searchText = "";
+        clusterMode = false;
+        activityWindow = "all";
+        if (searchInput) searchInput.value = "";
+        if (activityFilter) activityFilter.value = "all";
+        if (clusterToggle) clusterToggle.textContent = "Cluster by Type";
         updateSelectedPanel(null);
         rerender();
+      });
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("input", function () {
+        searchText = String(searchInput.value || "").trim();
+        rerender();
+      });
+    }
+
+    if (activityFilter) {
+      activityFilter.addEventListener("change", function () {
+        activityWindow = activityFilter.value || "all";
+        rerender();
+      });
+    }
+
+    if (clusterToggle) {
+      clusterToggle.addEventListener("click", function () {
+        clusterMode = !clusterMode;
+        clusterToggle.textContent = clusterMode ? "Clustered" : "Cluster by Type";
+        rerender();
+      });
+    }
+
+    if (exportJsonBtn) {
+      exportJsonBtn.addEventListener("click", function () {
+        const data = container.__graphExportData;
+        if (!data) return;
+        downloadText("graph-export.json", JSON.stringify(data, null, 2), "application/json");
+      });
+    }
+
+    if (exportSvgBtn) {
+      exportSvgBtn.addEventListener("click", function () {
+        const svg = container.querySelector("svg");
+        if (!svg) return;
+        downloadText("graph-export.svg", new XMLSerializer().serializeToString(svg), "image/svg+xml");
       });
     }
 
     rerender();
   }
 
-  function render(container, rawNodes, rawEdges) {
+  function render(container, rawNodes, rawEdges, options) {
     if (typeof container.__graphCleanup === "function") container.__graphCleanup();
+    const clusterMode = Boolean(options && options.clusterMode);
 
     container.innerHTML = "";
     const w = container.clientWidth || 800;
@@ -203,16 +273,32 @@
     let disposed = false;
 
     const nodes = rawNodes.map((node, index) => {
+      const centers = {
+        company: [w * 0.30, h * 0.48],
+        person: [w * 0.70, h * 0.48],
+        country: [w * 0.52, h * 0.18],
+        region: [w * 0.22, h * 0.18],
+        cert: [w * 0.18, h * 0.72],
+        tender: [w * 0.78, h * 0.72],
+        domain: [w * 0.50, h * 0.82],
+      };
       const angle = (index / Math.max(1, rawNodes.length)) * Math.PI * 2;
-      const orbit = Math.min(w, h) * 0.28;
+      const orbit = clusterMode ? Math.min(w, h) * 0.08 : Math.min(w, h) * 0.28;
+      const baseCenter = clusterMode ? (centers[node.clusterKey] || [w / 2, h / 2]) : [w / 2, h / 2];
       return {
         ...node,
-        x: Number.isFinite(node.x) ? node.x : w / 2 + Math.cos(angle) * orbit,
-        y: Number.isFinite(node.y) ? node.y : h / 2 + Math.sin(angle) * orbit,
+        x: Number.isFinite(node.x) ? node.x : baseCenter[0] + Math.cos(angle) * orbit,
+        y: Number.isFinite(node.y) ? node.y : baseCenter[1] + Math.sin(angle) * orbit,
         vx: 0,
         vy: 0,
       };
     });
+
+    container.__graphExportData = {
+      nodes: rawNodes,
+      edges: rawEdges,
+      options: { clusterMode },
+    };
 
     const nodeById = {};
     nodes.forEach((node) => {
@@ -281,6 +367,12 @@
       group.addEventListener("focus", () => setHover(node.id));
       group.addEventListener("blur", () => setHover(null));
       group.addEventListener("click", () => selectNode(node.id));
+      group.addEventListener("dblclick", () => {
+        const href = getNodeHref(node);
+        if (href) {
+          window.location.assign(href);
+        }
+      });
       group.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -344,12 +436,7 @@
       selectedId = selectedId === id ? null : id;
       updateVisuals();
       if (selectedId && nodeById[selectedId]) {
-        const node = nodeById[selectedId];
-        updateSelectedPanel(node);
-        const href = getNodeHref(node);
-        if (href) {
-          window.location.assign(href);
-        }
+        updateSelectedPanel(nodeById[selectedId]);
       } else if (hoveredId && nodeById[hoveredId]) {
         updateSelectedPanel(nodeById[hoveredId]);
       } else {
@@ -506,6 +593,7 @@
       disposed = true;
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      container.__graphInitialized = false;
     };
   }
 
@@ -523,9 +611,30 @@
     container.appendChild(wrap);
   }
 
+  function downloadText(fileName, text, mimeType) {
+    const blob = new Blob([text], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+  }
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
     init();
   }
+
+  // Reinitialize graph when HTMX swaps the graph page content.
+  document.addEventListener("htmx:afterSwap", function (event) {
+    const target = event && event.detail ? event.detail.target : null;
+    if (!target) return;
+    if (target.id === "main-results" || target.querySelector("#graph-container")) {
+      init();
+    }
+  });
 })();

@@ -1,20 +1,21 @@
 //! Web (HTML) routes — server-rendered pages via Askama + HTMX.
 
+pub mod admin;
 pub mod auth;
-pub mod dashboard;
-pub mod warnings;
-pub mod insights;
 pub mod companies;
-pub mod persons;
 pub mod competitors;
-pub mod memos;
-pub mod search;
+pub mod dashboard;
+pub mod errors;
 pub mod graph;
+pub mod insights;
+pub mod memos;
+pub mod notifications;
+pub mod persons;
+pub mod recipes;
+pub mod search;
 pub mod security;
 pub mod settings;
-pub mod admin;
-pub mod recipes;
-pub mod errors;
+pub mod warnings;
 
 use crate::middleware::session::WebSession;
 

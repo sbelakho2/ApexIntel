@@ -4,8 +4,9 @@
 /// should be non-negative (negative weights are clamped to `0.0`).  The
 /// `decay` factor should be in `(0.0, 1.0]`; values outside this range are
 /// clamped so that total risk can never exceed `1.0` per node.
-
 use std::collections::HashMap;
+
+use apex_core::graph_risk::propagate_weighted_risk;
 
 /// Propagate risk scores through a graph adjacency list.
 ///
@@ -22,40 +23,7 @@ pub fn propagate(
     hops: u8,
     decay: f64,
 ) -> HashMap<String, f64> {
-    // B263: clamp decay to [0,1] so negative or >1 values cannot amplify risk.
-    let effective_decay = decay.clamp(0.0, 1.0);
-    // Frontier-based propagation: only the risk gained on the previous hop
-    // is propagated forward, giving true geometric decay per hop.
-    let mut total_risk = initial_risk.clone();
-    let mut frontier = initial_risk.clone();
-
-    for _ in 0..hops {
-        let mut new_frontier: HashMap<String, f64> = HashMap::new();
-        for (node, neighbors) in adjacency {
-            if let Some(&r) = frontier.get(node) {
-                for (neighbor, weight) in neighbors {
-                    // B263: clamp negative weights to 0.0 so inhibitory edges
-                    // don't corrupt the risk accumulator with negative values.
-                    let effective_weight = weight.max(0.0);
-                    let propagated = r * effective_weight * effective_decay;
-                    if propagated > 1e-12 {
-                        *new_frontier.entry(neighbor.clone()).or_insert(0.0) += propagated;
-                    }
-                }
-            }
-        }
-        for (k, v) in new_frontier.iter_mut() {
-            let entry = total_risk.entry(k.clone()).or_insert(0.0);
-            let old = *entry;
-            *entry = (old + *v).min(1.0);
-            // Cap frontier to the actual risk increase so the next hop only
-            // propagates what was truly absorbed, not the raw sum which may
-            // exceed 1.0.
-            *v = *entry - old;
-        }
-        frontier = new_frontier;
-    }
-    total_risk
+    propagate_weighted_risk(adjacency, initial_risk, hops, decay)
 }
 
 /// Compute contagion score: how much risk a node receives from its neighbours.
@@ -117,8 +85,14 @@ pub fn high_risk_cluster(
     for (node, neighbors) in adjacency {
         for (neighbor, _) in neighbors {
             if high_risk_set.contains(node.as_str()) && high_risk_set.contains(neighbor.as_str()) {
-                undirected.entry(node.as_str()).or_default().push(neighbor.as_str());
-                undirected.entry(neighbor.as_str()).or_default().push(node.as_str());
+                undirected
+                    .entry(node.as_str())
+                    .or_default()
+                    .push(neighbor.as_str());
+                undirected
+                    .entry(neighbor.as_str())
+                    .or_default()
+                    .push(node.as_str());
             }
         }
     }
@@ -183,7 +157,11 @@ mod tests {
 
         assert!(*result.get("A").unwrap() >= 0.9);
         // B gets: 0.9 * 0.8 * 0.5 = 0.36
-        assert!((*result.get("B").unwrap() - 0.36).abs() < 0.01, "B = {}", result.get("B").unwrap());
+        assert!(
+            (*result.get("B").unwrap() - 0.36).abs() < 0.01,
+            "B = {}",
+            result.get("B").unwrap()
+        );
         // C gets: 0.9 * 0.5 * 0.5 = 0.225
         assert!((*result.get("C").unwrap() - 0.225).abs() < 0.01);
     }
@@ -202,14 +180,8 @@ mod tests {
     #[test]
     fn test_propagate_capped() {
         let mut adj = HashMap::new();
-        adj.insert(
-            "X".to_string(),
-            vec![("Y".to_string(), 1.0)],
-        );
-        adj.insert(
-            "Z".to_string(),
-            vec![("Y".to_string(), 1.0)],
-        );
+        adj.insert("X".to_string(), vec![("Y".to_string(), 1.0)]);
+        adj.insert("Z".to_string(), vec![("Y".to_string(), 1.0)]);
 
         let mut initial = HashMap::new();
         initial.insert("X".to_string(), 1.0);
@@ -301,9 +273,24 @@ mod tests {
         let result = propagate(&adj, &initial, 2, -0.5);
         // With decay=0 no risk propagates beyond the seed.
         assert_eq!(*result.get("A").unwrap(), 0.9);
-        assert!(result.get("B").is_none() || *result.get("B").unwrap() < 1e-12,
+        assert!(
+            result.get("B").is_none() || *result.get("B").unwrap() < 1e-12,
             "negative decay must block propagation"
         );
+    }
+
+    #[test]
+    fn test_propagate_accumulates_overlapping_sources() {
+        let mut adj = HashMap::new();
+        adj.insert("A".to_string(), vec![("C".to_string(), 1.0)]);
+        adj.insert("B".to_string(), vec![("C".to_string(), 1.0)]);
+
+        let mut initial = HashMap::new();
+        initial.insert("A".to_string(), 0.6);
+        initial.insert("B".to_string(), 0.5);
+
+        let result = propagate(&adj, &initial, 1, 1.0);
+        assert_eq!(result.get("C").copied(), Some(1.0));
     }
 
     // ── B264: isolated high-risk nodes each form singleton clusters ──────────
@@ -328,9 +315,17 @@ mod tests {
         // Sort clusters lexicographically for deterministic assertion
         clusters.sort_by(|a, b| a[0].cmp(&b[0]));
 
-        assert_eq!(clusters.len(), 3, "expected 3 singleton clusters; got {clusters:?}");
+        assert_eq!(
+            clusters.len(),
+            3,
+            "expected 3 singleton clusters; got {clusters:?}"
+        );
         for cluster in &clusters {
-            assert_eq!(cluster.len(), 1, "each isolated node must form a singleton: {cluster:?}");
+            assert_eq!(
+                cluster.len(),
+                1,
+                "each isolated node must form a singleton: {cluster:?}"
+            );
         }
         let all_nodes: Vec<_> = clusters.iter().map(|c| c[0].as_str()).collect();
         assert!(all_nodes.contains(&"X"));
@@ -375,6 +370,9 @@ mod tests {
         let all_node_names: Vec<_> = clusters.iter().flatten().map(String::as_str).collect();
         assert!(all_node_names.contains(&"A"), "A should be in a cluster");
         assert!(all_node_names.contains(&"B"), "B should be in a cluster");
-        assert!(all_node_names.contains(&"high_isolated"), "isolated node must appear");
+        assert!(
+            all_node_names.contains(&"high_isolated"),
+            "isolated node must appear"
+        );
     }
 }

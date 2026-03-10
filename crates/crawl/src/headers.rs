@@ -46,26 +46,75 @@ const USER_AGENTS: &[&str] = &[
 ];
 
 const ACCEPT_LANGUAGES: &[(&str, &[&str])] = &[
-    ("default", &[
-        "en-US,en;q=0.9",
-        "en-US,en;q=0.9,es;q=0.8",
-        "en-GB,en;q=0.9,en-US;q=0.8",
-        "en-US,en;q=0.9,fr;q=0.8",
-        "en-US,en;q=0.8",
-    ]),
-    ("FR", &["fr-FR,fr;q=0.9,en;q=0.8", "fr,fr-FR;q=0.9,en-US;q=0.8,en;q=0.7"]),
-    ("DE", &["de-DE,de;q=0.9,en;q=0.8", "de,de-DE;q=0.9,en-US;q=0.8,en;q=0.7"]),
-    ("AR", &["ar,ar-SA;q=0.9,en;q=0.8,fr;q=0.7", "ar-TN,ar;q=0.9,fr;q=0.8,en;q=0.7", "ar-MA,ar;q=0.9,fr;q=0.8,en;q=0.7"]),
-    ("TN", &["ar-TN,ar;q=0.9,fr;q=0.8,en;q=0.7", "fr-TN,fr;q=0.9,ar;q=0.8,en;q=0.7"]),
-    ("MA", &["ar-MA,ar;q=0.9,fr;q=0.8,en;q=0.7", "fr-MA,fr;q=0.9,ar;q=0.8,en;q=0.7"]),
-    ("IL", &["he-IL,he;q=0.9,en;q=0.8", "he,en-US;q=0.9,en;q=0.8"]),
-    ("CN", &["zh-CN,zh;q=0.9,en;q=0.8", "zh-CN,zh;q=0.8,zh-TW;q=0.7,en;q=0.6"]),
-    ("ES", &["es-ES,es;q=0.9,en;q=0.8", "es-MX,es;q=0.9,en;q=0.8"]),
+    (
+        "default",
+        &[
+            "en-US,en;q=0.9",
+            "en-US,en;q=0.9,es;q=0.8",
+            "en-GB,en;q=0.9,en-US;q=0.8",
+            "en-US,en;q=0.9,fr;q=0.8",
+            "en-US,en;q=0.8",
+        ],
+    ),
+    (
+        "FR",
+        &[
+            "fr-FR,fr;q=0.9,en;q=0.8",
+            "fr,fr-FR;q=0.9,en-US;q=0.8,en;q=0.7",
+        ],
+    ),
+    (
+        "DE",
+        &[
+            "de-DE,de;q=0.9,en;q=0.8",
+            "de,de-DE;q=0.9,en-US;q=0.8,en;q=0.7",
+        ],
+    ),
+    (
+        "AR",
+        &[
+            "ar,ar-SA;q=0.9,en;q=0.8,fr;q=0.7",
+            "ar-TN,ar;q=0.9,fr;q=0.8,en;q=0.7",
+            "ar-MA,ar;q=0.9,fr;q=0.8,en;q=0.7",
+        ],
+    ),
+    (
+        "TN",
+        &[
+            "ar-TN,ar;q=0.9,fr;q=0.8,en;q=0.7",
+            "fr-TN,fr;q=0.9,ar;q=0.8,en;q=0.7",
+        ],
+    ),
+    (
+        "MA",
+        &[
+            "ar-MA,ar;q=0.9,fr;q=0.8,en;q=0.7",
+            "fr-MA,fr;q=0.9,ar;q=0.8,en;q=0.7",
+        ],
+    ),
+    (
+        "IL",
+        &["he-IL,he;q=0.9,en;q=0.8", "he,en-US;q=0.9,en;q=0.8"],
+    ),
+    (
+        "CN",
+        &[
+            "zh-CN,zh;q=0.9,en;q=0.8",
+            "zh-CN,zh;q=0.8,zh-TW;q=0.7,en;q=0.6",
+        ],
+    ),
+    (
+        "ES",
+        &["es-ES,es;q=0.9,en;q=0.8", "es-MX,es;q=0.9,en;q=0.8"],
+    ),
     ("JP", &["ja-JP,ja;q=0.9,en;q=0.8"]),
     ("KR", &["ko-KR,ko;q=0.9,en;q=0.8"]),
     ("RU", &["ru-RU,ru;q=0.9,en;q=0.8"]),
     ("TR", &["tr-TR,tr;q=0.9,en;q=0.8"]),
-    ("IN", &["en-IN,en;q=0.9,hi;q=0.8", "hi-IN,hi;q=0.9,en;q=0.8"]),
+    (
+        "IN",
+        &["en-IN,en;q=0.9,hi;q=0.8", "hi-IN,hi;q=0.9,en;q=0.8"],
+    ),
     ("BR", &["pt-BR,pt;q=0.9,en;q=0.8"]),
 ];
 
@@ -102,7 +151,10 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
     let ua = USER_AGENTS.choose(rng).unwrap();
     headers.insert("User-Agent", HeaderValue::from_str(ua).unwrap());
 
-    let is_mobile = ua.contains("Mobile") || ua.contains("iPhone") || ua.contains("iPad") || ua.contains("Android");
+    let is_mobile = ua.contains("Mobile")
+        || ua.contains("iPhone")
+        || ua.contains("iPad")
+        || ua.contains("Android");
 
     // Accept — mobile browsers omit avif/webp support on older Android
     let accept = if is_mobile {
@@ -121,7 +173,10 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
     let lang = langs.choose(rng).unwrap();
     headers.insert("Accept-Language", HeaderValue::from_str(lang).unwrap());
 
-    headers.insert("Accept-Encoding", HeaderValue::from_static("gzip, deflate, br"));
+    headers.insert(
+        "Accept-Encoding",
+        HeaderValue::from_static("gzip, deflate, br"),
+    );
     headers.insert("Connection", HeaderValue::from_static("keep-alive"));
 
     // Mobile browsers rarely send Upgrade-Insecure-Requests
@@ -149,7 +204,11 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
 
         // Sec-CH-UA brand list — varies by browser
         let ch_ua = if ua.contains("Edg/") {
-            let edge_ver = ua.split("Edg/").nth(1).and_then(|s| s.split('.').next()).unwrap_or(version);
+            let edge_ver = ua
+                .split("Edg/")
+                .nth(1)
+                .and_then(|s| s.split('.').next())
+                .unwrap_or(version);
             format!(
                 "\"Microsoft Edge\";v=\"{edge_ver}\", \"Chromium\";v=\"{version}\", \"Not=A?Brand\";v=\"99\""
             )
@@ -178,19 +237,30 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
         );
         let platform = if ua.contains("Windows") {
             "\"Windows\""
-        } else if ua.contains("Macintosh") || ua.contains("iPhone") || ua.contains("iPad") || ua.contains("Mac OS X") {
+        } else if ua.contains("Macintosh")
+            || ua.contains("iPhone")
+            || ua.contains("iPad")
+            || ua.contains("Mac OS X")
+        {
             "\"macOS\""
         } else if ua.contains("Android") {
             "\"Android\""
         } else {
             "\"Linux\""
         };
-        headers.insert("Sec-CH-UA-Platform", HeaderValue::from_str(platform).unwrap());
+        headers.insert(
+            "Sec-CH-UA-Platform",
+            HeaderValue::from_str(platform).unwrap(),
+        );
     }
 
     // Referer — mobile browsers less likely to send social referers
     let referer_pool: Vec<&str> = if is_mobile {
-        REFERERS.iter().filter(|r| r.is_empty() || r.contains("google") || r.contains("bing")).copied().collect()
+        REFERERS
+            .iter()
+            .filter(|r| r.is_empty() || r.contains("google") || r.contains("bing"))
+            .copied()
+            .collect()
     } else {
         REFERERS.to_vec()
     };
@@ -291,7 +361,12 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(7);
         for _ in 0..20 {
             let headers = random_headers_with_rng(None, &mut rng);
-            let ua = headers.get("User-Agent").unwrap().to_str().unwrap().to_string();
+            let ua = headers
+                .get("User-Agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
             user_agents.insert(ua);
         }
         // With 12 UAs and 20 samples, we should see at least 2 different ones

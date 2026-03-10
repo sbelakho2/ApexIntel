@@ -261,19 +261,28 @@ mod tests {
     #[test]
     fn test_ewma_alpha_zero_returns_empty() {
         let data: Vec<f64> = vec![5.0; 30];
-        assert!(ewma_control(&data, 0.0, 3.0).is_empty(), "alpha=0 should be rejected");
+        assert!(
+            ewma_control(&data, 0.0, 3.0).is_empty(),
+            "alpha=0 should be rejected"
+        );
     }
 
     #[test]
     fn test_ewma_alpha_negative_returns_empty() {
         let data: Vec<f64> = vec![5.0; 30];
-        assert!(ewma_control(&data, -0.1, 3.0).is_empty(), "negative alpha should be rejected");
+        assert!(
+            ewma_control(&data, -0.1, 3.0).is_empty(),
+            "negative alpha should be rejected"
+        );
     }
 
     #[test]
     fn test_ewma_alpha_above_one_returns_empty() {
         let data: Vec<f64> = vec![5.0; 30];
-        assert!(ewma_control(&data, 1.01, 3.0).is_empty(), "alpha > 1 should be rejected");
+        assert!(
+            ewma_control(&data, 1.01, 3.0).is_empty(),
+            "alpha > 1 should be rejected"
+        );
     }
 
     #[test]
@@ -292,13 +301,19 @@ mod tests {
     #[test]
     fn test_ewma_sigma_mult_zero_returns_empty() {
         let data: Vec<f64> = vec![5.0; 30];
-        assert!(ewma_control(&data, 0.3, 0.0).is_empty(), "sigma_mult=0 should be rejected");
+        assert!(
+            ewma_control(&data, 0.3, 0.0).is_empty(),
+            "sigma_mult=0 should be rejected"
+        );
     }
 
     #[test]
     fn test_ewma_sigma_mult_negative_returns_empty() {
         let data: Vec<f64> = vec![5.0; 30];
-        assert!(ewma_control(&data, 0.3, -1.0).is_empty(), "negative sigma_mult should be rejected");
+        assert!(
+            ewma_control(&data, 0.3, -1.0).is_empty(),
+            "negative sigma_mult should be rejected"
+        );
     }
 
     // ── B252: alpha close to 1 does not overflow ─────────────────────────────
@@ -312,10 +327,16 @@ mod tests {
         data.extend(vec![100.0; 50]);
         let result = ewma_control(&data, 0.999, 3.0);
         for &(_, dev) in &result {
-            assert!(dev.is_finite(), "deviation must be finite for alpha close to 1");
+            assert!(
+                dev.is_finite(),
+                "deviation must be finite for alpha close to 1"
+            );
         }
         // The shift at index 500 should be detected
-        assert!(!result.is_empty(), "large shift must be detected with alpha=0.999");
+        assert!(
+            !result.is_empty(),
+            "large shift must be detected with alpha=0.999"
+        );
     }
 
     // ── B253: mad_zscore with NaN-heavy inputs ───────────────────────────────
@@ -323,13 +344,19 @@ mod tests {
     #[test]
     fn test_mad_zscore_all_nan_returns_empty() {
         let data = vec![f64::NAN; 20];
-        assert!(mad_zscore(&data, 3.0).is_empty(), "all-NaN input must return empty vec");
+        assert!(
+            mad_zscore(&data, 3.0).is_empty(),
+            "all-NaN input must return empty vec"
+        );
     }
 
     #[test]
     fn test_mad_zscore_all_inf_returns_empty() {
         let data = vec![f64::INFINITY; 20];
-        assert!(mad_zscore(&data, 3.0).is_empty(), "all-Inf input must return empty vec");
+        assert!(
+            mad_zscore(&data, 3.0).is_empty(),
+            "all-Inf input must return empty vec"
+        );
     }
 
     #[test]
@@ -341,7 +368,10 @@ mod tests {
         data[15] = 0.9;
         data[20] = 100.0; // extreme outlier
         let anomalies = mad_zscore(&data, 3.0);
-        assert!(!anomalies.is_empty(), "outlier at index 20 must be detected despite NaN majority");
+        assert!(
+            !anomalies.is_empty(),
+            "outlier at index 20 must be detected despite NaN majority"
+        );
         assert!(anomalies.iter().any(|(i, _)| *i == 20));
     }
 

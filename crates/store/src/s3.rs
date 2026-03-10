@@ -1,7 +1,7 @@
 use anyhow::Result;
-use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client as S3Client;
 use sha2::{Digest, Sha256};
 
 /// S3/MinIO raw document storage for crawled content.
@@ -13,7 +13,12 @@ pub struct ObjectStore {
 
 impl ObjectStore {
     /// Connect to an S3-compatible store (MinIO).
-    pub async fn new(endpoint_url: &str, bucket: &str, access_key: &str, secret_key: &str) -> Result<Self> {
+    pub async fn new(
+        endpoint_url: &str,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+    ) -> Result<Self> {
         let creds = Credentials::new(access_key, secret_key, None, None, "apex");
         let config = aws_sdk_s3::Config::builder()
             .endpoint_url(endpoint_url)
@@ -34,9 +39,7 @@ impl ObjectStore {
             Ok(_) => Ok(()),
             Err(err) => {
                 // Only create if the bucket doesn't exist; propagate other errors
-                let is_not_found = err
-                    .as_service_error()
-                    .map_or(false, |se| se.is_not_found());
+                let is_not_found = err.as_service_error().map_or(false, |se| se.is_not_found());
                 if is_not_found {
                     self.client
                         .create_bucket()
@@ -117,9 +120,7 @@ impl ObjectStore {
         {
             Ok(_) => Ok(true),
             Err(err) => {
-                let is_not_found = err
-                    .as_service_error()
-                    .map_or(false, |se| se.is_not_found());
+                let is_not_found = err.as_service_error().map_or(false, |se| se.is_not_found());
                 if is_not_found {
                     Ok(false)
                 } else {

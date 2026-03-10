@@ -4,12 +4,13 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use apex_core::entities::RoleFamily;
 use crate::normalizer;
+use apex_core::entities::RoleFamily;
 use apex_core::validation::normalize_url;
 
 static RE_JOB_LOCATION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:location|lieu|ville|city|based in)[:\s]+([A-Za-z\u{00c0}-\u{00ff}\s,]+)").unwrap()
+    Regex::new(r"(?i)(?:location|lieu|ville|city|based in)[:\s]+([A-Za-z\u{00c0}-\u{00ff}\s,]+)")
+        .unwrap()
 });
 
 static RE_SALARY: LazyLock<Regex> = LazyLock::new(|| {
@@ -172,22 +173,35 @@ pub fn detect_seniority(title: &str) -> Seniority {
 
     // C-level must be checked before Director: a title like "Director and CTO"
     // should classify as CLevel (higher seniority).
-    if lower.contains("chief") || lower == "ceo" || lower == "cfo"
-        || lower == "cto" || lower == "coo" || lower == "cpo"
-        || lower.starts_with("ceo ") || lower.starts_with("cfo ")
-        || lower.starts_with("cto ") || lower.starts_with("coo ")
+    if lower.contains("chief")
+        || lower == "ceo"
+        || lower == "cfo"
+        || lower == "cto"
+        || lower == "coo"
+        || lower == "cpo"
+        || lower.starts_with("ceo ")
+        || lower.starts_with("cfo ")
+        || lower.starts_with("cto ")
+        || lower.starts_with("coo ")
         || lower.starts_with("cpo ")
-        || lower.contains(" ceo") || lower.contains(" cfo")
-        || lower.contains(" cto") || lower.contains(" coo")
+        || lower.contains(" ceo")
+        || lower.contains(" cfo")
+        || lower.contains(" cto")
+        || lower.contains(" coo")
     {
         return Seniority::CLevel;
     }
     if lower.contains("director") || lower.contains("directeur") {
         return Seniority::Director;
     }
-    if lower.contains("vice president") || lower.contains("vp ") || lower == "vp"
-        || lower.starts_with("vp ") || lower.starts_with("vp-") || lower.starts_with("vp,")
-        || lower.contains(" vp,") || lower.ends_with(" vp")
+    if lower.contains("vice president")
+        || lower.contains("vp ")
+        || lower == "vp"
+        || lower.starts_with("vp ")
+        || lower.starts_with("vp-")
+        || lower.starts_with("vp,")
+        || lower.contains(" vp,")
+        || lower.ends_with(" vp")
     {
         return Seniority::VP;
     }
@@ -197,8 +211,11 @@ pub fn detect_seniority(title: &str) -> Seniority {
     if lower.contains("senior") || lower.contains("sr.") || lower.contains("sr ") {
         return Seniority::Senior;
     }
-    if lower.contains("junior") || lower.contains("jr.") || lower.contains("jr ")
-        || lower.contains("intern") || lower.contains("trainee")
+    if lower.contains("junior")
+        || lower.contains("jr.")
+        || lower.contains("jr ")
+        || lower.contains("intern")
+        || lower.contains("trainee")
     {
         return Seniority::Junior;
     }
@@ -207,11 +224,7 @@ pub fn detect_seniority(title: &str) -> Seniority {
 }
 
 /// Extract a job posting from HTML page content.
-pub fn extract_job_posting(
-    body_text: &str,
-    title: &str,
-    source_url: &str,
-) -> JobPosting {
+pub fn extract_job_posting(body_text: &str, title: &str, source_url: &str) -> JobPosting {
     let normalized_body = normalizer::normalize_whitespace(body_text);
     let role_family = classify_role_family(title);
     let seniority = detect_seniority(title);
@@ -241,7 +254,8 @@ pub fn extract_job_posting(
 }
 
 fn extract_location(text: &str) -> Option<String> {
-    RE_JOB_LOCATION.captures(text)
+    RE_JOB_LOCATION
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
@@ -249,7 +263,9 @@ fn extract_location(text: &str) -> Option<String> {
 fn extract_company_name(body_text: &str, source_url: &str) -> Option<String> {
     // 1. Try og:site_name meta tag.
     if let Some(caps) = RE_OG_SITE_NAME.captures(body_text) {
-        let name = caps.get(1).or_else(|| caps.get(2))
+        let name = caps
+            .get(1)
+            .or_else(|| caps.get(2))
             .map(|m| m.as_str().trim().to_string())
             .filter(|s| !s.is_empty());
         if name.is_some() {
@@ -259,7 +275,8 @@ fn extract_company_name(body_text: &str, source_url: &str) -> Option<String> {
 
     // 2. Try JSON-LD Organization/JobPosting "name".
     if let Some(caps) = RE_JSONLD_ORG.captures(body_text) {
-        let name = caps.get(1)
+        let name = caps
+            .get(1)
             .map(|m| m.as_str().trim().to_string())
             .filter(|s| !s.is_empty());
         if name.is_some() {
@@ -282,11 +299,15 @@ fn extract_domain_company(url: &str) -> Option<String> {
     let host = host.strip_prefix("www.").unwrap_or(host);
 
     // Extract the SLD (part before last dot).
-    let sld = host.rsplit_once('.').map(|(prefix, _)| prefix).unwrap_or(host);
+    let sld = host
+        .rsplit_once('.')
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(host);
     // If there's still a dot (e.g. jobs.company), take the last component.
     let sld = sld.rsplit('.').next().unwrap_or(sld);
 
-    let words: Vec<String> = sld.split(&['-', '_'][..])
+    let words: Vec<String> = sld
+        .split(&['-', '_'][..])
         .filter(|w| !matches!(*w, "jobs" | "careers" | "hr" | "talent"))
         .map(|w| {
             let mut c = w.chars();
@@ -297,11 +318,16 @@ fn extract_domain_company(url: &str) -> Option<String> {
         })
         .collect();
 
-    if words.is_empty() { None } else { Some(words.join(" ")) }
+    if words.is_empty() {
+        None
+    } else {
+        Some(words.join(" "))
+    }
 }
 
 fn extract_salary(text: &str) -> Option<String> {
-    RE_SALARY.captures(text)
+    RE_SALARY
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
@@ -311,45 +337,81 @@ mod tests {
 
     #[test]
     fn test_classify_procurement() {
-        assert_eq!(classify_role_family("Senior Procurement Manager"), RoleFamily::Procurement);
-        assert_eq!(classify_role_family("Global Sourcing Specialist"), RoleFamily::Procurement);
-        assert_eq!(classify_role_family("Responsable Achats"), RoleFamily::Procurement);
+        assert_eq!(
+            classify_role_family("Senior Procurement Manager"),
+            RoleFamily::Procurement
+        );
+        assert_eq!(
+            classify_role_family("Global Sourcing Specialist"),
+            RoleFamily::Procurement
+        );
+        assert_eq!(
+            classify_role_family("Responsable Achats"),
+            RoleFamily::Procurement
+        );
     }
 
     #[test]
     fn test_classify_quality() {
-        assert_eq!(classify_role_family("Supplier Quality Engineer"), RoleFamily::Quality);
+        assert_eq!(
+            classify_role_family("Supplier Quality Engineer"),
+            RoleFamily::Quality
+        );
         assert_eq!(classify_role_family("SQE Manager"), RoleFamily::Quality);
-        assert_eq!(classify_role_family("Quality Audit Lead"), RoleFamily::Quality);
+        assert_eq!(
+            classify_role_family("Quality Audit Lead"),
+            RoleFamily::Quality
+        );
     }
 
     #[test]
     fn test_classify_engineering() {
-        assert_eq!(classify_role_family("Process Engineer"), RoleFamily::Engineering);
+        assert_eq!(
+            classify_role_family("Process Engineer"),
+            RoleFamily::Engineering
+        );
         assert_eq!(classify_role_family("R&D Manager"), RoleFamily::Engineering);
-        assert_eq!(classify_role_family("NPI Engineer"), RoleFamily::Engineering);
+        assert_eq!(
+            classify_role_family("NPI Engineer"),
+            RoleFamily::Engineering
+        );
     }
 
     #[test]
     fn test_classify_operations() {
-        assert_eq!(classify_role_family("Plant Manager"), RoleFamily::Operations);
-        assert_eq!(classify_role_family("Manufacturing Supervisor"), RoleFamily::Operations);
+        assert_eq!(
+            classify_role_family("Plant Manager"),
+            RoleFamily::Operations
+        );
+        assert_eq!(
+            classify_role_family("Manufacturing Supervisor"),
+            RoleFamily::Operations
+        );
     }
 
     #[test]
     fn test_classify_executive() {
         assert_eq!(classify_role_family("CEO"), RoleFamily::Executive);
-        assert_eq!(classify_role_family("CFO and President"), RoleFamily::Executive);
+        assert_eq!(
+            classify_role_family("CFO and President"),
+            RoleFamily::Executive
+        );
     }
 
     #[test]
     fn test_classify_other() {
-        assert_eq!(classify_role_family("Marketing Specialist"), RoleFamily::Other("Unknown".to_string()));
+        assert_eq!(
+            classify_role_family("Marketing Specialist"),
+            RoleFamily::Other("Unknown".to_string())
+        );
     }
 
     #[test]
     fn test_detect_seniority_clevel() {
-        assert_eq!(detect_seniority("Chief Technology Officer"), Seniority::CLevel);
+        assert_eq!(
+            detect_seniority("Chief Technology Officer"),
+            Seniority::CLevel
+        );
         assert_eq!(detect_seniority("CEO"), Seniority::CLevel);
     }
 
@@ -361,7 +423,10 @@ mod tests {
 
     #[test]
     fn test_detect_seniority_director() {
-        assert_eq!(detect_seniority("Director of Operations"), Seniority::Director);
+        assert_eq!(
+            detect_seniority("Director of Operations"),
+            Seniority::Director
+        );
     }
 
     #[test]
@@ -372,7 +437,11 @@ mod tests {
     #[test]
     fn test_extract_job_posting() {
         let body = "Location: Sousse, Tunisia. We are looking for a Senior Quality Engineer with IATF 16949 and SMT experience.";
-        let posting = extract_job_posting(body, "Senior Quality Engineer", "https://jobs.example.com/123");
+        let posting = extract_job_posting(
+            body,
+            "Senior Quality Engineer",
+            "https://jobs.example.com/123",
+        );
 
         assert_eq!(posting.role_family, RoleFamily::Quality);
         assert_eq!(posting.seniority, Seniority::Senior);

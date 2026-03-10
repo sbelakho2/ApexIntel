@@ -142,7 +142,11 @@ impl FunctionSpec {
 
         if self.name.is_empty() {
             errors.push("FunctionSpec.name must not be empty".to_string());
-        } else if !self.name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        } else if !self
+            .name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
             errors.push(format!(
                 "FunctionSpec.name `{}` contains invalid characters (allow: [a-zA-Z0-9_-])",
                 self.name
@@ -269,8 +273,15 @@ mod tests {
 
     #[test]
     fn test_function_spec_valid_spec_returns_no_errors() {
-        let spec = make_spec("lookup_entity", &[("entity_id", ParamType::String)], &["entity_id"]);
-        assert!(spec.validate().is_empty(), "valid spec must pass validation");
+        let spec = make_spec(
+            "lookup_entity",
+            &[("entity_id", ParamType::String)],
+            &["entity_id"],
+        );
+        assert!(
+            spec.validate().is_empty(),
+            "valid spec must pass validation"
+        );
     }
 
     #[test]
@@ -313,7 +324,9 @@ mod tests {
         let json = spec.to_tool_json();
         assert_eq!(json["type"], "function");
         assert_eq!(json["function"]["name"], "get_flag");
-        let required = json["function"]["parameters"]["required"].as_array().unwrap();
+        let required = json["function"]["parameters"]["required"]
+            .as_array()
+            .unwrap();
         assert!(required.iter().any(|v| v == "flag_id"));
     }
 
@@ -341,7 +354,11 @@ mod tests {
 
     #[test]
     fn test_function_call_validate_against_detects_missing_required() {
-        let spec = make_spec("f", &[("a", ParamType::String), ("b", ParamType::Number)], &["a", "b"]);
+        let spec = make_spec(
+            "f",
+            &[("a", ParamType::String), ("b", ParamType::Number)],
+            &["a", "b"],
+        );
         let call = FunctionCall {
             name: "f".to_string(),
             arguments: serde_json::json!({"a": "hello"}), // "b" missing

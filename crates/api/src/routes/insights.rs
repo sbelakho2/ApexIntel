@@ -1,8 +1,8 @@
 //! Insights route — request/response types and logic for insight endpoints.
 
+use apex_core::validation::clamp_ratio;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use apex_core::validation::clamp_ratio;
 
 // ────────────────────────────────────────────
 // Request types
@@ -140,7 +140,12 @@ pub fn build_memo_metrics(
 mod tests {
     use super::*;
 
-    fn make_insight(region: &str, confidence: f64, hours_ago: i64, tags: Vec<&str>) -> InsightResponse {
+    fn make_insight(
+        region: &str,
+        confidence: f64,
+        hours_ago: i64,
+        tags: Vec<&str>,
+    ) -> InsightResponse {
         let ts = Utc::now() - chrono::Duration::hours(hours_ago);
         InsightResponse {
             id: uuid::Uuid::new_v4().to_string(),
@@ -161,8 +166,8 @@ mod tests {
     #[test]
     fn test_rank_insights_by_score() {
         let mut insights = vec![
-            make_insight("TN", 0.5, 48, vec![]),  // old, low conf
-            make_insight("MA", 0.95, 1, vec![]),   // recent, high conf
+            make_insight("TN", 0.5, 48, vec![]), // old, low conf
+            make_insight("MA", 0.95, 1, vec![]), // recent, high conf
             make_insight("EU", 0.8, 12, vec![]),
         ];
         rank_insights(&mut insights);
@@ -197,9 +202,7 @@ mod tests {
 
     #[test]
     fn test_filter_by_tag_case_insensitive() {
-        let insights = vec![
-            make_insight("TN", 0.9, 1, vec!["Supply_Chain"]),
-        ];
+        let insights = vec![make_insight("TN", 0.9, 1, vec!["Supply_Chain"])];
         let filtered = filter_by_tag(&insights, "supply_chain");
         assert_eq!(filtered.len(), 1);
     }

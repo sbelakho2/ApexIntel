@@ -72,9 +72,10 @@
   </div>
 </div>
 
-<div class="flex flex-wrap items-center gap-2 rounded-sm border border-border bg-card px-3 py-2 mb-4">
+<div class="graph-toolbar flex flex-wrap items-center gap-2 rounded-sm border border-border bg-card px-3 py-2 mb-4">
     {% call m::icon("search", "h-3.5 w-3.5 text-muted-foreground") %}
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-2">Refine graph entities:</span>
+  <input id="graph-search-input" type="search" placeholder="Search nodes" class="w-full sm:min-w-[180px] rounded-sm border border-border bg-background px-3 py-2 text-sm" />
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-2">Entity Type:</span>
     <button type="button" data-type="company" class="graph-filter-chip rounded-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-none min-h-[44px] min-w-[44px] border-border bg-secondary text-muted-foreground hover:text-foreground">company</button>
     <button type="button" data-type="person" class="graph-filter-chip rounded-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-none min-h-[44px] min-w-[44px] border-border bg-secondary text-muted-foreground hover:text-foreground">person</button>
@@ -83,7 +84,19 @@
     <button type="button" data-type="domain" class="graph-filter-chip rounded-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-none min-h-[44px] min-w-[44px] border-border bg-secondary text-muted-foreground hover:text-foreground">domain</button>
     <button type="button" data-type="cert" class="graph-filter-chip rounded-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-none min-h-[44px] min-w-[44px] border-border bg-secondary text-muted-foreground hover:text-foreground">cert</button>
     <button type="button" data-type="tender" class="graph-filter-chip rounded-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-none min-h-[44px] min-w-[44px] border-border bg-secondary text-muted-foreground hover:text-foreground">tender</button>
+    <label class="ml-2 flex items-center gap-2 text-[10px] font-bold uppercase text-muted-foreground">
+      Activity
+      <select id="graph-activity-filter" class="rounded-sm border border-border bg-background px-2 py-2 text-[11px] font-bold uppercase tracking-[0.08em] text-foreground">
+        <option value="all">All time</option>
+        <option value="30">Last 30d</option>
+        <option value="90">Last 90d</option>
+      </select>
+    </label>
+    <button type="button" id="graph-cluster-toggle" class="rounded-sm border border-border bg-secondary px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Cluster by Type</button>
+    <button type="button" id="graph-export-json" class="rounded-sm border border-border bg-secondary px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Export JSON</button>
+    <button type="button" id="graph-export-svg" class="rounded-sm border border-border bg-secondary px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Export SVG</button>
     <span id="graph-active-filter" class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: 0</span>
+    <span id="graph-visible-count" class="text-[10px] font-bold uppercase text-muted-foreground">Visible: {{ render_nodes.len() }}</span>
     <button type="button" id="graph-reset-filters" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</button>
 </div>
 

@@ -8,135 +8,366 @@ const MAX_KEYWORD_HITS_PER_TERM: usize = 5;
 /// Covers English, Arabic, French, German, Spanish, Hebrew, Korean,
 /// Japanese, Chinese and Russian signals in a single pass.
 const KEYWORD_CATEGORIES: &[(&str, &[&str])] = &[
-    ("cost", &[
-        // EN
-        "cost", "price", "budget", "savings", "tco", "should-cost", "capex", "opex",
-        "spend", "expenditure", "affordable", "cheap", "overrun", "invoice", "roi",
-        "payback", "margin", "profitability", "financial", "fiscal",
-        // AR
-        "تكلفة", "سعر", "ميزانية", "وفورات", "إنفاق",
-        // FR
-        "coût", "prix", "budget", "économies", "dépense",
-        // DE
-        "kosten", "preis", "budget", "einsparung",
-        // ES
-        "costo", "precio", "presupuesto", "ahorro",
-        // HE
-        "עלות", "מחיר", "תקציב",
-        // KO
-        "비용", "가격", "예산",
-        // JA
-        "コスト", "価格", "予算",
-        // ZH
-        "成本", "价格", "预算",
-        // RU
-        "стоимость", "бюджет",
-    ]),
-    ("quality", &[
-        // EN
-        "quality", "ppm", "defect", "yield", "zero defects", "six sigma", "iso 9001",
-        "inspection", "reliability", "durability", "tolerance", "precision", "accuracy",
-        "validation", "testing", "audit trail", "traceability", "asq", "apqp", "ppap",
-        // AR
-        "جودة", "عيب", "موثوقية",
-        // FR
-        "qualité", "défaut", "rendement", "fiabilité",
-        // DE
-        "qualität", "fehler", "zuverlässigkeit",
-        // ES
-        "calidad", "defecto", "confiabilidad",
-        // HE
-        "איכות", "פגם",
-        // KO
-        "품질", "결함", "수율",
-        // JA
-        "品質", "不良", "歩留まり",
-        // ZH
-        "质量", "缺陷", "良率",
-    ]),
-    ("speed", &[
-        // EN
-        "speed", "lead time", "fast", "agile", "npi", "time-to-market", "delivery",
-        "turnaround", "velocity", "throughput", "expedite", "urgent", "asap", "rapid",
-        "quick", "swift", "on-time", "runway", "sprint",
-        // AR
-        "سرعة", "وقت التسليم", "عاجل",
-        // FR
-        "rapidité", "délai", "livraison", "urgent",
-        // DE
-        "schnelligkeit", "lieferzeit", "dringend",
-        // ES
-        "velocidad", "entrega", "urgente",
-        // KO
-        "속도", "납기", "긴급",
-        // JA
-        "スピード", "リードタイム", "緊急",
-        // ZH
-        "速度", "交期", "紧急",
-    ]),
-    ("resilience", &[
-        // EN
-        "resilience", "risk", "disruption", "continuity", "dual source", "buffer stock",
-        "backup", "redundancy", "contingency", "recovery", "bcp", "drp", "disaster",
-        "shortage", "scarcity", "geopolitical", "vulnerability", "exposure", "volatility",
-        "diversification", "nearshoring", "reshoring", "friendshoring",
-        // AR
-        "مرونة", "مخاطر", "استمرارية", "نقص",
-        // FR
-        "résilience", "risque", "continuité", "pénurie", "rupture",
-        // DE
-        "resilienz", "risiko", "kontinuität", "versorgungsengpass",
-        // ES
-        "resiliencia", "riesgo", "continuidad",
-        // HE
-        "חוסן", "סיכון",
-        // KO
-        "회복력", "위험", "연속성",
-        // ZH
-        "弹性", "风险", "供应中断",
-    ]),
-    ("compliance", &[
-        // EN
-        "compliance", "audit", "regulation", "standard", "certification", "gdpr",
-        "sox", "hipaa", "iso", "itar", "ear", "sanctions", "aml", "kyc", "esg",
-        "csrd", "due diligence", "reporting", "transparency", "governance", "fiduciary",
-        "regulatory", "licensing", "accreditation",
-        // AR
-        "امتثال", "تدقيق", "تنظيم", "شهادة",
-        // FR
-        "conformité", "audit", "réglementation", "certification",
-        // DE
-        "compliance", "regulierung", "zertifizierung",
-        // ES
-        "cumplimiento", "auditoría", "regulación",
-        // HE
-        "ציות", "ביקורת", "רגולציה",
-        // KO
-        "준수", "감사", "규정",
-        // ZH
-        "合规", "审计", "监管",
-    ]),
-    ("security", &[
-        // EN
-        "security", "cyber", "dmarc", "breach", "zero trust", "soc2", "pentest",
-        "ransomware", "phishing", "intrusion", "vulnerability", "patch", "cve",
-        "ciso", "siem", "iam", "encryption", "privacy", "data loss", "dlp",
-        "national security", "defense", "classified", "clearance", "intelligence",
-        // AR
-        "أمن", "سيبراني", "اختراق", "دفاع",
-        // FR
-        "sécurité", "cyber", "violation", "défense",
-        // DE
-        "sicherheit", "cyber", "datenschutz",
-        // ES
-        "seguridad", "ciberseguridad", "privacidad",
-        // HE
-        "אבטחה", "סייבר", "ביטחון",
-        // KO
-        "보안", "사이버", "방어",
-        // ZH
-        "安全", "网络安全", "防御",
-    ]),
+    (
+        "cost",
+        &[
+            // EN
+            "cost",
+            "price",
+            "budget",
+            "savings",
+            "tco",
+            "should-cost",
+            "capex",
+            "opex",
+            "spend",
+            "expenditure",
+            "affordable",
+            "cheap",
+            "overrun",
+            "invoice",
+            "roi",
+            "payback",
+            "margin",
+            "profitability",
+            "financial",
+            "fiscal",
+            // AR
+            "تكلفة",
+            "سعر",
+            "ميزانية",
+            "وفورات",
+            "إنفاق",
+            // FR
+            "coût",
+            "prix",
+            "budget",
+            "économies",
+            "dépense",
+            // DE
+            "kosten",
+            "preis",
+            "budget",
+            "einsparung",
+            // ES
+            "costo",
+            "precio",
+            "presupuesto",
+            "ahorro",
+            // HE
+            "עלות",
+            "מחיר",
+            "תקציב",
+            // KO
+            "비용",
+            "가격",
+            "예산",
+            // JA
+            "コスト",
+            "価格",
+            "予算",
+            // ZH
+            "成本",
+            "价格",
+            "预算",
+            // RU
+            "стоимость",
+            "бюджет",
+        ],
+    ),
+    (
+        "quality",
+        &[
+            // EN
+            "quality",
+            "ppm",
+            "defect",
+            "yield",
+            "zero defects",
+            "six sigma",
+            "iso 9001",
+            "inspection",
+            "reliability",
+            "durability",
+            "tolerance",
+            "precision",
+            "accuracy",
+            "validation",
+            "testing",
+            "audit trail",
+            "traceability",
+            "asq",
+            "apqp",
+            "ppap",
+            // AR
+            "جودة",
+            "عيب",
+            "موثوقية",
+            // FR
+            "qualité",
+            "défaut",
+            "rendement",
+            "fiabilité",
+            // DE
+            "qualität",
+            "fehler",
+            "zuverlässigkeit",
+            // ES
+            "calidad",
+            "defecto",
+            "confiabilidad",
+            // HE
+            "איכות",
+            "פגם",
+            // KO
+            "품질",
+            "결함",
+            "수율",
+            // JA
+            "品質",
+            "不良",
+            "歩留まり",
+            // ZH
+            "质量",
+            "缺陷",
+            "良率",
+        ],
+    ),
+    (
+        "speed",
+        &[
+            // EN
+            "speed",
+            "lead time",
+            "fast",
+            "agile",
+            "npi",
+            "time-to-market",
+            "delivery",
+            "turnaround",
+            "velocity",
+            "throughput",
+            "expedite",
+            "urgent",
+            "asap",
+            "rapid",
+            "quick",
+            "swift",
+            "on-time",
+            "runway",
+            "sprint",
+            // AR
+            "سرعة",
+            "وقت التسليم",
+            "عاجل",
+            // FR
+            "rapidité",
+            "délai",
+            "livraison",
+            "urgent",
+            // DE
+            "schnelligkeit",
+            "lieferzeit",
+            "dringend",
+            // ES
+            "velocidad",
+            "entrega",
+            "urgente",
+            // KO
+            "속도",
+            "납기",
+            "긴급",
+            // JA
+            "スピード",
+            "リードタイム",
+            "緊急",
+            // ZH
+            "速度",
+            "交期",
+            "紧急",
+        ],
+    ),
+    (
+        "resilience",
+        &[
+            // EN
+            "resilience",
+            "risk",
+            "disruption",
+            "continuity",
+            "dual source",
+            "buffer stock",
+            "backup",
+            "redundancy",
+            "contingency",
+            "recovery",
+            "bcp",
+            "drp",
+            "disaster",
+            "shortage",
+            "scarcity",
+            "geopolitical",
+            "vulnerability",
+            "exposure",
+            "volatility",
+            "diversification",
+            "nearshoring",
+            "reshoring",
+            "friendshoring",
+            // AR
+            "مرونة",
+            "مخاطر",
+            "استمرارية",
+            "نقص",
+            // FR
+            "résilience",
+            "risque",
+            "continuité",
+            "pénurie",
+            "rupture",
+            // DE
+            "resilienz",
+            "risiko",
+            "kontinuität",
+            "versorgungsengpass",
+            // ES
+            "resiliencia",
+            "riesgo",
+            "continuidad",
+            // HE
+            "חוסן",
+            "סיכון",
+            // KO
+            "회복력",
+            "위험",
+            "연속성",
+            // ZH
+            "弹性",
+            "风险",
+            "供应中断",
+        ],
+    ),
+    (
+        "compliance",
+        &[
+            // EN
+            "compliance",
+            "audit",
+            "regulation",
+            "standard",
+            "certification",
+            "gdpr",
+            "sox",
+            "hipaa",
+            "iso",
+            "itar",
+            "ear",
+            "sanctions",
+            "aml",
+            "kyc",
+            "esg",
+            "csrd",
+            "due diligence",
+            "reporting",
+            "transparency",
+            "governance",
+            "fiduciary",
+            "regulatory",
+            "licensing",
+            "accreditation",
+            // AR
+            "امتثال",
+            "تدقيق",
+            "تنظيم",
+            "شهادة",
+            // FR
+            "conformité",
+            "audit",
+            "réglementation",
+            "certification",
+            // DE
+            "compliance",
+            "regulierung",
+            "zertifizierung",
+            // ES
+            "cumplimiento",
+            "auditoría",
+            "regulación",
+            // HE
+            "ציות",
+            "ביקורת",
+            "רגולציה",
+            // KO
+            "준수",
+            "감사",
+            "규정",
+            // ZH
+            "合规",
+            "审计",
+            "监管",
+        ],
+    ),
+    (
+        "security",
+        &[
+            // EN
+            "security",
+            "cyber",
+            "dmarc",
+            "breach",
+            "zero trust",
+            "soc2",
+            "pentest",
+            "ransomware",
+            "phishing",
+            "intrusion",
+            "vulnerability",
+            "patch",
+            "cve",
+            "ciso",
+            "siem",
+            "iam",
+            "encryption",
+            "privacy",
+            "data loss",
+            "dlp",
+            "national security",
+            "defense",
+            "classified",
+            "clearance",
+            "intelligence",
+            // AR
+            "أمن",
+            "سيبراني",
+            "اختراق",
+            "دفاع",
+            // FR
+            "sécurité",
+            "cyber",
+            "violation",
+            "défense",
+            // DE
+            "sicherheit",
+            "cyber",
+            "datenschutz",
+            // ES
+            "seguridad",
+            "ciberseguridad",
+            "privacidad",
+            // HE
+            "אבטחה",
+            "סייבר",
+            "ביטחון",
+            // KO
+            "보안",
+            "사이버",
+            "방어",
+            // ZH
+            "安全",
+            "网络安全",
+            "防御",
+        ],
+    ),
 ];
 
 /// Locale-specific keyword extensions for priority vector (B130).
@@ -213,7 +444,14 @@ pub fn compute_priority_vector_with_locale(
         .join(" ")
         .to_lowercase();
 
-    let category_names = ["cost", "quality", "speed", "resilience", "compliance", "security"];
+    let category_names = [
+        "cost",
+        "quality",
+        "speed",
+        "resilience",
+        "compliance",
+        "security",
+    ];
     let mut scores = [0.0_f64; 6];
     let mut total = 0.0;
 
@@ -307,8 +545,12 @@ pub fn role_seniority_score(title: &str) -> f64 {
     // C-level outranks director. Use token-level matching for 3-letter acronyms
     // to avoid false positives: "director" contains "cto" as a substring.
     let tokens: std::collections::HashSet<&str> = lower.split_whitespace().collect();
-    if tokens.contains("ceo") || tokens.contains("cto") || tokens.contains("cfo")
-        || tokens.contains("coo") || tokens.contains("cpo") || lower.contains("chief")
+    if tokens.contains("ceo")
+        || tokens.contains("cto")
+        || tokens.contains("cfo")
+        || tokens.contains("coo")
+        || tokens.contains("cpo")
+        || lower.contains("chief")
     {
         return 95.0;
     }
@@ -337,8 +579,19 @@ pub fn role_seniority_score(title: &str) -> f64 {
 /// Compute pain index from artifacts — higher if recent disruption/complaint mentions.
 pub fn compute_pain_index(artifacts: &[PoiArtifact], now_utc: i64) -> f64 {
     let pain_keywords = [
-        "problem", "issue", "delay", "shortage", "failure", "complaint",
-        "disruption", "late", "defect", "recall", "crisis", "مشكلة", "problème",
+        "problem",
+        "issue",
+        "delay",
+        "shortage",
+        "failure",
+        "complaint",
+        "disruption",
+        "late",
+        "defect",
+        "recall",
+        "crisis",
+        "مشكلة",
+        "problème",
     ];
 
     let mut pain_score = 0.0;
@@ -396,8 +649,13 @@ pub fn infer_change_appetite(role_history: &[RoleHistoryEntry]) -> ChangeAppetit
 
 fn seniority_level_for_title(title: &str) -> u8 {
     let t = title.to_lowercase();
-    if t.contains("chief") || t.contains("ceo") || t.contains("coo") || t.contains("cfo")
-        || t.contains("cto") || t.contains("ciso") || t.contains("president")
+    if t.contains("chief")
+        || t.contains("ceo")
+        || t.contains("coo")
+        || t.contains("cfo")
+        || t.contains("cto")
+        || t.contains("ciso")
+        || t.contains("president")
         || t.contains("founder")
     {
         9
@@ -432,7 +690,11 @@ pub fn compute_career_velocity(role_history: &[RoleHistoryEntry], now_utc: i64) 
     }
 
     // Use earliest start as career start
-    let career_start = role_history.iter().map(|r| r.start_ts).min().unwrap_or(now_utc);
+    let career_start = role_history
+        .iter()
+        .map(|r| r.start_ts)
+        .min()
+        .unwrap_or(now_utc);
     let career_years = ((now_utc - career_start) as f64 / (365.25 * 86_400.0)).max(0.25);
 
     // Calculate max seniority reached minus lowest seniority held
@@ -467,12 +729,73 @@ pub fn compute_public_recurrence_from_artifacts(
 pub fn infer_pain_themes(artifacts: &[PoiArtifact], now_utc: i64) -> Vec<(String, f64)> {
     // theme keyword sets → same decay logic as compute_pain_index but per category
     const THEMES: &[(&str, &[&str])] = &[
-        ("supply_disruption",  &["shortage", "disruption", "stockout", "out of stock", "delay", "backlog"]),
-        ("financial_stress",   &["budget cut", "layoff", "downturn", "loss", "deficit", "cash flow"]),
-        ("quality_crisis",     &["defect", "recall", "failure", "reject", "ppm spike", "complaint"]),
-        ("talent_gap",         &["talent", "hiring", "attrition", "skills gap", "understaffed", "headcount"]),
-        ("regulatory_burden",  &["fine", "penalty", "audit finding", "non-compliance", "litigation", "sec", "gdpr"]),
-        ("cyber_threat",       &["breach", "ransomware", "attack", "vulnerability", "data leak", "phishing"]),
+        (
+            "supply_disruption",
+            &[
+                "shortage",
+                "disruption",
+                "stockout",
+                "out of stock",
+                "delay",
+                "backlog",
+            ],
+        ),
+        (
+            "financial_stress",
+            &[
+                "budget cut",
+                "layoff",
+                "downturn",
+                "loss",
+                "deficit",
+                "cash flow",
+            ],
+        ),
+        (
+            "quality_crisis",
+            &[
+                "defect",
+                "recall",
+                "failure",
+                "reject",
+                "ppm spike",
+                "complaint",
+            ],
+        ),
+        (
+            "talent_gap",
+            &[
+                "talent",
+                "hiring",
+                "attrition",
+                "skills gap",
+                "understaffed",
+                "headcount",
+            ],
+        ),
+        (
+            "regulatory_burden",
+            &[
+                "fine",
+                "penalty",
+                "audit finding",
+                "non-compliance",
+                "litigation",
+                "sec",
+                "gdpr",
+            ],
+        ),
+        (
+            "cyber_threat",
+            &[
+                "breach",
+                "ransomware",
+                "attack",
+                "vulnerability",
+                "data leak",
+                "phishing",
+            ],
+        ),
     ];
 
     let half_life_secs = 90.0 * 86_400.0_f64; // 90-day half-life
@@ -513,21 +836,50 @@ pub fn infer_pain_themes(artifacts: &[PoiArtifact], now_utc: i64) -> Vec<(String
 
 /// Count distinct priority-vector categories that carry significant weight (≥10%).
 pub fn compute_topic_diversity(pv: &PriorityVector) -> u8 {
-    let weights = [pv.cost, pv.quality, pv.speed, pv.resilience, pv.compliance, pv.security];
+    let weights = [
+        pv.cost,
+        pv.quality,
+        pv.speed,
+        pv.resilience,
+        pv.compliance,
+        pv.security,
+    ];
     weights.iter().filter(|&&w| w >= 0.10).count() as u8
 }
 
 // Assertive/directive language markers
 const DIRECTIVE_MARKERS: &[&str] = &[
-    "we will", "we must", "i will", "i expect", "we are committed",
-    "non-negotiable", "mandatory", "zero tolerance", "immediate",
-    "take action", "drive", "execute", "deliver", "require",
+    "we will",
+    "we must",
+    "i will",
+    "i expect",
+    "we are committed",
+    "non-negotiable",
+    "mandatory",
+    "zero tolerance",
+    "immediate",
+    "take action",
+    "drive",
+    "execute",
+    "deliver",
+    "require",
 ];
 // Hedging/passive language markers
 const HEDGING_MARKERS: &[&str] = &[
-    "perhaps", "maybe", "consider", "might", "could be worth",
-    "it depends", "we'll see", "hopefully", "try to", "look into",
-    "it's complicated", "nuanced", "in theory", "ideally",
+    "perhaps",
+    "maybe",
+    "consider",
+    "might",
+    "could be worth",
+    "it depends",
+    "we'll see",
+    "hopefully",
+    "try to",
+    "look into",
+    "it's complicated",
+    "nuanced",
+    "in theory",
+    "ideally",
 ];
 
 /// Infer communication assertiveness from quote / speech artifacts.
@@ -574,8 +926,14 @@ pub fn infer_communication_assertiveness(artifacts: &[PoiArtifact]) -> f64 {
 /// board-level roles in, based on artifact text (a proxy for cross-board influence).
 pub fn infer_cross_board_count(artifacts: &[PoiArtifact]) -> u32 {
     const BOARD_SIGNALS: &[&str] = &[
-        "board member", "board of directors", "director at", "advisory board",
-        "non-executive", "independent director", "trustee", "governor",
+        "board member",
+        "board of directors",
+        "director at",
+        "advisory board",
+        "non-executive",
+        "independent director",
+        "trustee",
+        "governor",
     ];
     use std::collections::HashSet;
     let mut orgs: HashSet<String> = HashSet::new();
@@ -591,7 +949,12 @@ pub fn infer_cross_board_count(artifacts: &[PoiArtifact]) -> u32 {
             if let Some(pos) = BOARD_SIGNALS.iter().find_map(|s| text.find(s)) {
                 let snippet = &text[pos..pos.min(text.len())];
                 // Just record the artifact source as a distinct board seat proxy
-                orgs.insert(artifact.source_url.clone().unwrap_or_else(|| snippet.to_string()));
+                orgs.insert(
+                    artifact
+                        .source_url
+                        .clone()
+                        .unwrap_or_else(|| snippet.to_string()),
+                );
             }
         }
     }
@@ -615,8 +978,16 @@ mod tests {
     #[test]
     fn test_compute_priority_vector_cost_dominant() {
         let artifacts = vec![
-            make_artifact("Cost reduction strategies", "Budget savings and TCO analysis", 1700000000),
-            make_artifact("Price negotiation", "Cost optimization approach with price benchmarking", 1700000000),
+            make_artifact(
+                "Cost reduction strategies",
+                "Budget savings and TCO analysis",
+                1700000000,
+            ),
+            make_artifact(
+                "Price negotiation",
+                "Cost optimization approach with price benchmarking",
+                1700000000,
+            ),
         ];
         let pv = compute_priority_vector(&artifacts);
         assert_eq!(pv.dominant(), "cost");
@@ -626,7 +997,11 @@ mod tests {
     #[test]
     fn test_compute_priority_vector_quality_dominant() {
         let artifacts = vec![
-            make_artifact("Quality management", "PPM defect analysis and yield improvement", 1700000000),
+            make_artifact(
+                "Quality management",
+                "PPM defect analysis and yield improvement",
+                1700000000,
+            ),
             make_artifact("Zero defects", "Quality control excellence", 1700000000),
         ];
         let pv = compute_priority_vector(&artifacts);
@@ -740,19 +1115,33 @@ mod tests {
     fn test_compute_pain_index_high() {
         let now = 1700100000_i64;
         let artifacts = vec![
-            make_artifact("Supply chain crisis", "Major shortage and delays causing failure", now - 86400),
-            make_artifact("Quality problem report", "Defect recall and complaint escalation", now - 43200),
+            make_artifact(
+                "Supply chain crisis",
+                "Major shortage and delays causing failure",
+                now - 86400,
+            ),
+            make_artifact(
+                "Quality problem report",
+                "Defect recall and complaint escalation",
+                now - 43200,
+            ),
         ];
         let pain = compute_pain_index(&artifacts, now);
-        assert!(pain > 0.5, "Recent pain artifacts should yield high pain index, got {}", pain);
+        assert!(
+            pain > 0.5,
+            "Recent pain artifacts should yield high pain index, got {}",
+            pain
+        );
     }
 
     #[test]
     fn test_compute_pain_index_low() {
         let now = 1700100000_i64;
-        let artifacts = vec![
-            make_artifact("Annual report", "Growth and expansion plans", now - 86400),
-        ];
+        let artifacts = vec![make_artifact(
+            "Annual report",
+            "Growth and expansion plans",
+            now - 86400,
+        )];
         let pain = compute_pain_index(&artifacts, now);
         assert!(pain < 0.2);
     }
@@ -767,14 +1156,47 @@ mod tests {
     #[test]
     fn test_infer_change_appetite() {
         let history_4 = vec![
-            RoleHistoryEntry { org: "A".to_string(), title: "Eng".to_string(), role_family: RoleFamily::Engineering, start_ts: 0, end_ts: Some(100) },
-            RoleHistoryEntry { org: "B".to_string(), title: "Eng".to_string(), role_family: RoleFamily::Engineering, start_ts: 100, end_ts: Some(200) },
-            RoleHistoryEntry { org: "C".to_string(), title: "Eng".to_string(), role_family: RoleFamily::Engineering, start_ts: 200, end_ts: Some(300) },
-            RoleHistoryEntry { org: "D".to_string(), title: "Eng".to_string(), role_family: RoleFamily::Engineering, start_ts: 300, end_ts: None },
+            RoleHistoryEntry {
+                org: "A".to_string(),
+                title: "Eng".to_string(),
+                role_family: RoleFamily::Engineering,
+                start_ts: 0,
+                end_ts: Some(100),
+            },
+            RoleHistoryEntry {
+                org: "B".to_string(),
+                title: "Eng".to_string(),
+                role_family: RoleFamily::Engineering,
+                start_ts: 100,
+                end_ts: Some(200),
+            },
+            RoleHistoryEntry {
+                org: "C".to_string(),
+                title: "Eng".to_string(),
+                role_family: RoleFamily::Engineering,
+                start_ts: 200,
+                end_ts: Some(300),
+            },
+            RoleHistoryEntry {
+                org: "D".to_string(),
+                title: "Eng".to_string(),
+                role_family: RoleFamily::Engineering,
+                start_ts: 300,
+                end_ts: None,
+            },
         ];
-        assert_eq!(infer_change_appetite(&history_4), ChangeAppetite::EarlyAdopter);
-        assert_eq!(infer_change_appetite(&history_4[..2]), ChangeAppetite::Pragmatist);
-        assert_eq!(infer_change_appetite(&history_4[..1]), ChangeAppetite::Conservative);
+        assert_eq!(
+            infer_change_appetite(&history_4),
+            ChangeAppetite::EarlyAdopter
+        );
+        assert_eq!(
+            infer_change_appetite(&history_4[..2]),
+            ChangeAppetite::Pragmatist
+        );
+        assert_eq!(
+            infer_change_appetite(&history_4[..1]),
+            ChangeAppetite::Conservative
+        );
         assert_eq!(infer_change_appetite(&[]), ChangeAppetite::Laggard);
     }
 
@@ -782,18 +1204,28 @@ mod tests {
     #[test]
     fn test_influence_score_negative_inputs() {
         let score = compute_influence_score(-10.0, -5.0, -20.0);
-        assert!(score >= 0.0, "Negative inputs should be clamped: got {}", score);
+        assert!(
+            score >= 0.0,
+            "Negative inputs should be clamped: got {}",
+            score
+        );
     }
 
     // B119: Future-dated artifacts beyond threshold
     #[test]
     fn test_pain_index_future_artifacts_ignored() {
         let now = 1700100000_i64;
-        let artifacts = vec![
-            make_artifact("Future crisis", "Major problem and failure", now + 86400 * 365),
-        ];
+        let artifacts = vec![make_artifact(
+            "Future crisis",
+            "Major problem and failure",
+            now + 86400 * 365,
+        )];
         let pain = compute_pain_index(&artifacts, now);
-        assert!(pain < 0.01, "Future artifacts should not contribute to pain, got {}", pain);
+        assert!(
+            pain < 0.01,
+            "Future artifacts should not contribute to pain, got {}",
+            pain
+        );
     }
 
     // B120: Empty role family / unknown values
@@ -810,10 +1242,20 @@ mod tests {
         let now = 1700100000_i64;
         // Many pain artifacts should still be bounded to [0,1]
         let artifacts: Vec<PoiArtifact> = (0..100)
-            .map(|i| make_artifact("crisis failure problem", "shortage delay defect", now - i * 3600))
+            .map(|i| {
+                make_artifact(
+                    "crisis failure problem",
+                    "shortage delay defect",
+                    now - i * 3600,
+                )
+            })
             .collect();
         let pain = compute_pain_index(&artifacts, now);
-        assert!(pain <= 1.0, "Pain index should be bounded to 1.0, got {}", pain);
+        assert!(
+            pain <= 1.0,
+            "Pain index should be bounded to 1.0, got {}",
+            pain
+        );
         assert!(pain >= 0.0);
     }
 
@@ -841,35 +1283,54 @@ mod tests {
     // B130: Locale-specific keyword sets for priority vector
     #[test]
     fn test_priority_vector_with_locale_keywords() {
-        let artifacts = vec![
-            make_artifact("비용 절감 보고서", "예산 초과 및 가격 인상", 1700000000),
-        ];
+        let artifacts = vec![make_artifact(
+            "비용 절감 보고서",
+            "예산 초과 및 가격 인상",
+            1700000000,
+        )];
         let locale_kws = default_locale_keywords();
         let pv = compute_priority_vector_with_locale(&artifacts, &locale_kws);
         // Korean cost keywords should boost cost dimension
-        assert!(pv.cost > 0.0, "Korean cost keywords should register, got cost={}", pv.cost);
+        assert!(
+            pv.cost > 0.0,
+            "Korean cost keywords should register, got cost={}",
+            pv.cost
+        );
     }
 
     #[test]
     fn test_compute_priority_vector_repeated_keywords_bounded() {
         let repeated_cost = "cost ".repeat(200);
-        let artifacts = vec![
-            make_artifact("Cost storm", &format!("{} quality", repeated_cost), 1700000000),
-        ];
+        let artifacts = vec![make_artifact(
+            "Cost storm",
+            &format!("{} quality", repeated_cost),
+            1700000000,
+        )];
 
         let pv = compute_priority_vector(&artifacts);
-        assert!(pv.cost < 0.9, "repeated keyword should be bounded, got {}", pv.cost);
-        assert!(pv.cost > pv.quality, "cost should still dominate but not saturate");
+        assert!(
+            pv.cost < 0.9,
+            "repeated keyword should be bounded, got {}",
+            pv.cost
+        );
+        assert!(
+            pv.cost > pv.quality,
+            "cost should still dominate but not saturate"
+        );
     }
 
     #[test]
     fn test_compute_priority_vector_repeated_keywords_cap_is_stable() {
-        let artifacts_low = vec![
-            make_artifact("A", &"cost ".repeat(MAX_KEYWORD_HITS_PER_TERM), 1700000000),
-        ];
-        let artifacts_high = vec![
-            make_artifact("A", &"cost ".repeat(MAX_KEYWORD_HITS_PER_TERM * 20), 1700000000),
-        ];
+        let artifacts_low = vec![make_artifact(
+            "A",
+            &"cost ".repeat(MAX_KEYWORD_HITS_PER_TERM),
+            1700000000,
+        )];
+        let artifacts_high = vec![make_artifact(
+            "A",
+            &"cost ".repeat(MAX_KEYWORD_HITS_PER_TERM * 20),
+            1700000000,
+        )];
 
         let pv_low = compute_priority_vector(&artifacts_low);
         let pv_high = compute_priority_vector(&artifacts_high);

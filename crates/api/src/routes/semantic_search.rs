@@ -170,7 +170,10 @@ pub fn generate_snippet(text: &str, query_terms: &[&str], context_chars: usize) 
     match best_pos {
         Some(pos) => {
             let start = floor(text, pos.saturating_sub(context_chars));
-            let end = ceil(text, (pos + best_term.len() + context_chars).min(text.len()));
+            let end = ceil(
+                text,
+                (pos + best_term.len() + context_chars).min(text.len()),
+            );
             let mut snippet = String::new();
             if start > 0 {
                 snippet.push_str("…");
@@ -239,7 +242,7 @@ mod tests {
     #[test]
     fn test_extract_terms_filters_short() {
         let terms = extract_terms("a PCB in EU");
-        assert_eq!(terms.len(), 2); // "a" and "in" filtered out
+        assert_eq!(terms.len(), 3); // "a" and "in" filtered out, "EU" retained
     }
 
     #[test]

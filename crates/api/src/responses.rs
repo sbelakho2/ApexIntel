@@ -3,11 +3,11 @@
 //! Provides the standard wrapper for all JSON API responses, including
 //! success envelopes, error bodies, and status code mapping.
 
+use apex_core::errors::ApexError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use apex_core::errors::ApexError;
 
 // ────────────────────────────────────────────
 // Success envelope
@@ -185,7 +185,10 @@ impl ApiError {
         details.insert("retry_after".to_string(), retry_after_secs.to_string());
         Self::new(
             ErrorCode::RateLimited,
-            format!("Rate limit exceeded. Retry after {} seconds", retry_after_secs),
+            format!(
+                "Rate limit exceeded. Retry after {} seconds",
+                retry_after_secs
+            ),
         )
         .with_details(details)
     }
@@ -459,7 +462,10 @@ mod tests {
             .with_request_id("req-123")
             .with_duration(42);
         let resp = success_with_meta(42, meta);
-        assert_eq!(resp.meta.as_ref().unwrap().request_id, Some("req-123".to_string()));
+        assert_eq!(
+            resp.meta.as_ref().unwrap().request_id,
+            Some("req-123".to_string())
+        );
         assert_eq!(resp.meta.as_ref().unwrap().duration_ms, Some(42));
     }
 
@@ -517,7 +523,10 @@ mod tests {
         let err = ApiError::rate_limited(60);
         assert_eq!(err.http_status(), 429);
         assert!(err.details.is_some());
-        assert_eq!(err.details.as_ref().unwrap().get("retry_after"), Some(&"60".to_string()));
+        assert_eq!(
+            err.details.as_ref().unwrap().get("retry_after"),
+            Some(&"60".to_string())
+        );
     }
 
     #[test]

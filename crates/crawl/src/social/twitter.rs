@@ -125,11 +125,7 @@ impl TwitterScraper {
     ///
     /// `query` supports Twitter search operators, e.g.:
     /// `"defense procurement Israel" lang:en -is:retweet`
-    pub async fn search_recent(
-        &self,
-        query: &str,
-        max_results: u32,
-    ) -> Result<Vec<SocialPost>> {
+    pub async fn search_recent(&self, query: &str, max_results: u32) -> Result<Vec<SocialPost>> {
         match &self.bearer_token {
             Some(token) => self.api_search(query, max_results, token).await,
             None => {
@@ -140,11 +136,7 @@ impl TwitterScraper {
     }
 
     /// Fetch recent tweets from a public user timeline.
-    pub async fn user_timeline(
-        &self,
-        user_id: &str,
-        max_results: u32,
-    ) -> Result<Vec<SocialPost>> {
+    pub async fn user_timeline(&self, user_id: &str, max_results: u32) -> Result<Vec<SocialPost>> {
         let token = match &self.bearer_token {
             Some(t) => t,
             None => {
@@ -155,7 +147,9 @@ impl TwitterScraper {
 
         let url = format!(
             "{}/users/{}/tweets?max_results={}&tweet.fields=created_at,public_metrics,lang",
-            TWITTER_API_BASE, user_id, max_results.min(100)
+            TWITTER_API_BASE,
+            user_id,
+            max_results.min(100)
         );
 
         let resp: TweetSearchResponse = self
@@ -209,7 +203,11 @@ impl TwitterScraper {
     async fn nitter_search(&self, query: &str, max_results: u32) -> Result<Vec<SocialPost>> {
         // Try each nitter instance in order
         for instance in NITTER_INSTANCES {
-            let url = format!("{}/search?q={}&f=tweets", instance, urlencoding::encode(query));
+            let url = format!(
+                "{}/search?q={}&f=tweets",
+                instance,
+                urlencoding::encode(query)
+            );
             if let Ok(posts) = self.scrape_nitter_page(&url, max_results).await {
                 return Ok(posts);
             }
@@ -219,38 +217,32 @@ impl TwitterScraper {
     }
 
     async fn scrape_nitter_page(&self, url: &str, max_results: u32) -> Result<Vec<SocialPost>> {
-        let html = self
-            .client
-            .get(url)
-            .send()
-            .await?
-            .text()
-            .await?;
+        let html = self.client.get(url).send().await?.text().await?;
 
         // Parse Nitter HTML: look for tweet cards
         let mut posts = Vec::new();
         let now = Utc::now();
 
         for (idx, block) in html.split("timeline-item").enumerate() {
-            if idx == 0 { continue; } // Skip header
-            if posts.len() >= max_results as usize { break; }
+            if idx == 0 {
+                continue;
+            } // Skip header
+            if posts.len() >= max_results as usize {
+                break;
+            }
 
             // Extract tweet-content text block
             if let Some(content_start) = block.find("tweet-content") {
                 let inner = &block[content_start..];
                 if let (Some(start), Some(end)) = (inner.find('>'), inner.find("</div>")) {
-                    let text = strip_html_tags(&inner[start+1..end]);
+                    let text = strip_html_tags(&inner[start + 1..end]);
                     if !text.trim().is_empty() {
                         // Extract tweet link
                         let post_url = extract_attr(block, "href")
                             .map(|h| format!("https://twitter.com{}", h))
                             .unwrap_or_default();
 
-                        let post_id = post_url
-                            .split('/')
-                            .last()
-                            .unwrap_or("unknown")
-                            .to_string();
+                        let post_id = post_url.split('/').last().unwrap_or("unknown").to_string();
 
                         // Extract author handle
                         let author = extract_attr(block, "class=\"username\"")
@@ -287,8 +279,8 @@ impl TwitterScraper {
 
                 if let Some(metrics) = t.public_metrics {
                     post.like_count = metrics.like_count.unwrap_or(0);
-                    post.share_count = metrics.retweet_count.unwrap_or(0)
-                        + metrics.quote_count.unwrap_or(0);
+                    post.share_count =
+                        metrics.retweet_count.unwrap_or(0) + metrics.quote_count.unwrap_or(0);
                     post.reply_count = metrics.reply_count.unwrap_or(0);
                 }
 

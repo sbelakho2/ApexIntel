@@ -209,7 +209,10 @@ mod tests {
     fn test_generate_procurement_engagement() {
         let poi = sample_poi(RoleFamily::Procurement, DecisionStyle::CostFirst, 0.3);
         let eng = generate_engagement_profile(&poi);
-        assert!(eng.what_they_want_to_hear.iter().any(|t| t.contains("cost")));
+        assert!(eng
+            .what_they_want_to_hear
+            .iter()
+            .any(|t| t.contains("cost")));
         assert!(eng.opening_topics.iter().any(|t| t.contains("TCO")));
         assert_eq!(eng.best_channel, "trade_show_referral");
         assert_eq!(eng.best_timing, "budget_cycle_q4_q1");
@@ -225,7 +228,11 @@ mod tests {
 
     #[test]
     fn test_high_pain_timing() {
-        let poi = sample_poi(RoleFamily::Operations, DecisionStyle::BalancedAnalytical, 0.8);
+        let poi = sample_poi(
+            RoleFamily::Operations,
+            DecisionStyle::BalancedAnalytical,
+            0.8,
+        );
         let eng = generate_engagement_profile(&poi);
         assert_eq!(eng.best_timing, "immediately_pain_driven");
         assert!(eng.avoid_topics.iter().any(|t| t.contains("failures")));
@@ -256,21 +263,35 @@ mod tests {
 
     #[test]
     fn test_government_talking_points() {
-        let poi = sample_poi(RoleFamily::Government, DecisionStyle::BalancedAnalytical, 0.1);
+        let poi = sample_poi(
+            RoleFamily::Government,
+            DecisionStyle::BalancedAnalytical,
+            0.1,
+        );
         let eng = generate_engagement_profile(&poi);
-        assert!(eng.what_they_want_to_hear.iter().any(|t| t.contains("Job creation")));
+        assert!(eng
+            .what_they_want_to_hear
+            .iter()
+            .any(|t| t.contains("Job creation")));
     }
 
     #[test]
     fn test_security_role() {
         let poi = sample_poi(RoleFamily::Security, DecisionStyle::RiskFirst, 0.4);
         let eng = generate_engagement_profile(&poi);
-        assert!(eng.what_they_want_to_hear.iter().any(|t| t.contains("DMARC")));
+        assert!(eng
+            .what_they_want_to_hear
+            .iter()
+            .any(|t| t.contains("DMARC")));
     }
 
     #[test]
     fn test_low_risk_tolerance_avoid() {
-        let mut poi = sample_poi(RoleFamily::Executive, DecisionStyle::BalancedAnalytical, 0.3);
+        let mut poi = sample_poi(
+            RoleFamily::Executive,
+            DecisionStyle::BalancedAnalytical,
+            0.3,
+        );
         poi.psychological.risk_tolerance = 0.2;
         let eng = generate_engagement_profile(&poi);
         assert!(eng.avoid_topics.iter().any(|t| t.contains("disruptive")));

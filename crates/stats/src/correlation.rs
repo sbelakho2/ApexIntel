@@ -192,7 +192,10 @@ mod tests {
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let y = vec![1.0, 4.0, 9.0, 16.0, 25.0]; // monotonic but not linear
         let r = spearman(&x, &y);
-        assert!((r - 1.0).abs() < 1e-10, "Monotonic data should have Spearman = 1.0");
+        assert!(
+            (r - 1.0).abs() < 1e-10,
+            "Monotonic data should have Spearman = 1.0"
+        );
     }
 
     #[test]
@@ -201,7 +204,11 @@ mod tests {
         let results = lagged_xcorr(&x, &x, 5);
         // At lag 0, autocorrelation should be ~1.0
         let lag_0 = results.iter().find(|(lag, _)| *lag == 0).unwrap();
-        assert!((lag_0.1 - 1.0).abs() < 0.01, "Self-correlation at lag 0 should be ~1.0, got {}", lag_0.1);
+        assert!(
+            (lag_0.1 - 1.0).abs() < 0.01,
+            "Self-correlation at lag 0 should be ~1.0, got {}",
+            lag_0.1
+        );
     }
 
     #[test]
@@ -241,7 +248,11 @@ mod tests {
         let results = lagged_xcorr(&x, &y, 10);
 
         // Must still return 2*max_lag+1 = 21 entries
-        assert_eq!(results.len(), 21, "lagged_xcorr must return 2*max_lag+1 entries");
+        assert_eq!(
+            results.len(),
+            21,
+            "lagged_xcorr must return 2*max_lag+1 entries"
+        );
 
         // Lags with abs > 2 have < 3 overlapping points → must be 0.0
         for (lag, corr) in &results {
@@ -263,7 +274,10 @@ mod tests {
         assert_eq!(results.len(), 11);
         // Lag 0 should still show high autocorrelation
         let lag0 = results.iter().find(|(l, _)| *l == 0).unwrap().1;
-        assert!((lag0 - 1.0).abs() < 1e-10, "lag-0 autocorr should be 1.0; got {lag0}");
+        assert!(
+            (lag0 - 1.0).abs() < 1e-10,
+            "lag-0 autocorr should be 1.0; got {lag0}"
+        );
     }
 
     // ── B257: spearman when all values are identical (all-ties) ─────────────
@@ -286,7 +300,10 @@ mod tests {
         let x = vec![3.0; 5];
         let y = vec![7.0; 5];
         let r = spearman(&x, &y);
-        assert!((r - 0.0).abs() < 1e-10, "all-ties in both series must give Spearman=0; got {r}");
+        assert!(
+            (r - 0.0).abs() < 1e-10,
+            "all-ties in both series must give Spearman=0; got {r}"
+        );
     }
 
     #[test]
@@ -313,6 +330,9 @@ mod tests {
         let x = vec![1.0, f64::NAN, 3.0, 4.0];
         let y = vec![1.0, 2.0, 3.0, 4.0];
         let r = spearman(&x, &y);
-        assert!((r - 1.0).abs() < 1e-10, "Expected perfect monotonic rank after NaN-pair drop, got {r}");
+        assert!(
+            (r - 1.0).abs() < 1e-10,
+            "Expected perfect monotonic rank after NaN-pair drop, got {r}"
+        );
     }
 }

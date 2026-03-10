@@ -38,6 +38,43 @@ DEFAULT_SYSTEMS = {
     "compliance": "Assess trade compliance risk. Return JSON with: risk_level, entities_of_concern, applicable_regulations, red_flags, recommended_actions.",
 }
 
+MANIFEST_NAME = "manifest.json"
+
+
+def load_eval_manifest(eval_dir: Path) -> Dict[str, Any]:
+    manifest_path = eval_dir / MANIFEST_NAME
+    if not manifest_path.exists():
+        return {
+            "suite_name": "ad_hoc_eval",
+            "dataset_version": "unversioned",
+            "schema_version": "v0",
+            "files": [],
+        }
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    manifest.setdefault("suite_name", "apexintel-evaluation")
+    manifest.setdefault("dataset_version", "unversioned")
+    manifest.setdefault("schema_version", "v1")
+    manifest.setdefault("files", [])
+    return manifest
+
+
+def resolve_eval_files(eval_dir: Path) -> Tuple[Dict[str, Any], List[Path]]:
+    manifest = load_eval_manifest(eval_dir)
+    declared_files = manifest.get("files", []) or []
+    if declared_files:
+        files = [eval_dir / entry["file"] for entry in declared_files if entry.get("file")]
+    else:
+        files = sorted([p for p in eval_dir.glob("*.jsonl") if p.is_file()])
+
+    missing = [path.name for path in files if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"evaluation manifest references missing files: {missing}")
+
+    return manifest, files
+
 
 def _strip_fences(text: str) -> str:
     """Strip markdown code fences from text, matching Rust validators.rs logic.
@@ -446,10 +483,15 @@ def main() -> None:
     model, tokenizer = load_model(args.model_dir, args.adapter)
     import sys
 
+    manifest, files = resolve_eval_files(eval_dir)
+
     results = {
         "model": args.model_dir,
         "adapter": args.adapter,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "suite_name": manifest.get("suite_name"),
+        "dataset_version": manifest.get("dataset_version"),
+        "schema_version": manifest.get("schema_version"),
         "total": 0,
         "passed": 0,
         "failed": 0,
@@ -457,7 +499,6 @@ def main() -> None:
         "failures": [],
     }
 
-    files = sorted([p for p in eval_dir.glob("*.jsonl") if p.is_file()])
     t0 = time.time()
     global_idx = 0
 
@@ -619,7 +660,7 @@ def _run_eval_pass(model, tokenizer, eval_dir: Path, max_examples: int, max_new_
         "failed": 0,
         "by_type": {},
     }
-    files = sorted([p for p in eval_dir.glob("*.jsonl") if p.is_file()])
+    _, files = resolve_eval_files(eval_dir)
     for path in files:
         items = load_jsonl(path)
         if max_examples > 0:
@@ -740,7 +781,7 @@ def _compare(args, eval_dir: Path, out_report: Path) -> None:
 
 def _dry_run(eval_dir: Path, out_report: Path) -> None:
     """Validate all eval JSONL files without a model."""
-    files = sorted([p for p in eval_dir.glob("*.jsonl") if p.is_file()])
+    manifest, files = resolve_eval_files(eval_dir)
     total = 0
     valid = 0
     by_type: Dict[str, int] = {}
@@ -771,6 +812,9 @@ def _dry_run(eval_dir: Path, out_report: Path) -> None:
     # Write dry-run report
     report = {
         "dry_run": True,
+        "suite_name": manifest.get("suite_name"),
+        "dataset_version": manifest.get("dataset_version"),
+        "schema_version": manifest.get("schema_version"),
         "total": total,
         "valid": valid,
         "by_type": by_type,

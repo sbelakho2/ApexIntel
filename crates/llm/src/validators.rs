@@ -23,13 +23,17 @@ pub fn extract_json(raw: &str) -> Option<String> {
         let start = search_from + start_rel;
         let after_fence = &trimmed[start + 3..];
         let after_fence_trimmed = after_fence.trim_start();
-        let content_start = if after_fence_trimmed.starts_with("json") || after_fence_trimmed.starts_with("JSON") {
-            after_fence.find('\n').map(|i| i + 1).unwrap_or(after_fence.len())
-        } else if after_fence.starts_with('\n') {
-            1
-        } else {
-            0
-        };
+        let content_start =
+            if after_fence_trimmed.starts_with("json") || after_fence_trimmed.starts_with("JSON") {
+                after_fence
+                    .find('\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(after_fence.len())
+            } else if after_fence.starts_with('\n') {
+                1
+            } else {
+                0
+            };
 
         let content = &after_fence[content_start..];
         let end = content
@@ -115,7 +119,9 @@ pub fn validate_recipe_json(value: &Value) -> Vec<String> {
         errors.push(format!("Missing required field: {}", field));
     }
 
-    if !check_string_field(value, "narrative_template") && !missing.contains(&"narrative_template".to_string()) {
+    if !check_string_field(value, "narrative_template")
+        && !missing.contains(&"narrative_template".to_string())
+    {
         errors.push("narrative_template must be a non-empty string".to_string());
     }
 
@@ -149,7 +155,13 @@ pub fn validate_recipe_json(value: &Value) -> Vec<String> {
 pub fn validate_insight_json(value: &Value) -> Vec<String> {
     let mut errors = Vec::new();
 
-    let required = ["recipe_id", "entity_id", "narrative", "severity", "confidence"];
+    let required = [
+        "recipe_id",
+        "entity_id",
+        "narrative",
+        "severity",
+        "confidence",
+    ];
     let missing = check_required_fields(value, &required);
     for field in &missing {
         errors.push(format!("Missing required field: {}", field));
@@ -195,7 +207,9 @@ pub fn validate_stored_llm_output(value: &Value) -> Vec<String> {
         errors.push("kind must be a non-empty string".to_string());
     }
 
-    if value.get("payload").is_some() && !value.get("payload").map(|p| p.is_object()).unwrap_or(false) {
+    if value.get("payload").is_some()
+        && !value.get("payload").map(|p| p.is_object()).unwrap_or(false)
+    {
         errors.push("payload must be an object".to_string());
     }
 
@@ -251,7 +265,10 @@ pub fn check_content_quality(text: &str) -> Vec<String> {
     ];
     for pattern in &refusal_patterns {
         if lower.starts_with(pattern) {
-            issues.push(format!("Content appears to be a refusal: starts with '{}'", pattern));
+            issues.push(format!(
+                "Content appears to be a refusal: starts with '{}'",
+                pattern
+            ));
         }
     }
 
@@ -483,7 +500,8 @@ mod tests {
 
     #[test]
     fn test_check_content_quality_good() {
-        let text = "Starz Electronics has been awarded ISO 9001 certification for their Tunis facility.";
+        let text =
+            "Starz Electronics has been awarded ISO 9001 certification for their Tunis facility.";
         let issues = check_content_quality(text);
         assert!(issues.is_empty());
     }
@@ -635,7 +653,11 @@ mod tests {
     fn test_check_content_quality_mixed_scripts() {
         let text = "Starz Electronics (星茨电子) achieved ISO 9001 certification for Tunis.";
         let issues = check_content_quality(text);
-        assert!(issues.is_empty(), "Mixed-script text should pass: {:?}", issues);
+        assert!(
+            issues.is_empty(),
+            "Mixed-script text should pass: {:?}",
+            issues
+        );
     }
 
     // ════════════════════════════════════════════
@@ -699,7 +721,9 @@ mod tests {
             "action_playbook": "Take action"
         });
         let errors = validate_recipe_json(&val);
-        assert!(errors.iter().any(|e| e.contains("signals array must not be empty")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("signals array must not be empty")));
     }
 
     // ════════════════════════════════════════════
@@ -742,7 +766,10 @@ mod tests {
     #[test]
     fn test_check_unique_id_missing_id_explicit() {
         let val: Value = serde_json::json!({"name": "test"});
-        assert!(!check_unique_id(&val, &[]), "Missing id should return false");
+        assert!(
+            !check_unique_id(&val, &[]),
+            "Missing id should return false"
+        );
     }
 
     #[test]
@@ -754,13 +781,19 @@ mod tests {
     #[test]
     fn test_check_unique_id_whitespace_id() {
         let val: Value = serde_json::json!({"id": "   "});
-        assert!(!check_unique_id(&val, &[]), "Whitespace id should return false");
+        assert!(
+            !check_unique_id(&val, &[]),
+            "Whitespace id should return false"
+        );
     }
 
     #[test]
     fn test_check_unique_id_numeric_id_ignored() {
         let val: Value = serde_json::json!({"id": 123});
-        assert!(!check_unique_id(&val, &[]), "Non-string id should return false");
+        assert!(
+            !check_unique_id(&val, &[]),
+            "Non-string id should return false"
+        );
     }
 
     // ════════════════════════════════════════════

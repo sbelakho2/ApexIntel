@@ -3,12 +3,13 @@
 //! Takes a set of loaded recipes and feature data, checks signal presence,
 //! applies transforms, runs threshold checks, and produces ranked InsightCandidates.
 
+use apex_core::analysis::calibrate_confidence;
 use apex_core::schemas::{Recipe, RecipeStatus, SignalSpec, TransformSpec};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use uuid::Uuid;
 use tracing::warn;
+use uuid::Uuid;
 
 /// Maximum number of entities accepted in a single [`RecipeEngine::evaluate_batch`] call (B286).
 ///
@@ -67,7 +68,9 @@ pub fn check_signal(spec: &SignalSpec, features: &FeatureMap) -> Option<f64> {
 
     let threshold = spec.threshold.unwrap_or(0.0);
 
-    let known_operators = ["increase", "decrease", "above", "below", "equals", "contains"];
+    let known_operators = [
+        "increase", "decrease", "above", "below", "equals", "contains",
+    ];
     let op = spec.operator.as_str();
 
     // B131: Validate operator — unknown operators return None
@@ -289,18 +292,26 @@ pub fn estimate_confidence(signal_values: &[f64], recipe: &Recipe) -> f64 {
         0.0
     };
 
-    // 4. Precision factor: historical accuracy, discounted for seed recipes.
-    //    Seed recipes (fire_count == 0) previously returned 1.0 which inflated
-    //    confidence.  We use 0.5 as a neutral prior instead.
+    // 4. Precision factor: historical accuracy. Keep a neutral prior for unseen
+    // recipes, then pass the result through the shared calibration helper so
+    // false-positive-heavy recipes are disciplined more aggressively.
     let precision = if recipe.fire_count == 0 {
         0.5
     } else {
         recipe.precision()
     };
 
-    // Weighted combination
     let raw = 0.30 * coverage + 0.30 * strength + 0.15 * diversity + 0.25 * precision;
-    raw.min(1.0).max(0.05)
+    let true_positive_count = recipe
+        .fire_count
+        .saturating_sub(recipe.false_positive_count);
+    let calibration = calibrate_confidence(
+        raw.min(1.0).max(0.05),
+        true_positive_count,
+        recipe.false_positive_count,
+        None,
+    );
+    calibration.calibrated_confidence.min(1.0).max(0.05)
 }
 
 // ────────────────────────────────────────────
@@ -367,11 +378,7 @@ pub fn evaluate_recipe(
     }
 
     // 5. Build evidence IDs from signal keys
-    let evidence_ids: Vec<String> = recipe
-        .signals
-        .iter()
-        .map(|s| signal_key(s))
-        .collect();
+    let evidence_ids: Vec<String> = recipe.signals.iter().map(|s| signal_key(s)).collect();
 
     Some(InsightCandidate {
         recipe_id: recipe.id,
@@ -429,11 +436,7 @@ impl RecipeEngine {
     }
 
     /// Evaluate all active recipes for a given entity.
-    pub fn evaluate_all(
-        &self,
-        entity_id: &str,
-        features: &FeatureMap,
-    ) -> Vec<InsightCandidate> {
+    pub fn evaluate_all(&self, entity_id: &str, features: &FeatureMap) -> Vec<InsightCandidate> {
         let mut candidates = Vec::new();
 
         for recipe in self.active_recipes() {
@@ -460,10 +463,7 @@ impl RecipeEngine {
     /// Inputs larger than [`MAX_EVALUATE_BATCH_SIZE`] are truncated before
     /// evaluation.  The truncation is logged at `WARN` level.  Callers
     /// processing more entities should shard the slice and merge results.
-    pub fn evaluate_batch(
-        &self,
-        entities: &[(&str, &FeatureMap)],
-    ) -> Vec<InsightCandidate> {
+    pub fn evaluate_batch(&self, entities: &[(&str, &FeatureMap)]) -> Vec<InsightCandidate> {
         // B295: Deduplicate by entity_id before truncation or processing
         let mut seen_ids = std::collections::HashSet::new();
         let mut unique_entities = Vec::new();
@@ -525,7 +525,12 @@ impl RecipeEngine {
 mod tests {
     use super::*;
 
-    fn make_signal(obs_type: &str, field: &str, operator: &str, threshold: Option<f64>) -> SignalSpec {
+    fn make_signal(
+        obs_type: &str,
+        field: &str,
+        operator: &str,
+        threshold: Option<f64>,
+    ) -> SignalSpec {
         SignalSpec {
             observation_type: obs_type.to_string(),
             field: field.to_string(),
@@ -697,11 +702,14 @@ mod tests {
     #[test]
     fn test_estimate_confidence() {
         // Recipe declares 3 signals so that coverage differentiates 2 vs 3 matches.
-        let recipe = make_recipe("A001", vec![
-            make_signal("X", "y", "above", Some(0.0)),
-            make_signal("Y", "z", "above", Some(0.0)),
-            make_signal("Z", "w", "above", Some(0.0)),
-        ]);
+        let recipe = make_recipe(
+            "A001",
+            vec![
+                make_signal("X", "y", "above", Some(0.0)),
+                make_signal("Y", "z", "above", Some(0.0)),
+                make_signal("Z", "w", "above", Some(0.0)),
+            ],
+        );
         let conf = estimate_confidence(&[5.0, 3.0], &recipe);
         assert!(conf > 0.0);
         assert!(conf <= 1.0);
@@ -718,10 +726,22 @@ mod tests {
     }
 
     #[test]
+    fn test_estimate_confidence_penalizes_false_positive_history() {
+        let mut reliable = make_recipe("A001", vec![make_signal("X", "y", "above", Some(0.0))]);
+        reliable.fire_count = 50;
+        reliable.false_positive_count = 5;
+
+        let mut noisy = reliable.clone();
+        noisy.false_positive_count = 30;
+
+        let reliable_conf = estimate_confidence(&[4.0], &reliable);
+        let noisy_conf = estimate_confidence(&[4.0], &noisy);
+        assert!(reliable_conf > noisy_conf);
+    }
+
+    #[test]
     fn test_evaluate_recipe_satisfied() {
-        let signals = vec![
-            make_signal("JobPost", "count", "above", Some(3.0)),
-        ];
+        let signals = vec![make_signal("JobPost", "count", "above", Some(3.0))];
         let recipe = make_recipe("A001", signals);
         let mut features = FeatureMap::new();
         features.insert("JobPost.count".to_string(), 5.0);
@@ -737,9 +757,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_recipe_not_satisfied() {
-        let signals = vec![
-            make_signal("JobPost", "count", "above", Some(10.0)),
-        ];
+        let signals = vec![make_signal("JobPost", "count", "above", Some(10.0))];
         let recipe = make_recipe("A001", signals);
         // No features at all — neither exact match nor .count fallback fire.
         let features = FeatureMap::new();
@@ -849,7 +867,10 @@ mod tests {
         // No "Price.copper.prev" in features — should fall back to val, yielding 0% change
         let features = FeatureMap::new();
         let result = apply_transforms(&signals, &transforms, &features);
-        assert!((result[0] - 0.0).abs() < 1e-10, "Missing prev should yield 0 change");
+        assert!(
+            (result[0] - 0.0).abs() < 1e-10,
+            "Missing prev should yield 0 change"
+        );
     }
 
     // B135: estimate_impact with NaN inputs
@@ -857,7 +878,11 @@ mod tests {
     fn test_estimate_impact_nan_inputs() {
         let values = vec![f64::NAN, 3.0, f64::INFINITY];
         let impact = estimate_impact(&values);
-        assert!(impact.is_finite(), "NaN/Inf inputs should be filtered: got {}", impact);
+        assert!(
+            impact.is_finite(),
+            "NaN/Inf inputs should be filtered: got {}",
+            impact
+        );
         assert!(impact > 0.0);
     }
 
@@ -883,7 +908,7 @@ mod tests {
         features.insert("X.std".to_string(), 2.0);
         let result = apply_transforms(&signals, &transforms, &features);
         assert_eq!(result.len(), 2); // should still produce 2 values
-        // First is transformed, second is untouched
+                                     // First is transformed, second is untouched
         assert!((result[0] - 2.5).abs() < 1e-10);
         assert!((result[1] - 20.0).abs() < 1e-10);
     }
@@ -942,7 +967,10 @@ mod tests {
         let mut features = FeatureMap::new();
         features.insert("JobPost.count".to_string(), 5.0);
         let candidate = evaluate_recipe(&recipe, "e1", &features);
-        assert!(candidate.is_none(), "Empty insight_template should be rejected");
+        assert!(
+            candidate.is_none(),
+            "Empty insight_template should be rejected"
+        );
     }
 
     // B286: evaluate_batch must not exceed MAX_EVALUATE_BATCH_SIZE
@@ -1023,7 +1051,10 @@ mod tests {
         let engine = RecipeEngine::load(vec![]);
         let pairs: Vec<(&str, &FeatureMap)> = vec![];
         let candidates = engine.evaluate_batch(&pairs);
-        assert!(candidates.is_empty(), "evaluate_batch([]) must return empty vec");
+        assert!(
+            candidates.is_empty(),
+            "evaluate_batch([]) must return empty vec"
+        );
     }
 
     #[test]
@@ -1046,7 +1077,11 @@ mod tests {
         let recipe = make_recipe("E002", vec![]);
         let features = FeatureMap::new();
         let result = check_all_signals(&recipe, &features);
-        assert_eq!(result, Some(vec![]), "zero-signal recipe must vacuously pass");
+        assert_eq!(
+            result,
+            Some(vec![]),
+            "zero-signal recipe must vacuously pass"
+        );
     }
 
     // ── B288: boundary condition tests ──
@@ -1128,17 +1163,17 @@ mod tests {
         let sig = make_signal("Metric", "score", "above", Some(0.0));
         let recipe = make_recipe("DUP001", vec![sig]);
         let engine = RecipeEngine::load(vec![recipe]);
-        
+
         let features_a: FeatureMap = HashMap::from([("Metric.score".to_string(), 0.8)]);
         let features_b: FeatureMap = HashMap::from([("Metric.score".to_string(), 0.9)]);
         let features_c: FeatureMap = HashMap::from([("Metric.score".to_string(), 0.7)]);
-        
+
         let entities = vec![
             ("entity_dup", &features_a),
             ("entity_dup", &features_b), // duplicate entity_id
             ("entity_unique", &features_c),
         ];
-        
+
         let results = engine.evaluate_batch(&entities);
         // Should have 2 results: first occurrence of dup + unique
         assert_eq!(

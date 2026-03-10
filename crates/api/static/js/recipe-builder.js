@@ -254,6 +254,15 @@
 
   // ── API calls ──────────────────────────────────────────────────────────
 
+  function csrfJsonHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    const token = window.apexCsrfToken?.();
+    if (token) {
+      headers["X-CSRF-Token"] = token;
+    }
+    return headers;
+  }
+
   function submitRecipe() {
     const data = collectForm();
     if (!data.name || !data.signals.length || !data.thresholds.length || !data.actions.length) {
@@ -263,16 +272,16 @@
     const btn = document.querySelector('[type="submit"]');
     if (btn) { btn.disabled = true; btn.textContent = "Creating…"; }
 
-    fetch("/api/recipes", {
+    fetch("/recipes/create", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: csrfJsonHeaders(),
       body: JSON.stringify(data),
     })
       .then((r) => {
         if (!r.ok) throw new Error("Create failed");
         return r.json();
       })
-      .then((res) => {
+      .then(() => {
         window.showToast?.(`Recipe "${data.name}" created.`, "success");
         window.location.href = "/recipes";
       })
@@ -287,9 +296,9 @@
     const btn = document.getElementById("test-recipe-btn");
     if (btn) { btn.disabled = true; btn.textContent = "Testing…"; }
 
-    fetch("/api/recipes/test", {
+    fetch("/recipes/test", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: csrfJsonHeaders(),
       body: JSON.stringify(data),
     })
       .then((r) => {
@@ -319,40 +328,40 @@
     const btn = document.getElementById("ai-generate-btn");
     if (btn) { btn.disabled = true; btn.textContent = "Generating…"; }
 
-    fetch("/api/llm/generate-recipe", {
+    const payload = buildAiRecipePayload(prompt);
+
+    fetch("/llm/generate-recipe", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description: prompt }),
+      headers: csrfJsonHeaders(),
+      body: JSON.stringify(payload),
     })
       .then((r) => {
         if (!r.ok) throw new Error("AI generation failed");
         return r.json();
       })
-      .then((gen) => {
+      .then((res) => {
+        if (!res?.success || !res?.data) {
+          const msg = res?.error?.message || "AI generation failed";
+          throw new Error(msg);
+        }
+        const recipe = res.data.recipe_json || {};
+
         // Populate basic fields
-        if (gen.name) setField("name", gen.name);
-        if (gen.description) setField("description", gen.description);
-        if (gen.severity) setField("severity", gen.severity);
-        if (gen.narrative_template) setField("narrative_template", gen.narrative_template);
+        setField("description", prompt.trim());
+        if (recipe.id) setField("name", humanizeRecipeId(recipe.id));
+        if (recipe.narrative_template) setField("narrative_template", recipe.narrative_template);
 
         // Replace dynamic sections
-        if (gen.signals?.length) replaceSectionRows("signals", gen.signals, renderSignal, (row, data) => {
+        const generatedSignals = mapGeneratedSignals(recipe.signals);
+        if (generatedSignals.length) replaceSectionRows("signals", generatedSignals, renderSignal, (row, data) => {
           setInRow(row, "source_type", data.source_type);
           setInRow(row, "entity_type", data.entity_type);
           setInRow(row, "keywords", data.keywords);
           setInRow(row, "match_mode", data.match_mode);
         });
-        if (gen.transforms?.length) replaceSectionRows("transforms", gen.transforms, renderTransform, (row, data) => {
-          setInRow(row, "kind", data.kind);
-          setInRow(row, "window_days", data.window_days);
-          setInRow(row, "aggregation", data.aggregation);
-        });
-        if (gen.thresholds?.length) replaceSectionRows("thresholds", gen.thresholds, renderThreshold, (row, data) => {
-          setInRow(row, "metric", data.metric);
-          setInRow(row, "operator", data.operator);
-          setInRow(row, "value", data.value);
-        });
-        if (gen.actions?.length) replaceSectionRows("actions", gen.actions, renderAction, (row, data) => {
+
+        const generatedActions = mapGeneratedActions(recipe.action_playbook);
+        if (generatedActions.length) replaceSectionRows("actions", generatedActions, renderAction, (row, data) => {
           setInRow(row, "action_kind", data.kind);
           setInRow(row, "target", data.target);
         });
@@ -363,6 +372,95 @@
       .finally(() => {
         if (btn) { btn.disabled = false; btn.textContent = "Generate with AI"; }
       });
+  }
+
+  function buildAiRecipePayload(prompt) {
+    const description = (prompt || "").trim();
+    const inferredSignals = inferSignals(description);
+    return {
+      pattern_description: description,
+      outcome: inferOutcome(description),
+      signals: inferredSignals.length ? inferredSignals : ["emerging_signal"],
+      existing_recipe_ids: [],
+      regions: [],
+    };
+  }
+
+  function inferOutcome(prompt) {
+    const slug = toSnake(prompt).replace(/^_+|_+$/g, "").slice(0, 48);
+    return slug || "emerging_risk_pattern";
+  }
+
+  function inferSignals(prompt) {
+    if (!prompt) return [];
+    const segments = prompt
+      .split(/[;,\n]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const normalized = segments
+      .map((s) => toSnake(s).replace(/^_+|_+$/g, ""))
+      .filter((s) => s.length >= 3);
+
+    if (normalized.length) {
+      return Array.from(new Set(normalized)).slice(0, 8);
+    }
+
+    return prompt
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 4)
+      .slice(0, 6)
+      .map((w) => toSnake(w));
+  }
+
+  function mapGeneratedSignals(signals) {
+    if (!Array.isArray(signals)) return [];
+    return signals
+      .map((s) => {
+        const name = (s?.name || "").trim();
+        const description = (s?.description || "").trim();
+        const keywords = [name, description].filter(Boolean).join(", ");
+        if (!keywords) return null;
+        return {
+          source_type: "observation",
+          entity_type: inferEntityType(keywords),
+          keywords,
+          match_mode: "any",
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function mapGeneratedActions(actionPlaybook) {
+    if (!actionPlaybook || typeof actionPlaybook !== "string") return [];
+    return [{ kind: "warning", target: actionPlaybook.trim() }];
+  }
+
+  function inferEntityType(text) {
+    const t = (text || "").toLowerCase();
+    if (t.includes("person") || t.includes("executive") || t.includes("officer")) return "person";
+    if (t.includes("company") || t.includes("supplier") || t.includes("vendor") || t.includes("firm")) return "company";
+    if (t.includes("product") || t.includes("component") || t.includes("device")) return "product";
+    if (t.includes("region") || t.includes("country") || t.includes("city") || t.includes("port")) return "location";
+    return "any";
+  }
+
+  function humanizeRecipeId(id) {
+    const source = (id || "").toString().trim();
+    if (!source) return "";
+    return source
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+      .slice(0, 120);
+  }
+
+  function toSnake(value) {
+    return (value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
   }
 
   function setField(name, value) {

@@ -6,9 +6,9 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
-use sha2::{Sha256, Digest};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -57,7 +57,12 @@ pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
 
     // Constant-time comparison
     use subtle::ConstantTimeEq;
-    if password_hash.as_bytes().ct_eq(valid_password_hash.as_bytes()).unwrap_u8() != 1 {
+    if password_hash
+        .as_bytes()
+        .ct_eq(valid_password_hash.as_bytes())
+        .unwrap_u8()
+        != 1
+    {
         return LoginPage {
             error: Some("Invalid credentials".into()),
         }

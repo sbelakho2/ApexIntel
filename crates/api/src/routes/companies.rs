@@ -1,9 +1,9 @@
 //! Companies route — request/response types and logic for company endpoints.
 
+use apex_core::validation::{clamp_ratio, validate_uuid};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use apex_core::validation::{clamp_ratio, validate_uuid};
 
 use super::warnings::SortDirection;
 
@@ -159,7 +159,9 @@ pub fn search_companies<'a>(items: &'a [CompanyListItem], query: &str) -> Vec<&'
         .iter()
         .filter(|c| {
             c.name.to_lowercase().contains(&q)
-                || c.capabilities.iter().any(|cap| cap.to_lowercase().contains(&q))
+                || c.capabilities
+                    .iter()
+                    .any(|cap| cap.to_lowercase().contains(&q))
         })
         .collect()
 }
@@ -211,7 +213,12 @@ pub struct CompetitorSummary {
 mod tests {
     use super::*;
 
-    fn make_company(name: &str, region: &str, competitor: bool, threat: Option<f64>) -> CompanyListItem {
+    fn make_company(
+        name: &str,
+        region: &str,
+        competitor: bool,
+        threat: Option<f64>,
+    ) -> CompanyListItem {
         CompanyListItem {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),

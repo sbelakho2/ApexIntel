@@ -1,6 +1,10 @@
 #!/bin/bash
-KEY="sk-apex-prod-2026-starzerp"
-BASE="http://localhost:8080"
+set -euo pipefail
+
+: "${APEX_API_KEY:?Set APEX_API_KEY before running scripts/test_api_server.sh}"
+
+KEY="${APEX_API_KEY}"
+BASE="${BASE:-http://localhost:8080}"
 ok=0
 fail=0
 

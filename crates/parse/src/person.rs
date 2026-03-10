@@ -5,21 +5,21 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::normalizer;
+use apex_core::person_names::looks_like_person_name;
 use apex_core::validation::normalize_url;
 
 static PERSON_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        r"([A-Z][a-z\u{00e0}-\u{00ff}]+(?:[\s-]+(?:[a-z\u{00e0}-\u{00ff}]{1,4}\s+)*[A-Z][a-z\u{00e0}-\u{00ff}]+){1,4})\s*,\s*((?:CEO|CTO|COO|CFO|VP|Director|Manager|Head|President|Chairman|Engineer|Founder|Partner)[\w\s]*?)(?:\s+(?:at|of|chez|\u{00e0})\s+(.+?))?(?:\.|$|\n)",
-        r"([A-Z][a-z\u{00e0}-\u{00ff}]+(?:[\s-]+(?:[a-z\u{00e0}-\u{00ff}]{1,4}\s+)*[A-Z][a-z\u{00e0}-\u{00ff}]+){1,4})\s*[-\u{2013}]\s*((?:CEO|CTO|COO|CFO|VP|Director|Manager|Head|President|Chairman|Engineer|Founder|Partner)[\w\s]*?)(?:\s*,\s*(.+?))?(?:\.|$|\n)",
+        r"([\p{Lu}\p{Lo}][\p{L}\p{M}'’\-·]{0,40}(?:[\s-]+[\p{L}\p{M}'’\-·]{1,40}){0,4})\s*,\s*((?:CEO|CTO|COO|CFO|VP|Director|Manager|Head|President|Chairman|Engineer|Founder|Partner)[\w\s/&-]*?)(?:\s+(?:at|of|chez|à|في|من|из|в)\s+(.+?))?(?:\.|$|\n)",
+        r"([\p{Lu}\p{Lo}][\p{L}\p{M}'’\-·]{0,40}(?:[\s-]+[\p{L}\p{M}'’\-·]{1,40}){0,4})\s*[-\u{2013}]\s*((?:CEO|CTO|COO|CFO|VP|Director|Manager|Head|President|Chairman|Engineer|Founder|Partner)[\w\s/&-]*?)(?:\s*,\s*(.+?))?(?:\.|$|\n)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
     .collect()
 });
 
-static RE_LINKEDIN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([\w-]+)").unwrap()
-});
+static RE_LINKEDIN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([\w-]+)").unwrap());
 
 /// Extracted person of interest from a web page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,18 +72,26 @@ fn extract_structured_persons(text: &str, url: &str) -> Vec<PersonExtract> {
     for re in PERSON_PATTERNS.iter() {
         for caps in re.captures_iter(text) {
             let name = normalizer::normalize_whitespace(caps.get(1).unwrap().as_str());
-            let title = caps.get(2).map(|m| normalizer::normalize_whitespace(m.as_str()));
-            let mut company = caps.get(3).map(|m| normalizer::normalize_whitespace(m.as_str()));
+            if !looks_like_person_name(&name) {
+                continue;
+            }
+            let title = caps
+                .get(2)
+                .map(|m| normalizer::normalize_whitespace(m.as_str()));
+            let mut company = caps
+                .get(3)
+                .map(|m| normalizer::normalize_whitespace(m.as_str()));
 
-            let seniority = title.as_deref()
+            let seniority = title
+                .as_deref()
                 .map(|t| detect_seniority_from_title(t).to_string());
-            let role_family = title.as_deref()
-                .map(|t| detect_role_domain(t).to_string());
+            let role_family = title.as_deref().map(|t| detect_role_domain(t).to_string());
 
             // For government roles, extract department/ministry from title if no company found
             if company.is_none() || company.as_deref() == Some("") {
                 if let Some(ref t) = title {
-                    if detect_role_domain(t) == "Government" || detect_role_domain(t) == "Military" {
+                    if detect_role_domain(t) == "Government" || detect_role_domain(t) == "Military"
+                    {
                         company = extract_government_affiliation(t);
                     }
                 }
@@ -116,7 +124,8 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
     for email in &emails {
         let local = email.split('@').next().unwrap_or("");
         // Try to extract name from email local part: john.smith → John Smith
-        let parts: Vec<String> = local.split(&['.', '_', '-'][..])
+        let parts: Vec<String> = local
+            .split(&['.', '_', '-'][..])
             .filter(|p| p.len() > 1)
             .map(|p| {
                 let mut c = p.chars();
@@ -128,6 +137,9 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
             .collect();
         if parts.len() >= 2 {
             let name = parts.join(" ");
+            if !looks_like_person_name(&name) {
+                continue;
+            }
             results.push(PersonExtract {
                 name,
                 title: None,
@@ -149,7 +161,8 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
         let slug = caps.get(1).unwrap().as_str();
         let raw_url = caps.get(0).unwrap().as_str().to_string();
         let linkedin_url = normalize_url(&raw_url).unwrap_or(raw_url);
-        let parts: Vec<String> = slug.split('-')
+        let parts: Vec<String> = slug
+            .split('-')
             .filter(|p| p.len() > 1 && !p.chars().all(|c| c.is_ascii_digit()))
             .map(|p| {
                 let mut c = p.chars();
@@ -161,6 +174,9 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
             .collect();
         if parts.len() >= 2 {
             let name = parts.join(" ");
+            if !looks_like_person_name(&name) {
+                continue;
+            }
             results.push(PersonExtract {
                 name,
                 title: None,
@@ -182,12 +198,20 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
 
 fn detect_seniority_from_title(title: &str) -> &'static str {
     let lower = title.to_lowercase();
-    if lower.contains("chief") || lower == "ceo" || lower == "cto"
-        || lower == "coo" || lower == "cfo"
-        || lower.starts_with("ceo ") || lower.starts_with("cto ")
-        || lower.starts_with("coo ") || lower.starts_with("cfo ")
-        || lower.contains(" ceo") || lower.contains(" cto")
-        || lower.contains(" coo") || lower.contains(" cfo") {
+    if lower.contains("chief")
+        || lower == "ceo"
+        || lower == "cto"
+        || lower == "coo"
+        || lower == "cfo"
+        || lower.starts_with("ceo ")
+        || lower.starts_with("cto ")
+        || lower.starts_with("coo ")
+        || lower.starts_with("cfo ")
+        || lower.contains(" ceo")
+        || lower.contains(" cto")
+        || lower.contains(" coo")
+        || lower.contains(" cfo")
+    {
         "C-Level"
     } else if lower.contains("president") || lower.contains("chairman") {
         "Executive"
@@ -215,93 +239,155 @@ fn detect_seniority_from_title(title: &str) -> &'static str {
 
 fn detect_role_domain(title: &str) -> &'static str {
     let lower = title.to_lowercase();
-    
+
     // ═══════════════════════════════════════════════════════════════════════════
     // GOVERNMENT / PUBLIC SECTOR DETECTION (must be first to avoid false matches)
     // ═══════════════════════════════════════════════════════════════════════════
-    if lower.contains("minister") || lower.contains("ministère") || lower.contains("وزير")
-        || lower.contains("secretary of state") || lower.contains("secrétaire d'état")
-        || lower.contains("governor") || lower.contains("gouverneur") || lower.contains("والي")
-        || lower.contains("ambassador") || lower.contains("ambassadeur") || lower.contains("سفير")
-        || lower.contains("ministry of") || lower.contains("ministère de")
-        || lower.contains("department of defense") || lower.contains("department of commerce")
-        || lower.contains("director general") && (lower.contains("ministry") || lower.contains("defence") || lower.contains("defense"))
-        || lower.contains("president of the") && (lower.contains("council") || lower.contains("region") || lower.contains("assembly"))
+    if lower.contains("minister")
+        || lower.contains("ministère")
+        || lower.contains("وزير")
+        || lower.contains("secretary of state")
+        || lower.contains("secrétaire d'état")
+        || lower.contains("governor")
+        || lower.contains("gouverneur")
+        || lower.contains("والي")
+        || lower.contains("ambassador")
+        || lower.contains("ambassadeur")
+        || lower.contains("سفير")
+        || lower.contains("ministry of")
+        || lower.contains("ministère de")
+        || lower.contains("department of defense")
+        || lower.contains("department of commerce")
+        || lower.contains("director general")
+            && (lower.contains("ministry")
+                || lower.contains("defence")
+                || lower.contains("defense"))
+        || lower.contains("president of the")
+            && (lower.contains("council") || lower.contains("region") || lower.contains("assembly"))
         || lower.contains("chairman of the") && lower.contains("commission")
         || lower.contains("delegate") && (lower.contains("national") || lower.contains("defense"))
-        || lower.contains("federal") || lower.contains("congressional")
-        || lower.contains("parliament") || lower.contains("senate")
-        || lower.contains("public sector") || lower.contains("civil service")
+        || lower.contains("federal")
+        || lower.contains("congressional")
+        || lower.contains("parliament")
+        || lower.contains("senate")
+        || lower.contains("public sector")
+        || lower.contains("civil service")
     {
         return "Government";
     }
-    
+
     // Military / Defense
-    if lower.contains("general") && (lower.contains("army") || lower.contains("forces") || lower.contains("military") || lower.contains("command"))
-        || lower.contains("admiral") || lower.contains("colonel") || lower.contains("brigadier")
-        || lower.contains("defense attaché") || lower.contains("military attaché")
+    if lower.contains("general")
+        && (lower.contains("army")
+            || lower.contains("forces")
+            || lower.contains("military")
+            || lower.contains("command"))
+        || lower.contains("admiral")
+        || lower.contains("colonel")
+        || lower.contains("brigadier")
+        || lower.contains("defense attaché")
+        || lower.contains("military attaché")
         || lower.contains("chief of staff") && lower.contains("armed")
     {
         return "Military";
     }
-    
+
     // Regulatory / Compliance
-    if lower.contains("regulator") || lower.contains("compliance officer")
-        || lower.contains("inspector general") || lower.contains("audit")
-        || lower.contains("customs") || lower.contains("export control")
+    if lower.contains("regulator")
+        || lower.contains("compliance officer")
+        || lower.contains("inspector general")
+        || lower.contains("audit")
+        || lower.contains("customs")
+        || lower.contains("export control")
     {
         return "Regulatory";
     }
-    
+
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE SECTOR ROLES
     // ═══════════════════════════════════════════════════════════════════════════
-    if lower.contains("engineer") || lower.contains("tech") || lower.contains("r&d")
-        || lower.contains("developer") || lower.contains("architect") 
+    if lower.contains("engineer")
+        || lower.contains("tech")
+        || lower.contains("r&d")
+        || lower.contains("developer")
+        || lower.contains("architect")
     {
         "Engineering"
-    } else if lower.contains("sales") || lower.contains("commercial") || lower.contains("business dev")
-        || lower.contains("account") || lower.contains("customer success")
+    } else if lower.contains("sales")
+        || lower.contains("commercial")
+        || lower.contains("business dev")
+        || lower.contains("account")
+        || lower.contains("customer success")
     {
         "Sales"
-    } else if lower.contains("supply") || lower.contains("procurement") || lower.contains("sourcing")
-        || lower.contains("purchasing") || lower.contains("buyer")
+    } else if lower.contains("supply")
+        || lower.contains("procurement")
+        || lower.contains("sourcing")
+        || lower.contains("purchasing")
+        || lower.contains("buyer")
     {
         "Supply Chain"
-    } else if lower.contains("quality") || lower.contains("qa ") || lower.contains("qc ")
-        || lower.contains("test") || lower.contains("assurance")
+    } else if lower.contains("quality")
+        || lower.contains("qa ")
+        || lower.contains("qc ")
+        || lower.contains("test")
+        || lower.contains("assurance")
     {
         "Quality"
-    } else if lower.contains("finance") || lower.contains("cfo") || lower.contains("controller")
-        || lower.contains("treasurer") || lower.contains("accounting") || lower.contains("investor")
+    } else if lower.contains("finance")
+        || lower.contains("cfo")
+        || lower.contains("controller")
+        || lower.contains("treasurer")
+        || lower.contains("accounting")
+        || lower.contains("investor")
     {
         "Finance"
-    } else if lower.contains("manufactur") || lower.contains("production") || lower.contains("operations")
-        || lower.contains("plant") || lower.contains("factory") || lower.contains("site")
+    } else if lower.contains("manufactur")
+        || lower.contains("production")
+        || lower.contains("operations")
+        || lower.contains("plant")
+        || lower.contains("factory")
+        || lower.contains("site")
     {
         "Operations"
-    } else if lower.contains("human resource") || lower.contains("hr ") || lower.starts_with("hr")
-        || lower.contains("talent") || lower.contains("people")
+    } else if lower.contains("human resource")
+        || lower.contains("hr ")
+        || lower.starts_with("hr")
+        || lower.contains("talent")
+        || lower.contains("people")
     {
         "Human Resources"
-    } else if lower.contains("legal") || lower.contains("counsel") || lower.contains("attorney")
+    } else if lower.contains("legal")
+        || lower.contains("counsel")
+        || lower.contains("attorney")
         || lower.contains("compliance") && !lower.contains("export")
     {
         "Legal"
-    } else if lower.contains("marketing") || lower.contains("brand") || lower.contains("communication")
-        || lower.contains("pr ") || lower.contains("public relations")
+    } else if lower.contains("marketing")
+        || lower.contains("brand")
+        || lower.contains("communication")
+        || lower.contains("pr ")
+        || lower.contains("public relations")
     {
         "Marketing"
-    } else if lower.contains("research") || lower.contains("scientist") || lower.contains("phd")
-        || lower.contains("professor") || lower.contains("academic")
+    } else if lower.contains("research")
+        || lower.contains("scientist")
+        || lower.contains("phd")
+        || lower.contains("professor")
+        || lower.contains("academic")
     {
         "Research"
-    } else if lower.contains("security") || lower.contains("cyber") || lower.contains("ciso")
+    } else if lower.contains("security")
+        || lower.contains("cyber")
+        || lower.contains("ciso")
         || lower.contains("information security")
     {
         "Security"
-    } else if lower.contains("strategy") || lower.contains("business planning") || lower.contains("m&a")
-        || lower.contains("transformation") || lower.contains("corporate development")
+    } else if lower.contains("strategy")
+        || lower.contains("business planning")
+        || lower.contains("m&a")
+        || lower.contains("transformation")
+        || lower.contains("corporate development")
     {
         "Strategy"
     } else {
@@ -312,19 +398,22 @@ fn detect_role_domain(title: &str) -> &'static str {
 /// Extract government/ministry affiliation from a role title
 pub fn extract_government_affiliation(title: &str) -> Option<String> {
     let lower = title.to_lowercase();
-    
+
     // Pattern: "Minister of X" → "Ministry of X"
     if lower.contains("minister of ") {
         if let Some(idx) = lower.find("minister of ") {
             let rest = title.get(idx + 12..)?;
             if let Some(end) = rest.find(|c: char| c == ',' || c == '.' || c == '\n') {
-                return Some(format!("Ministry of {}", rest.get(..end).unwrap_or(rest).trim()));
+                return Some(format!(
+                    "Ministry of {}",
+                    rest.get(..end).unwrap_or(rest).trim()
+                ));
             } else {
                 return Some(format!("Ministry of {}", rest.trim()));
             }
         }
     }
-    
+
     // Pattern: "Ministry of X" directly mentioned
     if lower.contains("ministry of ") {
         if let Some(idx) = lower.find("ministry of ") {
@@ -339,7 +428,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
             return Some(rest.trim().to_string());
         }
     }
-    
+
     // Pattern: "Governor of X" → "Government of X (Regional)"
     if lower.contains("governor of ") || lower.contains("gouverneur de ") {
         if let Some((idx, offset)) = lower
@@ -349,16 +438,22 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
         {
             let rest = title.get(idx + offset..)?;
             if let Some(end) = rest.find(|c: char| c == ',' || c == '.' || c == '\n') {
-                return Some(format!("Regional Government of {}", rest.get(..end).unwrap_or(rest).trim()));
+                return Some(format!(
+                    "Regional Government of {}",
+                    rest.get(..end).unwrap_or(rest).trim()
+                ));
             } else {
                 return Some(format!("Regional Government of {}", rest.trim()));
             }
         }
     }
-    
+
     // Pattern: "President, X Regional Council" → "X Regional Council"
     if lower.contains("regional council") || lower.contains("conseil régional") {
-        if let Some(idx) = lower.find("regional council").or_else(|| lower.find("conseil régional")) {
+        if let Some(idx) = lower
+            .find("regional council")
+            .or_else(|| lower.find("conseil régional"))
+        {
             // Look backwards for the region name
             let before = title.get(..idx).unwrap_or(title);
             if let Some(comma) = before.rfind(',') {
@@ -366,7 +461,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
             }
         }
     }
-    
+
     // Pattern: "Department of X"
     if lower.contains("department of ") {
         if let Some(idx) = lower.find("department of ") {
@@ -381,7 +476,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
             return Some(rest.trim().to_string());
         }
     }
-    
+
     None
 }
 
@@ -408,12 +503,39 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_arabic_person() {
+        let text = "محمد بن سالم, CEO at Atlas Systems.";
+        let persons = extract_structured_persons(text, "https://example.com");
+        assert_eq!(persons.len(), 1);
+        assert_eq!(persons[0].name, "محمد بن سالم");
+    }
+
+    #[test]
+    fn test_extract_cyrillic_person() {
+        let text = "Алексей Иванов - Director of Engineering, Aurora Robotics.";
+        let persons = extract_structured_persons(text, "https://example.com");
+        assert_eq!(persons.len(), 1);
+        assert_eq!(persons[0].name, "Алексей Иванов");
+    }
+
+    #[test]
+    fn test_extract_cjk_person() {
+        let text = "王小明, Founder at Dragon Dynamics.";
+        let persons = extract_structured_persons(text, "https://example.com");
+        assert_eq!(persons.len(), 1);
+        assert_eq!(persons[0].name, "王小明");
+    }
+
+    #[test]
     fn test_extract_person_from_email() {
         let text = "Contact: john.smith@starz-electronics.tn for more info.";
         let persons = extract_named_persons(text, "https://example.com");
         assert_eq!(persons.len(), 1);
         assert_eq!(persons[0].name, "John Smith");
-        assert_eq!(persons[0].email, Some("john.smith@starz-electronics.tn".to_string()));
+        assert_eq!(
+            persons[0].email,
+            Some("john.smith@starz-electronics.tn".to_string())
+        );
     }
 
     #[test]
@@ -429,7 +551,10 @@ mod tests {
     fn test_detect_seniority() {
         assert_eq!(detect_seniority_from_title("CEO"), "C-Level");
         assert_eq!(detect_seniority_from_title("VP of Engineering"), "VP");
-        assert_eq!(detect_seniority_from_title("Director of Operations"), "Director");
+        assert_eq!(
+            detect_seniority_from_title("Director of Operations"),
+            "Director"
+        );
         assert_eq!(detect_seniority_from_title("Director and CTO"), "C-Level");
         assert_eq!(detect_seniority_from_title("Head of Quality"), "Manager");
         assert_eq!(detect_seniority_from_title("Founder"), "Executive");
@@ -442,7 +567,10 @@ mod tests {
         assert_eq!(detect_role_domain("Director of Sales"), "Sales");
         assert_eq!(detect_role_domain("Head of Supply Chain"), "Supply Chain");
         assert_eq!(detect_role_domain("VP Quality"), "Quality");
-        assert_eq!(detect_role_domain("Director of Manufacturing"), "Operations");
+        assert_eq!(
+            detect_role_domain("Director of Manufacturing"),
+            "Operations"
+        );
     }
 
     #[test]

@@ -13,13 +13,13 @@
 //! - [`youtube`] — YouTube channel RSS + Data API v3 video monitoring
 //! - [`discord`] — Discord community widget + invite preview monitor
 
-pub mod twitter;
-pub mod linkedin;
-pub mod telegram;
-pub mod reddit;
-pub mod facebook;
-pub mod youtube;
 pub mod discord;
+pub mod facebook;
+pub mod linkedin;
+pub mod reddit;
+pub mod telegram;
+pub mod twitter;
+pub mod youtube;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -113,21 +113,25 @@ impl SocialPost {
     pub fn platform_credibility(&self) -> f64 {
         let base: f64 = match self.platform.as_str() {
             "linkedin" => 0.85,
-            "twitter"  => 0.60,
-            "reddit"   => 0.55,
+            "twitter" => 0.60,
+            "reddit" => 0.55,
             "mastodon" => 0.60,
-            "bluesky"  => 0.55,
-            "youtube"  => 0.65,
+            "bluesky" => 0.55,
+            "youtube" => 0.65,
             "facebook" => 0.50,
             "telegram" => 0.35,
-            "discord"  => 0.35,
-            "forum"    => 0.50,
+            "discord" => 0.35,
+            "forum" => 0.50,
             _ => 0.40,
         };
         let verified_bonus: f64 = if self.author_verified { 0.15 } else { 0.0 };
-        let engagement_bonus: f64 = if self.engagement_score() > 1000.0 { 0.10 }
-                                     else if self.engagement_score() > 100.0 { 0.05 }
-                                     else { 0.0 };
+        let engagement_bonus: f64 = if self.engagement_score() > 1000.0 {
+            0.10
+        } else if self.engagement_score() > 100.0 {
+            0.05
+        } else {
+            0.0
+        };
         (base + verified_bonus + engagement_bonus).min(0.98)
     }
 
@@ -152,14 +156,20 @@ fn strip_urls(text: &str) -> String {
 fn extract_urls(text: &str) -> Vec<String> {
     text.split_whitespace()
         .filter(|w| w.starts_with("http://") || w.starts_with("https://"))
-        .map(|u| u.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '=').to_string())
+        .map(|u| {
+            u.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '=')
+                .to_string()
+        })
         .collect()
 }
 
 fn extract_hashtags(text: &str) -> Vec<String> {
     text.split_whitespace()
         .filter(|w| w.starts_with('#') && w.len() > 1)
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                .to_string()
+        })
         .filter(|w| !w.is_empty())
         .collect()
 }
@@ -167,7 +177,11 @@ fn extract_hashtags(text: &str) -> Vec<String> {
 fn extract_mentions(text: &str) -> Vec<String> {
     text.split_whitespace()
         .filter(|w| w.starts_with('@') && w.len() > 1)
-        .map(|w| w[1..].trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string())
+        .map(|w| {
+            w[1..]
+                .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                .to_string()
+        })
         .filter(|w| !w.is_empty())
         .collect()
 }
@@ -183,7 +197,13 @@ mod tests {
 
     #[test]
     fn social_post_minimal_builds() {
-        let p = SocialPost::minimal("twitter", "123", "elonmusk", "Hello world #AI @openai https://x.com", Utc::now());
+        let p = SocialPost::minimal(
+            "twitter",
+            "123",
+            "elonmusk",
+            "Hello world #AI @openai https://x.com",
+            Utc::now(),
+        );
         assert_eq!(p.platform, "twitter");
         assert!(!p.raw_text.is_empty());
         assert!(p.hashtags.contains(&"#AI".to_string()) || p.hashtags.contains(&"AI".to_string()));

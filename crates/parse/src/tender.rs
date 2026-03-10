@@ -57,12 +57,7 @@ pub struct TenderExtract {
 }
 
 /// Extract tender information from page text.
-pub fn extract_tender(
-    body_text: &str,
-    title: &str,
-    url: &str,
-    portal: &str,
-) -> TenderExtract {
+pub fn extract_tender(body_text: &str, title: &str, url: &str, portal: &str) -> TenderExtract {
     let normalized_body = normalizer::normalize_whitespace(body_text);
     let buyer = extract_buyer(&normalized_body);
     let reference_number = extract_reference(&normalized_body);
@@ -93,12 +88,14 @@ pub fn extract_tender(
 }
 
 fn extract_buyer(text: &str) -> Option<String> {
-    RE_BUYER.captures(text)
+    RE_BUYER
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
 fn extract_reference(text: &str) -> Option<String> {
-    RE_REFERENCE.captures(text)
+    RE_REFERENCE
+        .captures(text)
         .map(|c| c.get(1).unwrap().as_str().to_string())
 }
 
@@ -110,14 +107,12 @@ fn extract_value(text: &str) -> (Option<f64>, Option<String>) {
 
         let amount = normalizer::parse_number(amount_str);
 
-        let currency = currency_name.or_else(|| {
-            match symbol {
-                "€" => Some("EUR".to_string()),
-                "$" => Some("USD".to_string()),
-                "£" => Some("GBP".to_string()),
-                "¥" => Some("CNY".to_string()),
-                _ => None,
-            }
+        let currency = currency_name.or_else(|| match symbol {
+            "€" => Some("EUR".to_string()),
+            "$" => Some("USD".to_string()),
+            "£" => Some("GBP".to_string()),
+            "¥" => Some("CNY".to_string()),
+            _ => None,
         });
 
         return (amount, currency);
@@ -126,7 +121,8 @@ fn extract_value(text: &str) -> (Option<f64>, Option<String>) {
 }
 
 fn extract_deadline_text(text: &str) -> Option<String> {
-    RE_DEADLINE.captures(text)
+    RE_DEADLINE
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
         .and_then(|raw| {
             if normalizer::is_valid_date_range(&raw) {
@@ -175,7 +171,12 @@ mod tests {
         let body = "Buyer: Ministry of Defense Tunisia. Reference: TN-2024-001. \
                     Value: 500000 TND. Deadline: 2024-03-15. \
                     Supply of SMT assembly line equipment for the electronics sector.";
-        let tender = extract_tender(body, "SMT Equipment Supply", "https://tuneps.tn/123", "TUNEPS");
+        let tender = extract_tender(
+            body,
+            "SMT Equipment Supply",
+            "https://tuneps.tn/123",
+            "TUNEPS",
+        );
 
         assert_eq!(tender.title, "SMT Equipment Supply");
         assert!(tender.buyer.is_some());
@@ -223,8 +224,14 @@ mod tests {
 
     #[test]
     fn test_detect_sector() {
-        assert_eq!(detect_sector("automotive electronics assembly"), Some("automotive".to_string()));
-        assert_eq!(detect_sector("medical device manufacturing"), Some("medical".to_string()));
+        assert_eq!(
+            detect_sector("automotive electronics assembly"),
+            Some("automotive".to_string())
+        );
+        assert_eq!(
+            detect_sector("medical device manufacturing"),
+            Some("medical".to_string())
+        );
         assert_eq!(detect_sector("no sector here"), None);
     }
 

@@ -184,10 +184,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM insight narrative failed for type {}", signal_type))?;
 
-        let mut narrative: LlmInsightNarrative = resp.parse_json()
+        let mut narrative: LlmInsightNarrative = resp
+            .parse_json()
             .with_context(|| "Failed to parse insight narrative JSON")?;
 
         narrative.confidence = narrative.confidence.clamp(0.0, 1.0);
@@ -240,10 +244,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| "LLM geopolitical assessment failed")?;
 
-        let mut assessment: GeopoliticalAssessment = resp.parse_json()
+        let mut assessment: GeopoliticalAssessment = resp
+            .parse_json()
             .with_context(|| "Failed to parse geopolitical assessment JSON")?;
 
         assessment.confidence = assessment.confidence.clamp(0.0, 1.0);
@@ -292,10 +300,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM competitive intel failed for {}", company_name))?;
 
-        let mut summary: CompetitiveIntelSummary = resp.parse_json()
+        let mut summary: CompetitiveIntelSummary = resp
+            .parse_json()
             .with_context(|| "Failed to parse competitive intel JSON")?;
 
         summary.confidence = summary.confidence.clamp(0.0, 1.0);
@@ -355,10 +367,14 @@ Respond ONLY with valid JSON:
 
         let config = InferenceConfig::json_structured();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| "LLM supply chain risk narrative failed")?;
 
-        let mut narrative: SupplyChainRiskNarrative = resp.parse_json()
+        let mut narrative: SupplyChainRiskNarrative = resp
+            .parse_json()
             .with_context(|| "Failed to parse supply chain risk JSON")?;
 
         narrative.confidence = narrative.confidence.clamp(0.0, 1.0);
@@ -415,7 +431,10 @@ Keep the entire section under 350 words. Use professional intelligence memo lang
 
         let config = InferenceConfig::narrative();
         let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-        let resp = self.client.complete_with_config(messages, &config).await
+        let resp = self
+            .client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM memo section failed for {}", region))?;
 
         Ok(resp.text)

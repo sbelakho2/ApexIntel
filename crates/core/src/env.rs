@@ -26,3 +26,27 @@ pub const WEEKLY_DAY: &str = "WEEKLY_DAY";
 
 pub const DEFAULT_RPS: &str = "DEFAULT_RPS";
 pub const PROXY_POOL_SIZE: &str = "PROXY_POOL_SIZE";
+
+pub fn parse_truthy_flag(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_truthy_flag;
+
+    #[test]
+    fn parse_truthy_flag_accepts_common_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes ", "On"] {
+            assert!(parse_truthy_flag(value), "expected truthy value: {value}");
+        }
+    }
+
+    #[test]
+    fn parse_truthy_flag_rejects_other_values() {
+        for value in ["", "0", "false", "off", "no", "random"] {
+            assert!(!parse_truthy_flag(value), "expected false value: {value}");
+        }
+    }
+}

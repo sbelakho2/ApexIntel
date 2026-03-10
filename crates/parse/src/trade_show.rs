@@ -114,11 +114,7 @@ pub struct SpeakerExtract {
 }
 
 /// Extract trade show information from page text.
-pub fn extract_trade_show(
-    body_text: &str,
-    title: &str,
-    url: &str,
-) -> TradeShowExtract {
+pub fn extract_trade_show(body_text: &str, title: &str, url: &str) -> TradeShowExtract {
     let normalized_body = normalizer::normalize_whitespace(body_text);
     let location = extract_location(&normalized_body);
     let date_range = extract_date_range(&normalized_body);
@@ -138,7 +134,8 @@ pub fn extract_trade_show(
 }
 
 fn extract_location(text: &str) -> Option<String> {
-    RE_LOCATION.captures(text)
+    RE_LOCATION
+        .captures(text)
         .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
 }
 
@@ -173,17 +170,21 @@ pub fn extract_exhibitors(text: &str) -> Vec<ExhibitorExtract> {
         let has_booth = RE_BOOTH.is_match(trimmed);
 
         if has_booth {
-            let booth = RE_BOOTH.captures(trimmed)
+            let booth = RE_BOOTH
+                .captures(trimmed)
                 .map(|c| c.get(1).unwrap().as_str().to_string());
 
-            let hall = RE_HALL.captures(trimmed)
+            let hall = RE_HALL
+                .captures(trimmed)
                 .map(|c| c.get(1).unwrap().as_str().to_string());
 
-            let country = RE_COUNTRY.captures(trimmed)
+            let country = RE_COUNTRY
+                .captures(trimmed)
                 .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()));
 
             // Name is typically the first part before any delimiter
-            let name = trimmed.split(&['-', '–', '|', ','][..])
+            let name = trimmed
+                .split(&['-', '–', '|', ','][..])
                 .next()
                 .map(|s| normalizer::normalize_whitespace(s))
                 .unwrap_or_default();
@@ -212,8 +213,12 @@ pub fn extract_speakers(text: &str) -> Vec<SpeakerExtract> {
     // Pattern: "Name, Title at Company" or "Name (Company)"
     for caps in RE_SPEAKERS.captures_iter(text) {
         let name = normalizer::normalize_whitespace(caps.get(1).unwrap().as_str());
-        let title = caps.get(2).map(|m| normalizer::normalize_whitespace(m.as_str()));
-        let company = caps.get(3).map(|m| normalizer::normalize_whitespace(m.as_str()));
+        let title = caps
+            .get(2)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()));
+        let company = caps
+            .get(3)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()));
         let topic = extract_speaker_topic(text, &name);
 
         speakers.push(SpeakerExtract {
@@ -235,7 +240,8 @@ fn extract_speaker_topic(text: &str, name: &str) -> Option<String> {
     let context_end = (start + 300).min(text.len());
     let context = &text[start..context_end];
 
-    RE_TOPIC.captures(context)
+    RE_TOPIC
+        .captures(context)
         .and_then(|c| c.get(1))
         .map(|m| normalizer::normalize_whitespace(m.as_str()))
         .filter(|s| !s.is_empty())

@@ -245,6 +245,9 @@ CREATE TABLE IF NOT EXISTS warnings (
     acknowledged    BOOLEAN DEFAULT FALSE,
     acknowledged_at TIMESTAMPTZ,
     acknowledged_by TEXT,
+    review_outcome  TEXT,
+    reviewed_by     TEXT,
+    reviewed_at     TIMESTAMPTZ,
     sla_hours       INT DEFAULT 24,
     sla_deadline    TIMESTAMPTZ,
     escalation_level INT DEFAULT 0,
@@ -256,6 +259,23 @@ CREATE INDEX IF NOT EXISTS idx_warnings_type     ON warnings(warning_type, creat
 CREATE INDEX IF NOT EXISTS idx_warnings_severity ON warnings(severity, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_warnings_entity   ON warnings(entity_id);
 CREATE INDEX IF NOT EXISTS idx_warnings_unack    ON warnings(acknowledged, sla_deadline) WHERE NOT acknowledged;
+
+-- ─── recipe_weekly_metrics ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS recipe_weekly_metrics (
+    recipe_code             TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    week_start              DATE NOT NULL,
+    precision_score         DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    false_positive_rate     DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    warnings_generated      BIGINT NOT NULL DEFAULT 0,
+    reviewed_warnings       BIGINT NOT NULL DEFAULT 0,
+    false_positive_warnings BIGINT NOT NULL DEFAULT 0,
+    snapshot_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (recipe_code, week_start)
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_weekly_metrics_recipe_week ON recipe_weekly_metrics(recipe_code, week_start DESC);
+CREATE INDEX IF NOT EXISTS idx_recipe_weekly_metrics_week ON recipe_weekly_metrics(week_start DESC);
 
 -- ─── insights ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS insights (

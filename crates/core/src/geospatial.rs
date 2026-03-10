@@ -130,7 +130,13 @@ fn nearest_facility(point: GeoPoint, facilities: &[(&str, f64, f64)]) -> NamedPo
     facilities
         .iter()
         .map(|(name, lat, lon)| {
-            let dist = haversine_km(point, GeoPoint { lat: *lat, lon: *lon });
+            let dist = haversine_km(
+                point,
+                GeoPoint {
+                    lat: *lat,
+                    lon: *lon,
+                },
+            );
             NamedPoint {
                 name: name.to_string(),
                 lat: *lat,
@@ -138,7 +144,11 @@ fn nearest_facility(point: GeoPoint, facilities: &[(&str, f64, f64)]) -> NamedPo
                 distance_km: dist,
             }
         })
-        .min_by(|a, b| a.distance_km.partial_cmp(&b.distance_km).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|a, b| {
+            a.distance_km
+                .partial_cmp(&b.distance_km)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .unwrap()
 }
 
@@ -206,21 +216,33 @@ mod tests {
 
     #[test]
     fn haversine_tunis_casablanca() {
-        let tunis = GeoPoint { lat: 36.81, lon: 10.17 };
-        let casa = GeoPoint { lat: 33.57, lon: -7.59 };
+        let tunis = GeoPoint {
+            lat: 36.81,
+            lon: 10.17,
+        };
+        let casa = GeoPoint {
+            lat: 33.57,
+            lon: -7.59,
+        };
         let d = haversine_km(tunis, casa);
         assert!(d > 1500.0 && d < 1700.0, "Expected ~1600km, got {}", d);
     }
 
     #[test]
     fn haversine_same_point() {
-        let p = GeoPoint { lat: 48.86, lon: 2.35 };
+        let p = GeoPoint {
+            lat: 48.86,
+            lon: 2.35,
+        };
         assert!(haversine_km(p, p) < 0.01);
     }
 
     #[test]
     fn nearest_port_tunis() {
-        let tunis = GeoPoint { lat: 36.81, lon: 10.17 };
+        let tunis = GeoPoint {
+            lat: 36.81,
+            lon: 10.17,
+        };
         let port = nearest_port(tunis);
         assert!(port.name.contains("Tunis") || port.name.contains("Radès"));
         assert!(port.distance_km < 20.0);
@@ -228,29 +250,50 @@ mod tests {
 
     #[test]
     fn nearest_airport_paris() {
-        let paris = GeoPoint { lat: 48.86, lon: 2.35 };
+        let paris = GeoPoint {
+            lat: 48.86,
+            lon: 2.35,
+        };
         let ap = nearest_airport(paris);
         assert!(ap.name.contains("Charles de Gaulle"));
     }
 
     #[test]
     fn corridor_mediterranean() {
-        let tunis = GeoPoint { lat: 36.81, lon: 10.17 };
-        let barcelona = GeoPoint { lat: 41.39, lon: 2.17 };
+        let tunis = GeoPoint {
+            lat: 36.81,
+            lon: 10.17,
+        };
+        let barcelona = GeoPoint {
+            lat: 41.39,
+            lon: 2.17,
+        };
         assert_eq!(classify_corridor(tunis, barcelona), "Mediterranean");
     }
 
     #[test]
     fn corridor_pacific() {
-        let shanghai = GeoPoint { lat: 31.23, lon: 121.47 };
-        let la = GeoPoint { lat: 33.74, lon: -118.26 };
+        let shanghai = GeoPoint {
+            lat: 31.23,
+            lon: 121.47,
+        };
+        let la = GeoPoint {
+            lat: 33.74,
+            lon: -118.26,
+        };
         assert_eq!(classify_corridor(shanghai, la), "Pacific");
     }
 
     #[test]
     fn full_proximity() {
-        let tunis = GeoPoint { lat: 36.81, lon: 10.17 };
-        let casa = GeoPoint { lat: 33.57, lon: -7.59 };
+        let tunis = GeoPoint {
+            lat: 36.81,
+            lon: 10.17,
+        };
+        let casa = GeoPoint {
+            lat: 33.57,
+            lon: -7.59,
+        };
         let result = compute_proximity(tunis, casa);
         assert!(result.straight_line_km > 1500.0);
         assert!(result.estimated_road_km > result.straight_line_km);

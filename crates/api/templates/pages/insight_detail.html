@@ -27,6 +27,7 @@
       </div>
     </div>
     <div class="flex items-center gap-2">
+      <a href="/insights/{{ id }}?briefing=1" class="apex-btn-sm border border-border bg-secondary text-[10px] font-bold uppercase px-3 py-1 rounded hover:bg-muted">Briefing</a>
       <button hx-post="/insights/{{ id }}/bookmark"
               hx-target="#bookmark-status"
               hx-swap="innerHTML"
@@ -46,7 +47,9 @@
   <div id="bookmark-status"></div>
 
   <div class="apex-card p-4">
+    {% if !summary.is_empty() && summary != body %}
     <div class="text-sm font-semibold mb-2">{{ summary|safe }}</div>
+    {% endif %}
     <div class="text-sm leading-relaxed">{{ body|safe }}</div>
     <div class="mt-4 grid grid-cols-2 gap-4 text-[11px]">
       <div><span class="font-black uppercase text-muted-foreground">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline">{{ company_name }}</a></div>
@@ -59,16 +62,60 @@
     {% endif %}
   </div>
 
+  <div class="grid gap-4 xl:grid-cols-2">
+    <div class="apex-card p-4">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Notes</h2>
+      <form action="/insights/{{ id }}/notes" method="post" class="mt-4 space-y-3">
+        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
+          Note
+          <textarea name="body" rows="4" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="Capture why this insight matters and what should happen next."></textarea>
+        </label>
+        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
+          Tags
+          <input type="text" name="tags" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="memo, escalation, competitor">
+        </label>
+        <button type="submit" class="rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Add Note</button>
+      </form>
+    </div>
+
+    <div class="apex-card p-4">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Commentary</h2>
+      {% if annotations.is_empty() %}
+      <p class="mt-4 text-sm text-muted-foreground">No analyst commentary has been attached yet.</p>
+      {% else %}
+      <div class="mt-4 space-y-3">
+        {% for annotation in annotations %}
+        <article class="rounded-sm border border-border bg-secondary/30 p-3">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">{{ annotation.author }} · {{ annotation.visibility }}</p>
+            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ annotation.created_at }}</p>
+          </div>
+          <p class="mt-2 text-sm leading-relaxed">{{ annotation.body }}</p>
+          {% if !annotation.tags.is_empty() %}
+          <div class="mt-2 flex flex-wrap gap-1">
+            {% for tag in annotation.tags %}
+            <span class="rounded-sm border border-border bg-background px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ tag }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
   {% if !evidence.is_empty() %}
   <div class="apex-card">
     <div class="border-b border-border px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Evidence</h2>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Sources</h2>
     </div>
     <div class="divide-y divide-border">
       {% for e in evidence %}
       <div class="px-4 py-3">
-        <p class="text-sm"><a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="hover:underline">{{ e.snippet }}</a></p>
-        <p class="mt-1 text-[10px] text-muted-foreground">{{ e.source }} · Relevance: {{ e.relevance }}%</p>
+        <p class="text-sm font-semibold"><a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="hover:underline">{{ e.snippet }} · {{ e.source }}</a></p>
+        <p class="mt-1 break-words text-[10px] text-muted-foreground">{{ e.url }}</p>
+        <p class="mt-1 text-[10px] text-muted-foreground">Relevance: {{ e.relevance }}%</p>
       </div>
       {% endfor %}
     </div>

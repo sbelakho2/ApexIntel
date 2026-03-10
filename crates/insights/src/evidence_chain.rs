@@ -224,9 +224,10 @@ impl EvidenceChain {
                 let support_vals = vals.iter().copied().filter(|c| *c > 0.0);
                 let contradiction_vals = vals.iter().copied().filter(|c| *c < 0.0).map(f64::abs);
 
-                let support_mass = 1.0 - support_vals.fold(1.0_f64, |acc, c| acc * (1.0 - c.clamp(0.0, 1.0)));
-                let contradiction_mass =
-                    1.0 - contradiction_vals.fold(1.0_f64, |acc, c| acc * (1.0 - c.clamp(0.0, 1.0)));
+                let support_mass =
+                    1.0 - support_vals.fold(1.0_f64, |acc, c| acc * (1.0 - c.clamp(0.0, 1.0)));
+                let contradiction_mass = 1.0
+                    - contradiction_vals.fold(1.0_f64, |acc, c| acc * (1.0 - c.clamp(0.0, 1.0)));
 
                 let prior = self.nodes[src].confidence.clamp(0.0, 1.0);
                 let combined_support = 1.0 - (1.0 - prior) * (1.0 - support_mass);
@@ -243,7 +244,9 @@ impl EvidenceChain {
                     let edge = &self.edges[ei];
                     let delta = match edge.kind {
                         EdgeKind::Supports | EdgeKind::Cites => src_conf * edge.weight,
-                        EdgeKind::WeaklySupports | EdgeKind::Refines => src_conf * edge.weight * 0.5,
+                        EdgeKind::WeaklySupports | EdgeKind::Refines => {
+                            src_conf * edge.weight * 0.5
+                        }
                         EdgeKind::Contradicts => -(src_conf * edge.weight),
                     };
                     contributions.entry(edge.to).or_default().push(delta);
@@ -274,7 +277,12 @@ impl EvidenceChain {
         false
     }
 
-    fn dfs_cycle(&self, node: usize, visited: &mut HashSet<usize>, rec: &mut HashSet<usize>) -> bool {
+    fn dfs_cycle(
+        &self,
+        node: usize,
+        visited: &mut HashSet<usize>,
+        rec: &mut HashSet<usize>,
+    ) -> bool {
         if rec.contains(&node) {
             return true;
         }
@@ -303,8 +311,16 @@ impl EvidenceChain {
             .iter()
             .filter(|e| {
                 e.kind == EdgeKind::Contradicts
-                    && self.nodes.get(e.from).map(|n| n.confidence >= threshold).unwrap_or(false)
-                    && self.nodes.get(e.to).map(|n| n.confidence >= threshold).unwrap_or(false)
+                    && self
+                        .nodes
+                        .get(e.from)
+                        .map(|n| n.confidence >= threshold)
+                        .unwrap_or(false)
+                    && self
+                        .nodes
+                        .get(e.to)
+                        .map(|n| n.confidence >= threshold)
+                        .unwrap_or(false)
             })
             .map(|e| (e.from, e.to))
             .collect()
@@ -403,8 +419,8 @@ impl LlmChainBuilder {
         let obs_ids: Vec<usize> = source_snippets
             .iter()
             .map(|(src_id, text, conf)| {
-                let node = EvidenceNode::observation(text.clone(), *conf)
-                    .with_source(src_id.clone());
+                let node =
+                    EvidenceNode::observation(text.clone(), *conf).with_source(src_id.clone());
                 chain.add_node(node)
             })
             .collect();
@@ -434,8 +450,8 @@ impl LlmChainBuilder {
             .context("LLM chain builder call failed")?;
 
         // Parse weights from LLM response
-        let weights: Vec<serde_json::Value> = serde_json::from_str(&json_response)
-            .unwrap_or_default();
+        let weights: Vec<serde_json::Value> =
+            serde_json::from_str(&json_response).unwrap_or_default();
 
         // Add conclusion node
         let conclusion_id = chain.add_node(EvidenceNode::conclusion(conclusion_claim));
@@ -492,16 +508,34 @@ mod tests {
         let b = chain.add_node(EvidenceNode::observation("Obs B", 0.8));
         let c = chain.add_node(EvidenceNode::inference("Inferred C", 0.0));
         let d = chain.add_node(EvidenceNode::conclusion("Conclusion D"));
-        chain.add_edge(EvidenceEdge { from: a, to: c, kind: EdgeKind::Supports, weight: 0.9 });
-        chain.add_edge(EvidenceEdge { from: b, to: c, kind: EdgeKind::Supports, weight: 0.8 });
-        chain.add_edge(EvidenceEdge { from: c, to: d, kind: EdgeKind::Supports, weight: 0.95 });
+        chain.add_edge(EvidenceEdge {
+            from: a,
+            to: c,
+            kind: EdgeKind::Supports,
+            weight: 0.9,
+        });
+        chain.add_edge(EvidenceEdge {
+            from: b,
+            to: c,
+            kind: EdgeKind::Supports,
+            weight: 0.8,
+        });
+        chain.add_edge(EvidenceEdge {
+            from: c,
+            to: d,
+            kind: EdgeKind::Supports,
+            weight: 0.95,
+        });
         chain
     }
 
     #[test]
     fn confidence_propagation_increases_leaf_confidence() {
         let mut chain = build_simple_chain();
-        assert!((chain.node(3).map(|n| n.confidence).unwrap_or_default()).abs() < f64::EPSILON, "conclusion starts at 0");
+        assert!(
+            (chain.node(3).map(|n| n.confidence).unwrap_or_default()).abs() < f64::EPSILON,
+            "conclusion starts at 0"
+        );
         chain.propagate_confidence();
         assert!(
             chain.node(3).map(|n| n.confidence).unwrap_or_default() > 0.5,
@@ -515,8 +549,18 @@ mod tests {
         let a = chain.add_node(EvidenceNode::observation("Support", 0.9));
         let b = chain.add_node(EvidenceNode::observation("Contradict", 0.8));
         let c = chain.add_node(EvidenceNode::conclusion("Claim"));
-        chain.add_edge(EvidenceEdge { from: a, to: c, kind: EdgeKind::Supports, weight: 0.9 });
-        chain.add_edge(EvidenceEdge { from: b, to: c, kind: EdgeKind::Contradicts, weight: 0.8 });
+        chain.add_edge(EvidenceEdge {
+            from: a,
+            to: c,
+            kind: EdgeKind::Supports,
+            weight: 0.9,
+        });
+        chain.add_edge(EvidenceEdge {
+            from: b,
+            to: c,
+            kind: EdgeKind::Contradicts,
+            weight: 0.8,
+        });
         chain.propagate_confidence();
 
         let contradictions = chain.contradictions(0.5);
@@ -528,11 +572,21 @@ mod tests {
         let mut chain = EvidenceChain::new();
         let a = chain.add_node(EvidenceNode::observation("A", 0.9));
         let b = chain.add_node(EvidenceNode::inference("B", 0.0));
-        chain.add_edge(EvidenceEdge { from: a, to: b, kind: EdgeKind::Supports, weight: 1.0 });
+        chain.add_edge(EvidenceEdge {
+            from: a,
+            to: b,
+            kind: EdgeKind::Supports,
+            weight: 1.0,
+        });
         assert!(!chain.has_cycle());
 
         // Add back edge to create cycle
-        chain.add_edge(EvidenceEdge { from: b, to: a, kind: EdgeKind::Supports, weight: 1.0 });
+        chain.add_edge(EvidenceEdge {
+            from: b,
+            to: a,
+            kind: EdgeKind::Supports,
+            weight: 1.0,
+        });
         assert!(chain.has_cycle());
     }
 

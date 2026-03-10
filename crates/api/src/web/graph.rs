@@ -3,25 +3,18 @@
 //! Covers: interactive entity relationship graph with nodes (companies,
 //! persons) and edges (affiliations, supply-chain links, etc.).
 
-use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use askama::Template;
-use axum::{
-    http::HeaderMap,
-    response::IntoResponse,
-    Extension,
-};
+use axum::{response::IntoResponse, Extension};
+use chrono::Utc;
 
-use apex_store::postgres::{
-    CompanyListFilters,
-    InsightListFilters,
-    PersonListFilters,
-    PgStore,
-    WarningListFilters,
-};
-use super::{is_htmx_request, PageContext};
+use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_store::postgres::{
+    CompanyListFilters, InsightListFilters, PersonListFilters, PgStore, WarningListFilters,
+};
 use uuid::Uuid;
 
 // ─── Template data ──────────────────────────────────────────────────────────
@@ -30,7 +23,7 @@ use uuid::Uuid;
 pub struct GraphNode {
     pub id: String,
     pub label: String,
-    pub node_type: String,  // "company" | "person" | "site"
+    pub node_type: String, // "company" | "person" | "site"
     pub risk_score: Option<i64>,
 }
 
@@ -51,6 +44,8 @@ pub struct GraphRenderNode {
     pub size: i64,
     pub x: i64,
     pub y: i64,
+    pub cluster_key: String,
+    pub activity_days: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -108,11 +103,16 @@ pub struct GraphPage {
 
 /// GET /graph — entity relationship graph page.
 pub async fn graph_page(
-    headers: HeaderMap,
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let unack = store.count_warnings(&WarningListFilters { acknowledged: Some(false), ..Default::default() }).await.unwrap_or(0);
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/graph", unack);
 
     let edge_rows = store.list_all_edges(500).await.unwrap_or_else(|e| {
@@ -121,10 +121,22 @@ pub async fn graph_page(
     });
     let _edges_total = store.count_edges().await.unwrap_or(edge_rows.len() as i64);
 
-    let companies_total = store.count_companies(&CompanyListFilters::default()).await.unwrap_or(0);
-    let persons_total = store.count_persons(&PersonListFilters::default()).await.unwrap_or(0);
-    let _warnings_total = store.count_warnings(&WarningListFilters::default()).await.unwrap_or(0);
-    let _insights_total = store.count_insights(&InsightListFilters::default()).await.unwrap_or(0);
+    let companies_total = store
+        .count_companies(&CompanyListFilters::default())
+        .await
+        .unwrap_or(0);
+    let persons_total = store
+        .count_persons(&PersonListFilters::default())
+        .await
+        .unwrap_or(0);
+    let _warnings_total = store
+        .count_warnings(&WarningListFilters::default())
+        .await
+        .unwrap_or(0);
+    let _insights_total = store
+        .count_insights(&InsightListFilters::default())
+        .await
+        .unwrap_or(0);
 
     let node_ids: Vec<Uuid> = {
         let mut seen = HashSet::new();
@@ -133,6 +145,46 @@ pub async fn graph_page(
             seen.insert(row.target_id);
         }
         seen.into_iter().collect()
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct EntityActivityRow {
+        entity_id: String,
+        last_activity: chrono::DateTime<Utc>,
+    }
+
+    let entity_activity: HashMap<String, i64> = if node_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, EntityActivityRow>(
+            r#"SELECT entity_id, MAX(last_activity) AS last_activity
+               FROM (
+                   SELECT unnest(entity_ids)::text AS entity_id, ts_utc AS last_activity
+                   FROM warnings
+                   WHERE entity_ids IS NOT NULL
+                   UNION ALL
+                   SELECT unnest(entity_ids)::text AS entity_id, COALESCE(updated_at, created_at, now()) AS last_activity
+                   FROM insights
+                   WHERE entity_ids IS NOT NULL
+               ) activity
+               WHERE entity_id = ANY($1)
+               GROUP BY entity_id"#,
+        )
+        .bind(node_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>())
+        .fetch_all(&store.pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| {
+            (
+                row.entity_id,
+                Utc::now()
+                    .signed_duration_since(row.last_activity)
+                    .num_days()
+                    .max(0),
+            )
+        })
+        .collect()
     };
 
     let node_labels_by_id: HashMap<String, String> = if node_ids.is_empty() {
@@ -268,12 +320,14 @@ pub async fn graph_page(
     let mut synthetic_edge_seen: HashSet<(String, String)> = HashSet::new();
     for company in &company_rows {
         let company_id = company.id.to_string();
-        node_map.entry(company_id.clone()).or_insert_with(|| GraphNode {
-            id: company_id.clone(),
-            label: company.name.clone(),
-            node_type: "company".to_string(),
-            risk_score: None,
-        });
+        node_map
+            .entry(company_id.clone())
+            .or_insert_with(|| GraphNode {
+                id: company_id.clone(),
+                label: company.name.clone(),
+                node_type: "company".to_string(),
+                risk_score: None,
+            });
 
         if let Some(region_name) = company
             .region
@@ -283,17 +337,17 @@ pub async fn graph_page(
             let normalized_region = region_name.trim().to_string();
             let region_id = format!(
                 "region:{}",
-                normalized_region
-                    .to_ascii_lowercase()
-                    .replace(' ', "_")
+                normalized_region.to_ascii_lowercase().replace(' ', "_")
             );
 
-            node_map.entry(region_id.clone()).or_insert_with(|| GraphNode {
-                id: region_id.clone(),
-                label: normalized_region,
-                node_type: "region".to_string(),
-                risk_score: None,
-            });
+            node_map
+                .entry(region_id.clone())
+                .or_insert_with(|| GraphNode {
+                    id: region_id.clone(),
+                    label: normalized_region,
+                    node_type: "region".to_string(),
+                    risk_score: None,
+                });
 
             if synthetic_edge_seen.insert((company_id.clone(), region_id.clone())) {
                 synthetic_edges.push(GraphEdge {
@@ -313,17 +367,17 @@ pub async fn graph_page(
             let normalized_domain = domain_name.trim().to_string();
             let domain_id = format!(
                 "domain:{}",
-                normalized_domain
-                    .to_ascii_lowercase()
-                    .replace(' ', "_")
+                normalized_domain.to_ascii_lowercase().replace(' ', "_")
             );
 
-            node_map.entry(domain_id.clone()).or_insert_with(|| GraphNode {
-                id: domain_id.clone(),
-                label: normalized_domain,
-                node_type: "domain".to_string(),
-                risk_score: None,
-            });
+            node_map
+                .entry(domain_id.clone())
+                .or_insert_with(|| GraphNode {
+                    id: domain_id.clone(),
+                    label: normalized_domain,
+                    node_type: "domain".to_string(),
+                    risk_score: None,
+                });
 
             if synthetic_edge_seen.insert((company_id.clone(), domain_id.clone())) {
                 synthetic_edges.push(GraphEdge {
@@ -344,17 +398,17 @@ pub async fn graph_page(
             let normalized_country = country_name.trim().to_string();
             let country_id = format!(
                 "country:{}",
-                normalized_country
-                    .to_ascii_lowercase()
-                    .replace(' ', "_")
+                normalized_country.to_ascii_lowercase().replace(' ', "_")
             );
 
-            node_map.entry(country_id.clone()).or_insert_with(|| GraphNode {
-                id: country_id.clone(),
-                label: normalized_country,
-                node_type: "country".to_string(),
-                risk_score: None,
-            });
+            node_map
+                .entry(country_id.clone())
+                .or_insert_with(|| GraphNode {
+                    id: country_id.clone(),
+                    label: normalized_country,
+                    node_type: "country".to_string(),
+                    risk_score: None,
+                });
 
             if synthetic_edge_seen.insert((company_id.clone(), country_id.clone())) {
                 synthetic_edges.push(GraphEdge {
@@ -385,17 +439,17 @@ pub async fn graph_page(
         let normalized_country = country_code.to_string();
         let country_id = format!(
             "country:{}",
-            normalized_country
-                .to_ascii_lowercase()
-                .replace(' ', "_")
+            normalized_country.to_ascii_lowercase().replace(' ', "_")
         );
 
-        node_map.entry(country_id.clone()).or_insert_with(|| GraphNode {
-            id: country_id.clone(),
-            label: normalized_country,
-            node_type: "country".to_string(),
-            risk_score: None,
-        });
+        node_map
+            .entry(country_id.clone())
+            .or_insert_with(|| GraphNode {
+                id: country_id.clone(),
+                label: normalized_country,
+                node_type: "country".to_string(),
+                risk_score: None,
+            });
 
         if synthetic_edge_seen.insert((company_id.clone(), country_id.clone())) {
             synthetic_edges.push(GraphEdge {
@@ -420,19 +474,16 @@ pub async fn graph_page(
             continue;
         }
 
-        let cert_id = format!(
-            "cert:{}",
-            cert_label
-                .to_ascii_lowercase()
-                .replace(' ', "_")
-        );
+        let cert_id = format!("cert:{}", cert_label.to_ascii_lowercase().replace(' ', "_"));
 
-        node_map.entry(cert_id.clone()).or_insert_with(|| GraphNode {
-            id: cert_id.clone(),
-            label: cert_label,
-            node_type: "cert".to_string(),
-            risk_score: None,
-        });
+        node_map
+            .entry(cert_id.clone())
+            .or_insert_with(|| GraphNode {
+                id: cert_id.clone(),
+                label: cert_label,
+                node_type: "cert".to_string(),
+                risk_score: None,
+            });
 
         if synthetic_edge_seen.insert((company_id.clone(), cert_id.clone())) {
             synthetic_edges.push(GraphEdge {
@@ -470,12 +521,14 @@ pub async fn graph_page(
         };
         let tender_id = format!("tender:{}", warning.id);
 
-        node_map.entry(tender_id.clone()).or_insert_with(|| GraphNode {
-            id: tender_id.clone(),
-            label: tender_label,
-            node_type: "tender".to_string(),
-            risk_score: None,
-        });
+        node_map
+            .entry(tender_id.clone())
+            .or_insert_with(|| GraphNode {
+                id: tender_id.clone(),
+                label: tender_label,
+                node_type: "tender".to_string(),
+                risk_score: None,
+            });
 
         let anchor_id = warning
             .entity_ids
@@ -489,10 +542,7 @@ pub async fn graph_page(
                 warning.region.as_ref().and_then(|region| {
                     let region_id = format!(
                         "region:{}",
-                        region
-                            .trim()
-                            .to_ascii_lowercase()
-                            .replace(' ', "_")
+                        region.trim().to_ascii_lowercase().replace(' ', "_")
                     );
                     if node_map.contains_key(&region_id) {
                         Some(region_id)
@@ -516,12 +566,15 @@ pub async fn graph_page(
     }
 
     let nodes: Vec<GraphNode> = node_map.into_values().collect();
-    let mut edges: Vec<GraphEdge> = edge_rows.iter().map(|er| GraphEdge {
-        source: er.source_id.to_string(),
-        target: er.target_id.to_string(),
-        edge_type: er.edge_type.clone(),
-        weight: er.weight.unwrap_or(1.0),
-    }).collect();
+    let mut edges: Vec<GraphEdge> = edge_rows
+        .iter()
+        .map(|er| GraphEdge {
+            source: er.source_id.to_string(),
+            target: er.target_id.to_string(),
+            edge_type: er.edge_type.clone(),
+            weight: er.weight.unwrap_or(1.0),
+        })
+        .collect();
     edges.extend(synthetic_edges);
 
     // Count edge types
@@ -529,7 +582,8 @@ pub async fn graph_page(
     for e in &edges {
         *type_counts.entry(e.edge_type.clone()).or_insert(0) += 1;
     }
-    let edge_type_counts: Vec<EdgeTypeCount> = type_counts.into_iter()
+    let edge_type_counts: Vec<EdgeTypeCount> = type_counts
+        .into_iter()
         .map(|(edge_type, count)| EdgeTypeCount { edge_type, count })
         .collect();
 
@@ -648,6 +702,8 @@ pub async fn graph_page(
             size,
             x,
             y,
+            cluster_key: normalize_node_type(&node.node_type),
+            activity_days: *entity_activity.get(&node.id).unwrap_or(&3650),
         });
     }
 
@@ -659,7 +715,9 @@ pub async fn graph_page(
         })
         .take(320)
     {
-        if let (Some((x1, y1)), Some((x2, y2))) = (pos_map.get(&edge.source), pos_map.get(&edge.target)) {
+        if let (Some((x1, y1)), Some((x2, y2))) =
+            (pos_map.get(&edge.source), pos_map.get(&edge.target))
+        {
             render_edges.push(GraphRenderEdge {
                 source: edge.source.clone(),
                 target: edge.target.clone(),
@@ -694,6 +752,8 @@ pub async fn graph_page(
             "x": n.x,
             "y": n.y,
             "color": n.color,
+            "clusterKey": n.cluster_key,
+            "activityDays": n.activity_days,
         })).collect::<Vec<_>>(),
         "edges": render_edges.iter().map(|e| serde_json::json!({
             "source": e.source,
@@ -702,15 +762,24 @@ pub async fn graph_page(
             "edge_type": e.edge_type,
             "weight": 1.0,
         })).collect::<Vec<_>>(),
-    }).to_string();
+    })
+    .to_string();
 
     let tpl = GraphPage {
         current_path: ctx.current_path,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
-        companies_total: if companies_total_graph > 0 { companies_total_graph } else { companies_total },
-        persons_total: if persons_total_graph > 0 { persons_total_graph } else { persons_total },
+        companies_total: if companies_total_graph > 0 {
+            companies_total_graph
+        } else {
+            companies_total
+        },
+        persons_total: if persons_total_graph > 0 {
+            persons_total_graph
+        } else {
+            persons_total
+        },
         regions_total,
         countries_total,
         certs_total,
@@ -724,7 +793,6 @@ pub async fn graph_page(
         edges,
     };
 
-    let _ = is_htmx_request(&headers);
     tpl.into_response()
 }
 
@@ -742,9 +810,18 @@ fn normalize_node_type(value: &str) -> String {
         "company".to_string()
     } else if low.contains("person") || low.contains("poi") {
         "person".to_string()
-    } else if low.contains("country") || low.contains("countries") || low.contains("nation") || low.contains("state") {
+    } else if low.contains("country")
+        || low.contains("countries")
+        || low.contains("nation")
+        || low.contains("state")
+    {
         "country".to_string()
-    } else if low.contains("region") || low.contains("regions") || low.contains("geo") || low.contains("location") || low.contains("site") {
+    } else if low.contains("region")
+        || low.contains("regions")
+        || low.contains("geo")
+        || low.contains("location")
+        || low.contains("site")
+    {
         "region".to_string()
     } else if low.contains("cert") || low.contains("certificate") || low.contains("compliance") {
         "cert".to_string()
@@ -760,7 +837,13 @@ fn short_label(value: &str, max_chars: usize) -> String {
     if trimmed.chars().count() <= max_chars {
         trimmed.to_string()
     } else {
-        format!("{}…", trimmed.chars().take(max_chars.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            trimmed
+                .chars()
+                .take(max_chars.saturating_sub(1))
+                .collect::<String>()
+        )
     }
 }
 
@@ -779,7 +862,12 @@ fn is_generic_graph_label(value: &str) -> bool {
         || low == "org"
 }
 
-fn select_nodes_balanced(nodes: &[GraphNode], edges: &[GraphEdge], max_total: usize, per_type: usize) -> HashSet<String> {
+fn select_nodes_balanced(
+    nodes: &[GraphNode],
+    edges: &[GraphEdge],
+    max_total: usize,
+    per_type: usize,
+) -> HashSet<String> {
     let mut buckets: HashMap<String, Vec<&GraphNode>> = HashMap::new();
     for node in nodes {
         buckets

@@ -2233,6 +2233,111 @@ async def store_warning(pool: asyncpg.Pool, recipe_code: str, warning_type: str,
     )
 
 
+def _insight_digest_tokens(text: str, max_tokens: int = 220) -> list[str]:
+    stopwords = {
+        "the", "and", "for", "with", "that", "this", "from", "into", "over", "under",
+        "onto", "after", "before", "about", "their", "there", "they", "them", "were",
+        "have", "has", "been", "being", "will", "would", "could", "should", "a", "an",
+        "of", "to", "in", "on", "by", "at", "as", "is", "are", "or",
+    }
+    normalized = "".join(ch if ch.isalnum() else " " for ch in text.lower())
+    out = []
+    for word in normalized.split():
+        if len(word) > 2 and word not in stopwords:
+            out.append(word)
+        if len(out) >= max_tokens:
+            break
+    return out
+
+
+def _has_excessive_phrase_repetition(text: str) -> bool:
+    tokens = _insight_digest_tokens(text)
+    if len(tokens) < 10:
+        return False
+    seen = {}
+    for idx in range(len(tokens) - 3):
+        phrase = " ".join(tokens[idx:idx + 4])
+        seen[phrase] = seen.get(phrase, 0) + 1
+        if seen[phrase] >= 3:
+            return True
+    return False
+
+
+def _count_template_markers(text: str) -> int:
+    markers = [
+        "assessment:", "recommended action:", "additional source reporting:",
+        "signal themes detected:", "actionable:", "watch closely:",
+        "early signal:", "low confidence:", "analysis:", "impact:", "recommendation:",
+    ]
+    lower = text.lower()
+    return sum(1 for marker in markers if marker in lower)
+
+
+def _collapse_duplicate_paragraphs(text: str) -> str:
+    normalized = (text or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return ""
+
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n+", normalized) if paragraph.strip()]
+    if len(paragraphs) <= 1:
+        return normalized
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for paragraph in paragraphs:
+        key = " ".join(paragraph.split()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(paragraph)
+
+    return "\n\n".join(deduped)
+
+
+def _passes_shared_quality_gate(title_text: str, summary_text: str, current_type: str) -> bool:
+    if len(title_text.strip()) < 12 or len(summary_text.strip()) < 80:
+        return False
+    lower_title = title_text.lower()
+    lower_summary = summary_text.lower()
+    bad_fragments = [
+        "intelligence veracity:",
+        "additional source reporting:",
+        "signal themes detected:",
+        "assessment: moderate-high confidenc",
+        "[object object]",
+        "undefined",
+        "{{",
+        "}}",
+    ]
+    if any(fragment in lower_title or fragment in lower_summary for fragment in bad_fragments):
+        return False
+    if _count_template_markers(summary_text) >= 2:
+        return False
+    if _has_excessive_phrase_repetition(summary_text):
+        return False
+    if current_type == "veracity_analysis":
+        if "source" not in lower_summary:
+            return False
+        if not any(marker in lower_summary for marker in ("evidence", "corroborat", "reported")):
+            return False
+    return True
+
+
+def _confidence_gate_reason(insight_type: str, confidence: float, tags: list | None = None) -> Optional[str]:
+    if confidence < 0.50:
+        return f"confidence {confidence:.2f} below 0.50"
+    if insight_type == "veracity_analysis":
+        normalized_tags = {tag.strip().lower() for tag in (tags or []) if isinstance(tag, str)}
+        if "unverified" in normalized_tags or "contradicted" in normalized_tags:
+            blocked = "unverified" if "unverified" in normalized_tags else "contradicted"
+            return f"classification '{blocked}' blocked for persisted veracity insights"
+    return None
+
+
+def _passes_confidence_gate(insight_type: str, confidence: float, tags: list | None = None) -> bool:
+    return _confidence_gate_reason(insight_type, confidence, tags) is None
+
+
 async def store_insight(pool: asyncpg.Pool, title: str, summary: str, 
                        insight_type: str, region: str, evidence_urls: list,
                        tags: list, confidence: float = 0.75, entity_ids: list = None):
@@ -2242,9 +2347,16 @@ async def store_insight(pool: asyncpg.Pool, title: str, summary: str,
     threshold are too speculative to surface to analysts.
     """
     # Reject low-confidence insights
-    if confidence < 0.50:
-        log.debug(f"Insight rejected (confidence {confidence:.2f} < 0.50): {title[:60]}")
-        return
+    summary = _collapse_duplicate_paragraphs(summary)
+
+    confidence_reason = _confidence_gate_reason(insight_type, confidence, tags)
+    if confidence_reason is not None:
+        log.debug(f"Insight rejected by confidence gate: {title[:80]} ({confidence_reason})")
+        return False
+
+    if not _passes_shared_quality_gate(title, summary, insight_type):
+        log.debug(f"Insight rejected by shared quality gate: {title[:80]}")
+        return False
     
     # Deduplicate and filter evidence URLs, preserving insertion order
     seen: dict = {}
@@ -2257,7 +2369,11 @@ async def store_insight(pool: asyncpg.Pool, title: str, summary: str,
     # Reject insights with no evidence URLs — they're speculation
     if not deduped:
         log.debug(f"Insight rejected (no evidence URLs): {title[:60]}")
-        return
+        return False
+
+    if insight_type == "veracity_analysis" and not _has_non_social_evidence_url(deduped):
+        log.debug(f"Insight rejected (social-only veracity evidence): {title[:80]}")
+        return False
     
     # Parse entity_ids to UUID list
     parsed_entity_ids = None
@@ -2271,6 +2387,7 @@ async def store_insight(pool: asyncpg.Pool, title: str, summary: str,
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
         title, summary, insight_type, region, confidence, deduped, tags, parsed_entity_ids
     )
+    return True
 
 
 async def generate_insights_from_warnings(pool: asyncpg.Pool):
@@ -4316,7 +4433,44 @@ def _classify_story_category(text_lower: str) -> Optional[str]:
     return None
 
 
-def score_story_veracity(story_text: str, corroborating_articles: list[dict]) -> dict:
+def _is_social_or_low_signal_domain(domain: str) -> bool:
+    normalized = (domain or "").lower()
+    social_markers = (
+        "mastodon",
+        "mstdn",
+        "bsky",
+        "bluesky",
+        "x.com",
+        "twitter.com",
+        "linkedin.com",
+        "reddit.com",
+        "t.me",
+        "telegram",
+        "youtube.com",
+        "youtu.be",
+        "facebook.com",
+        "instagram.com",
+        "tiktok.com",
+    )
+    return any(marker in normalized for marker in social_markers)
+
+
+def _has_non_social_evidence_url(urls: list[str] | None) -> bool:
+    for url in urls or []:
+        try:
+            domain = urlparse(url).netloc.replace("www.", "")
+        except Exception:
+            continue
+        if domain and not _is_social_or_low_signal_domain(domain):
+            return True
+    return False
+
+
+def score_story_veracity(
+    story_text: str,
+    corroborating_articles: list[dict],
+    primary_urls: Optional[list[str]] = None,
+) -> dict:
     """
     Score the veracity of a news story based on:
     1. Source diversity — how many independent outlets report the same story
@@ -4343,6 +4497,13 @@ def score_story_veracity(story_text: str, corroborating_articles: list[dict]) ->
 
     # 3. Analyse corroborating articles
     unique_domains = set()
+    for primary_url in primary_urls or []:
+        try:
+            domain = urlparse(primary_url).netloc
+            if domain:
+                unique_domains.add(domain)
+        except Exception:
+            pass
     corroborating_action_count = 0
     corroborating_posturing_count = 0
     category_action_hits = []
@@ -4370,6 +4531,9 @@ def score_story_veracity(story_text: str, corroborating_articles: list[dict]) ->
 
     # 4. Calculate veracity score
     source_diversity_score = min(1.0, len(unique_domains) / 3.0)  # 3+ sources = full marks
+    non_social_domains = {domain for domain in unique_domains if not _is_social_or_low_signal_domain(domain)}
+    credible_source_score = min(1.0, len(non_social_domains) / 2.0)
+    social_echo_penalty = 0.12 if unique_domains and not non_social_domains else 0.0
 
     # Action/posturing ratio: ratio favoring action
     total_indicators = (action_count + corroborating_action_count
@@ -4388,12 +4552,14 @@ def score_story_veracity(story_text: str, corroborating_articles: list[dict]) ->
 
     # Composite score
     veracity = (
-        0.30 * source_diversity_score
+        0.24 * source_diversity_score
         + 0.30 * action_ratio
         + 0.20 * min(1.0, len(corroborating_articles) / 3.0)
-        + 0.20 * (1.0 if action_count > 0 else 0.3)
+        + 0.14 * (1.0 if action_count > 0 else 0.3)
+        + 0.12 * credible_source_score
         + category_bonus
         - category_penalty
+        - social_echo_penalty
     )
     veracity = max(0.05, min(0.98, veracity))
 
@@ -4401,6 +4567,8 @@ def score_story_veracity(story_text: str, corroborating_articles: list[dict]) ->
     if veracity >= 0.80 and total_actions >= 2 and len(unique_domains) >= 2:
         classification = "verified"
     elif veracity >= 0.60:
+        classification = "likely"
+    elif veracity >= 0.50 and len(non_social_domains) >= 2 and total_posturing <= total_actions + 1:
         classification = "likely"
     elif total_posturing > total_actions * 2 and category_penalty > 0:
         classification = "posturing"
@@ -4417,6 +4585,11 @@ def score_story_veracity(story_text: str, corroborating_articles: list[dict]) ->
         reasoning_parts.append("Single-source reporting — treat with caution")
     else:
         reasoning_parts.append("No corroborating sources found")
+
+    if unique_domains and not non_social_domains:
+        reasoning_parts.append("Current corroboration is social-only and lacks higher-signal reporting")
+    elif len(non_social_domains) >= 2:
+        reasoning_parts.append(f"Includes {len(non_social_domains)} non-social reporting sources")
 
     if total_actions > total_posturing:
         reasoning_parts.append(f"Contains {total_actions} concrete action indicators vs {total_posturing} rhetorical")
@@ -4568,7 +4741,11 @@ async def cross_reference_news(pool: asyncpg.Pool, session: aiohttp.ClientSessio
                 })
 
         # Score veracity
-        veracity_result = score_story_veracity(combined_text, corroborating)
+        veracity_result = score_story_veracity(
+            combined_text,
+            corroborating,
+            primary_urls=[o.get("url", "") for o in substantive_obs if o.get("url")],
+        )
 
         # Only generate insights for significant stories (multiple signals or high engagement)
         unique_signals = set()
@@ -4580,8 +4757,11 @@ async def cross_reference_news(pool: asyncpg.Pool, session: aiohttp.ClientSessio
 
         # Dedup: check for recent veracity insight about this entity
         existing = await pool.fetchval(
-            "SELECT 1 FROM insights WHERE title LIKE $1 AND created_at > NOW() - INTERVAL '12 hours'",
-            f"%{entity_name[:30]}%veracity%"
+            """SELECT 1 FROM insights
+               WHERE insight_type = 'veracity_analysis'
+               AND title ILIKE $1
+               AND created_at > NOW() - INTERVAL '12 hours'""",
+            f"%{entity_name[:30]}%"
         )
         if existing:
             continue
@@ -4600,16 +4780,13 @@ async def cross_reference_news(pool: asyncpg.Pool, session: aiohttp.ClientSessio
         score = veracity_result["veracity_score"]
         reasoning = veracity_result["reasoning"]
 
-        signal_types_str = ", ".join(unique_signals) if unique_signals else "general activity"
+        signal_types = sorted(unique_signals)
 
         # Adjust insight confidence based on veracity
         insight_confidence = min(0.95, score * 0.9 + 0.05)
 
         # ── Build ANALYTICAL summary with actual content from observations ──
-        best_excerpts = sorted(primary_texts, key=len, reverse=True)[:3]
         _topic_keywords = _extract_key_topics(combined_text, entity_name)
-
-        title = f"Intelligence Veracity: {entity_name} — {classification.title()} ({signal_types_str})"
 
         # ── Synthesize what the sources are actually reporting ──
         source_themes = []          # one-line theme per unique source
@@ -4624,117 +4801,75 @@ async def cross_reference_news(pool: asyncpg.Pool, session: aiohttp.ClientSessio
             if domain in seen_domains:
                 continue
             seen_domains.add(domain)
-            # Extract a meaningful sentence (first sentence or up to 150 chars)
-            raw = o_text.replace("\n", " ").strip()
-            # Find first sentence-ending punctuation
-            for end_char in ".!?":
-                pos = raw.find(end_char)
-                if 30 < pos < 180:
-                    raw = raw[:pos + 1]
-                    break
-            else:
-                if len(raw) > 150:
-                    raw = raw[:147] + "..."
+            raw = _trim_excerpt_sentence(o_text, limit=180)
             if raw:
                 source_themes.append((domain, raw))
 
-        n_sources = veracity_result["source_count"]
         n_reports = len(substantive_obs)
-
-        # ── Lead paragraph: what's happening ──
-        summary_parts = []
-        if source_themes:
-            lead_theme = source_themes[0][1]
-            summary_parts.append(
-                f"{entity_name} is featured across {n_sources} independent sources "
-                f"({n_reports} reports in the last 6 hours). "
-                f"The primary development: {lead_theme}"
-            )
-        else:
-            summary_parts.append(
-                f"{entity_name} appeared in {n_reports} reports from "
-                f"{n_sources} sources over the last 6 hours."
-            )
-
-        # ── Source detail: what each source specifically reports ──
-        if len(source_themes) > 1:
-            lines = []
-            for domain, theme in source_themes[1:5]:
-                lines.append(f"  • {domain}: {theme}")
-            summary_parts.append("Additional source reporting:\n" + "\n".join(lines))
-
-        # ── Topic analysis: specific themes, not generic labels ──
-        if _topic_keywords:
-            grouped = ", ".join(_topic_keywords[:6])
-            summary_parts.append(f"Signal themes detected: {grouped}.")
-
-        # ── Veracity assessment with explanation ──
-        conf_label = {
-            "verified": "HIGH CONFIDENCE",
-            "likely": "MODERATE-HIGH CONFIDENCE",
-            "unverified": "LOW-MODERATE CONFIDENCE",
-            "disputed": "LOW CONFIDENCE — DISPUTED",
-        }.get(classification, "UNASSESSED")
-
-        veracity_line = f"Assessment: {conf_label} ({score:.0%}). {reasoning}"
-        summary_parts.append(veracity_line)
-
-        # ── Evidence quality indicators ──
-        action_n = veracity_result.get("action_signals", 0)
-        posture_n = veracity_result.get("posturing_signals", 0)
-        if veracity_result.get("action_evidence"):
-            evidence_str = "; ".join(veracity_result["action_evidence"][:3])
-            summary_parts.append(f"Concrete evidence observed: {evidence_str}.")
-
-        if posture_n > action_n and posture_n > 0:
-            summary_parts.append(
-                f"Note: {posture_n} rhetorical/posturing indicators vs {action_n} concrete actions. "
-                f"Exercise caution — claims lack action-based corroboration."
-            )
-
-        if veracity_result.get("category"):
-            cat = veracity_result["category"]
-            if cat in NEEDS_ACTION_CORROBORATION and not veracity_result.get("action_evidence"):
-                needed = NEEDS_ACTION_CORROBORATION[cat][:3]
-                summary_parts.append(
-                    f"For '{cat.replace('_', ' ')}' intelligence, key evidence to watch: "
-                    f"{', '.join(needed)}."
-                )
-
-        # ── Actionable recommendation based on classification ──
-        if classification == "verified":
-            summary_parts.append(
-                f"Actionable: This intelligence is corroborated across {n_sources} sources "
-                f"with concrete evidence. Consider immediate strategic response."
-            )
-        elif classification == "likely":
-            summary_parts.append(
-                f"Watch closely: Development is probable based on {n_sources} sources. "
-                f"Recommend monitoring for official confirmation before major decisions."
-            )
-        elif classification == "unverified":
-            summary_parts.append(
-                "Early signal: Reports are not yet independently confirmed. "
-                "Track for additional corroboration before taking action."
-            )
-        else:
-            summary_parts.append(
-                "Low confidence: Insufficient corroboration. Do not act on this "
-                "intelligence without significant additional evidence."
-            )
-
-        summary = "\n\n".join(summary_parts)
+        title, summary = build_veracity_title_and_summary(
+            entity_name,
+            classification,
+            signal_types,
+            source_themes,
+            _topic_keywords,
+            veracity_result,
+            n_reports,
+        )
 
         insight_type = "veracity_analysis"
         tags = ["cross_reference", "veracity", classification]
         if veracity_result["category"]:
             tags.append(veracity_result["category"])
 
-        await store_insight(pool, title, summary, insight_type, "Global",
-                          evidence_urls, tags, insight_confidence,
-                          entity_ids=list({o["entity_id"] for o in obs_list if o.get("entity_id")}))
-        insights_created += 1
-        log.info(f"🔍 Veracity insight: {entity_name} → {classification} ({score:.0%})")
+        confidence_reason = _confidence_gate_reason(insight_type, insight_confidence, tags)
+        quality_ok = _passes_shared_quality_gate(title, summary, insight_type)
+
+        if confidence_reason is not None:
+            log.info(
+                "🔎 Veracity candidate skipped: %s → %s (%s, score=%.0f%%, reports=%d, evidence_urls=%d)",
+                entity_name,
+                classification,
+                confidence_reason,
+                score * 100,
+                n_reports,
+                len(evidence_urls),
+            )
+            continue
+
+        if not quality_ok:
+            log.info(
+                "🔎 Veracity candidate skipped: %s → %s (shared quality gate, score=%.0f%%, reports=%d, evidence_urls=%d)",
+                entity_name,
+                classification,
+                score * 100,
+                n_reports,
+                len(evidence_urls),
+            )
+            continue
+
+        inserted = await store_insight(
+            pool,
+            title,
+            summary,
+            insight_type,
+            "Global",
+            evidence_urls,
+            tags,
+            insight_confidence,
+            entity_ids=list({o["entity_id"] for o in obs_list if o.get("entity_id")}),
+        )
+        if inserted:
+            insights_created += 1
+            log.info(f"🔍 Veracity insight: {entity_name} → {classification} ({score:.0%})")
+        else:
+            log.info(
+                "🔎 Veracity candidate skipped: %s → %s (insert declined after evidence or dedup validation, score=%.0f%%, reports=%d, evidence_urls=%d)",
+                entity_name,
+                classification,
+                score * 100,
+                n_reports,
+                len(evidence_urls),
+            )
 
     log.info(f"✓ Cross-reference analysis complete: {insights_created} veracity insights")
     return insights_created
@@ -4773,6 +4908,130 @@ def _extract_key_topics(text: str, entity_name: str) -> list[str]:
             if m_clean not in entity_lower and m_clean not in [t.lower() for t in topics]:
                 topics.append(m.strip())
     return topics[:10]
+
+
+def _humanize_signal_types(signal_types: list[str]) -> str:
+    cleaned = []
+    seen = set()
+    for signal in signal_types:
+        label = signal.replace("_", " ").strip().lower()
+        if label and label not in seen:
+            seen.add(label)
+            cleaned.append(label)
+    if not cleaned:
+        return "market activity"
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} and {cleaned[1]}"
+    return f"{cleaned[0]}, {cleaned[1]}, and related activity"
+
+
+def _trim_excerpt_sentence(text: str, limit: int = 180) -> str:
+    raw = " ".join((text or "").replace("\n", " ").split()).strip()
+    if not raw:
+        return ""
+    for end_char in ".!?":
+        pos = raw.find(end_char)
+        if 30 < pos < limit:
+            return raw[:pos + 1]
+    if len(raw) > limit:
+        return raw[:limit - 3].rstrip() + "..."
+    return raw
+
+
+def _veracity_title(entity_name: str, classification: str, signal_types: list[str]) -> str:
+    signal_label = _humanize_signal_types(signal_types)
+    if classification == "verified":
+        return f"{entity_name}: corroborated {signal_label} reporting"
+    if classification == "likely":
+        return f"{entity_name}: likely {signal_label} development"
+    if classification == "posturing":
+        return f"{entity_name}: rhetorical {signal_label} claims outweigh evidence"
+    if classification == "contradicted":
+        return f"{entity_name}: weak support for reported {signal_label} claims"
+    return f"{entity_name}: emerging {signal_label} reporting"
+
+
+def build_veracity_title_and_summary(
+    entity_name: str,
+    classification: str,
+    signal_types: list[str],
+    source_themes: list[tuple[str, str]],
+    topic_keywords: list[str],
+    veracity_result: dict,
+    report_count: int,
+) -> tuple[str, str]:
+    title = _veracity_title(entity_name, classification, signal_types)
+    source_count = max(1, int(veracity_result.get("source_count", 0) or 0))
+    action_count = int(veracity_result.get("action_signals", 0) or 0)
+    posturing_count = int(veracity_result.get("posturing_signals", 0) or 0)
+    score = float(veracity_result.get("veracity_score", 0.0) or 0.0)
+    reasoning = (veracity_result.get("reasoning") or "").strip()
+    action_evidence = list(veracity_result.get("action_evidence") or [])
+    category = veracity_result.get("category")
+
+    lead_theme = source_themes[0][1] if source_themes else "recent reporting remains fragmented"
+    lead_sentence = _trim_excerpt_sentence(lead_theme)
+    signal_label = _humanize_signal_types(signal_types)
+    domains = [domain for domain, _ in source_themes if domain]
+    domain_phrase = ", ".join(domains[:4]) if domains else "recent coverage"
+
+    summary_parts = [
+        (
+            f"{entity_name} is appearing in {report_count} recent reports across {source_count} independent "
+            f"sources. The reported development centers on {signal_label}, with the clearest source language "
+            f"stating that {lead_sentence}"
+        )
+    ]
+
+    summary_parts.append(
+        f"Coverage from {domain_phrase} is being compared for corroboration. The current read is {classification} "
+        f"at roughly {score:.0%} confidence because {reasoning}."
+    )
+
+    if topic_keywords:
+        summary_parts.append(
+            f"The recurring reported themes involve {', '.join(topic_keywords[:6])}."
+        )
+
+    if action_evidence:
+        summary_parts.append(
+            f"Concrete evidence already visible in the source set includes {', '.join(action_evidence[:3])}."
+        )
+    elif category in NEEDS_ACTION_CORROBORATION:
+        needed = ", ".join(NEEDS_ACTION_CORROBORATION[category][:3])
+        summary_parts.append(
+            f"The reporting still lacks the action-based evidence that would matter most here, such as {needed}."
+        )
+
+    if posturing_count > action_count and posturing_count > 0:
+        summary_parts.append(
+            f"Rhetorical or signaling behavior currently outweighs operational proof, with {posturing_count} "
+            f"posturing indicators versus {action_count} action indicators across the observed sources."
+        )
+
+    if classification == "verified":
+        summary_parts.append(
+            "If this affects an active account, supplier, or program, it is reasonable to move from passive "
+            "monitoring into response planning now."
+        )
+    elif classification == "likely":
+        summary_parts.append(
+            "If this matters commercially or operationally, keep it on an active watchlist and look for formal "
+            "confirmation before making a hard commitment."
+        )
+    elif classification == "posturing":
+        summary_parts.append(
+            "Treat this primarily as directional signaling until stronger procurement, hiring, logistics, or other "
+            "operational evidence appears."
+        )
+    else:
+        summary_parts.append(
+            "Treat this as an early signal only and wait for stronger corroboration before acting on it."
+        )
+
+    return title, "\n\n".join(summary_parts)
 
 
 # ─── Geopolitical Landscape Analysis Engine ─────────────────────────────────────

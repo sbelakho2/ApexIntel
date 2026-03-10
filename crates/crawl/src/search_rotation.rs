@@ -15,8 +15,13 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use crate::governor_limiter::CrawlGovernor;
+use crate::rate_limit::RateLimitManager;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine definition
@@ -67,13 +72,7 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
-    fn new(
-        id: &str,
-        name: &str,
-        url_template: &str,
-        kind: EngineKind,
-        rpm: u32,
-    ) -> Self {
+    fn new(id: &str, name: &str, url_template: &str, kind: EngineKind, rpm: u32) -> Self {
         Self {
             id: id.to_string(),
             name: name.to_string(),
@@ -381,53 +380,45 @@ pub struct SearchPool {
     engines: Arc<Vec<SearchEngine>>,
     cursor: Arc<AtomicUsize>,
     web_cursor: Arc<AtomicUsize>,
+    rate_limits: Arc<Mutex<RateLimitManager>>,
+    rpm_windows: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    governor: Arc<CrawlGovernor>,
 }
 
 impl SearchPool {
     /// Create a pool from an explicit engine list.
     pub fn new(engines: Vec<SearchEngine>) -> Self {
+        Self::with_runtime_controls(
+            engines,
+            Arc::new(Mutex::new(RateLimitManager::new())),
+            Arc::new(CrawlGovernor::with_limits(30, 120)),
+        )
+    }
+
+    pub fn with_runtime_controls(
+        engines: Vec<SearchEngine>,
+        rate_limits: Arc<Mutex<RateLimitManager>>,
+        governor: Arc<CrawlGovernor>,
+    ) -> Self {
         Self {
             engines: Arc::new(engines),
             cursor: Arc::new(AtomicUsize::new(0)),
             web_cursor: Arc::new(AtomicUsize::new(0)),
+            rate_limits,
+            rpm_windows: Arc::new(Mutex::new(HashMap::new())),
+            governor,
         }
     }
 
-    /// Return the next enabled engine (round-robin).  Returns `None` if the
+    /// Return the next enabled engine with health-aware rotation. Returns `None` if the
     /// pool is empty.
     pub fn next(&self) -> Option<&SearchEngine> {
-        let enabled: Vec<usize> = self
-            .engines
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.enabled)
-            .map(|(i, _)| i)
-            .collect();
-
-        if enabled.is_empty() {
-            return None;
-        }
-
-        let pos = self.cursor.fetch_add(1, Ordering::Relaxed) % enabled.len();
-        Some(&self.engines[enabled[pos]])
+        self.next_healthy_engine(None, &self.cursor)
     }
 
     /// Return the next web-search-only engine.
     pub fn next_web(&self) -> Option<&SearchEngine> {
-        let web: Vec<usize> = self
-            .engines
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.enabled && e.kind == EngineKind::WebSearch)
-            .map(|(i, _)| i)
-            .collect();
-
-        if web.is_empty() {
-            return None;
-        }
-
-        let pos = self.web_cursor.fetch_add(1, Ordering::Relaxed) % web.len();
-        Some(&self.engines[web[pos]])
+        self.next_healthy_engine(Some(&EngineKind::WebSearch), &self.web_cursor)
     }
 
     /// Return engines matching a specific kind.
@@ -448,6 +439,98 @@ impl SearchPool {
 
     pub fn is_empty(&self) -> bool {
         self.engines.is_empty()
+    }
+
+    pub fn record_success(&self, engine_id: &str) {
+        self.rate_limits
+            .lock()
+            .expect("search pool rate-limit lock poisoned")
+            .record_success(engine_id);
+    }
+
+    pub fn record_failure(&self, engine_id: &str, is_soft: bool) {
+        self.rate_limits
+            .lock()
+            .expect("search pool rate-limit lock poisoned")
+            .record_failure(engine_id, is_soft);
+    }
+
+    fn next_healthy_engine(
+        &self,
+        kind: Option<&EngineKind>,
+        cursor: &AtomicUsize,
+    ) -> Option<&SearchEngine> {
+        let eligible_ids: Vec<String> = self
+            .engines
+            .iter()
+            .filter(|engine| {
+                engine.enabled && kind.map(|target| &engine.kind == target).unwrap_or(true)
+            })
+            .map(|engine| engine.id.clone())
+            .collect();
+        if eligible_ids.is_empty() {
+            return None;
+        }
+
+        let ranked_ids = self
+            .rate_limits
+            .lock()
+            .expect("search pool rate-limit lock poisoned")
+            .get_engines_by_health(&eligible_ids);
+        if ranked_ids.is_empty() {
+            return None;
+        }
+
+        let offset = cursor.fetch_add(1, Ordering::Relaxed) % ranked_ids.len();
+        for engine_id in ranked_ids
+            .iter()
+            .cycle()
+            .skip(offset)
+            .take(ranked_ids.len())
+        {
+            let engine = self
+                .engines
+                .iter()
+                .find(|candidate| candidate.id == *engine_id)?;
+            if !self.engine_is_within_rpm(engine) {
+                continue;
+            }
+            if !self.governor.try_acquire(&engine.id) {
+                continue;
+            }
+            self.record_engine_selection(engine);
+            return Some(engine);
+        }
+
+        None
+    }
+
+    fn engine_is_within_rpm(&self, engine: &SearchEngine) -> bool {
+        let mut windows = self
+            .rpm_windows
+            .lock()
+            .expect("search pool rpm-window lock poisoned");
+        let window = windows.entry(engine.id.clone()).or_default();
+        let now = Instant::now();
+        while window
+            .front()
+            .map(|instant| now.duration_since(*instant).as_secs() >= 60)
+            .unwrap_or(false)
+        {
+            window.pop_front();
+        }
+        window.len() < engine.rate_limit_rpm as usize
+    }
+
+    fn record_engine_selection(&self, engine: &SearchEngine) {
+        let mut windows = self
+            .rpm_windows
+            .lock()
+            .expect("search pool rpm-window lock poisoned");
+        windows
+            .entry(engine.id.clone())
+            .or_default()
+            .push_back(Instant::now());
     }
 }
 
@@ -481,19 +564,51 @@ mod tests {
 
     #[test]
     fn build_url_encodes_spaces() {
-        let engine = SearchEngine::new("test", "Test", "https://example.com?q={query}", EngineKind::WebSearch, 10);
+        let engine = SearchEngine::new(
+            "test",
+            "Test",
+            "https://example.com?q={query}",
+            EngineKind::WebSearch,
+            10,
+        );
         let url = engine.build_url("CBRN export controls");
         assert!(url.contains("CBRN+export+controls") || url.contains("CBRN%20export%20controls"));
     }
 
     #[test]
     fn pool_round_robins() {
-        let pool = SearchPool::default();
+        let pool = SearchPool::with_runtime_controls(
+            vec![
+                SearchEngine::new(
+                    "a",
+                    "A",
+                    "https://a.example/?q={query}",
+                    EngineKind::WebSearch,
+                    100,
+                ),
+                SearchEngine::new(
+                    "b",
+                    "B",
+                    "https://b.example/?q={query}",
+                    EngineKind::WebSearch,
+                    100,
+                ),
+                SearchEngine::new(
+                    "c",
+                    "C",
+                    "https://c.example/?q={query}",
+                    EngineKind::WebSearch,
+                    100,
+                ),
+            ],
+            Arc::new(Mutex::new(RateLimitManager::new())),
+            Arc::new(CrawlGovernor::with_limits(100, 100)),
+        );
         assert!(pool.enabled_len() > 0);
         let e1 = pool.next().unwrap().id.clone();
         // After going through the full cycle, we should see diversity
-        let mut seen = std::collections::HashSet::new();
-        for _ in 0..pool.enabled_len() {
+        let mut seen = std::collections::HashSet::from([e1.clone()]);
+        for _ in 1..pool.enabled_len() {
             seen.insert(pool.next().unwrap().id.clone());
         }
         assert!(seen.len() > 1);
@@ -520,13 +635,74 @@ mod tests {
         let academic = pool.engines_of_kind(&EngineKind::AcademicSearch);
         assert!(!academic.is_empty());
     }
+
+    #[test]
+    fn unhealthy_engine_is_skipped() {
+        let engines = vec![
+            SearchEngine::new(
+                "blocked",
+                "Blocked",
+                "https://blocked.example/?q={query}",
+                EngineKind::WebSearch,
+                5,
+            ),
+            SearchEngine::new(
+                "healthy",
+                "Healthy",
+                "https://healthy.example/?q={query}",
+                EngineKind::WebSearch,
+                5,
+            ),
+        ];
+        let rate_limits = Arc::new(Mutex::new(RateLimitManager::new()));
+        {
+            let mut state = rate_limits.lock().unwrap();
+            for _ in 0..4 {
+                state.record_failure("blocked", false);
+            }
+        }
+
+        let pool = SearchPool::with_runtime_controls(
+            engines,
+            rate_limits,
+            Arc::new(CrawlGovernor::with_limits(100, 100)),
+        );
+
+        assert_eq!(pool.next_web().unwrap().id, "healthy");
+    }
+
+    #[test]
+    fn engine_rpm_limit_is_enforced() {
+        let pool = SearchPool::with_runtime_controls(
+            vec![SearchEngine::new(
+                "limited",
+                "Limited",
+                "https://limited.example/?q={query}",
+                EngineKind::WebSearch,
+                1,
+            )],
+            Arc::new(Mutex::new(RateLimitManager::new())),
+            Arc::new(CrawlGovernor::with_limits(100, 100)),
+        );
+
+        assert_eq!(pool.next_web().unwrap().id, "limited");
+        assert!(pool.next_web().is_none());
+    }
+
     #[test]
     fn person_query_builder_returns_diverse_queries() {
         let queries = PersonOsintQueryBuilder::build_queries("Jane Doe", Some("Acme Corp"));
-        assert!(queries.len() >= 8, "Expected at least 8 query templates, got {}", queries.len());
+        assert!(
+            queries.len() >= 8,
+            "Expected at least 8 query templates, got {}",
+            queries.len()
+        );
         // All must contain the person's name
         for q in &queries {
-            assert!(q.contains("Jane Doe") || q.contains("jane doe"), "Query missing name: {q}");
+            assert!(
+                q.contains("Jane Doe") || q.contains("jane doe"),
+                "Query missing name: {q}"
+            );
         }
     }
 }
@@ -549,9 +725,7 @@ impl PersonOsintQueryBuilder {
     /// * `name`    – Full name of the person (e.g. `"Jane Doe"`).
     /// * `company` – Optional current employer to disambiguate the person.
     pub fn build_queries(name: &str, company: Option<&str>) -> Vec<String> {
-        let org_clause = company
-            .map(|c| format!(" \"{c}\""))
-            .unwrap_or_default();
+        let org_clause = company.map(|c| format!(" \"{c}\"")).unwrap_or_default();
 
         let mut queries: Vec<String> = Vec::with_capacity(24);
 
@@ -560,13 +734,21 @@ impl PersonOsintQueryBuilder {
         queries.push(format!("\"{name}\"{org_clause} linkedin"));
 
         // ── News & media ─────────────────────────────────────────
-        queries.push(format!("\"{name}\"{org_clause} interview OR statement OR remarks"));
-        queries.push(format!("\"{name}\"{org_clause} keynote OR speech OR panel OR conference"));
-        queries.push(format!("\"{name}\"{org_clause} site:reuters.com OR site:bloomberg.com OR site:ft.com"));
+        queries.push(format!(
+            "\"{name}\"{org_clause} interview OR statement OR remarks"
+        ));
+        queries.push(format!(
+            "\"{name}\"{org_clause} keynote OR speech OR panel OR conference"
+        ));
+        queries.push(format!(
+            "\"{name}\"{org_clause} site:reuters.com OR site:bloomberg.com OR site:ft.com"
+        ));
         queries.push(format!("\"{name}\"{org_clause} press release"));
 
         // ── Academic & research ──────────────────────────────────
-        queries.push(format!("\"{name}\"{org_clause} research paper OR publication OR study"));
+        queries.push(format!(
+            "\"{name}\"{org_clause} research paper OR publication OR study"
+        ));
         queries.push(format!("site:scholar.google.com \"{name}\""));
         queries.push(format!("site:semanticscholar.org \"{name}\""));
 
@@ -575,27 +757,41 @@ impl PersonOsintQueryBuilder {
         queries.push(format!("site:lens.org \"{name}\" inventor"));
 
         // ── Corporate / legal records ────────────────────────────
-        queries.push(format!("\"{name}\"{org_clause} board of directors OR advisory board"));
+        queries.push(format!(
+            "\"{name}\"{org_clause} board of directors OR advisory board"
+        ));
         queries.push(format!("site:opencorporates.com \"{name}\""));
         queries.push(format!("site:sec.gov \"{name}\""));
         queries.push(format!("site:companieshouse.gov.uk \"{name}\""));
 
         // ── Government & regulatory ──────────────────────────────
-        queries.push(format!("\"{name}\" site:.gov OR site:.gov.il OR site:.gov.de"));
-        queries.push(format!("\"{name}\"{org_clause} testimony OR hearing OR deposition OR subpoena"));
-        queries.push(format!("\"{name}\"{org_clause} sanction OR watchlist OR enforcement"));
+        queries.push(format!(
+            "\"{name}\" site:.gov OR site:.gov.il OR site:.gov.de"
+        ));
+        queries.push(format!(
+            "\"{name}\"{org_clause} testimony OR hearing OR deposition OR subpoena"
+        ));
+        queries.push(format!(
+            "\"{name}\"{org_clause} sanction OR watchlist OR enforcement"
+        ));
 
         // ── Document leaks / transparency ────────────────────────
         queries.push(format!("\"{name}\"{org_clause} filetype:pdf"));
-        queries.push(format!("\"{name}\"{org_clause} site:wikileaks.org OR site:icij.org OR site:occrp.org"));
+        queries.push(format!(
+            "\"{name}\"{org_clause} site:wikileaks.org OR site:icij.org OR site:occrp.org"
+        ));
 
         // ── Social / forum ───────────────────────────────────────
         queries.push(format!("site:twitter.com \"{name}\""));
         queries.push(format!("site:reddit.com \"{name}\"{org_clause}"));
 
         // ── Event speaker ────────────────────────────────────────
-        queries.push(format!("\"{name}\"{org_clause} speaker bio OR about the speaker"));
-        queries.push(format!("\"{name}\"{org_clause} site:techcrunch.com OR site:wired.com OR site:theregister.com"));
+        queries.push(format!(
+            "\"{name}\"{org_clause} speaker bio OR about the speaker"
+        ));
+        queries.push(format!(
+            "\"{name}\"{org_clause} site:techcrunch.com OR site:wired.com OR site:theregister.com"
+        ));
 
         queries
     }
@@ -603,13 +799,18 @@ impl PersonOsintQueryBuilder {
     /// Build search URLs by pairing each query with a pool engine and returning
     /// `(query_string, url)` pairs.  Engines are selected by round-robin so the
     /// load is spread.
-    pub fn build_urls(name: &str, company: Option<&str>, pool: &SearchPool) -> Vec<(String, String)> {
+    pub fn build_urls(
+        name: &str,
+        company: Option<&str>,
+        pool: &SearchPool,
+    ) -> Vec<(String, String)> {
         let queries = Self::build_queries(name, company);
         queries
             .into_iter()
             .filter_map(|q| {
-                let engine = pool.next()?;
+                let engine = pool.next_web().or_else(|| pool.next())?;
                 Some((q.clone(), engine.build_url(&q)))
             })
             .collect()
-    }}
+    }
+}

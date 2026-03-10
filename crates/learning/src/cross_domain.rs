@@ -203,7 +203,7 @@ impl InteractionContingency {
 /// - Neither signal present
 /// Then checks whether the outcome occurred within `window_days` of the signal.
 pub fn build_interaction_contingency(
-    outcomes: &[(String, i64)],   // (entity_id, ts_epoch)
+    outcomes: &[(String, i64)], // (entity_id, ts_epoch)
     signals_a: &[(String, i64)],
     signals_b: &[(String, i64)],
     lag_days: i32,
@@ -272,9 +272,9 @@ pub fn build_interaction_contingency(
         let has_outcome = if let Some(sig_ts) = latest_signal_ts {
             let window_start = sig_ts + lag_secs;
             let window_end = sig_ts + lag_secs + window_secs;
-            outcome_map
-                .get(entity)
-                .map_or(false, |ots| ots.iter().any(|&t| t >= window_start && t <= window_end))
+            outcome_map.get(entity).map_or(false, |ots| {
+                ots.iter().any(|&t| t >= window_start && t <= window_end)
+            })
         } else {
             // No signals — check if entity had any outcome at all.
             outcome_map.get(entity).map_or(false, |ots| !ots.is_empty())
@@ -378,7 +378,11 @@ pub fn mine_signal_combinations(
 
         // Build full interaction contingency.
         let cube = build_interaction_contingency(
-            outcomes, signals_a, signals_b, lag_days, window_days,
+            outcomes,
+            signals_a,
+            signals_b,
+            lag_days,
+            window_days,
             Some(&entity_universe),
         );
 
@@ -509,7 +513,11 @@ fn compute_interaction_stability(
         }
 
         let cube = build_interaction_contingency(
-            &out_split, &a_split, &b_split, lag_days, window_days,
+            &out_split,
+            &a_split,
+            &b_split,
+            lag_days,
+            window_days,
             None,
         );
         if cube.interaction_odds_ratio() >= min_effect {
@@ -577,13 +585,18 @@ pub fn sweep_lags(
     let mut lag = 1;
     while lag <= max_lag_days {
         let combos = mine_signal_combinations(
-            observations, outcomes, outcome_label, lag, window_days, config,
+            observations,
+            outcomes,
+            outcome_label,
+            lag,
+            window_days,
+            config,
         );
         for combo in combos {
             let key = (combo.type_a.clone(), combo.type_b.clone());
-            let is_better = best_by_pair
-                .get(&key)
-                .map_or(true, |existing| combo.interaction_effect > existing.interaction_effect);
+            let is_better = best_by_pair.get(&key).map_or(true, |existing| {
+                combo.interaction_effect > existing.interaction_effect
+            });
             if is_better {
                 best_by_pair.insert(key, combo);
             }
@@ -621,7 +634,7 @@ mod tests {
             .collect()
     }
 
-    fn make_outcome_events(entities: &[&str], base_ts: i64 ) -> Vec<(String, i64)> {
+    fn make_outcome_events(entities: &[&str], base_ts: i64) -> Vec<(String, i64)> {
         entities
             .iter()
             .enumerate()
@@ -640,24 +653,15 @@ mod tests {
 
     #[test]
     fn test_build_interaction_contingency_basic() {
-        let outcomes = vec![
-            ("e1".into(), 100_000i64),
-            ("e2".into(), 100_000),
-        ];
+        let outcomes = vec![("e1".into(), 100_000i64), ("e2".into(), 100_000)];
         let signals_a = vec![
             ("e1".into(), 50_000i64),
             ("e2".into(), 50_000),
             ("e3".into(), 50_000),
         ];
-        let signals_b = vec![
-            ("e1".into(), 50_000i64),
-            ("e4".into(), 50_000),
-        ];
+        let signals_b = vec![("e1".into(), 50_000i64), ("e4".into(), 50_000)];
 
-        let cube = build_interaction_contingency(
-            &outcomes, &signals_a, &signals_b, 0, 365,
-            None,
-        );
+        let cube = build_interaction_contingency(&outcomes, &signals_a, &signals_b, 0, 365, None);
 
         // e1: has_a=true, has_b=true, outcome=true  → both_signals_outcome
         // e2: has_a=true, has_b=false, outcome=true  → a_only_outcome
@@ -771,14 +775,8 @@ mod tests {
             min_stability: 0.0, // relax for test
         };
 
-        let combos = mine_signal_combinations(
-            &observations,
-            &outcomes,
-            "ContractAward",
-            15,
-            30,
-            &config,
-        );
+        let combos =
+            mine_signal_combinations(&observations, &outcomes, "ContractAward", 15, 30, &config);
 
         // Should find the JobPost × PatentPublished synergy.
         assert!(
@@ -796,22 +794,23 @@ mod tests {
 
     #[test]
     fn test_mine_empty() {
-        let combos = mine_signal_combinations(
-            &[],
-            &[],
-            "X",
-            30,
-            30,
-            &CrossDomainConfig::default(),
-        );
+        let combos = mine_signal_combinations(&[], &[], "X", 30, 30, &CrossDomainConfig::default());
         assert!(combos.is_empty());
     }
 
     #[test]
     fn test_sweep_lags() {
         // Simple test: sweep should find results when mine does.
-        let obs = make_events("A", &["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"], 1_000_000);
-        let mut obs2 = make_events("B", &["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"], 1_000_000);
+        let obs = make_events(
+            "A",
+            &["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"],
+            1_000_000,
+        );
+        let mut obs2 = make_events(
+            "B",
+            &["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8"],
+            1_000_000,
+        );
         let mut all_obs = obs;
         all_obs.append(&mut obs2);
         let outcomes = make_outcome_events(&["e1", "e2", "e3", "e4"], 1_100_000);
@@ -826,9 +825,7 @@ mod tests {
             min_stability: 0.0,
         };
 
-        let results = sweep_lags(
-            &all_obs, &outcomes, "Outcome", 30, 30, 15, &config,
-        );
+        let results = sweep_lags(&all_obs, &outcomes, "Outcome", 30, 30, 15, &config);
         // Should find something (though may not be very synergistic with these simple data)
         // The key thing is it doesn't panic.
         let _ = results;
@@ -859,9 +856,8 @@ mod tests {
             }
         }
 
-        let stability = compute_interaction_stability(
-            &outcomes, &signals_a, &signals_b, 10, 30, 4, 1.0,
-        );
+        let stability =
+            compute_interaction_stability(&outcomes, &signals_a, &signals_b, 10, 30, 4, 1.0);
         assert!(
             stability >= 0.5,
             "Expected ≥50% stability but got {}",

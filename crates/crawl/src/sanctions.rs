@@ -218,7 +218,10 @@ impl SanctionsScreener {
         let mut screener = Self::empty();
 
         // Load OFAC SDN XML
-        match screener.load_ofac_sdn_xml(&client, "https://www.treasury.gov/ofac/downloads/sdn.xml").await {
+        match screener
+            .load_ofac_sdn_xml(&client, "https://www.treasury.gov/ofac/downloads/sdn.xml")
+            .await
+        {
             Ok(count) => info!(count, "OFAC SDN entries loaded"),
             Err(e) => warn!(error = %e, "Failed to load OFAC SDN — using partial list"),
         }
@@ -239,7 +242,8 @@ impl SanctionsScreener {
 
     /// Load OFAC SDN from a local XML file path.
     pub async fn load_ofac_sdn_file(&mut self, path: &str) -> Result<usize> {
-        let content = tokio::fs::read(path).await
+        let content = tokio::fs::read(path)
+            .await
             .with_context(|| format!("Read OFAC SDN file: {}", path))?;
         self.parse_ofac_sdn_xml(&content)
     }
@@ -295,18 +299,35 @@ impl SanctionsScreener {
                     match name.as_str() {
                         "sdnEntry" => {
                             in_entry = true;
-                            uid.clear(); first_name.clear(); last_name.clear();
-                            sdn_type.clear(); programs.clear(); aliases.clear();
-                            identifiers.clear(); nationalities.clear();
+                            uid.clear();
+                            first_name.clear();
+                            last_name.clear();
+                            sdn_type.clear();
+                            programs.clear();
+                            aliases.clear();
+                            identifiers.clear();
+                            nationalities.clear();
                         }
-                        "aka" => { in_aka = true; current_aka_last.clear(); current_aka_first.clear(); }
-                        "id" if in_entry => { in_id = true; current_id_type.clear(); current_id_number.clear(); current_id_country = None; }
+                        "aka" => {
+                            in_aka = true;
+                            current_aka_last.clear();
+                            current_aka_first.clear();
+                        }
+                        "id" if in_entry => {
+                            in_id = true;
+                            current_id_type.clear();
+                            current_id_number.clear();
+                            current_id_country = None;
+                        }
                         _ => {}
                     }
                 }
                 Ok(Event::Text(ref e)) => {
                     let text = e.unescape().unwrap_or_default().trim().to_string();
-                    if text.is_empty() { buf.clear(); continue; }
+                    if text.is_empty() {
+                        buf.clear();
+                        continue;
+                    }
                     if in_entry {
                         match current_field.as_str() {
                             "uid" => uid = text,
@@ -330,12 +351,18 @@ impl SanctionsScreener {
                         "aka" if in_entry => {
                             in_aka = false;
                             let alias = format_name(&current_aka_first, &current_aka_last);
-                            if !alias.is_empty() { aliases.push(alias); }
+                            if !alias.is_empty() {
+                                aliases.push(alias);
+                            }
                         }
                         "id" if in_entry => {
                             in_id = false;
                             if !current_id_number.is_empty() {
-                                identifiers.push((current_id_type.clone(), current_id_number.clone(), current_id_country.clone()));
+                                identifiers.push((
+                                    current_id_type.clone(),
+                                    current_id_number.clone(),
+                                    current_id_country.clone(),
+                                ));
                             }
                         }
                         "sdnEntry" if in_entry => {
@@ -377,7 +404,11 @@ impl SanctionsScreener {
     /// Load EU consolidated XML from a remote URL.
     async fn load_eu_consolidated_xml(&mut self, client: &Client, url: &str) -> Result<usize> {
         debug!(url = %url, "Downloading EU consolidated sanctions XML");
-        let resp = client.get(url).send().await.context("Fetch EU consolidated")?;
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .context("Fetch EU consolidated")?;
         if !resp.status().is_success() {
             anyhow::bail!("EU consolidated download returned {}", resp.status());
         }
@@ -420,19 +451,31 @@ impl SanctionsScreener {
                             name_parts.clear();
                             // Try to get logicalId attribute
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"logicalId" || attr.key.as_ref() == b"euReferenceNumber" {
-                                    entry_id = str::from_utf8(attr.value.as_ref()).unwrap_or("").to_string();
+                                if attr.key.as_ref() == b"logicalId"
+                                    || attr.key.as_ref() == b"euReferenceNumber"
+                                {
+                                    entry_id = str::from_utf8(attr.value.as_ref())
+                                        .unwrap_or("")
+                                        .to_string();
                                 }
                             }
                         }
-                        "namePart" if in_sanctioned => { in_name = true; }
-                        "aliasStrong" | "aliasWeak" if in_sanctioned => { in_alias_name = true; name_parts.clear(); }
+                        "namePart" if in_sanctioned => {
+                            in_name = true;
+                        }
+                        "aliasStrong" | "aliasWeak" if in_sanctioned => {
+                            in_alias_name = true;
+                            name_parts.clear();
+                        }
                         _ => {}
                     }
                 }
                 Ok(Event::Text(ref e)) => {
                     let text = e.unescape().unwrap_or_default().trim().to_string();
-                    if text.is_empty() { buf.clear(); continue; }
+                    if text.is_empty() {
+                        buf.clear();
+                        continue;
+                    }
                     if in_sanctioned {
                         match current_field.as_str() {
                             "namePart" | "wholeName" | "firstName" | "lastName" | "middleName" => {
@@ -467,11 +510,15 @@ impl SanctionsScreener {
                             in_sanctioned = false;
                             if !current_name.is_empty() {
                                 let entry = SanctionEntry::new(
-                                    if entry_id.is_empty() { count.to_string() } else { entry_id.clone() },
+                                    if entry_id.is_empty() {
+                                        count.to_string()
+                                    } else {
+                                        entry_id.clone()
+                                    },
                                     current_name.clone(),
                                     aliases.clone(),
                                     EntityType::from_str(&subject_type),
-                                    vec![],   // regulation_title not parsed from this XML format
+                                    vec![], // regulation_title not parsed from this XML format
                                     vec![],
                                     vec![],
                                     SanctionsList::EuConsolidated,
@@ -505,7 +552,11 @@ impl SanctionsScreener {
     /// `identifiers` — optional list of (type, value) pairs (e.g. passport number).
     ///
     /// Returns a deduplicated, similarity-sorted `Vec<SanctionsMatch>`.
-    pub fn screen_entity(&self, name: &str, identifiers: &[(String, String)]) -> Vec<SanctionsMatch> {
+    pub fn screen_entity(
+        &self,
+        name: &str,
+        identifiers: &[(String, String)],
+    ) -> Vec<SanctionsMatch> {
         let query_lower = name.to_lowercase();
         let query_tokens: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -539,7 +590,11 @@ impl SanctionsScreener {
                     // Find original (non-lowercase) name
                     if candidate_lower == &entry.primary_name.to_lowercase() {
                         best_name = entry.primary_name.clone();
-                    } else if let Some(alias) = entry.aliases.iter().find(|a| a.to_lowercase() == *candidate_lower) {
+                    } else if let Some(alias) = entry
+                        .aliases
+                        .iter()
+                        .find(|a| a.to_lowercase() == *candidate_lower)
+                    {
                         best_name = alias.clone();
                     }
                 }
@@ -555,7 +610,11 @@ impl SanctionsScreener {
 
             // Report if above threshold or exact identifier match
             if best_score >= self.threshold || has_id_match {
-                let effective_score = if has_id_match { 1.0_f64.max(best_score) } else { best_score };
+                let effective_score = if has_id_match {
+                    1.0_f64.max(best_score)
+                } else {
+                    best_score
+                };
                 matches.push(SanctionsMatch {
                     query_name: name.to_string(),
                     matched_name: best_name,
@@ -575,8 +634,11 @@ impl SanctionsScreener {
 
         // Sort: exact matches first, then by similarity descending
         matches.sort_unstable_by(|a, b| {
-            b.is_exact.cmp(&a.is_exact)
-                .then(b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal))
+            b.is_exact.cmp(&a.is_exact).then(
+                b.similarity
+                    .partial_cmp(&a.similarity)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
         });
 
         // Deduplicate exact duplicates from same list with same entry_id
@@ -586,7 +648,10 @@ impl SanctionsScreener {
     }
 
     /// Screen multiple entities in batch.
-    pub fn screen_batch(&self, entities: &[(String, Vec<(String, String)>)]) -> Vec<(String, Vec<SanctionsMatch>)> {
+    pub fn screen_batch(
+        &self,
+        entities: &[(String, Vec<(String, String)>)],
+    ) -> Vec<(String, Vec<SanctionsMatch>)> {
         entities
             .iter()
             .map(|(name, ids)| {
@@ -750,7 +815,11 @@ mod tests {
     #[test]
     fn jaro_winkler_transposition() {
         let score = jaro_winkler("martha", "marhta");
-        assert!(score > 0.9, "Expected high similarity for transposition, got {}", score);
+        assert!(
+            score > 0.9,
+            "Expected high similarity for transposition, got {}",
+            score
+        );
     }
 
     #[test]
@@ -847,13 +916,20 @@ mod tests {
             EntityType::Individual,
             vec!["SDGT".to_string()],
             vec![],
-            vec![("Passport".to_string(), "AB123456".to_string(), Some("Russia".to_string()))],
+            vec![(
+                "Passport".to_string(),
+                "AB123456".to_string(),
+                Some("Russia".to_string()),
+            )],
             SanctionsList::OfacSdn,
             None,
         ));
 
         // Different name but matching passport
-        let hits = screener.screen_entity("Different Name", &[("Passport".to_string(), "AB123456".to_string())]);
+        let hits = screener.screen_entity(
+            "Different Name",
+            &[("Passport".to_string(), "AB123456".to_string())],
+        );
         assert!(!hits.is_empty());
         assert!(hits[0].is_exact);
     }

@@ -317,8 +317,10 @@ impl PriorityVector {
             // Use partial_cmp so that NaN never silently wins the comparison.
             // If best is NaN, any finite value replaces it; if pair is NaN it
             // is skipped (Greater never matches).
-            if matches!(pair.1.partial_cmp(&best.1), Some(std::cmp::Ordering::Greater))
-                || best.1.is_nan()
+            if matches!(
+                pair.1.partial_cmp(&best.1),
+                Some(std::cmp::Ordering::Greater)
+            ) || best.1.is_nan()
             {
                 best = pair;
             }
@@ -860,11 +862,7 @@ pub struct Capability {
 }
 
 impl Capability {
-    pub fn new(
-        company_id: Uuid,
-        capability: impl Into<String>,
-        proof_grade: ProofGrade,
-    ) -> Self {
+    pub fn new(company_id: Uuid, capability: impl Into<String>, proof_grade: ProofGrade) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -910,7 +908,12 @@ pub struct FeatureRow {
 }
 
 impl FeatureRow {
-    pub fn new(entity_id: impl Into<String>, entity_type: impl Into<String>, time_bucket: i64, bucket_size_days: i32) -> Self {
+    pub fn new(
+        entity_id: impl Into<String>,
+        entity_type: impl Into<String>,
+        time_bucket: i64,
+        bucket_size_days: i32,
+    ) -> Self {
         Self {
             entity_id: entity_id.into(),
             entity_type: entity_type.into(),
@@ -1125,7 +1128,12 @@ mod tests {
             (SiteType::Hq, "hq"),
         ];
         for (variant, expected) in &cases {
-            assert_eq!(variant.as_str(), *expected, "SiteType::{:?} should be {expected}", variant);
+            assert_eq!(
+                variant.as_str(),
+                *expected,
+                "SiteType::{:?} should be {expected}",
+                variant
+            );
         }
         // Other variant returns the inner string verbatim
         let custom = SiteType::Other("depot".to_string());
@@ -1144,25 +1152,57 @@ mod tests {
         assert_eq!(RoleFamily::Legal.as_str(), "legal");
 
         // Known variants must NOT become Other
-        assert_ne!(RoleFamily::from_str("finance"), RoleFamily::Other("finance".to_string()));
+        assert_ne!(
+            RoleFamily::from_str("finance"),
+            RoleFamily::Other("finance".to_string())
+        );
         assert_eq!(RoleFamily::Finance.as_str(), "finance");
 
         // New POI-originated variants
-        assert_eq!(RoleFamily::from_str("supplier_quality"), RoleFamily::SupplierQuality);
-        assert_eq!(RoleFamily::from_str("free_zone_authority"), RoleFamily::FreeZoneAuthority);
-        assert_eq!(RoleFamily::from_str("port_logistics"), RoleFamily::PortLogistics);
-        assert_eq!(RoleFamily::from_str("certification_body"), RoleFamily::CertificationBody);
-        assert_eq!(RoleFamily::from_str("industry_association"), RoleFamily::IndustryAssociation);
+        assert_eq!(
+            RoleFamily::from_str("supplier_quality"),
+            RoleFamily::SupplierQuality
+        );
+        assert_eq!(
+            RoleFamily::from_str("free_zone_authority"),
+            RoleFamily::FreeZoneAuthority
+        );
+        assert_eq!(
+            RoleFamily::from_str("port_logistics"),
+            RoleFamily::PortLogistics
+        );
+        assert_eq!(
+            RoleFamily::from_str("certification_body"),
+            RoleFamily::CertificationBody
+        );
+        assert_eq!(
+            RoleFamily::from_str("industry_association"),
+            RoleFamily::IndustryAssociation
+        );
         assert_eq!(RoleFamily::from_str("distributor"), RoleFamily::Distributor);
     }
 
     #[test]
     fn test_priority_vector_all_fields_matter_for_dominant() {
         // Security highest
-        let pv = PriorityVector { cost: 0.1, quality: 0.2, speed: 0.3, resilience: 0.4, compliance: 0.5, security: 0.9 };
+        let pv = PriorityVector {
+            cost: 0.1,
+            quality: 0.2,
+            speed: 0.3,
+            resilience: 0.4,
+            compliance: 0.5,
+            security: 0.9,
+        };
         assert_eq!(pv.dominant(), "security");
         // Cost highest (explicitly)
-        let pv2 = PriorityVector { cost: 1.0, quality: 0.0, speed: 0.0, resilience: 0.0, compliance: 0.0, security: 0.0 };
+        let pv2 = PriorityVector {
+            cost: 1.0,
+            quality: 0.0,
+            speed: 0.0,
+            resilience: 0.0,
+            compliance: 0.0,
+            security: 0.0,
+        };
         assert_eq!(pv2.dominant(), "cost");
         // Exact tie: first encountered (cost) wins
         let pv3 = PriorityVector::default(); // all zero

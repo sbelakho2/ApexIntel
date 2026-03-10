@@ -168,7 +168,9 @@ pub fn highlight_snippet(text: &str, tokens: &[String], max_len: usize) -> Strin
             for m in re.find_iter(&snippet) {
                 let candidate = (m.start(), m.end());
                 // Skip if it overlaps any already-collected range
-                let overlaps = ranges.iter().any(|&(s, e)| candidate.0 < e && candidate.1 > s);
+                let overlaps = ranges
+                    .iter()
+                    .any(|&(s, e)| candidate.0 < e && candidate.1 > s);
                 if !overlaps {
                     ranges.push(candidate);
                 }

@@ -139,7 +139,10 @@ pub fn sort_recipes(items: &mut [RecipeListItem], field: &RecipeSortField, desc:
 }
 
 /// Filter recipes by status.
-pub fn filter_by_status<'a>(items: &'a [RecipeListItem], status: &RecipeStatus) -> Vec<&'a RecipeListItem> {
+pub fn filter_by_status<'a>(
+    items: &'a [RecipeListItem],
+    status: &RecipeStatus,
+) -> Vec<&'a RecipeListItem> {
     items.iter().filter(|r| r.status == *status).collect()
 }
 
@@ -175,16 +178,26 @@ pub fn recipe_health(recipe: &RecipeListItem) -> f64 {
     let fpr_penalty = recipe.false_positive_rate;
     let activity_bonus = if recipe.fired_count > 0 { 0.1 } else { 0.0 };
 
-    let score: f64 = 0.4 * precision_score + 0.3 * recall_score - 0.2 * fpr_penalty + activity_bonus;
+    let score: f64 =
+        0.4 * precision_score + 0.3 * recall_score - 0.2 * fpr_penalty + activity_bonus;
     score.clamp(0.0, 1.0)
 }
 
 /// Compute aggregate recipe stats.
 pub fn recipe_stats(items: &[RecipeListItem]) -> RecipeAggregateStats {
     let total = items.len();
-    let production = items.iter().filter(|r| r.status == RecipeStatus::Production).count();
-    let staging = items.iter().filter(|r| r.status == RecipeStatus::Staging).count();
-    let deprecated = items.iter().filter(|r| r.status == RecipeStatus::Deprecated).count();
+    let production = items
+        .iter()
+        .filter(|r| r.status == RecipeStatus::Production)
+        .count();
+    let staging = items
+        .iter()
+        .filter(|r| r.status == RecipeStatus::Staging)
+        .count();
+    let deprecated = items
+        .iter()
+        .filter(|r| r.status == RecipeStatus::Deprecated)
+        .count();
 
     let active: Vec<_> = items
         .iter()
@@ -225,7 +238,14 @@ pub struct RecipeAggregateStats {
 mod tests {
     use super::*;
 
-    fn make_recipe(name: &str, status: RecipeStatus, precision: f64, recall: f64, fpr: f64, fired: u32) -> RecipeListItem {
+    fn make_recipe(
+        name: &str,
+        status: RecipeStatus,
+        precision: f64,
+        recall: f64,
+        fpr: f64,
+        fired: u32,
+    ) -> RecipeListItem {
         RecipeListItem {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
@@ -366,8 +386,14 @@ mod tests {
 
     #[test]
     fn test_recipe_sort_field_from_str() {
-        assert_eq!(RecipeSortField::from_str_loose("precision"), Some(RecipeSortField::Precision));
-        assert_eq!(RecipeSortField::from_str_loose("alerts"), Some(RecipeSortField::FiredCount));
+        assert_eq!(
+            RecipeSortField::from_str_loose("precision"),
+            Some(RecipeSortField::Precision)
+        );
+        assert_eq!(
+            RecipeSortField::from_str_loose("alerts"),
+            Some(RecipeSortField::FiredCount)
+        );
         assert_eq!(RecipeSortField::from_str_loose("xyz"), None);
     }
 
@@ -380,7 +406,14 @@ mod tests {
 
     #[test]
     fn test_recipe_list_item_serialization() {
-        let r = make_recipe("Test Recipe", RecipeStatus::Production, 0.88, 0.65, 0.03, 15);
+        let r = make_recipe(
+            "Test Recipe",
+            RecipeStatus::Production,
+            0.88,
+            0.65,
+            0.03,
+            15,
+        );
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("Test Recipe"));
         assert!(json.contains("Production"));

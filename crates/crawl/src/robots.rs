@@ -124,8 +124,8 @@ impl RobotsRules {
 
         match (best_allow, best_disallow) {
             (Some(a), Some(d)) => a >= d, // equal length: allow wins (per RFC 9309)
-            (None, Some(_)) => false,      // only disallow matched
-            _ => true,                     // no match or only allow matched → allowed
+            (None, Some(_)) => false,     // only disallow matched
+            _ => true,                    // no match or only allow matched → allowed
         }
     }
 
@@ -177,7 +177,11 @@ fn path_matches(path: &str, pattern: &str) -> bool {
             }
         }
         // If anchored, the match must consume the entire path
-        if must_end { pos == path.len() } else { true }
+        if must_end {
+            pos == path.len()
+        } else {
+            true
+        }
     } else if must_end {
         path == pat
     } else {

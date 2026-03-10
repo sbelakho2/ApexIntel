@@ -59,9 +59,8 @@ pub const MAX_NETWORK_SIZE: usize = 10_000;
 /// Maximum artifacts retained per POI to avoid unbounded profile growth.
 pub const MAX_PROFILE_ARTIFACTS: usize = 2_000;
 
-static PUBLIC_EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$").unwrap()
-});
+static PUBLIC_EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$").unwrap());
 
 impl PriorityVector {
     pub fn zero() -> Self {
@@ -80,8 +79,12 @@ impl PriorityVector {
     pub fn validate(&self) -> Vec<String> {
         let mut issues = Vec::new();
         let fields = [
-            ("cost", self.cost), ("quality", self.quality), ("speed", self.speed),
-            ("resilience", self.resilience), ("compliance", self.compliance), ("security", self.security),
+            ("cost", self.cost),
+            ("quality", self.quality),
+            ("speed", self.speed),
+            ("resilience", self.resilience),
+            ("compliance", self.compliance),
+            ("security", self.security),
         ];
         for (name, val) in &fields {
             if val.is_nan() || val.is_infinite() {
@@ -90,7 +93,11 @@ impl PriorityVector {
                 issues.push(format!("{} out of [0,1]: {}", name, val));
             }
         }
-        let sum: f64 = fields.iter().map(|(_, v)| v).filter(|v| v.is_finite()).sum();
+        let sum: f64 = fields
+            .iter()
+            .map(|(_, v)| v)
+            .filter(|v| v.is_finite())
+            .sum();
         if sum > 1.5 {
             issues.push(format!("dimension sum {:.2} > 1.5", sum));
         }
@@ -230,7 +237,10 @@ pub struct PoiProfile {
 impl PoiProfile {
     /// Returns normalized org_id: trimmed non-empty string, otherwise None.
     pub fn normalized_org_id(&self) -> Option<&str> {
-        self.org_id.as_deref().map(str::trim).filter(|id| !id.is_empty())
+        self.org_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
     }
 
     /// Compute profile completeness (0-1) based on filled fields.
@@ -239,18 +249,42 @@ impl PoiProfile {
         let mut filled = 0.0;
         let total = 12.0;
 
-        if !self.name.is_empty() { filled += 1.0; }
-        if !self.org.is_empty() { filled += 1.0; }
-        if self.normalized_org_id().is_some() { filled += 1.0; } // B113/B402
-        if !self.current_role.is_empty() { filled += 1.0; }
-        if !self.public_bio.is_empty() { filled += 1.0; }
-        if self.public_email.is_some() { filled += 1.0; }
-        if !self.artifacts.is_empty() { filled += 1.0; }
-        if !self.role_history.is_empty() { filled += 1.0; }
-        if !self.region.is_empty() { filled += 1.0; } // B113
-        if !self.country_code.is_empty() { filled += 1.0; } // B113
-        if self.priority_vector.confidence > 0.0 { filled += 1.0; }
-        if self.influence.influence_score > 0.0 { filled += 1.0; }
+        if !self.name.is_empty() {
+            filled += 1.0;
+        }
+        if !self.org.is_empty() {
+            filled += 1.0;
+        }
+        if self.normalized_org_id().is_some() {
+            filled += 1.0;
+        } // B113/B402
+        if !self.current_role.is_empty() {
+            filled += 1.0;
+        }
+        if !self.public_bio.is_empty() {
+            filled += 1.0;
+        }
+        if self.public_email.is_some() {
+            filled += 1.0;
+        }
+        if !self.artifacts.is_empty() {
+            filled += 1.0;
+        }
+        if !self.role_history.is_empty() {
+            filled += 1.0;
+        }
+        if !self.region.is_empty() {
+            filled += 1.0;
+        } // B113
+        if !self.country_code.is_empty() {
+            filled += 1.0;
+        } // B113
+        if self.priority_vector.confidence > 0.0 {
+            filled += 1.0;
+        }
+        if self.influence.influence_score > 0.0 {
+            filled += 1.0;
+        }
 
         let raw: f64 = filled / total;
         raw.clamp(0.0, 1.0) // B129: prevent exceeding 1.0
@@ -283,14 +317,16 @@ impl PoiProfile {
 
     /// Validate role_history timestamps are in ascending order (B117).
     pub fn validate_role_history_order(&self) -> bool {
-        self.role_history.windows(2).all(|pair| pair[0].start_ts <= pair[1].start_ts)
+        self.role_history
+            .windows(2)
+            .all(|pair| pair[0].start_ts <= pair[1].start_ts)
     }
 
     /// Detect identical consecutive role history entries (B118).
     pub fn has_consecutive_duplicates(&self) -> bool {
-        self.role_history.windows(2).any(|pair| {
-            pair[0].org == pair[1].org && pair[0].title == pair[1].title
-        })
+        self.role_history
+            .windows(2)
+            .any(|pair| pair[0].org == pair[1].org && pair[0].title == pair[1].title)
     }
 }
 
@@ -373,7 +409,11 @@ mod tests {
     fn test_profile_completeness_full() {
         let p = sample_profile();
         let c = p.compute_completeness();
-        assert!(c > 0.8, "Well-filled profile should have high completeness, got {}", c);
+        assert!(
+            c > 0.8,
+            "Well-filled profile should have high completeness, got {}",
+            c
+        );
     }
 
     #[test]
@@ -406,7 +446,11 @@ mod tests {
             profile_completeness: 0.0,
         };
         let c = p.compute_completeness();
-        assert!(c < 0.3, "Empty profile should have low completeness, got {}", c);
+        assert!(
+            c < 0.3,
+            "Empty profile should have low completeness, got {}",
+            c
+        );
     }
 
     #[test]
@@ -428,9 +472,18 @@ mod tests {
     #[test]
     fn test_role_family_canonical_labels_consistent_casing() {
         assert_eq!(RoleFamily::Procurement.canonical_label(), "procurement");
-        assert_eq!(RoleFamily::SupplierQuality.canonical_label(), "supplier_quality");
-        assert_eq!(RoleFamily::FreeZoneAuthority.canonical_label(), "free_zone_authority");
-        assert_eq!(RoleFamily::Other("MiXeD Case".to_string()).canonical_label(), "mixed_case");
+        assert_eq!(
+            RoleFamily::SupplierQuality.canonical_label(),
+            "supplier_quality"
+        );
+        assert_eq!(
+            RoleFamily::FreeZoneAuthority.canonical_label(),
+            "free_zone_authority"
+        );
+        assert_eq!(
+            RoleFamily::Other("MiXeD Case".to_string()).canonical_label(),
+            "mixed_case"
+        );
     }
 
     #[test]
@@ -450,8 +503,13 @@ mod tests {
     #[test]
     fn test_priority_vector_validate() {
         let pv = PriorityVector {
-            cost: 0.3, quality: 0.3, speed: 0.1, resilience: 0.1,
-            compliance: 0.1, security: 0.1, confidence: 0.8,
+            cost: 0.3,
+            quality: 0.3,
+            speed: 0.1,
+            resilience: 0.1,
+            compliance: 0.1,
+            security: 0.1,
+            confidence: 0.8,
         };
         assert!(pv.validate().is_empty());
     }
@@ -459,8 +517,13 @@ mod tests {
     #[test]
     fn test_priority_vector_validate_nan() {
         let pv = PriorityVector {
-            cost: f64::NAN, quality: 0.3, speed: 0.1, resilience: 0.1,
-            compliance: 0.1, security: 0.1, confidence: 0.8,
+            cost: f64::NAN,
+            quality: 0.3,
+            speed: 0.1,
+            resilience: 0.1,
+            compliance: 0.1,
+            security: 0.1,
+            confidence: 0.8,
         };
         assert!(!pv.validate().is_empty());
     }
@@ -484,8 +547,12 @@ mod tests {
     #[test]
     fn test_dominant_all_nan() {
         let pv = PriorityVector {
-            cost: f64::NAN, quality: f64::NAN, speed: f64::NAN,
-            resilience: f64::NAN, compliance: f64::NAN, security: f64::NAN,
+            cost: f64::NAN,
+            quality: f64::NAN,
+            speed: f64::NAN,
+            resilience: f64::NAN,
+            compliance: f64::NAN,
+            security: f64::NAN,
             confidence: 0.0,
         };
         // Should not panic, returns some valid string

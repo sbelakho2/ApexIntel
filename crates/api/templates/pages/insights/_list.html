@@ -85,22 +85,80 @@
 </div>
 
 <div class="mb-4 apex-card p-3">
+  <form method="get" action="/insights" class="mb-3 flex flex-wrap items-center gap-2"
+        hx-get="/insights" hx-target="#main-results" hx-push-url="true">
+    <label for="insights-search" class="text-[10px] font-bold uppercase text-muted-foreground">Search</label>
+    <input id="insights-search" name="q" type="text" value="{{ search_query }}"
+           placeholder="Title, tags, summary"
+           class="w-full sm:min-w-[220px] rounded-sm border border-border bg-background px-2 py-1 text-xs" />
+    <input type="hidden" name="category" value="{{ active_category }}" />
+    <input type="hidden" name="impact" value="{{ active_impact }}" />
+    <input type="hidden" name="sort" value="{{ sort_field }}" />
+    <input type="hidden" name="dir" value="{{ sort_dir }}" />
+    {% if show_bookmarked_only %}<input type="hidden" name="bookmarked" value="true" />{% endif %}
+    <button type="submit" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Apply</button>
+    {% if !search_query.is_empty() %}
+    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Clear</a>
+    {% endif %}
+  </form>
+
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Type:</span>
-    <a href="/insights" hx-get="/insights" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
-    <a href="/insights?category=demand_signal{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=demand_signal{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "demand_signal" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">demand signal</a>
-    <a href="/insights?category=supply_risk{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=supply_risk{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "supply_risk" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">supply risk</a>
-    <a href="/insights?category=competitive_intel{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=competitive_intel{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "competitive_intel" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">competitive intel</a>
-    <a href="/insights?category=security_posture{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=security_posture{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "security_posture" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">security posture</a>
-    <a href="/insights?category=macro_shift{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=macro_shift{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "macro_shift" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">macro shift</a>
-    <a href="/insights?category=poi_movement{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-get="/insights?category=poi_movement{% if !active_impact.is_empty() %}&impact={{ active_impact }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_category == "poi_movement" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">poi movement</a>
+    {% for chip in category_filters %}
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    {% endfor %}
     <span class="mx-2 h-4 w-px bg-border"></span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Impact:</span>
-    <a href="/insights?impact=high{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-get="/insights?impact=high{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_impact == "high" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">high</a>
-    <a href="/insights?impact=medium{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-get="/insights?impact=medium{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_impact == "medium" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">medium</a>
-    <a href="/insights?impact=low{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-get="/insights?impact=low{% if !active_category.is_empty() %}&category={{ active_category }}{% endif %}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_impact == "low" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">low</a>
-    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_category.is_empty() %}0{% else %}1{% endif %}{% if !active_impact.is_empty() %} + 1{% endif %}</span>
-    <a href="/insights" hx-get="/insights" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+    {% for chip in impact_filters %}
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    {% endfor %}
+    <span class="mx-2 h-4 w-px bg-border"></span>
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Scope:</span>
+    {% for chip in bookmarked_filters %}
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    {% endfor %}
+    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
+    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+  </div>
+</div>
+
+<div class="apex-card overflow-hidden mb-4">
+  <div class="flex items-center justify-between border-b border-border px-4 py-3">
+    <div>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
+      <p class="mt-1 text-[11px] text-muted-foreground">Dense insight view for triage, sorting, and export-friendly scanning.</p>
+    </div>
+    <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
+      <a href="/api/insights/export" class="rounded-sm border border-border bg-secondary px-2 py-1 text-muted-foreground hover:text-foreground">CSV</a>
+    </div>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-left text-xs" data-dense-table data-table-name="insights">
+      <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+        <tr>
+          <th class="px-4 py-3">Title</th>
+          <th class="px-4 py-3">Type</th>
+          <th class="px-4 py-3">Company</th>
+          <th class="px-4 py-3 text-right">Confidence</th>
+          <th class="px-4 py-3"><a href="{{ page_base_href }}sort=created_at&dir={% if sort_field == "created_at" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Created</a></th>
+          <th class="px-4 py-3">Tags</th>
+          <th class="px-4 py-3">Bookmark</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for i in insights %}
+        <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/insights/{{ i.id }}">
+          <td class="px-4 py-3 font-semibold">{{ i.title }}</td>
+          <td class="px-4 py-3"><span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span></td>
+          <td class="px-4 py-3 text-muted-foreground">{{ i.company_name }}</td>
+          <td class="px-4 py-3 text-right font-bold tabular-nums">{{ i.confidence_pct }}%</td>
+          <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ i.created_at }}</td>
+          <td class="px-4 py-3 text-muted-foreground">{% if i.tags.is_empty() %}—{% else %}{% for tag in i.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
+          <td class="px-4 py-3">{% if i.bookmarked %}<span class="text-yellow-500">Saved</span>{% else %}<span class="text-muted-foreground">No</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -108,6 +166,7 @@
   {% if insights.is_empty() %}
   {% call m::empty_state("No insights available", "Try adjusting filters.") %}
   {% else %}
+    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</p>
     {% for i in insights %}
     <div class="apex-card p-4 hover:bg-muted/30 transition-colors" id="insight-card-{{ i.id }}">
       <div class="flex items-start justify-between gap-3">
@@ -140,8 +199,8 @@
 <div class="mt-4 flex items-center justify-between">
   <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
   <div class="flex gap-1">
-    {% if page > 1 %}<a href="/insights?page={{ page - 1 }}" hx-get="/insights?page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
-    {% if page < total_pages %}<a href="/insights?page={{ page + 1 }}" hx-get="/insights?page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" hx-get="{{ page_base_href }}page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" hx-get="{{ page_base_href }}page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
   </div>
 </div>
 {% endif %}

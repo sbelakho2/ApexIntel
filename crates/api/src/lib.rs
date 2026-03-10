@@ -5,10 +5,10 @@
 //! Actual Axum wiring (`Router::new().route(...)`) is done at the binary level.
 
 pub mod auth;
-pub mod pagination;
 pub mod filters;
+pub mod middleware;
+pub mod pagination;
 pub mod rate_limit;
 pub mod responses;
 pub mod routes;
-pub mod middleware;
 pub mod web;

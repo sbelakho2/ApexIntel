@@ -17,7 +17,11 @@ pub struct Provenance {
 }
 
 impl Provenance {
-    pub fn new(url: impl Into<String>, content: &[u8], extractor_version: impl Into<String>) -> Self {
+    pub fn new(
+        url: impl Into<String>,
+        content: &[u8],
+        extractor_version: impl Into<String>,
+    ) -> Self {
         Self {
             url: url.into(),
             fetch_ts: Utc::now(),

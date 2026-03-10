@@ -1,7 +1,7 @@
 //! POI profile updater — computes derived fields and freshness.
 
-use crate::model::*;
 use crate::features;
+use crate::model::*;
 
 fn metric_changed(previous: f64, current: f64, epsilon: f64) -> bool {
     if !previous.is_finite() || !current.is_finite() {
@@ -143,7 +143,10 @@ pub fn detect_role_change(history: &[RoleHistoryEntry]) -> bool {
 }
 
 /// Build a detailed role change event from the last two history entries.
-fn build_role_change_event(person_id: &str, history: &[RoleHistoryEntry]) -> Option<RoleChangeEvent> {
+fn build_role_change_event(
+    person_id: &str,
+    history: &[RoleHistoryEntry],
+) -> Option<RoleChangeEvent> {
     if history.len() < 2 {
         return None;
     }
@@ -244,15 +247,13 @@ mod tests {
             country_code: "TN".to_string(),
             public_bio: "Engineer".to_string(),
             public_email: Some("test@org.com".to_string()),
-            artifacts: vec![
-                PoiArtifact {
-                    artifact_type: "article".to_string(),
-                    title: "Cost savings approach".to_string(),
-                    content_summary: "Budget and price optimization".to_string(),
-                    source_url: None,
-                    ts_utc: 1700000000,
-                },
-            ],
+            artifacts: vec![PoiArtifact {
+                artifact_type: "article".to_string(),
+                title: "Cost savings approach".to_string(),
+                content_summary: "Budget and price optimization".to_string(),
+                source_url: None,
+                ts_utc: 1700000000,
+            }],
             priority_vector: PriorityVector::zero(),
             psychological: PsychProfile::default_profile(),
             influence: InfluenceProfile {
@@ -320,8 +321,10 @@ mod tests {
     #[test]
     fn test_detect_change_vs_current_org_change() {
         let evt = detect_change_vs_current(
-            "Foxconn", "VP Procurement",
-            "Jabil", "VP Procurement",
+            "Foxconn",
+            "VP Procurement",
+            "Jabil",
+            "VP Procurement",
             "poi_001",
         );
         assert!(evt.is_some());
@@ -331,8 +334,10 @@ mod tests {
     #[test]
     fn test_detect_change_vs_current_role_change() {
         let evt = detect_change_vs_current(
-            "Foxconn", "VP Procurement",
-            "Foxconn", "SVP Supply Chain",
+            "Foxconn",
+            "VP Procurement",
+            "Foxconn",
+            "SVP Supply Chain",
             "poi_001",
         );
         assert!(evt.is_some());
@@ -342,8 +347,10 @@ mod tests {
     #[test]
     fn test_detect_change_vs_current_no_change() {
         let evt = detect_change_vs_current(
-            "Foxconn", "VP Procurement",
-            "Foxconn", "VP Procurement",
+            "Foxconn",
+            "VP Procurement",
+            "Foxconn",
+            "VP Procurement",
             "poi_001",
         );
         assert!(evt.is_none());
@@ -381,7 +388,10 @@ mod tests {
         // 0.3*60 + 0.4*seniority(VP) + 0.3*40
         // seniority for "VP Engineering" = 85.0
         // = 18 + 34 + 12 = 64.0
-        assert!((p.influence.influence_score - 64.0).abs() < 1.0,
-            "Expected ~64.0, got {}", p.influence.influence_score);
+        assert!(
+            (p.influence.influence_score - 64.0).abs() < 1.0,
+            "Expected ~64.0, got {}",
+            p.influence.influence_score
+        );
     }
 }

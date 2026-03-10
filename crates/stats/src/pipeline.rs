@@ -27,9 +27,7 @@
 //! - `stats.hazard.hazard_rate`
 //! - `stats.fdr.significant_count`
 
-use crate::{
-    anomaly, bayesian, changepoint, correlation, fdr, graph_risk, hazard, mutual_info,
-};
+use crate::{anomaly, bayesian, changepoint, correlation, fdr, graph_risk, hazard, mutual_info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;
@@ -67,6 +65,8 @@ pub struct StatsPipelineInput {
     pub ewma_alpha: f64,
     /// Maximum lag for cross-correlation. Default: 5.
     pub max_correlation_lag: usize,
+    /// Seasonal period for anomaly normalization. Default: 7.
+    pub seasonal_period: usize,
 }
 
 impl Default for StatsPipelineInput {
@@ -93,6 +93,7 @@ impl StatsPipelineInput {
             anomaly_mad_threshold: 3.5,
             ewma_alpha: 0.2,
             max_correlation_lag: 5,
+            seasonal_period: 7,
         }
     }
 }
@@ -223,7 +224,10 @@ fn run_changepoint_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
     // Flag if a changepoint was detected in the last 3 observations
     let n = input.primary_series.len();
     let recent_cp = cps.iter().any(|&i| i >= n.saturating_sub(3));
-    result.insert("stats.changepoint.recent_shift", if recent_cp { 1.0 } else { 0.0 });
+    result.insert(
+        "stats.changepoint.recent_shift",
+        if recent_cp { 1.0 } else { 0.0 },
+    );
 
     if count > 0.0 {
         warn!(
@@ -255,6 +259,20 @@ fn run_anomaly_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResul
     result.insert("stats.anomaly.mad_count", mad_count);
     result.insert("stats.anomaly.max_mad_zscore", max_zscore);
 
+    let (seasonal_baseline, seasonal_residual, seasonal_zscore, seasonal_is_anomaly) =
+        seasonal_anomaly_features(
+            &input.primary_series,
+            input.seasonal_period,
+            input.anomaly_mad_threshold,
+        );
+    result.insert("stats.anomaly.seasonal_baseline", seasonal_baseline);
+    result.insert("stats.anomaly.seasonal_residual", seasonal_residual);
+    result.insert("stats.anomaly.seasonal_zscore", seasonal_zscore);
+    result.insert(
+        "stats.anomaly.seasonal_is_anomaly",
+        if seasonal_is_anomaly { 1.0 } else { 0.0 },
+    );
+
     // EWMA anomaly detection (requires >= 10 points)
     if input.primary_series.len() >= 10 {
         let ewma_anomalies = anomaly::ewma_control(&input.primary_series, input.ewma_alpha, 3.0);
@@ -271,6 +289,45 @@ fn run_anomaly_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResul
     }
 }
 
+fn seasonal_anomaly_features(
+    series: &[f64],
+    seasonal_period: usize,
+    threshold: f64,
+) -> (f64, f64, f64, bool) {
+    if series.len() < seasonal_period.saturating_mul(2).max(4) || seasonal_period < 2 {
+        return (0.0, 0.0, 0.0, false);
+    }
+
+    let current_index = series.len() - 1;
+    let phase = current_index % seasonal_period;
+    let history: Vec<f64> = series
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, value)| {
+            if idx == current_index || idx % seasonal_period != phase || !value.is_finite() {
+                None
+            } else {
+                Some(*value)
+            }
+        })
+        .collect();
+    if history.len() < 2 {
+        return (0.0, 0.0, 0.0, false);
+    }
+
+    let baseline = history.iter().sum::<f64>() / history.len() as f64;
+    let variance = history
+        .iter()
+        .map(|value| (value - baseline).powi(2))
+        .sum::<f64>()
+        / history.len() as f64;
+    let stdev = variance.sqrt().max(1e-6);
+    let residual = series[current_index] - baseline;
+    let zscore = residual / stdev;
+    let is_anomaly = zscore.abs() >= threshold.max(2.5);
+    (baseline, residual, zscore, is_anomaly)
+}
+
 fn run_correlation_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
     let secondary = match &input.secondary_series {
         Some(s) => s,
@@ -282,18 +339,19 @@ fn run_correlation_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
     };
 
     if input.primary_series.len() < 5 || secondary.len() < 5 {
-        result.warn("correlation", "Insufficient data for cross-correlation (< 5 points)");
+        result.warn(
+            "correlation",
+            "Insufficient data for cross-correlation (< 5 points)",
+        );
         result.insert("stats.correlation.max_lagged_r", 0.0);
         result.insert("stats.correlation.best_lag", 0.0);
         return;
     }
 
-    let max_lag = input.max_correlation_lag.min(input.primary_series.len() / 3);
-    let corr_results = correlation::lagged_xcorr(
-        &input.primary_series,
-        secondary,
-        max_lag as i32,
-    );
+    let max_lag = input
+        .max_correlation_lag
+        .min(input.primary_series.len() / 3);
+    let corr_results = correlation::lagged_xcorr(&input.primary_series, secondary, max_lag as i32);
 
     if corr_results.is_empty() {
         result.warn("correlation", "Cross-correlation returned empty results");
@@ -304,7 +362,11 @@ fn run_correlation_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
 
     let (best_lag, best_r) = corr_results
         .iter()
-        .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| {
+            a.1.abs()
+                .partial_cmp(&b.1.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .copied()
         .unwrap_or((0, 0.0));
 
@@ -320,7 +382,6 @@ fn run_correlation_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
             0.0
         },
     );
-
 }
 
 fn run_mutual_info_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
@@ -373,17 +434,16 @@ fn run_graph_risk_stage(input: &StatsPipelineInput, result: &mut StatsPipelineRe
     let adjacency: std::collections::HashMap<String, Vec<(String, f64)>> = input
         .graph_edges
         .iter()
-        .map(|(from, tos)| (from.clone(), tos.iter().map(|t| (t.clone(), 1.0_f64)).collect()))
+        .map(|(from, tos)| {
+            (
+                from.clone(),
+                tos.iter().map(|t| (t.clone(), 1.0_f64)).collect(),
+            )
+        })
         .collect();
     let propagated = graph_risk::propagate(&adjacency, &input.graph_node_scores, 3, 0.5);
-    let max_risk = propagated
-        .values()
-        .copied()
-        .fold(0.0_f64, f64::max);
-    let entity_risk = propagated
-        .get(&input.entity_id)
-        .copied()
-        .unwrap_or(0.0);
+    let max_risk = propagated.values().copied().fold(0.0_f64, f64::max);
+    let entity_risk = propagated.get(&input.entity_id).copied().unwrap_or(0.0);
 
     result.insert("stats.graph_risk.propagated", entity_risk);
     result.insert("stats.graph_risk.max_node_risk", max_risk);
@@ -397,10 +457,7 @@ fn run_fdr_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
     }
 
     let adjusted = fdr::bh_correct(&input.p_values);
-    let significant_count = adjusted
-        .iter()
-        .filter(|&&p| p < input.fdr_alpha)
-        .count() as f64;
+    let significant_count = adjusted.iter().filter(|&&p| p < input.fdr_alpha).count() as f64;
     let proportion = significant_count / (input.p_values.len() as f64);
 
     result.insert("stats.fdr.significant_count", significant_count);
@@ -418,7 +475,10 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
     }
 
     if input.survival_times.len() != input.survival_events.len() {
-        result.warn("hazard", "survival_times and survival_events length mismatch");
+        result.warn(
+            "hazard",
+            "survival_times and survival_events length mismatch",
+        );
         result.insert("stats.hazard.hazard_rate", 0.0);
         return;
     }
@@ -438,7 +498,11 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
     } else {
         cum_h.last().map(|(_, h)| *h).unwrap_or(0.0)
     };
-    let mean_hazard = if mean_hazard.is_finite() { mean_hazard } else { 0.0 };
+    let mean_hazard = if mean_hazard.is_finite() {
+        mean_hazard
+    } else {
+        0.0
+    };
     let max_hazard = cum_h
         .iter()
         .map(|(_, h)| *h)
@@ -447,7 +511,10 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
 
     result.insert("stats.hazard.hazard_rate", mean_hazard);
     result.insert("stats.hazard.max_hazard", max_hazard);
-    result.insert("stats.hazard.event_count", input.survival_events.iter().filter(|&&e| e == 1).count() as f64);
+    result.insert(
+        "stats.hazard.event_count",
+        input.survival_events.iter().filter(|&&e| e == 1).count() as f64,
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -459,42 +526,96 @@ fn derive_alert_level(features: &HashMap<String, f64>) -> AlertLevel {
     let mut score = 0.0_f64;
 
     // Changepoints are strong signals
-    if features.get("stats.changepoint.recent_shift").copied().unwrap_or(0.0) > 0.5 {
+    if features
+        .get("stats.changepoint.recent_shift")
+        .copied()
+        .unwrap_or(0.0)
+        > 0.5
+    {
         score += 2.0;
     }
     // Any detected changepoint is meaningful; 2+ indicates persistent instability
-    if features.get("stats.changepoint.detected_count").copied().unwrap_or(0.0) >= 1.0 {
+    if features
+        .get("stats.changepoint.detected_count")
+        .copied()
+        .unwrap_or(0.0)
+        >= 1.0
+    {
         score += 1.0;
     }
-    if features.get("stats.changepoint.detected_count").copied().unwrap_or(0.0) >= 2.0 {
+    if features
+        .get("stats.changepoint.detected_count")
+        .copied()
+        .unwrap_or(0.0)
+        >= 2.0
+    {
         score += 0.5;
     }
 
     // Recent MAD anomaly
-    if features.get("stats.anomaly.latest_is_anomaly").copied().unwrap_or(0.0) > 0.5 {
+    if features
+        .get("stats.anomaly.latest_is_anomaly")
+        .copied()
+        .unwrap_or(0.0)
+        > 0.5
+    {
         score += 2.0;
     }
-    if features.get("stats.anomaly.mad_count").copied().unwrap_or(0.0) >= 2.0 {
+    if features
+        .get("stats.anomaly.seasonal_is_anomaly")
+        .copied()
+        .unwrap_or(0.0)
+        > 0.5
+    {
+        score += 1.5;
+    }
+    if features
+        .get("stats.anomaly.mad_count")
+        .copied()
+        .unwrap_or(0.0)
+        >= 2.0
+    {
         score += 1.0;
     }
 
     // Strong Bayesian posterior
-    let posterior = features.get("stats.bayesian.posterior").copied().unwrap_or(0.0);
-    if posterior >= 0.8 { score += 2.0; }
-    else if posterior >= 0.5 { score += 1.0; }
+    let posterior = features
+        .get("stats.bayesian.posterior")
+        .copied()
+        .unwrap_or(0.0);
+    if posterior >= 0.8 {
+        score += 2.0;
+    } else if posterior >= 0.5 {
+        score += 1.0;
+    }
 
     // High graph risk
-    if features.get("stats.graph_risk.propagated").copied().unwrap_or(0.0) >= 0.7 {
+    if features
+        .get("stats.graph_risk.propagated")
+        .copied()
+        .unwrap_or(0.0)
+        >= 0.7
+    {
         score += 1.5;
     }
 
     // FDR-significant signals
-    if features.get("stats.fdr.significant_count").copied().unwrap_or(0.0) >= 2.0 {
+    if features
+        .get("stats.fdr.significant_count")
+        .copied()
+        .unwrap_or(0.0)
+        >= 2.0
+    {
         score += 1.0;
     }
 
     // High MI / correlation (leading indicators)
-    if features.get("stats.mutual_info.normalized_mi").copied().unwrap_or(0.0) >= 0.5 {
+    if features
+        .get("stats.mutual_info.normalized_mi")
+        .copied()
+        .unwrap_or(0.0)
+        >= 0.5
+    {
         score += 0.5;
     }
 
@@ -524,7 +645,9 @@ mod tests {
         let input = make_input(3);
         let result = run_pipeline(&input);
         assert_eq!(result.entity_id, "entity-001");
-        assert!(result.features.contains_key("stats.changepoint.detected_count"));
+        assert!(result
+            .features
+            .contains_key("stats.changepoint.detected_count"));
         assert!(result.features.contains_key("stats.anomaly.mad_count"));
         assert!(result.features.contains_key("stats.bayesian.posterior"));
     }
@@ -541,9 +664,16 @@ mod tests {
         let result = run_pipeline(&input);
 
         // Should have features from all stages
-        assert!(result.features.contains_key("stats.changepoint.detected_count"));
+        assert!(result
+            .features
+            .contains_key("stats.changepoint.detected_count"));
         assert!(result.features.contains_key("stats.anomaly.ewma_count"));
-        assert!(result.features.contains_key("stats.correlation.max_lagged_r"));
+        assert!(result
+            .features
+            .contains_key("stats.anomaly.seasonal_zscore"));
+        assert!(result
+            .features
+            .contains_key("stats.correlation.max_lagged_r"));
         assert!(result.features.contains_key("stats.mutual_info.mi"));
         assert!(result.features.contains_key("stats.bayesian.posterior"));
         assert!(result.features.contains_key("stats.fdr.significant_count"));
@@ -572,7 +702,8 @@ mod tests {
         let result = run_pipeline(&input);
         assert!(
             result.alert_level == AlertLevel::High || result.alert_level == AlertLevel::Medium,
-            "Sudden step shift should be Medium or High: {:?}", result.alert_level
+            "Sudden step shift should be Medium or High: {:?}",
+            result.alert_level
         );
     }
 
@@ -581,7 +712,10 @@ mod tests {
         let input = StatsPipelineInput::new("e3", vec![1.0, 2.0, 3.0]);
         let result = run_pipeline(&input);
         // Should not panic, should have zero-valued features for skipped stages
-        assert_eq!(result.features.get("stats.correlation.max_lagged_r"), Some(&0.0));
+        assert_eq!(
+            result.features.get("stats.correlation.max_lagged_r"),
+            Some(&0.0)
+        );
         assert_eq!(result.features.get("stats.mutual_info.mi"), Some(&0.0));
         assert_eq!(result.features.get("stats.hazard.hazard_rate"), Some(&0.0));
     }
@@ -602,5 +736,27 @@ mod tests {
         features.insert("stats.bayesian.posterior".into(), 0.9);
         let level = derive_alert_level(&features);
         assert_eq!(level, AlertLevel::High);
+    }
+
+    #[test]
+    fn seasonal_anomaly_detects_off_cycle_spike() {
+        let mut input = StatsPipelineInput::new(
+            "seasonal",
+            vec![10.0, 50.0, 10.0, 50.0, 10.0, 50.0, 10.0, 50.0, 10.0, 120.0],
+        );
+        input.seasonal_period = 2;
+        let result = run_pipeline(&input);
+        assert!(
+            result
+                .features
+                .get("stats.anomaly.seasonal_zscore")
+                .copied()
+                .unwrap_or(0.0)
+                > 2.5
+        );
+        assert_eq!(
+            result.features.get("stats.anomaly.seasonal_is_anomaly"),
+            Some(&1.0)
+        );
     }
 }

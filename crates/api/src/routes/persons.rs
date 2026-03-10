@@ -1,9 +1,9 @@
 //! Persons route — request/response types and logic for POI endpoints.
 
+use apex_core::validation::{clamp_ratio, validate_uuid};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use apex_core::validation::{clamp_ratio, validate_uuid};
 
 // ────────────────────────────────────────────
 // Request types
@@ -253,8 +253,7 @@ pub fn search_persons<'a>(items: &'a [PersonListItem], query: &str) -> Vec<&'a P
     items
         .iter()
         .filter(|p| {
-            p.name.to_lowercase().contains(&q)
-                || p.organization.to_lowercase().contains(&q)
+            p.name.to_lowercase().contains(&q) || p.organization.to_lowercase().contains(&q)
         })
         .collect()
 }
@@ -297,8 +296,18 @@ mod tests {
             region: region.to_string(),
             country: "US".to_string(),
             priority_score: priority,
+            influence_score: (priority.clamp(0.0, 1.0) * 100.0).round() as i64,
+            priority: if priority >= 0.8 {
+                "A".to_string()
+            } else if priority >= 0.6 {
+                "B".to_string()
+            } else {
+                "C".to_string()
+            },
             influence_tier: super::priority_tier(priority).to_string(),
             engagement_status: "new".to_string(),
+            tags: vec![],
+            last_signal: "".to_string(),
             updated_at: Utc::now(),
         }
     }

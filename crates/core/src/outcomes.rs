@@ -152,11 +152,7 @@ mod tests {
 
     #[test]
     fn test_outcome_record_serialize() {
-        let record = OutcomeRecord::new(
-            OutcomeEvent::ContractAward,
-            Uuid::new_v4(),
-            "company",
-        );
+        let record = OutcomeRecord::new(OutcomeEvent::ContractAward, Uuid::new_v4(), "company");
         let json = serde_json::to_string(&record).unwrap();
         let record2: OutcomeRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(record.id, record2.id);

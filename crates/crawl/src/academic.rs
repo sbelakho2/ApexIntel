@@ -300,10 +300,7 @@ pub fn process_publications(
         for pub_author in &pub_.authors {
             let key = pub_author.to_lowercase();
             if let Some(author) = author_map.get(&key) {
-                let domain = ResearchDomain::classify(
-                    &pub_.title,
-                    pub_.abstract_text.as_deref(),
-                );
+                let domain = ResearchDomain::classify(&pub_.title, pub_.abstract_text.as_deref());
                 let significance = assess_significance(pub_, author, &domain);
                 let signal = generate_signal_description(pub_, author, &domain);
 
@@ -404,8 +401,7 @@ mod tests {
             arxiv_id: None,
             url: "https://ieeexplore.ieee.org/document/12345".into(),
             abstract_text: Some(
-                "We present a new algorithm for optimizing wire harness routing in EVs."
-                    .into(),
+                "We present a new algorithm for optimizing wire harness routing in EVs.".into(),
             ),
             published_date: Some(Utc::now().date_naive()),
             venue: Some("IEEE Transactions on Industrial Electronics".into()),

@@ -149,7 +149,11 @@ mod tests {
         let y: Vec<f64> = (0..100).map(|i| ((i * 7) % 10) as f64).collect();
         let mi = estimate(&x, &y, 5);
         // MI should be small (not necessarily zero due to binning artifacts)
-        assert!(mi < 1.0, "MI for independent vars should be small, got {}", mi);
+        assert!(
+            mi < 1.0,
+            "MI for independent vars should be small, got {}",
+            mi
+        );
     }
 
     #[test]
@@ -157,7 +161,11 @@ mod tests {
         let x: Vec<f64> = (0..100).map(|i| i as f64).collect();
         let y: Vec<f64> = (0..100).map(|i| i as f64 * 2.0).collect();
         let mi = estimate(&x, &y, 10);
-        assert!(mi > 0.5, "MI for perfectly correlated vars should be high, got {}", mi);
+        assert!(
+            mi > 0.5,
+            "MI for perfectly correlated vars should be high, got {}",
+            mi
+        );
     }
 
     #[test]
@@ -173,7 +181,11 @@ mod tests {
         let x: Vec<f64> = (0..100).map(|i| i as f64).collect();
         let y: Vec<f64> = (0..100).map(|i| i as f64 + 1.0).collect();
         let nmi = normalized_mi(&x, &y, 10);
-        assert!(nmi >= 0.0 && nmi <= 1.0, "NMI should be in [0,1], got {}", nmi);
+        assert!(
+            nmi >= 0.0 && nmi <= 1.0,
+            "NMI should be in [0,1], got {}",
+            nmi
+        );
     }
 
     #[test]
@@ -219,14 +231,20 @@ mod tests {
         let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
         let y: Vec<f64> = (0..10).map(|i| i as f64).collect();
         let mi = estimate(&x, &y, 1);
-        assert!((mi - 0.0).abs() < 1e-10, "bins=1 must return 0.0 (no resolution), got {mi}");
+        assert!(
+            (mi - 0.0).abs() < 1e-10,
+            "bins=1 must return 0.0 (no resolution), got {mi}"
+        );
     }
 
     #[test]
     fn test_nmi_zero_bins_returns_zero() {
         let x: Vec<f64> = (0..50).map(|i| i as f64).collect();
         let mi = normalized_mi(&x, &x, 0);
-        assert!((mi - 0.0).abs() < 1e-10, "NMI with bins=0 must return 0.0, got {mi}");
+        assert!(
+            (mi - 0.0).abs() < 1e-10,
+            "NMI with bins=0 must return 0.0, got {mi}"
+        );
     }
 
     // ── B255: all-NaN / all-Inf input safety via min_max ────────────────────
@@ -235,7 +253,10 @@ mod tests {
     fn test_mi_all_nan_returns_zero() {
         let data: Vec<f64> = vec![f64::NAN; 50];
         let mi = estimate(&data, &data, 5);
-        assert!((mi - 0.0).abs() < 1e-10, "all-NaN input must return 0.0, got {mi}");
+        assert!(
+            (mi - 0.0).abs() < 1e-10,
+            "all-NaN input must return 0.0, got {mi}"
+        );
         assert!(mi.is_finite(), "result must be finite, not NaN");
     }
 
@@ -243,14 +264,20 @@ mod tests {
     fn test_mi_all_inf_returns_zero() {
         let data: Vec<f64> = vec![f64::INFINITY; 50];
         let mi = estimate(&data, &data, 5);
-        assert!((mi - 0.0).abs() < 1e-10, "all-Inf input must return 0.0, got {mi}");
+        assert!(
+            (mi - 0.0).abs() < 1e-10,
+            "all-Inf input must return 0.0, got {mi}"
+        );
     }
 
     #[test]
     fn test_nmi_all_nan_returns_zero() {
         let data: Vec<f64> = vec![f64::NAN; 50];
         let nmi = normalized_mi(&data, &data, 5);
-        assert!((nmi - 0.0).abs() < 1e-10, "NMI for all-NaN must be 0.0, got {nmi}");
+        assert!(
+            (nmi - 0.0).abs() < 1e-10,
+            "NMI for all-NaN must be 0.0, got {nmi}"
+        );
     }
 
     #[test]
@@ -272,8 +299,30 @@ mod tests {
 
     #[test]
     fn test_mi_ignores_non_finite_pairs() {
-        let x = vec![1.0, 2.0, f64::NAN, 4.0, f64::INFINITY, 6.0, 7.0, 8.0, 9.0, 10.0];
-        let y = vec![1.0, 2.0, 3.0, f64::NAN, 5.0, 6.0, 7.0, f64::NEG_INFINITY, 9.0, 10.0];
+        let x = vec![
+            1.0,
+            2.0,
+            f64::NAN,
+            4.0,
+            f64::INFINITY,
+            6.0,
+            7.0,
+            8.0,
+            9.0,
+            10.0,
+        ];
+        let y = vec![
+            1.0,
+            2.0,
+            3.0,
+            f64::NAN,
+            5.0,
+            6.0,
+            7.0,
+            f64::NEG_INFINITY,
+            9.0,
+            10.0,
+        ];
         let mi = estimate(&x, &y, 3);
         assert!(mi.is_finite());
         assert!(mi >= 0.0);

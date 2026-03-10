@@ -17,9 +17,7 @@ use tracing::{debug, warn};
 
 use apex_llm::{
     inference::LlmClient,
-    poi_profiler::{
-        EngagementCopy, LlmPsychProfile, PoiBackgroundSummary, PoiProfiler,
-    },
+    poi_profiler::{EngagementCopy, LlmPsychProfile, PoiBackgroundSummary, PoiProfiler},
 };
 
 // ────────────────────────────────────────────
@@ -124,7 +122,14 @@ impl PoiLlmEnricher {
         if let Some(ref psych_profile) = profile.psych_profile {
             let copy = self
                 .profiler
-                .generate_engagement_copy(name, role, company, psych_profile, product_or_service, None)
+                .generate_engagement_copy(
+                    name,
+                    role,
+                    company,
+                    psych_profile,
+                    product_or_service,
+                    None,
+                )
                 .await;
             match copy {
                 Ok(c) => {
@@ -181,7 +186,14 @@ impl PoiLlmEnricher {
         recent_news: Option<&str>,
     ) -> Result<EngagementCopy> {
         self.profiler
-            .generate_engagement_copy(name, role, company, psych_profile, product_or_service, recent_news)
+            .generate_engagement_copy(
+                name,
+                role,
+                company,
+                psych_profile,
+                product_or_service,
+                recent_news,
+            )
             .await
     }
 
@@ -216,7 +228,9 @@ impl PoiLlmEnricher {
                 .iter()
                 .map(|s| ("bio".to_string(), s.to_string()))
                 .collect();
-            let enriched = self.enrich_full(id, name, title, company, &artifacts, product).await;
+            let enriched = self
+                .enrich_full(id, name, title, company, &artifacts, product)
+                .await;
             results.push(enriched);
         }
         results

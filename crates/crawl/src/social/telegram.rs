@@ -33,7 +33,9 @@ impl TelegramScraper {
             builder = builder.proxy(reqwest::Proxy::all(proxy).context("Invalid proxy")?);
         }
 
-        Ok(Self { client: builder.build()? })
+        Ok(Self {
+            client: builder.build()?,
+        })
     }
 
     /// Fetch recent posts from a public Telegram channel.
@@ -67,7 +69,8 @@ impl TelegramScraper {
             }
 
             // Track the lowest post ID seen for pagination
-            before_id = posts.iter()
+            before_id = posts
+                .iter()
                 .filter_map(|p| p.post_id.parse::<u64>().ok())
                 .min()
                 .map(|id| id.saturating_sub(1));
@@ -93,7 +96,9 @@ impl TelegramScraper {
                 continue;
             }
 
-            let post_id = self.extract_message_id(block).unwrap_or_else(|| "0".to_string());
+            let post_id = self
+                .extract_message_id(block)
+                .unwrap_or_else(|| "0".to_string());
             let text = self.extract_message_text(block);
             if text.trim().is_empty() {
                 continue;
@@ -161,7 +166,11 @@ impl TelegramScraper {
         let content_start = inner.find('>').map(|i| i + 1).unwrap_or(0);
         let content_end = inner.find("</span>").unwrap_or(content_start + 20);
         let text = &inner[content_start..content_end.min(inner.len())];
-        let clean = text.trim().replace(',', "").replace('K', "000").replace('M', "000000");
+        let clean = text
+            .trim()
+            .replace(',', "")
+            .replace('K', "000")
+            .replace('M', "000000");
         clean.parse().unwrap_or(0)
     }
 }
@@ -170,10 +179,20 @@ fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
     for c in html.chars() {
-        match c { '<' => in_tag = true, '>' => in_tag = false, _ if !in_tag => result.push(c), _ => {} }
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
     }
-    result.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-          .replace("&nbsp;", " ").replace("&#39;", "'").replace("&quot;", "\"")
+    result
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+        .replace("&#39;", "'")
+        .replace("&quot;", "\"")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

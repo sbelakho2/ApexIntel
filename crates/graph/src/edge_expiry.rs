@@ -123,10 +123,7 @@ impl EdgeExpiryEngine {
         edges: &'a [GraphEdge],
         now: DateTime<Utc>,
     ) -> Vec<&'a GraphEdge> {
-        edges
-            .iter()
-            .filter(|e| !self.is_stale(e, now))
-            .collect()
+        edges.iter().filter(|e| !self.is_stale(e, now)).collect()
     }
 
     /// SQL to flag stale edges in the database.
@@ -212,10 +209,7 @@ mod tests {
     #[test]
     fn test_mark_stale() {
         let engine = EdgeExpiryEngine::with_defaults();
-        let mut edges = vec![
-            make_edge("e-1", 30),
-            make_edge("e-2", 200),
-        ];
+        let mut edges = vec![make_edge("e-1", 30), make_edge("e-2", 200)];
         let count = engine.mark_stale(&mut edges, Utc::now());
         assert_eq!(count, 1);
         assert!(!edges[0].stale);

@@ -1,7 +1,7 @@
 //! Graph route — request/response types and logic for graph exploration endpoints.
 
-use serde::{Deserialize, Serialize};
 use apex_core::validation::validate_nonempty_id;
+use serde::{Deserialize, Serialize};
 
 // ────────────────────────────────────────────
 // Request types
@@ -146,7 +146,7 @@ pub struct GraphOverviewWithEdges {
 pub struct GraphNodeLabel {
     pub id: String,
     pub label: String,
-    pub node_type: String,  // "company" | "person"
+    pub node_type: String, // "company" | "person"
 }
 
 /// Edge type count summary.

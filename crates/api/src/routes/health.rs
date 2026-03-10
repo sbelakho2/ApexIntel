@@ -72,25 +72,20 @@ pub async fn deep_health_check(
     let redis_start = Instant::now();
     let redis_check = match redis::Client::open(redis_url) {
         Ok(client) => match client.get_multiplexed_async_connection().await {
-            Ok(mut conn) => {
-                match redis::cmd("PING")
-                    .query_async::<String>(&mut conn)
-                    .await
-                {
-                    Ok(_) => ComponentCheck {
-                        component: "redis".into(),
-                        status: "ok".into(),
-                        latency_ms: redis_start.elapsed().as_millis() as u64,
-                        message: None,
-                    },
-                    Err(e) => ComponentCheck {
-                        component: "redis".into(),
-                        status: "error".into(),
-                        latency_ms: redis_start.elapsed().as_millis() as u64,
-                        message: Some(format!("PING failed: {}", e)),
-                    },
-                }
-            }
+            Ok(mut conn) => match redis::cmd("PING").query_async::<String>(&mut conn).await {
+                Ok(_) => ComponentCheck {
+                    component: "redis".into(),
+                    status: "ok".into(),
+                    latency_ms: redis_start.elapsed().as_millis() as u64,
+                    message: None,
+                },
+                Err(e) => ComponentCheck {
+                    component: "redis".into(),
+                    status: "error".into(),
+                    latency_ms: redis_start.elapsed().as_millis() as u64,
+                    message: Some(format!("PING failed: {}", e)),
+                },
+            },
             Err(e) => ComponentCheck {
                 component: "redis".into(),
                 status: "error".into(),

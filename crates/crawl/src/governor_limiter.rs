@@ -1,4 +1,4 @@
-use governor::{Quota, RateLimiter, clock::DefaultClock, state::keyed::DefaultKeyedStateStore};
+use governor::{clock::DefaultClock, state::keyed::DefaultKeyedStateStore, Quota, RateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -7,7 +7,8 @@ pub type DomainLimiter = RateLimiter<String, DefaultKeyedStateStore<String>, Def
 /// Polite crawl governor enforcing per-domain and global rate limits.
 pub struct CrawlGovernor {
     domain_limiter: Arc<DomainLimiter>,
-    global_limiter: Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, DefaultClock>>,
+    global_limiter:
+        Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, DefaultClock>>,
     domain_rps: f64,
     global_rps: u32,
 }
@@ -38,7 +39,9 @@ impl CrawlGovernor {
     /// Acquires domain-local token first (more restrictive) to avoid holding
     /// a global token while waiting on the per-domain limiter.
     pub async fn wait_for_slot(&self, domain: &str) {
-        self.domain_limiter.until_key_ready(&domain.to_string()).await;
+        self.domain_limiter
+            .until_key_ready(&domain.to_string())
+            .await;
         self.global_limiter.until_ready().await;
     }
 

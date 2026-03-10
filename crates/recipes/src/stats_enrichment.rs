@@ -156,7 +156,10 @@ pub fn merge_into(base: &mut FeatureMap, stats: FeatureMap) -> (usize, usize) {
 ///
 /// This is the most common calling pattern: provide only the count series
 /// and let all other stages gracefully no-op.
-pub fn from_observation_counts(entity_id: impl Into<String>, counts: Vec<f64>) -> StatsEnrichmentInput {
+pub fn from_observation_counts(
+    entity_id: impl Into<String>,
+    counts: Vec<f64>,
+) -> StatsEnrichmentInput {
     StatsEnrichmentInput {
         entity_id: entity_id.into(),
         primary_series: counts,
@@ -195,14 +198,20 @@ mod tests {
     fn sufficient_series_produces_stats_keys() {
         let input = StatsEnrichmentInput {
             entity_id: "test-entity".to_string(),
-            primary_series: vec![1.0, 2.0, 3.0, 1.5, 2.5, 3.5, 1.0, 5.0, 2.0, 3.0,
-                                  4.0, 1.0, 2.0, 3.0, 4.0, 5.0, 3.0, 2.0, 1.0, 4.0],
+            primary_series: vec![
+                1.0, 2.0, 3.0, 1.5, 2.5, 3.5, 1.0, 5.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 5.0,
+                3.0, 2.0, 1.0, 4.0,
+            ],
             ..Default::default()
         };
         let result = enrich_features(&input);
         // At least anomaly or changepoint keys should appear
         let has_stats_keys = result.keys().any(|k| k.starts_with("stats."));
-        assert!(has_stats_keys, "expected stats.* keys, got: {:?}", result.keys().collect::<Vec<_>>());
+        assert!(
+            has_stats_keys,
+            "expected stats.* keys, got: {:?}",
+            result.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -211,7 +220,9 @@ mod tests {
         let stats: FeatureMap = [
             ("stats.anomaly.ewma_count".to_string(), 2.0),
             ("JobPost.count".to_string(), 7.0), // would overwrite
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
         let (added, overwritten) = merge_into(&mut base, stats);
         assert_eq!(added, 1);
         assert_eq!(overwritten, 1);

@@ -36,7 +36,7 @@
   </script>
   {% block head %}{% endblock %}
 </head>
-<body hx-boost="true" data-ws-warnings>
+<body data-ws-warnings>
   <!-- Skip link -->
   <a href="#main-content" class="skip-link">Skip to main content</a>
 
@@ -67,6 +67,7 @@
           {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
           {% call nav_item("/insights", "Insights", "eye") %}
           {% call nav_item("/memos", "Memos", "file-text") %}
+          {% call nav_item("/notifications", "Inbox", "bell") %}
           {% call nav_item("/companies", "Companies", "boxes") %}
           {% call nav_item("/persons", "Persons", "users") %}
           {% call nav_item("/competitors", "Competitors", "target") %}
@@ -106,6 +107,7 @@
           {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
           {% call nav_item("/insights", "Insights", "eye") %}
           {% call nav_item("/memos", "Memos", "file-text") %}
+          {% call nav_item("/notifications", "Inbox", "bell") %}
           {% call nav_item("/companies", "Companies", "boxes") %}
           {% call nav_item("/persons", "Persons", "users") %}
           {% call nav_item("/competitors", "Competitors", "target") %}
@@ -126,18 +128,18 @@
       <main id="main-content" class="flex-1 min-w-0 pb-8 md:pb-10" tabindex="-1">
         <header class="sticky top-0 z-20 bg-background/95">
           <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div class="min-h-16 border-b border-border flex items-center justify-between gap-2">
-              <div class="flex items-center gap-3">
+            <div class="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-border py-3 sm:flex-nowrap sm:py-0">
+              <div class="flex min-w-0 flex-1 items-center gap-3">
                 <!-- Mobile menu button -->
                 <button onclick="openMobileNav()"
                   class="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-sm text-muted-foreground hover:text-foreground lg:hidden"
                   aria-label="Open navigation">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
                 </button>
-                <p class="text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground">Operational Intelligence for EMS, Supply Chain, and Security</p>
+                <p class="hidden text-[10px] font-black uppercase leading-tight tracking-[0.1em] text-muted-foreground sm:block sm:text-[11px] sm:tracking-[0.14em]">Operational Intelligence for EMS, Supply Chain, and Security</p>
                 <p class="hidden text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground md:block">Data freshness: near real-time</p>
               </div>
-              <div class="flex items-center gap-3">
+              <div class="flex shrink-0 items-center gap-2 self-start sm:self-auto">
                 <button onclick="toggleDarkMode()" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground" title="Toggle dark mode">
                   Theme
                 </button>
@@ -145,10 +147,11 @@
                 <span class="hidden sm:inline text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ username }}</span>
                 <form action="/logout" method="post" class="inline">
                   <button type="submit"
-                    class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:text-destructive hover:border-destructive/40 whitespace-nowrap"
+                    class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:text-destructive hover:border-destructive/40"
+                    aria-label="Sign out"
                     title="Sign out">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                    <span>Sign Out</span>
+                    <span class="hidden sm:inline">Sign Out</span>
                   </button>
                 </form>
               </div>

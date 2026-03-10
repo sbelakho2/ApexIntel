@@ -216,7 +216,11 @@ pub fn validate_dossier_id(id: &str) -> Result<uuid::Uuid, String> {
 mod tests {
     use super::*;
 
-    fn make_section(section_type: DossierSectionType, content: &str, reliability: f64) -> DossierSection {
+    fn make_section(
+        section_type: DossierSectionType,
+        content: &str,
+        reliability: f64,
+    ) -> DossierSection {
         DossierSection {
             title: format!("{} Section", section_type.label()),
             content: content.to_string(),
@@ -325,7 +329,11 @@ mod tests {
             company_id: "c-1".to_string(),
             company_name: "Test Corp".to_string(),
             generated_at: Utc::now(),
-            sections: vec![make_section(DossierSectionType::Overview, "Test content", 0.9)],
+            sections: vec![make_section(
+                DossierSectionType::Overview,
+                "Test content",
+                0.9,
+            )],
             risk_assessment: RiskAssessment {
                 overall_risk: RiskLevel::Medium,
                 supply_chain_risk: 0.3,

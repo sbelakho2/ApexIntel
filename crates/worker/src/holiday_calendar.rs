@@ -21,32 +21,14 @@ impl Default for HolidayCalendarConfig {
     fn default() -> Self {
         let mut weekends = HashMap::new();
         // Tunisia & Morocco: Saturday + Sunday (recently shifted from Fri+Sat)
-        weekends.insert(
-            "TN".into(),
-            vec![Weekday::Sat, Weekday::Sun],
-        );
-        weekends.insert(
-            "MA".into(),
-            vec![Weekday::Sat, Weekday::Sun],
-        );
+        weekends.insert("TN".into(), vec![Weekday::Sat, Weekday::Sun]);
+        weekends.insert("MA".into(), vec![Weekday::Sat, Weekday::Sun]);
         // Israel: Friday + Saturday (Shabbat)
-        weekends.insert(
-            "IL".into(),
-            vec![Weekday::Fri, Weekday::Sat],
-        );
+        weekends.insert("IL".into(), vec![Weekday::Fri, Weekday::Sat]);
         // EU/US standard
-        weekends.insert(
-            "EU".into(),
-            vec![Weekday::Sat, Weekday::Sun],
-        );
-        weekends.insert(
-            "US".into(),
-            vec![Weekday::Sat, Weekday::Sun],
-        );
-        weekends.insert(
-            "CN".into(),
-            vec![Weekday::Sat, Weekday::Sun],
-        );
+        weekends.insert("EU".into(), vec![Weekday::Sat, Weekday::Sun]);
+        weekends.insert("US".into(), vec![Weekday::Sat, Weekday::Sun]);
+        weekends.insert("CN".into(), vec![Weekday::Sat, Weekday::Sun]);
 
         Self {
             skip_weekends: true,
@@ -66,20 +48,56 @@ pub fn holidays_2026() -> HashMap<String, Vec<(NaiveDate, String)>> {
     holidays.insert(
         "TN".into(),
         vec![
-            (NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), "New Year's Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 1, 14).unwrap(), "Revolution Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(), "Independence Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(), "Martyrs' Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), "Labour Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 7, 25).unwrap(), "Republic Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 8, 13).unwrap(), "Women's Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(), "Evacuation Day".into()),
+            (
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                "New Year's Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 1, 14).unwrap(),
+                "Revolution Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(),
+                "Independence Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+                "Martyrs' Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+                "Labour Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 7, 25).unwrap(),
+                "Republic Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 8, 13).unwrap(),
+                "Women's Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(),
+                "Evacuation Day".into(),
+            ),
             // Estimated Eid al-Fitr 2026 (dates shift annually)
-            (NaiveDate::from_ymd_opt(2026, 3, 30).unwrap(), "Eid al-Fitr".into()),
-            (NaiveDate::from_ymd_opt(2026, 3, 31).unwrap(), "Eid al-Fitr".into()),
+            (
+                NaiveDate::from_ymd_opt(2026, 3, 30).unwrap(),
+                "Eid al-Fitr".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 3, 31).unwrap(),
+                "Eid al-Fitr".into(),
+            ),
             // Estimated Eid al-Adha 2026
-            (NaiveDate::from_ymd_opt(2026, 6, 7).unwrap(), "Eid al-Adha".into()),
-            (NaiveDate::from_ymd_opt(2026, 6, 8).unwrap(), "Eid al-Adha".into()),
+            (
+                NaiveDate::from_ymd_opt(2026, 6, 7).unwrap(),
+                "Eid al-Adha".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 6, 8).unwrap(),
+                "Eid al-Adha".into(),
+            ),
         ],
     );
 
@@ -87,18 +105,51 @@ pub fn holidays_2026() -> HashMap<String, Vec<(NaiveDate, String)>> {
     holidays.insert(
         "MA".into(),
         vec![
-            (NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), "New Year's Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 1, 11).unwrap(), "Independence Manifesto".into()),
-            (NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), "Labour Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 7, 30).unwrap(), "Throne Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 8, 14).unwrap(), "Oued Ed-Dahab".into()),
-            (NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(), "Revolution Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(), "Youth Day".into()),
-            (NaiveDate::from_ymd_opt(2026, 11, 6).unwrap(), "Green March".into()),
-            (NaiveDate::from_ymd_opt(2026, 11, 18).unwrap(), "Independence Day".into()),
+            (
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                "New Year's Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 1, 11).unwrap(),
+                "Independence Manifesto".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+                "Labour Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 7, 30).unwrap(),
+                "Throne Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 8, 14).unwrap(),
+                "Oued Ed-Dahab".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
+                "Revolution Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+                "Youth Day".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 11, 6).unwrap(),
+                "Green March".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 11, 18).unwrap(),
+                "Independence Day".into(),
+            ),
             // Estimated Islamic holidays
-            (NaiveDate::from_ymd_opt(2026, 3, 30).unwrap(), "Eid al-Fitr".into()),
-            (NaiveDate::from_ymd_opt(2026, 6, 7).unwrap(), "Eid al-Adha".into()),
+            (
+                NaiveDate::from_ymd_opt(2026, 3, 30).unwrap(),
+                "Eid al-Fitr".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 6, 7).unwrap(),
+                "Eid al-Adha".into(),
+            ),
         ],
     );
 
@@ -107,15 +158,42 @@ pub fn holidays_2026() -> HashMap<String, Vec<(NaiveDate, String)>> {
         "IL".into(),
         vec![
             // Jewish holidays (approximate Gregorian dates for 2026)
-            (NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(), "Passover (start)".into()),
-            (NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(), "Passover (end)".into()),
-            (NaiveDate::from_ymd_opt(2026, 4, 15).unwrap(), "Yom HaAtzmaut".into()),
-            (NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(), "Shavuot".into()),
-            (NaiveDate::from_ymd_opt(2026, 9, 12).unwrap(), "Rosh Hashana".into()),
-            (NaiveDate::from_ymd_opt(2026, 9, 13).unwrap(), "Rosh Hashana".into()),
-            (NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(), "Yom Kippur".into()),
-            (NaiveDate::from_ymd_opt(2026, 9, 26).unwrap(), "Sukkot".into()),
-            (NaiveDate::from_ymd_opt(2026, 10, 3).unwrap(), "Simchat Torah".into()),
+            (
+                NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                "Passover (start)".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
+                "Passover (end)".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 4, 15).unwrap(),
+                "Yom HaAtzmaut".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+                "Shavuot".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 9, 12).unwrap(),
+                "Rosh Hashana".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 9, 13).unwrap(),
+                "Rosh Hashana".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(),
+                "Yom Kippur".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 9, 26).unwrap(),
+                "Sukkot".into(),
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 10, 3).unwrap(),
+                "Simchat Torah".into(),
+            ),
         ],
     );
 
@@ -185,13 +263,11 @@ impl HolidayScheduler {
     }
 
     /// Check if a job should run on this date for its configured regions.
-    pub fn should_run(
-        &self,
-        date: NaiveDate,
-        job_regions: &[&str],
-    ) -> bool {
+    pub fn should_run(&self, date: NaiveDate, job_regions: &[&str]) -> bool {
         // Job should run if ANY of its regions is a working day
-        job_regions.iter().any(|r| !self.is_non_working_day(date, r))
+        job_regions
+            .iter()
+            .any(|r| !self.is_non_working_day(date, r))
     }
 
     /// Get upcoming holidays for a region within the next N days.

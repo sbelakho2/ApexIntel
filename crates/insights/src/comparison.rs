@@ -223,7 +223,10 @@ mod tests {
         let starz = vec![("PCB Fabrication".into(), "A".into(), true)];
         let matrix = build_comparison_matrix(&starz, &[]);
         assert_eq!(matrix.capability_rows.len(), 1);
-        assert!(matrix.summary.starz_unique_capabilities.contains(&"PCB Fabrication".into()));
+        assert!(matrix
+            .summary
+            .starz_unique_capabilities
+            .contains(&"PCB Fabrication".into()));
     }
 
     #[test]
@@ -237,7 +240,10 @@ mod tests {
             vec![("AOI Testing".into(), "C".into(), false)],
         )];
         let matrix = build_comparison_matrix(&starz, &competitors);
-        assert!(matrix.summary.starz_cert_advantage.contains(&"AOI Testing".into()));
+        assert!(matrix
+            .summary
+            .starz_cert_advantage
+            .contains(&"AOI Testing".into()));
     }
 
     #[test]
@@ -251,6 +257,9 @@ mod tests {
             vec![("X-Ray Inspection".into(), "A".into(), true)],
         )];
         let matrix = build_comparison_matrix(&starz, &competitors);
-        assert!(matrix.summary.starz_cert_gap.contains(&"X-Ray Inspection".into()));
+        assert!(matrix
+            .summary
+            .starz_cert_gap
+            .contains(&"X-Ray Inspection".into()));
     }
 }

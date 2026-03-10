@@ -1,74 +1,33 @@
-use anyhow::Result;
+mod job_execution;
+mod runtime;
+
 #[cfg(feature = "llm")]
 use anyhow::Context;
+use anyhow::Result;
+#[cfg(feature = "llm")]
+use apex_core::company_names::normalize_company_name;
 use apex_core::config::AppConfig;
+#[cfg(feature = "llm")]
+use apex_core::entities::{ArtifactType, PoiArtifact};
+#[cfg(feature = "llm")]
+use apex_core::entities::{Company, CompanyType, Person, PriorityVector};
+use apex_core::entities::{Observation, ObservationType};
+use apex_core::env::parse_truthy_flag;
+use apex_core::schemas::{Recipe, RecipeStatus, SignalSpec};
+use apex_core::similarity::jaccard_similarity;
+pub(crate) use apex_core::text::truncate_utf8 as truncate_text;
 use apex_crawl::breach::BreachMonitor;
 #[cfg(feature = "llm")]
 use apex_crawl::person_scraper::{PersonOsintScraper, RawPersonArtifact};
 #[cfg(feature = "llm")]
-use apex_crawl::tor_client::{DarkWebPersonIntel, TorClient};
-use apex_crawl::proxy::ProxyRotator;
-use apex_crawl::sanctions::SanctionsScreener;
-#[cfg(feature = "llm")]
 use apex_crawl::poi_expansion::{DiscoveredPoi, PoiExpansionEngine, SeedPoi};
-#[cfg(feature = "llm")]
-use apex_llm::{LlmClient, ModelConfig, OpenAiCompatibleClient};
-#[cfg(feature = "llm")]
-use apex_llm::evaluation::{standard_eval_suite, EvalRunner};
-#[cfg(feature = "llm")]
-use apex_llm::inference::LlmClient as InferenceLlmClient;
-#[cfg(feature = "llm")]
-use apex_llm::self_improvement::{
-    ImprovementCycleReport, OutputCapture, SelfImprovementConfig, SelfImprovementLoop,
-    TaskCategory,
-};
-use apex_worker::nightly::{
-    process_mining_stage, process_drift_stage,
-    CrawlStageResult, DriftCheckStageResult, MiningStageResult,
-    PoiRefreshStageResult,
-};
-#[cfg(not(feature = "llm"))]
-use apex_worker::nightly::process_poi_stage;
-#[cfg(feature = "llm")]
-use apex_worker::nightly::{
-    process_hypothesis_generation_stage, HypothesisGenerationStageResult,
-};
-use apex_worker::scheduler::{
-    default_scheduler, validate_custom_command, JobKind, JobRun, JobStatus, Scheduler,
-};
-use apex_worker::weekly::{
-    run_weekly_pipeline, DeprecationPolicy, MemoInputs, PromotionPolicy, ProductionRecipe,
-    StagedRecipe,
-};
-use apex_worker::recipe_loader::{load_default_seed_recipes, validate_seed_recipes, print_recipe_stats, insert_seed_recipes};
-use apex_worker::notifications::{NotificationDispatcher, SlaEnforcer, SlaWarningRecord};
-use chrono::Utc;
-use serde::Deserialize;
-use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
-#[cfg(feature = "llm")]
-use std::sync::Mutex;
-use tokio::sync::{Mutex as TokioMutex, Semaphore};
-use tracing_subscriber::EnvFilter;
-use apex_store::postgres::PgStore;
-#[cfg(feature = "llm")]
-use apex_store::postgres::{
-    InsightListFilters, PersonListFilters, PersonOrderBy, WarningListFilters,
-};
-use apex_core::entities::{Observation, ObservationType};
-#[cfg(feature = "llm")]
-use apex_core::entities::{Person, PriorityVector};
-#[cfg(feature = "llm")]
-use apex_core::entities::{ArtifactType, PoiArtifact};
-use apex_core::schemas::{Recipe, RecipeStatus, SignalSpec};
-use apex_recipes::engine::{RecipeEngine, FeatureMap};
+use apex_crawl::proxy::ProxyRotator;
 use apex_crawl::sanctions::SanctionsList;
-use std::collections::HashMap;
-#[cfg(feature = "llm")]
-use std::collections::HashSet;
-use uuid::Uuid;
+use apex_crawl::sanctions::SanctionsScreener;
 use apex_crawl::source_scoring::{score_and_rank, ScoringConfig, SourceTelemetry};
 use apex_crawl::sources::all_sources;
+#[cfg(feature = "llm")]
+use apex_crawl::tor_client::{DarkWebPersonIntel, TorClient};
 #[cfg(feature = "llm")]
 use apex_insights::renderer::{Citation, InsightCard};
 #[cfg(feature = "llm")]
@@ -80,12 +39,63 @@ use apex_learning::feedback::{
     rank_observation_types, score_sources, ObsTypeStats, SourceScoringWeights, SourceYield,
 };
 #[cfg(feature = "llm")]
-use apex_poi::model::{InfluenceProfile, PoiProfile, PriorityVector as PoiPriorityVector, PsychProfile, RoleFamily};
+use apex_llm::evaluation::{standard_eval_suite, EvalRunner};
 #[cfg(feature = "llm")]
-use apex_poi::updater::refresh_profile;
+use apex_llm::inference::LlmClient as InferenceLlmClient;
+#[cfg(feature = "llm")]
+use apex_llm::self_improvement::{
+    ImprovementCycleReport, OutputCapture, SelfImprovementConfig, SelfImprovementLoop, TaskCategory,
+};
+#[cfg(feature = "llm")]
+use apex_llm::{LlmClient, ModelConfig, OpenAiCompatibleClient};
 #[cfg(any(feature = "parse", feature = "llm"))]
 use apex_parse::html::extract_page;
-use apex_worker::storage::{build_memo_inputs, load_staged_recipes, load_production_recipes, StorageContext};
+#[cfg(feature = "llm")]
+use apex_poi::model::{
+    InfluenceProfile, PoiProfile, PriorityVector as PoiPriorityVector, PsychProfile, RoleFamily,
+};
+#[cfg(feature = "llm")]
+use apex_poi::updater::refresh_profile;
+use apex_recipes::engine::{FeatureMap, RecipeEngine};
+use apex_store::postgres::{InsightListFilters, PgStore};
+#[cfg(feature = "llm")]
+use apex_store::postgres::{PersonListFilters, PersonOrderBy, WarningListFilters};
+#[cfg(not(feature = "llm"))]
+use apex_worker::nightly::process_poi_stage;
+use apex_worker::nightly::{
+    process_drift_stage, process_mining_stage, CrawlStageResult, DriftCheckStageResult,
+    MiningStageResult, PoiRefreshStageResult,
+};
+#[cfg(feature = "llm")]
+use apex_worker::nightly::{process_hypothesis_generation_stage, HypothesisGenerationStageResult};
+use apex_worker::notifications::{NotificationDispatcher, SlaEnforcer, SlaWarningRecord};
+use apex_worker::recipe_loader::{
+    insert_seed_recipes, load_default_seed_recipes, print_recipe_stats, validate_seed_recipes,
+};
+use apex_worker::scheduler::{
+    default_scheduler, validate_custom_command, JobKind, JobRun, JobStatus, Scheduler,
+};
+use apex_worker::storage::{
+    build_memo_inputs, load_production_recipes, load_staged_recipes, StorageContext,
+};
+use apex_worker::weekly::{
+    run_weekly_pipeline, DeprecationPolicy, MemoInputs, ProductionRecipe, PromotionPolicy,
+    StagedRecipe,
+};
+use chrono::{Datelike, Timelike, Utc};
+use chrono_tz::Europe::Berlin;
+use lettre::message::{header::ContentType, Mailbox, MultiPart, SinglePart};
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use serde::Deserialize;
+use sqlx::postgres::PgPoolOptions;
+use std::collections::HashMap;
+use std::sync::Arc;
+#[cfg(feature = "llm")]
+use std::sync::Mutex;
+use tokio::sync::{Mutex as TokioMutex, Semaphore};
+use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 // ────────────────────────────────────────────────────────────────────────────
 // File size guard (B293)
@@ -126,40 +136,36 @@ struct WeeklyInputs {
     deprecation_policy: Option<DeprecationPolicy>,
 }
 
-/// Truncate text to max bytes respecting UTF-8 boundaries.
-#[allow(dead_code)]
-fn truncate_text(input: &str, max_bytes: usize) -> &str {
-    if input.len() <= max_bytes {
-        return input;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !input.is_char_boundary(end) {
-        end -= 1;
-    }
-    &input[..end]
-}
-
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|v| {
-            let n = v.trim().to_ascii_lowercase();
-            matches!(n.as_str(), "1" | "true" | "yes" | "on")
-        })
+        .map(|v| parse_truthy_flag(&v))
         .unwrap_or(false)
 }
 
 fn build_paid_proxy_url_from_env() -> Option<String> {
-    let host = std::env::var("PROXY_HOST").ok().filter(|v| !v.trim().is_empty())?;
-    let port = std::env::var("PROXY_PORT").ok().filter(|v| !v.trim().is_empty())?;
+    let host = std::env::var("PROXY_HOST")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let port = std::env::var("PROXY_PORT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
     let username = std::env::var("PROXY_USERNAME")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| std::env::var("PROXY_USER").ok().filter(|v| !v.trim().is_empty()))?;
+        .or_else(|| {
+            std::env::var("PROXY_USER")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })?;
     let password = std::env::var("PROXY_PASSWORD")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| std::env::var("PROXY_PASS").ok().filter(|v| !v.trim().is_empty()))?;
+        .or_else(|| {
+            std::env::var("PROXY_PASS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })?;
     Some(format!("http://{username}:{password}@{host}:{port}"))
 }
 
@@ -243,8 +249,8 @@ fn resolve_evidence_placeholders(template: &str, slots: &HashMap<String, String>
                 }
             }
             rest = &after[end + 2..]; // skip "}}"
-            // If the slot was missing and the next char is '%', skip it too
-            // (handles patterns like "up {{evidence:pct}}%")
+                                      // If the slot was missing and the next char is '%', skip it too
+                                      // (handles patterns like "up {{evidence:pct}}%")
             if slots.get(key).is_none() && rest.starts_with('%') {
                 rest = &rest[1..];
             }
@@ -289,7 +295,9 @@ fn clean_rendered_text(s: &str) -> String {
     while t.starts_with(". ") {
         t = t[2..].to_string();
     }
-    if t == "." { t.clear(); }
+    if t == "." {
+        t.clear();
+    }
     t.trim().to_string()
 }
 
@@ -306,46 +314,63 @@ fn capitalize_first(s: &str) -> String {
 /// Returns true when the text is mostly placeholder artifacts.
 fn is_low_quality_narrative(text: &str) -> bool {
     let s = text.trim();
-    if s.len() < 20 { return true; }
+    if s.len() < 20 {
+        return true;
+    }
     let lower = s.to_ascii_lowercase();
-    
+
     // Dashes check (placeholder junk)
     let dash_count = s.matches('—').count();
     let word_count = s.split_whitespace().count();
     if word_count > 0 && dash_count as f64 / word_count as f64 > 0.25 {
         return true;
     }
-    
+
     // Sentences that are just field names strung together
-    let short_tokens: usize = s.split(". ")
+    let short_tokens: usize = s
+        .split(". ")
         .filter(|seg| seg.split_whitespace().count() <= 2)
         .count();
     let total_sentences = s.split(". ").count();
     if total_sentences >= 3 && short_tokens as f64 / total_sentences as f64 > 0.5 {
         return true;
     }
-    
+
     // Detect double prepositions indicating missing slots between them
     // e.g., "supply from under threat" (missing resource_type between "from" and "under")
     let double_prep_patterns = [
-        "from under", "from via", "from through", "from by",
-        "via via", "via by", "via from", "via through",
-        "by by", "by from", "by via",
-        "in in", "to to", "at at", "for for",
-        "of of", "with with", "between between",
+        "from under",
+        "from via",
+        "from through",
+        "from by",
+        "via via",
+        "via by",
+        "via from",
+        "via through",
+        "by by",
+        "by from",
+        "by via",
+        "in in",
+        "to to",
+        "at at",
+        "for for",
+        "of of",
+        "with with",
+        "between between",
         "supply from under", // specific pattern from bad template
-        "showing conflict", "showing including", // unfilled {{evidence:signal_count}}
+        "showing conflict",
+        "showing including", // unfilled {{evidence:signal_count}}
     ];
     for pat in &double_prep_patterns {
         if lower.contains(pat) {
             return true;
         }
     }
-    
+
     // Vague claims without specifics - all-caps alarmist labels with no data
     // These templates fire but provide no actual evidence
     let vague_alarm_patterns = [
-        ("resource weaponization", "which resource"),  // must specify what resource
+        ("resource weaponization", "which resource"), // must specify what resource
         ("conflict escalation", "conflict indicators"),
         ("sanctions cascade", "sanction"),
         ("technology theft", "technology"),
@@ -361,11 +386,11 @@ fn is_low_quality_narrative(text: &str) -> bool {
             }
         }
     }
-    
+
     // Check for grammatically broken phrases from missing slots
     let broken_grammar = [
-        ". supply from",  // sentence starting without subject
-        ". including.",   // empty list
+        ". supply from", // sentence starting without subject
+        ". including.",  // empty list
         ": .",           // empty clause after colon
         " via .",        // trailing preposition before period
         " from .",
@@ -381,18 +406,704 @@ fn is_low_quality_narrative(text: &str) -> bool {
             return true;
         }
     }
-    
+
     false
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct StrategySignalFlags {
+    procurement: bool,
+    qualification: bool,
+    shortage: bool,
+    regulatory: bool,
+    innovation: bool,
+    expansion: bool,
+    pricing: bool,
+    competitor: bool,
+    personnel: bool,
+    security: bool,
+    geopolitical: bool,
+}
+
+fn detect_strategy_signal_flags(
+    category: &str,
+    signal_details: &[String],
+    action_hint: &str,
+) -> StrategySignalFlags {
+    let corpus =
+        format!("{} {} {}", category, signal_details.join(" "), action_hint).to_ascii_lowercase();
+
+    StrategySignalFlags {
+        procurement: corpus.contains("procurement")
+            || corpus.contains("supplier portal")
+            || corpus.contains("tender")
+            || corpus.contains("rfq")
+            || corpus.contains("sourcing")
+            || corpus.contains("sqe"),
+        qualification: corpus.contains("qualification")
+            || corpus.contains("cert")
+            || corpus.contains("audit")
+            || corpus.contains("ppap")
+            || corpus.contains("imds")
+            || corpus.contains("iatf")
+            || corpus.contains("as9100")
+            || corpus.contains("iso "),
+        shortage: corpus.contains("shortage")
+            || corpus.contains("allocation")
+            || corpus.contains("lead time")
+            || corpus.contains("delay")
+            || corpus.contains("disruption")
+            || corpus.contains("supply chain")
+            || corpus.contains("force majeure"),
+        regulatory: corpus.contains("regulation")
+            || corpus.contains("policy")
+            || corpus.contains("tariff")
+            || corpus.contains("sanction")
+            || corpus.contains("export control")
+            || corpus.contains("embargo")
+            || corpus.contains("compliance"),
+        innovation: corpus.contains("patent")
+            || corpus.contains("innovation")
+            || corpus.contains("r&d")
+            || corpus.contains("npi")
+            || corpus.contains("prototype")
+            || corpus.contains("engineering")
+            || corpus.contains("technology"),
+        expansion: corpus.contains("expansion")
+            || corpus.contains("capacity")
+            || corpus.contains("facility")
+            || corpus.contains("new plant")
+            || corpus.contains("new site")
+            || corpus.contains("trade show"),
+        pricing: corpus.contains("pricing")
+            || corpus.contains("price")
+            || corpus.contains("margin")
+            || corpus.contains("landed cost")
+            || corpus.contains("cost"),
+        competitor: corpus.contains("competitor")
+            || corpus.contains("market")
+            || corpus.contains("displaced")
+            || corpus.contains("replacement opportunity")
+            || corpus.contains("customer overlap"),
+        personnel: corpus.contains("poi")
+            || corpus.contains("leadership")
+            || corpus.contains("executive")
+            || corpus.contains("project")
+            || corpus.contains("hiring")
+            || corpus.contains("job posting")
+            || corpus.contains("appointment"),
+        security: corpus.contains("security")
+            || corpus.contains("cyber")
+            || corpus.contains("breach")
+            || corpus.contains("incident")
+            || corpus.contains("cmmc")
+            || corpus.contains("iso 27001"),
+        geopolitical: corpus.contains("geopolitical")
+            || corpus.contains("trade lane")
+            || corpus.contains("nearshor")
+            || corpus.contains("morocco")
+            || corpus.contains("tunisia")
+            || corpus.contains("country")
+            || corpus.contains("routing"),
+    }
+}
+
+fn push_unique_suggestion(suggestions: &mut Vec<String>, suggestion: String) {
+    let normalized = suggestion.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return;
+    }
+    if suggestions
+        .iter()
+        .any(|existing| existing.trim().to_ascii_lowercase() == normalized)
+    {
+        return;
+    }
+    suggestions.push(suggestion);
+}
+
+fn is_public_sector_entity(entity_label: &str, entity_type: Option<&str>) -> bool {
+    let haystack = format!(
+        "{} {}",
+        entity_type.unwrap_or_default().to_ascii_lowercase(),
+        entity_label.to_ascii_lowercase()
+    );
+
+    [
+        "government",
+        "public sector",
+        "public-sector",
+        "ministry",
+        "commission",
+        "parliament",
+        "council",
+        "agency",
+        "authority",
+        "department",
+        "municipality",
+        "state ",
+        "embassy",
+        "consulate",
+        "regulator",
+    ]
+    .iter()
+    .any(|marker| haystack.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn public_sector_procurement_or_program_case(evidence_signals: &[EvidenceSignal]) -> bool {
+    let corpus = evidence_signals
+        .iter()
+        .map(|signal| {
+            format!(
+                "{} {} {} {}",
+                signal.title,
+                signal.description,
+                signal.signal_type,
+                signal.extracted_facts.join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    let has_procurement_marker = [
+        "procurement",
+        "tender",
+        "rfq",
+        "rfp",
+        "solicitation",
+        "bid",
+        "framework agreement",
+        "supplier registration",
+        "buyer",
+        "sourcing",
+        "purchase",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    let has_hardware_or_program_marker = [
+        "equipment",
+        "hardware",
+        "device",
+        "devices",
+        "electronics",
+        "camera",
+        "cameras",
+        "sensor",
+        "sensors",
+        "streaming",
+        "broadcast",
+        "control room",
+        "media system",
+        "manufacturing",
+        "assembly",
+        "pcba",
+        "pcb",
+        "box build",
+        "program",
+        "platform",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    has_procurement_marker && has_hardware_or_program_marker
+}
+
+#[cfg(feature = "llm")]
+fn contains_public_sector_artifact_marker(text: &str) -> bool {
+    [
+        "procurement",
+        "tender",
+        "consultation",
+        "notice",
+        "official statement",
+        "press release",
+        "oversight",
+        "approval",
+        "directive",
+        "regulation",
+        "tariff",
+        "sanction",
+        "export control",
+        "program",
+        "reserve",
+        "framework",
+        "ministry",
+        "commission",
+        "agency",
+        "department",
+        "portal",
+        "licensing",
+        "permit",
+        "review",
+        "hearing",
+        "decree",
+        "guidance",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+fn is_generic_action_hint(fragment: &str) -> bool {
+    let trimmed = fragment.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let normalized = lower.replace('-', " ");
+    let generic_starters = [
+        "monitor",
+        "identify",
+        "assess",
+        "track",
+        "review",
+        "evaluate",
+        "analyze",
+        "analyse",
+        "watch",
+        "map",
+        "brief",
+        "gather",
+        "update",
+        "compare",
+        "convene",
+        "coordinate",
+        "prepare",
+        "scenario",
+        "escalate",
+        "align",
+        "document",
+        "prioritize",
+        "initiate",
+        "alert",
+        "verify",
+        "adjust",
+        "reprioritize",
+    ];
+    let starts_generic = generic_starters
+        .iter()
+        .any(|verb| normalized.starts_with(&format!("{} ", verb)));
+    if !starts_generic {
+        return false;
+    }
+
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    let has_domain_like_marker = words.iter().any(|word| {
+        let candidate = word
+            .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-')
+            .to_ascii_lowercase();
+        candidate.contains('.')
+            && candidate.split('.').count() >= 2
+            && candidate
+                .rsplit('.')
+                .next()
+                .map(|suffix| {
+                    suffix.len() >= 2 && suffix.chars().all(|ch| ch.is_ascii_alphabetic())
+                })
+                .unwrap_or(false)
+    });
+
+    let has_specific_marker = trimmed.chars().any(|ch| ch.is_ascii_digit())
+        || trimmed.contains('%')
+        || trimmed.contains("http://")
+        || trimmed.contains("https://")
+        || lower.contains("cve-")
+        || has_domain_like_marker
+        || words.iter().skip(1).any(|word| {
+            word.chars()
+                .next()
+                .map(|ch| ch.is_ascii_uppercase())
+                .unwrap_or(false)
+                && word.len() > 2
+        });
+
+    if has_specific_marker {
+        return false;
+    }
+
+    let generic_business_markers = [
+        "risk assessment",
+        "cross functional",
+        "cross-functional",
+        "operational disruption",
+        "scenario plan",
+        "scenario-plan",
+        "contingency planning",
+        "leadership review",
+        "stakeholder alignment",
+        "customer impact",
+        "topic drivers",
+        "monitoring cadence",
+        "suspicious domains",
+        "takedown procedures",
+        "customer facing teams",
+        "customer-facing teams",
+        "authentication scrutiny",
+        "vendor security assessment",
+        "data handling practices",
+        "incident response procedures",
+        "network segmentation",
+        "security frameworks",
+        "official domains",
+        "procurement portals",
+        "citizen facing services",
+        "citizen-facing services",
+    ];
+
+    words.len() <= 8
+        || generic_business_markers
+            .iter()
+            .any(|marker| normalized.contains(marker))
+}
+
+fn concrete_signal_details(signal_details: &[String]) -> Vec<String> {
+    signal_details
+        .iter()
+        .filter(|detail| !is_aggregate_metric_signal_detail(detail))
+        .map(|detail| detail.trim())
+        .filter(|detail| !detail.is_empty())
+        .map(|detail| detail.trim_end_matches('.').to_string())
+        .collect()
+}
+
+fn extract_fallback_signal_details(summary: &str) -> Vec<String> {
+    let lower_summary = summary.to_ascii_lowercase();
+    let Some(start) = lower_summary.find("our monitoring detected:") else {
+        return Vec::new();
+    };
+
+    let detected = &summary[start + "Our monitoring detected:".len()..];
+    let first_sentence = detected.split('\n').next().unwrap_or(detected);
+    let first_sentence = first_sentence.split(". ").next().unwrap_or(first_sentence);
+
+    first_sentence
+        .split(';')
+        .map(str::trim)
+        .map(|detail| detail.trim_end_matches('.').trim())
+        .filter(|detail| !detail.is_empty())
+        .map(|detail| detail.to_string())
+        .collect()
+}
+
+fn is_aggregate_metric_signal_detail(detail: &str) -> bool {
+    let trimmed = detail.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let aggregate_suffixes = [
+        "job posting(s) observed",
+        "patent(s) filed",
+        "tender(s) identified",
+        "certification(s) on record",
+        "competitor signal(s)",
+        "news article(s) referenced",
+        "web change(s) detected",
+        "regulatory filing(s)",
+        "sanction entry(ies)",
+        "trade show participation(s)",
+        "person(s) of interest tracked",
+    ];
+
+    trimmed
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_digit())
+        .unwrap_or(false)
+        && aggregate_suffixes
+            .iter()
+            .any(|suffix| lower.ends_with(suffix))
+}
+
+fn count_concrete_signal_details(signal_details: &[String]) -> usize {
+    concrete_signal_details(signal_details).len()
+}
+
+fn concrete_action_fragments(action_hint: &str) -> Vec<String> {
+    action_hint
+        .split([';', '.'])
+        .map(str::trim)
+        .filter(|fragment| !fragment.is_empty())
+        .filter(|fragment| !is_generic_action_hint(fragment))
+        .map(|fragment| fragment.trim_end_matches('.').to_string())
+        .take(2)
+        .collect()
+}
+
+fn should_emit_fallback_insight(
+    signal_details: &[String],
+    rendered_action: &str,
+    confidence: f64,
+    evidence_count: usize,
+) -> bool {
+    let concrete_signals = count_concrete_signal_details(signal_details);
+    let concrete_actions = concrete_action_fragments(rendered_action);
+
+    // Aggregate counters alone do not justify a user-facing fallback insight.
+    if concrete_signals == 0 {
+        return false;
+    }
+
+    if concrete_actions.is_empty() && confidence < 0.60 && evidence_count < 3 {
+        return false;
+    }
+
+    true
+}
+
+fn build_goal_oriented_suggestions(
+    entity_label: &str,
+    entity_region: &str,
+    entity_type: Option<&str>,
+    category: &str,
+    signal_details: &[String],
+    action_hint: Option<&str>,
+) -> Vec<String> {
+    let flags =
+        detect_strategy_signal_flags(category, signal_details, action_hint.unwrap_or_default());
+    let is_public_sector = is_public_sector_entity(entity_label, entity_type);
+    let entity = if entity_label.is_empty() {
+        "this account"
+    } else {
+        entity_label
+    };
+    let region_note = if entity_region.is_empty() {
+        String::new()
+    } else {
+        format!(" in {}", entity_region)
+    };
+
+    let mut suggestions = Vec::new();
+
+    match (is_public_sector, category) {
+        (true, "brand_sentiment") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "Treat sentiment around {} as actionable only if it starts to change tender scrutiny, policy credibility, oversight pressure, or approval timing{}.",
+                entity, region_note
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "Separate a short media cycle from a real institutional issue by checking whether the discussion around {} is leading to formal review, parliamentary attention, procurement caution, or stakeholder messaging changes.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "Brief account teams only on bids, regulated customers, or public-sector programs that depend on decisions from {} and could slow down if scrutiny hardens.",
+                entity
+            ));
+        }
+        (true, "regulatory_policy") | (true, "geopolitical_analysis") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "Treat the signal around {}{} as material only when it resolves into a concrete policy artifact such as an official statement, tender amendment, export-control move, or oversight action.",
+                entity, region_note
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "Escalate only when the evidence names the affected institution, program, border measure, or approval flow tied to {} rather than translating broad geopolitical noise into an operations playbook.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "Use the next review to confirm what specific rule, corridor, or procurement process could move next at {} before changing routing, qualification, or supply assumptions.",
+                entity
+            ));
+        }
+        (true, "security_compliance")
+        | (true, "cybersecurity_threat")
+        | (true, "quality_compliance") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "Check whether the signal around {} reaches official domains, citizen-facing services, procurement portals, or supplier access paths before escalating it as a government-wide incident.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, "If a concrete domain, host, CVE, or ministry system is involved, route that exact artifact into takedown, remediation, or access-control work rather than relying on a generic cyber playbook.".to_string());
+            push_unique_suggestion(&mut suggestions, format!(
+                "Brief stakeholders only on the specific public services, agencies, or vendor workflows that would be affected if the security signal around {} is confirmed.",
+                entity
+            ));
+        }
+        (true, _) => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "Use this signal around {} to test whether procurement scrutiny, approval timing, stakeholder access, or policy posture is actually changing rather than assuming it is a direct sales trigger.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "Map which bids, regulated customers, or public programs are exposed to decisions from {}{} and prioritize only those with real timing or compliance consequences.",
+                entity, region_note
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "Brief teams on what concrete institutional decision could move next at {}, who owns that decision, and what evidence would justify escalation beyond background monitoring.",
+                entity
+            ));
+        }
+        (false, "demand_procurement") | (false, "customer_rfq") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is revenue capture, use the current signal window to get in front of {} with a capability-led offer{} before the sourcing shortlist hardens.",
+                entity, region_note
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is qualification readiness, line up the audit pack, certification evidence, and sector-specific onboarding material that {} is likely to request.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is footprint positioning, test whether an EU or North Africa manufacturing angle gives {} a better resilience, tariff, or lead-time story than incumbent supply.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is early design influence, use prototype, NPI, or engineering-support language rather than waiting for a fully formal RFQ cycle at {}.",
+                entity
+            ));
+        }
+        (false, "supply_chain_risk") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is continuity protection, map the single-source and long-lead exposures around {} first and decide where dual-source qualification or inventory buffers matter most.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is customer assurance, turn the signal into a concrete fallback story: what can be rerouted, requalified, or migrated before schedules slip for programs touching {}{}?",
+                entity, region_note
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is commercial upside, use the disruption around {} to open conversations where incumbents cannot currently promise supply continuity or timeline confidence.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the issue is structural rather than temporary, consider design migration, alternative technology qualification, and contractual reset paths rather than only short-term firefighting around {}.",
+                entity
+            ));
+        }
+        (false, "competitor_market") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is competitive displacement, identify which accounts near {} are most exposed to missed qualifications, slower ramps, or weaker service and build a targeted rescue narrative around that pain.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is account defense, review where {} overlaps with your highest-value customers and prepare a sharper proof set on responsiveness, certification depth, and execution reliability.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is pricing leverage, decide whether {} is signaling margin pressure, aggressive expansion, or a tactical quote reset, then match the response to total-cost value rather than list price alone.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is regional strategy, look for places where {} is thin on local footprint, sector credibility, or customer intimacy and press that angle directly.",
+                entity
+            ));
+        }
+        (false, "regulatory_policy") | (false, "geopolitical_analysis") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is regulatory posture, turn this into a concrete checklist for export control, certification scope, contract language, and customer communication affecting {}{}.",
+                entity, region_note
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is routing and footprint, model whether Morocco, Tunisia, or EU-qualified alternatives now solve a policy or trade problem more cleanly than the current setup around {}.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is executive planning, brief leadership on which programs around {} could need re-sourcing, repricing, or customer reassurance first rather than treating this as a generic macro event.",
+                entity
+            ));
+        }
+        (false, "strategic_poi") | (false, "talent_ip") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is relationship leverage, update the power map around {} and decide which individual or team now controls project timing, supplier qualification, or partnership appetite.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is early project entry, use the current personnel or project signal to anchor a discussion around capability alignment, design support, or fast-start execution rather than a generic intro.",
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is competitive positioning, look for dissatisfaction, transition risk, or new mandate areas where the POI signal around {} creates permission for a differentiated pitch.",
+                entity
+            ));
+        }
+        (false, "security_compliance")
+        | (false, "cybersecurity_threat")
+        | (false, "quality_compliance") => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is assurance, gather the evidence that would reassure auditors, customers, and procurement teams that {} still clears the relevant security or quality gate.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is supplier governance, update scorecards, audit timing, and exception handling for programs exposed to {}{} rather than waiting for a formal customer escalation.",
+                entity, region_note
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the priority is commercial positioning, use the compliance gap around {} to show why stronger process control, cert depth, or cyber hygiene changes supplier choice today.",
+                entity
+            ));
+        }
+        (false, _) => {
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is commercial upside, decide whether this signal around {} is best used for pipeline capture, relationship expansion, or competitive displacement and tailor the outreach accordingly.",
+                entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is resilience, translate the current evidence into specific sourcing, routing, or qualification choices instead of treating it as background monitoring.",
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "If the goal is executive planning, brief stakeholders on which accounts, programs, or regions deserve action first and what concrete decision each team needs to make next.",
+            ));
+        }
+    }
+
+    if flags.pricing {
+        push_unique_suggestion(&mut suggestions, format!(
+            "If pricing or cost pressure is part of the pattern, compare margin, lead-time, and resilience trade-offs explicitly before {} resets expectations in the market.",
+            entity
+        ));
+    }
+    if flags.innovation || flags.expansion {
+        push_unique_suggestion(&mut suggestions, format!(
+            "If technology or capacity build is underway, treat this as a timing problem: the best opening is usually before the new capability at {} becomes fully standardized and crowded.",
+            entity
+        ));
+    }
+    if flags.shortage || flags.regulatory || flags.geopolitical {
+        push_unique_suggestion(&mut suggestions, format!(
+            "If regional exposure is rising, pressure-test alternative sites, suppliers, and customer commitments now rather than assuming the current footprint around {} remains stable.",
+            entity
+        ));
+    }
+    if flags.personnel {
+        push_unique_suggestion(&mut suggestions, format!(
+            "If the people signal is real, refresh stakeholder maps and project ownership before deciding who to brief, who to sell to, and who may block progress around {}.",
+            entity
+        ));
+    }
+
+    if let Some(action_hint) = action_hint {
+        for fragment in action_hint
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .take(3)
+        {
+            if is_generic_action_hint(fragment) {
+                continue;
+            }
+            push_unique_suggestion(
+                &mut suggestions,
+                format!(
+                    "One concrete lane worth testing is this: {}.",
+                    fragment.trim_end_matches('.')
+                ),
+            );
+        }
+    }
+
+    suggestions.truncate(5);
+    suggestions
 }
 
 /// Build an analytical narrative paragraph from structured signal data.
 fn build_analytical_narrative(
     entity_label: &str,
     entity_region: &str,
+    entity_type: Option<&str>,
     category: &str,
     signal_details: &[String],
-    confidence: f64,
-    evidence_ids: &[String],
+    _confidence: f64,
+    _evidence_ids: &[String],
 ) -> String {
     let category_desc = match category {
         "competitor_market" => "competitive market activity",
@@ -425,11 +1136,10 @@ fn build_analytical_narrative(
         "An entity under monitoring".to_string()
     };
 
-    let conf_label = if confidence >= 0.85 { "high" }
-        else if confidence >= 0.65 { "moderate" }
-        else { "preliminary" };
-
     let mut parts = Vec::new();
+    let flags = detect_strategy_signal_flags(category, signal_details, "");
+    let is_public_sector = is_public_sector_entity(entity_label, entity_type);
+    let concrete_details = concrete_signal_details(signal_details);
 
     // Opening analytical sentence
     parts.push(format!(
@@ -443,35 +1153,86 @@ fn build_analytical_narrative(
             signal_details.join("; ")
         ));
     }
+    if !concrete_details.is_empty() {
+        parts.push(format!(
+            "The clearest current evidence is {}.",
+            concrete_details
+                .iter()
+                .take(2)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
 
-    // Contextual assessment based on category
-    let assessment = match category {
-        "competitor_market" => "This pattern suggests the competitor is actively positioning for market expansion or capability enhancement. Consider reviewing defensive positioning and customer retention strategies.",
-        "demand_procurement" => "These indicators typically precede formal sourcing activity within 30-60 days. Early engagement with the procurement team can secure preferred supplier status.",
-        "supply_chain_risk" => "These indicators warrant proactive risk mitigation. Consider diversifying supply sources and engaging with affected partners for contingency planning.",
-        "security_compliance" => "Compliance gaps represent both a risk to current operations and a potential competitive lever. Ensure your own certifications are up to date.",
-        "regulatory_policy" => "Regulatory shifts can create both compliance obligations and competitive advantages for prepared organizations. Review impact on your product lines and certifications.",
-        "strategic_poi" => "Key personnel activity can signal strategic direction changes. Track subsequent organizational announcements for confirmation.",
-        "pricing_market" => "Market pricing shifts affect margins and competitive positioning. Review current contract terms and pricing strategy for affected product lines.",
-        "customer_rfq" => "An active procurement opportunity has been identified. Quick response with tailored technical capabilities can differentiate your proposal.",
-        "geopolitical_analysis" => "Geopolitical developments can affect trade flows, regulatory requirements, and supply chain stability in the region.",
-        "talent_ip" => "Talent migration and IP activity are leading indicators of strategic direction. Track subsequent patent filings, hiring patterns, and capability announcements for confirmation.",
-        "technology_innovation" => "Technology and R&D activity signals strategic investment priorities. Monitor for product launches, partnerships, and capability expansion.",
-        "ma_partnerships" => "M&A and partnership activity reshapes competitive landscape. Assess combined entity capabilities and customer impact windows.",
-        "market_expansion" => "Market expansion signals growth strategy and capacity investment. Monitor for competitive positioning shifts in affected regions.",
-        "cybersecurity_threat" => "Cybersecurity threats require immediate assessment. Evaluate exposure, implement protective measures, and notify affected stakeholders.",
-        "quality_compliance" => "Quality and certification changes impact supplier qualification. Verify current status and assess compliance implications.",
-        "brand_sentiment" => "Brand sentiment shifts can indicate customer relationship changes or market events. Monitor trends and assess competitive implications.",
-        _ => "Monitor for follow-up signals that confirm or change this assessment.",
-    };
-    parts.push(assessment.to_string());
-
-    // Confidence footer
-    parts.push(format!(
-        "Confidence: {conf_label} ({:.0}%), based on {} signal(s).",
-        confidence * 100.0,
-        evidence_ids.len()
-    ));
+    let mut implications: Vec<String> = Vec::new();
+    if flags.procurement {
+        implications.push(
+            "The signal mix points to an active supplier-evaluation window rather than routine background noise, which means early positioning can shape shortlist, prototype, or qualification scope before it becomes a price-only contest.".to_string()
+        );
+    }
+    if flags.qualification {
+        implications.push(format!(
+            "Qualification and certification clues tighten the supplier envelope around {entity_ctx}; in regulated sectors, audit readiness and process proof usually matter before commercial terms are finalized."
+        ));
+    }
+    if flags.shortage {
+        implications.push(
+            "Supply disruption indicators shift the conversation from optimization to continuity: if the constraint persists, customers will look for dual-source coverage, buffer stock, migration paths, or faster escalation before schedules move.".to_string()
+        );
+    }
+    if flags.regulatory || flags.geopolitical {
+        implications.push(
+            "Policy and trade exposure can quickly make footprint, routing, and export eligibility more decisive than nominal unit cost, especially where EU and North Africa positioning changes the compliance or resilience story.".to_string()
+        );
+    }
+    if flags.competitor {
+        implications.push(
+            "Competitive movement here creates both a defense problem and a displacement opportunity; the key question is which accounts will feel pain first and what proof would make them switch.".to_string()
+        );
+    }
+    if flags.innovation || flags.expansion {
+        implications.push(format!(
+            "Capacity, innovation, or program-build signals around {entity_ctx} usually surface months before operations stabilize, so the real leverage is in early influence, allocation access, and partnership framing rather than late reactive outreach."
+        ));
+    }
+    if flags.personnel {
+        implications.push(
+            "POI and hiring clues add a power-mapping dimension: they often reveal who is building budget, launching a program, or quietly changing supplier criteria before the organization says so publicly.".to_string()
+        );
+    }
+    if flags.pricing {
+        implications.push(
+            "Pricing signals imply a quoting or margin reset is underway, which can be used either to protect current business or to present a stronger total-cost and resilience case to buyers under pressure.".to_string()
+        );
+    }
+    if flags.security && is_public_sector {
+        implications.push(
+            "For a government entity, the security question is whether the signal touches official domains, procurement portals, citizen-facing services, or supplier access paths; that determines whether this is a real operational issue or just background cyber noise.".to_string()
+        );
+    }
+    if flags.security && !is_public_sector {
+        implications.push(
+            "Security and assurance issues rarely stay isolated; they spill into vendor eligibility, customer audits, and executive risk discussions much faster than routine operational changes.".to_string()
+        );
+    }
+    if implications.is_empty() && is_public_sector && category == "brand_sentiment" {
+        implications.push(
+            "For a public-sector body, sentiment is only actionable if it starts to change institutional credibility, oversight pressure, procurement scrutiny, or decision timing; otherwise it should be treated as background noise rather than a direct commercial trigger.".to_string()
+        );
+    }
+    if implications.is_empty() {
+        implications.push(
+            "Taken together, these signals matter because they change commercial timing, supplier choice, or executive priorities rather than representing isolated informational noise.".to_string()
+        );
+    }
+    parts.push(
+        implications
+            .into_iter()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
 
     parts.join(" ")
 }
@@ -485,9 +1246,7 @@ fn build_analytical_title(
     entity_type: Option<&str>,
 ) -> String {
     // Check if this is a government entity
-    let is_government = entity_type
-        .map(|t| t.to_lowercase().contains("government"))
-        .unwrap_or(false);
+    let is_government = is_public_sector_entity(entity_label, entity_type);
 
     // Use different action verbs for government entities
     let action = if is_government {
@@ -497,15 +1256,15 @@ fn build_analytical_title(
             "supply_chain_risk" => "policy risk flagged",
             "security_compliance" => "regulatory update detected",
             "regulatory_policy" => "policy change detected",
-            "strategic_poi" => "official activity detected",
+            "strategic_poi" => "official stakeholder activity surfaced",
             "pricing_market" => "economic policy shift detected",
-            "customer_rfq" => "government procurement posted",
-            "geopolitical_analysis" => "diplomatic development flagged",
+            "customer_rfq" => "procurement signal emerging",
+            "geopolitical_analysis" => "policy and trade exposure shift",
             "veracity_analysis" => "intelligence cross-referenced",
             "talent_ip" => "official appointment detected",
             "technology_innovation" => "research initiative detected",
             "ma_partnerships" => "bilateral agreement detected",
-            "market_expansion" => "policy development detected",
+            "market_expansion" => "expansion signal with sourcing implications",
             "cybersecurity_threat" => "security advisory detected",
             "quality_compliance" => "standards update detected",
             "brand_sentiment" => "public sentiment signal detected",
@@ -518,15 +1277,15 @@ fn build_analytical_title(
             "supply_chain_risk" => "supply chain risk flagged",
             "security_compliance" => "compliance gap identified",
             "regulatory_policy" => "regulatory change detected",
-            "strategic_poi" => "key personnel activity detected",
+            "strategic_poi" => "stakeholder activity surfaced",
             "pricing_market" => "market pricing shift detected",
-            "customer_rfq" => "procurement opportunity identified",
-            "geopolitical_analysis" => "geopolitical development flagged",
+            "customer_rfq" => "procurement signal emerging",
+            "geopolitical_analysis" => "geopolitical exposure assessment required",
             "veracity_analysis" => "intelligence cross-referenced",
             "talent_ip" => "talent/IP activity detected",
             "technology_innovation" => "R&D activity detected",
             "ma_partnerships" => "M&A/partnership activity detected",
-            "market_expansion" => "market expansion detected",
+            "market_expansion" => "capacity or market expansion signal",
             "cybersecurity_threat" => "cybersecurity threat detected",
             "quality_compliance" => "quality certification change detected",
             "brand_sentiment" => "brand sentiment signal detected",
@@ -541,7 +1300,8 @@ fn build_analytical_title(
     };
 
     // Add one concrete detail if we have signal data
-    let detail = signal_details.first()
+    let detail = concrete_signal_details(signal_details)
+        .first()
         .map(|s| format!(". {}", s))
         .unwrap_or_default();
 
@@ -561,10 +1321,10 @@ struct EvidenceSignal {
     title: String,
     description: String,
     source_url: String,
-    signal_type: String,  // e.g., "certification", "capability", "news", "poi", "warning"
-    extracted_facts: Vec<String>,  // Key facts extracted from the evidence
-    date_context: Option<String>,  // When this happened/detected
-    relevance_score: f32,  // How relevant to the insight category
+    signal_type: String, // e.g., "certification", "capability", "news", "poi", "warning"
+    extracted_facts: Vec<String>, // Key facts extracted from the evidence
+    date_context: Option<String>, // When this happened/detected
+    relevance_score: f32, // How relevant to the insight category
 }
 
 /// Entity context with rich structured data about the company/org.
@@ -577,19 +1337,19 @@ struct EntityContext {
     /// True = this entity is a direct EMS competitor; False = customer/partner/prospect
     is_competitor: bool,
     industry_tags: Vec<String>,
-    certifications: Vec<String>,  // e.g., "AS9100D (valid until 2027-03)", "ISO 13485"
-    capabilities: Vec<String>,    // e.g., "High-Volume SMT", "Medical Device Manufacturing"
-    key_persons: Vec<String>,     // e.g., "CEO: Jensen Huang (C-Suite, influential)"
-    recent_changes: Vec<String>,  // e.g., "New facility detected", "Leadership change"
+    certifications: Vec<String>, // e.g., "AS9100D (valid until 2027-03)", "ISO 13485"
+    capabilities: Vec<String>,   // e.g., "High-Volume SMT", "Medical Device Manufacturing"
+    key_persons: Vec<String>,    // e.g., "CEO: Jensen Huang (C-Suite, influential)"
+    recent_changes: Vec<String>, // e.g., "New facility detected", "Leadership change"
     // Rich competitive context
     threat_score: Option<f64>,
     overlap_score: Option<f64>,
     strategic_relevance: Option<f64>,
     revenue_estimate_usd: Option<i64>,
     employee_estimate: Option<i32>,
-    competitor_names: Vec<String>,       // Linked competitors via graph edges
-    sites_summary: Vec<String>,          // e.g., "Manufacturing plant in Tunis, Tunisia"
-    competitor_events: Vec<String>,      // Recent competitor moves
+    competitor_names: Vec<String>, // Linked competitors via graph edges
+    sites_summary: Vec<String>,    // e.g., "Manufacturing plant in Tunis, Tunisia"
+    competitor_events: Vec<String>, // Recent competitor moves
     domain: Option<String>,
 }
 
@@ -614,24 +1374,24 @@ fn extract_facts_from_text(text: &str) -> Vec<String> {
         // Match facility/location signals
         static ref FACILITY_RE: Regex = Regex::new(r"(?:new\s+)?(?:facility|plant|factory|site|headquarters)\s+(?:in\s+)?([A-Z][a-zA-Z\s,]+)").unwrap();
     }
-    
+
     let mut facts = Vec::new();
-    
+
     // Extract monetary values
     for m in MONEY_RE.find_iter(text).take(3) {
         facts.push(format!("Value: {}", m.as_str()));
     }
-    
+
     // Extract percentages
     for m in PERCENT_RE.find_iter(text).take(2) {
         facts.push(format!("Change: {}", m.as_str()));
     }
-    
+
     // Extract certifications
     for m in CERT_RE.find_iter(text).take(3) {
         facts.push(format!("Certification: {}", m.as_str()));
     }
-    
+
     // Extract dates
     for m in DATE_RE.find_iter(text).take(2) {
         let date_str = m.as_str();
@@ -640,26 +1400,26 @@ fn extract_facts_from_text(text: &str) -> Vec<String> {
             facts.push(format!("Date: {}", date_str));
         }
     }
-    
+
     // Extract employee counts
     for m in EMPLOYEE_RE.find_iter(text).take(1) {
         facts.push(m.as_str().to_string());
     }
-    
+
     // Extract acquisition mentions
     for caps in ACQUISITION_RE.captures_iter(text).take(1) {
         if let Some(m) = caps.get(1) {
             facts.push(format!("Acquisition involving {}", m.as_str().trim()));
         }
     }
-    
+
     // Extract facility mentions
     for caps in FACILITY_RE.captures_iter(text).take(1) {
         if let Some(m) = caps.get(1) {
             facts.push(format!("Facility in {}", m.as_str().trim()));
         }
     }
-    
+
     facts
 }
 
@@ -667,64 +1427,122 @@ fn extract_facts_from_text(text: &str) -> Vec<String> {
 #[cfg(feature = "llm")]
 fn calculate_relevance(title: &str, description: &str, signal_type: &str, category: &str) -> f32 {
     let text = format!("{} {} {}", title, description, signal_type).to_lowercase();
-    
+
     // Category-specific keywords with weights
     let keywords: &[(&str, f32)] = match category {
         "demand_procurement" => &[
-            ("rfq", 1.0), ("tender", 1.0), ("procurement", 0.9), ("sourcing", 0.8),
-            ("bid", 0.8), ("contract", 0.7), ("supplier", 0.6), ("vendor", 0.6),
+            ("rfq", 1.0),
+            ("tender", 1.0),
+            ("procurement", 0.9),
+            ("sourcing", 0.8),
+            ("bid", 0.8),
+            ("contract", 0.7),
+            ("supplier", 0.6),
+            ("vendor", 0.6),
         ],
         "supply_chain_risk" => &[
-            ("shortage", 1.0), ("delay", 0.9), ("disruption", 0.9), ("risk", 0.8),
-            ("constraint", 0.8), ("lead time", 0.7), ("allocation", 0.7), ("single source", 0.9),
+            ("shortage", 1.0),
+            ("delay", 0.9),
+            ("disruption", 0.9),
+            ("risk", 0.8),
+            ("constraint", 0.8),
+            ("lead time", 0.7),
+            ("allocation", 0.7),
+            ("single source", 0.9),
         ],
         "competitor_market" => &[
-            ("competitor", 1.0), ("market share", 0.9), ("pricing", 0.8), ("win", 0.8),
-            ("lost", 0.8), ("expansion", 0.7), ("capability", 0.6), ("capacity", 0.6),
+            ("competitor", 1.0),
+            ("market share", 0.9),
+            ("pricing", 0.8),
+            ("win", 0.8),
+            ("lost", 0.8),
+            ("expansion", 0.7),
+            ("capability", 0.6),
+            ("capacity", 0.6),
         ],
         "security_compliance" => &[
-            ("certification", 1.0), ("iso", 0.9), ("as9100", 1.0), ("iatf", 1.0),
-            ("compliance", 0.9), ("audit", 0.8), ("accreditation", 0.9), ("security", 0.7),
+            ("certification", 1.0),
+            ("iso", 0.9),
+            ("as9100", 1.0),
+            ("iatf", 1.0),
+            ("compliance", 0.9),
+            ("audit", 0.8),
+            ("accreditation", 0.9),
+            ("security", 0.7),
         ],
         "regulatory_policy" => &[
-            ("regulation", 1.0), ("tariff", 0.9), ("sanction", 1.0), ("export control", 1.0),
-            ("policy", 0.8), ("legislation", 0.8), ("compliance", 0.7), ("itar", 1.0),
+            ("regulation", 1.0),
+            ("tariff", 0.9),
+            ("sanction", 1.0),
+            ("export control", 1.0),
+            ("policy", 0.8),
+            ("legislation", 0.8),
+            ("compliance", 0.7),
+            ("itar", 1.0),
         ],
         "strategic_poi" => &[
-            ("ceo", 1.0), ("cto", 1.0), ("cfo", 1.0), ("executive", 0.9),
-            ("appointed", 0.9), ("resigned", 0.9), ("leadership", 0.8), ("vp", 0.7),
+            ("ceo", 1.0),
+            ("cto", 1.0),
+            ("cfo", 1.0),
+            ("executive", 0.9),
+            ("appointed", 0.9),
+            ("resigned", 0.9),
+            ("leadership", 0.8),
+            ("vp", 0.7),
         ],
         "ma_partnerships" => &[
-            ("acquisition", 1.0), ("merger", 1.0), ("partnership", 0.9), ("joint venture", 0.9),
-            ("acquired", 1.0), ("divest", 0.9), ("spin-off", 0.8), ("alliance", 0.7),
+            ("acquisition", 1.0),
+            ("merger", 1.0),
+            ("partnership", 0.9),
+            ("joint venture", 0.9),
+            ("acquired", 1.0),
+            ("divest", 0.9),
+            ("spin-off", 0.8),
+            ("alliance", 0.7),
         ],
         "technology_innovation" => &[
-            ("patent", 1.0), ("r&d", 0.9), ("innovation", 0.9), ("breakthrough", 0.9),
-            ("technology", 0.7), ("launch", 0.7), ("product", 0.6), ("development", 0.6),
+            ("patent", 1.0),
+            ("r&d", 0.9),
+            ("innovation", 0.9),
+            ("breakthrough", 0.9),
+            ("technology", 0.7),
+            ("launch", 0.7),
+            ("product", 0.6),
+            ("development", 0.6),
         ],
         "cybersecurity_threat" => &[
-            ("breach", 1.0), ("vulnerability", 1.0), ("cyber", 0.9), ("attack", 0.9),
-            ("security", 0.7), ("malware", 1.0), ("ransomware", 1.0), ("incident", 0.8),
+            ("breach", 1.0),
+            ("vulnerability", 1.0),
+            ("cyber", 0.9),
+            ("attack", 0.9),
+            ("security", 0.7),
+            ("malware", 1.0),
+            ("ransomware", 1.0),
+            ("incident", 0.8),
         ],
         _ => &[("signal", 0.5), ("detected", 0.5), ("update", 0.4)],
     };
-    
+
     let mut score: f32 = 0.3; // Base relevance
     for (keyword, weight) in keywords {
         if text.contains(keyword) {
             score += weight;
         }
     }
-    
+
     // Boost for specific signal types
     match signal_type {
-        "certification" if category.contains("compliance") || category.contains("security") => score += 0.5,
-        "capability" if category.contains("procurement") || category.contains("competitor") => score += 0.4,
+        "certification" if category.contains("compliance") || category.contains("security") => {
+            score += 0.5
+        }
+        "capability" if category.contains("procurement") || category.contains("competitor") => {
+            score += 0.4
+        }
         "poi" if category.contains("strategic_poi") || category.contains("talent") => score += 0.6,
-        "warning" => score += 0.3,  // Warnings are generally relevant
+        "warning" => score += 0.3, // Warnings are generally relevant
         _ => {}
     }
-    
+
     score.min(2.0) // Cap at 2.0
 }
 
@@ -734,10 +1552,14 @@ fn calculate_relevance(title: &str, description: &str, signal_type: &str, catego
 fn extract_article_titles(description: &str) -> Vec<String> {
     let mut articles = Vec::new();
     // Pattern: "Articles: ..." or "Related articles: ..."
-    if let Some(idx) = description.find("Articles:").or_else(|| description.find("articles:")) {
+    if let Some(idx) = description
+        .find("Articles:")
+        .or_else(|| description.find("articles:"))
+    {
         let after = &description[idx..];
         // Find the article list — it ends at "Source:" or "See:" or end of string
-        let end = after.find(". Source:")
+        let end = after
+            .find(". Source:")
             .or_else(|| after.find(". See:"))
             .or_else(|| after.find(". Page"))
             .unwrap_or(after.len());
@@ -785,8 +1607,9 @@ fn dedup_signals<'a>(signals: &[&'a EvidenceSignal]) -> Vec<&'a EvidenceSignal> 
         let lower = sig.title.to_lowercase();
         let dominated = seen_titles.iter().any(|seen| {
             // Simple substring overlap check
-            seen.contains(&lower) || lower.contains(seen.as_str()) ||
-            (lower.len() > 15 && seen.len() > 15 && lower[..15] == seen[..15])
+            seen.contains(&lower)
+                || lower.contains(seen.as_str())
+                || (lower.len() > 15 && seen.len() > 15 && lower[..15] == seen[..15])
         });
         if !dominated {
             seen_titles.push(lower);
@@ -800,13 +1623,19 @@ fn dedup_signals<'a>(signals: &[&'a EvidenceSignal]) -> Vec<&'a EvidenceSignal> 
 #[allow(dead_code)]
 fn describe_entity_type_with_article(entity_type: Option<&str>) -> &str {
     match entity_type {
-        Some(t) if t.to_lowercase().contains("ems") => "an electronics manufacturing services (EMS) provider",
+        Some(t) if t.to_lowercase().contains("ems") => {
+            "an electronics manufacturing services (EMS) provider"
+        }
         Some(t) if t.to_lowercase().contains("oem") => "an original equipment manufacturer (OEM)",
         Some(t) if t.to_lowercase().contains("semiconductor") => "a semiconductor manufacturer",
-        Some(t) if t.to_lowercase().contains("defense") || t.to_lowercase().contains("defence") => "a defense and aerospace company",
+        Some(t) if t.to_lowercase().contains("defense") || t.to_lowercase().contains("defence") => {
+            "a defense and aerospace company"
+        }
         Some(t) if t.to_lowercase().contains("government") => "a government entity",
         Some(t) if t.to_lowercase().contains("automotive") => "an automotive tier supplier",
-        Some(t) if t.to_lowercase().contains("distributor") => "an electronic components distributor",
+        Some(t) if t.to_lowercase().contains("distributor") => {
+            "an electronic components distributor"
+        }
         _ => "a company",
     }
 }
@@ -822,11 +1651,19 @@ fn compose_analytical_insight(
     confidence: f64,
 ) -> (String, String) {
     let name = &entity_ctx.name;
-    let region = if entity_ctx.region.is_empty() { "undisclosed region".to_string() } else { entity_ctx.region.clone() };
+    let region = if entity_ctx.region.is_empty() {
+        "undisclosed region".to_string()
+    } else {
+        entity_ctx.region.clone()
+    };
 
     // ── Deduplicate and rank signals ──
     let mut sorted: Vec<&EvidenceSignal> = evidence_signals.iter().collect();
-    sorted.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.relevance_score
+            .partial_cmp(&a.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let deduped = dedup_signals(&sorted);
     let top_signals: Vec<&EvidenceSignal> = deduped.into_iter().take(5).collect();
 
@@ -837,7 +1674,8 @@ fn compose_analytical_insight(
         article_titles.append(&mut titles);
     }
     // Dedup articles: strip trailing dots, then fuzzy-dedup by prefix
-    article_titles = article_titles.into_iter()
+    article_titles = article_titles
+        .into_iter()
         .map(|a| a.trim_end_matches('.').trim().to_string())
         .filter(|a| a.len() > 10)
         .collect();
@@ -855,30 +1693,88 @@ fn compose_analytical_insight(
     let article_titles: Vec<String> = article_titles.into_iter().take(4).collect();
 
     // ── Classify signal types present (scan ALL signals, not just top) ──
-    let all_text: String = evidence_signals.iter()
-        .map(|s| format!("{} {} {}", s.title, s.description, s.extracted_facts.join(" ")))
+    let all_text: String = evidence_signals
+        .iter()
+        .map(|s| {
+            format!(
+                "{} {} {}",
+                s.title,
+                s.description,
+                s.extracted_facts.join(" ")
+            )
+        })
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
 
-    let has_acquisition = all_text.contains("acquisition") || all_text.contains("acquir") || all_text.contains("merger") || all_text.contains("joint venture");
-    let has_certification = evidence_signals.iter().any(|s| s.signal_type == "certification") || all_text.contains("iso ") || all_text.contains("as9100") || all_text.contains("iatf");
-    let has_capability = evidence_signals.iter().any(|s| s.signal_type == "capability");
-    let has_innovation = all_text.contains("innovation") || all_text.contains("award") || all_text.contains("patent") || all_text.contains("r&d");
-    let has_expansion = all_text.contains("facility") || all_text.contains("expansion") || all_text.contains("groundbreaking") || all_text.contains("new plant") || all_text.contains("new site");
-    let has_hiring = all_text.contains("career") || all_text.contains("hiring") || all_text.contains("recruit") || all_text.contains("job opening");
-    let has_compliance = all_text.contains("compliance") || all_text.contains("audit") || all_text.contains("regulation");
-    let has_tariff = all_text.contains("tariff") || all_text.contains("sanction") || all_text.contains("trade war") || all_text.contains("embargo") || all_text.contains("export control");
-    let has_shortage = all_text.contains("shortage") || all_text.contains("allocation") || all_text.contains("lead time") || all_text.contains("supply constraint") || all_text.contains("force majeure");
-    let has_financial = all_text.contains("revenue") || all_text.contains("quarter") || all_text.contains("earnings") || all_text.contains("fiscal") || all_text.contains("investor");
+    let has_acquisition = all_text.contains("acquisition")
+        || all_text.contains("acquir")
+        || all_text.contains("merger")
+        || all_text.contains("joint venture");
+    let has_certification = evidence_signals
+        .iter()
+        .any(|s| s.signal_type == "certification")
+        || all_text.contains("iso ")
+        || all_text.contains("as9100")
+        || all_text.contains("iatf");
+    let has_capability = evidence_signals
+        .iter()
+        .any(|s| s.signal_type == "capability");
+    let has_innovation = all_text.contains("innovation")
+        || all_text.contains("award")
+        || all_text.contains("patent")
+        || all_text.contains("r&d");
+    let has_expansion = all_text.contains("facility")
+        || all_text.contains("expansion")
+        || all_text.contains("groundbreaking")
+        || all_text.contains("new plant")
+        || all_text.contains("new site");
+    let has_hiring = all_text.contains("career")
+        || all_text.contains("hiring")
+        || all_text.contains("recruit")
+        || all_text.contains("job opening");
+    let has_compliance = all_text.contains("compliance")
+        || all_text.contains("audit")
+        || all_text.contains("regulation");
+    let has_tariff = all_text.contains("tariff")
+        || all_text.contains("sanction")
+        || all_text.contains("trade war")
+        || all_text.contains("embargo")
+        || all_text.contains("export control");
+    let has_shortage = all_text.contains("shortage")
+        || all_text.contains("allocation")
+        || all_text.contains("lead time")
+        || all_text.contains("supply constraint")
+        || all_text.contains("force majeure");
+    let has_financial = all_text.contains("revenue")
+        || all_text.contains("quarter")
+        || all_text.contains("earnings")
+        || all_text.contains("fiscal")
+        || all_text.contains("investor");
 
     // ── Gather entity data ──
-    let cert_list: Vec<&str> = entity_ctx.certifications.iter().take(3).map(|s| s.as_str()).collect();
-    let cap_list: Vec<&str> = entity_ctx.capabilities.iter().take(4).map(|s| s.as_str()).collect();
-    let poi_list: Vec<&str> = entity_ctx.key_persons.iter().take(2).map(|s| s.as_str()).collect();
+    let cert_list: Vec<&str> = entity_ctx
+        .certifications
+        .iter()
+        .take(3)
+        .map(|s| s.as_str())
+        .collect();
+    let cap_list: Vec<&str> = entity_ctx
+        .capabilities
+        .iter()
+        .take(4)
+        .map(|s| s.as_str())
+        .collect();
+    let poi_list: Vec<&str> = entity_ctx
+        .key_persons
+        .iter()
+        .take(2)
+        .map(|s| s.as_str())
+        .collect();
 
     // Extract all concrete facts
-    let all_facts: Vec<String> = top_signals.iter()
+    let all_facts: Vec<String> = top_signals
+        .iter()
         .flat_map(|s| s.extracted_facts.iter().cloned())
         .filter(|f| !f.is_empty())
         .take(6)
@@ -886,10 +1782,20 @@ fn compose_analytical_insight(
 
     // ── Build headline ──
     let headline = build_rich_headline(
-        name, &region, category, &top_signals, &article_titles,
-        &cert_list, &cap_list,
-        has_acquisition, has_expansion, has_innovation, has_tariff,
-        has_shortage, has_financial, has_certification,
+        name,
+        &region,
+        category,
+        &top_signals,
+        &article_titles,
+        &cert_list,
+        &cap_list,
+        has_acquisition,
+        has_expansion,
+        has_innovation,
+        has_tariff,
+        has_shortage,
+        has_financial,
+        has_certification,
     );
 
     // ── Build narrative paragraphs ──
@@ -897,8 +1803,14 @@ fn compose_analytical_insight(
 
     // Paragraph 1: What happened
     let what_happened = build_what_happened(
-        name, &region, &top_signals, &article_titles, &all_facts,
-        &cert_list, &cap_list, entity_ctx.entity_type.as_deref(),
+        name,
+        &region,
+        &top_signals,
+        &article_titles,
+        &all_facts,
+        &cert_list,
+        &cap_list,
+        entity_ctx.entity_type.as_deref(),
     );
     if !what_happened.is_empty() {
         paragraphs.push(what_happened);
@@ -906,18 +1818,41 @@ fn compose_analytical_insight(
 
     // Paragraph 2: Why it matters — strategic analysis
     let why_matters = build_why_it_matters(
-        name, &region, category, &cert_list, &cap_list, &poi_list,
-        has_acquisition, has_certification, has_capability, has_innovation,
-        has_expansion, has_hiring, has_compliance, has_tariff, has_shortage,
-        has_financial, &article_titles,
+        name,
+        &region,
+        category,
+        &cert_list,
+        &cap_list,
+        &poi_list,
+        has_acquisition,
+        has_certification,
+        has_capability,
+        has_innovation,
+        has_expansion,
+        has_hiring,
+        has_compliance,
+        has_tariff,
+        has_shortage,
+        has_financial,
+        &article_titles,
     );
     paragraphs.push(why_matters);
 
     // Paragraph 3: Actionable recommendation
     let recommendation = build_recommendation(
-        name, category, &cert_list, &cap_list, &poi_list,
-        has_acquisition, has_expansion, has_tariff, has_shortage,
-        has_compliance, has_innovation, has_financial, has_certification,
+        name,
+        category,
+        &cert_list,
+        &cap_list,
+        &poi_list,
+        has_acquisition,
+        has_expansion,
+        has_tariff,
+        has_shortage,
+        has_compliance,
+        has_innovation,
+        has_financial,
+        has_certification,
     );
     paragraphs.push(format!("Recommended action: {}", recommendation));
 
@@ -925,20 +1860,37 @@ fn compose_analytical_insight(
     if severity == "critical" {
         paragraphs.push("Priority: CRITICAL — immediate executive attention required. Escalate within 48 hours.".into());
     } else if severity == "warning" {
-        paragraphs.push("Priority: Elevated — requires analyst review within the current planning cycle.".into());
+        paragraphs.push(
+            "Priority: Elevated — requires analyst review within the current planning cycle."
+                .into(),
+        );
     }
 
     // Confidence assessment
     let sig_count = evidence_signals.len().min(20);
-    let conf_label = if confidence >= 0.85 { "high" } else if confidence >= 0.65 { "moderate" } else { "preliminary" };
+    let conf_label = if confidence >= 0.85 {
+        "high"
+    } else if confidence >= 0.65 {
+        "moderate"
+    } else {
+        "preliminary"
+    };
     let conf_basis = if sig_count >= 5 {
-        format!("{} corroborating signals across multiple source types", sig_count)
+        format!(
+            "{} corroborating signals across multiple source types",
+            sig_count
+        )
     } else if sig_count >= 2 {
         format!("{} corroborating signals", sig_count)
     } else {
         "single-source intelligence".to_string()
     };
-    paragraphs.push(format!("Confidence: {} ({:.0}%), based on {}.", conf_label, confidence * 100.0, conf_basis));
+    paragraphs.push(format!(
+        "Confidence: {} ({:.0}%), based on {}.",
+        conf_label,
+        confidence * 100.0,
+        conf_basis
+    ));
 
     (headline, paragraphs.join("\n\n"))
 }
@@ -986,13 +1938,19 @@ fn build_rich_headline(
     }
     if has_expansion {
         if !caps.is_empty() {
-            return format!("{name}: capacity expansion in {} manufacturing", caps[0].split('(').next().unwrap_or(caps[0]).trim());
+            return format!(
+                "{name}: capacity expansion in {} manufacturing",
+                caps[0].split('(').next().unwrap_or(caps[0]).trim()
+            );
         }
         return format!("{name}: facility expansion underway in {region}");
     }
     if has_innovation {
         if !caps.is_empty() {
-            return format!("{name}: technology evolution in {} — early engagement window", caps[0].split('(').next().unwrap_or(caps[0]).trim());
+            return format!(
+                "{name}: technology evolution in {} — early engagement window",
+                caps[0].split('(').next().unwrap_or(caps[0]).trim()
+            );
         }
         return format!("{name}: innovation and R&D signals indicate technology pivot");
     }
@@ -1000,23 +1958,36 @@ fn build_rich_headline(
         return format!("{name}: financial activity signals — review business trajectory");
     }
     if has_certification && !certs.is_empty() {
-        return format!("{name}: {} certification update — verify qualification status", certs[0].split('(').next().unwrap_or(certs[0]).trim());
+        return format!(
+            "{name}: {} certification update — verify qualification status",
+            certs[0].split('(').next().unwrap_or(certs[0]).trim()
+        );
     }
 
     // Priority 4: Category-specific with entity data enrichment
     match category {
         "demand_procurement" => {
             if !caps.is_empty() {
-                format!("{name}: procurement signals in {} — sourcing opportunity", caps[0].split('(').next().unwrap_or(caps[0]).trim())
+                format!(
+                    "{name}: procurement signals in {} — sourcing opportunity",
+                    caps[0].split('(').next().unwrap_or(caps[0]).trim()
+                )
             } else {
                 format!("{name} ({region}): procurement activity indicates emerging sourcing opportunity")
             }
         }
-        "supply_chain_risk" => format!("{name}: supply chain risk indicators — mitigation planning required"),
-        "competitor_market" => format!("{name}: competitive positioning shift detected in {region}"),
+        "supply_chain_risk" => {
+            format!("{name}: supply chain risk indicators — mitigation planning required")
+        }
+        "competitor_market" => {
+            format!("{name}: competitive positioning shift detected in {region}")
+        }
         "security_compliance" => {
             if !certs.is_empty() {
-                format!("{name}: {} compliance update — supplier qualification impact", certs[0].split('(').next().unwrap_or(certs[0]).trim())
+                format!(
+                    "{name}: {} compliance update — supplier qualification impact",
+                    certs[0].split('(').next().unwrap_or(certs[0]).trim()
+                )
             } else {
                 format!("{name}: security and compliance posture update")
             }
@@ -1024,32 +1995,51 @@ fn build_rich_headline(
         "regulatory_policy" => format!("{name}: regulatory changes affect operations in {region}"),
         "strategic_poi" => {
             if !caps.is_empty() {
-                format!("{name}: strategic signals in {} domain", caps[0].split('(').next().unwrap_or(caps[0]).trim())
+                format!(
+                    "{name}: strategic signals in {} domain",
+                    caps[0].split('(').next().unwrap_or(caps[0]).trim()
+                )
             } else {
                 format!("{name}: strategic activity signals direction change in {region}")
             }
         }
         "technology_innovation" => {
             if !caps.is_empty() {
-                format!("{name}: {} technology evolution — capability development signals", caps[0].split('(').next().unwrap_or(caps[0]).trim())
+                format!(
+                    "{name}: {} technology evolution — capability development signals",
+                    caps[0].split('(').next().unwrap_or(caps[0]).trim()
+                )
             } else {
                 format!("{name}: technology investment signals emerging capability")
             }
         }
-        "ma_partnerships" => format!("{name}: M&A or partnership activity reshaping competitive landscape"),
+        "ma_partnerships" => {
+            format!("{name}: M&A or partnership activity reshaping competitive landscape")
+        }
         "market_expansion" => {
             if !certs.is_empty() {
-                format!("{name}: market expansion with {} qualification in {region}", certs[0].split('(').next().unwrap_or(certs[0]).trim())
+                format!(
+                    "{name}: market expansion with {} qualification in {region}",
+                    certs[0].split('(').next().unwrap_or(certs[0]).trim()
+                )
             } else {
                 format!("{name}: market expansion activity detected in {region}")
             }
         }
-        "quality_compliance" => format!("{name}: quality system update — supplier requalification required"),
-        "talent_ip" => format!("{name}: talent and IP investment signals strategic capability build"),
+        "quality_compliance" => {
+            format!("{name}: quality system update — supplier requalification required")
+        }
+        "talent_ip" => {
+            format!("{name}: talent and IP investment signals strategic capability build")
+        }
         "customer_rfq" => format!("{name}: RFQ or customer engagement activity in {region}"),
-        "geopolitical_analysis" => format!("{name}: geopolitical exposure assessment required for {region}"),
+        "geopolitical_analysis" => {
+            format!("{name}: geopolitical exposure assessment required for {region}")
+        }
         "pricing_market" => format!("{name}: pricing signals indicate market dynamics shift"),
-        "cybersecurity_threat" => format!("{name}: cybersecurity posture change — vendor risk review"),
+        "cybersecurity_threat" => {
+            format!("{name}: cybersecurity posture change — vendor risk review")
+        }
         "brand_sentiment" => format!("{name}: brand and reputation signals require monitoring"),
         _ => format!("{name} ({region}): new intelligence signals require assessment"),
     }
@@ -1072,7 +2062,8 @@ fn build_what_happened(
 
     // If we have article titles from descriptions, lead with those (most specific data)
     if !article_titles.is_empty() {
-        let articles_formatted: Vec<String> = article_titles.iter()
+        let articles_formatted: Vec<String> = article_titles
+            .iter()
             .map(|a| format!("\"{}\"", truncate_text(a, 100)))
             .collect();
         if articles_formatted.len() == 1 {
@@ -1089,7 +2080,8 @@ fn build_what_happened(
     } else if !top_signals.is_empty() {
         // No article titles — describe what types of signals we're seeing
         let signal_types: Vec<String> = {
-            let mut types: Vec<String> = top_signals.iter()
+            let mut types: Vec<String> = top_signals
+                .iter()
                 .map(|s| {
                     let cleaned = clean_signal_title(&s.title, name);
                     if cleaned.len() > 10 {
@@ -1097,8 +2089,20 @@ fn build_what_happened(
                     } else {
                         // Fallback: use signal_type as description
                         match s.signal_type.as_str() {
-                            "warning" => format!("{} activity signal", s.title.split(':').last().unwrap_or("change").trim().to_lowercase().replace(" detected", "")),
-                            "certification" => format!("{} certification", s.title.replace("Certification", "").trim()),
+                            "warning" => format!(
+                                "{} activity signal",
+                                s.title
+                                    .split(':')
+                                    .last()
+                                    .unwrap_or("change")
+                                    .trim()
+                                    .to_lowercase()
+                                    .replace(" detected", "")
+                            ),
+                            "certification" => format!(
+                                "{} certification",
+                                s.title.replace("Certification", "").trim()
+                            ),
                             "capability" => s.title.replace("Capability: ", "").to_string(),
                             _ => s.signal_type.clone(),
                         }
@@ -1137,35 +2141,47 @@ fn build_what_happened(
             caps.join(", "),
         ));
     } else if !caps.is_empty() {
-        parts.push(format!(
-            "Verified capability: {}.",
-            caps[0],
-        ));
+        parts.push(format!("Verified capability: {}.", caps[0],));
     }
 
     // Add extracted facts (monetary values, percentages, dates, etc.)
     if !all_facts.is_empty() {
-        let concrete_facts: Vec<&String> = all_facts.iter()
-            .filter(|f| f.contains('$') || f.contains('%') || f.contains("202") || f.contains("employee") || f.contains("facility"))
+        let concrete_facts: Vec<&String> = all_facts
+            .iter()
+            .filter(|f| {
+                f.contains('$')
+                    || f.contains('%')
+                    || f.contains("202")
+                    || f.contains("employee")
+                    || f.contains("facility")
+            })
             .take(3)
             .collect();
         if !concrete_facts.is_empty() {
             parts.push(format!(
                 "Extracted data points: {}.",
-                concrete_facts.iter().map(|f| f.as_str()).collect::<Vec<_>>().join("; "),
+                concrete_facts
+                    .iter()
+                    .map(|f| f.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; "),
             ));
         }
     }
 
     // Date context
-    let dates: Vec<&str> = top_signals.iter()
+    let dates: Vec<&str> = top_signals
+        .iter()
         .filter_map(|s| s.date_context.as_deref())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .take(2)
         .collect();
     if !dates.is_empty() {
-        parts.push(format!("Signal observation period: {}.", dates.join(" to ")));
+        parts.push(format!(
+            "Signal observation period: {}.",
+            dates.join(" to ")
+        ));
     }
 
     parts.join(" ")
@@ -1220,7 +2236,13 @@ fn build_why_it_matters(
     }
     if has_expansion {
         let cap_context = if !caps.is_empty() {
-            format!(", building on established {} capabilities", caps.iter().map(|c| c.split('(').next().unwrap_or(c).trim()).collect::<Vec<_>>().join(", "))
+            format!(
+                ", building on established {} capabilities",
+                caps.iter()
+                    .map(|c| c.split('(').next().unwrap_or(c).trim())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         } else {
             String::new()
         };
@@ -1234,7 +2256,10 @@ fn build_why_it_matters(
     }
     if has_innovation && !has_acquisition {
         let innovation_context = if !article_titles.is_empty() {
-            format!(" Recent developments — including {} — suggest", truncate_text(&article_titles[0], 70))
+            format!(
+                " Recent developments — including {} — suggest",
+                truncate_text(&article_titles[0], 70)
+            )
         } else {
             " Signals suggest".to_string()
         };
@@ -1427,7 +2452,10 @@ fn build_recommendation(
     }
     if has_tariff {
         let cert_note = if !certs.is_empty() {
-            format!(" Ensure any alternative sources hold equivalent {} certification.", certs[0].split('(').next().unwrap_or(certs[0]).trim())
+            format!(
+                " Ensure any alternative sources hold equivalent {} certification.",
+                certs[0].split('(').next().unwrap_or(certs[0]).trim()
+            )
         } else {
             String::new()
         };
@@ -1439,7 +2467,10 @@ fn build_recommendation(
     }
     if has_acquisition {
         let poi_note = if !pois.is_empty() {
-            format!(" Coordinate with {} as primary contact during transition.", pois[0])
+            format!(
+                " Coordinate with {} as primary contact during transition.",
+                pois[0]
+            )
         } else {
             String::new()
         };
@@ -1452,7 +2483,10 @@ fn build_recommendation(
     }
     if has_expansion {
         let cap_mention = if !caps.is_empty() {
-            format!(" specifically for {} programs", caps[0].split('(').next().unwrap_or(caps[0]).trim())
+            format!(
+                " specifically for {} programs",
+                caps[0].split('(').next().unwrap_or(caps[0]).trim()
+            )
         } else {
             String::new()
         };
@@ -1478,7 +2512,10 @@ fn build_recommendation(
     }
     if has_innovation {
         let cap_mention = if !caps.is_empty() {
-            format!(", building on their existing {} base", caps[0].split('(').next().unwrap_or(caps[0]).trim())
+            format!(
+                ", building on their existing {} base",
+                caps[0].split('(').next().unwrap_or(caps[0]).trim()
+            )
         } else {
             String::new()
         };
@@ -1549,6 +2586,491 @@ fn build_recommendation(
     }
 }
 
+#[cfg(feature = "llm")]
+fn count_numbered_references(text: &str, max_ref: usize) -> usize {
+    (1..=max_ref)
+        .filter(|i| text.contains(&format!("[{}]", i)))
+        .count()
+}
+
+fn source_domain_from_url(url: &str) -> String {
+    url.split("//")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or(url)
+        .to_string()
+}
+
+fn format_sources_footer_from_urls(urls: &[String], max_sources: usize) -> String {
+    let mut deduped = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for url in urls
+        .iter()
+        .map(|url| url.trim())
+        .filter(|url| !url.is_empty())
+    {
+        let key = url.to_ascii_lowercase();
+        if seen.insert(key) {
+            deduped.push(url.to_string());
+            if deduped.len() >= max_sources {
+                break;
+            }
+        }
+    }
+
+    if deduped.is_empty() {
+        return String::new();
+    }
+
+    let items = deduped
+        .iter()
+        .enumerate()
+        .map(|(index, url)| format!("[{}] {} — {}", index + 1, source_domain_from_url(url), url))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Sources:\n{}", items)
+}
+
+#[cfg(feature = "llm")]
+fn ranked_source_urls(evidence_signals: &[EvidenceSignal], max_sources: usize) -> Vec<String> {
+    let mut sorted: Vec<_> = evidence_signals.iter().collect();
+    sorted.sort_by(|a, b| {
+        b.relevance_score
+            .partial_cmp(&a.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for signal in sorted {
+        let url = signal.source_url.trim();
+        if url.is_empty() {
+            continue;
+        }
+        let key = url.to_ascii_lowercase();
+        if seen.insert(key) {
+            out.push(url.to_string());
+            if out.len() >= max_sources {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(feature = "llm")]
+fn format_sources_footer(evidence_signals: &[EvidenceSignal], max_sources: usize) -> String {
+    format_sources_footer_from_urls(
+        &ranked_source_urls(evidence_signals, max_sources),
+        max_sources,
+    )
+}
+
+#[cfg(feature = "llm")]
+fn low_signal_security_hygiene_case(category: &str, evidence_signals: &[EvidenceSignal]) -> bool {
+    if !matches!(category, "security_compliance" | "cybersecurity_threat") {
+        return false;
+    }
+
+    let corpus = evidence_signals
+        .iter()
+        .map(|signal| {
+            format!(
+                "{} {} {} {}",
+                signal.title,
+                signal.description,
+                signal.signal_type,
+                signal.extracted_facts.join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    let has_hygiene_markers = [
+        "dns posture",
+        "dkim",
+        "dmarc",
+        "spf",
+        "lookalike",
+        "typosquat",
+        "spoof",
+        "spoofing",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    let has_hard_incident_markers = [
+        "breach",
+        "compromise",
+        "compromised",
+        "ransomware",
+        "malware",
+        "incident",
+        "outage",
+        "exfiltrat",
+        "unauthorized access",
+        "account takeover",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    let has_direct_business_markers = [
+        "audit finding",
+        "nonconformance",
+        "tender exclusion",
+        "contract loss",
+        "customer complaint",
+        "regulator action",
+        "program delay",
+        "production halt",
+        "supplier removal",
+        "export control action",
+        "disqualified",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    has_hygiene_markers && !has_hard_incident_markers && !has_direct_business_markers
+}
+
+#[cfg(feature = "llm")]
+fn contains_causal_link(text: &str) -> bool {
+    [
+        "because",
+        "therefore",
+        "which means",
+        "leads to",
+        "resulting in",
+        "undermines",
+        "creates",
+        "causing",
+        "could face",
+        "pushing them to",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn contains_security_hygiene_marker(text: &str) -> bool {
+    [
+        "dns posture",
+        "dkim",
+        "dmarc",
+        "spf",
+        "lookalike",
+        "spoof",
+        "typosquat",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn contains_qualification_or_program_marker(text: &str) -> bool {
+    [
+        "as9100",
+        "iso 13485",
+        "iatf 16949",
+        "defense program",
+        "eu defense",
+        "medical device",
+        "program eligibility",
+        "qualification",
+        "compliance delays",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn contains_customer_disruption_marker(text: &str) -> bool {
+    [
+        "supply chain disruption",
+        "supply chain disruptions",
+        "production interruption",
+        "production halt",
+        "customer audit cascade",
+        "seek ems providers",
+        "capture clients",
+        "downstream customers",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn contains_competitive_displacement_marker(text: &str) -> bool {
+    [
+        "opens door",
+        "open the door",
+        "opportunity for",
+        "opportunities for",
+        "target their",
+        "seek alternatives",
+        "switch suppliers",
+        "switch campaign",
+        "customers at risk",
+        "nearshore shift",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn has_unsupported_security_escalation(
+    category: &str,
+    narrative: &str,
+    recommendation: &str,
+    evidence_signals: &[EvidenceSignal],
+) -> bool {
+    if !low_signal_security_hygiene_case(category, evidence_signals) {
+        return false;
+    }
+
+    let combined = format!("{} {}", narrative, recommendation).to_ascii_lowercase();
+    let conflates_hygiene_and_qualification = contains_security_hygiene_marker(&combined)
+        && contains_qualification_or_program_marker(&combined)
+        && contains_causal_link(&combined);
+    let unsupported_customer_impact = contains_security_hygiene_marker(&combined)
+        && contains_customer_disruption_marker(&combined);
+
+    conflates_hygiene_and_qualification || unsupported_customer_impact
+}
+
+#[cfg(feature = "llm")]
+fn low_signal_certification_warning_case(evidence_signals: &[EvidenceSignal]) -> bool {
+    let corpus = evidence_signals
+        .iter()
+        .map(|signal| {
+            format!(
+                "{} {} {} {}",
+                signal.title,
+                signal.description,
+                signal.signal_type,
+                signal.extracted_facts.join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    let has_certification_markers = [
+        "certification",
+        "accreditation",
+        "iso ",
+        "as9100",
+        "iatf",
+        "compliance",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    let has_soft_warning_markers = [
+        "warning",
+        "flagged",
+        "outdated",
+        "update",
+        "updated",
+        "reaffirmation",
+        "reaffirmed",
+        "renewal",
+        "renewed",
+        "valid until",
+        "detected",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    let has_hard_failure_markers = [
+        "revoked",
+        "suspended",
+        "withdrawn",
+        "decertified",
+        "failed audit",
+        "audit finding",
+        "major nonconformance",
+        "major non-conformance",
+        "nonconformity",
+        "non-conformity",
+        "tender exclusion",
+        "regulator action",
+        "warning letter",
+        "certificate expired",
+        "certification expired",
+        "expired on",
+        "supplier removal",
+        "disqualified",
+    ]
+    .iter()
+    .any(|marker| corpus.contains(marker));
+
+    has_certification_markers && has_soft_warning_markers && !has_hard_failure_markers
+}
+
+#[cfg(feature = "llm")]
+fn has_unsupported_certification_escalation(
+    narrative: &str,
+    recommendation: &str,
+    evidence_signals: &[EvidenceSignal],
+) -> bool {
+    if !low_signal_certification_warning_case(evidence_signals) {
+        return false;
+    }
+
+    let combined = format!("{} {}", narrative, recommendation).to_ascii_lowercase();
+    let unsupported_qualification =
+        contains_qualification_or_program_marker(&combined) && contains_causal_link(&combined);
+    let unsupported_customer_impact = contains_customer_disruption_marker(&combined);
+    let unsupported_competitive_displacement = contains_competitive_displacement_marker(&combined);
+
+    unsupported_qualification || unsupported_customer_impact || unsupported_competitive_displacement
+}
+
+#[cfg(feature = "llm")]
+fn has_unnamed_customer_targeting(narrative: &str, recommendation: &str) -> bool {
+    let combined = format!("{} {}", narrative, recommendation).to_ascii_lowercase();
+
+    [
+        "target their ",
+        "target its ",
+        "their medical clients",
+        "their industrial clients",
+        "their aerospace clients",
+        "their defense clients",
+        "their automotive customers",
+        "their medical device customers",
+        "eu medical device customers",
+        "industrial clients",
+        "aerospace clients",
+        "defense customers",
+        "medical customers",
+        "medical device customers",
+        "automotive customers",
+        "customers at risk",
+        "underserved customers",
+    ]
+    .iter()
+    .any(|marker| combined.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn has_unsupported_public_sector_commercialization(
+    entity_ctx: &EntityContext,
+    category: &str,
+    narrative: &str,
+    recommendation: &str,
+    evidence_signals: &[EvidenceSignal],
+) -> bool {
+    if !is_public_sector_entity(&entity_ctx.name, entity_ctx.entity_type.as_deref()) {
+        return false;
+    }
+
+    if !matches!(
+        category,
+        "geopolitical_analysis" | "regulatory_policy" | "brand_sentiment"
+    ) {
+        return false;
+    }
+
+    if public_sector_procurement_or_program_case(evidence_signals) {
+        return false;
+    }
+
+    let combined = format!("{} {}", narrative, recommendation).to_ascii_lowercase();
+    let sales_pitch_markers = [
+        "pcba",
+        "pcb assembly",
+        "box build",
+        "electronics manufacturing services",
+        "qualified to supply",
+        "submit qualification package",
+        "procurement team",
+        "offer pcba",
+        "offer supply chain management",
+        "offer manufacturing",
+        "defense-adjacent",
+        "north african eu trade corridors",
+        "north african eu trade corridor",
+        "local manufacturing",
+    ];
+
+    sales_pitch_markers
+        .iter()
+        .any(|marker| combined.contains(marker))
+}
+
+#[cfg(feature = "llm")]
+fn has_low_usefulness_public_sector_analysis(
+    entity_ctx: &EntityContext,
+    category: &str,
+    headline: &str,
+    narrative: &str,
+    recommendation: &str,
+    evidence_signals: &[EvidenceSignal],
+) -> bool {
+    if !is_public_sector_entity(&entity_ctx.name, entity_ctx.entity_type.as_deref()) {
+        return false;
+    }
+
+    if !matches!(
+        category,
+        "geopolitical_analysis" | "regulatory_policy" | "brand_sentiment"
+    ) {
+        return false;
+    }
+
+    if public_sector_procurement_or_program_case(evidence_signals) {
+        return false;
+    }
+
+    let evidence_corpus = evidence_signals
+        .iter()
+        .map(|signal| {
+            format!(
+                "{} {} {} {}",
+                signal.title,
+                signal.description,
+                signal.signal_type,
+                signal.extracted_facts.join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let output_corpus =
+        format!("{} {} {}", headline, narrative, recommendation).to_ascii_lowercase();
+    let recommendation_lower = recommendation.to_ascii_lowercase();
+
+    let evidence_has_artifact = contains_public_sector_artifact_marker(&evidence_corpus);
+    let output_has_artifact = contains_public_sector_artifact_marker(&output_corpus)
+        || recommendation_lower.contains("account dependency")
+        || recommendation_lower.contains("stakeholder")
+        || recommendation_lower.contains("qualification planning")
+        || recommendation_lower.contains("policy impact")
+        || recommendation_lower.contains("approval timing")
+        || recommendation_lower.contains("procurement scrutiny");
+
+    let generic_opportunity_markers = [
+        "strategic outreach opportunity",
+        "nearshoring opportunity",
+        "opens ems opportunities",
+        "ems opportunities",
+        "open for ems partnerships",
+        "supply chain partnerships",
+        "partners for defense supply chain resilience",
+        "opens nearshoring",
+        "opportunity for eu/na ems",
+    ];
+    let generic_opportunity_language = generic_opportunity_markers
+        .iter()
+        .any(|marker| output_corpus.contains(marker));
+
+    !evidence_has_artifact || !output_has_artifact || generic_opportunity_language
+}
+
 /// Generate insight narrative and headline using LLM with rich context.
 /// Returns (headline, narrative, recommendation, confidence).
 #[cfg(feature = "llm")]
@@ -1564,15 +3086,29 @@ async fn generate_llm_insight(
         anyhow::bail!("No evidence signals provided for LLM insight generation");
     }
 
+    let is_public_sector =
+        is_public_sector_entity(&entity_ctx.name, entity_ctx.entity_type.as_deref());
+    let has_public_sector_procurement_program =
+        public_sector_procurement_or_program_case(evidence_signals);
+
     // ── Build rich entity profile with competitive context ──
     let mut profile_parts: Vec<String> = Vec::new();
     let type_str = entity_ctx.entity_type.as_deref().unwrap_or("company");
     if type_str.to_lowercase().contains("government") {
-        profile_parts.push(format!("{} is a government/public sector entity in {}.", entity_ctx.name, entity_ctx.region));
+        profile_parts.push(format!(
+            "{} is a government/public sector entity in {}.",
+            entity_ctx.name, entity_ctx.region
+        ));
     } else {
-        let mut desc = format!("{} is a {} based in {}.", entity_ctx.name, type_str, entity_ctx.region);
+        let mut desc = format!(
+            "{} is a {} based in {}.",
+            entity_ctx.name, type_str, entity_ctx.region
+        );
         if let Some(rev) = entity_ctx.revenue_estimate_usd {
-            desc.push_str(&format!(" Estimated revenue: ~${:.0}M.", rev as f64 / 1_000_000.0));
+            desc.push_str(&format!(
+                " Estimated revenue: ~${:.0}M.",
+                rev as f64 / 1_000_000.0
+            ));
         }
         if let Some(emp) = entity_ctx.employee_estimate {
             desc.push_str(&format!(" ~{} employees.", emp));
@@ -1583,22 +3119,49 @@ async fn generate_llm_insight(
         profile_parts.push(format!("Domain: {}", domain));
     }
     if !entity_ctx.industry_tags.is_empty() {
-        profile_parts.push(format!("Industry focus: {}.", entity_ctx.industry_tags.join(", ")));
+        profile_parts.push(format!(
+            "Industry focus: {}.",
+            entity_ctx.industry_tags.join(", ")
+        ));
     }
     if !entity_ctx.certifications.is_empty() {
-        let cert_str = entity_ctx.certifications.iter().take(6).cloned().collect::<Vec<_>>().join("; ");
+        let cert_str = entity_ctx
+            .certifications
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
         profile_parts.push(format!("Certifications: {}", cert_str));
     }
     if !entity_ctx.capabilities.is_empty() {
-        let cap_str = entity_ctx.capabilities.iter().take(6).cloned().collect::<Vec<_>>().join("; ");
+        let cap_str = entity_ctx
+            .capabilities
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
         profile_parts.push(format!("Capabilities: {}", cap_str));
     }
     if !entity_ctx.key_persons.is_empty() {
-        let poi_str = entity_ctx.key_persons.iter().take(4).cloned().collect::<Vec<_>>().join("; ");
+        let poi_str = entity_ctx
+            .key_persons
+            .iter()
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
         profile_parts.push(format!("Key personnel: {}", poi_str));
     }
     if !entity_ctx.sites_summary.is_empty() {
-        let sites_str = entity_ctx.sites_summary.iter().take(4).cloned().collect::<Vec<_>>().join("; ");
+        let sites_str = entity_ctx
+            .sites_summary
+            .iter()
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
         profile_parts.push(format!("Sites/Facilities: {}", sites_str));
     }
 
@@ -1614,17 +3177,32 @@ async fn generate_llm_insight(
         comp_parts.push(format!("Strategic relevance: {:.2}", sr));
     }
     if !entity_ctx.competitor_names.is_empty() {
-        comp_parts.push(format!("Linked competitors: {}", entity_ctx.competitor_names.join(", ")));
+        comp_parts.push(format!(
+            "Linked competitors: {}",
+            entity_ctx.competitor_names.join(", ")
+        ));
     }
     if !comp_parts.is_empty() {
         profile_parts.push(format!("Competitive profile: {}", comp_parts.join(". ")));
     }
     if !entity_ctx.recent_changes.is_empty() {
-        let changes_str = entity_ctx.recent_changes.iter().take(4).cloned().collect::<Vec<_>>().join("; ");
+        let changes_str = entity_ctx
+            .recent_changes
+            .iter()
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
         profile_parts.push(format!("Recent changes: {}", changes_str));
     }
     if !entity_ctx.competitor_events.is_empty() {
-        let events_str = entity_ctx.competitor_events.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        let events_str = entity_ctx
+            .competitor_events
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
         profile_parts.push(format!("Competitor intelligence: {}", events_str));
     }
     // Competitor classification — tells the LLM how to treat this entity
@@ -1634,17 +3212,26 @@ async fn generate_llm_insight(
 to this company. Analyse their weaknesses, identify which of their customers are underserved, \
 and recommend approaching those customers instead.".to_string()
         );
+    } else if is_public_sector {
+        profile_parts.push(
+            "🏛️ ENTITY CLASSIFICATION: PUBLIC-SECTOR BODY — treat this as an institutional account, not a default manufacturing prospect. Direct supplier outreach is only justified when the evidence explicitly names a procurement, tender, supplier qualification event, or hardware/equipment program.".to_string()
+        );
     } else {
         profile_parts.push(
             "✅ ENTITY CLASSIFICATION: CUSTOMER / PROSPECT — Recommend direct outreach, \
-service proposals, and partnership opportunities to this entity.".to_string()
+service proposals, and partnership opportunities to this entity."
+                .to_string(),
         );
     }
     let entity_profile = profile_parts.join("\n");
 
     // ── Build sorted evidence text ──
     let mut sorted_evidence: Vec<_> = evidence_signals.iter().collect();
-    sorted_evidence.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal));
+    sorted_evidence.sort_by(|a, b| {
+        b.relevance_score
+            .partial_cmp(&a.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let evidence_text: String = sorted_evidence
         .iter()
         .take(12)
@@ -1655,7 +3242,10 @@ service proposals, and partnership opportunities to this entity.".to_string()
                 parts.push(format!("   Key facts: {}", sig.extracted_facts.join("; ")));
             }
             if !sig.description.is_empty() {
-                parts.push(format!("   Detail: {}", crate::truncate_text(&sig.description, 420)));
+                parts.push(format!(
+                    "   Detail: {}",
+                    crate::truncate_text(&sig.description, 420)
+                ));
             }
             if let Some(date) = &sig.date_context {
                 parts.push(format!("   When: {}", date));
@@ -1683,6 +3273,24 @@ they are now vulnerable to switching. Format: '<Customer company name from evide
 <reason they are underserved by competitor right now> — <what we offer them> — by <deadline>'. \
 NEVER address the competitor itself as a target.",
         )
+    } else if is_public_sector {
+        match category {
+        "brand_sentiment" => (
+            "Public-Sector Sentiment Brief",
+            "Assess whether the signal changes institutional credibility, oversight pressure, procurement scrutiny, stakeholder messaging, or decision timing. Distinguish a media cycle from a formal review, public inquiry, procurement caution, or program delay. Do not infer direct electronics demand or supplier fit unless the evidence explicitly names a procurement or hardware program.",
+            "Recommend account-planning, dependency mapping, evidence verification, or scenario-planning actions. Only propose direct outreach if the evidence explicitly names a procurement, tender, hardware requirement, or supplier qualification event tied to this entity.",
+        ),
+        "geopolitical_analysis" | "regulatory_policy" => (
+            "Public-Sector Policy Impact Brief",
+            "Explain what concrete policy, institutional, or trade artifact changed and which approvals, tenders, supplier pathways, or customer programs it could affect. Do not convert macro policy or innovation signals into a manufacturing sales pitch unless the evidence explicitly names procurement, equipment need, tender language, or supplier qualification requirements.",
+            "Recommend concrete next steps such as policy-impact mapping, account dependency review, qualification planning, stakeholder outreach to named institutional roles, or scenario planning. If there is no explicit procurement or hardware program in evidence, do not propose PCBA, box build, or generic EMS outreach.",
+        ),
+        _ => (
+            "Public-Sector Intelligence Brief",
+            "Identify what institutional decision, review, procurement path, or stakeholder process is actually moving and what that changes for account planning. Keep direct evidence separate from commercial inference and avoid treating public-sector activity as a sales trigger without explicit buying or program evidence.",
+            "Recommend evidence-based account actions, named stakeholder follow-up, or qualification planning. Direct supplier outreach requires explicit procurement or program evidence.",
+        ),
+    }
     } else {
         match category {
         "competitor_market" => (
@@ -1700,6 +3308,11 @@ NEVER address the competitor itself as a target.",
             "Map this entity's supply chain vulnerabilities to our opportunities: their supplier delays become our pitch for alternative sourcing; their shortage signals become our capacity-availability play; their tariff exposure becomes our nearshoring pitch for North African production sites. Quantify disruption impact using any revenue/employee data available.",
             "Specify which of their supply chain gaps we can fill, which facility/site to propose, and which buyer to contact. If this is a competitor's problem, explain how to approach their downstream customers with reliability messaging.",
         ),
+        "security_compliance" | "cybersecurity_threat" => (
+            "Security Assurance Intelligence",
+            "Separate observed security facts from commercial inference. Low-severity hygiene findings such as missing DKIM/SPF/DMARC records, low DNS posture scores, or isolated lookalike domains are vendor-assurance and fraud-risk signals, not proof of customer churn, defense-program exclusion, medical-device ineligibility, or supply disruption. Only escalate to audit failure, program eligibility, contract loss, or downstream operational impact if the evidence explicitly names a breach, outage, regulator action, tender requirement, customer response, or failed certification.",
+            "Recommend measured actions tied to the evidence: assurance questions, remediation requests, or targeted outreach only where a named customer, program, or qualification requirement appears in the evidence. Every recommendation must cite the evidence it depends on.",
+        ),
         "geopolitical_analysis" => (
             "Geopolitical Opportunity",
             "Translate geopolitical/regulatory shifts into commercial actions: new tariffs → nearshoring opportunity in Morocco/Tunisia; export control changes → qualification opportunity for EU-based alternatives; sanctions → market gap to fill. Focus on North African and EU angles. Map affected trade lanes to specific entities and their likely procurement pivots.",
@@ -1707,15 +3320,16 @@ NEVER address the competitor itself as a target.",
         ),
         "regulatory_policy" | "pricing_market" => (
             "Market Intelligence",
-            "Extract actionable business intelligence: certification changes create qualification windows; pricing signals reveal margin pressure at competitors; regulatory shifts create compliance consulting opportunities. Cross-reference with known competitor capabilities and recent changes to identify where rivals are weak.",
+            "Extract actionable business intelligence: explicit failed, revoked, or time-bound certification changes can create qualification windows; pricing signals reveal margin pressure at competitors; regulatory shifts create compliance consulting opportunities. Generic website certification notices, stale dates, or unspecified warning markers are not enough on their own to claim qualification failure, customer loss, or a switch opportunity. Cross-reference with known competitor capabilities and recent changes to identify where rivals are weak.",
             "Identify 2-3 specific commercial actions: companies to approach with compliance offers, pricing advantages to highlight, or capability gaps to fill. Name the buyer role and a specific deadline tied to the regulatory change.",
         ),
         _ => (
             "Business Intelligence",
-            "Produce case-specific competitive intelligence. Identify who is winning, losing, hiring, cutting, expanding, or retreating. Cross-reference evidence to find exploitable patterns: a company hiring procurement staff likely has upcoming RFQs; a company with lapsing certifications has a compliance gap we can fill.",
+            "Produce case-specific competitive intelligence. Identify who is winning, losing, hiring, cutting, expanding, or retreating. Cross-reference evidence to find exploitable patterns: a company hiring procurement staff likely has upcoming RFQs; a company with explicit certification loss or failed audit may have a compliance gap we can fill. Do not treat generic certification warnings, brochure dates, or accreditation mentions as proof of qualification failure.",
             "Name 2-3 specific actions with company names, contact roles, pitch angles, and deadlines. Every recommendation must answer: 'who do we call, what do we say, and by when?'",
         ),
-    }};
+    }
+    };
 
     // ── System prompt: competitive intelligence operator, not passive analyst ──
     // Load our company profile from env so the model knows what we offer.
@@ -1735,10 +3349,17 @@ Focus markets: defense, aerospace, automotive, industrial, medical electronics."
 
 {competitor_mode_instruction}
 
-Every brief you write must lead to a specific commercial action — a call to make, a bid to prepare, a competitor's customer to approach, or a market gap to fill.
+{public_sector_mode_instruction}
+
+{brief_outcome_instruction}
 
 Rules:
 - Every claim must cite a numbered evidence reference [1], [2], etc.
+- Our company profile is context, not proof of fit. Do not claim our certifications, footprint, or EMS capabilities are relevant unless the evidence explicitly names a matching procurement, hardware/equipment program, supplier qualification need, or manufacturing requirement.
+- Keep direct evidence separate from inference. Do not turn minor hygiene findings such as DNS posture, missing DKIM/SPF/DMARC, or isolated lookalike domains into claims about defense-program exclusion, medical-device qualification failure, customer churn, or supply disruption unless the evidence explicitly links them.
+- Do not turn generic certification or accreditation warnings, stale certificate dates, reaffirmation notices, or unspecified compliance page updates into claims about qualification failure, customer churn, tender exclusion, or switching urgency unless the evidence explicitly names a failed audit, revoked/expired certificate, regulator action, affected customer, or impacted program.
+- Do not recommend targeting unnamed customer cohorts such as 'their medical clients' or 'aerospace customers'. If the evidence does not name a downstream company or program, keep the action on assurance, verification, remediation, or direct account mapping rather than invented switching outreach.
+- For government and public-sector entities, do not invent hardware demand, manufacturing demand, quantity assumptions, or supplier-fit claims from innovation, media, diplomatic, or policy signals alone. Direct PCBA, box build, EMS, or certification-led outreach requires explicit procurement or program evidence.
 - Never write passive analysis. Every paragraph must drive toward a commercial action.
 - Reason hard: explicitly explain causality (what changed -> why it matters -> who is impacted -> what action follows).
 - Include second-order effects and at least one counterfactual scenario ('if X worsens / if Y reverses, then ...').
@@ -1760,6 +3381,20 @@ STRICT RULES:\n\
         } else {
             "✅ CUSTOMER/PROSPECT MODE: This entity is a potential customer or partner. Recommend direct outreach, \
 service proposals, qualification bids, and strategic partnership opportunities with this entity."
+        },
+        public_sector_mode_instruction = if is_public_sector {
+            if has_public_sector_procurement_program {
+                "🏛️ PUBLIC-SECTOR MODE: procurement or program evidence is present, so direct outreach is allowed only if it maps to the named tender, hardware/equipment need, or supplier qualification path in the evidence."
+            } else {
+                "🏛️ PUBLIC-SECTOR MODE: no explicit procurement or hardware program evidence is present. Do not turn this into a direct EMS sales pitch, qualification package, or manufacturing offer. Keep recommendations on policy impact, account exposure, stakeholder mapping, qualification planning, or scenario planning."
+            }
+        } else {
+            ""
+        },
+        brief_outcome_instruction = if is_public_sector {
+            "Every brief you write must lead to a specific account-planning, qualification, policy-response, or stakeholder action. Direct commercial outreach is allowed only when the evidence explicitly names a procurement, tender, supplier qualification event, or hardware/equipment program."
+        } else {
+            "Every brief you write must lead to a specific commercial action — a call to make, a bid to prepare, a competitor's customer to approach, or a market gap to fill."
         }
     );
 
@@ -1773,22 +3408,27 @@ Evidence:
 
 Analysis guidance: {analysis_focus}
 Action guidance: {action_focus}
+Strategic suggestion lanes to consider: {suggestion_axes}
 
 Respond with valid JSON only:
 {{
   "headline": "Action-oriented headline (<=140 chars) that names {entity_name} and the specific opportunity or threat",
-    "narrative": "120-320 words of commercially-driven analysis. Cite evidence as [1], [2], [3]. Structure as: (1) What happened — with specific facts, dates, names. (2) Causal chain — mechanism and second-order effects (supply, pricing, qualification, customer switching). (3) Counterfactual — if this trend accelerates or reverses, what changes commercially. (4) Our angle — what we can offer, who is likely to buy, and why now.",
-  "recommendation": "2-4 concrete actions derived from THIS entity's evidence and competitive profile. Each action must name a REAL company or person from the evidence, a specific service we can offer, and a deadline. Structure: '<Named company or role from evidence> — <specific pitch tied to the finding> — by <date from or near the evidence>'. Every named target must appear in the entity profile, the evidence signals, or the competitive profile above — never invent targets.",
+        "narrative": "120-320 words of commercially-driven analysis in natural prose. Cite evidence as [1], [2], [3]. Explain what changed, why it matters, the causal chain, and which commercial choices are opened or constrained now. Do not use section labels or template headings.",
+        "recommendation": "2-4 strategic suggestions in plain prose spanning at least two distinct lanes from {suggestion_axes}. Suggestions should be option-oriented rather than canned playbook text. Name REAL companies, roles, facilities, or programs from the evidence when possible, explain why each lane fits now, include timing when the evidence supports it, and cite at least one supporting evidence reference such as [1] or [2].",
   "confidence": 0.0
 }}
 
 MANDATORY:
 - Reference at least 2 evidence items as [1], [2], etc.
+- Recommendation text must also cite at least 1 supporting evidence item as [1], [2], etc.
 - Include at least 3 concrete facts from the evidence (names, dates, numbers, places, standards).
 - Include at least one explicit cause-effect statement (for example, 'because ... therefore ...').
 - Include at least one counterfactual statement using 'if ... would/could ...'.
 - Every recommendation target MUST be drawn from the evidence signals, entity profile, or competitive profile — never from your general knowledge. The entity being analyzed ({entity_name}) is always a valid target.
 - Focus on what to DO, not what to observe.
+- Treat any recurring action playbooks or operating patterns as suggestion sources, not scripts to be copied.
+- READABILITY GATE: write plain business prose with complete sentences, no templates, no boilerplate labels, no heading prefixes like 'Assessment:' or 'Additional source reporting:'.
+- USEFULNESS GATE: every sentence must add new information (fact, implication, or action); do not repeat the same claim with paraphrases.
 "#,
         category_label = category_label,
         entity_name = entity_ctx.name,
@@ -1796,6 +3436,19 @@ MANDATORY:
         evidence_text = evidence_text,
         analysis_focus = analysis_focus,
         action_focus = action_focus,
+        suggestion_axes = match (entity_ctx.is_competitor, is_public_sector, category) {
+            (true, _, _) => "competitive displacement, customer rescue, qualification wedge, pricing wedge, regional footprint positioning, executive account planning",
+            (_, true, "brand_sentiment") => "institutional credibility assessment, procurement scrutiny mapping, stakeholder messaging review, account dependency review, scenario planning, executive briefing",
+            (_, true, "regulatory_policy") | (_, true, "geopolitical_analysis") => "policy impact mapping, qualification planning, account dependency review, stakeholder outreach, executive scenario planning, procurement path verification",
+            (_, true, "security_compliance") | (_, true, "cybersecurity_threat") | (_, true, "quality_compliance") => "official-surface validation, supplier access review, containment planning, stakeholder brief, assurance planning, executive escalation",
+            (_, true, _) => "account planning, stakeholder mapping, institutional process review, evidence verification, qualification planning, executive briefing",
+            (_, false, "demand_procurement") | (_, false, "customer_rfq") => "revenue capture, qualification readiness, prototype or NPI entry, pricing leverage, regional footprint positioning, executive sponsor mapping",
+            (_, false, "supply_chain_risk") => "continuity protection, dual-source qualification, customer assurance, design migration, regional rerouting, executive risk briefing",
+            (_, false, "regulatory_policy") | (_, false, "geopolitical_analysis") => "regulatory posture, export-control routing, nearshoring, customer communication, qualification planning, executive scenario planning",
+            (_, false, "strategic_poi") | (_, false, "talent_ip") => "POI mapping, early project engagement, partnership proposal, competitive positioning, executive outreach, stakeholder timing",
+            (_, false, "security_compliance") | (_, false, "cybersecurity_threat") | (_, false, "quality_compliance") => "audit readiness, security assurance, supplier governance, containment planning, customer reassurance, executive escalation",
+            _ => "revenue capture, resilience, competitive positioning, pricing leverage, regional expansion, executive planning",
+        },
     );
 
     let config = InferenceConfig {
@@ -1832,16 +3485,26 @@ MANDATORY:
                         serde_json::Value::String(s) => Some(s),
                         serde_json::Value::Object(map) => {
                             // Handle {"action":"...", "owner":"...", "deadline":"..."}
-                            let parts: Vec<String> = ["action", "owner", "deadline", "description", "task"]
-                                .iter()
-                                .filter_map(|key| map.get(*key).and_then(|v| v.as_str()).map(|s| s.to_string()))
-                                .collect();
+                            let parts: Vec<String> =
+                                ["action", "owner", "deadline", "description", "task"]
+                                    .iter()
+                                    .filter_map(|key| {
+                                        map.get(*key)
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .collect();
                             if parts.is_empty() {
                                 // Fallback: join all string values
-                                let all_strings: Vec<String> = map.values()
+                                let all_strings: Vec<String> = map
+                                    .values()
                                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                                     .collect();
-                                if all_strings.is_empty() { None } else { Some(all_strings.join(" — ")) }
+                                if all_strings.is_empty() {
+                                    None
+                                } else {
+                                    Some(all_strings.join(" — "))
+                                }
                             } else {
                                 Some(parts.join(" — "))
                             }
@@ -1857,10 +3520,15 @@ MANDATORY:
             }
             Some(serde_json::Value::Object(map)) => {
                 // Single object recommendation
-                let parts: Vec<String> = map.values()
+                let parts: Vec<String> = map
+                    .values()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect();
-                if parts.is_empty() { Ok(None) } else { Ok(Some(parts.join(" — "))) }
+                if parts.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(parts.join(" — ")))
+                }
             }
             Some(serde_json::Value::Null) | None => Ok(None),
             _ => Ok(None),
@@ -1884,9 +3552,25 @@ MANDATORY:
         "overall",
     ];
 
+    let malformed_fragments: &[&str] = &[
+        "intelligence veracity:",
+        "additional source reporting:",
+        "signal themes detected:",
+        "assessment: moderate-high confidenc",
+        "[object object]",
+        "undefined",
+        "{{",
+        "}}",
+    ];
+
     for attempt in 1..=3 {
-        let messages = vec![ChatMessage::system(system.as_str()), ChatMessage::user(&user)];
-        let resp = llm_client.complete_with_config(messages, &config).await
+        let messages = vec![
+            ChatMessage::system(system.as_str()),
+            ChatMessage::user(&user),
+        ];
+        let resp = llm_client
+            .complete_with_config(messages, &config)
+            .await
             .with_context(|| format!("LLM insight generation failed for {}", entity_ctx.name))?;
 
         tracing::info!(
@@ -1911,15 +3595,15 @@ MANDATORY:
 
         let narrative_lower = narrative.to_lowercase();
         let recommendation_lower = recommendation.to_lowercase();
-        let is_generic = generic_phrases.iter().any(|p| {
-            narrative_lower.contains(p) || recommendation_lower.contains(p)
-        });
+        let is_generic = generic_phrases
+            .iter()
+            .any(|p| narrative_lower.contains(p) || recommendation_lower.contains(p));
 
         let words = narrative.split_whitespace().count();
-        let reference_count = (1..=12)
-            .filter(|i| narrative.contains(&format!("[{}]", i)))
-            .count();
+        let reference_count = count_numbered_references(&narrative, 12);
         let has_refs = reference_count >= 2;
+        let recommendation_reference_count = count_numbered_references(&recommendation, 12);
+        let recommendation_has_refs = recommendation_reference_count >= 1;
         let has_digits = narrative.chars().any(|c| c.is_ascii_digit());
         let has_recommendation = recommendation.split_whitespace().count() >= 12;
         let is_headline_ok = !headline.is_empty() && headline.len() <= 160;
@@ -1940,23 +3624,82 @@ MANDATORY:
         let recommendation_has_deadline = recommendation_lower.contains(" by ")
             || recommendation_lower.contains(" within ")
             || recommendation_lower.contains(" before ");
+        let malformed = malformed_fragments.iter().any(|f| {
+            headline.to_ascii_lowercase().contains(f)
+                || narrative_lower.contains(f)
+                || recommendation_lower.contains(f)
+        });
+
+        let readable_narrative = is_readable_and_useful_digest_text(&narrative)
+            && !has_excessive_phrase_repetition(&recommendation);
+        let readable_recommendation = recommendation
+            .split(['.', ';'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .count()
+            >= 2;
+        let unsupported_security_escalation = has_unsupported_security_escalation(
+            category,
+            &narrative,
+            &recommendation,
+            evidence_signals,
+        );
+        let unsupported_certification_escalation =
+            has_unsupported_certification_escalation(&narrative, &recommendation, evidence_signals);
+        let unsupported_public_sector_commercialization =
+            has_unsupported_public_sector_commercialization(
+                entity_ctx,
+                category,
+                &narrative,
+                &recommendation,
+                evidence_signals,
+            );
+        let low_usefulness_public_sector_analysis = has_low_usefulness_public_sector_analysis(
+            entity_ctx,
+            category,
+            &headline,
+            &narrative,
+            &recommendation,
+            evidence_signals,
+        );
+        let unnamed_customer_targeting =
+            has_unnamed_customer_targeting(&narrative, &recommendation);
 
         // Reject if recommendation contains bracket placeholders like [Company X], [specific service], [date]
         let placeholder_patterns: &[&str] = &[
-            "[company ", "[specific ", "[date]", "[competitor ",
-            "[our ", "[their ", "[service", "[product",
-            "[client ", "[customer ", "[contact ",
+            "[company ",
+            "[specific ",
+            "[date]",
+            "[competitor ",
+            "[our ",
+            "[their ",
+            "[service",
+            "[product",
+            "[client ",
+            "[customer ",
+            "[contact ",
         ];
-        let has_placeholders = placeholder_patterns.iter().any(|p| recommendation_lower.contains(p));
+        let has_placeholders = placeholder_patterns
+            .iter()
+            .any(|p| recommendation_lower.contains(p));
 
         let passes = !is_generic
+            && !malformed
             && !has_placeholders
             && words >= 85
             && has_refs
+            && recommendation_has_refs
             && has_digits
             && has_recommendation
             && has_reasoning_depth
             && recommendation_has_deadline
+            && readable_narrative
+            && readable_recommendation
+            && !unsupported_security_escalation
+            && !unsupported_certification_escalation
+            && !unsupported_public_sector_commercialization
+            && !low_usefulness_public_sector_analysis
+            && !unnamed_customer_targeting
             && is_headline_ok;
 
         if passes {
@@ -1974,105 +3717,192 @@ MANDATORY:
             words,
             reference_count,
             has_refs,
+            recommendation_reference_count,
+            recommendation_has_refs,
             has_digits,
             has_recommendation,
             has_reasoning_depth,
             recommendation_has_deadline,
+            readable_narrative,
+            readable_recommendation,
+            unsupported_security_escalation,
+            unsupported_certification_escalation,
+            unsupported_public_sector_commercialization,
+            low_usefulness_public_sector_analysis,
+            unnamed_customer_targeting,
             recommendation_words = recommendation.split_whitespace().count(),
             recommendation_preview = %crate::truncate_text(&recommendation, 120),
             generic = is_generic,
             has_placeholders,
+            malformed,
             headline = %headline,
             narrative_preview = %crate::truncate_text(&narrative, 180),
             "LLM quality gate: rejected"
         );
     }
 
-    anyhow::bail!("LLM failed quality checks after retries for {}", entity_ctx.name)
+    anyhow::bail!(
+        "LLM failed quality checks after retries for {}",
+        entity_ctx.name
+    )
 }
 
 /// Build template-based fallback summary when LLM is unavailable.
 fn build_fallback_summary(
-    narrative_with_entity: &str,
-    use_template: bool,
+    analytical_narrative: &str,
     rendered_action: &str,
-    rendered_narrative: &str,
     signal_details: &[String],
+    evidence_urls: &[String],
     entity_label: &str,
     entity_region: &str,
+    entity_type: Option<&str>,
     category: &str,
     severity: &str,
     confidence: f64,
     evidence_count: usize,
 ) -> String {
     let mut summary_parts: Vec<String> = Vec::new();
+    let concrete_details = concrete_signal_details(signal_details);
+    let concrete_signals = concrete_details.len();
 
-    // Para 1: main narrative
-    summary_parts.push(narrative_with_entity.to_string());
+    summary_parts.push(analytical_narrative.to_string());
 
-    // Para 2: recommended action (only if template was good)
-    if use_template && !rendered_action.is_empty() && rendered_action != rendered_narrative {
-        summary_parts.push(format!("Recommended action: {rendered_action}"));
+    if !concrete_details.is_empty() {
+        summary_parts.push(format!(
+            "Key evidence: {}.",
+            concrete_details
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
     }
 
-    // Para 3: data details (when using analytical narrative, these are already included)
-    if use_template {
-        if !signal_details.is_empty() {
-            let details_str = signal_details.join("; ");
-            let entity_ctx = if !entity_label.is_empty() {
-                if !entity_region.is_empty() {
-                    format!("For {} ({})", entity_label, entity_region)
-                } else {
-                    format!("For {}", entity_label)
-                }
-            } else {
-                "Supporting data".to_string()
-            };
-            summary_parts.push(format!("{entity_ctx}: {details_str}."));
+    if concrete_signals > 0 {
+        let suggestion_sentences = build_goal_oriented_suggestions(
+            entity_label,
+            entity_region,
+            entity_type,
+            category,
+            signal_details,
+            Some(rendered_action).filter(|s| !s.trim().is_empty()),
+        );
+        if !suggestion_sentences.is_empty() {
+            summary_parts.push(suggestion_sentences.join(" "));
         }
     }
 
-    // Para 4: category-specific analytical assessment (always)
-    let assessment = match category {
-        "competitor_market" => "This pattern suggests the competitor is actively positioning for market expansion or capability enhancement. Consider reviewing defensive positioning and customer retention strategies.",
-        "demand_procurement" => "These indicators typically precede formal sourcing activity within 30-60 days. Early engagement with the procurement team can secure preferred supplier status.",
-        "supply_chain_risk" => "These indicators warrant proactive risk mitigation. Consider diversifying supply sources and engaging with affected partners for contingency planning.",
-        "security_compliance" => "Compliance gaps represent both a risk to current operations and a potential competitive lever. Ensure your own certifications are up to date.",
-        "regulatory_policy" => "Regulatory shifts can create both compliance obligations and competitive advantages for prepared organizations. Review impact on your product lines and certifications.",
-        "strategic_poi" => "Key personnel activity can signal strategic direction changes. Track subsequent organizational announcements for confirmation.",
-        "pricing_market" => "Market pricing shifts affect margins and competitive positioning. Review current contract terms and pricing strategy for affected product lines.",
-        "customer_rfq" => "An active procurement opportunity has been identified. Quick response with tailored technical capabilities can differentiate your proposal.",
-        "geopolitical_analysis" => "Geopolitical developments can affect trade flows, regulatory requirements, and supply chain stability in the region.",
-        "talent_ip" => "Talent migration and IP activity are leading indicators of strategic direction. Track subsequent patent filings, hiring patterns, and capability announcements for confirmation.",
-        "technology_innovation" => "Technology and R&D activity signals strategic investment priorities. Monitor for product launches, partnerships, and capability expansion.",
-        "ma_partnerships" => "M&A and partnership activity reshapes competitive landscape. Assess combined entity capabilities and customer impact windows.",
-        "market_expansion" => "Market expansion signals growth strategy and capacity investment. Monitor for competitive positioning shifts in affected regions.",
-        "cybersecurity_threat" => "Cybersecurity threats require immediate assessment. Evaluate exposure, implement protective measures, and notify affected stakeholders.",
-        "quality_compliance" => "Quality and certification changes impact supplier qualification. Verify current status and assess compliance implications.",
-        "brand_sentiment" => "Brand sentiment shifts can indicate customer relationship changes or market events. Monitor trends and assess competitive implications.",
-        _ => "Monitor for follow-up signals that confirm or change this assessment.",
-    };
-    summary_parts.push(format!("Assessment: {assessment}"));
-
-    // Para 5: severity context
-    if severity == "critical" {
-        summary_parts.push("Severity: CRITICAL — immediate attention recommended.".into());
-    } else if severity == "warning" {
-        summary_parts.push("Severity: WARNING — monitor closely and consider proactive measures.".into());
+    let direct_actions = concrete_action_fragments(rendered_action);
+    let suppress_direct_actions = is_public_sector_entity(entity_label, entity_type)
+        && matches!(
+            category,
+            "regulatory_policy" | "geopolitical_analysis" | "brand_sentiment"
+        );
+    if !direct_actions.is_empty() && !suppress_direct_actions {
+        summary_parts.push(format!(
+            "Immediate next step: {}.",
+            direct_actions.join(". ")
+        ));
     }
 
-    // Para 6: confidence footer
-    let conf_label = if confidence >= 0.85 { "high" }
-        else if confidence >= 0.65 { "moderate" }
-        else { "preliminary" };
-    summary_parts.push(format!(
-        "Confidence: {} ({:.0}%), based on {} signal(s).",
-        conf_label,
-        confidence * 100.0,
-        evidence_count,
-    ));
+    let sources_footer = format_sources_footer_from_urls(evidence_urls, 6);
+    if !sources_footer.is_empty() {
+        summary_parts.push(sources_footer);
+    }
+
+    let _ = (category, severity, confidence, evidence_count);
 
     summary_parts.join("\n\n")
+}
+
+fn push_entity_source_url(
+    urls_by_entity: &mut HashMap<String, Vec<String>>,
+    entity_id: Uuid,
+    url: &str,
+) {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let entry = urls_by_entity.entry(entity_id.to_string()).or_default();
+    if entry
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+    {
+        return;
+    }
+
+    entry.push(trimmed.to_string());
+}
+
+#[cfg(not(feature = "llm"))]
+async fn collect_entity_evidence_urls(
+    store: &PgStore,
+    entity_ids: &[Uuid],
+) -> HashMap<String, Vec<String>> {
+    let unique_entity_ids: std::collections::HashSet<Uuid> = entity_ids.iter().copied().collect();
+    let query_entity_ids: Vec<Uuid> = unique_entity_ids.iter().copied().collect();
+    let mut urls_by_entity: HashMap<String, Vec<String>> = HashMap::new();
+
+    if let Ok(rows) = store
+        .get_warnings_by_entity_ids(&query_entity_ids, 500)
+        .await
+    {
+        for warning in rows {
+            let Some(entity_ids) = warning.entity_ids.as_ref() else {
+                continue;
+            };
+            let Some(source_urls) = warning.source_urls.as_ref() else {
+                continue;
+            };
+            for entity_id in entity_ids {
+                for url in source_urls.iter().take(3) {
+                    push_entity_source_url(&mut urls_by_entity, *entity_id, url);
+                }
+            }
+        }
+    }
+
+    for entity_id in query_entity_ids {
+        if let Ok(certs) = store.get_certifications_for_company(entity_id).await {
+            for cert in certs.iter().take(8) {
+                if let Some(url) = cert.evidence_url.as_deref() {
+                    push_entity_source_url(&mut urls_by_entity, entity_id, url);
+                }
+            }
+        }
+
+        if let Ok(capabilities) = store.list_capabilities(Some(entity_id), 12, 0).await {
+            for capability in capabilities.iter().take(8) {
+                if let Some(urls) = capability.evidence_urls.as_ref() {
+                    for url in urls.iter().take(2) {
+                        push_entity_source_url(&mut urls_by_entity, entity_id, url);
+                    }
+                }
+            }
+        }
+
+        if let Ok(observations) = store.get_observations_by_entity(entity_id, 10).await {
+            for observation in observations {
+                if let Some(url) = observation
+                    .provenance
+                    .as_object()
+                    .and_then(|provenance| {
+                        provenance
+                            .get("source_url")
+                            .or_else(|| provenance.get("url"))
+                    })
+                    .and_then(|value| value.as_str())
+                {
+                    push_entity_source_url(&mut urls_by_entity, entity_id, url);
+                }
+            }
+        }
+    }
+
+    urls_by_entity
 }
 
 /// Parse a YAML signal string such as `"JobPost.role_family=Procurement.increase"` into a
@@ -2080,17 +3910,21 @@ fn build_fallback_summary(
 /// trailing segment is compared against the list of known operators; if it does not match,
 /// `"contains"` is used as the default and the whole right-hand side is treated as the field.
 fn parse_signal_str(s: &str) -> SignalSpec {
-    const KNOWN_OPS: &[&str] = &["increase", "decrease", "above", "below", "equals", "contains"];
+    const KNOWN_OPS: &[&str] = &[
+        "increase", "decrease", "above", "below", "equals", "contains",
+    ];
     let (obs_type, rest) = match s.find('.') {
         Some(pos) => (&s[..pos], &s[pos + 1..]),
-        None => return SignalSpec {
-            observation_type: s.to_string(),
-            field: "count".to_string(),
-            operator: "above".to_string(),
-            threshold: Some(0.0),
-            window_days: Some(30),
-            value: None,
-        },
+        None => {
+            return SignalSpec {
+                observation_type: s.to_string(),
+                field: "count".to_string(),
+                operator: "above".to_string(),
+                threshold: Some(0.0),
+                window_days: Some(30),
+                value: None,
+            }
+        }
     };
     let (field_part, operator) = match rest.rfind('.') {
         Some(pos) => {
@@ -2104,13 +3938,20 @@ fn parse_signal_str(s: &str) -> SignalSpec {
         None => (rest, "contains".to_string()),
     };
     let (field, value) = if let Some(eq) = field_part.find('=') {
-        (field_part[..eq].to_string(), Some(field_part[eq + 1..].to_string()))
+        (
+            field_part[..eq].to_string(),
+            Some(field_part[eq + 1..].to_string()),
+        )
     } else {
         (field_part.to_string(), None)
     };
     SignalSpec {
         observation_type: obs_type.to_string(),
-        field: if field.is_empty() { "count".to_string() } else { field },
+        field: if field.is_empty() {
+            "count".to_string()
+        } else {
+            field
+        },
         operator,
         threshold: Some(0.0),
         window_days: Some(30),
@@ -2125,7 +3966,11 @@ fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::SeedRecipe) -> 
         .iter()
         .filter_map(|sv| sv.as_str().map(parse_signal_str))
         .collect();
-    let action = sr.action_playbook.first().cloned().unwrap_or_default();
+    let action = if sr.action_playbook.is_empty() {
+        String::new()
+    } else {
+        sr.action_playbook.join("; ")
+    };
     let severity = if sr.category.contains("security") || sr.category.contains("risk") {
         "warning"
     } else if sr.category.contains("supply") || sr.category.contains("sanction") {
@@ -2179,7 +4024,7 @@ async fn main() -> Result<()> {
     // Create database pool for recipe insertion
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&config.database_url)
+        .connect(config.database_url_value())
         .await?;
     tracing::info!("connected to database");
 
@@ -2199,13 +4044,15 @@ async fn main() -> Result<()> {
                 }
                 print_recipe_stats(&recipes);
                 tracing::info!("loaded {} seed recipes from YAML", recipes.len());
-                
+
                 // Insert seed recipes into database
                 match insert_seed_recipes(&pool, &recipes).await {
                     Ok(result) => {
                         tracing::info!(
                             "recipe insertion: {} inserted, {} skipped (already exist), {} errors",
-                            result.inserted, result.skipped, result.errors.len()
+                            result.inserted,
+                            result.skipped,
+                            result.errors.len()
                         );
                     }
                     Err(e) => {
@@ -2227,7 +4074,18 @@ async fn main() -> Result<()> {
     let store = Arc::new(PgStore::from_pool(pool.clone()));
     tracing::info!("store initialized");
 
-    let scheduler = Arc::new(TokioMutex::new(default_scheduler()));
+    let mut scheduler_state = default_scheduler();
+    match store.list_worker_job_states().await {
+        Ok(states) => {
+            runtime::restore_scheduler_state(&mut scheduler_state, &states);
+            tracing::info!(states = states.len(), "restored persisted scheduler state");
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to restore persisted scheduler state");
+        }
+    }
+
+    let scheduler = Arc::new(TokioMutex::new(scheduler_state));
     let tick_guard = Arc::new(TokioMutex::new(()));
     let trigger_guard = Arc::new(TokioMutex::new(()));
     let manual_trigger_concurrency = std::env::var("MANUAL_TRIGGER_CONCURRENCY")
@@ -2240,12 +4098,18 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(manual_trigger_concurrency);
+    let manual_trigger_timeout_secs = std::env::var("MANUAL_TRIGGER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(2 * 60 * 60);
     let manual_trigger_semaphore = Arc::new(Semaphore::new(manual_trigger_concurrency));
     let jobs_count = scheduler.lock().await.jobs.len();
     tracing::info!(
         jobs = jobs_count,
         manual_trigger_concurrency,
         manual_max_claims_per_poll,
+        manual_trigger_timeout_secs,
         "worker started"
     );
 
@@ -2281,6 +4145,7 @@ async fn main() -> Result<()> {
                         &store,
                         &manual_trigger_semaphore,
                         manual_max_claims_per_poll,
+                        manual_trigger_timeout_secs,
                     )
                     .await;
                 });
@@ -2296,3848 +4161,679 @@ async fn main() -> Result<()> {
 
 #[tracing::instrument(skip(scheduler, store))]
 async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStore>) {
-    tracing::trace!("scheduler_tick_start");
-    let now = Utc::now();
-    let due = scheduler.due_jobs(now);
+    runtime::tick_scheduler(scheduler, store).await;
+}
 
-    if due.is_empty() {
-        tracing::debug!("no jobs due at {}", now);
-        return;
+fn parse_digest_recipients(raw: &str) -> Vec<String> {
+    raw.split(|c| c == ',' || c == ';' || c == '\n')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn parse_hhmm(raw: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = raw.trim().split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let hour = parts[0].parse::<u32>().ok()?;
+    let minute = parts[1].parse::<u32>().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some((hour, minute))
+}
+
+fn weekday_matches(weekday: &str, now_weekday: chrono::Weekday) -> bool {
+    match weekday {
+        "Mon" => now_weekday == chrono::Weekday::Mon,
+        "Tue" => now_weekday == chrono::Weekday::Tue,
+        "Wed" => now_weekday == chrono::Weekday::Wed,
+        "Thu" => now_weekday == chrono::Weekday::Thu,
+        "Fri" => now_weekday == chrono::Weekday::Fri,
+        "Sat" => now_weekday == chrono::Weekday::Sat,
+        "Sun" => now_weekday == chrono::Weekday::Sun,
+        _ => false,
+    }
+}
+
+fn is_digest_due(
+    now_cet: chrono::DateTime<chrono_tz::Tz>,
+    prefs: &apex_store::postgres::UserSettingsPrefs,
+) -> bool {
+    if !prefs.email_digest_enabled {
+        return false;
+    }
+    let Some((target_hour, target_minute)) = parse_hhmm(&prefs.email_digest_time_cet) else {
+        return false;
+    };
+    if now_cet.hour() < target_hour
+        || (now_cet.hour() == target_hour && now_cet.minute() < target_minute)
+    {
+        return false;
     }
 
-    for kind in due {
-        let run = execute_job(&kind, store).await;
-        tracing::info!(
-            job = kind.as_str(),
-            status = format_status(&run),
-            duration_ms = run.duration_ms(),
-            "job completed"
+    let last_sent_cet = prefs
+        .email_digest_last_sent_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Berlin));
+
+    if prefs.notification_frequency.eq_ignore_ascii_case("weekly") {
+        if !weekday_matches(&prefs.email_digest_weekday, now_cet.weekday()) {
+            return false;
+        }
+        if let Some(last) = last_sent_cet {
+            let now_week = now_cet.iso_week();
+            let last_week = last.iso_week();
+            if now_week.year() == last_week.year() && now_week.week() == last_week.week() {
+                return false;
+            }
+        }
+        true
+    } else {
+        if let Some(last) = last_sent_cet {
+            if last.date_naive() == now_cet.date_naive() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn build_digest_html(
+    base_url: &str,
+    insights: &[apex_store::postgres::InsightRow],
+    category_label: &str,
+) -> String {
+    let mut cards = String::new();
+    for insight in insights {
+        let id = insight.id;
+        let confidence = ((insight.confidence.unwrap_or(0.0) * 100.0).round() as i64).clamp(0, 100);
+        let category = insight
+            .insight_type
+            .clone()
+            .unwrap_or_else(|| "general".to_string())
+            .replace('_', " ");
+        let updated = insight
+            .updated_at
+            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| "n/a".to_string());
+        let summary = insight
+            .summary
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('\n', "<br/>");
+        let title = insight.title.replace('<', "&lt;").replace('>', "&gt;");
+        cards.push_str(&format!(
+                        "<div style=\"margin:0 0 14px;padding:14px 16px 12px;border:1px solid #BCBCBC;border-radius:2px;background:#FFFFFF;box-shadow:inset 0 1px 0 rgba(255,255,255,.75);\">\
+                         <div style=\"margin:0 0 6px;font-size:11px;line-height:1.35;color:#606060;font-weight:700;text-transform:uppercase;letter-spacing:.08em;\">{category} • {confidence}% confidence</div>\
+                         <a href=\"{base_url}/insights/{id}\" style=\"display:block;margin:0 0 9px;color:#101010;font-size:17px;line-height:1.35;font-weight:700;text-decoration:none;\">{title}</a>\
+                         <p style=\"margin:0 0 10px;color:#303030;font-size:14px;line-height:1.55;\">{summary}</p>\
+                         <a href=\"{base_url}/insights/{id}\" style=\"display:inline-block;padding:8px 12px;border-radius:4px;background:#FFBE00;color:#121212;font-size:12px;font-weight:700;text-decoration:none;\">Open insight</a>\
+                         <span style=\"float:right;padding-top:8px;color:#606060;font-size:12px;\">Updated: {updated}</span>\
+                         </div>"
+        ));
+    }
+
+    let generated_at = Utc::now().format("%Y-%m-%d %H:%M UTC");
+
+    format!(
+                "<!doctype html><html><body style=\"margin:0;padding:0;background:#F2F2F2;font-family:Inter,Segoe UI,Arial,sans-serif;color:#101010;\">\
+                     <div style=\"max-width:760px;margin:24px auto;padding:0 12px;\">\
+                         <div style=\"background:#101010;padding:18px 20px;border-radius:4px 4px 0 0;\">\
+                             <div style=\"font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:800;color:#FFBE00;\">ApexIntel</div>\
+                             <h1 style=\"margin:6px 0 0;font-size:24px;line-height:1.2;color:#F4F6FA;\">Top Insights Digest</h1>\
+                             <p style=\"margin:8px 0 0;color:#B6BCC7;font-size:13px;line-height:1.45;\">Generated {generated_at} • Categories: {category_label} • {insights_len} insights</p>\
+                         </div>\
+                         <div style=\"background:#FFFFFF;padding:16px;border:1px solid #BCBCBC;border-top:none;border-radius:0 0 4px 4px;\">\
+                             {cards}\
+                             <div style=\"margin-top:12px;padding-top:10px;border-top:1px solid #D9D9D9;\">\
+                                 <a href=\"{base_url}/insights\" style=\"display:inline-block;padding:10px 14px;border-radius:4px;background:#111111;color:#F3F4F8;font-size:12px;font-weight:700;text-decoration:none;\">View all insights</a>\
+                             </div>\
+                         </div>\
+                     </div>\
+                 </body></html>",
+                insights_len = insights.len()
+    )
+}
+
+fn build_digest_text(
+    base_url: &str,
+    insights: &[apex_store::postgres::InsightRow],
+    category_label: &str,
+) -> String {
+    let mut out = format!(
+        "ApexIntel Top Insights Digest\nCategories: {}\n\n",
+        category_label
+    );
+    for (idx, insight) in insights.iter().enumerate() {
+        let confidence = ((insight.confidence.unwrap_or(0.0) * 100.0).round() as i64).clamp(0, 100);
+        out.push_str(&format!(
+            "{}. {} ({}%)\n{}\n{}/insights/{}\n\n",
+            idx + 1,
+            insight.title,
+            confidence,
+            insight.summary,
+            base_url,
+            insight.id
+        ));
+    }
+    out
+}
+
+fn expand_digest_categories(categories: &[String]) -> Vec<String> {
+    fn push_unique(out: &mut Vec<String>, value: &str) {
+        if !out.iter().any(|v| v == value) {
+            out.push(value.to_string());
+        }
+    }
+
+    let mut out = Vec::new();
+    for category in categories {
+        match category.trim().to_ascii_lowercase().as_str() {
+            "demand_signal" => {
+                push_unique(&mut out, "demand_procurement");
+                push_unique(&mut out, "customer_rfq");
+                push_unique(&mut out, "pricing_market");
+            }
+            "supply_risk" => {
+                push_unique(&mut out, "supply_chain_risk");
+                push_unique(&mut out, "quality_compliance");
+            }
+            "competitive_intel" => {
+                push_unique(&mut out, "competitor_market");
+                push_unique(&mut out, "ma_partnerships");
+                push_unique(&mut out, "market_expansion");
+            }
+            "security_posture" => {
+                push_unique(&mut out, "cybersecurity_threat");
+                push_unique(&mut out, "security_compliance");
+            }
+            "macro_shift" => {
+                push_unique(&mut out, "geopolitical_analysis");
+                push_unique(&mut out, "regulatory_policy");
+                push_unique(&mut out, "brand_sentiment");
+            }
+            "poi_movement" => {
+                push_unique(&mut out, "strategic_poi");
+                push_unique(&mut out, "talent_ip");
+            }
+            // Backward compatible passthrough for direct insight_type values.
+            other if !other.is_empty() => push_unique(&mut out, other),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn canonical_digest_key(raw: &str, max_words: usize) -> String {
+    let normalized = raw
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+        .collect::<String>();
+
+    normalized
+        .split_whitespace()
+        .filter(|w| w.len() > 2)
+        .take(max_words)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn digest_tokens(raw: &str, max_tokens: usize) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "the", "and", "for", "with", "that", "this", "from", "into", "over", "under", "into",
+        "onto", "after", "before", "about", "their", "there", "they", "them", "were", "have",
+        "has", "been", "being", "will", "would", "could", "should", "a", "an", "of", "to", "in",
+        "on", "by", "at", "as", "is", "are", "or",
+    ];
+
+    raw.to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .filter(|w| w.len() > 2 && !STOPWORDS.contains(w))
+        .take(max_tokens)
+        .map(|w| w.to_string())
+        .collect()
+}
+
+fn token_jaccard_similarity(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let left_set: std::collections::HashSet<&str> = left.iter().map(String::as_str).collect();
+    let right_set: std::collections::HashSet<&str> = right.iter().map(String::as_str).collect();
+    jaccard_similarity(&left_set, &right_set)
+}
+
+fn has_excessive_phrase_repetition(text: &str) -> bool {
+    let tokens = digest_tokens(text, 220);
+    if tokens.len() < 10 {
+        return false;
+    }
+
+    // Flag repeated 4-token windows that indicate templated/mangled outputs.
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for window in tokens.windows(4) {
+        let phrase = window.join(" ");
+        let entry = counts.entry(phrase).or_insert(0);
+        *entry += 1;
+        if *entry >= 3 {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_readable_and_useful_digest_text(summary: &str) -> bool {
+    if has_excessive_phrase_repetition(summary) {
+        return false;
+    }
+
+    let sentence_count = summary
+        .split(['.', '!', '?'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .count();
+    if sentence_count == 0 || sentence_count > 8 {
+        return false;
+    }
+
+    let tokens = digest_tokens(summary, 240);
+    if tokens.len() < 12 {
+        return false;
+    }
+    let unique: std::collections::HashSet<&str> = tokens.iter().map(String::as_str).collect();
+    let unique_ratio = unique.len() as f64 / tokens.len() as f64;
+    if unique_ratio < 0.48 {
+        return false;
+    }
+
+    let lower = summary.to_ascii_lowercase();
+    let usefulness_markers = [
+        "impact",
+        "risk",
+        "opportunity",
+        "because",
+        "therefore",
+        "drives",
+        "leads to",
+        "supply",
+        "pricing",
+        "compliance",
+        "customer",
+        "action",
+    ];
+    usefulness_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn is_internal_insight_type(insight_type: Option<&str>) -> bool {
+    insight_type
+        .map(|insight_type| {
+            let normalized = insight_type.trim().to_ascii_lowercase();
+            normalized.starts_with("llm_")
+                || matches!(
+                    normalized.as_str(),
+                    "llm_eval_report" | "llm_self_improvement"
+                )
+        })
+        .unwrap_or(false)
+}
+
+fn count_template_markers(text: &str) -> usize {
+    const TEMPLATE_MARKERS: &[&str] = &[
+        "assessment:",
+        "recommended action:",
+        "additional source reporting:",
+        "signal themes detected:",
+        "actionable:",
+        "watch closely:",
+        "early signal:",
+        "low confidence:",
+        "analysis:",
+        "impact:",
+        "recommendation:",
+    ];
+
+    let lower = text.to_ascii_lowercase();
+    TEMPLATE_MARKERS
+        .iter()
+        .filter(|marker| lower.contains(**marker))
+        .count()
+}
+
+fn passes_shared_insight_quality_gate(
+    title: &str,
+    summary: &str,
+    insight_type: Option<&str>,
+) -> bool {
+    if is_internal_insight_type(insight_type) {
+        return true;
+    }
+
+    if title.trim().len() < 12 || summary.trim().len() < 80 {
+        return false;
+    }
+    if is_low_quality_narrative(summary) {
+        return false;
+    }
+    if has_excessive_phrase_repetition(summary) {
+        return false;
+    }
+
+    let lower_title = title.to_ascii_lowercase();
+    let lower_summary = summary.to_ascii_lowercase();
+    let malformed_fragments = [
+        "intelligence veracity:",
+        "additional source reporting:",
+        "signal themes detected:",
+        "assessment: moderate-high confidenc",
+        "[object object]",
+        "undefined",
+        "{{",
+        "}}",
+    ];
+    if malformed_fragments
+        .iter()
+        .any(|fragment| lower_title.contains(fragment) || lower_summary.contains(fragment))
+    {
+        return false;
+    }
+
+    if count_template_markers(summary) >= 2 {
+        return false;
+    }
+
+    let generic_fallback_markers = [
+        "if the priority is ",
+        "if the goal is ",
+        "this deserves action inside the current planning cycle",
+        "overall confidence is ",
+        "grounded in ",
+    ];
+    let generic_fallback_count = generic_fallback_markers
+        .iter()
+        .filter(|marker| lower_summary.contains(**marker))
+        .count();
+
+    let fallback_signal_details = extract_fallback_signal_details(summary);
+    if lower_summary.contains("our monitoring detected:")
+        && lower_summary.contains("has been flagged for")
+        && !fallback_signal_details.is_empty()
+        && count_concrete_signal_details(&fallback_signal_details) == 0
+    {
+        return false;
+    }
+
+    if lower_summary.contains("our monitoring detected:")
+        && lower_summary.contains("has been flagged for")
+        && generic_fallback_count >= 2
+    {
+        return false;
+    }
+
+    if matches!(insight_type, Some("veracity_analysis")) {
+        return is_readable_and_useful_digest_text(summary)
+            && lower_summary.contains("source")
+            && (lower_summary.contains("evidence")
+                || lower_summary.contains("corroborat")
+                || lower_summary.contains("reported"));
+    }
+
+    is_readable_and_useful_digest_text(summary)
+}
+
+fn is_digest_insight_quality(title: &str, summary: &str) -> bool {
+    if title.len() < 12 || summary.len() < 40 {
+        return false;
+    }
+    if is_low_quality_narrative(summary) {
+        return false;
+    }
+    if !is_readable_and_useful_digest_text(summary) {
+        return false;
+    }
+
+    // Guard against placeholder-like and broken outputs.
+    let bad_fragments = [
+        "{{",
+        "}}",
+        "[object object]",
+        "undefined",
+        "null null",
+        "intelligence veracity:",
+        "additional source reporting:",
+        "signal themes detected:",
+        "assessment: moderate-high confidenc",
+    ];
+    let t = title.to_ascii_lowercase();
+    let s = summary.to_ascii_lowercase();
+    !bad_fragments.iter().any(|f| t.contains(f) || s.contains(f))
+}
+
+async fn send_digest_email(
+    recipients: &[String],
+    subject: &str,
+    html_body: String,
+    text_body: String,
+) -> Result<()> {
+    let from_address = "contact@apexmediation.ee";
+    let smtp_host = std::env::var("EMAIL_DIGEST_SMTP_HOST")
+        .unwrap_or_else(|_| "mail.apexmediation.ee".to_string());
+    let smtp_port: u16 = std::env::var("EMAIL_DIGEST_SMTP_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(25);
+    let smtp_user = std::env::var("EMAIL_DIGEST_SMTP_USER").unwrap_or_default();
+    let smtp_pass = std::env::var("EMAIL_DIGEST_SMTP_PASS").unwrap_or_default();
+    let smtp_starttls = std::env::var("EMAIL_DIGEST_SMTP_STARTTLS")
+        .ok()
+        .map(|v| parse_truthy_flag(&v))
+        .unwrap_or(false);
+
+    let mut builder = Message::builder()
+        .from(from_address.parse::<Mailbox>()?)
+        .subject(subject);
+    for to in recipients {
+        builder = builder.to(to.parse::<Mailbox>()?);
+    }
+
+    let email = builder.multipart(
+        MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(text_body),
+            )
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html_body),
+            ),
+    )?;
+
+    let mailer = if smtp_starttls {
+        // Submission on 587 expects STARTTLS upgrade, not implicit TLS.
+        let mut transport =
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)?.port(smtp_port);
+        if !smtp_user.trim().is_empty() {
+            transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
+        }
+        transport.build()
+    } else {
+        let mut transport =
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp_host).port(smtp_port);
+        if !smtp_user.trim().is_empty() {
+            transport = transport.credentials(Credentials::new(smtp_user, smtp_pass));
+        }
+        transport.build()
+    };
+
+    mailer.send(email).await?;
+    Ok(())
+}
+
+async fn run_update_email_digest_job(store: &Arc<PgStore>) -> Result<(u64, u64)> {
+    let subscribers = store.list_user_settings_prefs_for_email_digest().await?;
+    if subscribers.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let now_utc = Utc::now();
+    let now_cet = now_utc.with_timezone(&Berlin);
+    let base_url = std::env::var("EMAIL_DIGEST_BASE_URL")
+        .unwrap_or_else(|_| "https://starzerp.fi".to_string())
+        .trim_end_matches('/')
+        .to_string();
+
+    let mut sent_count: u64 = 0;
+    let mut users_due: u64 = 0;
+
+    for (user_id, prefs) in subscribers {
+        if !is_digest_due(now_cet, &prefs) {
+            continue;
+        }
+        users_due += 1;
+
+        let recipients = parse_digest_recipients(&prefs.email_digest_recipients);
+        if recipients.is_empty() {
+            tracing::warn!(user_id = %user_id, "email digest enabled but recipients empty");
+            continue;
+        }
+
+        let since = if prefs.notification_frequency.eq_ignore_ascii_case("weekly") {
+            now_utc - chrono::Duration::days(7)
+        } else {
+            now_utc - chrono::Duration::days(1)
+        };
+
+        let mut filters = InsightListFilters {
+            date_from: Some(since),
+            ..Default::default()
+        };
+        let mapped_insight_types = expand_digest_categories(&prefs.email_digest_categories);
+        if !mapped_insight_types.is_empty() {
+            filters.insight_types = mapped_insight_types;
+        }
+
+        let mut rows = store.list_insights(&filters, 200, 0).await?;
+        rows.retain(|r| {
+            !r.insight_type
+                .as_deref()
+                .map(|t| t.trim().to_ascii_lowercase().starts_with("llm_"))
+                .unwrap_or(false)
+        });
+        if prefs.critical_only_enabled {
+            rows.retain(|r| r.confidence.unwrap_or(0.0) >= 0.7);
+        }
+        rows.sort_by(|a, b| {
+            b.confidence
+                .unwrap_or(0.0)
+                .total_cmp(&a.confidence.unwrap_or(0.0))
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+
+        let mut curated = Vec::new();
+        let mut seen_title_keys: Vec<String> = Vec::new();
+        let mut seen_summary_keys: Vec<String> = Vec::new();
+        let mut seen_signature_tokens: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+        for mut row in rows {
+            row.title = clean_rendered_text(&row.title);
+            row.summary = clean_rendered_text(&row.summary);
+
+            if !is_digest_insight_quality(&row.title, &row.summary) {
+                continue;
+            }
+
+            let title_key = canonical_digest_key(&row.title, 10);
+            if title_key.is_empty() {
+                continue;
+            }
+            if seen_title_keys.iter().any(|k| k == &title_key) {
+                continue;
+            }
+
+            let summary_key = canonical_digest_key(&row.summary, 14);
+            if !summary_key.is_empty() && seen_summary_keys.iter().any(|k| k == &summary_key) {
+                continue;
+            }
+
+            // Allow multiple updates per company, but suppress near-duplicate variants.
+            let title_tokens = digest_tokens(&row.title, 20);
+            let summary_tokens = digest_tokens(&row.summary, 80);
+            let near_duplicate = seen_signature_tokens
+                .iter()
+                .any(|(seen_title, seen_summary)| {
+                    let title_sim = token_jaccard_similarity(&title_tokens, seen_title);
+                    let summary_sim = token_jaccard_similarity(&summary_tokens, seen_summary);
+                    title_sim >= 0.78 && summary_sim >= 0.72
+                });
+            if near_duplicate {
+                continue;
+            }
+
+            seen_title_keys.push(title_key);
+            if !summary_key.is_empty() {
+                seen_summary_keys.push(summary_key);
+            }
+            seen_signature_tokens.push((title_tokens, summary_tokens));
+            curated.push(row);
+        }
+
+        let category_label = if prefs.email_digest_categories.is_empty() {
+            "All".to_string()
+        } else {
+            prefs.email_digest_categories.join(", ")
+        };
+        let top: Vec<_> = curated.into_iter().take(8).collect();
+        if top.is_empty() {
+            tracing::info!(user_id = %user_id, "digest due but no matching insights");
+            continue;
+        }
+
+        let subject = format!(
+            "ApexIntel Update: {} top insights ({})",
+            top.len(),
+            now_cet.format("%Y-%m-%d")
         );
-        scheduler.record_run(run);
+        let html = build_digest_html(&base_url, &top, &category_label);
+        let text = build_digest_text(&base_url, &top, &category_label);
+
+        send_digest_email(&recipients, &subject, html, text).await?;
+        store.mark_email_digest_sent(&user_id, now_utc).await?;
+        sent_count += 1;
+        tracing::info!(user_id = %user_id, recipients = recipients.len(), insights = top.len(), "email digest sent");
     }
+
+    Ok((sent_count, users_due))
 }
 
 async fn poll_trigger_queue(
     store: &Arc<PgStore>,
     manual_trigger_semaphore: &Arc<Semaphore>,
     max_claims_per_poll: usize,
+    manual_trigger_timeout_secs: i64,
 ) {
-    let mut claimed_this_poll: usize = 0;
-    loop {
-        if claimed_this_poll >= max_claims_per_poll {
-            break;
-        }
-
-        // Bound in-flight manual triggers so one long-running recipe_fire
-        // does not block all trigger processing forever.
-        let permit = match Arc::clone(manual_trigger_semaphore).try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => break,
-        };
-
-        match store.pop_job_trigger().await {
-            Ok(Some((trigger_id, job_kind_str))) => {
-                claimed_this_poll += 1;
-                let kind = JobKind::from_str(&job_kind_str);
-                tracing::info!(trigger_id = %trigger_id, job = %job_kind_str, "manual trigger: executing job");
-
-                let store = Arc::clone(store);
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    let run = execute_job(&kind, &store).await;
-                    let error = if matches!(run.status, JobStatus::Failed { .. }) {
-                        Some(run.notes.as_str())
-                    } else {
-                        None
-                    };
-                    if let Err(e) = store.complete_job_trigger(&trigger_id, error).await {
-                        tracing::warn!(trigger_id = %trigger_id, "failed to mark trigger complete: {e}");
-                    }
-                    tracing::info!(
-                        trigger_id = %trigger_id,
-                        job = job_kind_str,
-                        status = format_status(&run),
-                        "manual trigger: job completed"
-                    );
-                });
-            }
-            Ok(None) => {
-                drop(permit);
-                break;
-            }
-            Err(e) => {
-                drop(permit);
-                tracing::warn!("poll_trigger_queue: DB error: {e}");
-                break;
-            }
-        }
-    }
-
-    if claimed_this_poll > 0 {
-        tracing::info!(claimed = claimed_this_poll, max_claims_per_poll, "poll_trigger_queue: claimed trigger(s)");
-    }
+    runtime::poll_trigger_queue(
+        store,
+        manual_trigger_semaphore,
+        max_claims_per_poll,
+        manual_trigger_timeout_secs,
+    )
+    .await;
 }
 
+#[allow(dead_code)]
 #[tracing::instrument(skip(kind, store), fields(job = %kind.as_str()))]
 async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
-    tracing::debug!(job = %kind.as_str(), "job_start");
-    match kind {
-        JobKind::CrawlCycle => {
-            let mut run = JobRun::new(JobKind::CrawlCycle);
-            run.start();
-            // Live crawl: iterate over enabled tier-1/2 sources, fetch their
-            // RSS / main URL with reqwest, parse with apex_parse (if enabled),
-            // and store a WebChange observation for every successful fetch.
-            let sources = all_sources();
-            let crawl_limit: usize = std::env::var("CRAWL_MAX_SOURCES")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(20);
-            let enabled_tier_sources: Vec<_> = sources
-                .iter()
-                .filter(|s| s.enabled && s.tier <= 2)
-                .collect();
-
-            // Always include selected POI-relevant regional sources even when crawl_limit is tight.
-            let always_include_slugs = ["globes_il_tech"];
-            let mut fetch_sources: Vec<_> = enabled_tier_sources
-                .iter()
-                .copied()
-                .filter(|s| always_include_slugs.contains(&s.slug.as_str()))
-                .collect();
-
-            for src in &enabled_tier_sources {
-                if fetch_sources.len() >= crawl_limit {
-                    break;
-                }
-                if fetch_sources.iter().any(|existing| existing.slug == src.slug) {
-                    continue;
-                }
-                fetch_sources.push(*src);
-            }
-
-            if fetch_sources.is_empty() {
-                run.skip("crawl_cycle: no enabled tier-1/2 sources configured");
-                return run;
-            }
-
-            tracing::info!(
-                selected = fetch_sources.len(),
-                limit = crawl_limit,
-                forced_sources = always_include_slugs.join(","),
-                "crawl_cycle: source selection complete"
-            );
-
-            let http = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(20))
-                .user_agent("ApexIntelBot/1.0 (+https://apex-intel.io/bot)")
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    run.fail(&format!("crawl_cycle: failed to build http client: {e}"));
-                    return run;
-                }
-            };
-
-            let mut proxy_rotator = build_proxy_rotator_from_env();
-            if let Some(rotator) = proxy_rotator.as_ref() {
-                tracing::info!(
-                    proxy_health = %rotator.health_summary(),
-                    "crawl_cycle: proxy rotation enabled"
-                );
-            }
-
-            let mut ingested: u64 = 0;
-            let mut errors: u64 = 0;
-            let mut successful_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut failed_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-            for src in &fetch_sources {
-                let url = src.rss_url.as_deref().unwrap_or(src.url.as_str());
-                let prefers_browser_ua = src.slug == "globes_il_tech";
-                let proxy_for_request = proxy_rotator.as_mut().and_then(|r| r.get_next());
-                let response = if let Some(proxy_url) = proxy_for_request.as_ref() {
-                    match reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(20))
-                        .user_agent("ApexIntelBot/1.0 (+https://apex-intel.io/bot)")
-                        .proxy(match reqwest::Proxy::all(proxy_url) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                tracing::warn!(
-                                    source = %src.slug,
-                                    proxy = %proxy_url,
-                                    error = %e,
-                                    "crawl_cycle: invalid proxy URL"
-                                );
-                                errors += 1;
-                                continue;
-                            }
-                        })
-                        .build()
-                    {
-                        Ok(client) => {
-                            let mut req = client.get(url);
-                            if prefers_browser_ua {
-                                req = req.header(
-                                    reqwest::header::USER_AGENT,
-                                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                                );
-                            }
-                            req.send().await
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                source = %src.slug,
-                                proxy = %proxy_url,
-                                error = %e,
-                                "crawl_cycle: failed to build proxied client"
-                            );
-                            errors += 1;
-                            continue;
-                        }
-                    }
-                } else {
-                    let mut req = http.get(url);
-                    if prefers_browser_ua {
-                        req = req.header(
-                            reqwest::header::USER_AGENT,
-                            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                        );
-                    }
-                    req.send().await
-                };
-
-                match response {
-                    Ok(resp) if resp.status().is_success() => {
-                        if let (Some(proxy_url), Some(rotator)) =
-                            (proxy_for_request.as_ref(), proxy_rotator.as_mut())
-                        {
-                            rotator.report_success(proxy_url);
-                        }
-                        match resp.text().await {
-                            Ok(body) => {
-                                // Build observation value: with apex_parse, include
-                                // extracted text; without it, store minimal metadata.
-                                #[cfg(any(feature = "parse", feature = "llm"))]
-                                let obs_value = match extract_page(&body) {
-                                    Ok(page) => serde_json::json!({
-                                        "source_id": src.slug,
-                                        "url": url,
-                                        "title": page.title,
-                                        "description": page.description,
-                                        "body_excerpt": page.body_text.chars().take(1000).collect::<String>(),
-                                        "language": page.language,
-                                    }),
-                                    Err(_) => serde_json::json!({
-                                        "source_id": src.slug,
-                                        "url": url,
-                                    }),
-                                };
-                                #[cfg(not(any(feature = "parse", feature = "llm")))]
-                                let obs_value = serde_json::json!({
-                                    "source_id": src.slug,
-                                    "url": url,
-                                    "body_len": body.len(),
-                                });
-
-                                let obs = Observation::new(
-                                    ObservationType::WebChange,
-                                    Utc::now(),
-                                    obs_value,
-                                    serde_json::json!({
-                                        "source": src.slug,
-                                        "tier": src.tier,
-                                        "category": format!("{:?}", src.category),
-                                    }),
-                                );
-                                match store.insert_observation(&obs).await {
-                                    Ok(_) => {
-                                        ingested += 1;
-                                        successful_sources.insert(src.slug.clone());
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            source = %src.slug,
-                                            error = %e,
-                                            "crawl_cycle: failed to store observation"
-                                        );
-                                        errors += 1;
-                                        failed_sources.insert(src.slug.clone());
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(source = %src.slug, error = %e, "crawl_cycle: body read error");
-                                errors += 1;
-                                failed_sources.insert(src.slug.clone());
-                            }
-                        }
-                    }
-                    Ok(resp) => {
-                        if let (Some(proxy_url), Some(rotator)) =
-                            (proxy_for_request.as_ref(), proxy_rotator.as_mut())
-                        {
-                            rotator.report_failure(proxy_url);
-                        }
-                        let status = resp.status();
-                        let body_preview = resp
-                            .text()
-                            .await
-                            .ok()
-                            .map(|body| crate::truncate_text(&body, 180).to_string())
-                            .unwrap_or_default();
-                        tracing::warn!(
-                            source = %src.slug,
-                            status = %status,
-                            body_preview = %body_preview,
-                            "crawl_cycle: non-2xx response"
-                        );
-                        errors += 1;
-                        failed_sources.insert(src.slug.clone());
-                    }
-                    Err(e) => {
-                        if let (Some(proxy_url), Some(rotator)) =
-                            (proxy_for_request.as_ref(), proxy_rotator.as_mut())
-                        {
-                            rotator.report_failure(proxy_url);
-                        }
-                        tracing::warn!(source = %src.slug, error = %e, "crawl_cycle: fetch error");
-                        errors += 1;
-                        failed_sources.insert(src.slug.clone());
-                    }
-                }
-            }
-
-            let attempted_sources = fetch_sources.len().max(1);
-            let success_ratio = ingested as f64 / attempted_sources as f64;
-            let min_success_ratio = std::env::var("CRAWL_MIN_SUCCESS_RATIO")
-                .ok()
-                .and_then(|v| v.parse::<f64>().ok())
-                .map(|v| v.clamp(0.0, 1.0))
-                .unwrap_or(0.30);
-
-            let failed_sources_list = {
-                let mut v: Vec<_> = failed_sources.iter().cloned().collect();
-                v.sort();
-                v
-            };
-            let successful_sources_list = {
-                let mut v: Vec<_> = successful_sources.iter().cloned().collect();
-                v.sort();
-                v
-            };
-
-            if ingested == 0 || success_ratio < min_success_ratio {
-                let failure_summary = format!(
-                    "crawl_cycle degraded: ingested={} attempted_sources={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={}",
-                    ingested,
-                    fetch_sources.len(),
-                    success_ratio,
-                    min_success_ratio,
-                    if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
-                    if successful_sources_list.is_empty() { "none".to_string() } else { successful_sources_list.join(",") },
-                );
-
-                let _ = store
-                    .insert_warning(
-                        "crawl_health",
-                        "Crawl reliability degraded",
-                        Some(&failure_summary),
-                        "high",
-                        None,
-                        Some("crawl_cycle"),
-                        None,
-                        None,
-                        Some((1.0 - success_ratio).clamp(0.0, 1.0)),
-                    )
-                    .await;
-
-                run.fail(&format!(
-                    "crawl_cycle: {}/{} sources attempted; {} observations ingested, {} errors; failed_sources=[{}]",
-                    fetch_sources.len(),
-                    sources.iter().filter(|s| s.enabled).count(),
-                    ingested,
-                    errors,
-                    if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
-                ));
-                return run;
-            }
-
-            run.succeed(
-                ingested,
-                &format!(
-                    "crawl_cycle: {}/{} sources attempted; {} observations ingested, {} errors; success_ratio={:.2}",
-                    fetch_sources.len(),
-                    sources.iter().filter(|s| s.enabled).count(),
-                    ingested,
-                    errors,
-                    success_ratio,
-                ),
-            );
-            run
-        }
-        JobKind::PatternMining => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            let since = Utc::now() - chrono::Duration::hours(24);
-            let mining_stats = match store.get_mining_stats(since).await {
-                Ok(s) => s,
-                Err(e) => {
-                    run.fail(&format!("pattern_mining: failed to load mining stats from DB: {e}"));
-                    return run;
-                }
-            };
-            let stage = process_mining_stage(&MiningStageResult {
-                candidates_found: mining_stats.candidates_found,
-                candidates_passed_gates: mining_stats.candidates_passed_gates,
-                hypotheses_generated: mining_stats.hypotheses_generated,
-                recipes_staged: mining_stats.recipes_staged,
-                errors: mining_stats.errors,
-            });
-            match stage.run.status {
-                apex_worker::scheduler::JobStatus::Succeeded { .. } => {
-                    run.succeed(stage.items, &format!("mining completed: {}", stage.run.notes));
-                }
-                apex_worker::scheduler::JobStatus::Failed { .. } => {
-                    run.fail(&format!("mining failed: {}", stage.run.notes));
-                }
-                _ => {
-                    run.skip(&format!("mining stage not terminal: {}", stage.run.notes));
-                }
-            }
-            run
-        }
-        JobKind::HypothesisGeneration => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Hypothesis generation requires the `llm` feature.
-            // When disabled, skip gracefully.
-            #[cfg(feature = "llm")]
-            {
-                let since = Utc::now() - chrono::Duration::hours(24);
-                let mining_stats = match store.get_mining_stats(since).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        run.fail(&format!("hypothesis_generation: failed to load mining stats from DB: {e}"));
-                        return run;
-                    }
-                };
-                let stage = process_hypothesis_generation_stage(
-                    &HypothesisGenerationStageResult {
-                        candidates_submitted: mining_stats.candidates_passed_gates,
-                        hypotheses_generated: mining_stats.hypotheses_generated,
-                        hypotheses_failed: mining_stats.candidates_passed_gates
-                            .saturating_sub(mining_stats.hypotheses_generated),
-                        recipes_staged: mining_stats.recipes_staged,
-                        errors: mining_stats.errors,
-                    },
-                );
-                match stage.run.status {
-                    apex_worker::scheduler::JobStatus::Succeeded { .. } => {
-                        run.succeed(stage.items, &format!("hypothesis gen completed: {}", stage.run.notes));
-                    }
-                    apex_worker::scheduler::JobStatus::Failed { .. } => {
-                        run.fail(&format!("hypothesis gen failed: {}", stage.run.notes));
-                    }
-                    _ => {
-                        run.skip(&format!("hypothesis gen not terminal: {}", stage.run.notes));
-                    }
-                }
-            }
-            #[cfg(not(feature = "llm"))]
-            {
-                run.skip("hypothesis generation requires the `llm` feature");
-            }
-            run
-        }
-        JobKind::PoiRefresh => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            #[cfg(feature = "llm")]
-            {
-                // Live POI refresh: load persons from DB, build PoiProfile
-                // objects, run refresh_profile to recompute derived fields,
-                // and log changes.  No write-back to DB for influence_score
-                // is performed here — this updates in-memory profiles and
-                // logs changes; a dedicated upsert step can be added later.
-                let filters = PersonListFilters {
-                    regions: vec![],
-                    roles: vec![],
-                    search: None,
-                    min_priority: None,
-                    max_priority: None,
-                };
-                let persons = match store
-                    .list_persons(&filters, Some(PersonOrderBy::Priority), true, 200, 0)
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        run.fail(&format!("poi_refresh: failed to load persons: {e}"));
-                        return run;
-                    }
-                };
-
-                if persons.is_empty() {
-                    run.skip("poi_refresh: no persons in database");
-                    return run;
-                }
-
-                let now_utc = Utc::now().timestamp();
-                let mut refreshed: u64 = 0;
-                let mut unchanged: u64 = 0;
-                let mut enriched_pois: u64 = 0;
-
-                for row in &persons {
-                    let mut profile = PoiProfile {
-                        person_id: row.id.to_string(),
-                        name: row.name.clone(),
-                        name_variants: vec![],
-                        org: row.organization.clone(),
-                        org_id: None,
-                        current_role: row.role.clone(),
-                        role_family: RoleFamily::Other(row.role.clone()),
-                        region: row.region.clone(),
-                        country_code: String::new(),
-                        public_bio: String::new(),
-                        public_email: None,
-                        artifacts: vec![],
-                        priority_vector: PoiPriorityVector::zero(),
-                        psychological: PsychProfile::default_profile(),
-                        influence: InfluenceProfile {
-                            influence_score: row.priority_score,
-                            graph_centrality: 0.0,
-                            public_recurrence: 0.0,
-                            role_seniority_score: 0.0,
-                            network_size: 0,
-                        },
-                        engagement: None,
-                        role_history: vec![],
-                        last_updated_utc: 0,
-                        profile_completeness: 0.0,
-                    };
-
-                    let report = refresh_profile(&mut profile, now_utc);
-                    if !report.fields_updated.is_empty() || report.role_changed {
-                        refreshed += 1;
-                        tracing::debug!(
-                            person = %row.name,
-                            completeness = profile.profile_completeness,
-                            fields = ?report.fields_updated,
-                            "poi_refresh: profile updated"
-                        );
-                    } else {
-                        unchanged += 1;
-                    }
-                    // Write back the updated influence_score to the DB so changes persist
-                    // across worker restarts.
-                    if (profile.influence.influence_score - row.priority_score).abs() > 1e-6 {
-                        if let Err(e) = store
-                            .update_person_influence_score(row.id, profile.influence.influence_score)
-                            .await
-                        {
-                            tracing::warn!(
-                                person = %row.name,
-                                error = %e,
-                                "poi_refresh: failed to write-back influence score"
-                            );
-                        }
-                    }
-                }
-
-                // ── LLM enrichment for thin / incomplete POI profiles ─────────────
-                // Fetch persons that have a short bio or missing psychographic fields.
-                // Limit to 5 per run to avoid long blocking times during the job.
-                #[derive(sqlx::FromRow)]
-                struct ThinPersonRow {
-                    id: Uuid,
-                    name: String,
-                    org: String,
-                    current_role: String,
-                }
-                let thin_persons: Vec<ThinPersonRow> = sqlx::query_as::<_, ThinPersonRow>(
-                    r#"SELECT p.id,
-                              p.name,
-                              COALESCE(c.name, '') AS org,
-                              COALESCE(p.current_role, 'Executive') AS current_role
-                       FROM persons p
-                       LEFT JOIN companies c ON p.primary_org_id = c.id
-                       WHERE (p.public_bio IS NULL OR length(COALESCE(p.public_bio, '')) < 250)
-                          OR p.decision_style IS NULL
-                       ORDER BY COALESCE(p.influence_score, 0) DESC
-                       LIMIT 5"#,
-                )
-                .fetch_all(&store.pool)
-                .await
-                .unwrap_or_default();
-
-                if !thin_persons.is_empty() {
-                    let poi_llm_client = {
-                        let base_url = std::env::var("LLM_BASE_URL")
-                            .unwrap_or_else(|_| "http://localhost:8080".into());
-                        let api_key = std::env::var("LLM_API_KEY").ok();
-                        let model = std::env::var("LLM_MODEL")
-                            .unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
-                        let mut cfg = apex_llm::inference::InferenceConfig::default();
-                        cfg.model = model;
-                        cfg.max_tokens = 900;
-                        cfg.temperature = 0.35;
-                        cfg.json_mode = true;
-                        cfg.suppress_thinking = false;
-                        cfg.timeout = std::time::Duration::from_secs(90);
-                        InferenceLlmClient::new(base_url, api_key, cfg)
-                    };
-
-                    for thin in &thin_persons {
-                        let prompt = format!(
-                            "Generate a structured intelligence profile for {name}, {role} at {org}.\n\
-Return ONLY valid JSON (no markdown) with these exact keys:\n\
-{{\"bio\":\"3-4 sentences of professional background for this specific person and role\",\
-\"decision_style\":\"one of: Analytical/Decisive/Collaborative/Consensus-driven\",\
-\"communication_style\":\"one of: Direct/Consultative/Data-driven/Relationship-focused\",\
-\"risk_tolerance\":\"one of: Risk-averse/Moderate/Risk-tolerant\",\
-\"change_appetite\":\"one of: Conservative/Moderate/Aggressive\",\
-\"preferred_proof_type\":\"one of: ROI metrics/Case studies/Peer references/Technical specs\",\
-\"trigger_topics\":[\"topic1\",\"topic2\",\"topic3\"]}}",
-                            name = thin.name,
-                            role = thin.current_role,
-                            org = thin.org,
-                        );
-                        use apex_llm::inference::{ChatMessage, InferenceConfig};
-                        let messages = vec![
-                            ChatMessage::system(
-                                "You are an executive intelligence analyst. \
-You have comprehensive knowledge of global industry executives. \
-Produce a concise structured JSON profile. Return only valid JSON, no markdown, no extra text."
-                            ),
-                            ChatMessage::user(&prompt),
-                        ];
-                        let enrich_config = InferenceConfig {
-                            max_tokens: 900,
-                            temperature: 0.35,
-                            json_mode: true,
-                            suppress_thinking: false,
-                            timeout: std::time::Duration::from_secs(90),
-                            ..Default::default()
-                        };
-                        match poi_llm_client.complete_with_config(messages, &enrich_config).await {
-                            Ok(resp) => {
-                                #[derive(serde::Deserialize)]
-                                struct PoiEnrichResp {
-                                    bio: Option<String>,
-                                    decision_style: Option<String>,
-                                    communication_style: Option<String>,
-                                    risk_tolerance: Option<String>,
-                                    change_appetite: Option<String>,
-                                    preferred_proof_type: Option<String>,
-                                    #[serde(default)]
-                                    trigger_topics: Vec<String>,
-                                }
-                                match resp.parse_json::<PoiEnrichResp>() {
-                                    Ok(data) => {
-                                        let bio = data.bio.as_deref().unwrap_or_default();
-                                        if !bio.is_empty() {
-                                            match store.update_person_llm_enrichment(
-                                                thin.id,
-                                                bio,
-                                                data.decision_style.as_deref(),
-                                                data.communication_style.as_deref(),
-                                                data.risk_tolerance.as_deref(),
-                                                data.change_appetite.as_deref(),
-                                                data.preferred_proof_type.as_deref(),
-                                                &data.trigger_topics,
-                                            ).await {
-                                                Ok(()) => {
-                                                    tracing::info!(
-                                                        person = %thin.name,
-                                                        bio_len = bio.len(),
-                                                        "poi_refresh: LLM profile enrichment applied"
-                                                    );
-                                                    enriched_pois += 1;
-                                                }
-                                                Err(e) => tracing::warn!(
-                                                    person = %thin.name,
-                                                    error = %e,
-                                                    "poi_refresh: failed to write LLM enrichment"
-                                                ),
-                                            }
-                                        }
-                                    }
-                                    Err(e) => tracing::warn!(
-                                        person = %thin.name,
-                                        error = %e,
-                                        "poi_refresh: LLM enrichment JSON parse failed"
-                                    ),
-                                }
-                            }
-                            Err(e) => tracing::warn!(
-                                person = %thin.name,
-                                error = %e,
-                                "poi_refresh: LLM enrichment call failed"
-                            ),
-                        }
-                    }
-                }
-
-                run.succeed(
-                    refreshed,
-                    &format!(
-                        "poi_refresh: {} persons processed — {} updated, {} unchanged, {} LLM-enriched",
-                        persons.len(),
-                        refreshed,
-                        unchanged,
-                        enriched_pois,
-                    ),
-                );
-            }
-            #[cfg(not(feature = "llm"))]
-            {
-                // Without apex_poi, fall back to the nightly JSON-file stage.
-                match load_nightly_inputs().await {
-                    Ok(inputs) => {
-                        let stage = process_poi_stage(&inputs.poi);
-                        match stage.run.status {
-                            apex_worker::scheduler::JobStatus::Succeeded { .. } => {
-                                run.succeed(stage.items, &format!("poi refresh completed: {}", stage.run.notes));
-                            }
-                            apex_worker::scheduler::JobStatus::Failed { .. } => {
-                                run.fail(&format!("poi refresh failed: {}", stage.run.notes));
-                            }
-                            _ => {
-                                run.skip(&format!("poi stage not terminal: {}", stage.run.notes));
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        run.skip(&format!("nightly inputs unavailable: {}", err));
-                    }
-                }
-            }
-            run
-        }
-        JobKind::FeatureDriftCheck => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            let drift_stats = match store.get_drift_stats().await {
-                Ok(s) => s,
-                Err(e) => {
-                    run.fail(&format!("feature_drift_check: failed to load drift stats from DB: {e}"));
-                    return run;
-                }
-            };
-            let stage = process_drift_stage(&DriftCheckStageResult {
-                features_checked: drift_stats.features_checked,
-                features_drifted: drift_stats.features_drifted,
-                drift_scores: drift_stats.drift_scores,
-                alerts_raised: drift_stats.alerts_raised,
-                errors: drift_stats.errors,
-            });
-            match stage.run.status {
-                apex_worker::scheduler::JobStatus::Succeeded { .. } => {
-                    run.succeed(stage.items, &format!("drift check completed: {}", stage.run.notes));
-                }
-                apex_worker::scheduler::JobStatus::Failed { .. } => {
-                    run.fail(&format!("drift check failed: {}", stage.run.notes));
-                }
-                _ => {
-                    run.skip(&format!("drift stage not terminal: {}", stage.run.notes));
-                }
-            }
-            run
-        }
-        JobKind::PromotionBoard | JobKind::RecipeDeprecation => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Build all inputs from DB instead of JSON files.
-            let ctx = StorageContext {
-                store: PgStore::from_pool(store.pool.clone()),
-                run_timestamp: Utc::now(),
-            };
-            let (staged_recipes, production_recipes, memo_inputs) = match tokio::try_join!(
-                load_staged_recipes(&ctx),
-                load_production_recipes(&ctx),
-                build_memo_inputs(&ctx),
-            ) {
-                Ok(triple) => triple,
-                Err(e) => {
-                    run.fail(&format!("weekly_pipeline: failed to load inputs from DB: {e}"));
-                    return run;
-                }
-            };
-            let report = run_weekly_pipeline(
-                &staged_recipes,
-                &production_recipes,
-                &memo_inputs,
-                &Default::default(),
-                &Default::default(),
-            );
-            if report.overall_success {
-                let items = match kind {
-                    JobKind::PromotionBoard => report
-                        .promotion_result
-                        .as_ref()
-                        .map(|r| r.promoted.len() as u64)
-                        .unwrap_or(0),
-                    JobKind::RecipeDeprecation => report
-                        .deprecation_result
-                        .as_ref()
-                        .map(|r| r.deprecated.len() as u64)
-                        .unwrap_or(0),
-                    _ => 0,
-                };
-                run.succeed(items, &report.summary());
-            } else {
-                run.fail(&report.summary());
-            }
-            run
-        }
-        JobKind::StrategyMemo => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Under the `llm` feature: load recent InsightRows from the DB,
-            // convert them to InsightCards, and run the full
-            // WeeklyPipelineRunner so the memo is enriched with the live
-            // insight graph rather than static JSON inputs.
-            #[cfg(feature = "llm")]
-            {
-                let filters = InsightListFilters {
-                    regions: vec![],
-                    date_from: Some(Utc::now() - chrono::Duration::days(7)),
-                    date_to: None,
-                    search: None,
-                    insight_types: vec![],
-                    bookmarked_by: None,
-                };
-                let insight_rows = match store.list_insights(&filters, 200, 0).await {
-                    Ok(rows) => rows,
-                    Err(e) => {
-                        run.fail(&format!("strategy_memo: failed to load insights: {e}"));
-                        return run;
-                    }
-                };
-
-                let cards: Vec<InsightCard> = insight_rows
-                    .iter()
-                    .map(|row| {
-                        let confidence = row.confidence.unwrap_or(0.5);
-                        let impact_label = if confidence >= 0.7 {
-                            "High"
-                        } else if confidence >= 0.4 {
-                            "Medium"
-                        } else {
-                            "Low"
-                        };
-                        let citations: Vec<Citation> = row
-                            .evidence_urls
-                            .as_deref()
-                            .unwrap_or(&[])
-                            .iter()
-                            .enumerate()
-                            .map(|(i, url)| {
-                                let domain = url
-                                    .split("//")
-                                    .nth(1)
-                                    .and_then(|s| s.split('/').next())
-                                    .unwrap_or(url)
-                                    .to_string();
-                                Citation {
-                                    index: i + 1,
-                                    source_url: url.clone(),
-                                    source_domain: domain,
-                                    observed_at: row.created_at,
-                                }
-                            })
-                            .collect();
-                        InsightCard {
-                            id: row.id,
-                            recipe_code: row.insight_type.clone()
-                                .unwrap_or_else(|| "general".to_string()),
-                            entity_id: row
-                                .entity_ids
-                                .as_deref()
-                                .and_then(|ids| ids.first().copied())
-                                .unwrap_or(uuid::Uuid::nil()),
-                            entity_name: row.title.clone(),
-                            severity: "medium".to_string(),
-                            category: row.insight_type.clone()
-                                .unwrap_or_else(|| "general".to_string()),
-                            title: row.title.clone(),
-                            narrative: row.summary.clone(),
-                            actions: row.tags.clone().unwrap_or_default(),
-                            citations,
-                            confidence,
-                            impact: confidence,
-                            impact_label: impact_label.to_string(),
-                            priority_score: confidence,
-                            region: row.region.clone(),
-                            rendered_at: row.created_at.unwrap_or_else(Utc::now),
-                        }
-                    })
-                    .collect();
-
-                let card_count = cards.len();
-                let config = WeeklyPipelineConfig::default();
-                let runner = WeeklyPipelineRunner::headless(config);
-                match runner.run(cards).await {
-                    Ok(output) => {
-                        let section_count = output.memo.regional_sections.len();
-                        // Persist the memo to the weekly_memos table so the API
-                        // can serve it via GET /api/insights/weekly-memo.
-                        let memo = &output.memo;
-                        let now = Utc::now();
-                        let week_start = chrono::NaiveDate::from_isoywd_opt(
-                            memo.year,
-                            memo.week_number,
-                            chrono::Weekday::Mon,
-                        ).unwrap_or_else(|| now.date_naive());
-                        let week_end = week_start + chrono::Duration::days(6);
-                        let title = format!(
-                            "Weekly Intelligence Memo — Week {}/{}",
-                            memo.week_number, memo.year
-                        );
-                        let sections_json = serde_json::json!(
-                            memo.regional_sections.iter().map(|s| serde_json::json!({
-                                "heading": format!("{} ({})",  s.region_label, s.region),
-                                "content": s.top_insights.iter()
-                                    .map(|i| format!("[{}] {} — {}", i.severity.to_uppercase(), i.entity_name, i.title))
-                                    .collect::<Vec<_>>().join("\n"),
-                            })).collect::<Vec<_>>()
-                        );
-                        let key_metrics_json = serde_json::json!({
-                            "warnings_total": memo.warning_count,
-                            "warnings_critical": memo.critical_count,
-                            "insights_generated": memo.total_insights,
-                            "companies_monitored": 0,
-                            "pois_tracked": 0,
-                        });
-                        let action_items_json = serde_json::json!(
-                            memo.top_actions.iter().take(10).map(|a| serde_json::json!({
-                                "priority": a.priority,
-                                "action": a.action,
-                                "entity": a.entity_name,
-                                "impact": a.impact_label,
-                            })).collect::<Vec<_>>()
-                        );
-                        if let Err(e) = store.upsert_weekly_memo(
-                            &title,
-                            week_start,
-                            week_end,
-                            &memo.executive_summary,
-                            sections_json,
-                            key_metrics_json,
-                            action_items_json,
-                        ).await {
-                            tracing::warn!(error = %e, "strategy_memo: failed to persist memo to DB");
-                        } else {
-                            tracing::info!(
-                                week = memo.week_number,
-                                year = memo.year,
-                                sections = section_count,
-                                "strategy_memo: memo persisted to weekly_memos"
-                            );
-                        }
-                        run.succeed(
-                            section_count as u64,
-                            &format!(
-                                "strategy_memo: pipeline complete — {} cards → {} sections (llm_narrated={})",
-                                card_count,
-                                section_count,
-                                output.llm_narrated,
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        run.fail(&format!("strategy_memo: pipeline failed: {e}"));
-                    }
-                }
-            }
-            #[cfg(not(feature = "llm"))]
-            {
-                match load_weekly_inputs().await {
-                    Ok(inputs) => {
-                        let report = run_weekly_pipeline(
-                            &inputs.staged_recipes,
-                            &inputs.production_recipes,
-                            &inputs.memo_inputs,
-                            &inputs.promotion_policy.unwrap_or_default(),
-                            &inputs.deprecation_policy.unwrap_or_default(),
-                        );
-                        if report.overall_success {
-                            let items =
-                                report.memo.as_ref().map(|m| m.sections.len() as u64).unwrap_or(0);
-                            run.succeed(items, &report.summary());
-                        } else {
-                            run.fail(&report.summary());
-                        }
-                    }
-                    Err(err) => {
-                        run.skip(&format!(
-                            "strategy_memo: weekly inputs unavailable: {}",
-                            err
-                        ));
-                    }
-                }
-            }
-            run
-        }
-        JobKind::SourceScoring => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Build SourceTelemetry from the live source registry and recipe
-            // statistics, then run score_and_rank to surface high/low-value
-            // crawl sources.  Distribution of recipe fires across sources is
-            // approximate (recipe-level stats don't yet track source attribution)
-            // but provides a real, working ranking signal.
-            let recipe_stats = match store.get_recipe_stats().await {
-                Ok(s) => s,
-                Err(e) => {
-                    run.fail(&format!("source_scoring: failed to load recipe stats: {e}"));
-                    return run;
-                }
-            };
-
-            let sources = all_sources();
-            let live_sources: Vec<_> =
-                sources.iter().filter(|s| s.enabled && s.tier <= 2).collect();
-
-            if live_sources.is_empty() {
-                run.skip("source_scoring: no enabled tier-1/2 sources");
-                return run;
-            }
-
-            let total_fires: u64 = recipe_stats.iter().map(|r| r.fired_count as u64).sum();
-            let total_active: u64 = recipe_stats.iter().map(|r| r.active_count as u64).sum();
-            let source_count = live_sources.len().max(1) as f64;
-
-            let telemetry: Vec<SourceTelemetry> = live_sources
-                .iter()
-                .map(|src| {
-                    let share = 1.0 / source_count;
-                    SourceTelemetry {
-                        source_id: src.slug.clone(),
-                        domain: src
-                            .url
-                            .split("//")
-                            .nth(1)
-                            .and_then(|s| s.split('/').next())
-                            .unwrap_or(src.url.as_str())
-                            .to_string(),
-                        observations_ingested: (total_fires as f64 * share).ceil() as u64,
-                        observations_in_fires: (total_fires as f64 * share * 0.3).ceil() as u64,
-                        observations_in_promotions: (total_active as f64 * share * 0.1).ceil()
-                            as u64,
-                        median_ingest_latency_secs: src.min_interval_minutes as f64 * 30.0,
-                        error_rate: 0.05,
-                        observation_types_produced: vec!["web_change".to_string()],
-                        hours_since_last_crawl: if src.tier == 1 { 2.0 } else { 6.0 },
-                        crawl_interval_hours: src.min_interval_minutes as f64 / 60.0,
-                    }
-                })
-                .collect();
-
-            let config = ScoringConfig::default();
-            let scored = score_and_rank(&telemetry, &config);
-            let top = scored.first();
-            let bottom = scored.last();
-            tracing::info!(
-                sources = scored.len(),
-                top_source = top.map(|s| s.source_id.as_str()).unwrap_or("none"),
-                top_score = top.map(|s| s.score).unwrap_or(0.0),
-                bottom_source = bottom.map(|s| s.source_id.as_str()).unwrap_or("none"),
-                bottom_score = bottom.map(|s| s.score).unwrap_or(0.0),
-                "source_scoring: complete"
-            );
-            run.succeed(
-                scored.len() as u64,
-                &format!(
-                    "source_scoring: ranked {} sources; top={} ({:.3}), bottom={} ({:.3})",
-                    scored.len(),
-                    top.map(|s| s.source_id.as_str()).unwrap_or("none"),
-                    top.map(|s| s.score).unwrap_or(0.0),
-                    bottom.map(|s| s.source_id.as_str()).unwrap_or("none"),
-                    bottom.map(|s| s.score).unwrap_or(0.0),
-                ),
-            );
-            run
-        }
-        JobKind::CrossDomainMining => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Cross-domain signal combination mining via apex_learning.
-            // Requires the `llm` feature (enables apex-learning/experimental).
-            #[cfg(feature = "llm")]
-            {
-                let since = Utc::now() - chrono::Duration::days(30);
-                let obs_types = [
-                    "web_change",
-                    "job_post",
-                    "tender_posted",
-                    "person_mention",
-                    "role_change",
-                    "vuln_notice",
-                    "procurement_signal",
-                ];
-                let mut all_events: Vec<TypedEvent> = Vec::new();
-                for obs_type in &obs_types {
-                    match store.get_observations_by_type(obs_type, since, 500).await {
-                        Ok(rows) => {
-                            for row in rows {
-                                all_events.push(TypedEvent {
-                                    entity_id: row
-                                        .entity_id
-                                        .map(|id| id.to_string())
-                                        .unwrap_or_else(|| row.id.to_string()),
-                                    obs_type: row.observation_type.clone(),
-                                    ts_epoch: row.ts_utc.timestamp(),
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                obs_type = %obs_type,
-                                error = %e,
-                                "cross_domain_mining: skipping type"
-                            );
-                        }
-                    }
-                }
-
-                if all_events.len() < 10 {
-                    run.skip(&format!(
-                        "cross_domain_mining: insufficient observations ({} < 10); \
-                         re-run after more crawl data accumulates",
-                        all_events.len()
-                    ));
-                    return run;
-                }
-
-                let recipe_stats = match store.get_recipe_stats().await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        run.fail(&format!(
-                            "cross_domain_mining: failed to load recipe stats: {e}"
-                        ));
-                        return run;
-                    }
-                };
-                let outcomes: Vec<(String, i64)> = recipe_stats
-                    .iter()
-                    .filter(|r| r.fired_count > 0)
-                    .map(|r| {
-                        let ts = r.last_fired.map(|t| t.timestamp()).unwrap_or(0);
-                        (r.recipe_code.clone(), ts)
-                    })
-                    .collect();
-
-                let config = CrossDomainConfig::default();
-                let combinations =
-                    mine_signal_combinations(&all_events, &outcomes, "recipe_fire", 7, 30, &config);
-
-                for combo in combinations.iter().take(5) {
-                    tracing::info!(
-                        type_a = %combo.type_a,
-                        type_b = %combo.type_b,
-                        synergy = combo.synergy_factor,
-                        stability = combo.stability,
-                        "cross_domain_mining: synergistic combination"
-                    );
-                }
-                run.succeed(
-                    combinations.len() as u64,
-                    &format!(
-                        "cross_domain_mining: {} events → {} synergistic combinations",
-                        all_events.len(),
-                        combinations.len()
-                    ),
-                );
-            }
-            #[cfg(not(feature = "llm"))]
-            {
-                run.skip(
-                    "cross_domain_mining: requires the `llm` feature (apex-learning/experimental)",
-                );
-            }
-            run
-        }
-        JobKind::OutcomeTracking => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Score crawl sources and rank observation types by their
-            // contribution to promoted vs. retired recipes.
-            // Requires the `llm` feature (enables apex-learning/experimental).
-            #[cfg(feature = "llm")]
-            {
-                let recipe_stats = match store.get_recipe_stats().await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        run.fail(&format!("outcome_tracking: failed to load recipe stats: {e}"));
-                        return run;
-                    }
-                };
-
-                if recipe_stats.is_empty() {
-                    run.skip("outcome_tracking: no recipe stats available yet");
-                    return run;
-                }
-
-                // Treat each recipe code as a virtual "source" (real per-source
-                // attribution will be added once observation rows carry source_id).
-                let source_yields: Vec<SourceYield> = recipe_stats
-                    .iter()
-                    .map(|r| SourceYield {
-                        source_id: r.recipe_code.clone(),
-                        domain: r.recipe_code.clone(),
-                        total_observations: r.fired_count as u64,
-                        observations_in_fired_recipes: r.fired_count as u64,
-                        observations_in_promoted_recipes: r.active_count as u64,
-                        observations_in_retired_recipes: 0,
-                        freshness_hours: r
-                            .last_fired
-                            .map(|t| (Utc::now() - t).num_hours() as f64)
-                            .unwrap_or(720.0),
-                        diversity_score: 0.5,
-                    })
-                    .collect();
-
-                let weights = SourceScoringWeights::default();
-                let source_scores = score_sources(&source_yields, &weights);
-
-                let obs_type_names = [
-                    "web_change",
-                    "job_post",
-                    "tender_posted",
-                    "vuln_notice",
-                    "person_mention",
-                    "role_change",
-                    "procurement_signal",
-                ];
-                let obs_type_stats: Vec<ObsTypeStats> = obs_type_names
-                    .iter()
-                    .map(|&obs_type| {
-                        let total = recipe_stats
-                            .iter()
-                            .filter(|r| r.recipe_code.contains(obs_type))
-                            .map(|r| r.fired_count as u64)
-                            .sum::<u64>();
-                        let promoted = recipe_stats
-                            .iter()
-                            .filter(|r| r.recipe_code.contains(obs_type) && r.active_count > 0)
-                            .map(|r| r.active_count as u64)
-                            .sum::<u64>();
-                        ObsTypeStats {
-                            obs_type: obs_type.to_string(),
-                            total_occurrences: total,
-                            in_promoted_recipes: promoted,
-                            in_staged_recipes: 0,
-                            in_retired_recipes: 0,
-                        }
-                    })
-                    .collect();
-
-                let ranked_types = rank_observation_types(&obs_type_stats);
-
-                if let Some(top_source) = source_scores.first() {
-                    tracing::info!(
-                        source = %top_source.source_id,
-                        composite = top_source.composite,
-                        "outcome_tracking: top source"
-                    );
-                }
-                if let Some(top_type) = ranked_types.first() {
-                    tracing::info!(
-                        obs_type = %top_type.obs_type,
-                        net_value = top_type.net_value,
-                        "outcome_tracking: highest-value observation type"
-                    );
-                }
-
-                run.succeed(
-                    source_scores.len() as u64,
-                    &format!(
-                        "outcome_tracking: {} sources scored, {} obs types ranked; \
-                         top_type={} (net={:.3})",
-                        source_scores.len(),
-                        ranked_types.len(),
-                        ranked_types.first().map(|t| t.obs_type.as_str()).unwrap_or("none"),
-                        ranked_types.first().map(|t| t.net_value).unwrap_or(0.0),
-                    ),
-                );
-            }
-            #[cfg(not(feature = "llm"))]
-            {
-                run.skip(
-                    "outcome_tracking: requires the `llm` feature (apex-learning/experimental)",
-                );
-            }
-            run
-        }
-        JobKind::BreachScan => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-
-            let hibp_key = std::env::var("HIBP_API_KEY").ok();
-            let intelx_key = std::env::var("INTELX_API_KEY").ok();
-            let pastebin_key = std::env::var("PASTEBIN_API_DEV_KEY").ok();
-
-            let domains_raw = std::env::var("MONITORED_DOMAINS").unwrap_or_default();
-            let domains: Vec<String> = domains_raw
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-
-            if domains.is_empty() {
-                run.skip("breach_scan: no MONITORED_DOMAINS configured");
-                return run;
-            }
-
-            let monitor = match BreachMonitor::new(hibp_key, intelx_key, pastebin_key) {
-                Ok(m) => m,
-                Err(e) => {
-                    run.fail(&format!("breach_scan: failed to build monitor: {e}"));
-                    return run;
-                }
-            };
-            let mut total_hits: u64 = 0;
-
-            for domain in &domains {
-                let events = monitor.full_domain_exposure_check(domain).await;
-                let count = events.len() as u64;
-                if count > 0 {
-                    tracing::warn!(
-                        domain = %domain,
-                        breach_count = count,
-                        "breach_scan: domain has known breaches"
-                    );
-                    total_hits += count;
-                    // Collect source URLs from breach events.
-                    let breach_urls: Vec<String> = events
-                        .iter()
-                        .filter_map(|e| e.source_url.clone())
-                        .collect();
-                    let breach_urls_opt = if breach_urls.is_empty() { None } else { Some(breach_urls) };
-                    // Persist warning so the security page can surface it
-                    let title = format!("Domain breach exposure: {domain}");
-                    let description = format!(
-                        "{count} breach event(s) detected for domain '{domain}'. Immediate review recommended."
-                    );
-                    let _ = store
-                        .insert_warning(
-                            "breach",
-                            &title,
-                            Some(&description),
-                            if count > 5 { "critical" } else { "high" },
-                            None,
-                            Some("breach_scan"),
-                            None,
-                            breach_urls_opt,
-                            Some(0.9),
-                        )
-                        .await;
-                } else {
-                    tracing::info!(domain = %domain, "breach_scan: clean");
-                }
-            }
-
-            run.succeed(
-                total_hits,
-                &format!(
-                    "scanned {} domain(s): {} breach events found",
-                    domains.len(),
-                    total_hits,
-                ),
-            );
-            run
-        }
-        JobKind::SanctionsScreen => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-
-            let entities_raw = std::env::var("MONITORED_ENTITIES").unwrap_or_default();
-            let entity_names: Vec<String> = entities_raw
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-
-            if entity_names.is_empty() {
-                run.skip("sanctions_screen: no MONITORED_ENTITIES configured");
-                return run;
-            }
-
-            let threshold: f64 = std::env::var("SANCTIONS_THRESHOLD")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.92);
-
-            let screener = match SanctionsScreener::load_from_web().await {
-                Ok(s) => s.with_threshold(threshold),
-                Err(e) => {
-                    run.fail(&format!("sanctions_screen: failed to load sanctions lists: {e}"));
-                    return run;
-                }
-            };
-            tracing::info!(entries = screener.entry_count(), "sanctions_screen: lists loaded");
-
-            let mut total_hits: u64 = 0;
-
-            for name in &entity_names {
-                let matches = screener.screen_entity(name, &[]);
-                if matches.is_empty() {
-                    tracing::debug!(entity = %name, "sanctions_screen: no match");
-                } else {
-                    total_hits += matches.len() as u64;
-                    for m in &matches {
-                        tracing::warn!(
-                            entity = %name,
-                            matched = %m.matched_name,
-                            similarity = m.similarity,
-                            list = ?m.list,
-                            is_exact = m.is_exact,
-                            "sanctions_screen: MATCH FOUND"
-                        );
-                        // Persist a warning for each confirmed sanctions match
-                        let title = format!("Sanctions match: {name} → {}", m.matched_name);
-                        let description = format!(
-                            "Entity '{}' matched sanctions entry '{}' (similarity {:.2}, list: {:?}, exact: {}).",
-                            name, m.matched_name, m.similarity, m.list, m.is_exact
-                        );
-                        let severity = if m.is_exact { "critical" } else { "high" };
-                        let list_url = match &m.list {
-                            SanctionsList::OfacSdn | SanctionsList::OfacNs =>
-                                "https://home.treasury.gov/policy-issues/financial-sanctions/sdn-list",
-                            SanctionsList::EuConsolidated =>
-                                "https://eeas.europa.eu/topics/sanctions-policy/8442/consolidated-list_en",
-                            SanctionsList::UnSecurity =>
-                                "https://www.un.org/securitycouncil/content/un-sc-consolidated-list",
-                            SanctionsList::BisEntityList =>
-                                "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/entity-list",
-                            SanctionsList::BisDeniedPersons =>
-                                "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/denied-persons-list",
-                        };
-                        let _ = store
-                            .insert_warning(
-                                "sanctions",
-                                &title,
-                                Some(&description),
-                                severity,
-                                None,
-                                Some("sanctions_screen"),
-                                None,
-                                Some(vec![list_url.to_string()]),
-                                Some(m.similarity),
-                            )
-                            .await;
-                    }
-                }
-            }
-
-            run.succeed(
-                total_hits,
-                &format!(
-                    "screened {} entities against {} sanctions entries: {} matches",
-                    entity_names.len(),
-                    screener.entry_count(),
-                    total_hits
-                ),
-            );
-            run
-        }
-        JobKind::SlaEnforcement => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-
-            // Use the shared store pool — no need to create a second connection.
-            let pool = store.pool.clone();
-
-            // Query unacknowledged warnings, ordered oldest-first.
-            // Using the non-macro query API to avoid offline schema-cache requirements.
-            let rows = sqlx::query(
-                "SELECT id::text AS id, title, severity, warning_type, created_at, acknowledged \
-                 FROM warnings WHERE acknowledged = false ORDER BY created_at ASC LIMIT 500",
-            )
-            .fetch_all(&pool)
-            .await;
-
-            let records: Vec<SlaWarningRecord> = match rows {
-                Ok(rows) => {
-                    use sqlx::Row as _;
-                    rows.into_iter()
-                        .filter_map(|r| {
-                            let id: Option<String> = r.try_get("id").ok();
-                            let title: Option<String> = r.try_get("title").ok();
-                            let severity: Option<String> = r.try_get("severity").ok();
-                            let warning_type: Option<String> = r.try_get("warning_type").ok();
-                            let created_at: Option<chrono::DateTime<Utc>> =
-                                r.try_get("created_at").ok();
-                            let acknowledged: Option<bool> = r.try_get("acknowledged").ok();
-                            Some(SlaWarningRecord {
-                                id: id?,
-                                title: title?,
-                                severity: severity?,
-                                warning_type: warning_type?,
-                                entity_id: None,
-                                created_at: created_at?,
-                                acknowledged: acknowledged?,
-                            })
-                        })
-                        .collect()
-                }
-                Err(e) => {
-                    run.fail(&format!("sla_enforcement: query failed: {e}"));
-                    return run;
-                }
-            };
-
-            let enforcer = SlaEnforcer::from_env();
-            let violations = enforcer.check_sla_violations(&records);
-            let violation_count = violations.len() as u64;
-
-            if !violations.is_empty() {
-                let dispatcher = NotificationDispatcher::from_env();
-                let dispatched = dispatcher.dispatch_batch(violations).await;
-                tracing::warn!(
-                    violations = violation_count,
-                    dispatched = dispatched.len(),
-                    "sla_enforcement: escalated SLA breaches"
-                );
-            }
-
-            run.succeed(
-                violation_count,
-                &format!(
-                    "checked {} unacknowledged warnings: {} SLA breaches escalated",
-                    records.len(),
-                    violation_count
-                ),
-            );
-            run
-        }
-        JobKind::DnsPostureScan => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Enumerate all company domains from DB and check SPF/DKIM/DMARC.
-            let companies = store.list_companies(
-                &apex_store::postgres::CompanyListFilters { regions: vec![], search: None, is_competitor: None },
-                Some(apex_store::postgres::CompanyOrderBy::Name),
-                false,
-                500,
-                0,
-            ).await.unwrap_or_default();
-            let mut checked = 0u64;
-            for company in &companies {
-                if let Some(domain) = &company.domain {
-                    // In production this would check DNS records via https://dns.google/resolve
-                    // For now, log the domain as checked
-                    tracing::debug!(domain = %domain, company = %company.name, "dns_posture_scan: queued domain check");
-                    checked += 1;
-                }
-            }
-            run.succeed(checked, &format!("dns_posture_scan: queued {} domains for DNS posture check", checked));
-            run
-        }
-        JobKind::KevCatalogFetch => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Fetch CISA KEV JSON catalog from https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
-            let url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .build();
-            match client {
-                Ok(client) => {
-                    match client.get(url).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            match resp.json::<serde_json::Value>().await {
-                                Ok(catalog) => {
-                                    let count = catalog["vulnerabilities"]
-                                        .as_array()
-                                        .map(|v| v.len())
-                                        .unwrap_or(0);
-                                    tracing::info!(cve_count = count, "kev_catalog_fetch: catalog downloaded successfully");
-                                    run.succeed(count as u64, &format!("kev_catalog_fetch: downloaded {} CVEs from CISA KEV", count));
-                                }
-                                Err(e) => run.fail(&format!("kev_catalog_fetch: failed to parse JSON: {e}")),
-                            }
-                        }
-                        Ok(resp) => run.fail(&format!("kev_catalog_fetch: HTTP {} from CISA", resp.status())),
-                        Err(e) => run.fail(&format!("kev_catalog_fetch: request failed: {e}")),
-                    }
-                }
-                Err(e) => run.fail(&format!("kev_catalog_fetch: failed to build HTTP client: {e}")),
-            }
-            run
-        }
-        JobKind::LookalikeDomainScan => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Enumerate tracked company domains and generate common typosquats.
-            let companies = store.list_companies(
-                &apex_store::postgres::CompanyListFilters { regions: vec![], search: None, is_competitor: None },
-                Some(apex_store::postgres::CompanyOrderBy::Name),
-                false,
-                200,
-                0,
-            ).await.unwrap_or_default();
-            let mut domains_scanned = 0u64;
-            for company in &companies {
-                if let Some(domain) = &company.domain {
-                    // Generate basic typosquat variants (transposition, insertion, substitution)
-                    let variants: Vec<String> = generate_typosquat_variants(domain);
-                    tracing::debug!(
-                        domain = %domain,
-                        variants = variants.len(),
-                        company = %company.name,
-                        "lookalike_domain_scan: variants generated"
-                    );
-                    domains_scanned += 1;
-                }
-            }
-            run.succeed(domains_scanned, &format!("lookalike_domain_scan: scanned {} domains for lookalike variants", domains_scanned));
-            run
-        }
-        JobKind::SelfImprovementCycle => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-            // Run source scoring, cross-domain mining, and outcome tracking in sequence.
-            tracing::info!("self_improvement_cycle: starting coordinated improvement loop");
-            let source_run = Box::pin(execute_job(&JobKind::SourceScoring, store)).await;
-            let cross_run = Box::pin(execute_job(&JobKind::CrossDomainMining, store)).await;
-            let outcome_run = Box::pin(execute_job(&JobKind::OutcomeTracking, store)).await;
-            let base_total =
-                source_run.items_processed + cross_run.items_processed + outcome_run.items_processed;
-            let base_failed = [&source_run, &cross_run, &outcome_run]
-                .iter()
-                .filter(|r| matches!(r.status, JobStatus::Failed { .. }))
-                .count();
-
-            #[cfg(feature = "llm")]
-            let (total, failed) = {
-                let mut total = base_total;
-                let mut failed = base_failed;
-
-                // Execute the true LLM self-improvement loop:
-                // eval gate + critique cycle + training-example mining.
-                match run_llm_continuous_improvement_cycle(store).await {
-                    Ok(stats) => {
-                        tracing::info!(
-                            eval_pass_rate = stats.eval_pass_rate,
-                            eval_avg_score = stats.eval_avg_score,
-                            eval_hallucination_rate = stats.eval_hallucination_rate,
-                            captures_seeded = stats.captures_seeded,
-                            captures_analysed = stats.captures_analysed,
-                            qualifying_examples = stats.qualifying_examples,
-                            avg_critique = stats.avg_critique_score,
-                            "self_improvement_cycle: llm continuous improvement completed"
-                        );
-                        total += stats.captures_analysed as u64;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "self_improvement_cycle: llm continuous improvement failed");
-                        failed += 1;
-                    }
-                }
-                (total, failed)
-            };
-
-            #[cfg(not(feature = "llm"))]
-            let (total, failed) = (base_total, base_failed);
-
-            if failed > 0 {
-                run.fail(&format!("self_improvement_cycle: {failed} sub-jobs/components failed"));
-            } else {
-                run.succeed(
-                    total,
-                    &format!(
-                        "self_improvement_cycle: all jobs and quality loops completed ({total} items)"
-                    ),
-                );
-            }
-            run
-        }
-        JobKind::RecipeFire => {
-            let mut run = JobRun::new(kind.clone());
-            run.start();
-
-            // Initialize LLM client for insight narrative generation
-            #[cfg(feature = "llm")]
-            let insight_llm_client = {
-                let base_url = std::env::var("LLM_BASE_URL")
-                    .unwrap_or_else(|_| "http://localhost:8080".into());
-                let api_key = std::env::var("LLM_API_KEY").ok();
-                let model = std::env::var("LLM_MODEL")
-                    .unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
-                let mut config = apex_llm::inference::InferenceConfig::default();
-                config.model = model;
-                config.max_tokens = 2048;
-                config.timeout = std::time::Duration::from_secs(180);
-                InferenceLlmClient::new(base_url, api_key, config)
-            };
-
-            // 1. Load seed recipes and convert to engine-ready Recipe objects.
-            let seed_recipes = load_default_seed_recipes().unwrap_or_default();
-            let engine_recipes: Vec<Recipe> = seed_recipes
-                .iter()
-                .filter(|sr| !sr.narrative_template.is_empty() && !sr.signals.is_empty())
-                .map(|sr| seed_recipe_to_engine_recipe(sr))
-                .collect();
-
-            if engine_recipes.is_empty() {
-                run.skip("recipe_fire: no seed recipes with signals/templates available");
-                return run;
-            }
-
-            let engine = RecipeEngine::load(engine_recipes);
-
-            // 2. Fetch observation type counts per entity for the last 30 days.
-            let since = Utc::now() - chrono::Duration::days(30);
-            let obs_counts = match store.get_obs_type_counts_per_entity(since).await {
-                Ok(v) => v,
-                Err(e) => {
-                    run.fail(&format!("recipe_fire: failed to fetch observation counts: {e}"));
-                    return run;
-                }
-            };
-
-            // 2b. Fetch warning type counts per entity (rich signal source).
-            let warn_counts = store.get_warning_type_counts_per_entity(since).await.unwrap_or_default();
-
-            // 2c. Fetch CompetitorEvent JSONB features (signal_type, keyword).
-            let ce_features = store.get_competitor_event_features(since).await.unwrap_or_default();
-
-            // 2d. Fetch WebChange JSONB features (source_id, signal_type from JSONB).
-            let wc_features = store.get_webchange_jsonb_features(since).await.unwrap_or_default();
-
-            // 2e. Fetch WebChange keyword features (keyword → observation types).
-            let wc_kw_features = store.get_webchange_keyword_features(since).await.unwrap_or_default();
-
-            // 2f. Fetch relational table features (persons, certs, capabilities, sites, graph).
-            let person_feats = store.get_person_features_per_company().await.unwrap_or_default();
-            let cert_feats = store.get_certification_features_per_company().await.unwrap_or_default();
-            let cap_feats = store.get_capability_features_per_company().await.unwrap_or_default();
-            let site_feats = store.get_site_features_per_company().await.unwrap_or_default();
-            let graph_feats = store.get_graph_edge_features().await.unwrap_or_default();
-
-            if obs_counts.is_empty() && warn_counts.is_empty() {
-                run.skip("recipe_fire: no observations or warnings in last 30 days");
-                return run;
-            }
-
-            // 3. Build per-entity FeatureMaps from ALL data sources.
-            //
-            // Sources:
-            //   3a. Observation counts → "{obs_type}.count", "{obs_type}.any"
-            //   3b. Warning types → 100+ mapped recipe observation-type keys
-            //   3c. CompetitorEvent JSONB → "Competitor.{signal_type/keyword}"
-            //   3d. WebChange source_id → Patent/Tender/Sanctions/Filing/Defense/News keys
-            //   3e. WebChange keywords → 30+ mapped observation-type keys
-            //   3f. Persons/POI → POI.*, Decision.*, Multi_POI.*, Alumni.*, Succession.*
-            //   3g. Certifications → Certification.*, CertificationUpdate.*, Compliance.*
-            //   3h. Capabilities → Capability.*, Technology.*, Product.*, Engineering.*
-            //   3i. Sites → Production.*, Geographic.*, Facility.*, Infrastructure.*
-            //   3j. Graph edges → Connection.*, Relationship.*, Ecosystem.*
-            let mut entity_maps: HashMap<Uuid, FeatureMap> = HashMap::new();
-
-            // 3a. Observation counts.
-            for (entity_id, obs_type, count) in &obs_counts {
-                let fm = entity_maps.entry(*entity_id).or_default();
-                let count_f = *count as f64;
-                fm.insert(format!("{obs_type}.count"), count_f);
-                fm.insert(format!("{obs_type}.any"), count_f);
-                
-                // Map specific observation types to recipe signal vocabulary
-                match obs_type.as_str() {
-                    "lookalike_domain" => {
-                        for k in &[
-                            "LookalikeDomain.count", "LookalikeDomain.active", "LookalikeDomain.any",
-                            "Security.risk", "Security.count",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += count_f;
-                        }
-                    }
-                    "dns_posture" => {
-                        for k in &[
-                            "DNSPosture.degraded", "DNSPosture.count",
-                            "Security.count", "Compliance.cybersecurity",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += count_f;
-                        }
-                    }
-                    "kev_match" => {
-                        for k in &[
-                            "KEV.match", "KEV.count",
-                            "Security.vulnerability", "Security.risk", "Security.count",
-                            "Compliance.risk",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += count_f;
-                        }
-                    }
-                    "SocialPost" => {
-                        for k in &[
-                            "SocialPost.count", "SocialPost.sentiment", "SocialPost.any",
-                            "News.count", "News.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += count_f;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // 3b. Warning type counts → recipe vocabulary mapping.
-            //
-            // QUALITY GATE: Each warning type maps ONLY to closely-related
-            // observation keys.  Previous version mapped one warning to 20-40+
-            // keys spanning unrelated domains, causing nearly every recipe to
-            // partially match via .count/.any fallback.
-            for (entity_id, wtype, count) in &warn_counts {
-                let fm = entity_maps.entry(*entity_id).or_default();
-                let c = *count as f64;
-                fm.insert(format!("Warning.{wtype}"), c);
-
-                match wtype.as_str() {
-                    "certification_update" => {
-                        for k in &[
-                            "CertificationUpdate.count", "CertificationUpdate.any",
-                            "Certification.count", "Certification.any",
-                            "Compliance.certification",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "hiring_signal" => {
-                        for k in &[
-                            "JobPost.count", "JobPost.any",
-                            "Demand.hiring", "Demand.count",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "ma_activity" => {
-                        for k in &[
-                            "Competitor.ma_activity", "Competitor.acquisition",
-                            "Company.acquisition", "Company.M_A",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "expansion" => {
-                        for k in &[
-                            "Company.expansion", "Company.investment",
-                            "Facility.new", "Facility.count",
-                            "Production.site.change",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "technology" => {
-                        for k in &[
-                            "Technology.count", "Technology.any",
-                            "Patent.count", "Patent.any",
-                            "Innovation.count",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "supply_chain_disruption" | "supply_chain" => {
-                        for k in &[
-                            "SupplyChain.disruption", "SupplyChain.count",
-                            "Supplier.risk", "Supplier.count",
-                            "Material.shortage",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "geopolitical_risk" | "geopolitical" => {
-                        for k in &[
-                            "Geopolitical.risk", "Geopolitical.count",
-                            "Sanctions.count", "Sanctions.risk",
-                            "Trade.restriction",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "competitive" => {
-                        for k in &[
-                            "Competitor.count", "Competitor.activity",
-                            "Industry.trend",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "compliance" => {
-                        for k in &[
-                            "Compliance.count", "Compliance.risk",
-                            "Regulatory.count", "Regulatory.change",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "market_intelligence" => {
-                        for k in &[
-                            "Market.count", "Market.intelligence",
-                            "Industry.count", "Industry.trend",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "procurement" => {
-                        for k in &[
-                            "Procurement.count", "Procurement.any",
-                            "Tender.count", "Tender.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "relationship" => {
-                        for k in &[
-                            "Relationship.count", "Relationship.any",
-                            "Connection.count",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    // Talent/IP warning types → H-recipe signals.
-                    "talent_movement" | "talent_migration" | "key_hire" => {
-                        for k in &[
-                            "PersonMention.role_change", "PersonMention.count",
-                            "RoleChange.competitor_destination", "RoleChange.count",
-                            "SocialSignal.leadership_change",
-                            "JobPost.executive.new_function",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "patent" | "patent_filing" | "ip_filing" => {
-                        for k in &[
-                            "PatentPublished.competitor.cluster", "PatentPublished.technology_overlap",
-                            "PatentPublished.litigation.filed", "PatentPublished.university_collab",
-                            "Patent.count", "Patent.any",
-                            "IP.count", "IP.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "leadership_change" | "executive_change" => {
-                        for k in &[
-                            "SocialSignal.leadership_change", "SocialSignal.ip_dispute",
-                            "PersonMention.role_change",
-                            "RoleChange.competitor_destination",
-                            "JobPost.executive.new_function",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    other => {
-                        let capitalized = capitalize_first(other);
-                        *fm.entry(format!("{capitalized}.count")).or_default() += c;
-                        *fm.entry(format!("{capitalized}.any")).or_default() += c;
-                    }
-                }
-            }
-
-            // 3c. CompetitorEvent JSONB features (signal_type + keyword).
-            for (entity_id, signal_type, keyword, count) in &ce_features {
-                let fm = entity_maps.entry(*entity_id).or_default();
-                let c = *count as f64;
-                if !signal_type.is_empty() {
-                    *fm.entry(format!("Competitor.{signal_type}")).or_default() += c;
-                    *fm.entry("Competitor.count".into()).or_default() += c;
-                }
-                if !keyword.is_empty() {
-                    *fm.entry(format!("Competitor.{keyword}")).or_default() += c;
-                }
-            }
-
-            // 3d. WebChange JSONB features (source_id → recipe observation types).
-            for (entity_id, source_id, signal_type, count) in &wc_features {
-                let fm = entity_maps.entry(*entity_id).or_default();
-                let c = *count as f64;
-
-                match source_id.as_str() {
-                    "ofac_sanctions" | "eu_sanctions" | "un_sanctions" => {
-                        for k in &[
-                            "Sanctions.count", "Sanctions.any", "Sanctions.list",
-                            "Sanctions.screening.match", "Sanctions.risk",
-                            "OFAC.count", "OFAC.any", "OFAC.match",
-                            "Compliance.sanctions",
-                            "Trade.count", "Trade.any",
-                            "Embargo.count", "Embargo.any",
-                            "ExportControl.count", "ExportControl.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "uspto_patents" | "epo_patents" | "wipo_patents" => {
-                        for k in &[
-                            "Patent.count", "Patent.any", "Patent.recent",
-                            "Patent.filing", "Patent.competitor",
-                            "Technology.patent", "Technology.count", "Technology.any",
-                            "IP.count", "IP.any",
-                            // H-recipe talent_ip signals
-                            "PatentPublished.competitor.cluster", "PatentPublished.technology_overlap",
-                            "PatentPublished.litigation.filed", "PatentPublished.university_collab",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "sam_gov" | "ted_eu" | "dgmarket" => {
-                        for k in &[
-                            "Tender.count", "Tender.any", "Tender.public",
-                            "Tender.posted", "Tender.public.posted",
-                            "Tender.framework_agreement",
-                            "Tender.sector", "Tender.region",
-                            "Procurement.count", "Procurement.any",
-                            "Contract.count", "Contract.any",
-                            "Government.count", "Government.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "sec_edgar" | "sec_filings" => {
-                        for k in &[
-                            "Filing.count", "Filing.any", "Filing.recent",
-                            "Company.filing", "Company.count", "Company.any",
-                            "CompanyProfile.count", "CompanyProfile.any",
-                            "CompanyProfile.revenue",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "defense_news" | "jane_defence" | "janes_defence" => {
-                        for k in &[
-                            "Defense.count", "Defense.any",
-                            "Security.defense", "Security.count", "Security.any",
-                            "News.count", "News.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "bloomberg_global" | "ft_global" | "nyt_us" | "axios_us"
-                    | "politico_us" | "the_hill" | "afp_global" => {
-                        for k in &[
-                            "News.count", "News.any", "News.geopolitical",
-                            "News.industry", "News.competitor",
-                            "PressRelease.count", "PressRelease.any",
-                            "Industry.count", "Industry.any",
-                            "Market.count", "Market.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "foreign_affairs" => {
-                        for k in &[
-                            "Geopolitical.risk", "Geopolitical.count", "Geopolitical.any",
-                            "News.geopolitical", "News.count", "News.any",
-                            "Trade.count", "Trade.any",
-                            "Regional.risk.high",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    _ => {
-                        if !source_id.is_empty() {
-                            *fm.entry(format!("WebChange.{source_id}")).or_default() += c;
-                        }
-                    }
-                }
-
-                // WebChange signal_type → recipe observation types.
-                match signal_type.as_str() {
-                    "hiring_signal" => {
-                        for k in &["JobPost.count", "JobPost.any", "JobPost.role_family", "Demand.hiring",
-                            "JobPost.executive.new_function", "SocialSignal.leadership_change",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "certification_update" => {
-                        for k in &[
-                            "CertificationUpdate.count", "CertificationUpdate.any",
-                            "CertificationUpdate.new", "Certification.count", "Certification.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "technology" => {
-                        for k in &["Technology.count", "Technology.any", "Innovation.count", "Innovation.any"] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "supply_chain_disruption" => {
-                        for k in &[
-                            "SupplyChain.count", "SupplyChain.disruption",
-                            "Supplier.risk", "Supplier.count",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "geopolitical_risk" => {
-                        for k in &["Geopolitical.risk", "Geopolitical.count", "Security.risk", "Security.count"] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // 3e. WebChange keyword features → fine-grained observation types.
-            for (entity_id, keyword, count) in &wc_kw_features {
-                let fm = entity_maps.entry(*entity_id).or_default();
-                let c = *count as f64;
-                match keyword.as_str() {
-                    "patent" => {
-                        for k in &["Patent.count", "Patent.any", "Patent.recent", "IP.count", "IP.any"] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "innovation" | "breakthrough" | "next-generation" | "new technology" => {
-                        for k in &[
-                            "Technology.count", "Technology.any", "Technology.emerging",
-                            "Innovation.count", "Innovation.any",
-                            "Industry40.count", "Industry40.any",
-                            "Digital.count", "Digital.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "r&d" | "research and development" => {
-                        for k in &[
-                            "Technology.count", "Technology.any",
-                            "Engineering.count", "Engineering.any",
-                            "Competitor.R_D", "Product.development.early",
-                            "SocialSignal.research_partnership",
-                            "PatentPublished.university_collab",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "career" | "hiring" | "job opening" | "join our team" | "open position" => {
-                        for k in &[
-                            "JobPost.count", "JobPost.any", "JobPost.volume",
-                            "Demand.hiring", "Demand.count", "Demand.any",
-                            "JobPost.executive.new_function",
-                            "SocialSignal.leadership_change",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "certification" | "accreditation" | "iso 9001" | "iso 14001"
-                    | "iso 13485" | "iso 27001" | "as9100" | "iatf 16949" => {
-                        for k in &[
-                            "CertificationUpdate.count", "CertificationUpdate.any",
-                            "CertificationUpdate.new",
-                            "Certification.count", "Certification.any", "Certification.new",
-                            "Compliance.count", "Compliance.any", "Compliance.certification",
-                            "Audit.count", "Audit.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                        // Also add standard-specific keys.
-                        match keyword.as_str() {
-                            "iatf 16949" => {
-                                *fm.entry("CertificationUpdate.new.IATF_16949".into()).or_default() += c;
-                            }
-                            "as9100" => {
-                                *fm.entry("CertificationUpdate.new.AS9100".into()).or_default() += c;
-                            }
-                            "iso 13485" => {
-                                *fm.entry("CertificationUpdate.new.ISO_13485".into()).or_default() += c;
-                            }
-                            "iso 27001" => {
-                                *fm.entry("CertificationUpdate.new.ISO_27001".into()).or_default() += c;
-                            }
-                            _ => {}
-                        }
-                    }
-                    "compliance" | "audit" => {
-                        for k in &[
-                            "Compliance.count", "Compliance.any", "Compliance.risk",
-                            "Regulatory.count", "Regulatory.any",
-                            "Audit.count", "Audit.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "sanctions" => {
-                        for k in &[
-                            "Sanctions.count", "Sanctions.any", "Sanctions.list",
-                            "OFAC.count", "OFAC.any",
-                            "Compliance.sanctions",
-                            "Trade.count", "Trade.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "tariff" => {
-                        for k in &[
-                            "Tariff.count", "Tariff.any",
-                            "Tariff.change.announced", "Tariff.reduction",
-                            "Trade.count", "Trade.any", "Trade.restriction",
-                            "Customs.count", "Customs.any",
-                            "Import.count", "Import.any",
-                            "ImportData.count", "ImportData.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "shortage" | "allocation" | "lead time" => {
-                        for k in &[
-                            "SupplyChain.count", "SupplyChain.any",
-                            "SupplyChain.lead_time.increase",
-                            "Supplier.lead_time.increase", "Supplier.capacity.reduced",
-                            "Material.shortage", "Material.count", "Material.any",
-                            "Commodity.shortage", "Commodity.count", "Commodity.any",
-                            "Semiconductor.lead_time.surge",
-                            "Inventory.count", "Inventory.any",
-                            "Component.count", "Component.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "supply chain disruption" => {
-                        for k in &[
-                            "SupplyChain.disruption", "SupplyChain.count", "SupplyChain.any",
-                            "Supplier.risk", "Supplier.count", "Supplier.any",
-                            "Logistics.disruption", "Logistics.count", "Logistics.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "geopolitical" => {
-                        for k in &[
-                            "Geopolitical.risk", "Geopolitical.count", "Geopolitical.any",
-                            "Security.risk", "Security.count", "Security.any",
-                            "Regional.risk.high",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "acquisition" | "acquired" | "joint venture" | "strategic partnership" => {
-                        for k in &[
-                            "Company.acquisition", "Company.count", "Company.any",
-                            "Competitor.acquisition", "Competitor.ma_activity",
-                            "Post_MA.integration", "Post_MA.integration.issues",
-                            "Partnership.strategic",
-                            "PressRelease.acquisition", "PressRelease.JV_announced",
-                            "NewEntrant.count", "NewEntrant.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "investment in" | "new facility" | "new manufacturing" | "grand opening" | "groundbreaking" => {
-                        for k in &[
-                            "Company.expansion", "Company.investment", "Company.count", "Company.any",
-                            "Competitor.expansion", "Competitor.factory",
-                            "Facility.new", "Facility.count", "Facility.any",
-                            "Production.site.change", "Production.count", "Production.any",
-                            "PressRelease.expansion",
-                            "Infrastructure.count", "Infrastructure.any",
-                            "Growth.count", "Growth.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "product launch" => {
-                        for k in &[
-                            "Product.count", "Product.any", "Product.development.early",
-                            "Product.supply_chain.new",
-                            "Competitor.product", "Competitor.count",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    _ => {
-                        // Generic: add as WebChange.keyword feature.
-                        if !keyword.is_empty() {
-                            let kw_clean = keyword.replace(' ', "_");
-                            *fm.entry(format!("WebChange.kw_{kw_clean}")).or_default() += c;
-                        }
-                    }
-                }
-            }
-
-            // 3f. Person/POI features → POI.*, Decision.*, Multi_POI.*, etc.
-            for (company_id, role_family, influence, pain, change_risk, count) in &person_feats {
-                let fm = entity_maps.entry(*company_id).or_default();
-                let c = *count as f64;
-
-                // Core POI presence signals.
-                *fm.entry("POI.count".into()).or_default() += c;
-                *fm.entry("POI.any".into()).or_default() += c;
-
-                // Influence-based signals.
-                if *influence > 0.7 {
-                    for k in &[
-                        "POI.influence.broad", "POI.influence.expanding",
-                        "POI.influence.external", "POI.influence.chain",
-                        "POI.strategic.influence", "POI.visibility.high",
-                        "POI.spec.influence", "POI.stakeholder.map.complete",
-                    ] {
-                        *fm.entry(k.to_string()).or_default() += c;
-                    }
-                }
-
-                // Pain-based signals.
-                if *pain > 0.6 {
-                    for k in &[
-                        "POI.pain_index.high", "POI.pain.cost.expressed",
-                        "POI.pain.delivery.expressed", "POI.pain.quality.expressed",
-                        "POI.pain.flexibility.expressed", "POI.frustration.supplier",
-                        "POI.frustration.internal", "POI.lead_time.concern",
-                        "POI.reliability.priority",
-                    ] {
-                        *fm.entry(k.to_string()).or_default() += c;
-                    }
-                }
-                if *pain > 0.8 {
-                    *fm.entry("POI.pain_index.very_high".into()).or_default() += c;
-                }
-
-                // Change-risk signals.
-                if *change_risk > 0.5 {
-                    for k in &[
-                        "POI.role_change.CPO.new", "POI.scope.expanded",
-                        "POI.promotion.detected", "POI.milestone.career",
-                        "POI.project.new", "POI.team.building",
-                        "Decision.count", "Decision.any", "Decision.imminent",
-                        "Decision.budget.allocated", "Decision.committee.formed",
-                        // H-recipe talent_ip signals
-                        "PersonMention.role_change", "PersonMention.count",
-                        "RoleChange.competitor_destination", "RoleChange.count",
-                        "SocialSignal.leadership_change",
-                        "JobPost.executive.new_function",
-                    ] {
-                        *fm.entry(k.to_string()).or_default() += c;
-                    }
-                }
-
-                // Role-family-based signals.
-                match role_family.as_str() {
-                    "C-Suite" => {
-                        for k in &[
-                            "POI.strategic.influence", "POI.visibility.high",
-                            "POI.thought_leadership", "POI.media.presence",
-                            "POI.network.broad", "POI.social.active",
-                            "Decision.executive", "Succession.identified",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "Government" | "Agency Head" => {
-                        for k in &[
-                            "POI.region.visiting", "Government.count", "Government.any",
-                            "Regulatory.count", "Regulatory.any",
-                            "POI.knowledge.gap",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    "Industry Association" | "Industry Analyst" => {
-                        for k in &[
-                            "POI.thought_leadership", "POI.media.presence",
-                            "POI.network.broad", "Industry.count", "Industry.any",
-                            "ConferenceAgenda.count", "ConferenceAgenda.any",
-                            "Event.count", "Event.any",
-                        ] {
-                            *fm.entry(k.to_string()).or_default() += c;
-                        }
-                    }
-                    _ => {}
-                }
-
-                // Generic POI enrichment: only core analytical keys, not 40+ speculative ones.
-                for k in &[
-                    "POI.location.nearby", "POI.operations.experience",
-                    "Multi_POI.count", "Multi_POI.any",
-                    "Trigger.count", "Trigger.any",
-                ] {
-                    *fm.entry(k.to_string()).or_default() += c;
-                }
-            }
-
-            // 3g. Certification features → Certification observation types (narrowed).
-            for (company_id, standard, count) in &cert_feats {
-                let fm = entity_maps.entry(*company_id).or_default();
-                let c = *count as f64;
-
-                *fm.entry("Certification.count".into()).or_default() += c;
-                *fm.entry("Certification.any".into()).or_default() += c;
-                *fm.entry("CertificationUpdate.count".into()).or_default() += c;
-                *fm.entry("CertificationUpdate.any".into()).or_default() += c;
-
-                // Standard-specific mappings.
-                let std_upper = standard.to_uppercase();
-                if std_upper.contains("IATF") || std_upper.contains("16949") {
-                    *fm.entry("CertificationUpdate.new.IATF_16949".into()).or_default() += c;
-                    *fm.entry("Tender.sector=automotive".into()).or_default() += c;
-                }
-                if std_upper.contains("AS9100") || std_upper.contains("AS 9100") || std_upper.contains("EN 9100") {
-                    *fm.entry("CertificationUpdate.new.AS9100".into()).or_default() += c;
-                    *fm.entry("Tender.sector=aerospace".into()).or_default() += c;
-                }
-                if std_upper.contains("13485") {
-                    *fm.entry("CertificationUpdate.new.ISO_13485".into()).or_default() += c;
-                    *fm.entry("Tender.sector=medical".into()).or_default() += c;
-                }
-                if std_upper.contains("14001") {
-                    *fm.entry("Environmental.count".into()).or_default() += c;
-                    *fm.entry("ESG.count".into()).or_default() += c;
-                }
-                if std_upper.contains("27001") {
-                    *fm.entry("CertificationUpdate.new.ISO_27001".into()).or_default() += c;
-                    *fm.entry("Security.count".into()).or_default() += c;
-                    *fm.entry("Compliance.cybersecurity".into()).or_default() += c;
-                }
-            }
-
-            // 3h. Capability features → Technology/Capability observation types (narrowed).
-            for (company_id, capability, count) in &cap_feats {
-                let fm = entity_maps.entry(*company_id).or_default();
-                let c = *count as f64;
-
-                *fm.entry("Capability.count".into()).or_default() += c;
-                *fm.entry("Capability.any".into()).or_default() += c;
-                *fm.entry("Technology.count".into()).or_default() += c;
-
-                // Capability-specific mappings.
-                let cap_lower = capability.to_lowercase();
-                if cap_lower.contains("smt") || cap_lower.contains("pcb") {
-                    *fm.entry("Competitor.careers.SMT".into()).or_default() += c;
-                    *fm.entry("Competitor.capability_page.changed".into()).or_default() += c;
-                }
-                if cap_lower.contains("medical") {
-                    *fm.entry("Tender.sector=medical".into()).or_default() += c;
-                }
-                if cap_lower.contains("automotive") {
-                    *fm.entry("Tender.sector=automotive".into()).or_default() += c;
-                }
-                if cap_lower.contains("aerospace") || cap_lower.contains("avionics") || cap_lower.contains("satellite") {
-                    *fm.entry("Tender.sector=aerospace".into()).or_default() += c;
-                    *fm.entry("Defense.count".into()).or_default() += c;
-                }
-                if cap_lower.contains("iot") || cap_lower.contains("embedded") {
-                    *fm.entry("Industry40.count".into()).or_default() += c;
-                    *fm.entry("Digital.count".into()).or_default() += c;
-                }
-                if cap_lower.contains("prototype") || cap_lower.contains("testing") {
-                    *fm.entry("Product.development.early".into()).or_default() += c;
-                }
-            }
-
-            // 3i. Site features → Production/Facility observation types (narrowed).
-            for (company_id, country_code, site_type, count) in &site_feats {
-                let fm = entity_maps.entry(*company_id).or_default();
-                let c = *count as f64;
-
-                *fm.entry("Production.count".into()).or_default() += c;
-                *fm.entry("Production.any".into()).or_default() += c;
-                *fm.entry("Facility.count".into()).or_default() += c;
-                *fm.entry("Facility.any".into()).or_default() += c;
-
-                if !country_code.is_empty() {
-                    *fm.entry(format!("Geographic.{country_code}")).or_default() += c;
-                    *fm.entry("SupplyChain.geo.concentrated".into()).or_default() += c;
-                }
-                if !site_type.is_empty() {
-                    *fm.entry(format!("Facility.{site_type}")).or_default() += c;
-                    *fm.entry("Production.site.change".into()).or_default() += c;
-                }
-            }
-
-            // 3j. Graph edge features → Connection/Relationship observation types (narrowed).
-            for (source_id, edge_type, count) in &graph_feats {
-                let fm = entity_maps.entry(*source_id).or_default();
-                let c = *count as f64;
-
-                *fm.entry("Connection.count".into()).or_default() += c;
-                *fm.entry("Relationship.count".into()).or_default() += c;
-                *fm.entry("Ecosystem.count".into()).or_default() += c;
-
-                match edge_type.as_str() {
-                    "CompanyCompany" => {
-                        *fm.entry("Competitor.count".into()).or_default() += c;
-                        *fm.entry("Vendor.count".into()).or_default() += c;
-                        *fm.entry("Vendor.any".into()).or_default() += c;
-                        *fm.entry("Supplier.count".into()).or_default() += c;
-                        *fm.entry("Customer.count".into()).or_default() += c;
-                        *fm.entry("Customer.any".into()).or_default() += c;
-                        *fm.entry("Partnership.strategic".into()).or_default() += c;
-                        *fm.entry("Distributor.count".into()).or_default() += c;
-                        *fm.entry("Distributor.any".into()).or_default() += c;
-                    }
-                    "CompanyPerson" => {
-                        *fm.entry("POI.count".into()).or_default() += c;
-                        *fm.entry("POI.any".into()).or_default() += c;
-                        *fm.entry("Alumni.count".into()).or_default() += c;
-                        *fm.entry("Alumni.any".into()).or_default() += c;
-                        *fm.entry("Alumni.connection".into()).or_default() += c;
-                        *fm.entry("Connection.mutual".into()).or_default() += c;
-                    }
-                    "leads" => {
-                        *fm.entry("POI.influence.chain".into()).or_default() += c;
-                        *fm.entry("Relationship.new".into()).or_default() += c;
-                        *fm.entry("Relationship.strengthened".into()).or_default() += c;
-                    }
-                    _ => {}
-                }
-            }
-
-            // Log feature map stats for debugging.
-            tracing::info!(
-                entities = entity_maps.len(),
-                obs_rows = obs_counts.len(),
-                warn_rows = warn_counts.len(),
-                ce_rows = ce_features.len(),
-                wc_rows = wc_features.len(),
-                kw_rows = wc_kw_features.len(),
-                person_rows = person_feats.len(),
-                cert_rows = cert_feats.len(),
-                cap_rows = cap_feats.len(),
-                site_rows = site_feats.len(),
-                graph_rows = graph_feats.len(),
-                "recipe_fire: built feature maps"
-            );
-
-            // 4. Evaluate all recipes against each entity's FeatureMap.
-            let entity_id_strs: Vec<(String, FeatureMap)> = entity_maps
-                .into_iter()
-                .map(|(id, fm)| (id.to_string(), fm))
-                .collect();
-            let entity_refs: Vec<(&str, &FeatureMap)> = entity_id_strs
-                .iter()
-                .map(|(id, fm)| (id.as_str(), fm))
-                .collect();
-
-            let candidates = engine.evaluate_batch(&entity_refs);
-
-            // 5. Batch-load entity metadata for template rendering.
-            let all_entity_uuids: Vec<Uuid> = candidates
-                .iter()
-                .filter_map(|c| Uuid::parse_str(&c.entity_id).ok())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-
-            let company_names: HashMap<String, (String, Option<String>, Option<String>)> = match store
-                .get_company_names_by_ids(&all_entity_uuids)
-                .await
-            {
-                Ok(rows) => rows
-                    .into_iter()
-                    .map(|(id, name, region, company_type)| (id.to_string(), (name, region, company_type)))
-                    .collect(),
-                Err(e) => {
-                    tracing::warn!("recipe_fire: failed to load company names: {e}");
-                    HashMap::new()
-                }
-            };
-
-            // POI names: first person (by influence) per company.
-            let poi_names: HashMap<String, String> = match store
-                .get_person_names_by_company_ids(&all_entity_uuids)
-                .await
-            {
-                Ok(rows) => {
-                    let mut m: HashMap<String, String> = HashMap::new();
-                    for (org_id, name) in rows {
-                        m.entry(org_id.to_string()).or_insert(name);
-                    }
-                    m
-                }
-                Err(e) => {
-                    tracing::warn!("recipe_fire: failed to load POI names: {e}");
-                    HashMap::new()
-                }
-            };
-
-            // 5b. Fetch warning details for LLM evidence generation.
-            #[cfg(feature = "llm")]
-            let (entity_evidence, entity_contexts): (HashMap<String, Vec<EvidenceSignal>>, HashMap<String, EntityContext>) = {
-                let mut evidence_map: HashMap<String, Vec<EvidenceSignal>> = HashMap::new();
-                let mut context_map: HashMap<String, EntityContext> = HashMap::new();
-                
-                // Initialize EntityContext for each entity from company_names
-                for (entity_id, (name, region, company_type)) in &company_names {
-                    let industry_tags: Vec<String> = Vec::new();
-                    context_map.insert(entity_id.clone(), EntityContext {
-                        name: name.clone(),
-                        region: region.clone().unwrap_or_default(),
-                        entity_type: company_type.clone(),
-                        is_competitor: false,
-                        industry_tags,
-                        certifications: Vec::new(),
-                        capabilities: Vec::new(),
-                        key_persons: Vec::new(),
-                        recent_changes: Vec::new(),
-                        threat_score: None,
-                        overlap_score: None,
-                        strategic_relevance: None,
-                        revenue_estimate_usd: None,
-                        employee_estimate: None,
-                        competitor_names: Vec::new(),
-                        sites_summary: Vec::new(),
-                        competitor_events: Vec::new(),
-                        domain: None,
-                    });
-                }
-
-                // Enrich EntityContext with full company metadata (scores, revenue, employees, is_competitor)
-                for entity_uuid in all_entity_uuids.iter() {
-                    let entity_id_str = entity_uuid.to_string();
-                    if let Ok(Some(row)) = sqlx::query_as::<_, (Option<f64>, Option<f64>, Option<f64>, Option<i64>, Option<i32>, Option<String>, Option<Vec<String>>, Option<bool>)>(
-                        "SELECT threat_score, overlap_score, strategic_relevance, revenue_estimate_usd, employee_estimate, domain, industry_tags, (metadata->>'is_competitor')::boolean FROM companies WHERE id = $1"
-                    )
-                    .bind(entity_uuid)
-                    .fetch_optional(&store.pool)
-                    .await {
-                        if let Some(ctx) = context_map.get_mut(&entity_id_str) {
-                            ctx.threat_score = row.0;
-                            ctx.overlap_score = row.1;
-                            ctx.strategic_relevance = row.2;
-                            ctx.revenue_estimate_usd = row.3;
-                            ctx.employee_estimate = row.4;
-                            ctx.domain = row.5;
-                            if let Some(tags) = row.6 {
-                                ctx.industry_tags = tags;
-                            }
-                            ctx.is_competitor = row.7.unwrap_or(false);
-                        }
-                    }
-                }
-
-                // Enrich with graph edges: find competitor relationships
-                for entity_uuid in all_entity_uuids.iter() {
-                    let entity_id_str = entity_uuid.to_string();
-                    if let Ok(edges) = store.get_edges_from(*entity_uuid, "company").await {
-                        if let Some(ctx) = context_map.get_mut(&entity_id_str) {
-                            for edge in edges.iter().take(8) {
-                                // Look up target company name
-                                if let Some((name, region, _ctype)) = company_names.get(&edge.target_id.to_string()) {
-                                    let region_str = region.as_deref().unwrap_or("");
-                                    ctx.competitor_names.push(format!("{} ({})", name, region_str));
-                                }
-                            }
-                        }
-                    }
-                    // Also check incoming edges
-                    if let Ok(edges) = store.get_edges_to(*entity_uuid, "company").await {
-                        if let Some(ctx) = context_map.get_mut(&entity_id_str) {
-                            for edge in edges.iter().take(8) {
-                                if let Some((name, region, _ctype)) = company_names.get(&edge.source_id.to_string()) {
-                                    let region_str = region.as_deref().unwrap_or("");
-                                    let entry = format!("{} ({})", name, region_str);
-                                    if !ctx.competitor_names.contains(&entry) {
-                                        ctx.competitor_names.push(entry);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Enrich with site/facility data
-                for entity_uuid in all_entity_uuids.iter() {
-                    let entity_id_str = entity_uuid.to_string();
-                    if let Ok(sites) = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<Vec<String>>)>(
-                        "SELECT name, city, country_code, site_type, capabilities FROM sites WHERE company_id = $1 LIMIT 6"
-                    )
-                    .bind(entity_uuid)
-                    .fetch_all(&store.pool)
-                    .await {
-                        if let Some(ctx) = context_map.get_mut(&entity_id_str) {
-                            for (sname, city, cc, stype, caps) in sites {
-                                let location = city.unwrap_or_else(|| cc.unwrap_or_default());
-                                let type_str = stype.unwrap_or_default();
-                                let caps_str = caps.map(|c| c.join(", ")).unwrap_or_default();
-                                let summary = if caps_str.is_empty() {
-                                    format!("{} ({}) in {}", sname, type_str, location)
-                                } else {
-                                    format!("{} ({}) in {} – capabilities: {}", sname, type_str, location, caps_str)
-                                };
-                                ctx.sites_summary.push(summary);
-                            }
-                        }
-                    }
-                }
-
-                // Enrich with CompetitorEvent observations
-                for entity_uuid in all_entity_uuids.iter() {
-                    let entity_id_str = entity_uuid.to_string();
-                    if let Ok(obs) = store.get_observations_by_entity(*entity_uuid, 5).await {
-                        if let Some(ctx) = context_map.get_mut(&entity_id_str) {
-                            for o in obs {
-                                if o.observation_type == "CompetitorEvent" || o.observation_type == "JobPost" || o.observation_type == "SocialPost" {
-                                    let excerpt = o.value.as_object()
-                                        .and_then(|obj| obj.get("excerpt").or(obj.get("title")).or(obj.get("text")))
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let source = o.value.as_object()
-                                        .and_then(|obj| obj.get("source").or(obj.get("url")))
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    if !excerpt.is_empty() {
-                                        let evt_line = crate::truncate_text(&format!("{}: {}", o.observation_type, &excerpt), 200).to_string();
-                                        let sig = EvidenceSignal {
-                                            title: format!("{}: {}", o.observation_type, crate::truncate_text(&excerpt, 80)),
-                                            description: excerpt,
-                                            source_url: source,
-                                            signal_type: o.observation_type.clone(),
-                                            extracted_facts: extract_facts_from_text(&o.value.to_string()),
-                                            date_context: Some(o.ts_utc.format("%Y-%m-%d").to_string()),
-                                            relevance_score: 0.75,
-                                        };
-                                        evidence_map.entry(entity_id_str.clone()).or_default().push(sig);
-                                        ctx.competitor_events.push(evt_line);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Fetch certifications for each entity and add to context
-                for entity_uuid in all_entity_uuids.iter() {
-                    if let Ok(certs) = store.get_certifications_for_company(*entity_uuid).await {
-                        let entity_id_str = entity_uuid.to_string();
-                        if let Some(ctx) = context_map.get_mut(&entity_id_str) {
-                            for cert in certs.iter().take(10) {
-                                let valid_info = cert.valid_until
-                                    .map(|d| format!(" (valid until {})", d))
-                                    .unwrap_or_default();
-                                let cert_str = format!("{}{}", cert.standard, valid_info);
-                                ctx.certifications.push(cert_str.clone());
-                                
-                                // Also add as evidence signal for compliance-related insights
-                                let sig = EvidenceSignal {
-                                    title: format!("{} Certification", cert.standard),
-                                    description: format!(
-                                        "Holds {} certification{}. Issuing body: {}. Scope: {}",
-                                        cert.standard,
-                                        valid_info,
-                                        cert.issuing_body.as_deref().unwrap_or("Unknown"),
-                                        cert.scope.as_deref().unwrap_or("General")
-                                    ),
-                                    source_url: cert.evidence_url.clone().unwrap_or_default(),
-                                    signal_type: "certification".to_string(),
-                                    extracted_facts: vec![
-                                        format!("Standard: {}", cert.standard),
-                                        cert.valid_until.map(|d| format!("Valid until: {}", d)).unwrap_or_default(),
-                                    ].into_iter().filter(|s| !s.is_empty()).collect(),
-                                    date_context: cert.valid_until.map(|d| d.to_string()),
-                                    relevance_score: 0.5,
-                                };
-                                evidence_map.entry(entity_id_str.clone()).or_default().push(sig);
-                            }
-                        }
-                    }
-                }
-                
-                // Fetch capabilities for each entity
-                for entity_uuid in all_entity_uuids.iter() {
-                    if let Ok(caps) = store.list_capabilities(Some(*entity_uuid), 15, 0).await {
-                        let entity_id_str = entity_uuid.to_string();
-                        if let Some(ctx) = context_map.get_mut(&entity_id_str) {
-                            for cap in caps.iter().take(10) {
-                                let proof_info = cap.proof_grade.as_deref()
-                                    .map(|g| format!(" ({})", g))
-                                    .unwrap_or_default();
-                                ctx.capabilities.push(format!("{}{}", cap.capability, proof_info));
-                                
-                                // Add as evidence signal
-                                let sig = EvidenceSignal {
-                                    title: format!("Capability: {}", cap.capability),
-                                    description: format!(
-                                        "Manufacturing capability: {}. Proof level: {}",
-                                        cap.capability,
-                                        cap.proof_grade.as_deref().unwrap_or("Claimed")
-                                    ),
-                                    source_url: cap.evidence_urls.as_ref()
-                                        .and_then(|u| u.first().cloned())
-                                        .unwrap_or_default(),
-                                    signal_type: "capability".to_string(),
-                                    extracted_facts: vec![format!("Capability: {}", cap.capability)],
-                                    date_context: cap.last_confirmed.map(|d| d.format("%Y-%m-%d").to_string()),
-                                    relevance_score: 0.4,
-                                };
-                                evidence_map.entry(entity_id_str.clone()).or_default().push(sig);
-                            }
-                        }
-                    }
-                }
-                
-                // Add POI names to context
-                for (entity_id, poi_name) in &poi_names {
-                    if let Some(ctx) = context_map.get_mut(entity_id) {
-                        ctx.key_persons.push(poi_name.clone());
-                    }
-                }
-                
-                // Add warnings as evidence (these have the richest content)
-                match store.get_warnings_by_entity_ids(&all_entity_uuids, 500).await {
-                    Ok(rows) => {
-                        for w in rows {
-                            if let Some(entity_ids) = &w.entity_ids {
-                                let description = w.description.clone().unwrap_or_default();
-                                let extracted = extract_facts_from_text(&format!("{} {}", w.title, description));
-                                
-                                let sig = EvidenceSignal {
-                                    title: w.title.clone(),
-                                    description: description.clone(),
-                                    source_url: w.source_urls.as_ref()
-                                        .and_then(|urls| urls.first().cloned())
-                                        .unwrap_or_default(),
-                                    signal_type: "warning".to_string(),
-                                    extracted_facts: extracted,
-                                    date_context: Some(w.ts_utc.format("%Y-%m-%d").to_string()),
-                                    relevance_score: 0.8 + (w.severity.as_str() == "critical").then_some(0.2).unwrap_or(0.0) as f32,
-                                };
-                                
-                                for eid in entity_ids {
-                                    evidence_map.entry(eid.to_string()).or_default().push(sig.clone());
-                                    // Also add warning type as recent change
-                                    if let Some(ctx) = context_map.get_mut(&eid.to_string()) {
-                                        let change = format!("{}: {}", w.warning_type, w.title);
-                                        if ctx.recent_changes.len() < 5 {
-                                            ctx.recent_changes.push(change);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("recipe_fire: failed to load warning evidence: {e}");
-                    }
-                }
-
-                // Also fetch recent observations for entities as evidence.
-                let unique_entity_uuids: std::collections::HashSet<Uuid> = all_entity_uuids.iter().cloned().collect();
-                for entity_uuid in unique_entity_uuids.iter() {
-                    if let Ok(obs_rows) = store.get_observations_by_entity(*entity_uuid, 10).await {
-                        for obs in obs_rows {
-                            // Extract text from observation value
-                            let (title, description) = if let Some(obj) = obs.value.as_object() {
-                                let title = obj.get("title")
-                                    .or_else(|| obj.get("headline"))
-                                    .or_else(|| obj.get("role"))
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("{} update", obs.observation_type));
-                                let desc = obj.get("description")
-                                    .or_else(|| obj.get("text"))
-                                    .or_else(|| obj.get("summary"))
-                                    .or_else(|| obj.get("content"))
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_default();
-                                (title, desc)
-                            } else if let Some(s) = obs.value.as_str() {
-                                (obs.observation_type.clone(), s.to_string())
-                            } else {
-                                continue;
-                            };
-                            
-                            // Skip low-quality observations (just URLs with no content)
-                            if description.is_empty() && !title.contains(':') {
-                                continue;
-                            }
-                            
-                            let source_url = obs.provenance.as_object()
-                                .and_then(|p| p.get("source_url").or_else(|| p.get("url")))
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
-                            
-                            let extracted = extract_facts_from_text(&format!("{} {}", title, description));
-                            
-                            let sig = EvidenceSignal {
-                                title,
-                                description,
-                                source_url,
-                                signal_type: obs.observation_type.clone(),
-                                extracted_facts: extracted,
-                                date_context: Some(obs.ts_utc.format("%Y-%m-%d").to_string()),
-                                relevance_score: 0.5,
-                            };
-                            evidence_map.entry(entity_uuid.to_string()).or_default().push(sig);
-                        }
-                    }
-                }
-                
-                tracing::info!(
-                    unique_entities = unique_entity_uuids.len(),
-                    entities_with_evidence = evidence_map.len(),
-                    total_evidence_items = evidence_map.values().map(|v| v.len()).sum::<usize>(),
-                    entities_with_context = context_map.len(),
-                    "recipe_fire: loaded enriched evidence for LLM"
-                );
-                
-                (evidence_map, context_map)
-            };
-
-            // 6. Per-run dedup (F6): keep only the highest-scoring candidate per
-            //    (recipe_code, entity_id) pair. This prevents the same recipe
-            //    from producing duplicate insights for the same entity in a
-            //    single evaluation run.
-            let mut dedup_map: HashMap<(String, String), usize> = HashMap::new();
-            for (idx, c) in candidates.iter().enumerate() {
-                let key = (c.recipe_code.clone(), c.entity_id.clone());
-                let dominated = match dedup_map.get(&key) {
-                    Some(&prev_idx) => {
-                        let prev = &candidates[prev_idx];
-                        c.confidence * c.impact > prev.confidence * prev.impact
-                    }
-                    None => true,
-                };
-                if dominated {
-                    dedup_map.insert(key, idx);
-                }
-            }
-            let deduped_idxs: std::collections::HashSet<usize> =
-                dedup_map.values().copied().collect();
-
-            let total_candidates = candidates.len();
-            let deduped_count = total_candidates - deduped_idxs.len();
-            if deduped_count > 0 {
-                tracing::info!(
-                    total = total_candidates,
-                    deduped = deduped_count,
-                    "recipe_fire: per-run dedup removed duplicate candidates"
-                );
-            }
-
-            // Persist each candidate as an insight; resolve templates first.
-            let mut insights_inserted: u64 = 0;
-            let mut warnings_inserted: u64 = 0;
-            let mut skipped_low_conf: u64 = 0;
-            let mut skipped_dedup: u64 = 0;
-            let mut skipped_cross_run: u64 = 0;
-
-            // Pre-load existing (recipe_code, entity_id) pairs from last 4 days
-            // to avoid re-generating the same insight across daily runs.
-            let cross_run_dedup: std::collections::HashSet<(String, String)> = {
-                let rows = sqlx::query(
-                    "SELECT DISTINCT unnest(tags) AS tag, unnest(entity_ids)::text AS eid \
-                     FROM insights WHERE created_at > NOW() - INTERVAL '4 days'",
-                )
-                .fetch_all(&store.pool)
-                .await;
-                match rows {
-                    Ok(rows) => {
-                        use sqlx::Row as _;
-                        rows.into_iter()
-                            .filter_map(|r| {
-                                let tag: String = r.try_get("tag").ok()?;
-                                let eid: String = r.try_get("eid").ok()?;
-                                Some((tag, eid))
-                            })
-                            .collect()
-                    }
-                    Err(e) => {
-                        tracing::warn!("recipe_fire: failed to load cross-run dedup set: {e}");
-                        std::collections::HashSet::new()
-                    }
-                }
-            };
-
-            // F8: With LLM generation, dedup by (entity_id, category) because
-            // all recipes of the same category use the same evidence and produce
-            // near-identical insights.  Only the highest-scoring candidate per
-            // entity+category pair triggers an LLM call.
-            #[cfg(feature = "llm")]
-            let mut llm_entity_cat_done: std::collections::HashSet<(String, String)> =
-                std::collections::HashSet::new();
-
-            // F9: Per-run entity cap — limit each entity to at most 2 insights
-            // per batch run to prevent flooding when many recipes fire for one entity.
-            #[cfg(feature = "llm")]
-            let mut entity_run_count: std::collections::HashMap<String, u32> =
-                std::collections::HashMap::new();
-
-            for (idx, c) in candidates.iter().enumerate() {
-                // F6: skip candidates removed by per-run dedup
-                if !deduped_idxs.contains(&idx) {
-                    skipped_dedup += 1;
-                    continue;
-                }
-
-                // F5: minimum confidence threshold — skip low-quality signals
-                if c.confidence < 0.45 {
-                    skipped_low_conf += 1;
-                    continue;
-                }
-
-                // F7: cross-run dedup — skip if this recipe already produced
-                // an insight for this entity in the last 7 days.
-                if cross_run_dedup.contains(&(c.recipe_code.clone(), c.entity_id.clone())) {
-                    skipped_cross_run += 1;
-                    continue;
-                }
-
-                let entity_uuid = Uuid::parse_str(&c.entity_id).ok();
-                let entity_ids = entity_uuid.map(|u| vec![u]);
-                let tags = vec![c.category.clone(), c.recipe_code.clone()];
-
-                // Build evidence slot map from available data.
-                let mut slots: HashMap<String, String> = HashMap::new();
-                let mut entity_label = String::new();
-                let mut entity_region = String::new();
-                let mut entity_type: Option<String> = None;
-                if let Some((name, region, company_type)) = company_names.get(&c.entity_id) {
-                    entity_label = name.clone();
-                    entity_type = company_type.clone();
-                    slots.insert("company_name".into(), name.clone());
-                    slots.insert("supplier_name".into(), name.clone());
-                    slots.insert("vendor_name".into(), name.clone());
-                    slots.insert("customer_name".into(), name.clone());
-                    slots.insert("target_company".into(), name.clone());
-                    slots.insert("entity_name".into(), name.clone());
-                    // For competitor_market recipes, the entity IS the competitor.
-                    slots.insert("competitor_name".into(), name.clone());
-                    if let Some(r) = region {
-                        entity_region = r.clone();
-                        slots.insert("region".into(), r.clone());
-                        slots.insert("location".into(), r.clone());
-                        slots.insert("country".into(), r.clone());
-                    }
-                }
-                if let Some(poi) = poi_names.get(&c.entity_id) {
-                    slots.insert("poi_name".into(), poi.clone());
-                    slots.insert("mentor_name".into(), poi.clone());
-                }
-
-                // Derive numeric evidence from the feature map, if we still have it.
-                // Also collect signal details for the rich summary (F4).
-                let mut signal_details: Vec<String> = Vec::new();
-                if let Some((_, fm)) = entity_id_strs.iter().find(|(id, _)| id == &c.entity_id) {
-                    if let Some(v) = fm.get("POI.count") {
-                        slots.insert("poi_count".into(), (*v as i64).to_string());
-                        if *v > 0.0 { signal_details.push(format!("{} person(s) of interest tracked", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("JobPost.count") {
-                        slots.insert("job_count".into(), (*v as i64).to_string());
-                        slots.insert("job_delta".into(), format!("{:.0}", v));
-                        slots.insert("npi_jobs".into(), (*v as i64).to_string());
-                        slots.insert("eng_jobs".into(), (*v as i64).to_string());
-                        if *v > 0.0 { signal_details.push(format!("{} job posting(s) observed", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("Patent.count") {
-                        slots.insert("patent_count".into(), (*v as i64).to_string());
-                        if *v > 0.0 { signal_details.push(format!("{} patent(s) filed", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("Tender.count") {
-                        slots.insert("tender_count".into(), (*v as i64).to_string());
-                        if *v > 0.0 { signal_details.push(format!("{} tender(s) identified", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("Certification.count") {
-                        slots.insert("cert_count".into(), (*v as i64).to_string());
-                        if *v > 0.0 { signal_details.push(format!("{} certification(s) on record", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("Competitor.count") {
-                        slots.insert("competitor_count".into(), (*v as i64).to_string());
-                        if *v > 0.0 { signal_details.push(format!("{} competitor signal(s)", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("NewsArticle.count") {
-                        if *v > 0.0 { signal_details.push(format!("{} news article(s) referenced", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("WebChange.count") {
-                        if *v > 0.0 { signal_details.push(format!("{} web change(s) detected", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("Filing.count") {
-                        if *v > 0.0 { signal_details.push(format!("{} regulatory filing(s)", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("SanctionEntry.count") {
-                        if *v > 0.0 { signal_details.push(format!("{} sanction entry(ies)", *v as i64)); }
-                    }
-                    if let Some(v) = fm.get("TradeShow.count") {
-                        if *v > 0.0 { signal_details.push(format!("{} trade show participation(s)", *v as i64)); }
-                    }
-                    // Total signal count.
-                    let signal_count = c.evidence_ids.len();
-                    slots.insert("signal_count".into(), signal_count.to_string());
-                }
-
-                #[cfg(not(feature = "llm"))]
-                let rendered_narrative = clean_rendered_text(&resolve_evidence_placeholders(&c.narrative_template, &slots));
-                #[cfg(not(feature = "llm"))]
-                let rendered_action = clean_rendered_text(&resolve_evidence_placeholders(&c.action_template, &slots));
-
-                #[cfg(not(feature = "llm"))]
-                let use_template = !is_low_quality_narrative(&rendered_narrative);
-
-                #[cfg(not(feature = "llm"))]
-                let narrative_with_entity = if use_template {
-                    if !entity_label.is_empty()
-                        && !rendered_narrative.to_ascii_lowercase().contains(&entity_label.to_ascii_lowercase())
-                    {
-                        let poi_present = poi_names.get(&c.entity_id)
-                            .map(|p| rendered_narrative.to_ascii_lowercase().contains(&p.to_ascii_lowercase()))
-                            .unwrap_or(false);
-                        if poi_present {
-                            rendered_narrative.clone()
-                        } else {
-                            let region_tag = if !entity_region.is_empty() {
-                                format!(" ({})", entity_region)
-                            } else {
-                                String::new()
-                            };
-                            format!("[{}{}] {}", entity_label, region_tag, rendered_narrative)
-                        }
-                    } else {
-                        rendered_narrative.clone()
-                    }
-                } else {
-                    build_analytical_narrative(
-                        &entity_label,
-                        &entity_region,
-                        &c.category,
-                        &signal_details,
-                        c.confidence,
-                        &c.evidence_ids,
-                    )
-                };
-
-                // ======== Enriched insight generation (uses structured data) ========
-                #[cfg(feature = "llm")]
-                {
-                    // F8: entity+category dedup — only run LLM once per entity per
-                    // category since the evidence is the same regardless of recipe.
-                    let ec_key = (c.entity_id.clone(), c.category.clone());
-                    if !llm_entity_cat_done.insert(ec_key) {
-                        tracing::debug!(
-                            entity = %entity_label,
-                            category = %c.category,
-                            recipe = %c.recipe_code,
-                            "recipe_fire: skipping duplicate entity+category LLM call"
-                        );
-                        skipped_dedup += 1;
-                        continue;
-                    }
-
-                    // F9: per-run entity cap — max 2 insights per entity per batch
-                    let run_count = entity_run_count.entry(c.entity_id.clone()).or_insert(0);
-                    if *run_count >= 2 {
-                        tracing::debug!(
-                            entity = %entity_label,
-                            category = %c.category,
-                            "recipe_fire: per-run entity cap reached (F9), skipping"
-                        );
-                        skipped_dedup += 1;
-                        continue;
-                    }
-                    *run_count += 1;
-                }
-
-                #[cfg(feature = "llm")]
-                let llm_output = {
-                    // Get enriched evidence signals for this entity
-                    let mut evidence_signals: Vec<EvidenceSignal> = entity_evidence
-                        .get(&c.entity_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    
-                    // Calculate relevance scores for sorting
-                    for sig in &mut evidence_signals {
-                        sig.relevance_score = calculate_relevance(
-                            &sig.title,
-                            &sig.description,
-                            &sig.signal_type,
-                            &c.category,
-                        );
-                    }
-                    
-                    // Sort by relevance and take top items
-                    evidence_signals.sort_by(|a, b| {
-                        b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    evidence_signals.truncate(12);
-
-                    // Get or build EntityContext
-                    let entity_ctx = entity_contexts.get(&c.entity_id).cloned().unwrap_or_else(|| {
-                        EntityContext {
-                            name: entity_label.clone(),
-                            region: entity_region.clone(),
-                            entity_type: entity_type.clone(),
-                            is_competitor: false,
-                            industry_tags: Vec::new(),
-                            certifications: Vec::new(),
-                            capabilities: Vec::new(),
-                            key_persons: poi_names.get(&c.entity_id).cloned().into_iter().collect(),
-                            recent_changes: Vec::new(),
-                            threat_score: None,
-                            overlap_score: None,
-                            strategic_relevance: None,
-                            revenue_estimate_usd: None,
-                            employee_estimate: None,
-                            competitor_names: Vec::new(),
-                            sites_summary: Vec::new(),
-                            competitor_events: Vec::new(),
-                            domain: None,
-                        }
-                    });
-
-                    tracing::info!(
-                        entity = %entity_label,
-                        category = %c.category,
-                        evidence_count = evidence_signals.len(),
-                        certs = entity_ctx.certifications.len(),
-                        caps = entity_ctx.capabilities.len(),
-                        "recipe_fire: generating LLM insight"
-                    );
-
-                    match generate_llm_insight(
-                        &insight_llm_client,
-                        &entity_ctx,
-                        &c.category,
-                        &evidence_signals,
-                    ).await {
-                        Ok((headline, narrative, recommendation, llm_confidence)) => {
-                            let summary = format!("{}\n\nRecommended action: {}", narrative, recommendation);
-                            Some((headline, summary, recommendation, llm_confidence))
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                entity = %entity_label,
-                                category = %c.category,
-                                error = %e,
-                                "recipe_fire: LLM insight generation failed; skipping insight (no template fallback)"
-                            );
-                            None
-                        }
-                    }
-                };
-
-                #[cfg(feature = "llm")]
-                let (title, summary, warning_action, stored_confidence) = match llm_output {
-                    Some(v) => v,
-                    None => continue,
-                };
-
-                // ======== Template-based insight generation (non-LLM fallback) ========
-#[cfg(not(feature = "llm"))]
-                let stored_confidence = c.confidence;
-                #[cfg(not(feature = "llm"))]
-                let (title, summary) = {
-                    // Title: always a concise analytical headline — never a truncated narrative.
-                    let title = build_analytical_title(
-                        &entity_label,
-                        &entity_region,
-                        &c.category,
-                        &signal_details,
-                        entity_type.as_deref(),
-                    );
-                    let summary = build_fallback_summary(
-                        &narrative_with_entity,
-                        use_template,
-                        &rendered_action,
-                        &rendered_narrative,
-                        &signal_details,
-                        &entity_label,
-                        &entity_region,
-                        &c.category,
-                        &c.severity,
-                        c.confidence,
-                        c.evidence_ids.len(),
-                    );
-                    (title, summary)
-                };
-
-                match store.insert_insight(
-                    &title,
-                    &summary,
-                    Some(c.category.as_str()),
-                    None,
-                    Some(stored_confidence),
-                    None,
-                    entity_ids.clone(),
-                    Some(tags),
-                ).await {
-                    Ok(_) => insights_inserted += 1,
-                    Err(e) => tracing::warn!(recipe = %c.recipe_code, "recipe_fire: insert_insight failed: {e}"),
-                }
-
-                // Escalate to warning when severity is warning/critical and confidence ≥ 0.75.
-                #[cfg(feature = "llm")]
-                if (c.severity == "warning" || c.severity == "critical") && stored_confidence >= 0.75 {
-                    let warn_title = format!("[{}] {}", c.recipe_code, title);
-                    let _ = store.insert_warning(
-                        &c.category,
-                        &warn_title,
-                        Some(&warning_action),
-                        &c.severity,
-                        None,
-                        Some("recipe_fire"),
-                        entity_ids.clone(),
-                        None,
-                        Some(stored_confidence),
-                    ).await;
-                    warnings_inserted += 1;
-                }
-
-                #[cfg(not(feature = "llm"))]
-                if (c.severity == "warning" || c.severity == "critical") && c.confidence >= 0.75 {
-                    let warn_title = format!("[{}] {}", c.recipe_code, title);
-                    let _ = store.insert_warning(
-                        &c.category,
-                        &warn_title,
-                        Some(&rendered_action),
-                        &c.severity,
-                        None,
-                        Some("recipe_fire"),
-                        entity_ids.clone(),
-                        None,
-                        Some(c.confidence),
-                    ).await;
-                    warnings_inserted += 1;
-                }
-            }
-
-            tracing::info!(
-                total_candidates = total_candidates,
-                skipped_low_conf = skipped_low_conf,
-                skipped_dedup = skipped_dedup,
-                skipped_cross_run = skipped_cross_run,
-                inserted = insights_inserted,
-                warnings = warnings_inserted,
-                "recipe_fire: run complete"
-            );
-
-            run.succeed(
-                insights_inserted,
-                &format!(
-                    "recipe_fire: {} candidate(s), inserted {} insight(s), {} warning(s) (skipped {} low-conf, {} dedup, {} cross-run)",
-                    total_candidates,
-                    insights_inserted,
-                    warnings_inserted,
-                    skipped_low_conf,
-                    skipped_dedup,
-                    skipped_cross_run,
-                ),
-            );
-            run
-        }
-        JobKind::PoiDiscovery => {
-            let mut run = JobRun::new(JobKind::PoiDiscovery);
-            run.start();
-            #[cfg(feature = "llm")]
-            {
-                // POI network-expansion: discover new persons from existing seeds.
-                // Load existing persons as seeds, run the expansion engine, insert discoveries.
-                
-                let seed_limit = std::env::var("POI_DISCOVERY_SEED_LIMIT")
-                    .ok()
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .unwrap_or(120)
-                    .clamp(20, 400);
-
-                // Load existing persons to use as seeds (joins companies for org_domain)
-                let seed_rows = match store.list_expansion_seeds(seed_limit).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        run.fail(&format!("poi_discovery: failed to load seed persons: {e}"));
-                        return run;
-                    }
-                };
-
-                if seed_rows.is_empty() {
-                    run.skip("poi_discovery: no seed persons in database");
-                    return run;
-                }
-
-                let min_competitor_seeds = std::env::var("POI_DISCOVERY_MIN_COMPETITOR_SEEDS")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .unwrap_or(25)
-                    .clamp(0, seed_rows.len());
-                let min_partner_seeds = std::env::var("POI_DISCOVERY_MIN_PARTNER_SEEDS")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .unwrap_or(25)
-                    .clamp(0, seed_rows.len());
-
-                // Maintain both tracks: verified competitors and non-competitor partner/prospect orgs.
-                let mut selected_seed_rows: Vec<&apex_store::postgres::ExpansionSeedRow> = Vec::new();
-                let mut selected_ids: HashSet<String> = HashSet::new();
-
-                for row in seed_rows.iter().filter(|r| r.is_competitor).take(min_competitor_seeds) {
-                    selected_ids.insert(row.id.to_string());
-                    selected_seed_rows.push(row);
-                }
-                for row in seed_rows.iter().filter(|r| !r.is_competitor).take(min_partner_seeds) {
-                    if selected_ids.insert(row.id.to_string()) {
-                        selected_seed_rows.push(row);
-                    }
-                }
-                for row in &seed_rows {
-                    if selected_seed_rows.len() >= seed_limit as usize {
-                        break;
-                    }
-                    if selected_ids.insert(row.id.to_string()) {
-                        selected_seed_rows.push(row);
-                    }
-                }
-
-                // Convert ExpansionSeedRow to SeedPoi (domain → full URL)
-                let seeds: Vec<SeedPoi> = selected_seed_rows.iter().map(|r| SeedPoi {
-                    id: r.id.to_string(),
-                    name: r.name.clone(),
-                    organization: r.org_name.clone(),
-                    org_website: r.org_domain.as_deref()
-                        .filter(|d| !d.is_empty())
-                        .map(|d| format!("https://www.{d}")),
-                    region: Some(r.region.clone()).filter(|s| !s.is_empty()),
-                    role_family: r.role_family.clone(),
-                }).collect();
-
-                // Build seed lookup: seed_person_id → ExpansionSeedRow
-                let seed_lookup: std::collections::HashMap<String, &apex_store::postgres::ExpansionSeedRow> =
-                    selected_seed_rows.iter().map(|r| (r.id.to_string(), *r)).collect();
-
-                tracing::info!(
-                    seeds_total = seeds.len(),
-                    competitor_seeds = selected_seed_rows.iter().filter(|r| r.is_competitor).count(),
-                    partner_seeds = selected_seed_rows.iter().filter(|r| !r.is_competitor).count(),
-                    with_website = seeds.iter().filter(|s| s.org_website.is_some()).count(),
-                    "poi_discovery: loaded expansion seeds"
-                );
-
-                // Get all known names to avoid duplicates
-                let filters = PersonListFilters {
-                    regions: vec![],
-                    roles: vec![],
-                    search: None,
-                    min_priority: None,
-                    max_priority: None,
-                };
-                let all_persons = match store
-                    .list_persons(&filters, None, true, 1000, 0)
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        run.fail(&format!("poi_discovery: failed to load all persons: {e}"));
-                        return run;
-                    }
-                };
-                let known_names: HashSet<String> = all_persons.iter()
-                    .map(|p| p.name.to_lowercase())
-                    .collect();
-
-                // Create expansion engine and discover new POIs
-                let proxy_rotator = build_proxy_rotator_from_env().map(|r| Arc::new(Mutex::new(r)));
-                if let Some(rotator) = proxy_rotator.as_ref() {
-                    if let Ok(guard) = rotator.lock() {
-                        tracing::info!(
-                            proxy_health = %guard.health_summary(),
-                            "poi_discovery: proxy rotation enabled"
-                        );
-                    }
-                }
-
-                let engine = match PoiExpansionEngine::new(proxy_rotator) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        run.fail(&format!("poi_discovery: failed to create expansion engine: {e}"));
-                        return run;
-                    }
-                };
-
-                let discoveries = engine.expand_from_seeds(&seeds, &known_names, 50).await;
-                
-                // Filter out the noisiest discoveries, then validate a bounded top-N via LLM.
-                let discovered_total = discoveries.len();
-                let min_confidence = 0.35;
-                let mut discoveries: Vec<_> = discoveries.into_iter()
-                    .filter(|d| {
-                        if !looks_like_person_name(&d.name) {
-                            tracing::debug!(
-                                name = %d.name,
-                                method = %d.discovery_method,
-                                "poi_discovery: skipping non-person-like candidate"
-                            );
-                            return false;
-                        }
-
-                        if d.discovery_method == "gdelt_co_mention" && d.confidence < 0.55 {
-                            tracing::debug!(
-                                name = %d.name,
-                                confidence = d.confidence,
-                                "poi_discovery: skipping low-confidence gdelt co-mention"
-                            );
-                            return false;
-                        }
-
-                        if d.confidence < min_confidence {
-                            tracing::debug!(
-                                name = %d.name,
-                                confidence = d.confidence,
-                                method = %d.discovery_method,
-                                "poi_discovery: skipping low-confidence discovery"
-                            );
-                            false
-                        } else {
-                            true
-                        }
-                    })
-                    .collect();
-
-                discoveries.sort_by(|a, b| {
-                    discovery_method_priority(&b.discovery_method)
-                        .cmp(&discovery_method_priority(&a.discovery_method))
-                        .then_with(|| {
-                            b.confidence
-                                .partial_cmp(&a.confidence)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                });
-
-                // Keep LLM validation costs bounded while significantly increasing candidate throughput.
-                const MAX_LLM_CANDIDATES: usize = 25;
-                if discoveries.len() > MAX_LLM_CANDIDATES {
-                    discoveries.truncate(MAX_LLM_CANDIDATES);
-                }
-
-                tracing::info!(
-                    discovered_total,
-                    above_confidence = discoveries.len(),
-                    min_confidence,
-                    llm_cap = MAX_LLM_CANDIDATES,
-                    "poi_discovery: candidates prepared for LLM validation"
-                );
-
-                if discoveries.is_empty() {
-                    run.succeed(0, "poi_discovery: no new persons discovered");
-                    return run;
-                }
-
-                // ────────────────────────────────────────────────────────────────────────────
-                // LLM validation step: filter out garbage names & extract structured info
-                // ────────────────────────────────────────────────────────────────────────────
-                tracing::info!(
-                    count = discoveries.len(),
-                    "poi_discovery: running LLM validation on candidates"
-                );
-
-                // Build LLM config from environment (LLM_BASE_URL) or default
-                let mut llm_config = ModelConfig::llamacpp_lightweight();
-                if let Ok(base_url) = std::env::var("LLM_BASE_URL") {
-                    llm_config.base_url = base_url;
-                }
-                let llm = OpenAiCompatibleClient::new(llm_config);
-                let mut validated_discoveries: Vec<DiscoveredPoi> = Vec::new();
-
-                for disc in discoveries {
-                    match validate_person_via_llm(&llm, &disc).await {
-                        Ok(Some(validated)) => {
-                            tracing::debug!(
-                                name = %validated.name,
-                                role = ?validated.inferred_role,
-                                org = ?validated.inferred_org,
-                                "poi_discovery: LLM validated as real person"
-                            );
-                            validated_discoveries.push(validated);
-                        }
-                        Ok(None) => {
-                            tracing::info!(
-                                name = %disc.name,
-                                method = %disc.discovery_method,
-                                "poi_discovery: LLM rejected as not a real person"
-                            );
-                        }
-                        Err(e) => {
-                            // On LLM error, skip this candidate but don't fail the job
-                            tracing::warn!(
-                                name = %disc.name,
-                                error = %e,
-                                "poi_discovery: LLM validation failed, skipping"
-                            );
-                        }
-                    }
-                }
-
-                let discoveries = validated_discoveries;
-                tracing::info!(
-                    count = discoveries.len(),
-                    "poi_discovery: LLM validation passed {} candidates",
-                    discoveries.len()
-                );
-
-                if discoveries.is_empty() {
-                    run.succeed(0, "poi_discovery: no candidates passed LLM validation");
-                    return run;
-                }
-
-                // Insert discovered persons into the database
-                let mut inserted: u64 = 0;
-                let mut artifacts_ingested: u64 = 0;
-                let mut skipped_dup: u64 = 0;
-                let mut errors: Vec<String> = vec![];
-                let now = Utc::now();
-
-                let enrichment_proxy = build_paid_proxy_url_from_env();
-                let person_scraper = PersonOsintScraper::new(enrichment_proxy.as_deref())
-                    .map_err(|e| {
-                        tracing::warn!(error = %e, "poi_discovery: failed to init person scraper, continuing without deep artifact enrichment");
-                        e
-                    })
-                    .ok();
-
-                let onion_enrich_enabled = std::env::var("POI_ONION_ENRICH_ENABLED")
-                    .ok()
-                    .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-                    .unwrap_or(true);
-                let max_onion_people = std::env::var("POI_ONION_ENRICH_PER_RUN")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .unwrap_or(12)
-                    .clamp(0, 200);
-                let tor_client = if onion_enrich_enabled {
-                    Some(TorClient::new().await)
-                } else {
-                    None
-                };
-                let mut onion_enriched_people = 0usize;
-
-                // Track names we've inserted this run to avoid duplicates within same batch
-                let mut inserted_names: HashSet<String> = HashSet::new();
-
-                for disc in &discoveries {
-                    // Final duplicate check: normalize name and check against known + this batch
-                    let normalized = disc.name.split_whitespace()
-                        .map(|w| w.to_lowercase())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    
-                    if known_names.contains(&disc.name.to_lowercase()) 
-                        || known_names.contains(&normalized)
-                        || inserted_names.contains(&normalized) 
-                    {
-                        tracing::debug!(
-                            name = %disc.name,
-                            "poi_discovery: skipping duplicate"
-                        );
-                        skipped_dup += 1;
-                        continue;
-                    }
-                    inserted_names.insert(normalized);
-
-                    // Determine role family from inferred role title
-                    let role_family = classify_role_family(disc.inferred_role.as_deref());
-
-                    // Look up the seed that produced this discovery to inherit org/region
-                    let parent_seed = seed_lookup.get(&disc.seed_person_id);
-
-                    let person = Person {
-                        id: Uuid::new_v4(),
-                        name: disc.name.clone(),
-                        name_ar: None,
-                        name_fr: None,
-                        primary_org_id: parent_seed.and_then(|s| s.primary_org_id),
-                        current_role: Some(disc.inferred_role.clone()
-                            .unwrap_or_else(|| format!("Discovered ({})", disc.discovery_method))),
-                        role_family,
-                        region: parent_seed.map(|s| s.region.clone()).filter(|s| !s.is_empty()),
-                        country_code: parent_seed.map(|s| s.country_code.clone()).filter(|s| !s.is_empty()),
-                        public_bio: None,
-                        public_email: disc.contact_email.clone(),
-                        phone: None,
-                        personal_email: None,
-                        photo_hash: None,
-                        priority_vector: PriorityVector::default(),
-                        decision_mode: None,
-                        influence_score: 0.0,
-                        role_drift_score: 0.0,
-                        change_risk: 0.0,
-                        pain_index: 0.0,
-                        preferred_proof_type: None,
-                        trigger_topics: vec![],
-                        decision_style: None,
-                        risk_tolerance: None,
-                        change_appetite: None,
-                        communication_style: None,
-                        metadata: serde_json::json!({
-                            "engagement_status": "untracked",
-                            "discovery_method": disc.discovery_method,
-                            "source_url": disc.source_url,
-                            "seed_person_id": disc.seed_person_id,
-                            "linkedin_url": disc.contact_linkedin,
-                            "inferred_org": disc.inferred_org,
-                            "confidence": disc.confidence,
-                            "seed_is_competitor": parent_seed.map(|s| s.is_competitor).unwrap_or(false),
-                            "discovery_track": if parent_seed.map(|s| s.is_competitor).unwrap_or(false) { "competitor" } else { "partner_or_prospect" },
-                        }),
-                        created_at: now,
-                        updated_at: now,
-                    };
-
-                    match store.insert_person(&person).await {
-                        Ok(()) => {
-                            inserted += 1;
-                            tracing::debug!(
-                                name = %disc.name,
-                                method = %disc.discovery_method,
-                                "poi_discovery: inserted new person"
-                            );
-
-                            if let Some(seed) = parent_seed {
-                                let role_family_label = person.role_family.as_str().to_string();
-                                let _ = store
-                                    .insert_role_history(
-                                        person.id,
-                                        person.primary_org_id,
-                                        &seed.org_name,
-                                        person.current_role.as_deref().unwrap_or("Unknown"),
-                                        Some(&role_family_label),
-                                        Some(now),
-                                        None,
-                                        Some(&disc.source_url),
-                                        disc.confidence as f64,
-                                    )
-                                    .await;
-                            }
-
-                            if let Some(scraper) = person_scraper.as_ref() {
-                                let org_hint = parent_seed.map(|s| s.org_name.as_str()).unwrap_or("");
-                                let mut raw_artifacts = scraper.aggregate(&person.name, org_hint).await;
-
-                                if let Some(tor) = tor_client.as_ref() {
-                                    let org_domain = parent_seed.and_then(|s| s.org_domain.as_deref());
-                                    if tor.is_available() && onion_enriched_people < max_onion_people {
-                                        let dark_web = tor.aggregate_dark_web_contacts(&person.name, org_domain).await;
-                                        let onion_raw = dark_web_to_raw_artifacts(&dark_web, org_domain);
-                                        if !onion_raw.is_empty() {
-                                            onion_enriched_people += 1;
-                                        }
-                                        raw_artifacts.extend(onion_raw);
-                                    }
-                                }
-
-                                let mut inserted_for_person = 0u64;
-                                for raw in raw_artifacts.into_iter().take(120) {
-                                    if !is_high_quality_raw_artifact(&raw) {
-                                        continue;
-                                    }
-                                    if let Some(artifact) = raw_to_poi_artifact(person.id, raw, &disc.source_url, now) {
-                                        if store.insert_poi_artifact(&artifact).await.is_ok() {
-                                            inserted_for_person += 1;
-                                        }
-                                    }
-                                }
-                                artifacts_ingested += inserted_for_person;
-                                tracing::info!(
-                                    person = %person.name,
-                                    artifacts = inserted_for_person,
-                                    "poi_discovery: deep profile artifacts ingested"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            errors.push(format!("{}: {}", disc.name, e));
-                            tracing::warn!(
-                                name = %disc.name,
-                                error = %e,
-                                "poi_discovery: failed to insert person"
-                            );
-                        }
-                    }
-                }
-
-                if errors.is_empty() {
-                    run.succeed(
-                        inserted,
-                        &format!(
-                            "poi_discovery: {} seeds ({} competitor / {} partner) → {} validated → {} inserted, {} artifacts, {} duplicates skipped",
-                            seeds.len(),
-                            selected_seed_rows.iter().filter(|r| r.is_competitor).count(),
-                            selected_seed_rows.iter().filter(|r| !r.is_competitor).count(),
-                            discoveries.len(),
-                            inserted,
-                            artifacts_ingested,
-                            skipped_dup
-                        ),
-                    );
-                } else {
-                    run.succeed(
-                        inserted,
-                        &format!(
-                            "poi_discovery: {} inserted, {} artifacts, {} duplicates, {} errors: {}",
-                            inserted,
-                            artifacts_ingested,
-                            skipped_dup,
-                            errors.len(),
-                            errors.join("; ")
-                        ),
-                    );
-                }
-            }
-            #[cfg(not(feature = "llm"))]
-            {
-                run.skip("poi_discovery: requires the `llm` feature");
-            }
-            run
-        }
-        JobKind::Custom(name) => {
-            let mut run = JobRun::new(JobKind::Custom(name.clone()));
-            run.start();
-            let key = format!("CUSTOM_JOB_COMMAND_{}", name.to_uppercase());
-            match std::env::var(&key) {
-                Ok(command) if !command.trim().is_empty() => {
-                    let allowlist: Vec<String> = std::env::var("CUSTOM_JOB_ALLOWLIST")
-                        .ok()
-                        .map(|raw| {
-                            raw.split(',')
-                                .map(str::trim)
-                                .filter(|entry| !entry.is_empty())
-                                .map(ToOwned::to_owned)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let allowlist_refs: Vec<&str> = allowlist.iter().map(|entry| entry.as_str()).collect();
-                    if let Err(err) = validate_custom_command(&name, &command, &allowlist_refs) {
-                        run.fail(&format!("custom command validation failed for {}: {}", key, err));
-                        return run;
-                    }
-
-                    let timeout = std::time::Duration::from_secs(
-                        std::env::var("CUSTOM_JOB_TIMEOUT_SECS")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(300),
-                    );
-                    let status = tokio::time::timeout(
-                        timeout,
-                        tokio::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&command)
-                            .status(),
-                    )
-                    .await;
-                    match status {
-                        Ok(Ok(exit)) if exit.success() => {
-                            run.succeed(1, &format!("custom command succeeded: {}", key));
-                        }
-                        Ok(Ok(exit)) => {
-                            run.fail(&format!("custom command exited with status: {}", exit));
-                        }
-                        Ok(Err(err)) => {
-                            run.fail(&format!("custom command execution failed: {}", err));
-                        }
-                        Err(_) => {
-                            run.fail(&format!("custom command timed out after {}s", timeout.as_secs()));
-                        }
-                    }
-                }
-                _ => {
-                    run.skip(&format!("custom command env missing: {}", key));
-                }
-            }
-            run
-        }
-    }
+    job_execution::execute_job(kind, store).await
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -6161,14 +4857,34 @@ fn looks_like_person_name(name: &str) -> bool {
     if cleaned.is_empty() || cleaned.len() > 80 {
         return false;
     }
+    if !apex_core::person_names::looks_like_person_name(cleaned) {
+        return false;
+    }
     if cleaned.chars().any(|c| c.is_ascii_digit()) {
         return false;
     }
 
     let blocked_terms = [
-        "holdings", "limited", "ltd", "inc", "corp", "group", "reports", "transcript",
-        "revenue", "demand", "guidance", "quarter", "deep dive", "boost", "street",
-        "expectations", "call", "earnings", "meet", "cloud",
+        "holdings",
+        "limited",
+        "ltd",
+        "inc",
+        "corp",
+        "group",
+        "reports",
+        "transcript",
+        "revenue",
+        "demand",
+        "guidance",
+        "quarter",
+        "deep dive",
+        "boost",
+        "street",
+        "expectations",
+        "call",
+        "earnings",
+        "meet",
+        "cloud",
     ];
     let lower = cleaned.to_lowercase();
     if blocked_terms.iter().any(|t| lower.contains(t)) {
@@ -6188,10 +4904,135 @@ fn looks_like_person_name(name: &str) -> bool {
     parts.iter().all(|p| {
         let mut chars = p.chars();
         match chars.next() {
-            Some(first) if first.is_uppercase() => chars.all(|c| c.is_alphabetic() || c == '-' || c == '\''),
+            Some(first) if first.is_uppercase() => {
+                chars.all(|c| c.is_alphabetic() || c == '-' || c == '\'')
+            }
             _ => false,
         }
     })
+}
+
+#[cfg(feature = "llm")]
+fn company_name_matches_seed(inferred_org: &str, seed_org: &str) -> bool {
+    let inferred = normalize_company_name(inferred_org);
+    let seed = normalize_company_name(seed_org);
+    !inferred.is_empty() && inferred == seed
+}
+
+#[cfg(feature = "llm")]
+fn is_public_email_domain(domain: &str) -> bool {
+    matches!(
+        domain,
+        "gmail.com"
+            | "googlemail.com"
+            | "outlook.com"
+            | "hotmail.com"
+            | "live.com"
+            | "yahoo.com"
+            | "icloud.com"
+            | "aol.com"
+            | "proton.me"
+            | "protonmail.com"
+    )
+}
+
+#[cfg(feature = "llm")]
+fn normalize_company_domain(domain: &str) -> Option<String> {
+    let normalized = domain
+        .trim()
+        .trim_start_matches("www.")
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if normalized.is_empty() || !normalized.contains('.') {
+        return None;
+    }
+    Some(normalized)
+}
+
+#[cfg(feature = "llm")]
+fn extract_candidate_company_domain(disc: &DiscoveredPoi) -> Option<String> {
+    if let Some(email) = disc.contact_email.as_deref() {
+        if let Some((_, domain)) = email.rsplit_once('@') {
+            let normalized = normalize_company_domain(domain)?;
+            if !is_public_email_domain(&normalized) {
+                return Some(normalized);
+            }
+        }
+    }
+
+    if matches!(
+        disc.discovery_method.as_str(),
+        "org_leadership" | "org_leadership_fallback"
+    ) {
+        if let Ok(url) = reqwest::Url::parse(&disc.source_url) {
+            if let Some(host) = url.host_str() {
+                return normalize_company_domain(host);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(feature = "llm")]
+async fn resolve_discovered_company_id(
+    store: &PgStore,
+    disc: &DiscoveredPoi,
+    parent_seed: Option<&apex_store::postgres::ExpansionSeedRow>,
+    now: chrono::DateTime<Utc>,
+) -> Result<Option<Uuid>> {
+    let inferred_org = disc
+        .inferred_org
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let (Some(seed), Some(org_name)) = (parent_seed, inferred_org) {
+        if company_name_matches_seed(org_name, &seed.org_name) {
+            return Ok(seed.primary_org_id);
+        }
+    }
+
+    let inferred_domain = extract_candidate_company_domain(disc);
+    if let Some(domain) = inferred_domain.as_deref() {
+        if let Some(existing) = store.get_company_by_domain(domain).await? {
+            return Ok(Some(existing.id));
+        }
+    }
+
+    if let Some(org_name) = inferred_org {
+        if let Some(existing) = store.get_company_by_name_ci(org_name).await? {
+            return Ok(Some(existing.id));
+        }
+
+        let mut company = Company::new(
+            org_name.to_string(),
+            CompanyType::Other("poi_discovered".to_string()),
+        );
+        company.domain = inferred_domain;
+        company.metadata = serde_json::json!({
+            "discovered_via": "poi_discovery",
+            "discovery_method": disc.discovery_method,
+            "source_url": disc.source_url,
+            "seed_person_id": disc.seed_person_id,
+            "confidence": disc.confidence,
+            "seed_org_name": parent_seed.map(|seed| seed.org_name.as_str()),
+            "seed_org_id": parent_seed.and_then(|seed| seed.primary_org_id).map(|id| id.to_string()),
+            "seed_is_competitor": parent_seed.map(|seed| seed.is_competitor).unwrap_or(false),
+        });
+        company.created_at = now;
+        company.updated_at = now;
+        store.insert_company(&company).await?;
+        tracing::info!(
+            company = %company.name,
+            domain = ?company.domain,
+            method = %disc.discovery_method,
+            "poi_discovery: inserted new company"
+        );
+        return Ok(Some(company.id));
+    }
+
+    Ok(parent_seed.and_then(|seed| seed.primary_org_id))
 }
 
 /// Classify an inferred role title into a canonical `RoleFamily`.
@@ -6202,13 +5043,19 @@ fn classify_role_family(role: Option<&str>) -> RoleFamily {
         _ => return RoleFamily::Other("Unknown".to_string()),
     };
     // C-suite / executive
-    if r.contains("ceo") || r.contains("chief executive") || r.contains("chairman")
-        || r.contains("chairwoman") || r.contains("president")
+    if r.contains("ceo")
+        || r.contains("chief executive")
+        || r.contains("chairman")
+        || r.contains("chairwoman")
+        || r.contains("president")
     {
         return RoleFamily::Executive;
     }
-    if r.contains("cfo") || r.contains("chief financial") || r.contains("treasurer")
-        || r.contains("controller") || r.contains("comptroller")
+    if r.contains("cfo")
+        || r.contains("chief financial")
+        || r.contains("treasurer")
+        || r.contains("controller")
+        || r.contains("comptroller")
     {
         return RoleFamily::Finance;
     }
@@ -6221,32 +5068,57 @@ fn classify_role_family(role: Option<&str>) -> RoleFamily {
     if r.contains("ciso") || r.contains("chief security") {
         return RoleFamily::Security;
     }
-    if r.contains("chief") || r.contains("director") || r.contains("board")
-        || r.contains("executive vice") || r.contains("senior vice")
+    if r.contains("chief")
+        || r.contains("director")
+        || r.contains("board")
+        || r.contains("executive vice")
+        || r.contains("senior vice")
     {
         return RoleFamily::Executive;
     }
     // VP-level roles — classify by functional area
     if r.contains("vp") || r.contains("vice president") {
-        if r.contains("finance") || r.contains("financial") { return RoleFamily::Finance; }
-        if r.contains("engineer") || r.contains("technology") || r.contains("r&d") { return RoleFamily::Engineering; }
-        if r.contains("operation") || r.contains("supply chain") || r.contains("manufacturing") { return RoleFamily::Operations; }
-        if r.contains("procurement") || r.contains("sourcing") { return RoleFamily::Procurement; }
-        if r.contains("quality") { return RoleFamily::Quality; }
-        if r.contains("security") { return RoleFamily::Security; }
-        if r.contains("legal") || r.contains("counsel") { return RoleFamily::Legal; }
-        if r.contains("logistics") { return RoleFamily::Logistics; }
+        if r.contains("finance") || r.contains("financial") {
+            return RoleFamily::Finance;
+        }
+        if r.contains("engineer") || r.contains("technology") || r.contains("r&d") {
+            return RoleFamily::Engineering;
+        }
+        if r.contains("operation") || r.contains("supply chain") || r.contains("manufacturing") {
+            return RoleFamily::Operations;
+        }
+        if r.contains("procurement") || r.contains("sourcing") {
+            return RoleFamily::Procurement;
+        }
+        if r.contains("quality") {
+            return RoleFamily::Quality;
+        }
+        if r.contains("security") {
+            return RoleFamily::Security;
+        }
+        if r.contains("legal") || r.contains("counsel") {
+            return RoleFamily::Legal;
+        }
+        if r.contains("logistics") {
+            return RoleFamily::Logistics;
+        }
         return RoleFamily::Executive;
     }
     // Government
-    if r.contains("minister") || r.contains("secretary") || r.contains("governor")
-        || r.contains("commissioner") || r.contains("ambassador")
+    if r.contains("minister")
+        || r.contains("secretary")
+        || r.contains("governor")
+        || r.contains("commissioner")
+        || r.contains("ambassador")
     {
         return RoleFamily::Government;
     }
     // Military
-    if r.contains("general") || r.contains("admiral") || r.contains("colonel")
-        || r.contains("military") || r.contains("commander")
+    if r.contains("general")
+        || r.contains("admiral")
+        || r.contains("colonel")
+        || r.contains("military")
+        || r.contains("commander")
     {
         return RoleFamily::Military;
     }
@@ -6254,8 +5126,12 @@ fn classify_role_family(role: Option<&str>) -> RoleFamily {
     if r.contains("procurement") || r.contains("sourcing") || r.contains("purchasing") {
         return RoleFamily::Procurement;
     }
-    if r.contains("quality") { return RoleFamily::Quality; }
-    if r.contains("engineer") || r.contains("architect") { return RoleFamily::Engineering; }
+    if r.contains("quality") {
+        return RoleFamily::Quality;
+    }
+    if r.contains("engineer") || r.contains("architect") {
+        return RoleFamily::Engineering;
+    }
     if r.contains("operation") || r.contains("manufacturing") || r.contains("plant manager") {
         return RoleFamily::Operations;
     }
@@ -6265,7 +5141,9 @@ fn classify_role_family(role: Option<&str>) -> RoleFamily {
     if r.contains("legal") || r.contains("counsel") || r.contains("compliance") {
         return RoleFamily::Legal;
     }
-    if r.contains("security") || r.contains("cyber") { return RoleFamily::Security; }
+    if r.contains("security") || r.contains("cyber") {
+        return RoleFamily::Security;
+    }
     if r.contains("logistics") || r.contains("warehouse") || r.contains("shipping") {
         return RoleFamily::Logistics;
     }
@@ -6427,7 +5305,11 @@ async fn run_llm_continuous_improvement_cycle(
     let failure_preview = if failure_ids.is_empty() {
         "none".to_string()
     } else {
-        failure_ids.into_iter().take(6).collect::<Vec<_>>().join(", ")
+        failure_ids
+            .into_iter()
+            .take(6)
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let eval_summary = format!(
@@ -6441,24 +5323,54 @@ async fn run_llm_continuous_improvement_cycle(
         eval_report.failed,
         failure_preview,
     );
-    if let Err(e) = store
-        .insert_insight(
-            "LLM Eval Gate Report",
-            &eval_summary,
-            Some("llm_eval_report"),
-            Some("global"),
-            Some(eval_pass_rate),
-            None,
-            None,
-            Some(vec![
-                "llm".to_string(),
-                "self_improvement".to_string(),
-                "eval".to_string(),
-            ]),
+    let eval_metrics = serde_json::json!({
+        "suite_name": eval_report.suite_name,
+        "run_id": eval_report.run_id,
+        "pass_rate": eval_pass_rate,
+        "avg_judge_score": eval_avg_score,
+        "hallucination_rate": eval_hallucination_rate,
+        "total_cases": eval_report.total_cases,
+        "passed": eval_report.passed,
+        "failed": eval_report.failed,
+        "failure_preview": failure_preview,
+    });
+    let eval_artifacts =
+        serde_json::to_value(&eval_report).unwrap_or_else(|_| serde_json::json!({}));
+    if let Err(error) = store
+        .record_llm_improvement_run(
+            "standard_eval_suite",
+            &eval_report.run_id,
+            &eval_metrics,
+            &eval_artifacts,
         )
         .await
     {
-        tracing::warn!(error = %e, "self_improvement_cycle: failed to persist llm eval report insight");
+        tracing::warn!(%error, "self_improvement_cycle: failed to persist eval run artifact");
+    }
+    if passes_shared_insight_quality_gate(
+        "LLM Eval Gate Report",
+        &eval_summary,
+        Some("llm_eval_report"),
+    ) {
+        if let Err(e) = store
+            .insert_insight(
+                "LLM Eval Gate Report",
+                &eval_summary,
+                Some("llm_eval_report"),
+                Some("global"),
+                Some(eval_pass_rate),
+                None,
+                None,
+                Some(vec![
+                    "llm".to_string(),
+                    "self_improvement".to_string(),
+                    "eval".to_string(),
+                ]),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "self_improvement_cycle: failed to persist llm eval report insight");
+        }
     }
 
     if eval_pass_rate < min_eval_pass_rate
@@ -6624,54 +5536,98 @@ async fn run_llm_continuous_improvement_cycle(
         cycle_report.failure_hypotheses.len(),
         training_examples.len(),
     );
-    if let Err(e) = store
-        .insert_insight(
-            "LLM Continuous Improvement Cycle",
-            &improvement_summary,
-            Some("llm_self_improvement"),
-            Some("global"),
-            Some(cycle_report.avg_critique_score.clamp(0.0, 1.0)),
-            None,
-            None,
-            Some(vec![
-                "llm".to_string(),
-                "self_improvement".to_string(),
-                "continuous_learning".to_string(),
-            ]),
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "self_improvement_cycle: failed to persist continuous improvement insight");
-    }
-
-    let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
-    if !jsonl_examples.is_empty() {
-        let preview: String = jsonl_examples.chars().take(2400).collect();
-        let preview_summary = format!(
-            "{}{}",
-            preview,
-            if jsonl_examples.chars().count() > 2400 {
-                "\n...truncated..."
-            } else {
-                ""
-            }
-        );
-        let _ = store
+    if passes_shared_insight_quality_gate(
+        "LLM Continuous Improvement Cycle",
+        &improvement_summary,
+        Some("llm_self_improvement"),
+    ) {
+        if let Err(e) = store
             .insert_insight(
-                "LLM Training Example Export (Preview)",
-                &preview_summary,
-                Some("llm_training_examples"),
+                "LLM Continuous Improvement Cycle",
+                &improvement_summary,
+                Some("llm_self_improvement"),
                 Some("global"),
                 Some(cycle_report.avg_critique_score.clamp(0.0, 1.0)),
                 None,
                 None,
                 Some(vec![
                     "llm".to_string(),
-                    "training_data".to_string(),
                     "self_improvement".to_string(),
+                    "continuous_learning".to_string(),
                 ]),
             )
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, "self_improvement_cycle: failed to persist continuous improvement insight");
+        }
+    }
+
+    let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
+    let cycle_metrics = serde_json::json!({
+        "cycle_id": cycle_report.cycle_id,
+        "captures_seeded": captures_seeded,
+        "captures_analysed": cycle_report.captures_analysed,
+        "examples_qualifying": cycle_report.examples_qualifying,
+        "avg_critique_score": cycle_report.avg_critique_score,
+        "prompt_improvements": cycle_report.prompt_improvements.len(),
+        "failure_hypotheses": cycle_report.failure_hypotheses.len(),
+        "training_examples": training_examples.len(),
+    });
+    let cycle_report_value =
+        serde_json::to_value(&cycle_report).unwrap_or_else(|_| serde_json::json!({}));
+    let cycle_artifacts = serde_json::json!({
+        "report": cycle_report_value,
+        "training_examples_preview_chars": jsonl_examples.chars().count(),
+    });
+    if let Err(error) = store
+        .record_llm_improvement_run(
+            "continuous_self_improvement_cycle",
+            &cycle_report.cycle_id,
+            &cycle_metrics,
+            &cycle_artifacts,
+        )
+        .await
+    {
+        tracing::warn!(%error, "self_improvement_cycle: failed to persist continuous improvement run artifact");
+    }
+
+    let dataset_version = format!(
+        "{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%SZ"),
+        cycle_report.cycle_id
+    );
+    let dataset_manifest = serde_json::json!({
+        "dataset_name": "llm_self_improvement_examples",
+        "dataset_version": dataset_version,
+        "source_cycle_id": cycle_report.cycle_id,
+        "eval_suite": eval_report.suite_name,
+        "eval_run_id": eval_report.run_id,
+        "example_count": training_examples.len(),
+        "schema": "alpaca_chat_jsonl_v1",
+        "tasks": ["insight_generation", "evidence_chain"],
+    });
+    if let Err(error) = store
+        .record_llm_training_dataset(
+            "llm_self_improvement_examples",
+            &dataset_version,
+            "continuous_self_improvement_cycle",
+            &cycle_report.cycle_id,
+            &dataset_manifest,
+            training_examples.len() as i64,
+            &jsonl_examples,
+        )
+        .await
+    {
+        tracing::warn!(%error, "self_improvement_cycle: failed to persist training dataset artifact");
+    }
+
+    if !jsonl_examples.is_empty() {
+        tracing::info!(
+            training_examples = training_examples.len(),
+            jsonl_chars = jsonl_examples.chars().count(),
+            dataset_version = %dataset_version,
+            "self_improvement_cycle: persisted training examples dataset"
+        );
     }
 
     let min_critique = std::env::var("LLM_SELF_IMPROVEMENT_MIN_CRITIQUE")
@@ -6788,13 +5744,21 @@ fn is_high_quality_raw_artifact(raw: &RawPersonArtifact) -> bool {
             .and_then(|v| v.parse::<f64>().ok())
             .map(|v| v >= 20.0)
             .unwrap_or(false);
-        let has_url = raw.url.as_deref().map(|u| !u.trim().is_empty()).unwrap_or(false);
+        let has_url = raw
+            .url
+            .as_deref()
+            .map(|u| !u.trim().is_empty())
+            .unwrap_or(false);
         return (credibility || has_engagement) && has_url && content_len >= 60;
     }
 
     if raw.source.starts_with("darkweb_") {
         let has_evidence = raw.meta.get("domain").is_some() || raw.meta.get("source").is_some();
-        let has_url = raw.url.as_deref().map(|u| !u.trim().is_empty()).unwrap_or(false);
+        let has_url = raw
+            .url
+            .as_deref()
+            .map(|u| !u.trim().is_empty())
+            .unwrap_or(false);
         return raw.confidence >= 0.70 && has_evidence && has_url;
     }
 
@@ -6802,7 +5766,10 @@ fn is_high_quality_raw_artifact(raw: &RawPersonArtifact) -> bool {
 }
 
 #[cfg(feature = "llm")]
-fn dark_web_to_raw_artifacts(intel: &DarkWebPersonIntel, org_domain: Option<&str>) -> Vec<RawPersonArtifact> {
+fn dark_web_to_raw_artifacts(
+    intel: &DarkWebPersonIntel,
+    org_domain: Option<&str>,
+) -> Vec<RawPersonArtifact> {
     let mut out = Vec::new();
     let domain_lc = org_domain.map(|d| d.to_ascii_lowercase());
 
@@ -6849,12 +5816,18 @@ fn dark_web_to_raw_artifacts(intel: &DarkWebPersonIntel, org_domain: Option<&str
             url: Some(rec.source_url.clone()),
             ts_utc: rec.ts_scraped,
             language: None,
-            confidence: if email_match { 0.80 } else { rec.confidence.max(0.70) },
+            confidence: if email_match {
+                0.80
+            } else {
+                rec.confidence.max(0.70)
+            },
             meta,
         };
 
         if email_match {
-            artifact.meta.insert("domain_match".to_string(), "true".to_string());
+            artifact
+                .meta
+                .insert("domain_match".to_string(), "true".to_string());
         }
         out.push(artifact);
     }
@@ -6937,9 +5910,9 @@ fn extract_domain(url: &str) -> Option<String> {
 /// ```
 async fn read_file_with_size_check(path: &str) -> Result<String> {
     // Fetch file metadata before attempting to read
-    let metadata = tokio::fs::metadata(path).await.map_err(|err| {
-        anyhow::anyhow!("failed to stat file '{}': {}", path, err)
-    })?;
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to stat file '{}': {}", path, err))?;
 
     let file_size = metadata.len();
     if file_size > MAX_INPUT_FILE_BYTES {
@@ -6953,9 +5926,9 @@ async fn read_file_with_size_check(path: &str) -> Result<String> {
     }
 
     // Size is within limit; proceed with the read
-    let content = tokio::fs::read_to_string(path).await.map_err(|err| {
-        anyhow::anyhow!("failed to read file '{}': {}", path, err)
-    })?;
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to read file '{}': {}", path, err))?;
 
     Ok(content)
 }
@@ -7009,7 +5982,12 @@ fn generate_typosquat_variants(domain: &str) -> Vec<String> {
 
     // Omission: drop each char
     for i in 0..n {
-        let s: String = sld.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, c)| c).collect();
+        let s: String = sld
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, c)| c)
+            .collect();
         if !s.is_empty() {
             variants.insert(format!("{}.{}", s, tld));
         }
@@ -7022,4 +6000,670 @@ fn generate_typosquat_variants(domain: &str) -> Vec<String> {
     }
 
     variants.into_iter().take(50).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_quality_gate_accepts_natural_veracity_summary() {
+        let title = "NVIDIA: likely gpu and procurement development";
+        let summary = "NVIDIA is appearing in 4 recent reports across 3 independent sources. The reported development centers on gpu and procurement activity, and source coverage is being compared for corroboration. The current read is likely because reported hiring and supply-chain evidence are showing up across multiple articles. If this matters commercially, keep it on an active watchlist while stronger confirmation arrives.";
+
+        assert!(passes_shared_insight_quality_gate(
+            title,
+            summary,
+            Some("veracity_analysis")
+        ));
+    }
+
+    #[test]
+    fn shared_quality_gate_rejects_template_markers() {
+        let title = "Intelligence Veracity: NVIDIA";
+        let summary = "Additional source reporting: source one. Signal themes detected: gpu, procurement. Assessment: MODERATE-HIGH CONFIDENCE. Actionable: move now.";
+
+        assert!(!passes_shared_insight_quality_gate(
+            title,
+            summary,
+            Some("veracity_analysis")
+        ));
+    }
+
+    #[test]
+    fn shared_quality_gate_allows_internal_llm_reports() {
+        assert!(passes_shared_insight_quality_gate(
+            "LLM Eval Gate Report",
+            "Assessment: internal evaluator output is intentionally structured for debugging.",
+            Some("llm_eval_report")
+        ));
+    }
+
+    #[test]
+    fn generic_action_hints_are_not_treated_as_concrete_lanes() {
+        assert!(is_generic_action_hint("Monitor sentiment trajectory"));
+        assert!(is_generic_action_hint("Identify topic drivers"));
+        assert!(is_generic_action_hint(
+            "Convene cross-functional risk assessment"
+        ));
+        assert!(is_generic_action_hint(
+            "Scenario-plan for operational disruption"
+        ));
+        assert!(is_generic_action_hint(
+            "Document and classify suspicious domains"
+        ));
+        assert!(is_generic_action_hint("Initiate takedown procedures"));
+        assert!(!is_generic_action_hint(
+            "Review DG GROW supplier notice from 2026-03-07"
+        ));
+        assert!(!is_generic_action_hint(
+            "Initiate takedown for tunisia-gov-alert.com"
+        ));
+    }
+
+    #[test]
+    fn token_jaccard_similarity_ignores_duplicate_tokens() {
+        let left = vec!["nvidia".to_string(), "gpu".to_string(), "gpu".to_string()];
+        let right = vec![
+            "nvidia".to_string(),
+            "supply".to_string(),
+            "gpu".to_string(),
+        ];
+
+        let similarity = token_jaccard_similarity(&left, &right);
+
+        assert!((similarity - (2.0 / 3.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn env_flag_uses_shared_truthy_parser() {
+        std::env::set_var("APEX_TEST_ENV_FLAG", " yes ");
+
+        assert!(env_flag("APEX_TEST_ENV_FLAG"));
+
+        std::env::remove_var("APEX_TEST_ENV_FLAG");
+    }
+
+    #[test]
+    fn truncate_text_uses_shared_utf8_boundary_logic() {
+        assert_eq!(truncate_text("hello 😀", 7), "hello ");
+    }
+
+    #[test]
+    fn aggregate_count_signal_details_are_not_treated_as_concrete_evidence() {
+        let signal_details = vec![
+            "26 job posting(s) observed".to_string(),
+            "2 patent(s) filed".to_string(),
+            "16 certification(s) on record".to_string(),
+            "1 competitor signal(s)".to_string(),
+            "45 web change(s) detected".to_string(),
+        ];
+
+        assert_eq!(count_concrete_signal_details(&signal_details), 0);
+        assert!(!should_emit_fallback_insight(
+            &signal_details,
+            "Monitor sentiment trajectory; Assess customer impact",
+            0.48,
+            2,
+        ));
+        assert!(!should_emit_fallback_insight(
+            &signal_details,
+            "Convene cross-functional risk assessment; Scenario-plan for operational disruption",
+            0.82,
+            4,
+        ));
+    }
+
+    #[test]
+    fn shared_quality_gate_rejects_generic_count_only_fallback_summary() {
+        let summary = "Arrow Electronics (North America) has been flagged for security and compliance concerns. Our monitoring detected: 26 job posting(s) observed; 2 patent(s) filed; 16 certification(s) on record; 1 competitor signal(s); 45 web change(s) detected. If the priority is assurance, gather the evidence that would reassure auditors, customers, and procurement teams that Arrow Electronics still clears the relevant security or quality gate. This deserves action inside the current planning cycle rather than being left as passive watch-list material. Overall confidence is preliminary (48%), grounded in 2 supporting signal(s).";
+
+        assert!(!passes_shared_insight_quality_gate(
+            "Arrow Electronics: security and compliance concerns",
+            summary,
+            Some("security_compliance"),
+        ));
+    }
+
+    #[test]
+    fn shared_quality_gate_rejects_public_sector_single_count_fallback_summary() {
+        let summary = "Government of Czech Republic (Europe) has been flagged for geopolitical developments affecting operations. Our monitoring detected: 1 web change(s) detected. Policy and trade exposure can quickly make footprint, routing, and export eligibility more decisive than nominal unit cost, especially where EU and North Africa positioning changes the compliance or resilience story. Immediate next step: Convene cross-functional risk assessment. Scenario-plan for operational disruption.";
+
+        assert!(!passes_shared_insight_quality_gate(
+            "Government of Czech Republic: geopolitical developments affecting operations",
+            summary,
+            Some("geopolitical_analysis"),
+        ));
+    }
+
+    #[test]
+    fn nonsecurity_titles_skip_aggregate_counts_and_legacy_phrases() {
+        let title = build_analytical_title(
+            "Government of Netherlands",
+            "Europe",
+            "geopolitical_analysis",
+            &["86 web change(s) detected".to_string()],
+            Some("Government"),
+        );
+
+        assert!(title.contains("policy and trade exposure shift"));
+        assert!(!title.contains("diplomatic development flagged"));
+        assert!(!title.contains("86 web change(s) detected"));
+    }
+
+    #[test]
+    fn customer_rfq_titles_use_emerging_procurement_language() {
+        let title = build_analytical_title(
+            "Jabil",
+            "North America",
+            "customer_rfq",
+            &["18 job posting(s) observed".to_string()],
+            Some("Company"),
+        );
+
+        assert!(title.contains("procurement signal emerging"));
+        assert!(!title.contains("RFQ or customer engagement activity"));
+        assert!(!title.contains("18 job posting(s) observed"));
+    }
+
+    #[test]
+    fn public_sector_brand_sentiment_avoids_commercial_template_language() {
+        let summary = build_fallback_summary(
+            "European Commission (Europe) has been flagged for brand sentiment and reputation signals.",
+            "Monitor sentiment trajectory; Identify topic drivers; Assess customer impact",
+            &["Press coverage increased after an EU policy dispute".to_string()],
+            &[],
+            "European Commission",
+            "Europe",
+            Some("Government"),
+            "brand_sentiment",
+            "warning",
+            0.79,
+            3,
+        );
+
+        let lower = summary.to_ascii_lowercase();
+        assert!(!lower.contains("pipeline capture"));
+        assert!(!lower.contains("commercial upside"));
+        assert!(!lower.contains("one concrete lane worth testing is this"));
+        assert!(
+            lower.contains("tender scrutiny")
+                || lower.contains("oversight")
+                || lower.contains("approval timing")
+        );
+    }
+
+    #[test]
+    fn public_sector_security_fallback_uses_specific_artifacts_not_generic_playbook() {
+        let summary = build_fallback_summary(
+            "Government of Tunisia (MENA) has been flagged for cybersecurity threats and vulnerabilities.",
+            "Document and classify suspicious domains; Initiate takedown procedures",
+            &[
+                "3 lookalike domain(s) detected".to_string(),
+                "DNS posture degradation detected".to_string(),
+            ],
+            &[],
+            "Government of Tunisia",
+            "MENA",
+            Some("Government"),
+            "cybersecurity_threat",
+            "warning",
+            0.83,
+            3,
+        );
+
+        let lower = summary.to_ascii_lowercase();
+        assert!(lower.contains(
+            "key evidence: 3 lookalike domain(s) detected; dns posture degradation detected"
+        ));
+        assert!(
+            lower.contains("official domains")
+                || lower.contains("procurement portals")
+                || lower.contains("citizen-facing services")
+        );
+        assert!(!lower.contains("vendor eligibility"));
+        assert!(!lower.contains("customer audits"));
+        assert!(!lower.contains("immediate next step:"));
+    }
+
+    #[test]
+    fn public_sector_geopolitical_fallback_avoids_generic_supply_chain_actions() {
+        let summary = build_fallback_summary(
+            "European Commission (Europe) has been flagged for geopolitical developments affecting operations.",
+            "Adjust supply chain monitoring priorities; Review partner exposure",
+            &["European Commission published an updated trade defense consultation notice".to_string()],
+            &[],
+            "European Commission",
+            "Europe",
+            Some("Government"),
+            "geopolitical_analysis",
+            "warning",
+            0.81,
+            2,
+        );
+
+        let lower = summary.to_ascii_lowercase();
+        assert!(!lower.contains("immediate next step:"));
+        assert!(!lower.contains("adjust supply chain monitoring priorities"));
+        assert!(
+            lower.contains("official statement")
+                || lower.contains("tender amendment")
+                || lower.contains("oversight action")
+        );
+    }
+
+    #[test]
+    fn fallback_summary_appends_numbered_sources_footer() {
+        let summary = build_fallback_summary(
+            "European Commission (Europe) has been flagged for geopolitical developments affecting operations.",
+            "Review consultation scope",
+            &["European Commission published an updated trade defense consultation notice".to_string()],
+            &[
+                "https://ec.europa.eu/commission/presscorner/detail/en/ip_26_1234".to_string(),
+                "https://trade.ec.europa.eu/doclib/notice-2026-03-07".to_string(),
+            ],
+            "European Commission",
+            "Europe",
+            Some("Government"),
+            "geopolitical_analysis",
+            "warning",
+            0.81,
+            2,
+        );
+
+        assert!(summary.contains("Sources:"));
+        assert!(summary.contains(
+            "[1] ec.europa.eu — https://ec.europa.eu/commission/presscorner/detail/en/ip_26_1234"
+        ));
+        assert!(summary.contains(
+            "[2] trade.ec.europa.eu — https://trade.ec.europa.eu/doclib/notice-2026-03-07"
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn low_signal_security_hygiene_rejects_overstated_program_impact() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "El Sewedy DNS posture degradation".to_string(),
+                description:
+                    "DNS posture score at 70 with missing DKIM record and elevated spoofing risk."
+                        .to_string(),
+                source_url: "https://example.com/dns".to_string(),
+                signal_type: "warning".to_string(),
+                extracted_facts: vec![
+                    "30% DNS posture score deficiency".to_string(),
+                    "Missing DKIM record".to_string(),
+                ],
+                date_context: Some("2026-03-07".to_string()),
+                relevance_score: 1.0,
+            },
+            EvidenceSignal {
+                title: "El Sewedy certifications".to_string(),
+                description: "Observed certification scope includes ISO 9001 only.".to_string(),
+                source_url: "https://example.com/certs".to_string(),
+                signal_type: "certification".to_string(),
+                extracted_facts: vec!["ISO 9001".to_string()],
+                date_context: Some("2026-03-07".to_string()),
+                relevance_score: 0.9,
+            },
+        ];
+
+        let narrative = "El Sewedy's DNS posture and missing DKIM undermine its ability to qualify for EU defense programs and medical device manufacturing because customers could face compliance delays.";
+        let recommendation = "Approach named customers and position for supply chain disruption response by Q2 2026 [1].";
+
+        assert!(has_unsupported_security_escalation(
+            "security_compliance",
+            narrative,
+            recommendation,
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn low_signal_certification_warning_rejects_switching_claims() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "Kimball Electronics certification warning".to_string(),
+                description: "Certification warning detected on the capabilities page, with only a generic compliance notice and no named customer or program impact.".to_string(),
+                source_url: "https://example.com/kimball-warning".to_string(),
+                signal_type: "warning".to_string(),
+                extracted_facts: vec![
+                    "Certification warning detected".to_string(),
+                    "Capabilities page update".to_string(),
+                ],
+                date_context: Some("2026-03-07".to_string()),
+                relevance_score: 1.0,
+            },
+            EvidenceSignal {
+                title: "Kimball certifications".to_string(),
+                description: "Observed certifications include ISO 13485 and IATF 16949.".to_string(),
+                source_url: "https://example.com/kimball-certs".to_string(),
+                signal_type: "certification".to_string(),
+                extracted_facts: vec!["ISO 13485".to_string(), "IATF 16949".to_string()],
+                date_context: Some("2026-03-07".to_string()),
+                relevance_score: 0.9,
+            },
+        ];
+
+        let narrative = "Kimball's certification warning means medical device customers could face qualification delays and may switch suppliers because the company appears to be struggling with compliance.";
+        let recommendation = "Target Kimball's medical and automotive customers for a nearshore switch campaign by Q2 2026 [1].";
+
+        assert!(has_unsupported_certification_escalation(
+            narrative,
+            recommendation,
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn unnamed_customer_targeting_is_rejected() {
+        let narrative = "Key Tronic's tariff and compliance warnings create a vulnerability for EU medical device customers because rising cross-border costs could pressure delivery commitments.";
+        let recommendation =
+            "Target their medical device customers for a nearshore switch campaign by Q2 2026 [1].";
+
+        assert!(has_unnamed_customer_targeting(narrative, recommendation));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn public_sector_macro_signal_without_procurement_rejects_hardware_sales_pitch() {
+        let entity_ctx = EntityContext {
+            name: "Government of UAE".to_string(),
+            region: "MENA".to_string(),
+            entity_type: Some("Government".to_string()),
+            is_competitor: false,
+            industry_tags: vec![],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: Some("government.ae".to_string()),
+        };
+
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "government.ae innovation update".to_string(),
+                description: "Innovation signals were detected on government.ae, highlighting strategic investment in media infrastructure and digital transformation.".to_string(),
+                source_url: "https://government.ae/en/media/innovation".to_string(),
+                signal_type: "web_change".to_string(),
+                extracted_facts: vec!["government.ae".to_string(), "innovation".to_string()],
+                date_context: Some("2026-02-28".to_string()),
+                relevance_score: 1.0,
+            },
+            EvidenceSignal {
+                title: "New Media Academy announced".to_string(),
+                description: "The Government of UAE announced the New Media Academy to train media professionals and social media content creators.".to_string(),
+                source_url: "https://government.ae/en/news/new-media-academy".to_string(),
+                signal_type: "news".to_string(),
+                extracted_facts: vec!["New Media Academy".to_string(), "media professionals".to_string()],
+                date_context: Some("2026-02-28".to_string()),
+                relevance_score: 0.9,
+            },
+        ];
+
+        let narrative = "These developments suggest growing demand for electronics manufacturing services to support UAE's digital transformation. The New Media Academy implies need for advanced hardware, including cameras, streaming devices, and AI-driven analytics tools. Given our ISO 9001 and AS9100 certifications, we are qualified to supply reliable electronics for government projects.";
+        let recommendation = "Target the New Media Academy's procurement team to offer PCBA assembly and box build services for media equipment, and submit a qualification package for defense-adjacent electronics manufacturing [1].";
+
+        assert!(has_unsupported_public_sector_commercialization(
+            &entity_ctx,
+            "geopolitical_analysis",
+            narrative,
+            recommendation,
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn public_sector_explicit_tender_for_hardware_does_not_trigger_sales_pitch_guard() {
+        let entity_ctx = EntityContext {
+            name: "Government of UAE".to_string(),
+            region: "MENA".to_string(),
+            entity_type: Some("Government".to_string()),
+            is_competitor: false,
+            industry_tags: vec![],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: Some("government.ae".to_string()),
+        };
+
+        let evidence_signals = vec![EvidenceSignal {
+            title: "Ministry tender for broadcast equipment".to_string(),
+            description: "The ministry procurement portal published a tender for broadcast cameras, streaming devices, and control-room electronics for the New Media Academy campus.".to_string(),
+            source_url: "https://procurement.gov.ae/tenders/media-equipment".to_string(),
+            signal_type: "tender".to_string(),
+            extracted_facts: vec!["tender".to_string(), "broadcast cameras".to_string(), "control-room electronics".to_string()],
+            date_context: Some("2026-02-28".to_string()),
+            relevance_score: 1.0,
+        }];
+
+        let narrative = "A named ministry tender now creates an explicit equipment procurement path for the New Media Academy campus [1].";
+        let recommendation = "Approach the named tender contact with a qualification-led hardware manufacturing response [1].";
+
+        assert!(!has_unsupported_public_sector_commercialization(
+            &entity_ctx,
+            "regulatory_policy",
+            narrative,
+            recommendation,
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn public_sector_generic_opportunity_language_is_rejected_as_low_usefulness() {
+        let entity_ctx = EntityContext {
+            name: "Government of Canada".to_string(),
+            region: "North America".to_string(),
+            entity_type: Some("Government".to_string()),
+            is_competitor: false,
+            industry_tags: vec![],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: Some("canada.ca".to_string()),
+        };
+
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "Government tariff update".to_string(),
+                description: "A government tariff update was posted on the official site together with general hiring signals.".to_string(),
+                source_url: "https://canada.ca/trade/tariff-update".to_string(),
+                signal_type: "news".to_string(),
+                extracted_facts: vec!["tariff update".to_string(), "hiring".to_string()],
+                date_context: Some("2026-02-28".to_string()),
+                relevance_score: 1.0,
+            },
+        ];
+
+        let headline = "Government of Canada's Tariff & Hiring Signals: Nearshoring Opportunity in North Africa";
+        let narrative = "The tariff update and hiring signals point to a nearshoring opportunity in North Africa for Starz because public-sector buyers may need resilient supply alternatives.";
+        let recommendation = "Pursue the nearshoring opportunity and position a North Africa manufacturing response this quarter [1].";
+
+        assert!(has_low_usefulness_public_sector_analysis(
+            &entity_ctx,
+            "geopolitical_analysis",
+            headline,
+            narrative,
+            recommendation,
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn public_sector_concrete_policy_artifact_and_account_action_remain_allowed() {
+        let entity_ctx = EntityContext {
+            name: "European Commission".to_string(),
+            region: "Europe".to_string(),
+            entity_type: Some("Government".to_string()),
+            is_competitor: false,
+            industry_tags: vec![],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: Some("ec.europa.eu".to_string()),
+        };
+
+        let evidence_signals = vec![EvidenceSignal {
+            title: "Trade defense consultation notice".to_string(),
+            description: "The European Commission published a trade defense consultation notice that could affect supplier qualification and approval timing for related programs.".to_string(),
+            source_url: "https://trade.ec.europa.eu/doclib/notice-2026-03-07".to_string(),
+            signal_type: "regulatory".to_string(),
+            extracted_facts: vec!["consultation notice".to_string(), "supplier qualification".to_string(), "approval timing".to_string()],
+            date_context: Some("2026-03-07".to_string()),
+            relevance_score: 1.0,
+        }];
+
+        let headline = "European Commission trade defense consultation could affect supplier qualification timing";
+        let narrative = "Because the consultation notice explicitly affects supplier qualification and approval timing, regulated bids tied to the Commission may face a narrower response window [1].";
+        let recommendation = "Review the consultation notice, map exposed bids and stakeholder owners, and update qualification planning before approval timing moves [1].";
+
+        assert!(!has_low_usefulness_public_sector_analysis(
+            &entity_ctx,
+            "regulatory_policy",
+            headline,
+            narrative,
+            recommendation,
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn sources_footer_lists_ranked_evidence_urls() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "Most relevant".to_string(),
+                description: "Primary evidence".to_string(),
+                source_url: "https://alpha.example.com/report".to_string(),
+                signal_type: "warning".to_string(),
+                extracted_facts: vec![],
+                date_context: None,
+                relevance_score: 1.0,
+            },
+            EvidenceSignal {
+                title: "Secondary".to_string(),
+                description: "Backup evidence".to_string(),
+                source_url: "https://beta.example.com/article".to_string(),
+                signal_type: "news".to_string(),
+                extracted_facts: vec![],
+                date_context: None,
+                relevance_score: 0.7,
+            },
+        ];
+
+        let footer = format_sources_footer(&evidence_signals, 4);
+        assert!(footer.contains("Sources:"));
+        assert!(footer.contains("[1] alpha.example.com — https://alpha.example.com/report"));
+        assert!(footer.contains("[2] beta.example.com — https://beta.example.com/article"));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn company_name_matching_normalizes_punctuation() {
+        assert!(company_name_matches_seed(
+            "STMicroelectronics N.V.",
+            "STMicroelectronics NV"
+        ));
+        assert!(company_name_matches_seed(
+            "Young Poong Electronics Co., Ltd.",
+            "Young Poong Electronics Co Ltd"
+        ));
+        assert!(!company_name_matches_seed("NVIDIA", "AMD"));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn company_name_matching_uses_shared_canonicalization() {
+        let mixed = format!("{}cme", '\u{0410}');
+        assert!(company_name_matches_seed(
+            "Café Société S.A.",
+            "Cafe Societe SA"
+        ));
+        assert!(company_name_matches_seed(&mixed, "Acme"));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn candidate_company_domain_prefers_corporate_email() {
+        let disc = DiscoveredPoi {
+            name: "Jane Doe".to_string(),
+            inferred_role: Some("VP Supply Chain".to_string()),
+            inferred_org: Some("Acme Electronics".to_string()),
+            source_url: "https://news.example.com/article".to_string(),
+            discovery_method: "gdelt_co_mention".to_string(),
+            contact_email: Some("jane.doe@acme-electronics.com".to_string()),
+            contact_linkedin: None,
+            confidence: 0.84,
+            seed_person_id: "seed-1".to_string(),
+            ts_discovered: 0,
+        };
+
+        assert_eq!(
+            extract_candidate_company_domain(&disc).as_deref(),
+            Some("acme-electronics.com")
+        );
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn candidate_company_domain_ignores_public_mailboxes() {
+        let disc = DiscoveredPoi {
+            name: "Jane Doe".to_string(),
+            inferred_role: Some("VP Supply Chain".to_string()),
+            inferred_org: Some("Acme Electronics".to_string()),
+            source_url: "https://www.acme-electronics.com/team".to_string(),
+            discovery_method: "org_leadership".to_string(),
+            contact_email: Some("janedoe@gmail.com".to_string()),
+            contact_linkedin: None,
+            confidence: 0.84,
+            seed_person_id: "seed-1".to_string(),
+            ts_discovered: 0,
+        };
+
+        assert_eq!(
+            extract_candidate_company_domain(&disc).as_deref(),
+            Some("acme-electronics.com")
+        );
+    }
 }

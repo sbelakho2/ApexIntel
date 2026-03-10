@@ -7,13 +7,18 @@
 //! - Security posture summary
 //! - Recommended actions
 
+use apex_core::analysis::{
+    assess_evidence_quality, compare_temporal_windows, fuse_weak_signals,
+    score_competing_hypotheses, source_group_from_url, EvidenceRecord, EvidenceStance,
+    HypothesisInput, HypothesisScorecard, SignalFrame, TemporalDelta,
+};
 use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::renderer::{InsightCard, format_card_text, group_by_category, group_by_region};
+use crate::renderer::{format_card_text, group_by_category, group_by_region, InsightCard};
 
 // ────────────────────────────────────────────
 // Memo structures
@@ -34,6 +39,9 @@ pub struct WeeklyMemo {
     pub top_actions: Vec<ActionItem>,
     pub regional_sections: Vec<RegionalSection>,
     pub security_summary: SecuritySummary,
+    pub temporal_summary: TemporalSummary,
+    pub fused_signal_clusters: Vec<FusedSignalCluster>,
+    pub competing_hypotheses: Vec<HypothesisScorecard>,
     pub category_breakdown: HashMap<String, usize>,
     pub full_text: String,
 }
@@ -65,6 +73,8 @@ pub struct RegionalInsightSummary {
     pub title: String,
     pub severity: String,
     pub impact_label: String,
+    pub evidence_quality_score: f64,
+    pub evidence_quality_label: String,
 }
 
 /// Security posture summary section.
@@ -74,6 +84,26 @@ pub struct SecuritySummary {
     pub critical_security: usize,
     pub top_threats: Vec<String>,
     pub posture_assessment: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemporalSummary {
+    pub volume_delta: TemporalDelta,
+    pub early_period_count: usize,
+    pub late_period_count: usize,
+    pub fastest_rising_region: Option<String>,
+    pub narrative: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FusedSignalCluster {
+    pub theme: String,
+    pub region: Option<String>,
+    pub entities: Vec<String>,
+    pub signal_count: usize,
+    pub independent_source_count: usize,
+    pub combined_score: f64,
+    pub label: String,
 }
 
 // ────────────────────────────────────────────
@@ -181,7 +211,10 @@ pub fn extract_top_actions(cards: &[InsightCard], max_actions: usize) -> Vec<Act
 // ────────────────────────────────────────────
 
 /// Build regional sections from insight cards.
-pub fn build_regional_sections(cards: &[InsightCard], max_per_region: usize) -> Vec<RegionalSection> {
+pub fn build_regional_sections(
+    cards: &[InsightCard],
+    max_per_region: usize,
+) -> Vec<RegionalSection> {
     let by_region = group_by_region(cards);
     let order = region_order();
 
@@ -207,12 +240,17 @@ pub fn build_regional_sections(cards: &[InsightCard], max_per_region: usize) -> 
             let top: Vec<RegionalInsightSummary> = ordered
                 .iter()
                 .take(max_per_region)
-                .map(|c| RegionalInsightSummary {
-                    recipe_code: c.recipe_code.clone(),
-                    entity_name: c.entity_name.clone(),
-                    title: c.title.clone(),
-                    severity: normalize_severity_label(&c.severity).to_string(),
-                    impact_label: c.impact_label.clone(),
+                .map(|c| {
+                    let evidence = card_evidence_quality(c);
+                    RegionalInsightSummary {
+                        recipe_code: c.recipe_code.clone(),
+                        entity_name: c.entity_name.clone(),
+                        title: c.title.clone(),
+                        severity: normalize_severity_label(&c.severity).to_string(),
+                        impact_label: c.impact_label.clone(),
+                        evidence_quality_score: evidence.overall_score,
+                        evidence_quality_label: evidence.quality_label,
+                    }
                 })
                 .collect();
             sections.push(RegionalSection {
@@ -252,12 +290,17 @@ pub fn build_regional_sections(cards: &[InsightCard], max_per_region: usize) -> 
         let top: Vec<RegionalInsightSummary> = ordered
             .iter()
             .take(max_per_region)
-            .map(|c| RegionalInsightSummary {
-                recipe_code: c.recipe_code.clone(),
-                entity_name: c.entity_name.clone(),
-                title: c.title.clone(),
-                severity: normalize_severity_label(&c.severity).to_string(),
-                impact_label: c.impact_label.clone(),
+            .map(|c| {
+                let evidence = card_evidence_quality(c);
+                RegionalInsightSummary {
+                    recipe_code: c.recipe_code.clone(),
+                    entity_name: c.entity_name.clone(),
+                    title: c.title.clone(),
+                    severity: normalize_severity_label(&c.severity).to_string(),
+                    impact_label: c.impact_label.clone(),
+                    evidence_quality_score: evidence.overall_score,
+                    evidence_quality_label: evidence.quality_label,
+                }
             })
             .collect();
         sections.push(RegionalSection {
@@ -271,16 +314,202 @@ pub fn build_regional_sections(cards: &[InsightCard], max_per_region: usize) -> 
     sections
 }
 
+fn card_evidence_quality(card: &InsightCard) -> apex_core::analysis::EvidenceQuality {
+    let now = Utc::now();
+    let records: Vec<EvidenceRecord> = card
+        .citations
+        .iter()
+        .map(|citation| {
+            let mut record = EvidenceRecord::new(card.confidence, EvidenceStance::Supports)
+                .with_source_url(citation.source_url.clone())
+                .with_source_type(card.category.clone());
+            if let Some(observed_at) = citation.observed_at {
+                record = record.with_observed_at(observed_at);
+            }
+            record
+        })
+        .collect();
+    assess_evidence_quality(&records, now)
+}
+
+pub fn build_temporal_summary(cards: &[InsightCard]) -> TemporalSummary {
+    if cards.is_empty() {
+        return TemporalSummary {
+            volume_delta: compare_temporal_windows(0.0, 0.0),
+            early_period_count: 0,
+            late_period_count: 0,
+            fastest_rising_region: None,
+            narrative: "Signals remained stable across the period with no measurable acceleration."
+                .to_string(),
+        };
+    }
+
+    let min_ts = cards
+        .iter()
+        .map(|card| card.rendered_at)
+        .min()
+        .unwrap_or_else(Utc::now);
+    let max_ts = cards
+        .iter()
+        .map(|card| card.rendered_at)
+        .max()
+        .unwrap_or(min_ts);
+    let midpoint = min_ts + chrono::Duration::seconds((max_ts - min_ts).num_seconds() / 2);
+
+    let mut early_region_counts: HashMap<String, usize> = HashMap::new();
+    let mut late_region_counts: HashMap<String, usize> = HashMap::new();
+    let mut early_count = 0usize;
+    let mut late_count = 0usize;
+
+    for card in cards {
+        let region = card.region.clone().unwrap_or_else(|| "global".to_string());
+        if card.rendered_at <= midpoint {
+            early_count += 1;
+            *early_region_counts.entry(region).or_default() += 1;
+        } else {
+            late_count += 1;
+            *late_region_counts.entry(region).or_default() += 1;
+        }
+    }
+
+    let volume_delta = compare_temporal_windows(late_count as f64, early_count as f64);
+    let fastest_rising_region = late_region_counts
+        .iter()
+        .map(|(region, late)| {
+            let early = early_region_counts.get(region).copied().unwrap_or(0) as f64;
+            let delta = compare_temporal_windows(*late as f64, early);
+            (region.clone(), delta.absolute_change)
+        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(region, _)| region);
+
+    let narrative = if late_count > early_count {
+        format!(
+            "Signal volume is {} into the back half of the period ({} early, {} late). {} shows the clearest acceleration.",
+            volume_delta.label,
+            early_count,
+            late_count,
+            fastest_rising_region.clone().unwrap_or_else(|| "Global coverage".to_string())
+        )
+    } else if late_count < early_count {
+        format!(
+            "Signal volume is {} after an earlier spike ({} early, {} late). Monitor whether {} continues to cool.",
+            volume_delta.label,
+            early_count,
+            late_count,
+            fastest_rising_region.clone().unwrap_or_else(|| "global coverage".to_string())
+        )
+    } else {
+        format!(
+            "Signal flow remained {} across the period ({} early, {} late).",
+            volume_delta.label, early_count, late_count
+        )
+    };
+
+    TemporalSummary {
+        volume_delta,
+        early_period_count: early_count,
+        late_period_count: late_count,
+        fastest_rising_region,
+        narrative,
+    }
+}
+
+pub fn build_fused_signal_clusters(cards: &[InsightCard]) -> Vec<FusedSignalCluster> {
+    let signal_frames: Vec<SignalFrame> = cards
+        .iter()
+        .map(|card| SignalFrame {
+            id: card.id.to_string(),
+            theme: card.category.clone(),
+            category: Some(card.category.clone()),
+            region: card.region.clone(),
+            entity: Some(card.entity_name.clone()),
+            confidence: card.confidence,
+            impact: card.impact,
+            source_group: card
+                .citations
+                .iter()
+                .find_map(|citation| source_group_from_url(&citation.source_url)),
+        })
+        .collect();
+
+    let entities_by_id: HashMap<String, String> = cards
+        .iter()
+        .map(|card| (card.id.to_string(), card.entity_name.clone()))
+        .collect();
+
+    fuse_weak_signals(&signal_frames)
+        .into_iter()
+        .map(|cluster| {
+            let mut entities: Vec<String> = cluster
+                .signal_ids
+                .iter()
+                .filter_map(|id| entities_by_id.get(id).cloned())
+                .collect();
+            entities.sort();
+            entities.dedup();
+            FusedSignalCluster {
+                theme: cluster.theme,
+                region: cluster.region,
+                entities,
+                signal_count: cluster.signal_count,
+                independent_source_count: cluster.independent_source_count,
+                combined_score: cluster.combined_score,
+                label: cluster.label,
+            }
+        })
+        .collect()
+}
+
+pub fn build_competing_hypotheses(cards: &[InsightCard]) -> Vec<HypothesisScorecard> {
+    let mut expansion_support = 0.0;
+    let mut compliance_support = 0.0;
+    let mut pressure_support = 0.0;
+
+    for card in cards {
+        let weight = (card.confidence * card.impact.max(0.2)).clamp(0.0, 1.0);
+        match card.category.as_str() {
+            "demand" | "procurement" | "logistics" => expansion_support += weight,
+            "security" | "regulatory" => compliance_support += weight,
+            "competitor" | "supply_chain" => pressure_support += weight,
+            _ => {
+                expansion_support += weight * 0.15;
+                pressure_support += weight * 0.15;
+            }
+        }
+    }
+
+    let total = cards.len().max(1) as f64;
+    score_competing_hypotheses(&[
+        HypothesisInput {
+            hypothesis: "Expansion or program acceleration".to_string(),
+            support_score: (expansion_support / total).clamp(0.0, 1.0),
+            contradiction_score: (compliance_support / total * 0.5).clamp(0.0, 1.0),
+            prior: 0.45,
+        },
+        HypothesisInput {
+            hypothesis: "Compliance or security stress response".to_string(),
+            support_score: (compliance_support / total).clamp(0.0, 1.0),
+            contradiction_score: (expansion_support / total * 0.35).clamp(0.0, 1.0),
+            prior: 0.35,
+        },
+        HypothesisInput {
+            hypothesis: "Competitive pressure and defensive repositioning".to_string(),
+            support_score: (pressure_support / total).clamp(0.0, 1.0),
+            contradiction_score: (expansion_support / total * 0.25).clamp(0.0, 1.0),
+            prior: 0.40,
+        },
+    ])
+}
+
 // ────────────────────────────────────────────
 // Security summary
 // ────────────────────────────────────────────
 
 /// Build security posture summary from insight cards.
 pub fn build_security_summary(cards: &[InsightCard]) -> SecuritySummary {
-    let security_cards: Vec<&InsightCard> = cards
-        .iter()
-        .filter(|c| c.category == "security")
-        .collect();
+    let security_cards: Vec<&InsightCard> =
+        cards.iter().filter(|c| c.category == "security").collect();
 
     let total = security_cards.len();
     let critical = security_cards
@@ -376,13 +605,19 @@ pub fn render_memo_text(
     actions: &[ActionItem],
     sections: &[RegionalSection],
     security: &SecuritySummary,
+    temporal_summary: &TemporalSummary,
+    fused_signal_clusters: &[FusedSignalCluster],
+    competing_hypotheses: &[HypothesisScorecard],
 ) -> String {
     // Pre-allocate: 8 structural lines + 1 per action + 3 per section insight
     // + 4 per detailed card + 6 fixed security lines.  Better than Vec::new()
     // which triggers multiple doubling re-allocations on large memos (B280).
     let estimated_lines = 8
         + actions.len()
-        + sections.iter().map(|s| 2 + s.top_insights.len()).sum::<usize>()
+        + sections
+            .iter()
+            .map(|s| 2 + s.top_insights.len())
+            .sum::<usize>()
         + security.top_threats.len()
         + cards.len().min(20) * 4
         + 6;
@@ -425,6 +660,10 @@ pub fn render_memo_text(
                 "- **[{}]** {} — {} [{}]",
                 insight.recipe_code, insight.title, insight.entity_name, insight.severity
             ));
+            lines.push(format!(
+                "  Evidence posture: {} ({:.2})",
+                insight.evidence_quality_label, insight.evidence_quality_score
+            ));
         }
         lines.push(String::new());
     }
@@ -445,6 +684,47 @@ pub fn render_memo_text(
         lines.push("Top threats: none listed".to_string());
     }
     lines.push(String::new());
+
+    lines.push("## Momentum and Deltas".to_string());
+    lines.push(temporal_summary.narrative.clone());
+    lines.push(format!(
+        "Early period: {} | Late period: {} | Direction: {}",
+        temporal_summary.early_period_count,
+        temporal_summary.late_period_count,
+        temporal_summary.volume_delta.label
+    ));
+    lines.push(String::new());
+
+    if !fused_signal_clusters.is_empty() {
+        lines.push("## Weak-Signal Fusion".to_string());
+        for cluster in fused_signal_clusters.iter().take(5) {
+            lines.push(format!(
+                "- {} [{}] — {} signals across {} independent sources (score {:.2}); entities: {}",
+                cluster.theme,
+                cluster.label,
+                cluster.signal_count,
+                cluster.independent_source_count,
+                cluster.combined_score,
+                cluster.entities.join(", ")
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    if !competing_hypotheses.is_empty() {
+        lines.push("## Competing Hypotheses".to_string());
+        for hypothesis in competing_hypotheses.iter().take(3) {
+            lines.push(format!(
+                "- {} — {} (posterior {:.0}%, support {:.2}, contradiction {:.2})",
+                hypothesis.hypothesis,
+                hypothesis.assessment,
+                hypothesis.posterior * 100.0,
+                hypothesis.support_score,
+                hypothesis.contradiction_score
+            ));
+        }
+        lines.push(String::new());
+    }
 
     // Detailed insights
     if !cards.is_empty() {
@@ -475,15 +755,13 @@ pub fn generate_weekly_memo(cards: &[InsightCard]) -> WeeklyMemo {
     let top_actions = extract_top_actions(cards, 10);
     let regional_sections = build_regional_sections(cards, 5);
     let security = build_security_summary(cards);
+    let temporal_summary = build_temporal_summary(cards);
+    let fused_signal_clusters = build_fused_signal_clusters(cards);
+    let competing_hypotheses = build_competing_hypotheses(cards);
     let cat_breakdown = category_breakdown(cards);
 
-    let exec_summary = generate_executive_summary(
-        cards.len(),
-        critical,
-        warning,
-        &top_actions,
-        &security,
-    );
+    let exec_summary =
+        generate_executive_summary(cards.len(), critical, warning, &top_actions, &security);
 
     let full_text = render_memo_text(
         week,
@@ -493,6 +771,9 @@ pub fn generate_weekly_memo(cards: &[InsightCard]) -> WeeklyMemo {
         &top_actions,
         &regional_sections,
         &security,
+        &temporal_summary,
+        &fused_signal_clusters,
+        &competing_hypotheses,
     );
 
     info!(
@@ -521,6 +802,9 @@ pub fn generate_weekly_memo(cards: &[InsightCard]) -> WeeklyMemo {
         top_actions,
         regional_sections,
         security_summary: security,
+        temporal_summary,
+        fused_signal_clusters,
+        competing_hypotheses,
         category_breakdown: cat_breakdown,
         full_text,
     }
@@ -533,7 +817,7 @@ pub fn generate_weekly_memo(cards: &[InsightCard]) -> WeeklyMemo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::{InsightCandidate, EvidenceSlot, render_batch};
+    use crate::renderer::{render_batch, EvidenceSlot, InsightCandidate};
 
     fn make_candidate(
         code: &str,
@@ -568,11 +852,43 @@ mod tests {
 
     fn sample_cards() -> Vec<InsightCard> {
         let candidates = vec![
-            make_candidate("A001", "Foxconn", "critical", "demand", Some("TN"), 0.9, 0.9),
-            make_candidate("B001", "Jabil", "warning", "competitor", Some("MA"), 0.7, 0.8),
-            make_candidate("C001", "Starz", "critical", "security", Some("TN"), 0.85, 0.95),
+            make_candidate(
+                "A001",
+                "Foxconn",
+                "critical",
+                "demand",
+                Some("TN"),
+                0.9,
+                0.9,
+            ),
+            make_candidate(
+                "B001",
+                "Jabil",
+                "warning",
+                "competitor",
+                Some("MA"),
+                0.7,
+                0.8,
+            ),
+            make_candidate(
+                "C001",
+                "Starz",
+                "critical",
+                "security",
+                Some("TN"),
+                0.85,
+                0.95,
+            ),
             make_candidate("D001", "Flex", "info", "supply_chain", Some("CN"), 0.4, 0.6),
-            make_candidate("A010", "Celestica", "warning", "demand", Some("EU"), 0.6, 0.7),
+            make_candidate(
+                "A010",
+                "Celestica",
+                "warning",
+                "demand",
+                Some("EU"),
+                0.6,
+                0.7,
+            ),
         ];
         render_batch(&candidates)
     }
@@ -664,9 +980,15 @@ mod tests {
     #[test]
     fn test_build_security_summary_no_security() {
         // Cards with no security category
-        let candidates = vec![
-            make_candidate("A001", "Foxconn", "warning", "demand", Some("TN"), 0.7, 0.8),
-        ];
+        let candidates = vec![make_candidate(
+            "A001",
+            "Foxconn",
+            "warning",
+            "demand",
+            Some("TN"),
+            0.7,
+            0.8,
+        )];
         let cards = render_batch(&candidates);
         let summary = build_security_summary(&cards);
         assert_eq!(summary.total_security_insights, 0);
@@ -687,7 +1009,8 @@ mod tests {
             total_security_insights: 1,
             critical_security: 1,
             top_threats: vec!["Brand impersonation detected".to_string()],
-            posture_assessment: "ELEVATED — Critical security threats require immediate attention".to_string(),
+            posture_assessment: "ELEVATED — Critical security threats require immediate attention"
+                .to_string(),
         };
         let summary = generate_executive_summary(5, 2, 2, &actions, &security);
         assert!(summary.contains("5 actionable insights"));
@@ -709,6 +1032,7 @@ mod tests {
         assert!(!memo.executive_summary.is_empty());
         assert!(!memo.top_actions.is_empty());
         assert!(!memo.regional_sections.is_empty());
+        assert!(!memo.competing_hypotheses.is_empty());
         assert!(!memo.full_text.is_empty());
 
         // Full text should contain key sections
@@ -717,6 +1041,8 @@ mod tests {
         assert!(memo.full_text.contains("## Priority Actions"));
         assert!(memo.full_text.contains("## Regional Breakdown"));
         assert!(memo.full_text.contains("## Security Posture"));
+        assert!(memo.full_text.contains("## Momentum and Deltas"));
+        assert!(memo.full_text.contains("## Competing Hypotheses"));
     }
 
     #[test]
@@ -790,14 +1116,16 @@ mod tests {
 
     #[test]
     fn test_executive_summary_bounded() {
-        let actions: Vec<ActionItem> = (0..100).map(|i| ActionItem {
-            priority: i,
-            action: format!("Very long action item {} that goes on and on", i),
-            source_recipe: format!("R{}", i),
-            entity_name: format!("Entity{}", i),
-            impact_label: "Critical".to_string(),
-            confidence: 0.9,
-        }).collect();
+        let actions: Vec<ActionItem> = (0..100)
+            .map(|i| ActionItem {
+                priority: i,
+                action: format!("Very long action item {} that goes on and on", i),
+                source_recipe: format!("R{}", i),
+                entity_name: format!("Entity{}", i),
+                impact_label: "Critical".to_string(),
+                confidence: 0.9,
+            })
+            .collect();
         let security = SecuritySummary {
             total_security_insights: 0,
             critical_security: 0,
@@ -806,7 +1134,11 @@ mod tests {
         };
         let summary = generate_executive_summary(1000, 500, 300, &actions, &security);
         // Summary should only include top 3 actions, keeping it reasonable
-        assert!(summary.len() < 2000, "Executive summary is too long: {} chars", summary.len());
+        assert!(
+            summary.len() < 2000,
+            "Executive summary is too long: {} chars",
+            summary.len()
+        );
     }
 
     // ── B183: severity normalization ──
@@ -827,9 +1159,15 @@ mod tests {
 
     #[test]
     fn test_count_by_severity_unknown_treated_as_info() {
-        let candidates = vec![
-            make_candidate("A01", "E", "unknown-sev", "demand", None, 0.5, 0.5),
-        ];
+        let candidates = vec![make_candidate(
+            "A01",
+            "E",
+            "unknown-sev",
+            "demand",
+            None,
+            0.5,
+            0.5,
+        )];
         let cards = render_batch(&candidates);
         let (critical, warning, info) = count_by_severity(&cards);
         assert_eq!(critical, 0);
@@ -866,9 +1204,15 @@ mod tests {
 
     #[test]
     fn test_build_security_summary_empty_top_threats_has_fallback() {
-        let mut cards = render_batch(&[
-            make_candidate("S01", "E1", "critical", "security", Some("TN"), 0.9, 0.9),
-        ]);
+        let mut cards = render_batch(&[make_candidate(
+            "S01",
+            "E1",
+            "critical",
+            "security",
+            Some("TN"),
+            0.9,
+            0.9,
+        )]);
         cards[0].title = "   ".to_string();
         let summary = build_security_summary(&cards);
         assert_eq!(summary.total_security_insights, 1);
@@ -878,9 +1222,15 @@ mod tests {
 
     #[test]
     fn test_build_regional_sections_normalizes_severity_casing() {
-        let cards = render_batch(&[
-            make_candidate("A01", "E1", "HIGH", "demand", Some("TN"), 0.7, 0.7),
-        ]);
+        let cards = render_batch(&[make_candidate(
+            "A01",
+            "E1",
+            "HIGH",
+            "demand",
+            Some("TN"),
+            0.7,
+            0.7,
+        )]);
         let sections = build_regional_sections(&cards, 3);
         let tn = sections.iter().find(|s| s.region == "TN").unwrap();
         assert_eq!(tn.top_insights[0].severity, "warning");
@@ -891,6 +1241,31 @@ mod tests {
         let cards = sample_cards();
         let memo = generate_weekly_memo(&cards);
         assert!(memo.full_text.contains("Score breakdown: impact="));
+    }
+
+    #[test]
+    fn test_regional_sections_include_evidence_posture() {
+        let cards = sample_cards();
+        let sections = build_regional_sections(&cards, 5);
+        let tn = sections
+            .iter()
+            .find(|section| section.region == "TN")
+            .unwrap();
+        assert!(tn
+            .top_insights
+            .iter()
+            .all(|insight| !insight.evidence_quality_label.is_empty()));
+    }
+
+    #[test]
+    fn test_fused_signal_clusters_require_multiple_related_cards() {
+        let mut cards = render_batch(&[
+            make_candidate("A01", "Acme", "info", "demand", Some("EU"), 0.55, 0.55),
+            make_candidate("A02", "Acme", "info", "demand", Some("EU"), 0.60, 0.58),
+        ]);
+        cards[1].citations[0].source_url = "https://independent.example.org/evidence".to_string();
+        let clusters = build_fused_signal_clusters(&cards);
+        assert!(!clusters.is_empty());
     }
 
     #[test]
