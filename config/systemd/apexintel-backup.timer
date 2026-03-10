@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ApexIntel backup job nightly
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+Unit=apexintel-backup.service
+
+[Install]
+WantedBy=timers.target

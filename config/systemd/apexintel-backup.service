@@ -1,0 +1,17 @@
+[Unit]
+Description=ApexIntel backup job
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=apexintel
+Group=apexintel
+WorkingDirectory=/opt/apexintel
+EnvironmentFile=/opt/apexintel/config/.env
+ExecStart=/usr/bin/env bash /opt/apexintel/scripts/backup.sh /opt/apexintel/backups
+StandardOutput=append:/var/log/apexintel-backup.log
+StandardError=append:/var/log/apexintel-backup.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,67 @@
+{
+  "suite_name": "apexintel-evaluation",
+  "dataset_version": "2026-03-10.v1",
+  "schema_version": "v1",
+  "files": [
+    {
+      "file": "adversarial_tests.jsonl",
+      "eval_type": "adversarial_tests",
+      "focus": "hallucination_control"
+    },
+    {
+      "file": "company_dossier_eval.jsonl",
+      "eval_type": "company_dossier",
+      "focus": "structured_generation"
+    },
+    {
+      "file": "competitive_analysis_eval.jsonl",
+      "eval_type": "competitive_analysis",
+      "focus": "structured_generation"
+    },
+    {
+      "file": "compliance_eval.jsonl",
+      "eval_type": "compliance",
+      "focus": "risk_assessment"
+    },
+    {
+      "file": "entity_extraction_eval.jsonl",
+      "eval_type": "entity_extraction",
+      "focus": "extraction_regression"
+    },
+    {
+      "file": "memo_quality_eval.jsonl",
+      "eval_type": "memo_quality",
+      "focus": "memo_quality"
+    },
+    {
+      "file": "multilingual_golden.jsonl",
+      "eval_type": "multilingual_golden",
+      "focus": "multilingual_regression"
+    },
+    {
+      "file": "poi_synthesis_eval.jsonl",
+      "eval_type": "poi_synthesis",
+      "focus": "poi_synthesis"
+    },
+    {
+      "file": "recipe_quality_eval.jsonl",
+      "eval_type": "recipe_quality",
+      "focus": "recipe_generation"
+    },
+    {
+      "file": "regression_tests.jsonl",
+      "eval_type": "regression_tests",
+      "focus": "regression_guardrail"
+    },
+    {
+      "file": "supply_chain_risk_eval.jsonl",
+      "eval_type": "supply_chain_risk",
+      "focus": "risk_assessment"
+    },
+    {
+      "file": "warning_generation_eval.jsonl",
+      "eval_type": "warning_generation",
+      "focus": "warning_generation"
+    }
+  ]
+}

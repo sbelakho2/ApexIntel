@@ -149,7 +149,7 @@
         {% for i in insights %}
         <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/insights/{{ i.id }}">
           <td class="px-4 py-3 font-semibold">{{ i.title }}</td>
-          <td class="px-4 py-3"><span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span></td>
+          <td class="px-4 py-3"><span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span></td>
           <td class="px-4 py-3 text-muted-foreground">{{ i.company_name }}</td>
           <td class="px-4 py-3 text-right font-bold tabular-nums">{{ i.confidence_pct }}%</td>
           <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ i.created_at }}</td>
@@ -173,7 +173,7 @@
         <div class="min-w-0 flex-1">
           <a href="/insights/{{ i.id }}" class="text-sm font-semibold hover:underline">{{ i.title }}</a>
           <div class="mt-1.5 flex flex-wrap items-center gap-2">
-            <span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span>
+            <span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span>
               <span class="text-xs font-bold tabular-nums text-muted-foreground">{{ i.confidence_pct }}%</span>
           </div>
         </div>

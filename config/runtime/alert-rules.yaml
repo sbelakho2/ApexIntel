@@ -1,0 +1,41 @@
+version: 1
+
+routes:
+  pager_webhook_env: PAGE_WEBHOOK_URL
+  warning_email_env: ALERT_EMAIL_TO
+
+rules:
+  - name: api-deep-health-failed
+    source: api_health_deep
+    condition: status != ok
+    severity: critical
+    for: 2m
+    notify:
+      - pager_webhook
+      - email
+
+  - name: worker-job-failures
+    source: worker_job_state
+    condition: consecutive_failures >= 3 or circuit_open == true
+    severity: critical
+    for: 5m
+    notify:
+      - pager_webhook
+      - email
+
+  - name: backup-missing
+    source: backup_timer
+    condition: last_success_age_hours > 26
+    severity: critical
+    for: 10m
+    notify:
+      - pager_webhook
+
+  - name: backup-restore-validation-failed
+    source: restore_validate
+    condition: status != ok
+    severity: critical
+    for: 0m
+    notify:
+      - pager_webhook
+      - email

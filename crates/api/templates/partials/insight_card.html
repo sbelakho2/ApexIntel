@@ -6,7 +6,7 @@
     <div class="min-w-0 flex-1">
       <a href="/insights/{{ id }}" class="text-sm font-semibold hover:underline">{{ title }}</a>
       <div class="mt-1.5 flex flex-wrap items-center gap-2">
-        <span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ category }}</span>
+        <span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ category }}</span>
         {% call m::confidence_meter(confidence, "") %}
       </div>
     </div>

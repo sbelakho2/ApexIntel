@@ -280,6 +280,37 @@
       overflow-wrap: anywhere;
     }
 
+    .mobile-inline-chip {
+      flex-shrink: 0;
+      width: fit-content;
+      max-width: 100%;
+      align-items: flex-start;
+      white-space: normal;
+      line-height: 1.25;
+      letter-spacing: 0.03em !important;
+      text-transform: none;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .mobile-toolbar-control {
+      max-width: 100%;
+      white-space: normal;
+      line-height: 1.2;
+      text-align: center;
+      letter-spacing: 0.05em !important;
+    }
+
+    .mobile-wrap-token {
+      display: block;
+      max-width: 100%;
+      line-height: 1.35;
+      letter-spacing: 0.04em !important;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
+    }
+
     .overflow-x-auto {
       -webkit-overflow-scrolling: touch;
     }

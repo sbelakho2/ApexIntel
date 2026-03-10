@@ -15,14 +15,14 @@
 
 {% block content %}
 {% if briefing_mode %}
-<div class="mb-4 flex items-center justify-between gap-4 no-print">
+<div class="mb-4 flex flex-wrap items-center justify-between gap-4 no-print">
   <div>
     <h1>Executive Briefing</h1>
     <p class="mt-2 text-sm text-muted-foreground">Print and PDF-friendly weekly memo layout.</p>
   </div>
-  <div class="flex items-center gap-2">
-    <a href="/memos" class="rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Interactive View</a>
-    <button type="button" onclick="window.print()" class="rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
+  <div class="flex flex-wrap items-center gap-2">
+    <a href="/memos" class="mobile-toolbar-control rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Interactive View</a>
+    <button type="button" onclick="window.print()" class="mobile-toolbar-control rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
   </div>
 </div>
 {% endif %}
@@ -30,16 +30,18 @@
 
 {% if let Some(latest) = memos.first() %}
 <div class="briefing-page apex-card p-6 mb-6 border-l-4 border-l-primary">
-  <div class="flex items-start justify-between gap-4 mb-4">
+  <div class="mb-4 flex flex-wrap items-start justify-between gap-4">
     <div>
       <h3 class="text-xl font-black uppercase">{{ latest.title }}</h3>
       <p class="text-sm text-muted-foreground mt-1">Period: {{ latest.week_start }} • {{ latest.week_end }}</p>
       <p class="text-xs text-muted-foreground mt-1">Generated: {{ latest.created_at }}</p>
     </div>
-    {% if !briefing_mode %}
-    <a href="/memos?briefing=true" class="no-print rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing Layout</a>
-    {% endif %}
-    <span class="rounded-sm border border-green-500/30 bg-green-500/10 px-2 py-1 text-[10px] font-black uppercase text-green-600">Current</span>
+    <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
+      {% if !briefing_mode %}
+      <a href="/memos?briefing=true" class="mobile-toolbar-control no-print rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing Layout</a>
+      {% endif %}
+      <span class="mobile-inline-chip rounded-sm border border-green-500/30 bg-green-500/10 px-2 py-1 text-[10px] font-black uppercase text-green-600">Current</span>
+    </div>
   </div>
 
   <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">

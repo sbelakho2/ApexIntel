@@ -1,0 +1,22 @@
+{
+  "dry_run": true,
+  "suite_name": "apexintel-evaluation",
+  "dataset_version": "2026-03-10.v1",
+  "schema_version": "v1",
+  "total": 884,
+  "valid": 884,
+  "by_type": {
+    "adversarial_tests": 5,
+    "company_dossier": 50,
+    "competitive_analysis": 50,
+    "compliance": 30,
+    "entity_extraction": 260,
+    "memo_quality": 60,
+    "multilingual_golden": 7,
+    "poi_synthesis": 121,
+    "recipe_quality": 200,
+    "recipe_hypothesis": 1,
+    "supply_chain_risk": 50,
+    "warning_generation": 50
+  }
+}
