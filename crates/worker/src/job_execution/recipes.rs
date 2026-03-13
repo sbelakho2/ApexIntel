@@ -425,6 +425,18 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .await
         .unwrap_or_default();
     let graph_feats = store.get_graph_edge_features().await.unwrap_or_default();
+    let job_post_feats = store
+        .get_job_post_features_per_entity(since)
+        .await
+        .unwrap_or_default();
+    let commodity_fx_feats = store
+        .get_commodity_fx_features_per_entity(since)
+        .await
+        .unwrap_or_default();
+    let poi_artifact_feats = store
+        .get_poi_artifact_features_per_company(since)
+        .await
+        .unwrap_or_default();
     let daily_obs_series = store
         .get_daily_observation_counts_per_entity(since)
         .await
@@ -570,6 +582,141 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     "CompetitorEvent.count",
                     "Industry.count",
                     "Industry.trend",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            // ── Observation types previously unmapped ──────────────────
+            "JobPost" => {
+                for k in &[
+                    "JobPost.count",
+                    "JobPost.any",
+                    "JobPost.volume.anomaly",
+                    "Demand.hiring",
+                    "Demand.count",
+                    "Demand.any",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "CertificationUpdate" => {
+                for k in &[
+                    "CertificationUpdate.count",
+                    "CertificationUpdate.any",
+                    "Certification.count",
+                    "Certification.any",
+                    "Compliance.certification",
+                    "Compliance.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "WebChange" => {
+                for k in &[
+                    "WebChange.count",
+                    "WebChange.any",
+                    "News.count",
+                    "News.any",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "CommodityPrice" => {
+                for k in &[
+                    "CommodityPrice.shift",
+                    "CommodityPrice.significant_move",
+                    "Commodity.price.volatile",
+                    "Commodity.count",
+                    "Commodity.any",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "FxRate" => {
+                for k in &[
+                    "FxRate.significant_move",
+                    "FxRate.volatility.high",
+                    "FxRate.any",
+                    "FxRate.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "PortMetric" => {
+                for k in &[
+                    "PortMetric.delay_increase",
+                    "SupplyChain.disruption",
+                    "SupplyChain.count",
+                    "Supplier.risk",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "NewDomain" => {
+                for k in &[
+                    "DNS.typosquat.new",
+                    "LookalikeDomain.count",
+                    "LookalikeDomain.active",
+                    "Security.risk",
+                    "Security.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "VulnNotice" => {
+                for k in &[
+                    "VulnNotice.data_breach",
+                    "Security.vulnerability",
+                    "Security.risk",
+                    "Security.count",
+                    "Compliance.risk",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "PersonMention" => {
+                for k in &[
+                    "PersonMention.count",
+                    "POI.media.presence",
+                    "POI.visibility.high",
+                    "POI.count",
+                    "News.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "RoleChange" => {
+                for k in &[
+                    "RoleChange.count",
+                    "RoleChange.any",
+                    "RoleChange.competitor_destination",
+                    "POI.role_change.imminent",
+                    "PersonMention.role_change",
+                    "SocialSignal.leadership_change",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "SpeakerAppearance" => {
+                for k in &[
+                    "TradeShow.speaker.poi_match",
+                    "TradeShow.presence.increase",
+                    "ConferenceAgenda.count",
+                    "POI.conference.speaker",
+                    "POI.thought_leadership",
+                    "POI.visibility.high",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "ProcurementSignal" => {
+                for k in &[
+                    "Procurement.count",
+                    "Procurement.any",
+                    "SocialSignal.procurement_announcement",
+                    "Demand.count",
+                    "Demand.any",
+                    "Tender.count",
                 ] {
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
@@ -1449,7 +1596,159 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 *fm.entry("Relationship.new".into()).or_default() += c;
                 *fm.entry("Relationship.strengthened".into()).or_default() += c;
             }
+            "CompanySite" => {
+                *fm.entry("Facility.count".into()).or_default() += c;
+                *fm.entry("Production.count".into()).or_default() += c;
+            }
+            "SiteLogistics" => {
+                *fm.entry("SupplyChain.count".into()).or_default() += c;
+                *fm.entry("PortMetric.delay_increase".into()).or_default() += c;
+            }
+            "CompanyCapability" => {
+                *fm.entry("Capability.count".into()).or_default() += c;
+                *fm.entry("Technology.count".into()).or_default() += c;
+            }
+            "VulnProduct" => {
+                *fm.entry("Security.vulnerability".into()).or_default() += c;
+                *fm.entry("Product.risk".into()).or_default() += c;
+            }
+            "CompanyRegulation" => {
+                *fm.entry("Regulatory.count".into()).or_default() += c;
+                *fm.entry("Compliance.count".into()).or_default() += c;
+            }
+            "PersonPatent" => {
+                *fm.entry("Patent.count".into()).or_default() += c;
+                *fm.entry("IP.count".into()).or_default() += c;
+            }
+            "PersonEvent" => {
+                *fm.entry("ConferenceAgenda.count".into()).or_default() += c;
+                *fm.entry("TradeShow.presence.increase".into()).or_default() += c;
+            }
             _ => {}
+        }
+    }
+
+    // ── Job-post payload feature enrichment ───────────────────────
+    // Recipes reference JobPost.role_family, JobPost.bilingual.*,
+    // JobPost.competitor.decrease, JobPost.new_region — all need
+    // structured data from the job post JSONB payloads.
+    for (entity_id, role_family, seniority, count) in &job_post_feats {
+        let fm = entity_maps.entry(*entity_id).or_default();
+        let c = *count as f64;
+        *fm.entry("JobPost.count".into()).or_default() += c;
+        *fm.entry("JobPost.any".into()).or_default() += c;
+        *fm.entry("Demand.hiring".into()).or_default() += c;
+        *fm.entry("Demand.count".into()).or_default() += c;
+        if !role_family.is_empty() {
+            *fm.entry(format!("JobPost.role_family")).or_default() += c;
+            *fm.entry(format!("JobPost.role_family.{role_family}")).or_default() += c;
+            let rf_lower = role_family.to_lowercase();
+            if rf_lower.contains("procurement") || rf_lower.contains("sourcing") {
+                *fm.entry("Demand.hiring".into()).or_default() += c;
+                *fm.entry("SocialSignal.procurement_announcement".into()).or_default() += c;
+            }
+            if rf_lower.contains("executive") || rf_lower.contains("clevel") {
+                *fm.entry("JobPost.executive.new_function".into()).or_default() += c;
+                *fm.entry("SocialSignal.leadership_change".into()).or_default() += c;
+            }
+            if rf_lower.contains("quality") || rf_lower.contains("audit") {
+                *fm.entry("Compliance.count".into()).or_default() += c;
+            }
+            if rf_lower.contains("engineer") || rf_lower.contains("r&d") {
+                *fm.entry("Technology.count".into()).or_default() += c;
+                *fm.entry("Innovation.count".into()).or_default() += c;
+            }
+        }
+        if !seniority.is_empty() {
+            let sen_lower = seniority.to_lowercase();
+            if sen_lower.contains("director") || sen_lower.contains("vp") || sen_lower.contains("clevel") {
+                *fm.entry("JobPost.executive.new_function".into()).or_default() += c;
+            }
+        }
+    }
+
+    // ── Commodity/FX feature enrichment ───────────────────────────
+    // Recipes reference CommodityPrice.shift/significant_move,
+    // FxRate.EUR_MAD.stable, FxRate.volatility.high, Commodity.*
+    for (entity_id, obs_type, item, count) in &commodity_fx_feats {
+        let fm = entity_maps.entry(*entity_id).or_default();
+        let c = *count as f64;
+        match obs_type.as_str() {
+            "CommodityPrice" => {
+                *fm.entry("CommodityPrice.shift".into()).or_default() += c;
+                *fm.entry("CommodityPrice.significant_move".into()).or_default() += c;
+                *fm.entry("Commodity.count".into()).or_default() += c;
+                *fm.entry("Commodity.price.volatile".into()).or_default() += c;
+                if !item.is_empty() {
+                    let item_upper = item.to_uppercase();
+                    // Map specific commodities to recipe keys
+                    if item_upper.contains("COPPER") || item_upper.contains("CU") {
+                        *fm.entry("Commodity.Cu.increase_5pct".into()).or_default() += c;
+                        *fm.entry("Commodity.copper.increase_5pct".into()).or_default() += c;
+                    }
+                    if item_upper.contains("TIN") || item_upper.contains("SN") {
+                        *fm.entry("Commodity.Sn.increase_5pct".into()).or_default() += c;
+                    }
+                }
+            }
+            "FxRate" => {
+                *fm.entry("FxRate.significant_move".into()).or_default() += c;
+                *fm.entry("FxRate.count".into()).or_default() += c;
+                *fm.entry("FxRate.any".into()).or_default() += c;
+                if !item.is_empty() {
+                    *fm.entry(format!("FxRate.{item}")).or_default() += c;
+                    let pair = item.to_uppercase();
+                    // Detect specific pairs referenced in recipes
+                    if pair.contains("EUR") && pair.contains("MAD") {
+                        *fm.entry("FxRate.EUR_MAD.stable".into()).or_default() += c;
+                    }
+                    if pair.contains("EUR") && pair.contains("TND") {
+                        *fm.entry("FxRate.EUR_TND.increase".into()).or_default() += c;
+                    }
+                    if pair.contains("GBP") && pair.contains("EUR") {
+                        *fm.entry("FxRate.GBP_EUR.decrease".into()).or_default() += c;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── POI artifact feature enrichment ───────────────────────────
+    // POI artifacts (articles, speaker appearances, publications) feed
+    // the massive POI recipe category (93 refs). Map artifact types to
+    // the rich POI.* feature keys that recipes expect.
+    for (company_id, artifact_type, count) in &poi_artifact_feats {
+        let fm = entity_maps.entry(*company_id).or_default();
+        let c = *count as f64;
+        *fm.entry("POI.count".into()).or_default() += c;
+        *fm.entry("POI.visibility.high".into()).or_default() += c;
+        let at_lower = artifact_type.to_lowercase();
+        if at_lower.contains("article") || at_lower.contains("publication") {
+            *fm.entry("POI.article.published".into()).or_default() += c;
+            *fm.entry("POI.thought_leadership".into()).or_default() += c;
+            *fm.entry("PressRelease.count".into()).or_default() += c;
+            *fm.entry("PressRelease.any".into()).or_default() += c;
+            *fm.entry("News.count".into()).or_default() += c;
+        }
+        if at_lower.contains("speaker") || at_lower.contains("conference") || at_lower.contains("panel") {
+            *fm.entry("POI.conference.speaker".into()).or_default() += c;
+            *fm.entry("ConferenceAgenda.count".into()).or_default() += c;
+            *fm.entry("TradeShow.speaker.poi_match".into()).or_default() += c;
+            *fm.entry("TradeShow.presence.increase".into()).or_default() += c;
+        }
+        if at_lower.contains("award") || at_lower.contains("recognition") {
+            *fm.entry("POI.achievement.professional".into()).or_default() += c;
+            *fm.entry("PressRelease.quality_award".into()).or_default() += c;
+        }
+        if at_lower.contains("social") || at_lower.contains("post") || at_lower.contains("linkedin") {
+            *fm.entry("POI.social.active".into()).or_default() += c;
+            *fm.entry("POI.content.engagement".into()).or_default() += c;
+            *fm.entry("SocialPost.count".into()).or_default() += c;
+        }
+        if at_lower.contains("patent") {
+            *fm.entry("Patent.count".into()).or_default() += c;
+            *fm.entry("POI.technical.expert".into()).or_default() += c;
         }
     }
 
@@ -1522,6 +1821,9 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         cap_rows = cap_feats.len(),
         site_rows = site_feats.len(),
         graph_rows = graph_feats.len(),
+        job_post_rows = job_post_feats.len(),
+        commodity_fx_rows = commodity_fx_feats.len(),
+        poi_artifact_rows = poi_artifact_feats.len(),
         "recipe_fire: built feature maps"
     );
 
@@ -1936,6 +2238,54 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             }
         }
 
+        // ── Graph relationship evidence signals ───────────────────────
+        // Supplier/customer/partnership relationships are tracked in
+        // graph_edges but never surfaced as evidence. This gives the LLM
+        // concrete relationship data for 37 Supplier recipe refs, 10
+        // Customer refs, and 5 Partnership refs.
+        for entity_uuid in all_entity_uuids.iter() {
+            let entity_id_str = entity_uuid.to_string();
+            if let Ok(edges) = store.get_graph_edge_evidence(*entity_uuid).await {
+                for (edge_type, target_type, target_name, weight, confidence) in edges.iter().take(8) {
+                    let label = match edge_type.as_str() {
+                        "CompanyCompany" => "Business relationship",
+                        "CompanyPerson" => "Key personnel",
+                        "CompanySite" => "Facility",
+                        "SiteLogistics" => "Logistics link",
+                        "CompanyCapability" => "Capability",
+                        "VulnProduct" => "Vulnerability exposure",
+                        "CompanyRegulation" => "Regulatory exposure",
+                        "PersonPatent" => "Patent holder",
+                        "PersonEvent" => "Event participation",
+                        _ => "Relationship",
+                    };
+
+                    let facts = vec![
+                        format!("Relationship: {}", edge_type),
+                        format!("Target: {} ({})", target_name, target_type),
+                        format!("Weight: {:.2}, Confidence: {:.2}", weight, confidence),
+                    ];
+
+                    let sig = EvidenceSignal {
+                        title: format!("{}: {}", label, target_name),
+                        description: format!(
+                            "{} link to {} {} (weight {:.2}, confidence {:.2})",
+                            edge_type, target_type, target_name, weight, confidence
+                        ),
+                        source_url: String::new(),
+                        signal_type: format!("graph_{}", edge_type),
+                        extracted_facts: facts,
+                        date_context: None,
+                        relevance_score: (*weight as f32 * 0.5).clamp(0.3, 0.7),
+                    };
+                    evidence_map
+                        .entry(entity_id_str.clone())
+                        .or_default()
+                        .push(sig);
+                }
+            }
+        }
+
         match store
             .get_warnings_by_entity_ids(&all_entity_uuids, 500)
             .await
@@ -1995,19 +2345,32 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         // and person moves all get fair representation as evidence.
         let diverse_obs_types = [
             "TenderNotice",
+            "TenderPosted",
             "PatentPublication",
+            "PatentPublished",
             "RegulatoryFiling",
             "FinancialDisclosure",
             "PersonMove",
+            "PersonMention",
+            "RoleChange",
+            "SpeakerAppearance",
+            "JobPost",
+            "CertificationUpdate",
+            "CommodityPrice",
+            "FxRate",
+            "PortMetric",
+            "NewDomain",
+            "VulnNotice",
+            "ProcurementSignal",
+            "CompetitorEvent",
             "WebChange",
             "SocialPost",
-            "CompetitorEvent",
         ];
         for entity_uuid in unique_entity_uuids.iter() {
             // Track how many signals we've added per type so we can
             // cap the total while preserving diversity.
             let mut type_counts: HashMap<String, u32> = HashMap::new();
-            let obs_rows = match store.get_observations_by_entity(*entity_uuid, 30).await {
+            let obs_rows = match store.get_observations_by_entity(*entity_uuid, 50).await {
                 Ok(rows) => rows,
                 Err(_) => continue,
             };
@@ -2023,6 +2386,13 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                             .get("title")
                             .or_else(|| obj.get("headline"))
                             .or_else(|| obj.get("role"))
+                            .or_else(|| obj.get("commodity"))
+                            .or_else(|| obj.get("pair"))
+                            .or_else(|| obj.get("cve_id"))
+                            .or_else(|| obj.get("domain"))
+                            .or_else(|| obj.get("patent_id"))
+                            .or_else(|| obj.get("standard"))
+                            .or_else(|| obj.get("event"))
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("{} update", obs.observation_type));
@@ -2031,6 +2401,9 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                             .or_else(|| obj.get("text"))
                             .or_else(|| obj.get("summary"))
                             .or_else(|| obj.get("content"))
+                            .or_else(|| obj.get("detail"))
+                            .or_else(|| obj.get("context"))
+                            .or_else(|| obj.get("diff_summary"))
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string())
                             .unwrap_or_default();
@@ -2057,11 +2430,19 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
                     // Assign higher relevance to rarer, more actionable types
                     let relevance = match *obs_type {
-                        "TenderNotice" => 0.80,
-                        "PatentPublication" => 0.70,
+                        "TenderNotice" | "TenderPosted" => 0.80,
+                        "PatentPublication" | "PatentPublished" => 0.70,
                         "RegulatoryFiling" => 0.70,
                         "FinancialDisclosure" => 0.65,
-                        "PersonMove" => 0.75,
+                        "PersonMove" | "RoleChange" => 0.75,
+                        "PersonMention" | "SpeakerAppearance" => 0.65,
+                        "JobPost" => 0.70,
+                        "CertificationUpdate" => 0.60,
+                        "CommodityPrice" => 0.75,
+                        "FxRate" => 0.70,
+                        "PortMetric" => 0.80,
+                        "NewDomain" | "VulnNotice" => 0.75,
+                        "ProcurementSignal" => 0.70,
                         "CompetitorEvent" => 0.70,
                         "SocialPost" => 0.55,
                         _ => 0.50,
@@ -2089,13 +2470,20 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 let type_count = *type_counts.get(&obs.observation_type).unwrap_or(&0);
                 if type_count >= 3 { continue; }
                 let total: u32 = type_counts.values().sum();
-                if total >= 15 { break; }
+                if total >= 25 { break; }
 
                 let (title, description) = if let Some(obj) = obs.value.as_object() {
                     let title = obj
                         .get("title")
                         .or_else(|| obj.get("headline"))
                         .or_else(|| obj.get("role"))
+                        .or_else(|| obj.get("commodity"))
+                        .or_else(|| obj.get("pair"))
+                        .or_else(|| obj.get("cve_id"))
+                        .or_else(|| obj.get("domain"))
+                        .or_else(|| obj.get("patent_id"))
+                        .or_else(|| obj.get("standard"))
+                        .or_else(|| obj.get("event"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| format!("{} update", obs.observation_type));
@@ -2104,6 +2492,9 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                         .or_else(|| obj.get("text"))
                         .or_else(|| obj.get("summary"))
                         .or_else(|| obj.get("content"))
+                        .or_else(|| obj.get("detail"))
+                        .or_else(|| obj.get("context"))
+                        .or_else(|| obj.get("diff_summary"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_default();

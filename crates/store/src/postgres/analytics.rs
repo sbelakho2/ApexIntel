@@ -491,6 +491,145 @@ impl PgStore {
             .collect())
     }
 
+    /// Extract job-post payload features per entity: role_family, seniority, count.
+    pub async fn get_job_post_features_per_entity(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<(Uuid, String, String, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT entity_id,
+                      COALESCE(value->>'role_family', '') AS rf,
+                      COALESCE(value->>'seniority', '') AS sen,
+                      COUNT(*)::BIGINT AS cnt
+               FROM observations
+               WHERE observation_type = 'JobPost'
+                 AND entity_id IS NOT NULL
+                 AND ts_utc >= $1
+               GROUP BY entity_id, rf, sen
+               ORDER BY entity_id, cnt DESC"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let eid: Uuid = row.try_get("entity_id").ok()?;
+                let rf: String = row.try_get("rf").ok()?;
+                let sen: String = row.try_get("sen").ok()?;
+                let cnt: i64 = row.try_get("cnt").ok()?;
+                Some((eid, rf, sen, cnt))
+            })
+            .collect())
+    }
+
+    /// Extract commodity/FX observation payload features per entity.
+    pub async fn get_commodity_fx_features_per_entity(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<(Uuid, String, String, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT entity_id,
+                      observation_type AS otype,
+                      COALESCE(value->>'commodity', value->>'pair', '') AS item,
+                      COUNT(*)::BIGINT AS cnt
+               FROM observations
+               WHERE observation_type IN ('CommodityPrice', 'FxRate')
+                 AND entity_id IS NOT NULL
+                 AND ts_utc >= $1
+               GROUP BY entity_id, otype, item
+               ORDER BY entity_id, cnt DESC"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let eid: Uuid = row.try_get("entity_id").ok()?;
+                let otype: String = row.try_get("otype").ok()?;
+                let item: String = row.try_get("item").ok()?;
+                let cnt: i64 = row.try_get("cnt").ok()?;
+                Some((eid, otype, item, cnt))
+            })
+            .collect())
+    }
+
+    /// Extract POI artifact features per company (articles, appearances, etc.)
+    pub async fn get_poi_artifact_features_per_company(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<(Uuid, String, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT p.primary_org_id AS company_id,
+                      pa.artifact_type,
+                      COUNT(*)::BIGINT AS cnt
+               FROM poi_artifacts pa
+               JOIN persons p ON p.id = pa.person_id
+               WHERE p.primary_org_id IS NOT NULL
+                 AND pa.ts_utc >= $1
+               GROUP BY p.primary_org_id, pa.artifact_type
+               ORDER BY p.primary_org_id, cnt DESC"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let cid: Uuid = row.try_get("company_id").ok()?;
+                let at: String = row.try_get("artifact_type").ok()?;
+                let cnt: i64 = row.try_get("cnt").ok()?;
+                Some((cid, at, cnt))
+            })
+            .collect())
+    }
+
+    /// Extract graph edge details with target names for evidence loading.
+    pub async fn get_graph_edge_evidence(
+        &self,
+        entity_id: Uuid,
+    ) -> Result<Vec<(String, String, String, f64, f64)>> {
+        let rows = sqlx::query(
+            r#"SELECT ge.edge_type,
+                      ge.target_type,
+                      COALESCE(
+                          CASE WHEN ge.target_type = 'company' THEN (SELECT name FROM companies WHERE id = ge.target_id)
+                               WHEN ge.target_type = 'person'  THEN (SELECT name FROM persons WHERE id = ge.target_id)
+                               ELSE NULL END,
+                          ge.target_id::TEXT
+                      ) AS target_name,
+                      ge.weight,
+                      ge.confidence
+               FROM graph_edges ge
+               WHERE ge.source_id = $1
+               ORDER BY ge.weight DESC, ge.confidence DESC
+               LIMIT 10"#,
+        )
+        .bind(entity_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let et: String = row.try_get("edge_type").ok()?;
+                let tt: String = row.try_get("target_type").ok()?;
+                let tn: String = row.try_get("target_name").ok()?;
+                let w: f64 = row.try_get("weight").ok()?;
+                let c: f64 = row.try_get("confidence").ok()?;
+                Some((et, tt, tn, w, c))
+            })
+            .collect())
+    }
+
     pub async fn get_person_features_per_company(
         &self,
     ) -> Result<Vec<(Uuid, String, f64, f64, f64, i64)>> {

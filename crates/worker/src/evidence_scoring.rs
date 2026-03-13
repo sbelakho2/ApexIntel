@@ -33,14 +33,75 @@ pub(super) fn signal_type_relevance_score(signal_type: &str, category: &str) -> 
         "poi" if category.contains("competitor") => 0.55,
         "facility" if category.contains("supply_chain") || category.contains("procurement") => 0.60,
         "facility" if category.contains("competitor") => 0.50,
-        "TenderNotice" if category.contains("demand") || category.contains("procurement") => 0.85,
-        "PatentPublication" if category.contains("technology") || category.contains("competitor") => 0.80,
+        // Tender / procurement signals
+        "TenderNotice" | "TenderPosted" if category.contains("demand") || category.contains("procurement") => 0.85,
+        "TenderNotice" | "TenderPosted" => 0.55,
+        // Patent / IP signals
+        "PatentPublication" | "PatentPublished" if category.contains("technology") || category.contains("competitor") => 0.80,
+        "PatentPublication" | "PatentPublished" => 0.50,
+        // Regulatory / compliance signals
         "RegulatoryFiling" if category.contains("regulatory") || category.contains("compliance") => 0.80,
+        "RegulatoryFiling" => 0.45,
+        // Financial signals
         "FinancialDisclosure" if category.contains("competitor") || category.contains("ma_") => 0.75,
-        "PersonMove" if category.contains("poi") || category.contains("talent") => 0.85,
-        "PersonMove" if category.contains("competitor") => 0.65,
+        "FinancialDisclosure" => 0.45,
+        // Personnel movement signals
+        "PersonMove" | "RoleChange" if category.contains("poi") || category.contains("talent") => 0.85,
+        "PersonMove" | "RoleChange" if category.contains("competitor") => 0.65,
+        "PersonMove" | "RoleChange" => 0.50,
+        // Person mention / visibility
+        "PersonMention" if category.contains("poi") || category.contains("strategic") => 0.75,
+        "PersonMention" => 0.40,
+        // Speaker / conference appearances
+        "SpeakerAppearance" if category.contains("poi") || category.contains("competitor") => 0.70,
+        "SpeakerAppearance" => 0.45,
+        // Competitor events
         "CompetitorEvent" if category.contains("competitor") => 0.75,
+        "CompetitorEvent" => 0.45,
+        // Social/news signals
         "SocialPost" if category.contains("brand") || category.contains("sentiment") => 0.70,
+        "SocialPost" if category.contains("poi") => 0.55,
+        "SocialPost" => 0.35,
+        // Job posting signals
+        "JobPost" if category.contains("demand") || category.contains("competitor") => 0.70,
+        "JobPost" if category.contains("poi") || category.contains("talent") => 0.65,
+        "JobPost" => 0.40,
+        // Certification observation signals
+        "CertificationUpdate" if category.contains("compliance") || category.contains("security") => 0.70,
+        "CertificationUpdate" if category.contains("competitor") => 0.60,
+        "CertificationUpdate" => 0.40,
+        // Commodity/FX signals
+        "CommodityPrice" if category.contains("commodity") || category.contains("supply_chain") => 0.80,
+        "CommodityPrice" if category.contains("arbitrage") => 0.85,
+        "CommodityPrice" => 0.40,
+        "FxRate" if category.contains("arbitrage") || category.contains("commodity") => 0.80,
+        "FxRate" if category.contains("logistics") || category.contains("supply_chain") => 0.65,
+        "FxRate" => 0.35,
+        // Port/logistics signals
+        "PortMetric" if category.contains("logistics") || category.contains("supply_chain") => 0.85,
+        "PortMetric" => 0.40,
+        // Security signals
+        "NewDomain" if category.contains("security") => 0.80,
+        "NewDomain" => 0.40,
+        "VulnNotice" if category.contains("security") || category.contains("cyber") => 0.85,
+        "VulnNotice" if category.contains("compliance") => 0.70,
+        "VulnNotice" => 0.40,
+        // Procurement language drift
+        "ProcurementSignal" if category.contains("demand") || category.contains("procurement") => 0.80,
+        "ProcurementSignal" => 0.45,
+        // Graph relationship signals
+        s if s.starts_with("graph_") => {
+            let edge = &s[6..];
+            match edge {
+                "CompanyCompany" if category.contains("competitor") || category.contains("supplier") => 0.65,
+                "CompanyPerson" if category.contains("poi") || category.contains("talent") => 0.60,
+                "SiteLogistics" if category.contains("logistics") || category.contains("supply_chain") => 0.70,
+                "VulnProduct" if category.contains("security") => 0.75,
+                "CompanyRegulation" if category.contains("regulatory") || category.contains("compliance") => 0.70,
+                "PersonPatent" if category.contains("technology") || category.contains("innovation") => 0.65,
+                _ => 0.35,
+            }
+        }
         "warning" => 0.45,
         "news" => 0.35,
         _ => 0.20,
@@ -176,6 +237,31 @@ pub(super) fn calculate_relevance(title: &str, description: &str, signal_type: &
             ("malware", 1.0),
             ("ransomware", 1.0),
             ("incident", 0.8),
+        ],
+        "commodity_logistics" => &[
+            ("commodity", 1.0),
+            ("price", 0.9),
+            ("copper", 0.9),
+            ("tin", 0.8),
+            ("port", 0.9),
+            ("congestion", 0.9),
+            ("freight", 0.8),
+            ("delay", 0.8),
+            ("fx", 0.7),
+            ("exchange rate", 0.8),
+            ("allocation", 0.9),
+        ],
+        "talent_personnel" => &[
+            ("role change", 1.0),
+            ("appointed", 0.9),
+            ("hire", 0.9),
+            ("recruit", 0.8),
+            ("speaker", 0.7),
+            ("conference", 0.7),
+            ("influence", 0.8),
+            ("departed", 0.9),
+            ("retired", 0.8),
+            ("promoted", 0.9),
         ],
         _ => &[("signal", 0.5), ("detected", 0.5), ("update", 0.4)],
     };
