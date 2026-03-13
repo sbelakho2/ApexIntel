@@ -3046,6 +3046,8 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             Some(entity_region.as_str())
         };
 
+        let warning_evidence_urls = maybe_evidence_urls.clone();
+
         match store
             .insert_insight(
                 &title,
@@ -3074,16 +3076,22 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             c.impact,
         ) {
             let warn_title = format!("[{}] {}", c.recipe_code, title);
+            let warn_region = if entity_region.is_empty() {
+                None
+            } else {
+                Some(entity_region.as_str())
+            };
+            let warn_urls = warning_evidence_urls.clone();
             let _ = store
                 .insert_warning(
                     &c.category,
                     &warn_title,
                     Some(&warning_action),
                     warning_severity,
-                    None,
+                    warn_region,
                     Some(&c.recipe_code),
                     entity_ids.clone(),
-                    None,
+                    warn_urls,
                     Some(stored_confidence),
                 )
                 .await;
@@ -3099,16 +3107,22 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             c.impact,
         ) {
             let warn_title = format!("[{}] {}", c.recipe_code, title);
+            let warn_region = if entity_region.is_empty() {
+                None
+            } else {
+                Some(entity_region.as_str())
+            };
+            let warn_urls = warning_evidence_urls.clone();
             let _ = store
                 .insert_warning(
                     &c.category,
                     &warn_title,
                     Some(&rendered_action),
                     warning_severity,
-                    None,
+                    warn_region,
                     Some(&c.recipe_code),
                     entity_ids.clone(),
-                    None,
+                    warn_urls,
                     Some(c.confidence),
                 )
                 .await;

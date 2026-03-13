@@ -3,7 +3,7 @@
 //! Covers: warning list with filters/pagination, warning detail with
 //! evidence timeline and acknowledgment status.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use askama::Template;
@@ -197,6 +197,8 @@ pub struct WarningsListPage {
     pub severity_filters: Vec<WarningFilterChip>,
     pub status_filters: Vec<WarningFilterChip>,
     pub scope_filters: Vec<WarningFilterChip>,
+    pub type_filters: Vec<WarningFilterChip>,
+    pub region_filters: Vec<WarningFilterChip>,
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
@@ -227,6 +229,8 @@ pub struct WarningsListPartial {
     pub severity_filters: Vec<WarningFilterChip>,
     pub status_filters: Vec<WarningFilterChip>,
     pub scope_filters: Vec<WarningFilterChip>,
+    pub type_filters: Vec<WarningFilterChip>,
+    pub region_filters: Vec<WarningFilterChip>,
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
@@ -528,19 +532,49 @@ pub async fn list_warnings(
             vec![]
         });
 
+    // Resolve entity_ids → company names in one batch query
+    let all_entity_ids: Vec<Uuid> = warning_rows
+        .iter()
+        .flat_map(|w| w.entity_ids.as_deref().unwrap_or_default().iter().copied())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let company_name_map: HashMap<Uuid, String> = if all_entity_ids.is_empty() {
+        HashMap::new()
+    } else {
+        store
+            .get_company_names_by_ids(&all_entity_ids)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, name, _, _)| (id, name))
+            .collect()
+    };
+
     let warnings: Vec<WarningListItem> = warning_rows
         .iter()
-        .map(|w| WarningListItem {
-            id: w.id.to_string(),
-            title: w.title.clone(),
-            severity: w.severity.clone(),
-            warning_type: w.warning_type.clone(),
-            company_name: String::new(),
-            region: w.region.clone().unwrap_or_default(),
-            confidence: w.confidence.unwrap_or(0.0),
-            confidence_pct: confidence_to_pct(w.confidence.unwrap_or(0.0)),
-            created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
-            acknowledged: w.acknowledged,
+        .map(|w| {
+            let company_name = w
+                .entity_ids
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|eid| company_name_map.get(eid))
+                .next()
+                .cloned()
+                .unwrap_or_default();
+            WarningListItem {
+                id: w.id.to_string(),
+                title: w.title.clone(),
+                severity: w.severity.clone(),
+                warning_type: w.warning_type.clone(),
+                company_name,
+                region: w.region.clone().unwrap_or_default(),
+                confidence: w.confidence.unwrap_or(0.0),
+                confidence_pct: confidence_to_pct(w.confidence.unwrap_or(0.0)),
+                created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
+                acknowledged: w.acknowledged,
+            }
         })
         .collect();
 
@@ -560,6 +594,68 @@ pub async fn list_warnings(
         .iter()
         .filter(|w| w.severity == "low" && !w.acknowledged)
         .count() as i64;
+
+    // Build dynamic type filter chips from actual warning types in result set
+    let mut seen_types: Vec<String> = all_warning_rows
+        .iter()
+        .map(|w| w.warning_type.clone())
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
+    seen_types.sort();
+    let mut type_filter_values: Vec<&str> = vec![""];
+    for t in &seen_types {
+        type_filter_values.push(t.as_str());
+    }
+    let type_filters = type_filter_values
+        .iter()
+        .map(|value| WarningFilterChip {
+            label: if value.is_empty() { "All".to_string() } else { value.replace('_', " ") },
+            href: build_warnings_href(
+                Some(active_scope.as_str()),
+                if active_severity.is_empty() { None } else { Some(active_severity.as_str()) },
+                if active_status.is_empty() { None } else { Some(active_status.as_str()) },
+                if value.is_empty() { None } else { Some(*value) },
+                if active_region.is_empty() { None } else { Some(active_region.as_str()) },
+                if search_query.is_empty() { None } else { Some(search_query.as_str()) },
+                Some(sort_field.as_str()),
+                Some(sort_dir_str.as_str()),
+            ),
+            active: active_type == *value,
+        })
+        .collect::<Vec<_>>();
+
+    // Build dynamic region filter chips
+    let mut seen_regions: Vec<String> = all_warning_rows
+        .iter()
+        .filter_map(|w| w.region.as_ref())
+        .filter(|r: &&String| !r.is_empty())
+        .cloned()
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
+    seen_regions.sort();
+    let mut region_filter_values: Vec<&str> = vec![""];
+    for r in &seen_regions {
+        region_filter_values.push(r.as_str());
+    }
+    let region_filters = region_filter_values
+        .iter()
+        .map(|value| WarningFilterChip {
+            label: if value.is_empty() { "All".to_string() } else { value.to_string() },
+            href: build_warnings_href(
+                Some(active_scope.as_str()),
+                if active_severity.is_empty() { None } else { Some(active_severity.as_str()) },
+                if active_status.is_empty() { None } else { Some(active_status.as_str()) },
+                if active_type.is_empty() { None } else { Some(active_type.as_str()) },
+                if value.is_empty() { None } else { Some(*value) },
+                if search_query.is_empty() { None } else { Some(search_query.as_str()) },
+                Some(sort_field.as_str()),
+                Some(sort_dir_str.as_str()),
+            ),
+            active: active_region == *value,
+        })
+        .collect::<Vec<_>>();
 
     // Generate real 30-day trend data from warnings in DB.
     let warning_trend: Vec<WarningTrendDay> = {
@@ -652,6 +748,8 @@ pub async fn list_warnings(
         severity_filters,
         status_filters,
         scope_filters,
+        type_filters,
+        region_filters,
         active_filters,
         reset_href,
         page_base_href,
@@ -680,6 +778,8 @@ pub async fn list_warnings(
             severity_filters: tpl.severity_filters.clone(),
             status_filters: tpl.status_filters.clone(),
             scope_filters: tpl.scope_filters.clone(),
+            type_filters: tpl.type_filters.clone(),
+            region_filters: tpl.region_filters.clone(),
             active_filters: tpl.active_filters,
             reset_href: tpl.reset_href.clone(),
             page_base_href: tpl.page_base_href.clone(),
@@ -775,6 +875,27 @@ pub async fn get_warning(
         })
         .collect();
 
+    // Resolve entity_ids → company names for detail page
+    let entity_ids_slice = warning.entity_ids.as_deref().unwrap_or_default();
+    let company_rows = if entity_ids_slice.is_empty() {
+        vec![]
+    } else {
+        store
+            .get_company_names_by_ids(entity_ids_slice)
+            .await
+            .unwrap_or_default()
+    };
+    let primary_company_name = company_rows.first().map(|(_, n, _, _)| n.clone()).unwrap_or_default();
+    let primary_company_id = company_rows.first().map(|(id, _, _, _)| id.to_string()).unwrap_or_default();
+    let related_entities: Vec<RelatedEntity> = company_rows
+        .iter()
+        .map(|(cid, name, _, _)| RelatedEntity {
+            kind: "company".to_string(),
+            id: cid.to_string(),
+            name: name.clone(),
+        })
+        .collect();
+
     let tpl = WarningDetailPage {
         current_path: ctx.current_path,
         username: ctx.username,
@@ -786,8 +907,8 @@ pub async fn get_warning(
         severity: warning.severity.clone(),
         warning_type: warning.warning_type.clone(),
         description: warning.description.clone().unwrap_or_default(),
-        company_name: String::new(),
-        company_id: String::new(),
+        company_name: primary_company_name,
+        company_id: primary_company_id,
         region: warning.region.clone().unwrap_or_default(),
         confidence: warning.confidence.unwrap_or(0.0),
         created_at: warning
@@ -806,7 +927,7 @@ pub async fn get_warning(
         acknowledged_note: warning.acknowledged_note.clone(),
         review_outcome: warning.review_outcome.clone(),
         evidence,
-        related_entities: vec![],
+        related_entities,
         annotations,
         ai_analysis: None,
     };

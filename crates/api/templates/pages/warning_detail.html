@@ -128,6 +128,20 @@
     </div>
   </div>
 
+  {% if !related_entities.is_empty() %}
+  <div class="apex-card p-4">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Related Entities</h2>
+    <div class="flex flex-wrap gap-2">
+      {% for entity in related_entities %}
+      <a href="/{{ entity.kind }}s/{{ entity.id }}" class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted/30 transition-colors">
+        {% if entity.kind == "company" %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Co</span>{% else %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">P</span>{% endif %}
+        {{ entity.name }}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if !evidence.is_empty() %}
   <div class="apex-card">
     <div class="border-b border-border px-4 py-3">

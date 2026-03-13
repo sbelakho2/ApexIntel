@@ -74,6 +74,22 @@
     <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
     <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>
   </div>
+  {% if type_filters.len() > 2 %}
+  <div class="mt-2 flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Type:</span>
+    {% for chip in type_filters %}
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if region_filters.len() > 2 %}
+  <div class="mt-2 flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
+    {% for chip in region_filters %}
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 
 <div class="apex-card overflow-hidden mb-4">
