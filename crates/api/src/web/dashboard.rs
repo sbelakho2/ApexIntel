@@ -14,6 +14,14 @@ use super::PageContext;
 use crate::middleware::session::WebSession;
 use apex_store::postgres::{InsightListFilters, PgStore, WarningListFilters};
 
+fn dashboard_reference_now() -> DateTime<Utc> {
+    std::env::var("APEX_FIXED_NOW")
+        .ok()
+        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now)
+}
+
 // ─── Template structs ───────────────────────────────────────────────────────
 
 /// A single stat card on the dashboard.
@@ -22,7 +30,7 @@ pub struct StatCard {
     pub label: String,
     pub value: String,
     pub icon: String,
-    pub accent: String,
+    pub accent_class: String,
     pub delta: Option<String>,
     pub direction: String, // "up" | "down" | "flat"
 }
@@ -72,6 +80,12 @@ pub struct WarningTrendDay {
     pub high: i64,
     pub medium: i64,
     pub low: i64,
+    pub total: i64,
+    pub bar_h: i64,
+    pub critical_h: i64,
+    pub high_h: i64,
+    pub medium_h: i64,
+    pub low_h: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +93,8 @@ pub struct RegionSlice {
     pub name: String,
     pub count: i64,
     pub color: String,
+    pub dash_array: String,
+    pub dash_offset: String,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +102,8 @@ pub struct CrawlActivityHour {
     pub hour_label: String,
     pub success: i64,
     pub errors: i64,
+    pub success_h: i64,
+    pub errors_h: i64,
 }
 
 /// Precomputed donut chart segment for SVG rendering.
@@ -267,6 +285,12 @@ pub async fn dashboard(
             high: 0,
             medium: 0,
             low: 0,
+            total: 0,
+            bar_h: 0,
+            critical_h: 0,
+            high_h: 0,
+            medium_h: 0,
+            low_h: 0,
         });
         match warning.severity.to_lowercase().as_str() {
             "critical" => entry.critical += 1,
@@ -278,6 +302,22 @@ pub async fn dashboard(
     let mut warning_trend: Vec<WarningTrendDay> = daily.into_values().collect();
     if warning_trend.len() > 24 {
         warning_trend = warning_trend.split_off(warning_trend.len() - 24);
+    }
+    let max_total = warning_trend
+        .iter()
+        .map(|d| d.critical + d.high + d.medium + d.low)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    for day in &mut warning_trend {
+        day.total = day.critical + day.high + day.medium + day.low;
+        day.bar_h = day.total * 100 / max_total;
+        if day.total > 0 {
+            day.critical_h = day.critical * 100 / day.total;
+            day.high_h = day.high * 100 / day.total;
+            day.medium_h = day.medium * 100 / day.total;
+            day.low_h = day.low * 100 / day.total;
+        }
     }
 
     let mut used_region_colors: HashSet<String> = HashSet::new();
@@ -303,9 +343,30 @@ pub async fn dashboard(
                 name: region.region.clone(),
                 count: region.count,
                 color,
+                dash_array: String::new(),
+                dash_offset: String::new(),
             }
         })
         .collect();
+    let region_total = region_slices.iter().map(|slice| slice.count).sum::<i64>() as f64;
+    let region_radius = 53.0f64;
+    let region_circumference = 2.0 * std::f64::consts::PI * region_radius;
+    let mut cumulative_region = 0.0f64;
+    let region_slices: Vec<RegionSlice> = region_slices
+        .into_iter()
+        .map(|mut slice| {
+            if region_total > 0.0 {
+                let fraction = slice.count as f64 / region_total;
+                slice.dash_array = format!("{:.2} {:.2}", fraction * region_circumference, region_circumference);
+                slice.dash_offset = format!("{:.2}", region_circumference * 0.25 - cumulative_region * region_circumference);
+                cumulative_region += fraction;
+            }
+            slice
+        })
+        .collect();
+
+    let reference_now = dashboard_reference_now();
+    let crawl_window_start = reference_now - Duration::hours(24);
 
     #[derive(sqlx::FromRow)]
     struct CrawlActivityRow {
@@ -315,7 +376,7 @@ pub async fn dashboard(
     }
 
     // Use page_fingerprints (pages crawled) + observations (pipeline events) as crawl proxy
-    let crawl_activity: Vec<CrawlActivityHour> = sqlx::query_as::<_, CrawlActivityRow>(
+    let crawl_activity_rows: Vec<CrawlActivityRow> = sqlx::query_as::<_, CrawlActivityRow>(
         r#"SELECT
                to_char(date_trunc('hour', h.hour), 'HH24:00') AS hour_label,
                COALESCE(pf.cnt, 0)::bigint AS success,
@@ -323,7 +384,7 @@ pub async fn dashboard(
            FROM (
                SELECT generate_series(
                    date_trunc('hour', $1::timestamptz),
-                   date_trunc('hour', now()),
+                   date_trunc('hour', $2::timestamptz),
                    '1 hour'::interval
                ) AS hour
            ) h
@@ -342,15 +403,25 @@ pub async fn dashboard(
            ORDER BY h.hour ASC
            LIMIT 24"#,
     )
-    .bind(Utc::now() - Duration::hours(24))
+        .bind(crawl_window_start)
+        .bind(reference_now)
     .fetch_all(&store.pool)
     .await
-    .unwrap_or_default()
-    .into_iter()
+    .unwrap_or_default();
+    let crawl_max = crawl_activity_rows
+        .iter()
+        .map(|row| row.success.max(row.errors))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let crawl_activity: Vec<CrawlActivityHour> = crawl_activity_rows
+        .into_iter()
     .map(|row| CrawlActivityHour {
         hour_label: row.hour_label,
         success: row.success,
         errors: row.errors,
+        success_h: row.success * 100 / crawl_max,
+        errors_h: row.errors * 100 / crawl_max,
     })
     .collect();
 
@@ -410,7 +481,7 @@ pub async fn dashboard(
                 label: "Active Warnings".into(),
                 value: stats_data.unacknowledged_warnings.to_string(),
                 icon: "alert-triangle".into(),
-                accent: "var(--rams-orange)".into(),
+                accent_class: "metric-rail-orange".into(),
                 delta: if new_warnings_24h > 0 {
                     Some(format!("+{}", new_warnings_24h))
                 } else {
@@ -426,7 +497,7 @@ pub async fn dashboard(
                 label: "Insights (7d)".into(),
                 value: stats_data.total_insights.to_string(),
                 icon: "eye".into(),
-                accent: "var(--rams-blue)".into(),
+                accent_class: "metric-rail-blue".into(),
                 delta: if new_insights_24h > 0 {
                     Some(format!("+{}", new_insights_24h))
                 } else {
@@ -442,7 +513,7 @@ pub async fn dashboard(
                 label: "Companies".into(),
                 value: stats_data.total_companies.to_string(),
                 icon: "boxes".into(),
-                accent: "var(--rams-navy)".into(),
+                accent_class: "metric-rail-navy".into(),
                 delta: None,
                 direction: "flat".into(),
             },
@@ -450,7 +521,7 @@ pub async fn dashboard(
                 label: "Persons of Interest".into(),
                 value: stats_data.total_persons.to_string(),
                 icon: "users".into(),
-                accent: "var(--rams-gold)".into(),
+                accent_class: "metric-rail-gold".into(),
                 delta: None,
                 direction: "flat".into(),
             },
@@ -469,7 +540,7 @@ pub async fn dashboard(
         data_freshness: "Live".into(),
     };
 
-    page.into_response()
+    super::render_template(&page)
 }
 
 fn region_color(region: &str, index: usize) -> &'static str {

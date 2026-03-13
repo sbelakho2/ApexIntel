@@ -141,7 +141,7 @@ fn normalize_digest_categories(raw: Option<Vec<String>>) -> Vec<String> {
 }
 
 fn split_recipients(raw: &str) -> Vec<String> {
-    raw.split(|c| c == ',' || c == ';' || c == '\n')
+    raw.split([',', ';', '\n'])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
@@ -334,7 +334,7 @@ pub async fn settings_page(
         .flatten()
         .unwrap_or_default();
 
-    render_settings_page(ctx, None, None, &prefs).into_response()
+    super::render_template(&render_settings_page(ctx, None, None, &prefs))
 }
 
 /// POST /settings — validate and save settings changes.
@@ -355,25 +355,23 @@ pub async fn save_settings(
     let mut prefs = settings_from_form(&form);
     let backend_url = prefs.backend_url_display.clone();
     if backend_url.trim().is_empty() {
-        return render_settings_page(
+        return super::render_template(&render_settings_page(
             ctx,
             None,
             Some("Backend URL cannot be empty.".to_string()),
             &prefs,
-        )
-        .into_response();
+        ));
     }
 
     if prefs.email_digest_enabled {
         let recipients = split_recipients(&prefs.email_digest_recipients);
         if recipients.is_empty() {
-            return render_settings_page(
+            return super::render_template(&render_settings_page(
                 ctx,
                 None,
                 Some("Add at least one digest recipient when email digest is enabled.".to_string()),
                 &prefs,
-            )
-            .into_response();
+            ));
         }
         let invalid: Vec<String> = recipients
             .iter()
@@ -381,7 +379,7 @@ pub async fn save_settings(
             .cloned()
             .collect();
         if !invalid.is_empty() {
-            return render_settings_page(
+            return super::render_template(&render_settings_page(
                 ctx,
                 None,
                 Some(format!(
@@ -389,28 +387,25 @@ pub async fn save_settings(
                     invalid.join(", ")
                 )),
                 &prefs,
-            )
-            .into_response();
+            ));
         }
         if !is_valid_hhmm(&prefs.email_digest_time_cet) {
-            return render_settings_page(
+            return super::render_template(&render_settings_page(
                 ctx,
                 None,
                 Some("Digest send time must use HH:MM format (CET).".to_string()),
                 &prefs,
-            )
-            .into_response();
+            ));
         }
         if prefs.notification_frequency.eq_ignore_ascii_case("weekly")
             && !is_valid_weekday(&prefs.email_digest_weekday)
         {
-            return render_settings_page(
+            return super::render_template(&render_settings_page(
                 ctx,
                 None,
                 Some("For weekly digest, select a valid weekday.".to_string()),
                 &prefs,
-            )
-            .into_response();
+            ));
         }
     }
 
@@ -426,20 +421,18 @@ pub async fn save_settings(
             "Failed to persist user settings for {}: {e}",
             session.username
         );
-        return render_settings_page(
+        return super::render_template(&render_settings_page(
             ctx,
             None,
             Some("Failed to save settings. Please retry.".to_string()),
             &prefs,
-        )
-        .into_response();
+        ));
     }
 
-    render_settings_page(
+    super::render_template(&render_settings_page(
         ctx,
         Some("Settings saved successfully.".to_string()),
         None,
         &prefs,
-    )
-    .into_response()
+    ))
 }

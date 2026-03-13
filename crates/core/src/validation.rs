@@ -492,6 +492,24 @@ mod tests {
         assert_eq!(safe_div(1.0, 1.0), 1.0);
     }
 
+    #[test]
+    fn safe_div_never_nan() {
+        let values = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (f64::NAN, 2.0),
+            (2.0, f64::NAN),
+            (f64::INFINITY, 1.0),
+            (1.0, f64::EPSILON / 4.0),
+        ];
+
+        for (left, right) in values {
+            let result = safe_div(left, right);
+            assert!(result.is_finite());
+        }
+    }
+
     // ── B277: round_to_dp ───────────────────────────────────
 
     #[test]

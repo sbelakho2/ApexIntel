@@ -1,6 +1,7 @@
 //! Warnings route — request/response types and logic for the warnings endpoints.
 
 use apex_core::validation::{normalize_email, validate_uuid};
+use apex_shared::{BayesianInterpretation, ConfidenceInterval};
 use apex_store::postgres::WarningReviewOutcome;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ pub struct ListWarningsQuery {
     pub date_to: Option<String>,
     pub search: Option<String>,
     pub acknowledged: Option<bool>,
+    pub include_deleted: Option<bool>,
     pub sort_by: Option<WarningSortField>,
     pub sort_dir: Option<SortDirection>,
 }
@@ -46,17 +48,12 @@ impl WarningSortField {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SortDirection {
     Asc,
+    #[default]
     Desc,
-}
-
-impl Default for SortDirection {
-    fn default() -> Self {
-        Self::Desc
-    }
 }
 
 impl SortDirection {
@@ -94,6 +91,16 @@ pub struct WarningResponse {
     pub entity_ids: Vec<String>,
     pub recipe_code: Option<String>,
     pub confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calibrated_probability: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bayesian_interpretation: Option<BayesianInterpretation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence_interval: Option<ConfidenceInterval>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_quality_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub information_gain_bits: Option<f64>,
     pub acknowledged: bool,
     pub acknowledged_by: Option<String>,
     pub acknowledged_at: Option<DateTime<Utc>>,
@@ -101,6 +108,8 @@ pub struct WarningResponse {
     pub review_outcome: Option<String>,
     pub reviewed_by: Option<String>,
     pub reviewed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
     pub ts_utc: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -234,6 +243,11 @@ mod tests {
             entity_ids: vec![],
             recipe_code: None,
             confidence: 0.9,
+            calibrated_probability: Some(0.92),
+            bayesian_interpretation: Some(BayesianInterpretation::Strong),
+            confidence_interval: Some(ConfidenceInterval::default()),
+            evidence_quality_label: Some("moderate".to_string()),
+            information_gain_bits: Some(0.18),
             acknowledged: acked,
             acknowledged_by: None,
             acknowledged_at: None,
@@ -241,6 +255,7 @@ mod tests {
             review_outcome: None,
             reviewed_by: None,
             reviewed_at: None,
+            deleted_at: None,
             ts_utc: now - chrono::Duration::minutes(minutes_ago),
             created_at: now - chrono::Duration::minutes(minutes_ago),
             updated_at: now,

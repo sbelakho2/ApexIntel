@@ -6,7 +6,153 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use subtle::ConstantTimeEq;
+
+const AUTH_BACKOFF_STEPS_SECS: [i64; 4] = [1, 2, 4, 8];
+const TEMP_LOCK_THRESHOLD_10M: usize = 10;
+const ADMIN_LOCK_THRESHOLD_1H: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthThrottleStatus {
+    pub allowed: bool,
+    pub retry_after_secs: u64,
+    pub failure_count_10m: usize,
+    pub failure_count_1h: usize,
+    pub admin_unlock_required: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AuthAttemptState {
+    failures_10m: Vec<DateTime<Utc>>,
+    failures_1h: Vec<DateTime<Utc>>,
+    backoff_until: Option<DateTime<Utc>>,
+    temp_lock_until: Option<DateTime<Utc>>,
+    admin_locked: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct AuthAttemptTracker {
+    inner: Arc<Mutex<HashMap<String, AuthAttemptState>>>,
+}
+
+impl AuthAttemptTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn evaluate(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        let state = inner.entry(attempt_key.to_string()).or_default();
+        prune_attempt_state(state, now);
+        throttle_status_from_state(state, now)
+    }
+
+    pub fn record_failure(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        let state = inner.entry(attempt_key.to_string()).or_default();
+        prune_attempt_state(state, now);
+        state.failures_10m.push(now);
+        state.failures_1h.push(now);
+
+        if state.failures_1h.len() >= ADMIN_LOCK_THRESHOLD_1H {
+            state.admin_locked = true;
+            state.backoff_until = None;
+            state.temp_lock_until = None;
+            return throttle_status_from_state(state, now);
+        }
+
+        if state.failures_10m.len() >= TEMP_LOCK_THRESHOLD_10M {
+            state.temp_lock_until = Some(now + chrono::Duration::minutes(10));
+            state.backoff_until = None;
+            return throttle_status_from_state(state, now);
+        }
+
+        let idx = state.failures_10m.len().saturating_sub(1);
+        let delay_secs = AUTH_BACKOFF_STEPS_SECS
+            .get(idx)
+            .copied()
+            .unwrap_or(*AUTH_BACKOFF_STEPS_SECS.last().unwrap_or(&8));
+        state.backoff_until = Some(now + chrono::Duration::seconds(delay_secs));
+        throttle_status_from_state(state, now)
+    }
+
+    pub fn record_success(&self, attempt_key: &str) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        inner.remove(attempt_key);
+    }
+
+    pub fn clear_lock(&self, attempt_key: &str) -> bool {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        if let Some(state) = inner.get_mut(attempt_key) {
+            state.failures_10m.clear();
+            state.failures_1h.clear();
+            state.backoff_until = None;
+            state.temp_lock_until = None;
+            state.admin_locked = false;
+            return true;
+        }
+        false
+    }
+}
+
+fn prune_attempt_state(state: &mut AuthAttemptState, now: DateTime<Utc>) {
+    let cutoff_10m = now - chrono::Duration::minutes(10);
+    let cutoff_1h = now - chrono::Duration::hours(1);
+    state.failures_10m.retain(|ts| *ts >= cutoff_10m);
+    state.failures_1h.retain(|ts| *ts >= cutoff_1h);
+
+    if state.backoff_until.is_some_and(|until| now >= until) {
+        state.backoff_until = None;
+    }
+    if state.temp_lock_until.is_some_and(|until| now >= until) {
+        state.temp_lock_until = None;
+    }
+}
+
+fn throttle_status_from_state(state: &AuthAttemptState, now: DateTime<Utc>) -> AuthThrottleStatus {
+    let retry_after_secs = if state.admin_locked {
+        0
+    } else if let Some(until) = state.temp_lock_until {
+        (until - now).num_seconds().max(0) as u64
+    } else if let Some(until) = state.backoff_until {
+        (until - now).num_seconds().max(0) as u64
+    } else {
+        0
+    };
+
+    AuthThrottleStatus {
+        allowed: !state.admin_locked
+            && state.temp_lock_until.map(|until| now >= until).unwrap_or(true)
+            && state.backoff_until.map(|until| now >= until).unwrap_or(true),
+        retry_after_secs,
+        failure_count_10m: state.failures_10m.len(),
+        failure_count_1h: state.failures_1h.len(),
+        admin_unlock_required: state.admin_locked,
+    }
+}
+
+pub fn client_fingerprint(ip_hint: Option<&str>, user_agent: Option<&str>) -> String {
+    let source = format!(
+        "{}|{}",
+        ip_hint.unwrap_or("unknown-ip"),
+        user_agent.unwrap_or("unknown-ua")
+    );
+    hash_api_key(&source)
+}
 
 // ────────────────────────────────────────────
 // API Key management
@@ -45,16 +191,6 @@ impl ApiRole {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "admin" => Some(Self::Admin),
-            "analyst" => Some(Self::Analyst),
-            "viewer" => Some(Self::Viewer),
-            "service" => Some(Self::Service),
-            _ => None,
-        }
-    }
-
     /// Can this role access admin endpoints?
     pub fn can_admin(&self) -> bool {
         matches!(self, Self::Admin)
@@ -68,6 +204,20 @@ impl ApiRole {
     /// Can this role read data?
     pub fn can_read(&self) -> bool {
         true // all roles can read
+    }
+}
+
+impl FromStr for ApiRole {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "admin" => Ok(Self::Admin),
+            "analyst" => Ok(Self::Analyst),
+            "viewer" => Ok(Self::Viewer),
+            "service" => Ok(Self::Service),
+            _ => Err(()),
+        }
     }
 }
 
@@ -143,10 +293,8 @@ pub fn validate_token(
     let mut matched_key: Option<&ApiKey> = None;
     for key in registry.values() {
         let stored_bytes = key.key_hash.as_bytes();
-        if stored_bytes.len() == token_bytes.len() {
-            if bool::from(stored_bytes.ct_eq(token_bytes)) {
-                matched_key = Some(key);
-            }
+        if stored_bytes.len() == token_bytes.len() && bool::from(stored_bytes.ct_eq(token_bytes)) {
+            matched_key = Some(key);
         }
     }
 
@@ -291,11 +439,11 @@ mod tests {
 
     #[test]
     fn test_role_from_str() {
-        assert_eq!(ApiRole::from_str("admin"), Some(ApiRole::Admin));
-        assert_eq!(ApiRole::from_str("analyst"), Some(ApiRole::Analyst));
-        assert_eq!(ApiRole::from_str("viewer"), Some(ApiRole::Viewer));
-        assert_eq!(ApiRole::from_str("service"), Some(ApiRole::Service));
-        assert_eq!(ApiRole::from_str("unknown"), None);
+        assert_eq!("admin".parse::<ApiRole>().ok(), Some(ApiRole::Admin));
+        assert_eq!("analyst".parse::<ApiRole>().ok(), Some(ApiRole::Analyst));
+        assert_eq!("viewer".parse::<ApiRole>().ok(), Some(ApiRole::Viewer));
+        assert_eq!("service".parse::<ApiRole>().ok(), Some(ApiRole::Service));
+        assert_eq!("unknown".parse::<ApiRole>().ok(), None);
     }
 
     #[test]
@@ -315,6 +463,102 @@ mod tests {
         assert!(!ApiRole::Service.can_admin());
         assert!(!ApiRole::Service.can_write());
         assert!(ApiRole::Service.can_read());
+    }
+
+    #[test]
+    fn auth_attempt_tracker_applies_progressive_backoff() {
+        let tracker = AuthAttemptTracker::new();
+        let now = Utc::now();
+        let first = tracker.record_failure("key-hash", now);
+        assert!(!first.allowed);
+        assert_eq!(first.retry_after_secs, 1);
+
+        let second = tracker.record_failure("key-hash", now + chrono::Duration::seconds(1));
+        assert!(!second.allowed);
+        assert_eq!(second.retry_after_secs, 2);
+
+        let later = tracker.evaluate("key-hash", now + chrono::Duration::seconds(4));
+        assert!(later.allowed);
+    }
+
+    #[test]
+    fn auth_attempt_tracker_temp_locks_after_ten_failures() {
+        let tracker = AuthAttemptTracker::new();
+        let now = Utc::now();
+        let mut last = AuthThrottleStatus {
+            allowed: true,
+            retry_after_secs: 0,
+            failure_count_10m: 0,
+            failure_count_1h: 0,
+            admin_unlock_required: false,
+        };
+        for idx in 0..10 {
+            last = tracker.record_failure("key-hash", now + chrono::Duration::seconds(idx));
+        }
+        assert!(!last.allowed);
+        assert!(last.retry_after_secs >= 599);
+        assert_eq!(last.failure_count_10m, 10);
+    }
+
+    #[test]
+    fn auth_attempt_tracker_requires_admin_unlock_after_twenty_failures() {
+        let tracker = AuthAttemptTracker::new();
+        let now = Utc::now();
+        let mut last = AuthThrottleStatus {
+            allowed: true,
+            retry_after_secs: 0,
+            failure_count_10m: 0,
+            failure_count_1h: 0,
+            admin_unlock_required: false,
+        };
+        for idx in 0..20 {
+            last = tracker.record_failure("key-hash", now + chrono::Duration::minutes(idx));
+        }
+        assert!(!last.allowed);
+        assert!(last.admin_unlock_required);
+        assert!(tracker.clear_lock("key-hash"));
+        assert!(tracker.evaluate("key-hash", now + chrono::Duration::hours(2)).allowed);
+    }
+
+    #[test]
+    fn auth_progressive_backoff() {
+        let tracker = AuthAttemptTracker::new();
+        let now = Utc::now();
+        let first = tracker.record_failure("registry-key", now);
+        for index in 1..10 {
+            tracker.record_failure(
+                "registry-key",
+                now + chrono::Duration::seconds(index as i64 * 10),
+            );
+        }
+        let eleventh = tracker.record_failure("registry-key", now + chrono::Duration::seconds(110));
+
+        assert_eq!(first.retry_after_secs, 1);
+        assert!(eleventh.retry_after_secs > first.retry_after_secs * 8);
+    }
+
+    #[test]
+    fn auth_lockout_after_threshold() {
+        let tracker = AuthAttemptTracker::new();
+        let now = Utc::now();
+        let mut status = tracker.evaluate("registry-lock", now);
+        for index in 0..20 {
+            status = tracker.record_failure(
+                "registry-lock",
+                now + chrono::Duration::minutes(index as i64),
+            );
+        }
+
+        assert!(!status.allowed);
+        assert!(status.admin_unlock_required);
+        assert_ne!(status.retry_after_secs, 401);
+    }
+
+    #[test]
+    fn client_fingerprint_changes_with_inputs() {
+        let a = client_fingerprint(Some("1.2.3.4"), Some("ua-a"));
+        let b = client_fingerprint(Some("1.2.3.4"), Some("ua-b"));
+        assert_ne!(a, b);
     }
 
     // ── Token extraction ──

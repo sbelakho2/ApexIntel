@@ -141,7 +141,7 @@ pub fn generate_snippet(text: &str, query_terms: &[&str], context_chars: usize) 
 
     for term in query_terms {
         if let Some(pos) = lower.find(&term.to_lowercase()) {
-            if best_pos.is_none() || pos < best_pos.unwrap() {
+            if best_pos.is_none_or(|best| pos < best) {
                 best_pos = Some(pos);
                 best_term = term;
             }
@@ -176,11 +176,11 @@ pub fn generate_snippet(text: &str, query_terms: &[&str], context_chars: usize) 
             );
             let mut snippet = String::new();
             if start > 0 {
-                snippet.push_str("…");
+                snippet.push('…');
             }
             snippet.push_str(&text[start..end]);
             if end < text.len() {
-                snippet.push_str("…");
+                snippet.push('…');
             }
             snippet
         }
@@ -189,7 +189,7 @@ pub fn generate_snippet(text: &str, query_terms: &[&str], context_chars: usize) 
             let end = ceil(text, context_chars.min(text.len()));
             let mut snippet = text[..end].to_string();
             if end < text.len() {
-                snippet.push_str("…");
+                snippet.push('…');
             }
             snippet
         }

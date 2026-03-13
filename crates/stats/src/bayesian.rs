@@ -1,5 +1,7 @@
 /// Bayesian evidence fusion.
 
+const LOG_BAYES_FACTOR_CAP: f64 = 30.0;
+
 fn stable_logistic(log_odds: f64) -> f64 {
     if log_odds >= 0.0 {
         let z = (-log_odds).exp();
@@ -16,28 +18,80 @@ fn stable_logistic(log_odds: f64) -> f64 {
 /// `likelihoods`: Vec of (P(signal|true), P(signal|false)) pairs.
 /// Returns posterior probability.
 pub fn fuse_signals(prior: f64, likelihoods: &[(f64, f64)]) -> f64 {
+    fuse_signals_detailed(prior, likelihoods).posterior
+}
+
+#[derive(Debug, Clone)]
+pub struct BayesianFusionResult {
+    pub posterior: f64,
+    pub capped_updates: usize,
+    pub cap_trigger_rate: f64,
+    pub interpretation: &'static str,
+    pub combined_bayes_factor: f64,
+}
+
+pub fn fuse_signals_detailed(prior: f64, likelihoods: &[(f64, f64)]) -> BayesianFusionResult {
     if prior <= 0.0 {
-        return 0.0;
+        return BayesianFusionResult {
+            posterior: 0.0,
+            capped_updates: 0,
+            cap_trigger_rate: 0.0,
+            interpretation: "against",
+            combined_bayes_factor: 0.0,
+        };
     }
     if prior >= 1.0 {
-        return 1.0;
+        return BayesianFusionResult {
+            posterior: 1.0,
+            capped_updates: 0,
+            cap_trigger_rate: 0.0,
+            interpretation: "decisive",
+            combined_bayes_factor: f64::INFINITY,
+        };
     }
 
-    let mut log_odds = (prior / (1.0 - prior)).ln();
+    let prior_log_odds = (prior / (1.0 - prior)).ln();
+    let mut log_odds = prior_log_odds;
+    let mut capped_updates = 0usize;
     for &(p_true, p_false) in likelihoods {
         if p_true.abs() < 1e-12 && p_false.abs() < 1e-12 {
             continue; // both near zero — uninformative signal
         }
         let log_bf = if p_false < 1e-12 {
-            20.0 // decisive support: cap log Bayes factor
+            LOG_BAYES_FACTOR_CAP // decisive support: cap log Bayes factor
         } else if p_true < 1e-12 {
-            -20.0 // decisive refutation: cap log Bayes factor
+            -LOG_BAYES_FACTOR_CAP // decisive refutation: cap log Bayes factor
         } else {
-            (p_true / p_false).ln()
+            let raw = (p_true / p_false).ln();
+            if raw > LOG_BAYES_FACTOR_CAP {
+                capped_updates += 1;
+                LOG_BAYES_FACTOR_CAP
+            } else if raw < -LOG_BAYES_FACTOR_CAP {
+                capped_updates += 1;
+                -LOG_BAYES_FACTOR_CAP
+            } else {
+                raw
+            }
         };
+        if p_false < 1e-12 || p_true < 1e-12 {
+            capped_updates += 1;
+        }
         log_odds += log_bf;
     }
-    stable_logistic(log_odds)
+    let combined_log_bf = log_odds - prior_log_odds;
+    let combined_bayes_factor = combined_log_bf.exp();
+
+    BayesianFusionResult {
+        posterior: stable_logistic(log_odds),
+        capped_updates,
+        cap_trigger_rate: if likelihoods.is_empty() {
+            0.0
+        } else {
+            capped_updates as f64 / likelihoods.len() as f64
+        },
+        interpretation: interpret_bayes_factor(combined_bayes_factor),
+        combined_bayes_factor,
+    }
 }
 
 /// Beta-Binomial Bayesian updater for binary outcomes.
@@ -126,7 +180,7 @@ pub fn interpret_bayes_factor(bf: f64) -> &'static str {
     } else if bf > 3.0 {
         "substantial"
     } else if bf > 1.0 {
-        "barely_worth_mentioning"
+        "barely"
     } else {
         "against"
     }
@@ -173,6 +227,12 @@ mod tests {
         let posterior = fuse_signals(0.5, &likes);
         assert!(posterior.is_finite());
         assert!(posterior > 0.999_999);
+    }
+
+    #[test]
+    fn bayesian_strong_evidence_posterior() {
+        let posterior = fuse_signals(0.5, &[(1.0, 1e-20); 5]);
+        assert!(posterior > 0.9999, "expected posterior > 0.9999, got {posterior}");
     }
 
     #[test]
@@ -238,7 +298,7 @@ mod tests {
         assert_eq!(interpret_bayes_factor(50.0), "very_strong");
         assert_eq!(interpret_bayes_factor(15.0), "strong");
         assert_eq!(interpret_bayes_factor(5.0), "substantial");
-        assert_eq!(interpret_bayes_factor(1.5), "barely_worth_mentioning");
+        assert_eq!(interpret_bayes_factor(1.5), "barely");
         assert_eq!(interpret_bayes_factor(0.5), "against");
     }
 
@@ -247,8 +307,31 @@ mod tests {
         assert_eq!(interpret_bayes_factor(100.0), "very_strong");
         assert_eq!(interpret_bayes_factor(30.0), "strong");
         assert_eq!(interpret_bayes_factor(10.0), "substantial");
-        assert_eq!(interpret_bayes_factor(3.0), "barely_worth_mentioning");
+        assert_eq!(interpret_bayes_factor(3.0), "barely");
         assert_eq!(interpret_bayes_factor(1.0), "against");
+    }
+
+    #[test]
+    fn capped_updates_are_reported() {
+        let detailed = fuse_signals_detailed(0.5, &[(1.0, 1e-20); 10]);
+
+        assert!(detailed.capped_updates > 0);
+        assert!(detailed.cap_trigger_rate > 0.05);
+        assert_eq!(detailed.interpretation, "decisive");
+    }
+
+    #[test]
+    fn bayesian_posterior_bounded() {
+        let sequences = [
+            vec![(0.9, 0.1), (0.8, 0.2), (0.7, 0.3)],
+            vec![(0.2, 0.8), (0.1, 0.9), (0.4, 0.6)],
+            vec![(1.0, 1e-20); 5],
+        ];
+
+        for likelihoods in sequences {
+            let posterior = fuse_signals(0.5, &likelihoods);
+            assert!((0.0..=1.0).contains(&posterior));
+        }
     }
 
     // ── B270: previously uncovered utility methods ──────────────────────────

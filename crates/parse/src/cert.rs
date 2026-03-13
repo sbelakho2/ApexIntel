@@ -408,4 +408,17 @@ mod tests {
         assert!(standards.contains(&&CertStandard::RoHS));
         assert!(standards.contains(&&CertStandard::Reach));
     }
+
+    #[test]
+    fn fuzz_cert_parse_no_panic() {
+        let inputs = [
+            "",
+            "Certificate no: ???",
+            "ISO 9001\0\0\0 weird bytes rendered",
+            "شهادة ISO 14001 صالحة",
+        ];
+        for input in inputs {
+            let _ = extract_certifications(input, "https://example.com");
+        }
+    }
 }

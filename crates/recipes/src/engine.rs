@@ -740,6 +740,21 @@ mod tests {
     }
 
     #[test]
+    fn confidence_bounded() {
+        let recipe = make_recipe(
+            "A001",
+            vec![
+                make_signal("X", "y", "above", Some(0.0)),
+                make_signal("Y", "z", "above", Some(0.0)),
+            ],
+        );
+        for values in [vec![0.1], vec![5.0, 2.0], vec![50.0, 40.0]] {
+            let confidence = estimate_confidence(&values, &recipe);
+            assert!((0.05..=1.0).contains(&confidence));
+        }
+    }
+
+    #[test]
     fn test_evaluate_recipe_satisfied() {
         let signals = vec![make_signal("JobPost", "count", "above", Some(3.0))];
         let recipe = make_recipe("A001", signals);

@@ -97,7 +97,7 @@ impl ReplayStatus {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "running" => Self::Running,
             "completed" => Self::Completed,

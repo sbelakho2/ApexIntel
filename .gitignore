@@ -18,6 +18,8 @@ frontend/coverage/
 frontend/.nyc_output/
 frontend/*.tsbuildinfo
 frontend/next-env.d.ts
+crates/frontend/dist/
+crates/frontend/.trunk/
 
 # =========================
 # Environment & Secrets

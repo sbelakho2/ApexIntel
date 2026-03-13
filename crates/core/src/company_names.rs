@@ -15,6 +15,7 @@ pub fn normalize_company_name(name: &str) -> String {
         .replace_all(&RE_NON_WORD.replace_all(&lower, " "), " ")
         .trim()
         .to_string();
+    let compact = collapse_letter_sequences(&compact);
 
     let suffixes = [
         " inc", " ltd", " llc", " corp", " s a", " sa", " s a r l", " sarl", " gmbh", " ag",
@@ -25,6 +26,11 @@ pub fn normalize_company_name(name: &str) -> String {
     loop {
         let prev_len = result.len();
         for suffix in &suffixes {
+            let bare_suffix = suffix.trim();
+            if result == bare_suffix {
+                result.clear();
+                break;
+            }
             if result.ends_with(suffix) {
                 result = result[..result.len() - suffix.len()].trim().to_string();
                 break;
@@ -38,6 +44,29 @@ pub fn normalize_company_name(name: &str) -> String {
     result
 }
 
+fn collapse_letter_sequences(input: &str) -> String {
+    let mut collapsed = Vec::new();
+    let mut letter_run = String::new();
+
+    for token in input.split_whitespace() {
+        if token.len() == 1 && token.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+            letter_run.push_str(token);
+            continue;
+        }
+
+        if !letter_run.is_empty() {
+            collapsed.push(std::mem::take(&mut letter_run));
+        }
+        collapsed.push(token.to_string());
+    }
+
+    if !letter_run.is_empty() {
+        collapsed.push(letter_run);
+    }
+
+    collapsed.join(" ")
+}
+
 fn strip_diacritics(input: &str) -> String {
     input.nfd().filter(|ch| !is_combining_mark(*ch)).collect()
 }
@@ -49,16 +78,36 @@ fn normalize_mixed_script_confusables(input: &str) -> String {
             'А' | 'а' => 'a',
             'В' | 'в' => 'b',
             'С' | 'с' => 'c',
+            'ԁ' => 'd',
             'Е' | 'е' => 'e',
+            'Ғ' | 'ғ' => 'f',
+            'ɢ' | 'Ԍ' | 'ɡ' | 'Գ' | 'г' | 'Г' => 'g',
             'Н' | 'н' => 'h',
             'І' | 'і' => 'i',
+            'Ј' | 'ј' => 'j',
             'К' | 'к' => 'k',
+            'Լ' => 'l',
             'М' | 'м' => 'm',
+            'Ν' | 'П' | 'п' | 'η' => 'n',
             'О' | 'о' => 'o',
+            'Ο' | 'ο' | 'Ө' | 'ө' | 'Օ' => 'o',
             'Р' | 'р' => 'p',
+            'ԛ' => 'q',
+            'Γ' => 'r',
             'Т' | 'т' => 't',
+            'τ' => 't',
+            'Ս' => 'u',
+            'ν' | 'ѵ' => 'v',
+            'Ԝ' => 'w',
             'Х' | 'х' => 'x',
-            'Υ' | 'υ' => 'y',
+            'Υ' | 'υ' | 'Ү' | 'ү' => 'y',
+            'Ζ' | 'z' | 'ᴢ' => 'z',
+            'Β' => 'b',
+            'Ι' => 'i',
+            'Κ' => 'k',
+            'Μ' => 'm',
+            'Τ' => 't',
+            'Ρ' => 'p',
             _ => ch,
         })
         .collect()
@@ -90,5 +139,27 @@ mod tests {
     fn normalize_company_name_normalizes_mixed_script_confusables() {
         let mixed = format!("{}cme", '\u{0410}');
         assert_eq!(normalize_company_name(&mixed), "acme");
+    }
+
+    #[test]
+    fn normalize_company_name_collapses_letter_sequences() {
+        assert_eq!(normalize_company_name("A.B.C. Corp."), "abc");
+        assert_eq!(normalize_company_name("N.V."), "");
+    }
+
+    #[test]
+    fn fuzz_company_name_normalize_no_panic() {
+        let inputs = [
+            "",
+            "Rоsatом",
+            "A\u{200B}B\u{200C}C",
+            "شركة التقنية العالمية ذ.م.م",
+            "株式会社テスト",
+        ];
+
+        for input in inputs {
+            let normalized = normalize_company_name(input);
+            assert!(normalized.is_ascii() || !normalized.is_empty() || input.is_empty());
+        }
     }
 }

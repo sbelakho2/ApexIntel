@@ -21,6 +21,7 @@ use secrecy::{ExposeSecret, SecretString};
 /// | `LLM_MODEL`               | `Qwen3-30B-A3B-Q4_K_M`        | Locally deployed quantized model     |
 /// | `ENABLE_PROXY_ROTATION`   | `false`                       | Enable only in production            |
 /// | `ENABLE_HEADLESS_BROWSER` | `false`                       | Enable only when scraping JS pages   |
+/// | `ENABLE_WASM_PREVIEW`     | `true`                        | Gate the Rust/WASM preview UI        |
 /// | `CRAWL_INTERVAL_SECS`     | `21600` (6 h)                 | How often to re-crawl domains        |
 /// | `NIGHTLY_HOUR_UTC`        | `2`                           | UTC hour for the nightly pipeline    |
 /// | `WEEKLY_DAY`              | `0` (Monday)                  | 0=Mon … 6=Sun                        |
@@ -70,6 +71,8 @@ pub struct AppConfig {
     pub enable_proxy_rotation: bool,
     /// Enable headless-browser crawl fallback.  Default: `false`.
     pub enable_headless_browser: bool,
+    /// Expose the Rust/WASM preview UI. Default: `true`.
+    pub enable_wasm_preview: bool,
 
     // ── Scheduling ──────────────────────────────────────────────
     /// Crawl polling interval in seconds.  Default: `21600` (6 hours).
@@ -114,6 +117,7 @@ impl AppConfig {
 
             enable_proxy_rotation: parse_bool_env(env::ENABLE_PROXY_ROTATION, false)?,
             enable_headless_browser: parse_bool_env(env::ENABLE_HEADLESS_BROWSER, false)?,
+            enable_wasm_preview: parse_bool_env(env::ENABLE_WASM_PREVIEW, true)?,
 
             crawl_interval_secs: parse_u64_env(env::CRAWL_INTERVAL_SECS, 21600)?,
             nightly_hour_utc: parse_u32_env(env::NIGHTLY_HOUR_UTC, 2)?.min(23),

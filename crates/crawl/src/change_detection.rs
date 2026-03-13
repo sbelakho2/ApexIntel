@@ -259,4 +259,19 @@ mod tests {
         assert!((ChangeDetector::text_similarity("", "")).abs() < 0.01);
         assert!((ChangeDetector::text_similarity("hello world", "") - 0.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn fuzz_change_detection_no_panic() {
+        let mut detector = ChangeDetector::new();
+        let pairs = [
+            ("https://example.com/a", "plain text", "plain text"),
+            ("https://example.com/b", "شركة التقنية", "شركة التقنية 2"),
+            ("https://example.com/c", "<div>html</div>", "<div>html changed</div>"),
+        ];
+        for (url, left, right) in pairs {
+            let _ = detector.has_changed(url, left.as_bytes());
+            let _ = detector.has_changed(url, right.as_bytes());
+            let _ = ChangeDetector::text_similarity(left, right);
+        }
+    }
 }

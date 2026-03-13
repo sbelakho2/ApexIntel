@@ -1,6 +1,8 @@
 use apex_core::company_names::normalize_company_name;
-use apex_core::similarity::trigram_similarity;
+use apex_core::similarity::{jaccard_similarity, trigram_similarity};
 use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::HashSet;
 use tracing::debug;
 
 /// Default similarity threshold for entity clustering (B160).
@@ -8,6 +10,20 @@ use tracing::debug;
 /// while avoiding false merges between distinct entities.
 pub const DEFAULT_SIMILARITY_THRESHOLD: f64 = 0.6;
 const FALSE_POSITIVE_AUDIT_THRESHOLD: f64 = 0.85;
+const SHORT_NAME_LEN: usize = 8;
+const BOOTSTRAP_RESAMPLES: usize = 32;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityMatchScore {
+    pub similarity: f64,
+    pub trigram_jaccard: f64,
+    pub token_sort_ratio: f64,
+    pub phonetic_match: f64,
+    pub short_name_similarity: Option<f64>,
+    pub confidence_lower: f64,
+    pub confidence_upper: f64,
+    pub alias_matched: bool,
+}
 
 /// Canonical form for entity name resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -34,7 +50,7 @@ pub fn duplicate_entity_name_indices(names: &[String]) -> Vec<Vec<usize>> {
     let mut by_norm: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, name) in names.iter().enumerate() {
         by_norm
-            .entry(normalize_company_name(name))
+            .entry(canonical_company_identity(name))
             .or_default()
             .push(idx);
     }
@@ -53,19 +69,19 @@ pub fn find_best_match<'a>(
     candidates: &'a [String],
     threshold: f64,
 ) -> Option<(&'a str, f64)> {
-    let norm = normalize_company_name(name);
+    let norm = canonical_company_identity(name);
 
     let mut best: Option<(&str, f64)> = None;
 
     for candidate in candidates {
-        let norm_candidate = normalize_company_name(candidate);
+        let norm_candidate = canonical_company_identity(candidate);
 
         // Exact match after normalization
         if norm == norm_candidate {
             return Some((candidate.as_str(), 1.0));
         }
 
-        let sim = trigram_similarity(&norm, &norm_candidate);
+        let sim = score_entity_match(&norm, &norm_candidate).similarity;
         if sim >= threshold {
             if best.is_none() || sim > best.unwrap().1 {
                 best = Some((candidate.as_str(), sim));
@@ -76,9 +92,278 @@ pub fn find_best_match<'a>(
     best
 }
 
+fn alias_canonical_form(normalized: &str) -> Option<&'static str> {
+    match normalized {
+        "stmicro" => Some("stmicroelectronics"),
+        "stm" => Some("stmicroelectronics"),
+        "tsmc" => Some("taiwan semiconductor manufacturing"),
+        "taiwan semi" => Some("taiwan semiconductor manufacturing"),
+        "taiwan semiconductor" => Some("taiwan semiconductor manufacturing"),
+        "nxp" => Some("nxp semiconductors"),
+        "bae" => Some("bae systems"),
+        "ibm" => Some("international business machines"),
+        "ge" => Some("general electric"),
+        _ => None,
+    }
+}
+
+fn canonical_company_identity(name: &str) -> String {
+    let normalized = normalize_company_name(name);
+    alias_canonical_form(&normalized)
+        .unwrap_or(normalized.as_str())
+        .to_string()
+}
+
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    if left == right {
+        return 0;
+    }
+    if left.is_empty() {
+        return right.chars().count();
+    }
+    if right.is_empty() {
+        return left.chars().count();
+    }
+
+    let right_chars: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right_chars.len()).collect();
+
+    for (i, left_char) in left.chars().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, right_char) in right_chars.iter().enumerate() {
+            let substitution_cost = if left_char == *right_char { 0 } else { 1 };
+            current.push(
+                (previous[j + 1] + 1)
+                    .min(current[j] + 1)
+                    .min(previous[j] + substitution_cost),
+            );
+        }
+        previous = current;
+    }
+
+    *previous.last().unwrap_or(&0)
+}
+
+fn normalized_levenshtein_similarity(left: &str, right: &str) -> f64 {
+    let max_len = left.chars().count().max(right.chars().count());
+    if max_len == 0 {
+        return 1.0;
+    }
+    1.0 - levenshtein_distance(left, right) as f64 / max_len as f64
+}
+
+fn token_sort_ratio(left: &str, right: &str) -> f64 {
+    let mut left_tokens: Vec<&str> = left.split_whitespace().collect();
+    let mut right_tokens: Vec<&str> = right.split_whitespace().collect();
+    left_tokens.sort_unstable();
+    right_tokens.sort_unstable();
+    normalized_levenshtein_similarity(&left_tokens.join(" "), &right_tokens.join(" "))
+}
+
+fn soundex_code(token: &str) -> String {
+    let mut chars = token.chars();
+    let first = chars.next().unwrap_or('0').to_ascii_uppercase();
+    let mut code = String::from(first);
+    let mut previous_digit = map_soundex_digit(first);
+
+    for ch in chars {
+        let digit = map_soundex_digit(ch.to_ascii_uppercase());
+        if digit != '0' && digit != previous_digit {
+            code.push(digit);
+        }
+        previous_digit = digit;
+        if code.len() == 4 {
+            break;
+        }
+    }
+
+    while code.len() < 4 {
+        code.push('0');
+    }
+    code
+}
+
+fn map_soundex_digit(ch: char) -> char {
+    match ch {
+        'B' | 'F' | 'P' | 'V' => '1',
+        'C' | 'G' | 'J' | 'K' | 'Q' | 'S' | 'X' | 'Z' => '2',
+        'D' | 'T' => '3',
+        'L' => '4',
+        'M' | 'N' => '5',
+        'R' => '6',
+        _ => '0',
+    }
+}
+
+fn phonetic_signature(name: &str) -> Vec<String> {
+    let mut signature: Vec<String> = name
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .map(soundex_code)
+        .collect();
+    signature.sort();
+    signature
+}
+
+fn phonetic_match_score(left: &str, right: &str) -> f64 {
+    let left_signature = phonetic_signature(left);
+    let right_signature = phonetic_signature(right);
+    if left_signature.is_empty() && right_signature.is_empty() {
+        return 1.0;
+    }
+    if left_signature == right_signature {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn trigram_set(input: &str) -> HashSet<String> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut set = HashSet::new();
+
+    if chars.len() < 3 {
+        let padded: Vec<char> = format!(" {} ", input).chars().collect();
+        for window in padded.windows(3) {
+            set.insert(window.iter().collect());
+        }
+        return set;
+    }
+
+    for window in chars.windows(3) {
+        set.insert(window.iter().collect());
+    }
+
+    set
+}
+
+fn deterministic_seed(left: &str, right: &str) -> u64 {
+    let mut hash = 1469598103934665603u64;
+    for byte in left.bytes().chain([0u8]).chain(right.bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(1099511628211u64);
+    }
+    hash.max(1)
+}
+
+fn sample_with_replacement(values: &[String], seed: &mut u64) -> HashSet<String> {
+    if values.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut sample = HashSet::new();
+    for _ in 0..values.len() {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let index = (*seed as usize) % values.len();
+        sample.insert(values[index].clone());
+    }
+    sample
+}
+
+fn bootstrap_similarity_band(left: &str, right: &str, baseline: f64) -> (f64, f64) {
+    let left_trigrams: Vec<String> = trigram_set(left).into_iter().collect();
+    let right_trigrams: Vec<String> = trigram_set(right).into_iter().collect();
+    if left_trigrams.is_empty() || right_trigrams.is_empty() {
+        return (baseline, baseline);
+    }
+
+    let mut seed = deterministic_seed(left, right);
+    let mut samples = Vec::with_capacity(BOOTSTRAP_RESAMPLES);
+    for _ in 0..BOOTSTRAP_RESAMPLES {
+        let sampled_left = sample_with_replacement(&left_trigrams, &mut seed);
+        let sampled_right = sample_with_replacement(&right_trigrams, &mut seed);
+        samples.push(jaccard_similarity(&sampled_left, &sampled_right));
+    }
+    samples.sort_by(|left, right| left.total_cmp(right));
+
+    let lower_index = ((BOOTSTRAP_RESAMPLES - 1) as f64 * 0.05).round() as usize;
+    let upper_index = ((BOOTSTRAP_RESAMPLES - 1) as f64 * 0.95).round() as usize;
+    (samples[lower_index], samples[upper_index])
+}
+
+pub fn score_entity_match(left: &str, right: &str) -> EntityMatchScore {
+    let left = canonical_company_identity(left);
+    let right = canonical_company_identity(right);
+    let alias_matched = left == right;
+
+    if alias_matched {
+        return EntityMatchScore {
+            similarity: 1.0,
+            trigram_jaccard: 1.0,
+            token_sort_ratio: 1.0,
+            phonetic_match: 1.0,
+            short_name_similarity: Some(1.0),
+            confidence_lower: 1.0,
+            confidence_upper: 1.0,
+            alias_matched: true,
+        };
+    }
+
+    let trigram_jaccard = trigram_similarity(&left, &right);
+    let token_sort = token_sort_ratio(&left, &right);
+    let phonetic_match = phonetic_match_score(&left, &right);
+    let short_name_similarity = if left.len() < SHORT_NAME_LEN || right.len() < SHORT_NAME_LEN {
+        Some(normalized_levenshtein_similarity(&left, &right))
+    } else {
+        None
+    };
+
+    let mut similarity = 0.6 * trigram_jaccard + 0.3 * token_sort + 0.1 * phonetic_match;
+    if let Some(short_score) = short_name_similarity {
+        similarity = similarity.max(0.5 * similarity + 0.5 * short_score);
+    }
+    let (confidence_lower, confidence_upper) = bootstrap_similarity_band(&left, &right, similarity);
+
+    EntityMatchScore {
+        similarity,
+        trigram_jaccard,
+        token_sort_ratio: token_sort,
+        phonetic_match,
+        short_name_similarity,
+        confidence_lower,
+        confidence_upper,
+        alias_matched: false,
+    }
+}
+
+fn canonical_entity_key(name: &str, original_index: usize) -> (String, String, usize) {
+    (
+        canonical_company_identity(name),
+        name.to_string(),
+        original_index,
+    )
+}
+
+fn compare_entity_keys(
+    left: &(String, String, usize),
+    right: &(String, String, usize),
+) -> Ordering {
+    left.0
+        .cmp(&right.0)
+        .then_with(|| left.1.cmp(&right.1))
+        .then_with(|| left.2.cmp(&right.2))
+}
+
 /// Resolve entities: given a batch of names, group them into clusters.
 pub fn cluster_entities(names: &[String], threshold: f64) -> Vec<Vec<usize>> {
-    let normalized: Vec<String> = names.iter().map(|n| normalize_company_name(n)).collect();
+    let mut canonical_entities: Vec<(usize, String, String)> = names
+        .iter()
+        .enumerate()
+        .map(|(original_index, name)| {
+            (
+                original_index,
+                canonical_company_identity(name),
+                name.clone(),
+            )
+        })
+        .collect();
+    canonical_entities.sort_by(|left, right| {
+        compare_entity_keys(
+            &(left.1.clone(), left.2.clone(), left.0),
+            &(right.1.clone(), right.2.clone(), right.0),
+        )
+    });
+
     let n = names.len();
     let mut parent: Vec<usize> = (0..n).collect();
     let mut rank: Vec<u8> = vec![0; n];
@@ -107,7 +392,20 @@ pub fn cluster_entities(names: &[String], threshold: f64) -> Vec<Vec<usize>> {
         }
     }
 
-    for dup_group in duplicate_entity_name_indices(names) {
+    let mut duplicate_groups: Vec<Vec<usize>> = Vec::new();
+    let mut start = 0usize;
+    while start < canonical_entities.len() {
+        let mut end = start + 1;
+        while end < canonical_entities.len() && canonical_entities[end].1 == canonical_entities[start].1 {
+            end += 1;
+        }
+        if end - start > 1 {
+            duplicate_groups.push((start..end).collect());
+        }
+        start = end;
+    }
+
+    for dup_group in duplicate_groups {
         debug!(group = ?dup_group, "Detected duplicate normalized entity names");
         let leader = dup_group[0];
         for &idx in dup_group.iter().skip(1) {
@@ -117,15 +415,18 @@ pub fn cluster_entities(names: &[String], threshold: f64) -> Vec<Vec<usize>> {
 
     for i in 0..n {
         for j in (i + 1)..n {
-            if normalized[i] == normalized[j]
-                || trigram_similarity(&normalized[i], &normalized[j]) >= threshold
-            {
+            let normalized_i = &canonical_entities[i].1;
+            let normalized_j = &canonical_entities[j].1;
+            let match_score = score_entity_match(normalized_i, normalized_j);
+            if normalized_i == normalized_j || match_score.similarity >= threshold {
                 debug!(
                     i,
                     j,
-                    name_i = %names[i],
-                    name_j = %names[j],
-                    sim = %trigram_similarity(&normalized[i], &normalized[j]),
+                    name_i = %canonical_entities[i].2,
+                    name_j = %canonical_entities[j].2,
+                    sim = %match_score.similarity,
+                    ci_low = %match_score.confidence_lower,
+                    ci_high = %match_score.confidence_upper,
                     "Merging entities in cluster"
                 );
                 union(&mut parent, &mut rank, i, j);
@@ -136,17 +437,33 @@ pub fn cluster_entities(names: &[String], threshold: f64) -> Vec<Vec<usize>> {
     let mut clusters: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in 0..n {
         let root = find(&mut parent, i);
-        clusters.entry(root).or_default().push(i);
+        clusters
+            .entry(root)
+            .or_default()
+            .push(canonical_entities[i].0);
     }
 
-    // Collect into a stable, deterministic order:
-    // - Each cluster's members are already in ascending index order (0..n loop above).
-    // - Clusters themselves are sorted by their smallest (canonical) member index, so
-    //   the output Vec<Vec<usize>> is the same for identical inputs regardless of
-    //   HashMap internal iteration order.  This is required for snapshot tests and
-    //   any downstream code that compares cluster sets (B292).
+    // Collect into a stable, deterministic order using canonicalized member identities.
     let mut result: Vec<Vec<usize>> = clusters.into_values().collect();
-    result.sort_by_key(|cluster| cluster[0]); // cluster[0] is always the minimum because we iterate 0..n
+    for cluster in &mut result {
+        cluster.sort_unstable();
+    }
+    result.sort_by(|left, right| {
+        let left_key = left
+            .iter()
+            .map(|index| canonical_entity_key(&names[*index], *index))
+            .min_by(compare_entity_keys);
+        let right_key = right
+            .iter()
+            .map(|index| canonical_entity_key(&names[*index], *index))
+            .min_by(compare_entity_keys);
+        match (left_key, right_key) {
+            (Some(left_key), Some(right_key)) => compare_entity_keys(&left_key, &right_key),
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    });
 
     let metrics = compute_entity_resolution_metrics(names, &result);
     debug!(
@@ -186,8 +503,8 @@ pub fn compute_entity_resolution_metrics(
                     continue;
                 }
                 merged_pairs += 1;
-                let sim = trigram_similarity(&normalized[left], &normalized[right]);
-                if sim < FALSE_POSITIVE_AUDIT_THRESHOLD {
+                let match_score = score_entity_match(&normalized[left], &normalized[right]);
+                if match_score.confidence_lower < FALSE_POSITIVE_AUDIT_THRESHOLD {
                     potential_false_positive_pairs += 1;
                 }
             }
@@ -212,6 +529,37 @@ pub fn compute_entity_resolution_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn canonical_cluster_labels(names: &[String], clusters: &[Vec<usize>]) -> Vec<Vec<String>> {
+        let mut labels: Vec<Vec<String>> = clusters
+            .iter()
+            .map(|cluster| {
+                let mut members: Vec<String> = cluster
+                    .iter()
+                    .map(|index| normalize_company_name(&names[*index]))
+                    .collect();
+                members.sort();
+                members
+            })
+            .collect();
+        labels.sort();
+        labels
+    }
+
+    fn pseudo_shuffle_names(names: &[String], iteration: usize) -> Vec<String> {
+        let mut keyed: Vec<(u64, String)> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let key = ((index as u64 + 1) * 1_103_515_245u64)
+                    .wrapping_add((iteration as u64 + 7) * 12_345u64)
+                    % 4_294_967_291u64;
+                (key, name.clone())
+            })
+            .collect();
+        keyed.sort_by_key(|(key, name)| (*key, name.clone()));
+        keyed.into_iter().map(|(_, name)| name).collect()
+    }
 
     #[test]
     fn test_normalize_company_name() {
@@ -278,6 +626,80 @@ mod tests {
         let candidates = vec!["Foxconn Technology Group".to_string()];
         let result = find_best_match("Samsung Electronics", &candidates, 0.8);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_score_entity_match_short_names_use_levenshtein() {
+        let score = score_entity_match("NXP", "NXP Semiconductors");
+        assert!(score.short_name_similarity.is_some());
+        assert!(score.similarity > 0.6);
+    }
+
+    #[test]
+    fn test_score_entity_match_token_sort_handles_reordering() {
+        let score = score_entity_match("Samsung Electronics", "Electronics Samsung");
+        assert!(score.token_sort_ratio > 0.99);
+        assert!(score.similarity > 0.7);
+    }
+
+    #[test]
+    fn test_score_entity_match_alias_short_circuit() {
+        let score = score_entity_match("STMicro", "STMicroelectronics");
+        assert!(score.alias_matched);
+        assert!((score.similarity - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn short_name_confusion_prevention() {
+        let bae_bea = score_entity_match("BAE", "BEA");
+        let nxp = score_entity_match("NXP", "NXP Semiconductors");
+        assert!(bae_bea.similarity < DEFAULT_SIMILARITY_THRESHOLD);
+        assert!(nxp.similarity >= DEFAULT_SIMILARITY_THRESHOLD);
+    }
+
+    #[test]
+    fn token_reorder_invariance() {
+        let score = score_entity_match("Samsung Electronics", "Electronics Samsung");
+        assert!(score.token_sort_ratio > 0.99);
+        assert!(score.similarity >= DEFAULT_SIMILARITY_THRESHOLD);
+    }
+
+    #[test]
+    fn full_homoglyph_table() {
+        assert_eq!(normalize_company_name("Rоsatом"), "rosatom");
+    }
+
+    #[test]
+    fn alias_table_resolution() {
+        assert!(score_entity_match("STMicro", "STMicroelectronics").alias_matched);
+        assert!(score_entity_match("TSMC", "Taiwan Semiconductor").alias_matched);
+    }
+
+    #[test]
+    fn union_find_valid_partition() {
+        let names = vec![
+            "STMicro".to_string(),
+            "STMicroelectronics".to_string(),
+            "TSMC".to_string(),
+            "Taiwan Semiconductor".to_string(),
+            "NXP".to_string(),
+        ];
+        let clusters = cluster_entities(&names, DEFAULT_SIMILARITY_THRESHOLD);
+        let mut seen = std::collections::HashSet::new();
+        for cluster in &clusters {
+            for index in cluster {
+                assert!(seen.insert(*index), "duplicate index in partition: {index}");
+            }
+        }
+        assert_eq!(seen.len(), names.len());
+    }
+
+    #[test]
+    fn test_score_entity_match_emits_confidence_band() {
+        let score = score_entity_match("Foxconn Technology Group", "Foxconn Technology");
+        assert!(score.confidence_lower <= score.confidence_upper);
+        assert!((0.0..=1.0).contains(&score.confidence_lower));
+        assert!((0.0..=1.0).contains(&score.confidence_upper));
     }
 
     #[test]
@@ -396,6 +818,13 @@ mod tests {
     fn test_normalize_company_name_mixed_script_confusables() {
         let mixed = "A\u{0421}\u{041c}E Corp."; // uses Cyrillic С and М in ACME
         assert_eq!(normalize_company_name(mixed), "acme");
+    }
+
+    #[test]
+    fn test_normalize_company_name_extended_homoglyphs() {
+        assert_eq!(normalize_company_name("οmicron Corp"), "omicron");
+        assert_eq!(normalize_company_name("Τesla"), "tesla");
+        assert_eq!(normalize_company_name("Νokia"), "nokia");
     }
 
     // ── B169: large-set performance test ──
@@ -570,6 +999,30 @@ mod tests {
     }
 
     #[test]
+    fn entity_resolution_ordering_invariance() {
+        let names = vec![
+            "Starz Electronics SARL".to_string(),
+            "Foxconn Technology Group".to_string(),
+            "Starz Electronics".to_string(),
+            "Foxconn Technology".to_string(),
+            "Samsung Electronics".to_string(),
+            "ACME INC.".to_string(),
+            "Acme".to_string(),
+        ];
+        let baseline = canonical_cluster_labels(&names, &cluster_entities(&names, 0.6));
+
+        for iteration in 0..10 {
+            let shuffled = pseudo_shuffle_names(&names, iteration);
+            let shuffled_clusters = cluster_entities(&shuffled, 0.6);
+            assert_eq!(
+                canonical_cluster_labels(&shuffled, &shuffled_clusters),
+                baseline,
+                "cluster membership should be invariant across deterministic shuffles"
+            );
+        }
+    }
+
+    #[test]
     fn test_compute_entity_resolution_metrics_flags_potential_false_positives() {
         let names = vec![
             "Starz Electronics".to_string(),
@@ -600,6 +1053,6 @@ mod tests {
 
         assert_eq!(metrics.merged_pairs, 1);
         assert_eq!(metrics.potential_false_positive_pairs, 0);
-        assert_eq!(metrics.potential_false_positive_rate, 0.0);
+        assert!((metrics.potential_false_positive_rate - 0.0).abs() < 1e-10);
     }
 }

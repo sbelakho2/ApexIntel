@@ -88,4 +88,15 @@ mod tests {
         assert!(different < 0.2);
         assert!(similar > different);
     }
+
+    #[test]
+    fn jaccard_symmetry_commutative() {
+        let left = std::collections::HashSet::from_iter(["alpha", "beta", "gamma"]);
+        let right = std::collections::HashSet::from_iter(["beta", "gamma", "delta"]);
+        let ab = jaccard_similarity(&left, &right);
+        let ba = jaccard_similarity(&right, &left);
+
+        assert!((ab - ba).abs() < f64::EPSILON);
+        assert!((0.0..=1.0).contains(&ab));
+    }
 }

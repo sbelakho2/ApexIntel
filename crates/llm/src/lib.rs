@@ -57,6 +57,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing;
 
+pub const EXPERIMENTAL_FEATURES_ENABLED: bool = cfg!(feature = "experimental");
+
 pub(crate) fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
     if input.len() <= max_bytes {
         return input;

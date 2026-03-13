@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use url::Url;
@@ -222,7 +222,65 @@ pub struct CalibrationReport {
     pub sample_size: u64,
     pub evidence_quality: f64,
     pub calibration_delta: f64,
+    pub confidence_interval_low: f64,
+    pub confidence_interval_high: f64,
+    pub confidence_interval_half_width: f64,
     pub confidence_band: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryBrierObservation {
+    pub category: String,
+    pub predicted_probability: f64,
+    pub actual_outcome: bool,
+    pub observed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryWeekBrierScore {
+    pub category: String,
+    pub week_start: DateTime<Utc>,
+    pub sample_count: usize,
+    pub brier_score: f64,
+}
+
+fn start_of_utc_week(observed_at: DateTime<Utc>) -> DateTime<Utc> {
+    let date = observed_at.date_naive();
+    let weekday = date.weekday().num_days_from_monday() as i64;
+    let week_start = date - chrono::Duration::days(weekday);
+    DateTime::<Utc>::from_naive_utc_and_offset(
+        week_start.and_hms_opt(0, 0, 0).unwrap_or_default(),
+        Utc,
+    )
+}
+
+pub fn brier_score_per_category_week(
+    observations: &[CategoryBrierObservation],
+) -> Vec<CategoryWeekBrierScore> {
+    let mut grouped: BTreeMap<(String, DateTime<Utc>), (f64, usize)> = BTreeMap::new();
+    for observation in observations {
+        let category = observation.category.trim();
+        if category.is_empty() {
+            continue;
+        }
+        let week_start = start_of_utc_week(observation.observed_at);
+        let entry = grouped
+            .entry((category.to_string(), week_start))
+            .or_insert((0.0, 0));
+        let actual = if observation.actual_outcome { 1.0 } else { 0.0 };
+        entry.0 += (observation.predicted_probability.clamp(0.0, 1.0) - actual).powi(2);
+        entry.1 += 1;
+    }
+
+    grouped
+        .into_iter()
+        .map(|((category, week_start), (sum, count))| CategoryWeekBrierScore {
+            category,
+            week_start,
+            sample_count: count,
+            brier_score: if count > 0 { sum / count as f64 } else { 0.0 },
+        })
+        .collect()
 }
 
 pub fn calibrate_confidence(
@@ -239,17 +297,27 @@ pub fn calibrate_confidence(
     let sample_weight = 1.0 - (-(sample_size as f64) / 12.0).exp();
     let evidence_quality = evidence_quality.unwrap_or(0.5).clamp(0.0, 1.0);
 
-    let historical_component =
-        base_confidence * (1.0 - sample_weight) + posterior_precision * sample_weight;
+    let historical_component = 0.67 * posterior_precision + 0.33 * evidence_quality;
     let calibrated_confidence =
-        (0.55 * base_confidence + 0.30 * historical_component + 0.15 * evidence_quality)
+        ((1.0 - sample_weight) * base_confidence + sample_weight * historical_component)
             .clamp(0.0, 1.0);
     let calibration_delta = calibrated_confidence - base_confidence;
-    let confidence_band = match calibrated_confidence {
-        score if score >= 0.8 => "high",
-        score if score >= 0.6 => "elevated",
-        score if score >= 0.4 => "watch",
-        _ => "low",
+    let confidence_interval_half_width = if sample_size == 0 {
+        0.5
+    } else {
+        (1.96
+            * ((calibrated_confidence * (1.0 - calibrated_confidence)) / sample_size as f64)
+                .sqrt())
+        .clamp(0.0, 0.5)
+    };
+    let confidence_interval_low =
+        (calibrated_confidence - confidence_interval_half_width).clamp(0.0, 1.0);
+    let confidence_interval_high =
+        (calibrated_confidence + confidence_interval_half_width).clamp(0.0, 1.0);
+    let confidence_band = match confidence_interval_half_width {
+        width if width <= 0.05 => "tight",
+        width if width <= 0.15 => "moderate",
+        _ => "wide",
     }
     .to_string();
 
@@ -260,6 +328,9 @@ pub fn calibrate_confidence(
         sample_size,
         evidence_quality,
         calibration_delta,
+        confidence_interval_low,
+        confidence_interval_high,
+        confidence_interval_half_width,
         confidence_band,
     }
 }
@@ -557,6 +628,65 @@ mod tests {
 
         assert!(high_quality.calibrated_confidence > weak_history.calibrated_confidence);
         assert!(weak_history.posterior_precision < 0.5);
+    }
+
+    #[test]
+    fn dynamic_confidence_data_dominates() {
+        let report = calibrate_confidence(0.55, 100, 0, Some(0.95));
+
+        assert!(report.calibrated_confidence > 0.90);
+        assert_eq!(report.confidence_band, "tight");
+        assert!(report.confidence_interval_half_width < 0.10);
+    }
+
+    #[test]
+    fn low_sample_confidence_band_is_wide() {
+        let report = calibrate_confidence(0.75, 1, 0, Some(0.8));
+
+        assert_eq!(report.confidence_band, "wide");
+        assert!(report.confidence_interval_half_width >= 0.15);
+    }
+
+    #[test]
+    fn brier_score_per_category() {
+        let base = DateTime::<Utc>::from_naive_utc_and_offset(
+            chrono::NaiveDate::from_ymd_opt(2026, 3, 9)
+                .unwrap_or_default()
+                .and_hms_opt(12, 0, 0)
+                .unwrap_or_default(),
+            Utc,
+        );
+        let observations = vec![
+            CategoryBrierObservation {
+                category: "supply_chain".to_string(),
+                predicted_probability: 0.9,
+                actual_outcome: true,
+                observed_at: base,
+            },
+            CategoryBrierObservation {
+                category: "supply_chain".to_string(),
+                predicted_probability: 0.8,
+                actual_outcome: true,
+                observed_at: base + chrono::Duration::days(1),
+            },
+            CategoryBrierObservation {
+                category: "regulatory".to_string(),
+                predicted_probability: 0.2,
+                actual_outcome: false,
+                observed_at: base,
+            },
+            CategoryBrierObservation {
+                category: "regulatory".to_string(),
+                predicted_probability: 0.3,
+                actual_outcome: false,
+                observed_at: base + chrono::Duration::days(2),
+            },
+        ];
+
+        let scores = brier_score_per_category_week(&observations);
+
+        assert_eq!(scores.len(), 2);
+        assert!(scores.iter().all(|score| score.brier_score < 0.25));
     }
 
     #[test]

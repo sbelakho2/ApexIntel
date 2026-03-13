@@ -6,7 +6,11 @@
 /// clamped so that total risk can never exceed `1.0` per node.
 use std::collections::HashMap;
 
-use apex_core::graph_risk::propagate_weighted_risk;
+pub use apex_core::graph_risk::{ContagionDistributionSummary, DecayModel};
+use apex_core::graph_risk::{
+    propagate_weighted_risk, propagate_weighted_risk_with_decay, simulate_contagion_distribution,
+    validate_monotonic_non_increasing,
+};
 
 /// Propagate risk scores through a graph adjacency list.
 ///
@@ -24,6 +28,44 @@ pub fn propagate(
     decay: f64,
 ) -> HashMap<String, f64> {
     propagate_weighted_risk(adjacency, initial_risk, hops, decay)
+}
+
+pub fn propagate_with_decay(
+    adjacency: &HashMap<String, Vec<(String, f64)>>,
+    initial_risk: &HashMap<String, f64>,
+    hops: u8,
+    decay_model: DecayModel,
+) -> HashMap<String, f64> {
+    propagate_weighted_risk_with_decay(adjacency, initial_risk, hops, decay_model)
+}
+
+pub fn monotonic_non_increasing_with_hop(
+    adjacency: &HashMap<String, Vec<(String, f64)>>,
+    initial_risk: &HashMap<String, f64>,
+    hops: u8,
+    decay_model: DecayModel,
+) -> bool {
+    validate_monotonic_non_increasing(adjacency, initial_risk, hops, decay_model)
+}
+
+pub fn contagion_simulation(
+    adjacency: &HashMap<String, Vec<(String, f64)>>,
+    initial_risk: &HashMap<String, f64>,
+    hops: u8,
+    decay_model: DecayModel,
+    edge_failure_probability: f64,
+    simulations: usize,
+    seed: u64,
+) -> ContagionDistributionSummary {
+    simulate_contagion_distribution(
+        adjacency,
+        initial_risk,
+        hops,
+        decay_model,
+        edge_failure_probability,
+        simulations,
+        seed,
+    )
 }
 
 /// Compute contagion score: how much risk a node receives from its neighbours.
@@ -291,6 +333,56 @@ mod tests {
 
         let result = propagate(&adj, &initial, 1, 1.0);
         assert_eq!(result.get("C").copied(), Some(1.0));
+    }
+
+    #[test]
+    fn test_monotonic_non_increasing_with_hop() {
+        let adj = sample_adjacency();
+        let mut initial = HashMap::new();
+        initial.insert("A".to_string(), 0.9);
+        assert!(monotonic_non_increasing_with_hop(
+            &adj,
+            &initial,
+            3,
+            DecayModel::Exponential { lambda: 0.6 },
+        ));
+    }
+
+    #[test]
+    fn test_decay_models_produce_distinct_spread_profiles() {
+        let adj = sample_adjacency();
+        let mut initial = HashMap::new();
+        initial.insert("A".to_string(), 0.9);
+
+        let exponential = propagate_with_decay(
+            &adj,
+            &initial,
+            2,
+            DecayModel::Exponential { lambda: 0.8 },
+        );
+        let inverse_square = propagate_with_decay(&adj, &initial, 2, DecayModel::InverseSquare);
+        assert_ne!(exponential.get("D"), inverse_square.get("D"));
+    }
+
+    #[test]
+    fn test_contagion_simulation_summary_is_ordered() {
+        let adj = sample_adjacency();
+        let mut initial = HashMap::new();
+        initial.insert("A".to_string(), 0.9);
+
+        let summary = contagion_simulation(
+            &adj,
+            &initial,
+            2,
+            DecayModel::Linear(0.5),
+            0.25,
+            128,
+            7,
+        );
+        let mean = summary.per_node_mean.get("B").copied().unwrap_or(0.0);
+        let p05 = summary.per_node_p05.get("B").copied().unwrap_or(0.0);
+        let p95 = summary.per_node_p95.get("B").copied().unwrap_or(0.0);
+        assert!(p05 <= mean && mean <= p95);
     }
 
     // ── B264: isolated high-risk nodes each form singleton clusters ──────────

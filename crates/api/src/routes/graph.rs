@@ -181,7 +181,7 @@ pub fn filter_edges_by_type<'a>(edges: &'a [GraphEdge], types: &[String]) -> Vec
 }
 
 /// Filter edges by minimum weight.
-pub fn filter_edges_by_weight<'a>(edges: &'a [GraphEdge], min_weight: f64) -> Vec<&'a GraphEdge> {
+pub fn filter_edges_by_weight(edges: &[GraphEdge], min_weight: f64) -> Vec<&GraphEdge> {
     edges.iter().filter(|e| e.weight >= min_weight).collect()
 }
 

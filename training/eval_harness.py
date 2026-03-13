@@ -19,8 +19,10 @@ Usage:
 import argparse
 import json
 import os
+import math
 import re
 import time
+import random
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -244,6 +246,122 @@ def f1_score(pred: List[str], gold: List[str]) -> Tuple[float, float, float]:
     else:
         f1 = 2 * precision * recall / (precision + recall)
     return precision, recall, f1
+
+
+def bootstrap_confidence_interval(values: List[float], iterations: int = 1000, seed: int = 42) -> Dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "ci_lower": 0.0, "ci_upper": 0.0}
+    rng = random.Random(seed)
+    samples = []
+    for _ in range(iterations):
+        resample = [values[rng.randrange(len(values))] for _ in range(len(values))]
+        samples.append(sum(resample) / len(resample))
+    samples.sort()
+    lower_idx = max(0, int(0.025 * (len(samples) - 1)))
+    upper_idx = min(len(samples) - 1, int(0.975 * (len(samples) - 1)))
+    return {
+        "mean": sum(values) / len(values),
+        "ci_lower": samples[lower_idx],
+        "ci_upper": samples[upper_idx],
+    }
+
+
+def paired_bootstrap_test(values_a: List[float], values_b: List[float], iterations: int = 1000, seed: int = 42) -> Dict[str, float]:
+    n = min(len(values_a), len(values_b))
+    if n == 0:
+        return {"delta": 0.0, "p_value": 1.0}
+    paired_a = values_a[:n]
+    paired_b = values_b[:n]
+    observed_delta = (sum(paired_b) / n) - (sum(paired_a) / n)
+    rng = random.Random(seed)
+    extreme = 0
+    for _ in range(iterations):
+        idxs = [rng.randrange(n) for _ in range(n)]
+        delta = (sum(paired_b[i] for i in idxs) / n) - (sum(paired_a[i] for i in idxs) / n)
+        if abs(delta) >= abs(observed_delta):
+            extreme += 1
+    return {"delta": observed_delta, "p_value": extreme / iterations}
+
+
+def compute_bleu_like_score(prediction: str, reference: str) -> float:
+    pred_tokens = prediction.lower().split()
+    ref_tokens = reference.lower().split()
+    if not pred_tokens or not ref_tokens:
+        return 0.0
+
+    precisions = []
+    for n in range(1, 5):
+        pred_ngrams = [tuple(pred_tokens[i:i + n]) for i in range(max(0, len(pred_tokens) - n + 1))]
+        ref_ngrams = [tuple(ref_tokens[i:i + n]) for i in range(max(0, len(ref_tokens) - n + 1))]
+        if not pred_ngrams or not ref_ngrams:
+            precisions.append(0.0)
+            continue
+        ref_counts: Dict[Tuple[str, ...], int] = {}
+        for gram in ref_ngrams:
+            ref_counts[gram] = ref_counts.get(gram, 0) + 1
+        matches = 0
+        used: Dict[Tuple[str, ...], int] = {}
+        for gram in pred_ngrams:
+            available = ref_counts.get(gram, 0)
+            consumed = used.get(gram, 0)
+            if consumed < available:
+                matches += 1
+                used[gram] = consumed + 1
+        precisions.append((matches + 1) / (len(pred_ngrams) + 1))
+
+    brevity_penalty = 1.0 if len(pred_tokens) >= len(ref_tokens) else math.exp(1 - len(ref_tokens) / max(len(pred_tokens), 1))
+    return brevity_penalty * math.exp(sum(math.log(max(p, 1e-9)) for p in precisions) / 4.0)
+
+
+def primary_metric(eval_type: str, metrics: Dict[str, Any], item: Dict[str, Any], output_text: str) -> Tuple[str | None, float | None]:
+    if eval_type == "entity_extraction":
+        return "f1", float(metrics.get("f1", 0.0))
+    if eval_type == "memo_quality":
+        return "quality_score", float(metrics.get("field_coverage", 0.0))
+    if eval_type in {"recipe_quality", "poi_synthesis", "competitive_analysis", "company_dossier", "warning_generation", "supply_chain_risk", "compliance"}:
+        return "accuracy", 1.0 if metrics.get("json_valid") and metrics.get("schema_ok") else 0.0
+    if eval_type in {"adversarial_tests", "adversarial", "regression_tests", "multilingual_golden", "recipe_hypothesis"}:
+        return "accuracy", 1.0 if metrics.get("passed", False) or metrics.get("f1", 0.0) >= 0.5 else 0.0
+    if item.get("reference_text"):
+        return "bleu", compute_bleu_like_score(output_text, str(item["reference_text"]))
+    return None, None
+
+
+def summarize_metrics(scored_examples: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    metric_buckets: Dict[str, List[float]] = {}
+    category_buckets: Dict[str, Dict[str, List[float]]] = {}
+
+    for sample in scored_examples:
+        metric_name = sample["metric_name"]
+        metric_buckets.setdefault(metric_name, []).append(sample["score"])
+        category_buckets.setdefault(sample["category"], {}).setdefault(metric_name, []).append(sample["score"])
+
+    summary = {
+        "overall": {name: bootstrap_confidence_interval(values) for name, values in metric_buckets.items()},
+        "by_category": {
+            category: {name: bootstrap_confidence_interval(values) for name, values in metrics.items()}
+            for category, metrics in category_buckets.items()
+        },
+    }
+
+    assertions = []
+    entity_f1 = summary["by_category"].get("entity_extraction", {}).get("f1")
+    if entity_f1:
+        assertions.append({
+            "name": "entity_extraction_f1_lower_bound",
+            "passed": entity_f1["ci_lower"] > 0.70,
+            "ci_lower": entity_f1["ci_lower"],
+            "threshold": 0.70,
+        })
+    memo_quality = summary["by_category"].get("memo_quality", {}).get("quality_score")
+    if memo_quality:
+        assertions.append({
+            "name": "memo_quality_lower_bound",
+            "passed": memo_quality["ci_lower"] > 0.60,
+            "ci_lower": memo_quality["ci_lower"],
+            "threshold": 0.60,
+        })
+    return summary, assertions
 
 
 def build_prompt(tokenizer, system: str, user: str) -> str:
@@ -497,7 +615,10 @@ def main() -> None:
         "failed": 0,
         "by_type": {},
         "failures": [],
+        "metric_summary": {},
+        "threshold_assertions": [],
     }
+    scored_examples: List[Dict[str, Any]] = []
 
     t0 = time.time()
     global_idx = 0
@@ -608,6 +729,20 @@ def main() -> None:
                 metrics = {"note": "no evaluator"}
                 passed = False  # Unknown eval types must not silently pass
 
+            metric_name, metric_score = primary_metric(eval_type, metrics, item, output_text)
+            if metric_name is not None and metric_score is not None:
+                scored_examples.append({
+                    "category": eval_type,
+                    "metric_name": metric_name,
+                    "score": float(metric_score),
+                })
+            if item.get("reference_text"):
+                scored_examples.append({
+                    "category": eval_type,
+                    "metric_name": "bleu",
+                    "score": compute_bleu_like_score(output_text, str(item["reference_text"])),
+                })
+
             status = "✓" if passed else "✗"
             print(f"    [{global_idx}/{total_count}] {status} {item.get('id', f'{eval_type}-{idx}')} ({gen_time:.1f}s)")
             sys.stdout.flush()
@@ -628,6 +763,9 @@ def main() -> None:
     elapsed = time.time() - t0
     results["elapsed_seconds"] = round(elapsed, 1)
     results["pass_rate"] = round(results["passed"] / max(results["total"], 1) * 100, 1)
+    metric_summary, threshold_assertions = summarize_metrics(scored_examples)
+    results["metric_summary"] = metric_summary
+    results["threshold_assertions"] = threshold_assertions
 
     out_report.parent.mkdir(parents=True, exist_ok=True)
     with open(out_report, "w", encoding="utf-8") as f:
@@ -642,6 +780,11 @@ def main() -> None:
     print(f"  Failed:  {results['failed']}")
     print(f"  Rate:    {results['pass_rate']}%")
     print(f"  Time:    {elapsed:.0f}s")
+    for metric_name, interval in sorted(results["metric_summary"].get("overall", {}).items()):
+        print(
+            f"  {metric_name}: {interval['mean']:.3f} "
+            f"(95% CI {interval['ci_lower']:.3f}-{interval['ci_upper']:.3f})"
+        )
     print("─" * 60)
     for etype, counts in sorted(results["by_type"].items()):
         rate = counts["passed"] / max(counts["total"], 1) * 100
@@ -649,6 +792,15 @@ def main() -> None:
         print(f"  {status} {etype:<30} {counts['passed']}/{counts['total']} ({rate:.0f}%)")
     print("═" * 60)
     print(f"  Report: {out_report}")
+    failed_assertions = [assertion for assertion in threshold_assertions if not assertion["passed"]]
+    if failed_assertions:
+        print("  Threshold assertions failed:")
+        for assertion in failed_assertions:
+            print(
+                f"    {assertion['name']}: ci_lower={assertion['ci_lower']:.3f} "
+                f"threshold={assertion['threshold']:.3f}"
+            )
+        raise SystemExit(1)
 
 
 def _run_eval_pass(model, tokenizer, eval_dir: Path, max_examples: int, max_new_tokens: int, label: str) -> Dict[str, Any]:
@@ -659,6 +811,7 @@ def _run_eval_pass(model, tokenizer, eval_dir: Path, max_examples: int, max_new_
         "passed": 0,
         "failed": 0,
         "by_type": {},
+        "example_scores": [],
     }
     _, files = resolve_eval_files(eval_dir)
     for path in files:
@@ -692,6 +845,7 @@ def _run_eval_pass(model, tokenizer, eval_dir: Path, max_examples: int, max_new_
                 passed = isinstance(obj, (dict, list))
             except Exception:
                 passed = False
+            results["example_scores"].append(1.0 if passed else 0.0)
 
             if passed:
                 results["passed"] += 1
@@ -766,11 +920,28 @@ def _compare(args, eval_dir: Path, out_report: Path) -> None:
     print(total_line)
     print("═" * 80)
 
+    paired_comparisons = []
+    if all_results:
+        baseline = all_results[0]
+        for contender in all_results[1:]:
+            paired = paired_bootstrap_test(baseline.get("example_scores", []), contender.get("example_scores", []))
+            paired_comparisons.append({
+                "baseline": baseline["label"],
+                "candidate": contender["label"],
+                "delta": paired["delta"],
+                "p_value": paired["p_value"],
+            })
+            print(
+                f"  {contender['label']} vs {baseline['label']}: "
+                f"delta={paired['delta']:.3f}, p={paired['p_value']:.3f}"
+            )
+
     # Save comparison report
     report = {
         "mode": "comparison",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "results": all_results,
+        "paired_bootstrap": paired_comparisons,
     }
     comparison_report = out_report.parent / "comparison_report.json"
     comparison_report.parent.mkdir(parents=True, exist_ok=True)

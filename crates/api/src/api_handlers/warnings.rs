@@ -1,5 +1,7 @@
-use super::super::*;
-use apex_store::postgres::AcknowledgeWarningResult;
+#![allow(clippy::disallowed_methods)]
+
+use crate::*;
+use apex_store::postgres::{AcknowledgeWarningResult, WarningReviewOutcome};
 
 #[derive(Debug, Deserialize)]
 struct BulkDeleteRequest {
@@ -37,8 +39,17 @@ fn parse_bulk_delete_ids(body: &[u8]) -> Result<(Vec<Uuid>, usize), ApiError> {
     Ok((parsed_ids, req.ids.len()))
 }
 
+fn review_outcome_as_str(outcome: &WarningReviewOutcome) -> &'static str {
+    match outcome {
+        WarningReviewOutcome::TruePositive => "true_positive",
+        WarningReviewOutcome::FalsePositive => "false_positive",
+        WarningReviewOutcome::Inconclusive => "inconclusive",
+    }
+}
+
 pub(crate) async fn list_warnings(
     State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Query(params): Query<ListWarningsQuery>,
 ) -> (
     StatusCode,
@@ -121,10 +132,19 @@ pub(crate) async fn list_warnings(
         );
     }
 
+    if params.include_deleted == Some(true) && !auth_ctx.role.can_admin() {
+        let api_err = ApiError::forbidden("Admin role required to include deleted warnings");
+        return (
+            StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::FORBIDDEN),
+            Json(error_response(api_err)),
+        );
+    }
+
     let filters = WarningListFilters {
         regions,
         severities,
         warning_types,
+        exclude_hygiene_signals: false,
         acknowledged: params.acknowledged,
         date_from,
         date_to,
@@ -142,6 +162,7 @@ pub(crate) async fn list_warnings(
             },
             None => None,
         },
+        include_deleted: params.include_deleted.unwrap_or(false) && auth_ctx.role.can_admin(),
     };
 
     let order_by = params
@@ -151,7 +172,7 @@ pub(crate) async fn list_warnings(
         .unwrap_or(WarningOrderBy::CreatedAt);
     let desc = params.sort_dir.clone().unwrap_or_default() == SortDirection::Desc;
 
-    let total = match tracing::info_span!("db.count_warnings", request_id = %request_id)
+    let mut total = match tracing::info_span!("db.count_warnings", request_id = %request_id)
         .in_scope(|| state.store.count_warnings(&filters))
         .await
     {
@@ -167,38 +188,67 @@ pub(crate) async fn list_warnings(
         }
     };
 
-    let clamped_page = clamp_page(page, per_page, total);
-    let clamped_offset = ((clamped_page - 1) as i64).saturating_mul(per_page as i64);
-
-    let rows = match tracing::info_span!("db.list_warnings", request_id = %request_id)
-        .in_scope(|| {
-            state.store.list_warnings(
-                &filters,
-                Some(order_by),
-                desc,
-                per_page as i64,
-                clamped_offset,
-            )
-        })
-        .await
+    let mut resolved_page = clamp_page(page, per_page, total);
+    let mut rows = match fetch_warning_page(
+        &state,
+        &filters,
+        order_by,
+        desc,
+        per_page,
+        resolved_page,
+        &request_id,
+    )
+    .await
     {
-        Ok(value) => value,
-        Err(err) => {
-            tracing::error!(request_id = %request_id, "list warnings failed: {err:#}");
-            let api_err = ApiError::internal("Failed to list warnings");
-            return (
-                StatusCode::from_u16(api_err.http_status())
-                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                Json(error_response(api_err)),
-            );
-        }
+        Ok(rows) => rows,
+        Err(response) => return response,
     };
+
+    if rows.is_empty() && total > 0 && resolved_page > 1 {
+        total = match tracing::info_span!("db.count_warnings_refresh", request_id = %request_id)
+            .in_scope(|| state.store.count_warnings(&filters))
+            .await
+        {
+            Ok(value) => value.max(0) as u64,
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "refresh warning count failed: {err:#}");
+                let api_err = ApiError::internal("Failed to count warnings");
+                return (
+                    StatusCode::from_u16(api_err.http_status())
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    Json(error_response(api_err)),
+                );
+            }
+        };
+        resolved_page = clamp_page(page, per_page, total);
+
+        loop {
+            rows = match fetch_warning_page(
+                &state,
+                &filters,
+                order_by,
+                desc,
+                per_page,
+                resolved_page,
+                &request_id,
+            )
+            .await
+            {
+                Ok(rows) => rows,
+                Err(response) => return response,
+            };
+            if !rows.is_empty() || resolved_page == 1 {
+                break;
+            }
+            resolved_page -= 1;
+        }
+    }
 
     let items = rows.into_iter().map(warning_row_to_response).collect();
     let payload = PagedResponse {
         items,
         total,
-        page: clamped_page,
+        page: resolved_page,
         per_page,
     };
 
@@ -209,6 +259,41 @@ pub(crate) async fn list_warnings(
     log_latency("list_warnings", duration_ms);
 
     (StatusCode::OK, Json(success_with_meta(payload, meta)))
+}
+
+async fn fetch_warning_page(
+    state: &AppState,
+    filters: &WarningListFilters,
+    order_by: WarningOrderBy,
+    desc: bool,
+    per_page: u32,
+    page: u32,
+    request_id: &str,
+) -> Result<Vec<WarningRow>, (StatusCode, Json<ApiResponse<PagedResponse<WarningResponse>>>)> {
+    let offset = ((page - 1) as i64).saturating_mul(per_page as i64);
+    match tracing::info_span!("db.list_warnings", request_id = %request_id, page = page)
+        .in_scope(|| {
+            state.store.list_warnings(
+                filters,
+                Some(order_by),
+                desc,
+                per_page as i64,
+                offset,
+            )
+        })
+        .await
+    {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            tracing::error!(request_id = %request_id, page = page, "list warnings failed: {err:#}");
+            let api_err = ApiError::internal("Failed to list warnings");
+            Err((
+                StatusCode::from_u16(api_err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(error_response(api_err)),
+            ))
+        }
+    }
 }
 
 pub(crate) async fn acknowledge_warning(
@@ -269,13 +354,15 @@ pub(crate) async fn acknowledge_warning(
         );
     }
 
+    let review_outcome = body.review_outcome.as_ref().map(review_outcome_as_str);
+
     match tracing::info_span!("db.acknowledge_warning", request_id = %request_id)
         .in_scope(|| {
             state.store.acknowledge_warning(
                 id_parsed,
-                &body.user_id.trim(),
+                body.user_id.trim(),
                 body.note.as_deref(),
-                body.review_outcome.map(|outcome| outcome.as_str()),
+                review_outcome,
             )
         })
         .await
@@ -289,7 +376,7 @@ pub(crate) async fn acknowledge_warning(
                     &serde_json::json!({
                         "warning_id": id_parsed,
                         "acknowledged_by": body.user_id,
-                        "review_outcome": body.review_outcome.map(|outcome| outcome.as_str()),
+                        "review_outcome": review_outcome,
                         "has_note": body.note.as_ref().map(|note| !note.trim().is_empty()).unwrap_or(false)
                     }),
                 )
@@ -300,11 +387,9 @@ pub(crate) async fn acknowledge_warning(
                 acknowledged: true,
                 acknowledged_by: body.user_id.clone(),
                 acknowledged_at: now,
-                review_outcome: body
-                    .review_outcome
-                    .map(|outcome| outcome.as_str().to_string()),
-                reviewed_by: body.review_outcome.map(|_| body.user_id.clone()),
-                reviewed_at: body.review_outcome.map(|_| now),
+                review_outcome: review_outcome.map(str::to_string),
+                reviewed_by: review_outcome.map(|_| body.user_id.clone()),
+                reviewed_at: review_outcome.map(|_| now),
             };
             let duration_ms = start.elapsed().as_millis() as u64;
             let meta = ResponseMeta::now()

@@ -330,8 +330,8 @@ pub async fn list_competitors(
             active_filters: tpl.active_filters,
             reset_href: tpl.reset_href.clone(),
         };
-        partial.into_response()
+        super::render_template(&partial)
     } else {
-        tpl.into_response()
+        super::render_template(&tpl)
     }
 }

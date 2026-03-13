@@ -577,6 +577,19 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_html_extract_no_panic() {
+        let inputs = [
+            "<div><span>ok",
+            "<script>boom</script><p>safe</p>",
+            "<![CDATA[opaque]]>",
+            "<div class='x'>\\x00\\x01hello</div>",
+        ];
+        for input in inputs {
+            let _ = strip_html_tags(input);
+        }
+    }
+
+    #[test]
     fn fuzz_extract_emails_none_in_plain_text() {
         assert!(extract_emails("no emails here just text").is_empty());
     }

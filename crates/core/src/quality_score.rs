@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ─── Source reliability tiers ───────────────────────────────────────────
 
 /// Reliability rating for a data source.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SourceReliability {
     /// Verified official sources (SEC filings, government registries)
     Official,
@@ -28,6 +28,16 @@ pub enum SourceReliability {
 }
 
 impl SourceReliability {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Official => "official",
+            Self::Established => "established",
+            Self::TradePress => "trade_press",
+            Self::Social => "social",
+            Self::Unknown => "unknown",
+        }
+    }
+
     /// Numeric score 0.0–1.0.
     pub fn score(&self) -> f64 {
         match self {
@@ -36,6 +46,16 @@ impl SourceReliability {
             Self::TradePress => 0.70,
             Self::Social => 0.45,
             Self::Unknown => 0.25,
+        }
+    }
+
+    pub fn demote(self) -> Self {
+        match self {
+            Self::Official => Self::Established,
+            Self::Established => Self::TradePress,
+            Self::TradePress => Self::Social,
+            Self::Social => Self::Unknown,
+            Self::Unknown => Self::Unknown,
         }
     }
 
@@ -71,6 +91,80 @@ impl SourceReliability {
         } else {
             Self::Unknown
         }
+    }
+}
+
+/// Observed performance stats for a source domain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceReliabilityStats {
+    pub source_domain: String,
+    pub tier: SourceReliability,
+    pub observation_count: u64,
+    pub confirmed_count: u64,
+    pub observed_reliability: f64,
+    pub effective_reliability: f64,
+    pub promotion_recommended: bool,
+}
+
+pub fn observed_reliability(confirmed_count: u64, observation_count: u64) -> f64 {
+    ((0.5 + confirmed_count as f64) / (1.0 + observation_count as f64)).clamp(0.0, 1.0)
+}
+
+pub fn effective_reliability(
+    tier: SourceReliability,
+    observation_count: u64,
+    observed_reliability: f64,
+) -> f64 {
+    let sample_weight = 1.0 - (-(observation_count as f64) / 20.0).exp();
+    (((1.0 - sample_weight) * tier.score()) + (sample_weight * observed_reliability)).clamp(0.0, 1.0)
+}
+
+pub fn should_promote_source(
+    tier: SourceReliability,
+    observation_count: u64,
+    observed_reliability: f64,
+) -> bool {
+    tier == SourceReliability::Unknown && observation_count >= 50 && observed_reliability > 0.75
+}
+
+pub fn retraction_rate(retraction_count: u64, observation_count: u64) -> f64 {
+    if observation_count == 0 {
+        return 0.0;
+    }
+    (retraction_count as f64 / observation_count as f64).clamp(0.0, 1.0)
+}
+
+pub fn effective_tier_with_retractions(
+    tier: SourceReliability,
+    retraction_count: u64,
+    observation_count: u64,
+) -> SourceReliability {
+    if retraction_rate(retraction_count, observation_count) > 0.05 {
+        tier.demote()
+    } else {
+        tier
+    }
+}
+
+pub fn build_source_reliability_stats(
+    source_domain: impl Into<String>,
+    tier: SourceReliability,
+    observation_count: u64,
+    confirmed_count: u64,
+) -> SourceReliabilityStats {
+    let observed_reliability = observed_reliability(confirmed_count, observation_count);
+    let effective_reliability = effective_reliability(tier, observation_count, observed_reliability);
+    let promotion_recommended =
+        should_promote_source(tier, observation_count, observed_reliability);
+
+    SourceReliabilityStats {
+        source_domain: source_domain.into(),
+        tier,
+        observation_count,
+        confirmed_count,
+        observed_reliability,
+        effective_reliability,
+        promotion_recommended,
     }
 }
 
@@ -111,6 +205,8 @@ pub struct ObservationInput {
     pub observed_at: DateTime<Utc>,
     /// Override source reliability (if known)
     pub source_reliability: Option<SourceReliability>,
+    /// Optional observed performance stats for the source domain.
+    pub source_reliability_stats: Option<SourceReliabilityStats>,
 }
 
 /// Computed quality score with breakdown.
@@ -118,9 +214,12 @@ pub struct ObservationInput {
 pub struct QualityScore {
     pub total: f64,
     pub source_score: f64,
+    pub tier_prior_score: f64,
+    pub observed_source_score: Option<f64>,
     pub confidence_score: f64,
     pub freshness_score: f64,
     pub source_reliability: String,
+    pub promotion_recommended: bool,
     pub passes_threshold: bool,
 }
 
@@ -134,7 +233,12 @@ pub fn compute_quality(
     let reliability = input
         .source_reliability
         .unwrap_or_else(|| SourceReliability::from_url(&input.source_url));
-    let source_score = reliability.score();
+    let tier_prior_score = reliability.score();
+    let source_score = input
+        .source_reliability_stats
+        .as_ref()
+        .map(|stats| stats.effective_reliability)
+        .unwrap_or(tier_prior_score);
 
     // Extraction confidence (clamp to 0–1)
     let confidence_score = input.extraction_confidence.clamp(0.0, 1.0);
@@ -156,9 +260,19 @@ pub fn compute_quality(
     QualityScore {
         total,
         source_score,
+        tier_prior_score,
+        observed_source_score: input
+            .source_reliability_stats
+            .as_ref()
+            .map(|stats| stats.observed_reliability),
         confidence_score,
         freshness_score,
         source_reliability: format!("{:?}", reliability),
+        promotion_recommended: input
+            .source_reliability_stats
+            .as_ref()
+            .map(|stats| stats.promotion_recommended)
+            .unwrap_or(false),
         passes_threshold: total >= config.min_quality_threshold,
     }
 }
@@ -225,6 +339,7 @@ mod tests {
             extraction_confidence: confidence,
             observed_at: Utc::now() - Duration::days(days_ago),
             source_reliability: None,
+            source_reliability_stats: None,
         }
     }
 
@@ -311,5 +426,58 @@ mod tests {
     #[test]
     fn test_sql_not_empty() {
         assert!(update_quality_sql().contains("UPDATE observations"));
+    }
+
+    #[test]
+    fn source_reliability_adaptive() {
+        let stats = build_source_reliability_stats(
+            "unknown-blog.com",
+            SourceReliability::Unknown,
+            50,
+            48,
+        );
+
+        assert!(stats.effective_reliability > SourceReliability::Unknown.score());
+        assert!(stats.observed_reliability > 0.75);
+    }
+
+    #[test]
+    fn adaptive_source_promotion() {
+        let stats = build_source_reliability_stats(
+            "unknown-blog.com",
+            SourceReliability::Unknown,
+            50,
+            48,
+        );
+
+        assert!(stats.effective_reliability > 0.45);
+        assert!(stats.promotion_recommended);
+    }
+
+    #[test]
+    fn quality_score_bounded() {
+        let config = QualityConfig::default();
+        let cases = [
+            make_input("https://sec.gov/filing", 1.5, 0),
+            make_input("https://twitter.com/example", -1.0, 120),
+            make_input("https://unknown-blog.com", 0.5, 30),
+        ];
+
+        for input in &cases {
+            let score = compute_quality(input, &config, Utc::now());
+            assert!((0.0..=1.0).contains(&score.total));
+        }
+    }
+
+    #[test]
+    fn source_tier_demoted_when_retraction_rate_exceeds_five_percent() {
+        assert_eq!(
+            effective_tier_with_retractions(SourceReliability::Established, 6, 100),
+            SourceReliability::TradePress
+        );
+        assert_eq!(
+            effective_tier_with_retractions(SourceReliability::Official, 5, 100),
+            SourceReliability::Official
+        );
     }
 }

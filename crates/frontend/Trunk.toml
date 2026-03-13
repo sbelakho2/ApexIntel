@@ -1,0 +1,6 @@
+[build]
+dist = "dist"
+public_url = "/wasm/"
+
+[watch]
+watch = ["src", "index.html", "style.css"]

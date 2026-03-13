@@ -4,19 +4,110 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ApexIntel{% endblock %}</title>
-  <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/InterVariable.woff2?v=20260311-ui-fix-1" as="font" type="font/woff2" crossorigin>
   <style>
-    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable.woff2') format('woff2-variations'); font-weight: 100 900; font-display: swap; }
-    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable-Italic.woff2') format('woff2-variations'); font-weight: 100 900; font-style: italic; font-display: swap; }
-    @font-face { font-family: 'JetBrainsMono'; src: url('/static/fonts/JetBrainsMono-Variable.ttf') format('truetype-variations'); font-weight: 100 800; font-display: swap; }
+    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable.woff2?v=20260311-ui-fix-1') format('woff2-variations'); font-weight: 100 900; font-display: swap; }
+    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable-Italic.woff2?v=20260311-ui-fix-1') format('woff2-variations'); font-weight: 100 900; font-style: italic; font-display: swap; }
+    @font-face { font-family: 'JetBrainsMono'; src: url('/static/fonts/JetBrainsMono-Variable.ttf?v=20260311-ui-fix-1') format('truetype-variations'); font-weight: 100 800; font-display: swap; }
     :root { --font-apex: 'ApexIntel', ui-sans-serif, system-ui, sans-serif; }
   </style>
   <script>
-    (function(){var t=localStorage.getItem("apex-theme");if(t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme:dark)").matches)){document.documentElement.classList.add("dark");document.documentElement.setAttribute("data-theme","dark")}})();
+    (() => {
+      const storageKey = 'apex-theme';
+      const validThemes = new Set(['light', 'dark', 'system']);
+      const root = document.documentElement;
+      const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+      const normalizeTheme = (value) => validThemes.has(value) ? value : 'system';
+      const resolveTheme = (theme) => theme === 'system'
+        ? (media?.matches ? 'dark' : 'light')
+        : theme;
+      const applyTheme = (theme) => {
+        const normalized = normalizeTheme(theme);
+        const resolved = resolveTheme(normalized);
+        root.dataset.theme = normalized;
+        root.classList.toggle('dark', resolved === 'dark');
+        root.style.colorScheme = resolved;
+        window.__apexThemeState = { theme: normalized, resolved };
+        document.dispatchEvent(new CustomEvent('apex:themechange', { detail: { theme: normalized, resolved } }));
+      };
+      const getTheme = () => normalizeTheme(window.localStorage?.getItem(storageKey) || root.dataset.theme || 'system');
+      const setTheme = (theme) => {
+        const normalized = normalizeTheme(theme);
+        window.localStorage?.setItem(storageKey, normalized);
+        applyTheme(normalized);
+      };
+      const cycleTheme = () => {
+        const current = getTheme();
+        let next = 'dark';
+        if (current === 'dark') {
+          next = 'light';
+        } else if (current === 'light') {
+          next = 'dark';
+        } else if (resolveTheme(current) === 'dark') {
+          next = 'light';
+        }
+        setTheme(next);
+      };
+      window.ApexTheme = { getTheme, setTheme, cycleTheme };
+      applyTheme(getTheme());
+    })();
   </script>
-  <link rel="stylesheet" href="/static/css/tailwind.css">
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260311-chart-tableau-2">
+  <style>
+    .standalone-theme-toggle {
+      position: fixed;
+      top: 0.75rem;
+      right: 0.75rem;
+      z-index: 20;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      border: 1px solid rgb(var(--border));
+      background: rgb(var(--card));
+      border-radius: 2px;
+      padding: 0.45rem 0.7rem;
+      color: rgb(var(--foreground));
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+    }
+  </style>
 </head>
-<body class="font-sans antialiased">
-  {% block content %}{% endblock %}
+<body class="font-sans antialiased apex-standalone-shell">
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <button type="button" class="standalone-theme-toggle" data-theme-toggle aria-label="Toggle theme">
+    <span data-theme-toggle-text>System</span>
+    <span class="text-[9px] text-muted-foreground" data-theme-toggle-state>Day</span>
+  </button>
+  <div class="apex-standalone-frame hidden md:block" aria-hidden="true"></div>
+  <div class="relative min-h-screen">
+    {% block content %}{% endblock %}
+  </div>
+  <script>
+    (() => {
+      const buttons = Array.from(document.querySelectorAll('[data-theme-toggle]'));
+      const updateButtons = () => {
+        const detail = window.__apexThemeState || { theme: 'system', resolved: 'light' };
+        const label = detail.theme === 'system'
+          ? `System ${detail.resolved === 'dark' ? 'Dark' : 'Light'}`
+          : detail.theme.charAt(0).toUpperCase() + detail.theme.slice(1);
+        const resolvedLabel = detail.resolved === 'dark' ? 'Night' : 'Day';
+        buttons.forEach((button) => {
+          button.querySelector('[data-theme-toggle-text]').textContent = label;
+          button.querySelector('[data-theme-toggle-state]').textContent = resolvedLabel;
+        });
+      };
+      buttons.forEach((button) => {
+        button.addEventListener('click', () => {
+          window.ApexTheme?.cycleTheme?.();
+          updateButtons();
+        });
+      });
+      document.addEventListener('apex:themechange', updateButtons);
+      updateButtons();
+    })();
+  </script>
 </body>
 </html>

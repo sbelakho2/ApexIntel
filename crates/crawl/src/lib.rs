@@ -20,6 +20,7 @@ pub mod sanctions;
 pub mod search_rotation;
 pub mod social;
 pub mod source_scoring;
+pub mod source_entropy;
 pub mod sources;
 pub mod tor_client;
 pub mod trade_shows;

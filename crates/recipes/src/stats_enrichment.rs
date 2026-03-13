@@ -12,7 +12,12 @@
 //!   with existing observation-derived keys.
 //! - Graceful: insufficient data produces empty maps (no panics).
 
-use apex_stats::pipeline::{run_pipeline, StatsPipelineInput};
+pub use apex_stats::calibration::{
+    alert_score_rank_correlation, calibration_curve, fit_best_alert_calibration_model,
+    AlertCalibrationModel, CalibrationSample, ReliabilityBin,
+};
+pub use apex_stats::pipeline::alert_score_from_features;
+use apex_stats::pipeline::{run_pipeline, run_pipeline_with_calibration, StatsPipelineInput, StatsPipelineResult};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -91,9 +96,25 @@ pub struct StatsEnrichmentInput {
 /// let extra = enrich_features(&stats_input);
 /// features.extend(extra);
 /// ```
-pub fn enrich_features(input: &StatsEnrichmentInput) -> FeatureMap {
+pub fn analyze(input: &StatsEnrichmentInput) -> StatsPipelineResult {
+    analyze_with_calibration(input, None)
+}
+
+pub fn analyze_with_calibration(
+    input: &StatsEnrichmentInput,
+    calibration_model: Option<&AlertCalibrationModel>,
+) -> StatsPipelineResult {
     if input.entity_id.is_empty() {
-        return FeatureMap::new();
+        return StatsPipelineResult {
+            entity_id: String::new(),
+            features: FeatureMap::new(),
+            labels: HashMap::new(),
+            warnings: Vec::new(),
+            alert_score: 0.0,
+            alert_probability: 0.0,
+            calibration_method: "legacy".to_string(),
+            alert_level: apex_stats::pipeline::AlertLevel::None,
+        };
     }
 
     // Build the unified pipeline input.
@@ -120,7 +141,14 @@ pub fn enrich_features(input: &StatsEnrichmentInput) -> FeatureMap {
         pipeline_input.max_correlation_lag = lag;
     }
 
-    let result = run_pipeline(&pipeline_input);
+    match calibration_model {
+        Some(model) => run_pipeline_with_calibration(&pipeline_input, Some(model)),
+        None => run_pipeline(&pipeline_input),
+    }
+}
+
+pub fn enrich_features(input: &StatsEnrichmentInput) -> FeatureMap {
+    let result = analyze(input);
 
     if !result.warnings.is_empty() {
         debug!(

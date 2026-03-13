@@ -1625,9 +1625,9 @@ mod tests {
 
     #[test]
     fn golden_stage_count_equals_four() {
-        // NightlyStage::all() has 5 stages (includes HypothesisGeneration),
-        // but the pipeline report only contains 4 when hypothesis is None.
-        assert_eq!(NightlyStage::all().len(), 5);
+        // NightlyStage::all() now includes PoiDiscovery in addition to the
+        // earlier stages, so the full stage registry has 6 entries.
+        assert_eq!(NightlyStage::all().len(), 6);
         let report = run_nightly_pipeline(
             &good_crawl(),
             &good_mining(),
@@ -1635,7 +1635,7 @@ mod tests {
             &good_poi(),
             &good_drift(),
         );
-        // hypothesis=None → stage is omitted from report → 4 entries
+        // This fixture path omits both the hypothesis and POI discovery stages.
         assert_eq!(report.stages.len(), 4);
         let json = serde_json::to_string(&report).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

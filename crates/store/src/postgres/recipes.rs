@@ -31,7 +31,7 @@ impl PgStore {
                  MIN(w.created_at) AS first_fired,
                  COALESCE(COUNT(*) FILTER (WHERE w.id IS NOT NULL AND NOT w.acknowledged), 0) AS active_count
                FROM recipes r
-               LEFT JOIN warnings w ON w.recipe_code = r.code
+               LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                WHERE r.status IN ('active', 'production', 'staging')
                GROUP BY r.code, r.status, r.precision_score
                ORDER BY COALESCE(COUNT(w.id), 0) DESC, r.code ASC"#,
@@ -55,7 +55,7 @@ impl PgStore {
                        COUNT(w.id) AS fired_count,
                        AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL) AS avg_confidence
                    FROM recipe_scope rs
-                   LEFT JOIN warnings w ON w.recipe_code = rs.code
+                   LEFT JOIN warnings w ON w.recipe_code = rs.code AND w.deleted_at IS NULL
                    GROUP BY rs.code
                )
                SELECT
@@ -90,7 +90,7 @@ impl PgStore {
                        EXTRACT(DAY FROM (NOW() - r.created_at))::INT AS days_in_staging,
                        r.created_at
                    FROM recipes r
-                   LEFT JOIN warnings w ON w.recipe_code = r.code
+                   LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status = 'staging'
                    GROUP BY r.code, r.name, r.precision_score, r.created_at
                )
@@ -138,7 +138,7 @@ impl PgStore {
                        r.precision_score,
                        r.created_at
                    FROM recipes r
-                   LEFT JOIN warnings w ON w.recipe_code = r.code
+                   LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status IN ('active', 'production')
                    GROUP BY r.code, r.name, r.precision_score, r.created_at
                ), ranked_snapshots AS (
@@ -227,7 +227,7 @@ impl PgStore {
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'), 0)::BIGINT AS false_positive_warnings,
                        $1 AS snapshot_at
                    FROM recipes r
-                   LEFT JOIN warnings w ON w.recipe_code = r.code
+                   LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status IN ('active', 'production')
                    GROUP BY r.code, r.precision_score
                )
@@ -288,7 +288,7 @@ impl PgStore {
                 MIN(w.created_at) AS first_fired,
                 COALESCE(COUNT(*) FILTER (WHERE w.id IS NOT NULL AND NOT w.acknowledged), 0) AS active_count
                FROM recipes r
-               LEFT JOIN warnings w ON w.recipe_code = r.code
+               LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                WHERE r.status = 'staging'
                GROUP BY r.code, r.status, r.precision_score
                ORDER BY r.code ASC

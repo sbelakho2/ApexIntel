@@ -29,6 +29,48 @@ pub struct WebSession {
     pub issued_at: i64,
 }
 
+pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<WebSession> {
+    if session_secret.is_empty() {
+        return None;
+    }
+
+    let token = extract_cookie_value(headers, "apex_session")?;
+
+    let parts: Vec<&str> = token.splitn(2, '.').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let payload_b64 = parts[0];
+    let sig_hex = parts[1];
+
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+
+    let mut mac = HmacSha256::new_from_slice(session_secret.as_bytes()).ok()?;
+    mac.update(&payload_bytes);
+    let expected = hex::encode(mac.finalize().into_bytes());
+
+    if expected.as_bytes().ct_eq(sig_hex.as_bytes()).unwrap_u8() != 1 {
+        return None;
+    }
+
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    let username = payload.get("sub").and_then(|v| v.as_str())?.to_string();
+    let issued_at = payload.get("iat").and_then(|v| v.as_i64())?;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if now_ms - issued_at > 24 * 60 * 60 * 1000 {
+        return None;
+    }
+
+    Some(WebSession {
+        username,
+        issued_at,
+    })
+}
+
 fn extract_cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(header::COOKIE)
@@ -120,74 +162,16 @@ pub async fn require_session(request: Request, next: Next) -> Response {
         return Redirect::to("/login").into_response();
     }
 
-    // Extract cookie
-    let token = extract_cookie_value(request.headers(), "apex_session");
-
-    let token = match token {
-        Some(t) if !t.is_empty() => t,
-        _ => return Redirect::to("/login").into_response(),
-    };
-
-    // Verify token: base64url(payload).hmac_hex
-    let parts: Vec<&str> = token.splitn(2, '.').collect();
-    if parts.len() != 2 {
-        return Redirect::to("/login").into_response();
-    }
-
-    let payload_b64 = parts[0];
-    let sig_hex = parts[1];
-
-    // Decode payload
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    let payload_bytes = match URL_SAFE_NO_PAD.decode(payload_b64) {
-        Ok(b) => b,
-        Err(_) => return Redirect::to("/login").into_response(),
-    };
-
-    // Compute expected HMAC
-    let mut mac = match HmacSha256::new_from_slice(session_secret.as_bytes()) {
-        Ok(m) => m,
-        Err(_) => return Redirect::to("/login").into_response(),
-    };
-    mac.update(&payload_bytes);
-    let expected = hex::encode(mac.finalize().into_bytes());
-
-    // Constant-time comparison
-    if expected.as_bytes().ct_eq(sig_hex.as_bytes()).unwrap_u8() != 1 {
-        return Redirect::to("/login").into_response();
-    }
-
-    // Parse payload JSON
-    let payload: serde_json::Value = match serde_json::from_slice(&payload_bytes) {
-        Ok(v) => v,
-        Err(_) => return Redirect::to("/login").into_response(),
-    };
-
-    let username = match payload.get("sub").and_then(|v| v.as_str()) {
-        Some(u) => u.to_string(),
+    let session = match validate_session(request.headers(), &session_secret) {
+        Some(session) => session,
         None => return Redirect::to("/login").into_response(),
     };
-
-    let issued_at = match payload.get("iat").and_then(|v| v.as_i64()) {
-        Some(ts) => ts,
-        None => return Redirect::to("/login").into_response(),
-    };
-
-    // Check 24-hour expiry
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    if now_ms - issued_at > 24 * 60 * 60 * 1000 {
-        return Redirect::to("/login").into_response();
-    }
 
     let method = request.method().clone();
     let csrf_cookie = extract_cookie_value(request.headers(), CSRF_COOKIE_NAME).map(str::to_string);
 
     let mut request = request;
-    request.extensions_mut().insert(WebSession {
-        username,
-        issued_at,
-    });
+    request.extensions_mut().insert(session);
 
     if !requires_csrf(&method) {
         let mut response = next.run(request).await;
@@ -230,11 +214,45 @@ pub async fn require_session(request: Request, next: Next) -> Response {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
 
     fn headers_with_cookie(cookie: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
         headers
+    }
+
+    fn signed_session_cookie(username: &str, issued_at: i64, secret: &str) -> String {
+        let payload = serde_json::json!({
+            "sub": username,
+            "iat": issued_at,
+        });
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_bytes);
+
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&payload_bytes);
+        let sig = hex::encode(mac.finalize().into_bytes());
+
+        format!("apex_session={payload_b64}.{sig}")
+    }
+
+    #[test]
+    fn test_validate_session_accepts_valid_signed_cookie() {
+        let secret = "test-secret";
+        let cookie = signed_session_cookie("alice", chrono::Utc::now().timestamp_millis(), secret);
+        let headers = headers_with_cookie(&cookie);
+
+        let session = validate_session(&headers, secret).expect("session should validate");
+
+        assert_eq!(session.username, "alice");
+    }
+
+    #[test]
+    fn test_validate_session_rejects_bad_signature() {
+        let headers = headers_with_cookie("apex_session=bad.token");
+        assert!(validate_session(&headers, "test-secret").is_none());
     }
 
     #[test]

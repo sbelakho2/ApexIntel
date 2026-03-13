@@ -147,7 +147,7 @@ pub fn filter_by_status<'a>(
 }
 
 /// Filter recipes by minimum precision.
-pub fn filter_by_precision<'a>(items: &'a [RecipeListItem], min: f64) -> Vec<&'a RecipeListItem> {
+pub fn filter_by_precision(items: &[RecipeListItem], min: f64) -> Vec<&RecipeListItem> {
     items.iter().filter(|r| r.precision >= min).collect()
 }
 

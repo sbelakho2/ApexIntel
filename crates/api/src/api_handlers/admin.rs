@@ -1,4 +1,4 @@
-use super::super::*;
+use crate::*;
 use apex_api::routes::admin::{
     AdminLlmGovernanceResponse, AdminLlmImprovementRunSummary, AdminLlmTrainingDatasetSummary,
     AdminLlmWorkflowRunSummary, AdminPromptVersionSummary,
@@ -6,6 +6,72 @@ use apex_api::routes::admin::{
 use apex_api::routes::replay::{
     estimate_duration, ReplayProgress, ReplayRequest, ReplayResponse, ReplayStatus,
 };
+use apex_shared::{CalibrationCurve, CalibrationPoint};
+
+fn alert_level_probability(alert_level: &str, metadata: &serde_json::Value) -> f64 {
+    metadata
+        .get("alert_probability")
+        .and_then(|value| value.as_f64())
+        .unwrap_or_else(|| match alert_level.to_ascii_lowercase().as_str() {
+            "critical" => 0.9,
+            "high" => 0.75,
+            "medium" => 0.55,
+            "low" => 0.3,
+            _ => 0.5,
+        })
+        .clamp(0.0, 1.0)
+}
+
+pub(crate) fn calibration_curve_from_samples(
+    rows: &[apex_store::postgres::ResolvedStatsAlertCalibrationSampleRecord],
+) -> CalibrationCurve {
+    if rows.is_empty() {
+        return CalibrationCurve::default();
+    }
+
+    let mut bins = vec![(0.0f64, 0.0f64, 0u32); 10];
+    let mut total_brier = 0.0;
+    let mut base_rate = 0.0;
+
+    for row in rows {
+        let predicted = alert_level_probability(&row.alert_level, &row.metadata);
+        let actual = if row.actual_outcome_within_30d { 1.0 } else { 0.0 };
+        let index = (predicted * 10.0).floor().clamp(0.0, 9.0) as usize;
+        bins[index].0 += predicted;
+        bins[index].1 += actual;
+        bins[index].2 += 1;
+        total_brier += (predicted - actual).powi(2);
+        base_rate += actual;
+    }
+
+    let total_count = rows.len() as f64;
+    let base_rate = base_rate / total_count;
+    let mut reliability = 0.0;
+    let mut resolution = 0.0;
+    let points = bins
+        .into_iter()
+        .filter(|(_, _, count)| *count > 0)
+        .map(|(pred_sum, actual_sum, count)| {
+            let predicted_probability = pred_sum / count as f64;
+            let observed_frequency = actual_sum / count as f64;
+            let weight = count as f64 / total_count;
+            reliability += weight * (predicted_probability - observed_frequency).powi(2);
+            resolution += weight * (observed_frequency - base_rate).powi(2);
+            CalibrationPoint {
+                predicted_probability,
+                observed_frequency,
+                bin_count: count,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    CalibrationCurve {
+        points,
+        brier_score: total_brier / total_count,
+        reliability,
+        resolution,
+    }
+}
 
 fn count_validation_issues(value: &serde_json::Value) -> usize {
     value.as_array().map(|items| items.len()).unwrap_or(0)
@@ -75,6 +141,12 @@ pub(crate) struct TriggerScanRequest {
 pub(crate) struct TriggerScanResponse {
     trigger_id: String,
     job_kind: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct UnlockApiKeyResponse {
+    key_id: String,
+    unlocked: bool,
 }
 
 fn build_trigger_scan_response(trigger_id: String, job_kind: String) -> TriggerScanResponse {
@@ -177,6 +249,44 @@ pub(crate) async fn get_admin_poi_coverage(
     }
 }
 
+pub(crate) async fn get_admin_calibration(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<ApiResponse<CalibrationCurve>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+    match state
+        .store
+        .list_resolved_stats_alert_calibration_samples(
+            Some(Utc::now() - chrono::Duration::days(365)),
+            5_000,
+        )
+        .await
+    {
+        Ok(rows) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_latency("get_admin_calibration", duration_ms);
+            (
+                StatusCode::OK,
+                Json(success_with_meta(
+                    calibration_curve_from_samples(&rows),
+                    ResponseMeta::now()
+                        .with_request_id(request_id)
+                        .with_duration(duration_ms),
+                )),
+            )
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "admin calibration failed: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load calibration curve",
+                ))),
+            )
+        }
+    }
+}
+
 pub(crate) async fn get_admin_llm_governance(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<ApiResponse<AdminLlmGovernanceResponse>>) {
@@ -269,6 +379,36 @@ pub(crate) async fn post_trigger_scan(
     }
 }
 
+pub(crate) async fn post_unlock_api_key(
+    State(state): State<AppState>,
+    Path(key_id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<UnlockApiKeyResponse>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let Some(api_key) = state.api_keys.values().find(|candidate| candidate.key_id == key_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(error_response(ApiError::not_found("api_key", &key_id))),
+        );
+    };
+
+    let unlocked = state.auth_attempt_tracker.clear_lock(&api_key.key_hash);
+    let duration_ms = start.elapsed().as_millis() as u64;
+    log_latency("post_unlock_api_key", duration_ms);
+    tracing::info!(request_id = %request_id, key_id = %key_id, unlocked, "API key auth lockout cleared");
+
+    (
+        StatusCode::OK,
+        Json(success_with_meta(
+            UnlockApiKeyResponse { key_id, unlocked },
+            ResponseMeta::now()
+                .with_request_id(request_id)
+                .with_duration(duration_ms),
+        )),
+    )
+}
+
 fn replay_progress_from_record(record: apex_store::postgres::ReplayJobRecord) -> ReplayProgress {
     let progress_pct = if record.total_observations > 0 {
         ((record.processed as f64 / record.total_observations as f64) * 100.0).clamp(0.0, 100.0)
@@ -280,7 +420,7 @@ fn replay_progress_from_record(record: apex_store::postgres::ReplayJobRecord) ->
 
     ReplayProgress {
         job_id: record.id.to_string(),
-        status: ReplayStatus::from_str(&record.status),
+        status: ReplayStatus::parse(&record.status),
         total_observations: record.total_observations.max(0) as usize,
         processed: record.processed.max(0) as usize,
         warnings_generated: record.warnings_generated.max(0) as usize,

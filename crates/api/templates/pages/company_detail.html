@@ -23,14 +23,14 @@
       <div class="mt-2 flex items-center gap-2">
         {% call m::region_badge(region) %}
         <span class="text-[11px] text-muted-foreground">{{ sector }}</span>
-        {% if is_competitor %}<span class="text-[10px] font-bold text-orange-600 uppercase">Competitor</span>{% endif %}
+        {% if is_competitor %}<span class="text-[10px] font-bold uppercase apex-text-competitor">Competitor</span>{% endif %}
       </div>
     </div>
     <div class="flex items-center gap-3">
       {% if !briefing_mode %}
       <a href="/companies/{{ id }}?briefing=true" class="no-print rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing</a>
       {% else %}
-      <button type="button" onclick="window.print()" class="no-print rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
+      <button type="button" class="no-print rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
       {% endif %}
       {% call m::score_ring(risk_score, 48) %}
     </div>
@@ -39,7 +39,7 @@
   <div class="apex-card p-4">
     <p class="text-sm leading-relaxed">{{ description }}</p>
     {% if !website_url.is_empty() %}
-    <p class="mt-2 text-[11px]"><a href="{{ website_url }}" class="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer" hx-boost="false">{{ website }}</a></p>
+    <p class="mt-2 text-[11px]"><a href="{{ website_url }}" class="apex-link-steel hover:underline" target="_blank" rel="noopener noreferrer">{{ website }}</a></p>
     {% endif %}
     <div class="mt-4 grid grid-cols-3 gap-4 text-[11px]">
       <div><span class="font-black uppercase text-muted-foreground">Warnings</span><br>{{ total_warnings }}</div>
@@ -113,7 +113,7 @@
         <div class="flex items-center justify-between">
           <span class="text-sm font-semibold">{{ entry.field_name }}</span>
           {% if entry.verified %}
-          <span class="text-[9px] font-bold text-green-600 uppercase">Verified</span>
+          <span class="text-[9px] font-bold uppercase apex-text-positive">Verified</span>
           {% else %}
           <span class="text-[9px] font-bold text-muted-foreground uppercase">Unverified</span>
           {% endif %}
@@ -131,20 +131,11 @@
   </div>
   {% else %}
   <div class="apex-card">
-    <div class="border-b border-border px-4 py-3 flex items-center gap-4">
-      <button type="button"
-              class="text-[10px] font-black uppercase tracking-[0.12em] text-foreground"
-              onclick="document.getElementById('company-tab-changes').classList.remove('hidden');document.getElementById('company-tab-dossier').classList.add('hidden');">
-        Recent Changes
-      </button>
-      <button type="button"
-              class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
-              onclick="document.getElementById('company-tab-dossier').classList.remove('hidden');document.getElementById('company-tab-changes').classList.add('hidden');">
-        Dossier
-      </button>
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Changes</h2>
     </div>
 
-    <div id="company-tab-changes">
+    <div>
       {% if !recent_events.is_empty() %}
       <div class="divide-y divide-border">
         {% for ev in recent_events %}
@@ -162,7 +153,11 @@
       {% endif %}
     </div>
 
-    <div id="company-tab-dossier" class="hidden">
+    <div class="border-y border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Dossier</h2>
+    </div>
+
+    <div>
       {% if !dossier_entries.is_empty() %}
       <div class="divide-y divide-border">
         {% for entry in dossier_entries %}
@@ -170,7 +165,7 @@
           <div class="flex items-center justify-between">
             <span class="text-sm font-semibold">{{ entry.field_name }}</span>
             {% if entry.verified %}
-            <span class="text-[9px] font-bold text-green-600 uppercase">Verified</span>
+            <span class="text-[9px] font-bold uppercase apex-text-positive">Verified</span>
             {% else %}
             <span class="text-[9px] font-bold text-muted-foreground uppercase">Unverified</span>
             {% endif %}

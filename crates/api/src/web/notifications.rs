@@ -88,7 +88,7 @@ pub async fn list_notifications_page(
             .collect(),
     };
 
-    page.into_response()
+    super::render_template(&page)
 }
 
 pub async fn mark_notification_read(

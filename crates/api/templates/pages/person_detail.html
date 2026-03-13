@@ -24,7 +24,7 @@
   </div>
   <div class="flex items-center gap-2">
     <a href="/persons/{{ id }}" class="rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Interactive View</a>
-    <button type="button" onclick="window.print()" class="rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
+    <button type="button" class="rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
   </div>
 </div>
 {% else %}
@@ -34,7 +34,7 @@
 <div class="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
   <span class="font-bold uppercase tracking-[0.1em]">ID:</span>
   <span id="person-id-value" class="max-w-[320px] truncate font-mono" title="{{ id }}">{{ id }}</span>
-  <button type="button" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('person-id-value').textContent)">Copy</button>
+  <button type="button" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Copy</button>
 </div>
 
 <nav aria-label="In-page sections" class="mb-4 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">
@@ -123,22 +123,11 @@
   </div>
   {% else %}
   <div class="apex-card">
-    <div class="border-b border-border px-4 py-3 flex items-center gap-4">
-      <button id="person-tab-btn-affiliations" class="text-[10px] font-black uppercase tracking-[0.12em] text-foreground"
-              onclick="switchPersonTab('affiliations')">
-        Affiliations
-      </button>
-      <button id="person-tab-btn-history" class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
-              onclick="switchPersonTab('history')">
-        Role History
-      </button>
-      <button id="person-tab-btn-peers" class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground"
-              onclick="switchPersonTab('peers')">
-        Peers
-      </button>
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Affiliations</h2>
     </div>
 
-    <div id="person-tab-affiliations" class="divide-y divide-border">
+    <div class="divide-y divide-border">
       {% for a in affiliations %}
       <div class="px-4 py-3 flex items-center justify-between">
         <div>
@@ -154,7 +143,11 @@
       {% endfor %}
     </div>
 
-    <div id="person-tab-history" class="hidden divide-y divide-border">
+    <div class="border-y border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Role History</h2>
+    </div>
+
+    <div class="divide-y divide-border">
       {% for rh in role_history %}
       <div class="px-4 py-3">
         <span class="text-sm font-semibold">{{ rh.role }}</span>
@@ -164,7 +157,11 @@
       {% endfor %}
     </div>
 
-    <div id="person-tab-peers" class="hidden divide-y divide-border">
+    <div class="border-y border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Peers</h2>
+    </div>
+
+    <div class="divide-y divide-border">
       {% for p in peers %}
       <a href="/persons/{{ p.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
         <span class="text-sm font-semibold">{{ p.name }}</span>
@@ -192,29 +189,4 @@
   </div>
   {% endif %}
 </div>
-
-{% if !briefing_mode %}
-<script>
-  function switchPersonTab(tab) {
-    var tabs = {
-      affiliations: document.getElementById('person-tab-affiliations'),
-      history: document.getElementById('person-tab-history'),
-      peers: document.getElementById('person-tab-peers')
-    };
-    var buttons = {
-      affiliations: document.getElementById('person-tab-btn-affiliations'),
-      history: document.getElementById('person-tab-btn-history'),
-      peers: document.getElementById('person-tab-btn-peers')
-    };
-
-    Object.keys(tabs).forEach(function (k) {
-      if (!tabs[k] || !buttons[k]) return;
-      var active = k === tab;
-      tabs[k].classList.toggle('hidden', !active);
-      buttons[k].classList.toggle('text-foreground', active);
-      buttons[k].classList.toggle('text-muted-foreground', !active);
-    });
-  }
-</script>
-{% endif %}
 {% endblock %}

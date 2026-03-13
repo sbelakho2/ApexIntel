@@ -16,6 +16,10 @@ Usage (launched by run_all.sh via accelerate):
 import os
 import sys
 import yaml
+import json
+import math
+import random
+from collections import defaultdict
 
 # PyTorch 2.10 introduced a strict metadata check in use_reentrant=False GC that
 # fires on Qwen3-MoE due to flash-attn 2.8 producing different strides on
@@ -33,6 +37,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
+    TrainerCallback,
     DataCollatorForLanguageModeling,
     set_seed,
 )
@@ -57,6 +62,101 @@ def setup_cuda_optimizations():
 def load_config() -> dict:
     with open(CONFIG_PATH) as f:
         return yaml.safe_load(f)
+
+
+def load_jsonl_records(path: Path) -> list[dict]:
+    with open(path, "r", encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def write_jsonl_records(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def stratify_records_by_category(records: list[dict], eval_fraction: float, seed: int) -> tuple[list[dict], list[dict]]:
+    grouped = defaultdict(list)
+    for record in records:
+        category = str(record.get("category") or record.get("source") or "uncategorized")
+        grouped[category].append(record)
+
+    rng = random.Random(seed)
+    train_records: list[dict] = []
+    eval_records: list[dict] = []
+    for category_records in grouped.values():
+        shuffled = category_records[:]
+        rng.shuffle(shuffled)
+        eval_count = max(1, int(round(len(shuffled) * eval_fraction))) if len(shuffled) > 1 else 0
+        eval_records.extend(shuffled[:eval_count])
+        train_records.extend(shuffled[eval_count:])
+
+    rng.shuffle(train_records)
+    rng.shuffle(eval_records)
+    return train_records, eval_records
+
+
+def ensure_stratified_eval_split(train_path: Path, eval_path: Path, category_field: str, seed: int) -> None:
+    if train_path.exists() and eval_path.exists():
+        return
+    if not eval_path.exists():
+        raise FileNotFoundError(f"expected eval split at {eval_path}")
+
+    records = load_jsonl_records(eval_path)
+    for record in records:
+        if category_field not in record:
+            record[category_field] = str(record.get("source") or "uncategorized")
+
+    train_records, eval_records = stratify_records_by_category(records, eval_fraction=0.1, seed=seed)
+    write_jsonl_records(train_path, train_records)
+    write_jsonl_records(eval_path, eval_records)
+
+
+def load_canary_terms(path: Path) -> list[str]:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle) or {}
+    return [str(term).strip() for term in payload.get("terms", []) if str(term).strip()]
+
+
+def compute_canary_perplexity(model, tokenizer, canary_terms: list[str]) -> float | None:
+    if not canary_terms:
+        return None
+
+    device = next(model.parameters()).device
+    losses = []
+    for term in canary_terms:
+        encoded = tokenizer(term, return_tensors="pt", truncation=True, max_length=128)
+        encoded = {key: value.to(device) for key, value in encoded.items()}
+        labels = encoded["input_ids"].clone()
+        with torch.no_grad():
+            outputs = model(**encoded, labels=labels)
+        losses.append(float(outputs.loss.detach().cpu().item()))
+    if not losses:
+        return None
+    return float(math.exp(sum(losses) / len(losses)))
+
+
+class CanaryEvalCallback(TrainerCallback):
+    def __init__(self, tokenizer, canary_terms: list[str], output_dir: str):
+        self.tokenizer = tokenizer
+        self.canary_terms = canary_terms
+        self.output_path = Path(output_dir) / "canary_metrics.jsonl"
+
+    def on_evaluate(self, args, state, control, model=None, metrics=None, **kwargs):
+        if model is None or not self.canary_terms:
+            return control
+        canary_perplexity = compute_canary_perplexity(model, self.tokenizer, self.canary_terms)
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.output_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "step": state.global_step,
+                "epoch": state.epoch,
+                "eval_loss": (metrics or {}).get("eval_loss"),
+                "canary_perplexity": canary_perplexity,
+            }) + "\n")
+        print(f"  ✓ Canary perplexity @ step {state.global_step}: {canary_perplexity}")
+        return control
 
 
 def main():
@@ -152,6 +252,13 @@ def main():
     eval_path = str(WORK / dc["eval_file"])
     max_len = dc.get("max_seq_length", 4096)
     packing = dc.get("packing", False)
+    ensure_stratified_eval_split(
+        Path(train_path),
+        Path(eval_path),
+        dc.get("category_field", "category"),
+        seed=42,
+    )
+    canary_terms = load_canary_terms(WORK / dc.get("canary_terms_file", "training/configs/phase1_canary_terms.yaml"))
 
     raw = load_dataset("json", data_files={"train": train_path, "eval": eval_path})
 
@@ -215,7 +322,11 @@ def main():
         save_strategy=tc["save_strategy"],
         save_steps=tc["save_steps"],
         save_total_limit=tc["save_total_limit"],
-        eval_strategy="no",  # skip eval during short 1-epoch run
+        eval_strategy=tc.get("eval_strategy", "steps"),
+        eval_steps=tc.get("eval_steps", 500),
+        load_best_model_at_end=tc.get("load_best_model_at_end", True),
+        metric_for_best_model=tc.get("metric_for_best_model", "eval_loss"),
+        greater_is_better=tc.get("greater_is_better", False),
         dataloader_num_workers=tc["dataloader_num_workers"],
         dataloader_pin_memory=tc["dataloader_pin_memory"],
         dataloader_prefetch_factor=tc.get("dataloader_prefetch_factor", 4),
@@ -227,6 +338,7 @@ def main():
         ddp_find_unused_parameters=False,
         torch_compile=False,
         seed=42,
+        lr_scheduler_kwargs={"num_cycles": max(1, int(tc["num_train_epochs"]))},
         # No deepspeed — pure DDP, only LoRA grads synced (~106 MB)
     )
 
@@ -237,6 +349,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=collator,
+        callbacks=[CanaryEvalCallback(tokenizer, canary_terms, output_dir)],
     )
 
     print("Starting Phase 1 DAPT training (QLoRA 4-bit) …")

@@ -1,5 +1,6 @@
 //! Persons route — request/response types and logic for POI endpoints.
 
+use crate::config::PriorityWeights;
 use apex_core::validation::{clamp_ratio, validate_uuid};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -133,7 +134,10 @@ pub struct PriorityVector {
 impl PriorityVector {
     /// Compute a weighted composite score.
     pub fn composite(&self) -> f64 {
-        let weights = [0.25, 0.20, 0.20, 0.15, 0.20];
+        self.composite_with_weights(&PriorityWeights::default())
+    }
+
+    pub fn composite_with_weights(&self, weights: &PriorityWeights) -> f64 {
         let values = [
             self.decision_power,
             self.domain_relevance,
@@ -141,7 +145,26 @@ impl PriorityVector {
             self.engagement_potential,
             self.intelligence_value,
         ];
-        let score: f64 = weights.iter().zip(values.iter()).map(|(w, v)| w * v).sum();
+        let weight_values = [
+            weights.decision_power,
+            weights.domain_relevance,
+            weights.network_centrality,
+            weights.engagement_potential,
+            weights.intelligence_value,
+        ];
+        let total_weight: f64 = weight_values.iter().sum();
+        let normalized = if total_weight <= f64::EPSILON {
+            [0.25, 0.20, 0.20, 0.15, 0.20]
+        } else {
+            [
+                weight_values[0] / total_weight,
+                weight_values[1] / total_weight,
+                weight_values[2] / total_weight,
+                weight_values[3] / total_weight,
+                weight_values[4] / total_weight,
+            ]
+        };
+        let score: f64 = normalized.iter().zip(values.iter()).map(|(w, v)| w * v).sum();
         clamp_ratio(score)
     }
 }
@@ -227,7 +250,7 @@ pub fn sort_persons(items: &mut [PersonListItem], field: &PersonSortField, desc:
 }
 
 /// Filter persons by minimum priority.
-pub fn filter_by_priority<'a>(items: &'a [PersonListItem], min: f64) -> Vec<&'a PersonListItem> {
+pub fn filter_by_priority(items: &[PersonListItem], min: f64) -> Vec<&PersonListItem> {
     items.iter().filter(|p| p.priority_score >= min).collect()
 }
 
@@ -430,6 +453,26 @@ mod tests {
             intelligence_value: 1.0,
         };
         assert!((pv.composite() - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_priority_vector_composite_with_custom_weights() {
+        let pv = PriorityVector {
+            decision_power: 0.9,
+            domain_relevance: 0.2,
+            network_centrality: 0.2,
+            engagement_potential: 0.2,
+            intelligence_value: 0.2,
+        };
+        let weights = PriorityWeights {
+            decision_power: 1.0,
+            domain_relevance: 0.0,
+            network_centrality: 0.0,
+            engagement_potential: 0.0,
+            intelligence_value: 0.0,
+        };
+
+        assert!((pv.composite_with_weights(&weights) - 0.9).abs() < 0.001);
     }
 
     #[test]

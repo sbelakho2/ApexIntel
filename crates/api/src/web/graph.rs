@@ -102,6 +102,7 @@ pub struct GraphPage {
 // ─── Handler ────────────────────────────────────────────────────────────────
 
 /// GET /graph — entity relationship graph page.
+#[allow(clippy::disallowed_methods)]
 pub async fn graph_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
@@ -741,11 +742,16 @@ pub async fn graph_page(
         })
         .collect();
 
+    let node_label_lookup: HashMap<String, String> = node_slice
+        .iter()
+        .map(|node| (node.id.clone(), node.label.clone()))
+        .collect();
+
     // Serialize for client
     let graph_json = serde_json::json!({
         "nodes": render_nodes.iter().map(|n| serde_json::json!({
             "id": n.id,
-            "label": n.label,
+            "label": node_label_lookup.get(&n.id).cloned().unwrap_or_else(|| n.label.clone()),
             "type": n.node_type,
             "node_type": n.node_type,
             "size": n.size,
@@ -761,6 +767,11 @@ pub async fn graph_page(
             "type": e.edge_type,
             "edge_type": e.edge_type,
             "weight": 1.0,
+        })).collect::<Vec<_>>(),
+        "catalog": nodes.iter().map(|node| serde_json::json!({
+            "id": node.id,
+            "label": node.label,
+            "node_type": normalize_node_type(&node.node_type),
         })).collect::<Vec<_>>(),
     })
     .to_string();
@@ -793,7 +804,7 @@ pub async fn graph_page(
         edges,
     };
 
-    tpl.into_response()
+    super::render_template(&tpl)
 }
 
 fn short_id(value: &str) -> String {

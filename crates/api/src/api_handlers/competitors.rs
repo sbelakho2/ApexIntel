@@ -1,4 +1,4 @@
-use super::super::*;
+use crate::*;
 
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct ListCompetitorsQuery {

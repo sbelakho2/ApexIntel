@@ -32,6 +32,8 @@
 //! ```
 
 use chrono::{DateTime, Duration, Utc};
+use apex_core::timeline::{EntityTimeline, TimelineEvent, TemporalValidationReport};
+use apex_llm::insight_gen::extract_temporal_claims;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, info};
@@ -958,6 +960,34 @@ pub fn sla_seconds_remaining(alert: &CepAlert) -> i64 {
     (alert.sla_deadline - Utc::now()).num_seconds()
 }
 
+pub fn build_entity_timelines(events: &[SecurityEvent]) -> HashMap<String, EntityTimeline> {
+    let mut timelines = HashMap::new();
+
+    for event in events {
+        let Some(entity_id) = event.entity_id else {
+            continue;
+        };
+        let timeline = timelines
+            .entry(entity_id.to_string())
+            .or_insert_with(|| EntityTimeline::new(entity_id.to_string()));
+        timeline.add_event(
+            TimelineEvent::new(&event.event_type, event.ts_utc, event.confidence)
+                .with_source_observation_id(event.observation_id.to_string()),
+        );
+    }
+
+    timelines
+}
+
+pub fn validate_insight_temporal_consistency(
+    insight_text: &str,
+    insight_time: DateTime<Utc>,
+    timeline: &EntityTimeline,
+) -> TemporalValidationReport {
+    let claims = extract_temporal_claims(insight_text, timeline);
+    timeline.validate_claims(&claims, insight_time)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -975,6 +1005,28 @@ mod tests {
             0.95,
             serde_json::json!({}),
         )
+    }
+
+    #[test]
+    fn event_timeline_consistency() {
+        let entity_id = Uuid::new_v4();
+        let insight_time = Utc::now();
+        let events = vec![make_event(
+            "audit",
+            Some(entity_id),
+            insight_time + Duration::days(3),
+        )];
+        let timelines = build_entity_timelines(&events);
+        let timeline = timelines.get(&entity_id.to_string()).unwrap();
+
+        let report = validate_insight_temporal_consistency(
+            "After the audit, the company tightened controls.",
+            insight_time,
+            timeline,
+        );
+
+        assert!(!report.consistent);
+        assert_eq!(report.violations.len(), 1);
     }
 
     #[test]

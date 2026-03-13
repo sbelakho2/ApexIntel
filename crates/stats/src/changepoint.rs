@@ -5,15 +5,18 @@
 /// # Default values
 /// | Field          | Default | Rationale                                                           |
 /// |---------------|---------|--------------------------------------------------------------------|
-/// | `penalty`     | 3.0     | BIC-like penalty; lower detects more (potentially spurious) points |
+/// | `penalty`     | 3.0     | Fixed penalty fallback when adaptive mode is disabled              |
+/// | `adaptive_penalty` | true | Use modified BIC penalty `β = c · log(n)` with variance-adaptive `c` |
 /// | `min_segment` | 2       | Minimum observations per segment; must be ≥ 1                      |
 ///
 /// Increase `penalty` to suppress noise-driven change-points on smooth series;
 /// decrease it for volatile series where subtle shifts matter.
 #[derive(Debug, Clone)]
 pub struct PeltConfig {
-    /// Log-likelihood change-point penalty.  Default: `3.0`.
+    /// Fixed log-likelihood change-point penalty fallback. Default: `3.0`.
     pub penalty: f64,
+    /// Whether to use the variance-adaptive modified BIC penalty.
+    pub adaptive_penalty: bool,
     /// Minimum data points in a valid segment.  Default: `2`.
     pub min_segment: usize,
 }
@@ -22,7 +25,37 @@ impl Default for PeltConfig {
     fn default() -> Self {
         Self {
             penalty: 3.0,
+            adaptive_penalty: true,
             min_segment: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BocpdConfig {
+    /// Constant hazard rate for a changepoint at any step.
+    pub hazard: f64,
+    /// Prior mean for the Gaussian mean model.
+    pub prior_mean: f64,
+    /// Effective sample size of the prior.
+    pub prior_strength: f64,
+    /// Known observation variance used by the predictive density.
+    pub observation_variance: f64,
+    /// Posterior probability threshold for emitting a changepoint.
+    pub changepoint_threshold: f64,
+    /// Minimum number of points between consecutive emitted changepoints.
+    pub min_distance: usize,
+}
+
+impl Default for BocpdConfig {
+    fn default() -> Self {
+        Self {
+            hazard: 1.0 / 24.0,
+            prior_mean: 0.0,
+            prior_strength: 1.0,
+            observation_variance: 1.0,
+            changepoint_threshold: 0.35,
+            min_distance: 2,
         }
     }
 }
@@ -67,10 +100,12 @@ pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
         return vec![];
     }
 
+    let penalty = effective_penalty(data, config);
+
     let mut cost = vec![0.0_f64; n + 1];
     // Standard PELT initialization: F(0) = -β so that the no-changepoint
     // baseline has cost 0 and each split adds exactly β to the objective.
-    cost[0] = -config.penalty;
+    cost[0] = -penalty;
     let mut cp_trace: Vec<Vec<usize>> = vec![vec![]; n + 1];
     // PELT candidate set — properly pruned each iteration
     let mut candidates: Vec<usize> = vec![0];
@@ -84,7 +119,7 @@ pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
                 continue;
             }
             let seg_cost = gaussian_cost(&data[s..t]);
-            let total = cost[s] + seg_cost + config.penalty;
+            let total = cost[s] + seg_cost + penalty;
             if total < best_cost {
                 best_cost = total;
                 best_s = s;
@@ -112,6 +147,98 @@ pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
     cp_trace[n].clone()
 }
 
+pub fn effective_penalty(data: &[f64], config: &PeltConfig) -> f64 {
+    if config.adaptive_penalty {
+        modified_bic_penalty(data)
+    } else {
+        config.penalty
+    }
+}
+
+pub fn modified_bic_penalty(data: &[f64]) -> f64 {
+    if data.len() < 2 {
+        return 1.0;
+    }
+
+    let variance = sample_variance(data);
+    let normalized_variance = (variance / (variance + 1.0)).clamp(0.0, 1.0);
+    let c = (1.0 + 2.0 * normalized_variance).clamp(1.0, 3.0);
+    c * (data.len() as f64).ln().max(1.0)
+}
+
+pub fn detect_changepoints_bocpd(data: &[f64], config: &BocpdConfig) -> Vec<usize> {
+    if data.len() < 2 || !config.hazard.is_finite() || config.hazard <= 0.0 || config.hazard >= 1.0 {
+        return vec![];
+    }
+
+    let observation_variance = config.observation_variance.max(1e-6);
+    let mut run_probs = vec![1.0_f64];
+    let mut means = vec![config.prior_mean];
+    let mut strengths = vec![config.prior_strength.max(1e-6)];
+    let mut changepoints = Vec::new();
+
+    for (index, &value) in data.iter().enumerate() {
+        let predictive = means
+            .iter()
+            .zip(strengths.iter())
+            .map(|(&mean, &strength)| {
+                let variance = observation_variance * (1.0 + 1.0 / strength.max(1e-6));
+                gaussian_pdf(value, mean, variance)
+            })
+            .collect::<Vec<_>>();
+
+        let mut next_run_probs = vec![0.0_f64; run_probs.len() + 1];
+        let mut next_means = vec![config.prior_mean; means.len() + 1];
+        let mut next_strengths = vec![config.prior_strength.max(1e-6); strengths.len() + 1];
+
+        let cp_prob = run_probs
+            .iter()
+            .zip(predictive.iter())
+            .map(|(&prob, &pred)| prob * pred * config.hazard)
+            .sum::<f64>();
+        next_run_probs[0] = cp_prob;
+
+        for run_length in 0..run_probs.len() {
+            let growth_prob = run_probs[run_length] * predictive[run_length] * (1.0 - config.hazard);
+            next_run_probs[run_length + 1] = growth_prob;
+
+            let posterior_strength = strengths[run_length] + 1.0;
+            let posterior_mean =
+                ((strengths[run_length] * means[run_length]) + value) / posterior_strength;
+            next_means[run_length + 1] = posterior_mean;
+            next_strengths[run_length + 1] = posterior_strength;
+        }
+
+        let normalizer = next_run_probs.iter().sum::<f64>();
+        if normalizer <= f64::EPSILON || !normalizer.is_finite() {
+            continue;
+        }
+        for probability in &mut next_run_probs {
+            *probability /= normalizer;
+        }
+
+        let short_run_mass = next_run_probs
+            .iter()
+            .take(config.min_distance.max(1) + 1)
+            .sum::<f64>();
+
+        if index >= config.min_distance
+            && short_run_mass >= config.changepoint_threshold
+            && changepoints
+                .last()
+                .is_none_or(|last| index.saturating_sub(*last) >= config.min_distance)
+        {
+            changepoints.push(index);
+        }
+
+        run_probs = next_run_probs;
+        means = next_means;
+        strengths = next_strengths;
+    }
+
+    changepoints
+}
+
 /// Gaussian cost function for a segment: sum of squared deviations (always ≥ 0).
 fn gaussian_cost(data: &[f64]) -> f64 {
     if data.is_empty() {
@@ -120,6 +247,20 @@ fn gaussian_cost(data: &[f64]) -> f64 {
     let n = data.len() as f64;
     let mean = data.iter().sum::<f64>() / n;
     data.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+}
+
+fn sample_variance(data: &[f64]) -> f64 {
+    if data.len() < 2 {
+        return 0.0;
+    }
+    let mean = data.iter().sum::<f64>() / data.len() as f64;
+    data.iter().map(|value| (value - mean).powi(2)).sum::<f64>() / (data.len() - 1) as f64
+}
+
+fn gaussian_pdf(x: f64, mean: f64, variance: f64) -> f64 {
+    let variance = variance.max(1e-9);
+    let norm = (2.0 * std::f64::consts::PI * variance).sqrt();
+    ((-0.5 * (x - mean).powi(2) / variance).exp() / norm).max(1e-12)
 }
 
 /// Simplified CUSUM detector for online change-point detection.
@@ -159,6 +300,7 @@ mod tests {
         let data: Vec<f64> = vec![1.0; 20];
         let config = PeltConfig {
             penalty: 5.0,
+            adaptive_penalty: false,
             min_segment: 3,
         };
         let cps = detect_changepoints(&data, &config);
@@ -172,6 +314,7 @@ mod tests {
 
         let config = PeltConfig {
             penalty: 10.0,
+            adaptive_penalty: false,
             min_segment: 3,
         };
         let cps = detect_changepoints(&data, &config);
@@ -193,10 +336,61 @@ mod tests {
         let data = vec![1.0, 2.0];
         let config = PeltConfig {
             penalty: 1.0,
+            adaptive_penalty: false,
             min_segment: 3,
         };
         let cps = detect_changepoints(&data, &config);
         assert!(cps.is_empty());
+    }
+
+    #[test]
+    fn adaptive_penalty_tracks_signal_variance() {
+        let low_variance = vec![1.0, 1.1, 0.9, 1.05, 0.95, 1.02, 0.98, 1.0];
+        let high_variance = vec![1.0, 4.0, -2.0, 5.0, -3.0, 6.0, -4.0, 7.0];
+
+        let low_penalty = modified_bic_penalty(&low_variance);
+        let high_penalty = modified_bic_penalty(&high_variance);
+
+        assert!(high_penalty > low_penalty);
+        assert!(low_penalty >= (low_variance.len() as f64).ln());
+    }
+
+    #[test]
+    fn adaptive_penalty_detects_single_known_changepoint() {
+        let mut data = Vec::new();
+        for index in 0..120 {
+            let seasonal = (((index * 17) % 9) as f64 - 4.0) * 0.05;
+            let baseline = if index < 60 { 2.0 } else { 5.5 };
+            data.push(baseline + seasonal);
+        }
+
+        let config = PeltConfig {
+            penalty: 3.0,
+            adaptive_penalty: true,
+            min_segment: 4,
+        };
+        let cps = detect_changepoints(&data, &config);
+        let closest = cps
+            .iter()
+            .min_by_key(|&&cp| (cp as i64 - 60).unsigned_abs())
+            .copied();
+
+        assert!(closest.is_some(), "adaptive penalty should detect the synthetic shift");
+        assert!((closest.unwrap() as i64 - 60).unsigned_abs() <= 6);
+    }
+
+    #[test]
+    fn adaptive_penalty_rejects_pure_noise() {
+        let data = (0..120)
+            .map(|index| ((((index * 37) % 101) as f64) / 100.0 - 0.5) * 0.6)
+            .collect::<Vec<_>>();
+        let config = PeltConfig {
+            penalty: 3.0,
+            adaptive_penalty: true,
+            min_segment: 4,
+        };
+        let cps = detect_changepoints(&data, &config);
+        assert!(cps.is_empty(), "variance-adaptive MBIC should suppress pure noise changepoints");
     }
 
     #[test]
@@ -242,6 +436,7 @@ mod tests {
         // Identical across two calls (deterministic)
         assert_eq!(a.min_segment, b.min_segment);
         assert!((a.penalty - b.penalty).abs() < f64::EPSILON);
+        assert_eq!(a.adaptive_penalty, b.adaptive_penalty);
         // Values are in valid ranges
         assert!(
             a.penalty > 0.0,
@@ -262,6 +457,7 @@ mod tests {
             (cfg.penalty - 3.0).abs() < f64::EPSILON,
             "default penalty should be 3.0"
         );
+        assert!(cfg.adaptive_penalty, "adaptive penalty should be enabled by default");
         assert_eq!(cfg.min_segment, 2, "default min_segment should be 2");
     }
 
@@ -318,10 +514,86 @@ mod tests {
     fn test_pelt_config_all_invalid_fields_all_reported() {
         let cfg = PeltConfig {
             penalty: f64::NEG_INFINITY,
+            adaptive_penalty: true,
             min_segment: 0,
         };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("penalty")));
         assert!(errs.iter().any(|e| e.contains("min_segment")));
+    }
+
+    #[test]
+    fn bocpd_detects_streaming_shift() {
+        let mut data = vec![0.5; 40];
+        data.extend(vec![4.0; 40]);
+        let config = BocpdConfig {
+            hazard: 1.0 / 30.0,
+            prior_mean: 0.0,
+            prior_strength: 1.0,
+            observation_variance: 0.5,
+            changepoint_threshold: 0.25,
+            min_distance: 3,
+        };
+
+        let cps = detect_changepoints_bocpd(&data, &config);
+        let closest = cps
+            .iter()
+            .min_by_key(|&&cp| (cp as i64 - 40).unsigned_abs())
+            .copied();
+        assert!(closest.is_some(), "BOCPD should detect the shift");
+        assert!((closest.unwrap() as i64 - 40).unsigned_abs() <= 6);
+    }
+
+    #[test]
+    fn bocpd_rejects_pure_noise() {
+        let data = (0..80)
+            .map(|index| ((((index * 19) % 97) as f64) / 97.0 - 0.5) * 0.5)
+            .collect::<Vec<_>>();
+        let config = BocpdConfig {
+            observation_variance: 0.5,
+            changepoint_threshold: 0.4,
+            min_distance: 3,
+            ..BocpdConfig::default()
+        };
+
+        let cps = detect_changepoints_bocpd(&data, &config);
+        assert!(cps.is_empty(), "BOCPD should stay quiet on stationary noise");
+    }
+
+    #[test]
+    fn changepoint_adaptive_penalty() {
+        let mut shifted = vec![1.0; 100];
+        shifted.extend(vec![6.0; 100]);
+        let shifted_cfg = PeltConfig {
+            penalty: 3.0,
+            adaptive_penalty: true,
+            min_segment: 4,
+        };
+        let shifted_cps = detect_changepoints(&shifted, &shifted_cfg);
+        assert!(shifted_cps.iter().any(|cp| (*cp as i64 - 100).unsigned_abs() <= 5));
+
+        let noise = (0..200)
+            .map(|index| ((((index * 97) % 113) as f64) / 113.0 - 0.5) * 0.4)
+            .collect::<Vec<_>>();
+        let noise_cps = detect_changepoints(&noise, &shifted_cfg);
+        assert!(noise_cps.is_empty());
+    }
+
+    #[test]
+    fn changepoint_sensitivity_specificity_pair() {
+        let mut shifted = vec![0.0; 100];
+        shifted.extend(vec![5.0; 100]);
+        let config = PeltConfig {
+            penalty: 6.0,
+            adaptive_penalty: false,
+            min_segment: 4,
+        };
+        let cps = detect_changepoints(&shifted, &config);
+        assert!(cps.iter().any(|cp| (*cp as i64 - 100).unsigned_abs() <= 5));
+
+        let pure_noise = (0..200)
+            .map(|index| ((((index * 29) % 89) as f64) / 89.0 - 0.5) * 0.3)
+            .collect::<Vec<_>>();
+        assert!(detect_changepoints(&pure_noise, &config).is_empty());
     }
 }

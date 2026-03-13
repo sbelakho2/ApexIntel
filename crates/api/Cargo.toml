@@ -17,6 +17,7 @@ llm = ["apex-llm"]
 [dependencies]
 apex-core = { path = "../core" }
 apex-store = { path = "../store" }
+apex-shared = { path = "../shared" }
 apex-llm = { path = "../llm", optional = true }
 sqlx = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -42,7 +43,15 @@ lazy_static = "1.4"
 redis = { workspace = true }
 reqwest = { workspace = true }
 async-nats = { workspace = true }
+async-trait = { workspace = true }
 askama = { version = "0.12", features = ["with-axum"] }
 askama_axum = "0.4"
 hmac = "0.12"
 base64 = "0.22"
+secrecy = "0.10"
+async-stream = "0.3"
+futures-core = "0.3"
+
+[dev-dependencies]
+tower = { workspace = true }
+http-body-util = "0.1"

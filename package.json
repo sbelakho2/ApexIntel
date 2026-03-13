@@ -2,14 +2,14 @@
   "name": "apexintel",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Use cargo test or npm run test:e2e\"",
-    "test:e2e": "playwright test",
-    "test:e2e:update": "playwright test --update-snapshots"
+    "test": "echo \"Use cargo test\"",
+    "check:shared": "cargo check -p apex-shared && cargo check -p apex-shared --target wasm32-unknown-unknown",
+    "test:ui-parity": "playwright test -c playwright.config.cjs e2e/parity/html-ui.spec.js",
+    "test:ui-parity:update": "playwright test -c playwright.config.cjs e2e/parity/html-ui.spec.js --update-snapshots"
   },
   "repository": {
     "type": "git",

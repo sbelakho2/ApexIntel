@@ -40,6 +40,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         let mut refreshed: u64 = 0;
         let mut unchanged: u64 = 0;
         let mut enriched_pois: u64 = 0;
+        let mut role_history_backfilled: u64 = 0;
 
         for row in &persons {
             let mut profile = PoiProfile {
@@ -97,12 +98,73 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         }
 
         #[derive(sqlx::FromRow)]
+        struct MissingRoleHistoryRow {
+            id: Uuid,
+            org_id: Option<Uuid>,
+            org_name: String,
+            current_role: String,
+            role_family: String,
+        }
+
+        let role_history_backfill_limit = std::env::var("POI_ROLE_HISTORY_BACKFILL_PER_RUN")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(100)
+            .clamp(0, 500);
+
+        if role_history_backfill_limit > 0 {
+            let missing_role_history = sqlx::query_as::<_, MissingRoleHistoryRow>(
+                r#"SELECT p.id,
+                          p.primary_org_id AS org_id,
+                          COALESCE(c.name, 'Independent') AS org_name,
+                          COALESCE(p.current_role, p.role_family, 'Unknown') AS current_role,
+                          COALESCE(p.role_family, 'Unknown') AS role_family
+                   FROM persons p
+                   LEFT JOIN companies c ON p.primary_org_id = c.id
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM role_history rh WHERE rh.person_id = p.id
+                   )
+                   ORDER BY COALESCE(p.updated_at, p.created_at) DESC
+                   LIMIT $1"#,
+            )
+            .bind(role_history_backfill_limit)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap_or_default();
+
+            for row in missing_role_history {
+                if store
+                    .insert_role_history(
+                        row.id,
+                        row.org_id,
+                        &row.org_name,
+                        &row.current_role,
+                        Some(&row.role_family),
+                        Some(Utc::now()),
+                        None,
+                        None,
+                        0.6,
+                    )
+                    .await
+                    .is_ok()
+                {
+                    role_history_backfilled += 1;
+                }
+            }
+        }
+
+        #[derive(sqlx::FromRow)]
         struct ThinPersonRow {
             id: Uuid,
             name: String,
             org: String,
             current_role: String,
         }
+        let enrichment_limit = std::env::var("POI_LLM_ENRICH_PER_RUN")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(25)
+            .clamp(0, 100);
         let thin_persons: Vec<ThinPersonRow> = sqlx::query_as::<_, ThinPersonRow>(
             r#"SELECT p.id,
                       p.name,
@@ -113,8 +175,9 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                WHERE (p.public_bio IS NULL OR length(COALESCE(p.public_bio, '')) < 250)
                   OR p.decision_style IS NULL
                ORDER BY COALESCE(p.influence_score, 0) DESC
-               LIMIT 5"#,
+             LIMIT $1"#,
         )
+         .bind(enrichment_limit)
         .fetch_all(&store.pool)
         .await
         .unwrap_or_default();
@@ -236,10 +299,11 @@ Produce a concise structured JSON profile. Return only valid JSON, no markdown, 
         run.succeed(
             refreshed,
             &format!(
-                "poi_refresh: {} persons processed — {} updated, {} unchanged, {} LLM-enriched",
+                "poi_refresh: {} persons processed — {} updated, {} unchanged, {} role-history backfilled, {} LLM-enriched",
                 persons.len(),
                 refreshed,
                 unchanged,
+                role_history_backfilled,
                 enriched_pois,
             ),
         );

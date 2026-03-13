@@ -1,4 +1,6 @@
-use super::super::*;
+#![allow(clippy::disallowed_methods)]
+
+use crate::*;
 
 fn parse_detail_uuid(id: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(id).map_err(|_| ApiError::bad_request("Invalid UUID"))

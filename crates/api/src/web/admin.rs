@@ -312,5 +312,5 @@ pub async fn admin_page(
         total_entities,
     };
 
-    tpl.into_response()
+    super::render_template(&tpl)
 }

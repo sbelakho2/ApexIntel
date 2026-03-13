@@ -1,4 +1,6 @@
-use super::super::*;
+#![allow(clippy::disallowed_methods)]
+
+use crate::*;
 
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct ListStagingQuery {

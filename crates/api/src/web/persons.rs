@@ -18,6 +18,170 @@ fn normalize_percent(value: f64) -> f64 {
     normalized.clamp(0.0, 100.0).round()
 }
 
+fn normalize_ratio(value: f64) -> f64 {
+    let normalized = if value <= 1.0 { value } else { value / 100.0 };
+    normalized.clamp(0.0, 1.0)
+}
+
+fn priority_metric(vector: &Option<serde_json::Value>, key: &str) -> Option<f64> {
+    vector
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_f64())
+        .map(normalize_ratio)
+}
+
+fn average_priority_metrics(vector: &Option<serde_json::Value>, keys: &[&str]) -> Option<f64> {
+    let values: Vec<f64> = keys
+        .iter()
+        .filter_map(|key| priority_metric(vector, key))
+        .collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+
+fn role_exposure_risk(role_family: Option<&str>, current_role: Option<&str>) -> f64 {
+    let role = current_role.unwrap_or_default().to_lowercase();
+    let family = role_family.unwrap_or_default().to_lowercase();
+
+    if role.contains("ceo")
+        || role.contains("chief")
+        || role.contains("president")
+        || role.contains("chair")
+        || family.contains("executive")
+        || family.contains("board")
+    {
+        0.60
+    } else if role.contains("minister")
+        || role.contains("general")
+        || role.contains("director")
+        || family.contains("government")
+        || family.contains("military")
+        || family.contains("security")
+    {
+        0.45
+    } else if family.contains("procurement")
+        || family.contains("operations")
+        || family.contains("engineering")
+        || family.contains("legal")
+        || family.contains("finance")
+    {
+        0.30
+    } else {
+        0.18
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_profile_priority_vector(
+    person: &apex_store::postgres::PersonRow,
+    artifact_count: usize,
+    role_history_count: usize,
+    affiliation_count: usize,
+    peer_count: usize,
+    warning_count: i64,
+    insight_count: i64,
+    recent_change_count: usize,
+) -> PriorityVector {
+    let influence_ratio = priority_metric(&person.priority_vector, "influence")
+        .or(person.influence_score.map(normalize_ratio))
+        .unwrap_or(0.0);
+
+    let live_connectivity = 0.45 * (peer_count as f64 / 8.0).min(1.0)
+        + 0.20 * (affiliation_count as f64 / 4.0).min(1.0)
+        + 0.15 * (role_history_count as f64 / 6.0).min(1.0)
+        + 0.10 * if person.primary_org_id.is_some() { 1.0 } else { 0.0 }
+        + 0.10 * if person.public_email.as_ref().is_some_and(|value| !value.trim().is_empty()) {
+            1.0
+        } else {
+            0.0
+        };
+    let connectivity_ratio = priority_metric(&person.priority_vector, "connectivity")
+        .or(average_priority_metrics(
+            &person.priority_vector,
+            &["network_centrality", "domain_relevance"],
+        ))
+        .unwrap_or(live_connectivity);
+
+    let live_activity = 0.35 * (artifact_count as f64 / 12.0).min(1.0)
+        + 0.25 * (recent_change_count as f64 / 8.0).min(1.0)
+        + 0.20 * (warning_count as f64 / 6.0).min(1.0)
+        + 0.10 * (insight_count as f64 / 6.0).min(1.0)
+        + 0.10 * {
+            let freshness_days = person
+                .updated_at
+                .or(person.created_at)
+                .map(|ts| chrono::Utc::now().signed_duration_since(ts).num_days())
+                .unwrap_or(365);
+            if freshness_days <= 7 {
+                1.0
+            } else if freshness_days <= 30 {
+                0.65
+            } else if freshness_days <= 90 {
+                0.35
+            } else {
+                0.12
+            }
+        };
+    let activity_ratio = priority_metric(&person.priority_vector, "activity")
+        .or(priority_metric(&person.priority_vector, "engagement_potential"))
+        .unwrap_or(live_activity);
+
+    let metadata_change_risk = person
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("change_risk"))
+        .and_then(|value| value.as_f64())
+        .map(normalize_ratio)
+        .unwrap_or(0.0);
+    let metadata_role_drift = person
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("role_drift_score"))
+        .and_then(|value| value.as_f64())
+        .map(normalize_ratio)
+        .unwrap_or(0.0);
+    let metadata_pain = person
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("pain_index"))
+        .and_then(|value| value.as_f64())
+        .map(normalize_ratio)
+        .unwrap_or(0.0);
+    let stored_risk = average_priority_metrics(
+        &person.priority_vector,
+        &["risk", "security", "compliance", "resilience"],
+    )
+    .unwrap_or(0.0);
+    let baseline_risk = 0.45 * influence_ratio
+        + 0.35 * role_exposure_risk(person.role_family.as_deref(), person.current_role.as_deref())
+        + 0.10 * if artifact_count > 0 { 1.0 } else { 0.0 }
+        + 0.10 * if person.primary_org_id.is_some() { 1.0 } else { 0.0 };
+    let live_risk = 0.40 * (warning_count as f64 / 6.0).min(1.0)
+        + 0.20 * (recent_change_count as f64 / 8.0).min(1.0)
+        + 0.15 * metadata_change_risk
+        + 0.15 * metadata_role_drift
+        + 0.10 * metadata_pain;
+    let risk_ratio = priority_metric(&person.priority_vector, "risk")
+        .unwrap_or((stored_risk * 0.25 + live_risk * 0.35 + baseline_risk * 0.40).clamp(0.0, 1.0));
+
+    let overall_ratio = priority_metric(&person.priority_vector, "overall").unwrap_or(
+        (0.35 * influence_ratio + 0.20 * connectivity_ratio + 0.20 * activity_ratio + 0.25 * risk_ratio)
+            .clamp(0.0, 1.0),
+    );
+
+    PriorityVector {
+        influence: normalize_percent(influence_ratio),
+        connectivity: normalize_percent(connectivity_ratio),
+        activity: normalize_percent(activity_ratio),
+        risk: normalize_percent(risk_ratio),
+        overall: normalize_percent(overall_ratio),
+    }
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct PersonListQuery {
     pub region: Option<String>,
@@ -248,7 +412,7 @@ pub async fn list_persons(
             let score = (row.priority_score * 100.0).round() as i64;
             if !match selected_priority.as_str() {
                 "A" => score >= 80,
-                "B" => score >= 50 && score < 80,
+                "B" => (50..80).contains(&score),
                 "C" => score < 50,
                 _ => true,
             } {
@@ -347,8 +511,8 @@ pub async fn list_persons(
             if !row.role_family.trim().is_empty() {
                 tags.push(row.role_family.clone());
             }
-            if row.artifact_count > 0 {
-                tags.push(format!("{} artifacts", row.artifact_count));
+            if !row.country.trim().is_empty() {
+                tags.push(row.country.clone());
             }
             PersonListCard {
                 id: row.id.to_string(),
@@ -419,11 +583,8 @@ pub async fn list_persons(
         search_query: selected_q,
     };
 
-    if is_htmx_request(&headers) {
-        tpl.into_response()
-    } else {
-        tpl.into_response()
-    }
+    let _ = is_htmx_request(&headers);
+    super::render_template(&tpl)
 }
 
 /// GET /persons/:id — person of interest detail page.
@@ -473,33 +634,15 @@ pub async fn get_person(
         }
     };
 
-    // Parse priority vector from JSON (convert 0-1 range to 0-100 for display)
-    let pv = person
-        .priority_vector
-        .as_ref()
-        .and_then(|v| {
-            Some(PriorityVector {
-                influence: normalize_percent(v.get("influence")?.as_f64()?),
-                connectivity: normalize_percent(v.get("connectivity")?.as_f64()?),
-                activity: normalize_percent(v.get("activity")?.as_f64()?),
-                risk: normalize_percent(v.get("risk")?.as_f64()?),
-                overall: normalize_percent(v.get("overall")?.as_f64()?),
-            })
-        })
-        .unwrap_or(PriorityVector {
-            influence: normalize_percent(person.influence_score.unwrap_or(0.0)),
-            connectivity: 0.0,
-            activity: 0.0,
-            risk: 0.0,
-            overall: normalize_percent(person.influence_score.unwrap_or(0.0)),
-        });
-
-    // Determine priority tier (values are 0-100 now)
-    let tier = match pv.overall {
-        x if x >= 80.0 => "critical",
-        x if x >= 60.0 => "high",
-        x if x >= 40.0 => "medium",
-        _ => "low",
+    let organization_name = match person.primary_org_id {
+        Some(org_id) => store
+            .get_company(org_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|company| company.name)
+            .unwrap_or_default(),
+        None => String::new(),
     };
 
     // Fetch role history
@@ -507,7 +650,7 @@ pub async fn get_person(
         .get_role_history_for_person(uuid)
         .await
         .unwrap_or_default();
-    let role_history: Vec<PersonRoleHistory> = rh_rows
+    let mut role_history: Vec<PersonRoleHistory> = rh_rows
         .iter()
         .map(|rh| PersonRoleHistory {
             company_name: rh.org_name.clone(),
@@ -521,7 +664,7 @@ pub async fn get_person(
         .collect();
 
     // Build affiliations from role history (current = no end_date)
-    let affiliations: Vec<PersonAffiliation> = rh_rows
+    let mut affiliations: Vec<PersonAffiliation> = rh_rows
         .iter()
         .map(|rh| PersonAffiliation {
             company_id: rh.org_id.map(|u| u.to_string()).unwrap_or_default(),
@@ -535,6 +678,45 @@ pub async fn get_person(
             is_current: rh.end_date.is_none(),
         })
         .collect();
+
+    if role_history.is_empty() && !organization_name.is_empty() {
+        role_history.push(PersonRoleHistory {
+            company_name: organization_name.clone(),
+            role: person.current_role.clone().unwrap_or_else(|| {
+                person
+                    .role_family
+                    .clone()
+                    .unwrap_or_else(|| "Tracked contact".to_string())
+            }),
+            start_date: person
+                .created_at
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default(),
+            end_date: None,
+        });
+    }
+
+    if affiliations.is_empty() && !organization_name.is_empty() {
+        affiliations.push(PersonAffiliation {
+            company_id: person
+                .primary_org_id
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+            company_name: organization_name.clone(),
+            role: person.current_role.clone().unwrap_or_else(|| {
+                person
+                    .role_family
+                    .clone()
+                    .unwrap_or_else(|| "Tracked contact".to_string())
+            }),
+            since: person
+                .created_at
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default(),
+            until: None,
+            is_current: true,
+        });
+    }
 
     // Fetch peers
     let rf = person.role_family.as_deref().unwrap_or("Unknown");
@@ -564,10 +746,38 @@ pub async fn get_person(
         .map(|rows| rows.len() as i64)
         .unwrap_or(0);
 
-    let recent_events = store
+    let artifact_count = store
+        .get_artifacts_for_person(uuid, 200)
+        .await
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+
+    let person_changes = store
         .get_person_changes(uuid, 10)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let recent_change_count = person_changes.len();
+
+    let pv = derive_profile_priority_vector(
+        &person,
+        artifact_count,
+        role_history.len(),
+        affiliations.len(),
+        peers.len(),
+        warning_count_person,
+        insight_count,
+        recent_change_count,
+    );
+
+    // Determine priority tier (values are 0-100 now)
+    let tier = match pv.overall {
+        x if x >= 80.0 => "critical",
+        x if x >= 60.0 => "high",
+        x if x >= 40.0 => "medium",
+        _ => "low",
+    };
+
+    let mut recent_events = person_changes
         .into_iter()
         .map(|change| PersonEvent {
             kind: change.change_type,
@@ -585,6 +795,55 @@ pub async fn get_person(
         })
         .collect::<Vec<_>>();
 
+    if recent_events.is_empty() {
+        let description = if !organization_name.is_empty() {
+            format!(
+                "Tracking {} at {} while profile enrichment continues.",
+                person
+                    .current_role
+                    .clone()
+                    .unwrap_or_else(|| "current role".to_string()),
+                organization_name
+            )
+        } else {
+            "Person profile is being tracked and awaits additional source-backed updates."
+                .to_string()
+        };
+        recent_events.push(PersonEvent {
+            kind: "profile_tracking".to_string(),
+            description,
+            date: person
+                .updated_at
+                .or(person.created_at)
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "—".to_string()),
+            source: "system".to_string(),
+        });
+    }
+
+    let bio = person.public_bio.clone().filter(|value| !value.trim().is_empty()).unwrap_or_else(|| {
+        let role = person
+            .current_role
+            .clone()
+            .or_else(|| person.role_family.clone())
+            .unwrap_or_else(|| "tracked contact".to_string());
+        let org_fragment = if organization_name.is_empty() {
+            "".to_string()
+        } else {
+            format!(" at {}", organization_name)
+        };
+        let region_fragment = person
+            .region
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .map(|region| format!(" in {}", region))
+            .unwrap_or_default();
+        format!(
+            "{} is currently tracked as {}{}{}. Source-backed enrichment is still in progress, so this profile may not yet include full role history, relationships, or activity context.",
+            person.name, role, org_fragment, region_fragment
+        )
+    });
+
     let tpl = PersonDetailPage {
         current_path: ctx.current_path,
         username: ctx.username,
@@ -594,7 +853,7 @@ pub async fn get_person(
         id: person.id.to_string(),
         name: person.name.clone(),
         title: person.current_role.clone().unwrap_or_default(),
-        bio: person.public_bio.clone().unwrap_or_default(),
+        bio,
         region: person.region.clone().unwrap_or_default(),
         priority_tier: tier.to_string(),
         priority_vector: pv,
@@ -614,9 +873,6 @@ pub async fn get_person(
             .unwrap_or_default(),
     };
 
-    if is_htmx_request(&headers) {
-        tpl.into_response()
-    } else {
-        tpl.into_response()
-    }
+    let _ = is_htmx_request(&headers);
+    super::render_template(&tpl)
 }

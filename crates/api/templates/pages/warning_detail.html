@@ -23,20 +23,20 @@
       <div class="mt-2 flex items-center gap-2">
         {% call m::severity_badge(severity) %}
         {% call m::region_badge(region) %}
-        {% if acknowledged %}<span class="text-[10px] font-bold text-green-600 uppercase">Acknowledged</span>{% endif %}
+        {% if acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>{% endif %}
       </div>
     </div>
     <div class="flex items-center gap-2">
       {% if !briefing_mode %}
-      <a href="/warnings/{{ id }}?briefing=true" class="apex-btn-sm border border-border bg-secondary text-[10px] font-bold uppercase px-3 py-1 rounded hover:bg-muted">Briefing</a>
+      <a href="/warnings/{{ id }}?briefing=true" class="apex-btn apex-btn-secondary">Briefing</a>
       {% else %}
-      <button type="button" onclick="window.print()" class="no-print apex-btn-sm border border-primary/40 bg-primary/10 text-[10px] font-bold uppercase px-3 py-1 rounded text-primary">Print / PDF</button>
+      <button type="button" class="no-print apex-btn apex-btn-primary">Print / PDF</button>
       {% endif %}
       {% if !acknowledged %}
       <button hx-post="/warnings/{{ id }}/acknowledge"
               hx-target="#ack-status"
               hx-swap="innerHTML"
-          class="no-print apex-btn-sm border border-green-500/30 bg-green-500/10 text-green-600 hover:bg-green-500/20 text-[10px] font-bold uppercase px-3 py-1 rounded">
+          class="no-print apex-btn apex-btn-success">
         Acknowledge
       </button>
       {% endif %}
@@ -44,9 +44,9 @@
               hx-target="#analysis-panel"
               hx-swap="outerHTML"
               hx-indicator="#analyze-spinner"
-          class="no-print apex-btn-sm border border-border bg-secondary text-[10px] font-bold uppercase px-3 py-1 rounded hover:bg-muted">
+          class="no-print apex-btn apex-btn-secondary">
         Analyze
-        <span id="analyze-spinner" class="htmx-indicator ml-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"></span>
+        <span id="analyze-spinner" class="htmx-indicator ml-1 apex-spinner-sm"></span>
       </button>
     </div>
   </div>
@@ -61,7 +61,7 @@
       <div><span class="font-black uppercase text-muted-foreground">Created</span><br>{{ created_at }}</div>
     </div>
     {% if let Some(outcome) = review_outcome %}
-    <div class="mt-4 rounded-sm border border-primary/20 bg-primary/5 p-3 text-sm">
+    <div class="apex-alert apex-alert-success mt-4 text-sm">
       <p class="text-[10px] font-black uppercase tracking-[0.1em] text-primary">Review Outcome</p>
       <p class="mt-1 font-semibold">{{ outcome }}</p>
       {% if let Some(note) = acknowledged_note %}
@@ -87,7 +87,7 @@
           Note
           <textarea name="note" rows="4" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="Capture analyst resolution context."></textarea>
         </label>
-        <button type="submit" class="rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Save Review</button>
+        <button type="submit" class="apex-btn apex-btn-primary">Save Review</button>
       </form>
     </div>
 
@@ -102,7 +102,7 @@
           Tags
           <input type="text" name="tags" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="supplier, escalation, follow-up">
         </label>
-        <button type="submit" class="rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Add Note</button>
+        <button type="submit" class="apex-btn apex-btn-secondary">Add Note</button>
       </form>
 
       {% if !annotations.is_empty() %}

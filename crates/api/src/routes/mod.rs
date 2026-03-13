@@ -40,6 +40,7 @@ pub mod paths {
     pub const ENDPOINTS: &str = "/api/endpoints";
     pub const OPENAPI_JSON: &str = "/api/openapi.json";
     pub const DOCS: &str = "/api/docs";
+    pub const FEATURES: &str = "/api/features";
     pub const WARNINGS: &str = "/api/warnings";
     pub const WARNING_DETAIL: &str = "/api/warnings/:id";
     pub const WARNING_ACKNOWLEDGE: &str = "/api/warnings/:id/acknowledge";
@@ -67,6 +68,7 @@ pub mod paths {
     pub const ADMIN_CRAWL_STATUS: &str = "/api/admin/crawl-status";
     pub const ADMIN_RECIPE_PERFORMANCE: &str = "/api/admin/recipe-performance";
     pub const ADMIN_POI_COVERAGE: &str = "/api/admin/poi-coverage";
+    pub const ADMIN_CALIBRATION: &str = "/api/admin/calibration";
     pub const ADMIN_LLM_GOVERNANCE: &str = "/api/admin/llm-governance";
     pub const ADMIN_TRIGGER_SCAN: &str = "/api/admin/trigger-scan";
     pub const REPLAY: &str = "/api/admin/replay";
@@ -186,6 +188,13 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: false,
             min_role: "public",
         },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::FEATURES,
+            description: "Public feature flags for client rollout",
+            auth_required: false,
+            min_role: "public",
+        },
         // Warnings
         EndpointDef {
             method: HttpMethod::Get,
@@ -209,11 +218,25 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             min_role: "admin",
         },
         EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::ADMIN_CALIBRATION,
+            description: "Inspect live alert calibration curve",
+            auth_required: true,
+            min_role: "admin",
+        },
+        EndpointDef {
             method: HttpMethod::Post,
             path: paths::WARNING_BULK_DELETE,
             description: "Delete warnings in bulk",
             auth_required: true,
             min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::WARNING_ANALYZE,
+            description: "Trigger AI analysis of a warning",
+            auth_required: true,
+            min_role: "analyst",
         },
         // Insights
         EndpointDef {
@@ -229,6 +252,20 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             description: "Export insights as CSV",
             auth_required: true,
             min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::INSIGHT_DETAIL,
+            description: "Get a single insight by ID",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::INSIGHT_ANALYZE,
+            description: "Trigger AI analysis of an insight",
+            auth_required: true,
+            min_role: "analyst",
         },
         EndpointDef {
             method: HttpMethod::Post,
@@ -701,31 +738,10 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "viewer",
         },
-        // Admin endpoints
+        // LLM Governance
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/api/admin/crawl-status",
-            description: "Crawl pipeline status overview",
-            auth_required: true,
-            min_role: "admin",
-        },
-        EndpointDef {
-            method: HttpMethod::Get,
-            path: "/api/admin/recipe-performance",
-            description: "Recipe performance metrics",
-            auth_required: true,
-            min_role: "admin",
-        },
-        EndpointDef {
-            method: HttpMethod::Get,
-            path: "/api/admin/poi-coverage",
-            description: "Person-of-interest data coverage stats",
-            auth_required: true,
-            min_role: "admin",
-        },
-        EndpointDef {
-            method: HttpMethod::Get,
-            path: "/api/admin/llm-governance",
+            path: paths::ADMIN_LLM_GOVERNANCE,
             description: "LLM governance overview for prompts, runs, and datasets",
             auth_required: true,
             min_role: "admin",
@@ -738,9 +754,17 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "viewer",
         },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/ws/calibration",
+            description: "Live calibration curve stream via WebSocket",
+            auth_required: false,
+            min_role: "public",
+        },
     ]
 }
 
+#[allow(clippy::disallowed_methods)]
 pub fn openapi_spec() -> Value {
     let mut paths = Map::new();
     for endpoint in all_endpoints() {
@@ -757,8 +781,7 @@ pub fn openapi_spec() -> Value {
                 endpoint
                     .description
                     .to_ascii_lowercase()
-                    .replace(' ', "_")
-                    .replace('-', "_"),
+                    .replace([' ', '-'], "_"),
             ),
         );
         operation.insert(
@@ -784,10 +807,10 @@ pub fn openapi_spec() -> Value {
             "responses".to_string(),
             json!({
                 "200": {"description": "Successful response"},
-                "400": {"description": "Bad request"},
-                "401": {"description": "Unauthorized"},
-                "403": {"description": "Forbidden"},
-                "500": {"description": "Internal error"}
+                "400": {"description": "Bad request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiErrorResponse"}}}},
+                "401": {"description": "Unauthorized", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiErrorResponse"}}}},
+                "403": {"description": "Forbidden", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiErrorResponse"}}}},
+                "500": {"description": "Internal error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiErrorResponse"}}}}
             }),
         );
 
@@ -822,6 +845,33 @@ pub fn openapi_spec() -> Value {
             "securitySchemes": {
                 "bearerAuth": {"type": "http", "scheme": "bearer"},
                 "apiKeyAuth": {"type": "apiKey", "in": "header", "name": "Authorization"}
+            },
+            "schemas": {
+                "ApiError": {
+                    "type": "object",
+                    "required": ["code", "message"],
+                    "properties": {
+                        "code": {"type": "string"},
+                        "message": {"type": "string"},
+                        "details": {"type": ["string", "null"]}
+                    }
+                },
+                "ApiErrorResponse": {
+                    "type": "object",
+                    "required": ["success", "error"],
+                    "properties": {
+                        "success": {"type": "boolean", "enum": [false]},
+                        "error": {"$ref": "#/components/schemas/ApiError"},
+                        "meta": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                "request_id": {"type": ["string", "null"]},
+                                "generated_at": {"type": ["string", "null"]},
+                                "duration_ms": {"type": ["integer", "null"]}
+                            }
+                        }
+                    }
+                }
             }
         },
         "paths": Value::Object(paths)
@@ -835,7 +885,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 81);
+        assert_eq!(eps.len(), 85);
     }
 
     #[test]
@@ -890,5 +940,39 @@ mod tests {
         assert_eq!(paths::API_PREFIX, "/api");
         assert!(paths::WARNINGS.starts_with("/api"));
         assert!(paths::ADMIN.starts_with("/api"));
+    }
+
+    #[test]
+    fn openapi_doc_includes_authenticated_warning_routes() {
+        let spec = openapi_spec();
+        let warning_get = &spec["paths"][paths::WARNINGS]["get"];
+
+        assert_eq!(warning_get["summary"], "List warnings with filters");
+        assert_eq!(warning_get["x-min-role"], "viewer");
+        assert!(warning_get["security"].is_array());
+    }
+
+    #[test]
+    fn openapi_doc_includes_error_schemas() {
+        let spec = openapi_spec();
+        let schemas = &spec["components"]["schemas"];
+
+        assert!(schemas["ApiError"].is_object());
+        assert!(schemas["ApiErrorResponse"].is_object());
+        assert_eq!(
+            spec["paths"][paths::WARNINGS]["get"]["responses"]["400"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ApiErrorResponse"
+        );
+    }
+
+    #[test]
+    fn openapi_doc_build_fails_when_handler_schema_is_missing() {
+        let spec = openapi_spec();
+        let paths_obj = spec["paths"].as_object().expect("paths object");
+
+        for endpoint in all_endpoints() {
+            assert!(paths_obj.contains_key(endpoint.path), "missing current path {}", endpoint.path);
+            assert!(paths_obj.contains_key(&versioned_path(endpoint.path)), "missing versioned path {}", endpoint.path);
+        }
     }
 }

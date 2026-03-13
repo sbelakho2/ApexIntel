@@ -129,6 +129,9 @@ pub struct PatternCandidate {
     pub signals: Vec<String>,
     pub best_lag_days: i32,
     pub effect_size: f64,
+    pub odds_ratio_ci_low: Option<f64>,
+    pub odds_ratio_ci_high: Option<f64>,
+    pub minimum_detectable_effect: f64,
     pub p_value: f64,
     pub q_value: f64,
     pub stability: f64,
@@ -251,6 +254,10 @@ pub fn fisher_p_value(a: u64, b: u64, c: u64, d: u64) -> f64 {
     apex_stats::fisher::p_value(a, b, c, d)
 }
 
+pub fn fisher_result(a: u64, b: u64, c: u64, d: u64) -> apex_stats::fisher::FisherExactResult {
+    apex_stats::fisher::analyze(a, b, c, d)
+}
+
 // ────────────────────────────────────────────
 // Stability analysis
 // ────────────────────────────────────────────
@@ -360,7 +367,12 @@ pub fn sweep_lags(
     window_days: i32,
 ) -> Option<PatternCandidate> {
     let effective_max = config.max_lag_days.min(MAX_SWEEP_LAG_DAYS); // B222
-    let mut best: Option<(i32, f64, f64, (u64, u64, u64, u64))> = None;
+    let mut best: Option<(
+        i32,
+        apex_stats::fisher::FisherExactResult,
+        f64,
+        (u64, u64, u64, u64),
+    )> = None;
 
     for lag in -effective_max..=effective_max {
         let (a, b, c, d) = build_contingency(outcomes, signals, lag, window_days, 0);
@@ -369,25 +381,30 @@ pub fn sweep_lags(
             continue;
         }
 
-        let p = fisher_p_value(a, b, c, d);
+        let fisher = fisher_result(a, b, c, d);
         let effect = odds_ratio(a, b, c, d);
+        let minimum_detectable_effect =
+            apex_stats::fisher::minimum_detectable_odds_ratio(a, b, c, d, config.max_p, 0.80);
 
-        if effect >= config.min_effect && p <= config.max_p {
+        if effect >= config.min_effect && fisher.p_value <= config.max_p {
             if best
                 .as_ref()
-                .map_or(true, |(_, best_effect, _, _)| effect > *best_effect)
+                .map_or(true, |(_, best_fisher, _, _)| effect > best_fisher.odds_ratio.min(100.0))
             {
-                best = Some((lag, effect, p, (a, b, c, d)));
+                best = Some((lag, fisher, minimum_detectable_effect, (a, b, c, d)));
             }
         }
     }
 
-    best.map(|(lag, effect, p, contingency)| PatternCandidate {
+    best.map(|(lag, fisher, minimum_detectable_effect, contingency)| PatternCandidate {
         outcome: "unknown_outcome".to_string(),
         signals: vec!["unknown_signal".to_string()],
         best_lag_days: lag,
-        effect_size: effect,
-        p_value: p,
+        effect_size: odds_ratio(contingency.0, contingency.1, contingency.2, contingency.3),
+        odds_ratio_ci_low: fisher.odds_ratio_ci_low,
+        odds_ratio_ci_high: fisher.odds_ratio_ci_high,
+        minimum_detectable_effect,
+        p_value: fisher.p_value,
         q_value: 0.0,
         stability: 0.0,
         entity_coverage: 0.0,
@@ -643,6 +660,9 @@ mod tests {
                 signals: vec!["s1".to_string()],
                 best_lag_days: 0,
                 effect_size: 2.0,
+                odds_ratio_ci_low: Some(1.1),
+                odds_ratio_ci_high: Some(3.5),
+                minimum_detectable_effect: 1.5,
                 p_value: 0.01,
                 q_value: 0.01,
                 stability: 0.8,
@@ -655,6 +675,9 @@ mod tests {
                 signals: vec!["s2".to_string()],
                 best_lag_days: 5,
                 effect_size: 5.0,
+                odds_ratio_ci_low: Some(2.4),
+                odds_ratio_ci_high: Some(9.2),
+                minimum_detectable_effect: 1.7,
                 p_value: 0.001,
                 q_value: 0.002,
                 stability: 0.9,
@@ -676,6 +699,9 @@ mod tests {
                 signals: vec![],
                 best_lag_days: 0,
                 effect_size: 2.0,
+                odds_ratio_ci_low: Some(1.1),
+                odds_ratio_ci_high: Some(3.5),
+                minimum_detectable_effect: 1.5,
                 p_value: 0.001,
                 q_value: 0.0,
                 stability: 0.8,
@@ -688,6 +714,9 @@ mod tests {
                 signals: vec![],
                 best_lag_days: 0,
                 effect_size: 1.5,
+                odds_ratio_ci_low: Some(0.9),
+                odds_ratio_ci_high: Some(2.8),
+                minimum_detectable_effect: 1.5,
                 p_value: 0.5,
                 q_value: 0.0,
                 stability: 0.6,
@@ -712,6 +741,9 @@ mod tests {
                 signals: vec!["s1".to_string()],
                 best_lag_days: 0,
                 effect_size: 2.0,
+                odds_ratio_ci_low: Some(1.1),
+                odds_ratio_ci_high: Some(3.5),
+                minimum_detectable_effect: 1.5,
                 p_value: 0.01,
                 q_value: 0.01,
                 stability: 0.8,
@@ -724,6 +756,9 @@ mod tests {
                 signals: vec!["s1".to_string()],
                 best_lag_days: 5,
                 effect_size: 1.5, // lower, should be removed
+                odds_ratio_ci_low: Some(0.9),
+                odds_ratio_ci_high: Some(2.8),
+                minimum_detectable_effect: 1.5,
                 p_value: 0.01,
                 q_value: 0.01,
                 stability: 0.7,
@@ -760,6 +795,40 @@ mod tests {
 
         let result = sweep_lags(&outcomes, &signals, &cfg, 30);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_sweep_lags_populates_fisher_metadata() {
+        let mut outcomes = Vec::new();
+        let mut signals = Vec::new();
+
+        for i in 0..20 {
+            let entity = format!("E{}", i);
+            signals.push((entity.clone(), (i * 5) as i64 * 86400));
+            outcomes.push((entity, (i * 5 + 1) as i64 * 86400));
+        }
+        for i in 20..28 {
+            let entity = format!("E{}", i);
+            signals.push((entity, (i * 5) as i64 * 86400));
+        }
+        for i in 28..36 {
+            let entity = format!("E{}", i);
+            outcomes.push((entity, (i * 5) as i64 * 86400));
+        }
+
+        let config = MinerConfig {
+            min_effect: 1.1,
+            max_p: 0.05,
+            ..MinerConfig::default()
+        };
+        let candidate = sweep_lags(&outcomes, &signals, &config, 5)
+            .expect("sweep_lags should find a valid candidate");
+
+        assert!(candidate.odds_ratio_ci_low.is_some());
+        assert!(candidate.odds_ratio_ci_high.is_some());
+        assert!(candidate.odds_ratio_ci_low.unwrap() < candidate.effect_size);
+        assert!(candidate.odds_ratio_ci_high.unwrap() > candidate.effect_size);
+        assert!(candidate.minimum_detectable_effect > 1.0);
     }
 
     #[test]
@@ -980,6 +1049,9 @@ mod tests {
             signals: vec![sig.to_string()],
             best_lag_days: 7,
             effect_size: 2.0,
+            odds_ratio_ci_low: Some(1.1),
+            odds_ratio_ci_high: Some(3.5),
+            minimum_detectable_effect: 1.5,
             p_value: 0.01,
             q_value: 0.01,
             stability: 0.8,
@@ -1005,6 +1077,9 @@ mod tests {
             signals: vec!["sig".to_string()],
             best_lag_days: 7,
             effect_size: effect,
+            odds_ratio_ci_low: Some(1.1),
+            odds_ratio_ci_high: Some(3.5),
+            minimum_detectable_effect: 1.5,
             p_value: 0.01,
             q_value: 0.01,
             stability: 0.8,

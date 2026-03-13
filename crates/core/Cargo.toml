@@ -19,6 +19,7 @@ tracing = { workspace = true }
 secrecy = { version = "0.10", features = ["serde"] }
 regex = { workspace = true }
 unicode-normalization = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

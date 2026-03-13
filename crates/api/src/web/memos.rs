@@ -109,5 +109,5 @@ pub async fn list_memos(
         total,
     };
 
-    tpl.into_response()
+    super::render_template(&tpl)
 }

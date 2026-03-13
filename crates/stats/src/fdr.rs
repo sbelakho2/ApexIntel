@@ -217,4 +217,13 @@ mod tests {
         assert!(q[3].is_nan(), "NaN at index 3 must survive");
         assert!(q[0].is_finite() && q[2].is_finite() && q[4].is_finite());
     }
+
+    #[test]
+    fn bh_fdr_monotonicity() {
+        let pvals = vec![0.001, 0.01, 0.025, 0.05, 0.1, 0.4, 0.8];
+        let qvals = bh_correct(&pvals);
+        for (p, q) in pvals.iter().zip(qvals.iter()) {
+            assert!(*q >= *p);
+        }
+    }
 }

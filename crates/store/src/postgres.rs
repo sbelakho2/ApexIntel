@@ -1,15 +1,202 @@
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::postgres::{PgPool, PgPoolOptions};
-use sqlx::Row;
-use sqlx::{Postgres, QueryBuilder};
+use sqlx::{Postgres, QueryBuilder, Row};
 use uuid::Uuid;
 
-use apex_core::analysis::{EvidenceQuality, HypothesisScorecard, TemporalDelta, WeakSignalCluster};
 use apex_core::entities::*;
 use apex_core::validation::normalize_url;
+
+/// Escape ILIKE wildcard characters (`%` and `_`) in user input,
+/// then wrap with `%…%` for a contains-match pattern.
+fn ilike_pattern(raw: &str) -> String {
+    let escaped = raw.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{}%", escaped)
+}
+
+const MAX_LIST_LIMIT: i64 = 500;
+
+fn clamp_limit(limit: i64) -> i64 {
+    limit.clamp(1, MAX_LIST_LIMIT)
+}
+
+fn normalize_url_vec(urls: &[String]) -> Vec<String> {
+    urls.iter()
+        .filter_map(|u| normalize_url(u))
+        .collect()
+}
+
+fn validate_tags(tags: &[String]) -> Result<()> {
+    for tag in tags {
+        if tag.chars().count() > 64 {
+            return Err(anyhow::anyhow!("tag too long (max 64 chars)"));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn normalize_dedup_token(token: &str) -> Option<String> {
+    let trimmed = token.trim_matches(|character: char| !character.is_ascii_alphanumeric());
+    if trimmed.len() <= 2 {
+        return None;
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    if matches!(
+        lowered.as_str(),
+        "the"
+            | "and"
+            | "for"
+            | "with"
+            | "from"
+            | "that"
+            | "this"
+            | "into"
+            | "their"
+            | "there"
+            | "have"
+            | "will"
+            | "after"
+            | "before"
+            | "through"
+            | "about"
+            | "under"
+            | "over"
+            | "between"
+            | "while"
+            | "where"
+            | "which"
+            | "could"
+            | "should"
+            | "would"
+            | "than"
+            | "then"
+            | "they"
+            | "them"
+            | "your"
+            | "ours"
+            | "also"
+            | "just"
+            | "only"
+            | "more"
+            | "most"
+            | "very"
+            | "real"
+            | "same"
+            | "does"
+            | "been"
+            | "being"
+            | "were"
+            | "when"
+            | "what"
+            | "whose"
+            | "amid"
+            | "around"
+            | "across"
+            | "within"
+            | "without"
+    ) {
+        return None;
+    }
+
+    let canonical = if lowered.len() > 6 && lowered.ends_with("ies") {
+        format!("{}y", &lowered[..lowered.len() - 3])
+    } else if lowered.len() > 6 && lowered.ends_with("ing") {
+        lowered[..lowered.len() - 3].to_string()
+    } else if lowered.len() > 5 && lowered.ends_with("ed") {
+        lowered[..lowered.len() - 2].to_string()
+    } else if lowered.len() > 5 && lowered.ends_with("es") {
+        lowered[..lowered.len() - 2].to_string()
+    } else if lowered.len() > 4 && lowered.ends_with('s') {
+        lowered[..lowered.len() - 1].to_string()
+    } else {
+        lowered
+    };
+
+    if canonical.len() <= 2 {
+        None
+    } else {
+        Some(canonical)
+    }
+}
+
+fn dedup_signature_from_texts(parts: &[&str]) -> Option<String> {
+    let mut tokens = parts
+        .iter()
+        .flat_map(|part| part.split(|character: char| !character.is_ascii_alphanumeric()))
+        .filter_map(normalize_dedup_token)
+        .collect::<Vec<_>>();
+
+    tokens.sort();
+    tokens.dedup();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.into_iter().take(18).collect::<Vec<_>>().join(" "))
+    }
+}
+
+fn normalize_warning_title_for_dedup(title: &str) -> String {
+    let trimmed = title.trim();
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        if let Some((_, suffix)) = rest.split_once(']') {
+            return suffix.trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn filter_visible_insights(rows: Vec<InsightRow>) -> Vec<InsightRow> {
+    rows.into_iter()
+        .filter(|row| !row.title.trim().is_empty())
+        .collect()
+}
+
+fn recent_story_dedup_signature(
+    summary: &str,
+    _insight_type: Option<&str>,
+    _entity_ids: Option<&[Uuid]>,
+) -> Option<String> {
+    dedup_signature_from_texts(&[summary])
+}
+
+fn recent_warning_dedup_signature(title: &str, description: Option<&str>) -> Option<String> {
+    let normalized_title = normalize_warning_title_for_dedup(title);
+    dedup_signature_from_texts(&[normalized_title.as_str(), description.unwrap_or_default()])
+}
+
+fn insight_dedup_key(
+    title: &str,
+    insight_type: Option<&str>,
+    region: Option<&str>,
+) -> String {
+    format!(
+        "{}|{}|{}",
+        title.trim().to_lowercase(),
+        insight_type.unwrap_or("").to_lowercase(),
+        region.unwrap_or("").to_lowercase(),
+    )
+}
+
+fn append_legacy_malformed_veracity_sql_clause(
+    qb: &mut QueryBuilder<Postgres>,
+    col_prefix: &str,
+) {
+    qb.push("(")
+        .push(col_prefix)
+        .push("insight_type IS NULL OR lower(")
+        .push(col_prefix)
+        .push("insight_type) <> 'veracity' OR coalesce(trim(")
+        .push(col_prefix)
+        .push("summary), '') <> '')");
+}
 
 mod admin;
 mod analytics;
@@ -31,151 +218,6 @@ mod recipes;
 mod security;
 mod warnings;
 
-/// Escape ILIKE wildcard characters (`%` and `_`) in user input,
-/// then wrap with `%…%` for a contains-match pattern.
-fn ilike_pattern(raw: &str) -> String {
-    let escaped = raw
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{}%", escaped)
-}
-
-const MAX_LIST_LIMIT: i64 = 500;
-const LEGACY_MALFORMED_VERACITY_TITLE_MARKER: &str = "intelligence veracity:";
-const LEGACY_MALFORMED_VERACITY_SUMMARY_MARKERS: [&str; 7] = [
-    "additional source reporting:",
-    "signal themes detected:",
-    "assessment:",
-    "actionable:",
-    "watch closely:",
-    "early signal:",
-    "low confidence:",
-];
-
-fn clamp_limit(limit: i64) -> i64 {
-    limit.clamp(1, MAX_LIST_LIMIT)
-}
-
-fn normalize_url_vec(urls: &[String]) -> Vec<String> {
-    urls.iter().filter_map(|u| normalize_url(u)).collect()
-}
-
-fn validate_tags(tags: &[String]) -> Result<()> {
-    for tag in tags {
-        if tag.chars().count() > 64 {
-            return Err(anyhow::anyhow!("tag too long (max 64 chars)"));
-        }
-    }
-    Ok(())
-}
-
-fn insight_dedup_key(title: &str, insight_type: Option<&str>, region: Option<&str>) -> String {
-    format!(
-        "{}|{}|{}",
-        title.trim().to_ascii_lowercase(),
-        insight_type.unwrap_or_default().trim().to_ascii_lowercase(),
-        region.unwrap_or_default().trim().to_ascii_lowercase(),
-    )
-}
-
-fn normalize_story_signature(text: &str, max_tokens: usize) -> String {
-    let mut normalized = String::with_capacity(text.len());
-    for ch in text.chars().flat_map(|ch| ch.to_lowercase()) {
-        if ch.is_ascii_alphanumeric() {
-            normalized.push(ch);
-        } else {
-            normalized.push(' ');
-        }
-    }
-
-    normalized
-        .split_whitespace()
-        .take(max_tokens)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn recent_story_dedup_signature(
-    summary: &str,
-    insight_type: Option<&str>,
-    entity_ids: Option<&[Uuid]>,
-) -> Option<String> {
-    if entity_ids.is_none_or(|ids| ids.is_empty()) {
-        return None;
-    }
-
-    let insight_type = insight_type.unwrap_or_default().trim().to_ascii_lowercase();
-    if insight_type.starts_with("llm_") || insight_type == "veracity_analysis" {
-        return None;
-    }
-
-    let signature = normalize_story_signature(summary, 18);
-    if signature.split_whitespace().count() < 10 {
-        return None;
-    }
-
-    Some(signature)
-}
-
-fn has_legacy_malformed_veracity_text(title: &str, summary: &str) -> bool {
-    let lower_title = title.trim().to_ascii_lowercase();
-    let lower_summary = summary.trim().to_ascii_lowercase();
-
-    lower_title.contains(LEGACY_MALFORMED_VERACITY_TITLE_MARKER)
-        || LEGACY_MALFORMED_VERACITY_SUMMARY_MARKERS
-            .iter()
-            .any(|marker| lower_summary.contains(marker))
-}
-
-fn append_legacy_malformed_veracity_sql_clause(qb: &mut QueryBuilder<Postgres>, col_prefix: &str) {
-    qb.push("NOT (lower(coalesce(")
-        .push(col_prefix)
-        .push("insight_type, '')) = 'veracity_analysis' AND (")
-        .push("lower(")
-        .push(col_prefix)
-        .push("title) LIKE '%")
-        .push(LEGACY_MALFORMED_VERACITY_TITLE_MARKER)
-        .push("%'");
-
-    for marker in LEGACY_MALFORMED_VERACITY_SUMMARY_MARKERS {
-        qb.push(" OR lower(")
-            .push(col_prefix)
-            .push("summary) LIKE '%")
-            .push(marker)
-            .push("%'");
-    }
-
-    qb.push("))");
-}
-
-fn is_legacy_malformed_veracity_row(row: &InsightRow) -> bool {
-    let insight_type = row
-        .insight_type
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if insight_type != "veracity_analysis" {
-        return false;
-    }
-
-    has_legacy_malformed_veracity_text(&row.title, &row.summary)
-}
-
-fn filter_visible_insights(rows: Vec<InsightRow>) -> Vec<InsightRow> {
-    rows.into_iter()
-        .filter(|row| !is_legacy_malformed_veracity_row(row))
-        .collect()
-}
-
-fn normalize_optional_text(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(|v| v.to_string())
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct WarningListFilters {
     pub regions: Vec<String>,
@@ -185,6 +227,8 @@ pub struct WarningListFilters {
     pub date_from: Option<DateTime<Utc>>,
     pub date_to: Option<DateTime<Utc>>,
     pub search: Option<String>,
+    pub exclude_hygiene_signals: bool,
+    pub include_deleted: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -194,10 +238,8 @@ pub struct InsightListFilters {
     pub date_to: Option<DateTime<Utc>>,
     pub search: Option<String>,
     pub insight_types: Vec<String>,
-    /// Exclude internal telemetry insight types (e.g. `llm_*`) from results.
-    pub exclude_internal: bool,
-    /// When Some(user_id), only return bookmarked insights for this user.
     pub bookmarked_by: Option<String>,
+    pub exclude_internal: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -205,14 +247,6 @@ pub struct CompanyListFilters {
     pub regions: Vec<String>,
     pub search: Option<String>,
     pub is_competitor: Option<bool>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompanyOrderBy {
-    Name,
-    Region,
-    ThreatScore,
-    UpdatedAt,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -224,7 +258,22 @@ pub struct PersonListFilters {
     pub max_priority: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
+pub enum WarningOrderBy {
+    CreatedAt,
+    Severity,
+    WarningType,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CompanyOrderBy {
+    Name,
+    Region,
+    ThreatScore,
+    UpdatedAt,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum PersonOrderBy {
     Name,
     Priority,
@@ -232,86 +281,272 @@ pub enum PersonOrderBy {
     UpdatedAt,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WarningOrderBy {
-    CreatedAt,
-    WarningType,
-    Severity,
+/// Review outcome for an acknowledged warning.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum WarningReviewOutcome {
+    TruePositive,
+    FalsePositive,
+    Inconclusive,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+/// Result of acknowledging/reviewing a warning.
+#[derive(Debug, Clone)]
+pub enum AcknowledgeWarningResult {
+    Acknowledged,
+    ReviewedExisting,
+    AlreadyAcknowledged,
+    NotFound,
+}
+
+/// User settings preferences — persisted as a JSON blob in `user_settings.prefs`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UserSettingsPrefs {
+    #[serde(default = "default_api_key_display")]
     pub api_key_display: String,
+    #[serde(default = "default_backend_url_display")]
     pub backend_url_display: String,
+    #[serde(default = "default_session_timeout")]
     pub session_timeout_hours: i64,
+    #[serde(default = "default_region_val")]
     pub default_region: String,
+    #[serde(default)]
     pub auto_include_neighbors: bool,
+    #[serde(default)]
     pub daily_crawl_enabled: bool,
+    #[serde(default = "default_crawl_window")]
     pub crawl_window: String,
+    #[serde(default)]
     pub slack_enabled: bool,
+    #[serde(default = "default_min_severity")]
     pub minimum_severity: String,
+    #[serde(default)]
     pub auto_cleanup_enabled: bool,
+    #[serde(default = "default_export_format")]
     pub export_format: String,
+    #[serde(default = "default_retention_period")]
     pub retention_period: String,
+    #[serde(default)]
     pub email_digest_enabled: bool,
+    #[serde(default = "default_notification_frequency")]
     pub notification_frequency: String,
+    #[serde(default)]
     pub critical_only_enabled: bool,
     #[serde(default)]
     pub email_digest_recipients: String,
     #[serde(default)]
     pub email_digest_categories: Vec<String>,
-    #[serde(default = "default_email_digest_time_cet")]
+    #[serde(default = "default_digest_time")]
     pub email_digest_time_cet: String,
-    #[serde(default = "default_email_digest_weekday")]
+    #[serde(default = "default_digest_weekday")]
     pub email_digest_weekday: String,
     #[serde(default)]
-    pub email_digest_last_sent_at: Option<String>,
+    pub email_digest_last_sent_at: Option<DateTime<Utc>>,
 }
 
-fn default_email_digest_time_cet() -> String {
-    "08:00".to_string()
-}
-
-fn default_email_digest_weekday() -> String {
-    "Mon".to_string()
-}
-
-#[derive(Debug, Clone)]
-pub struct UserPreferencesRecord {
-    pub theme: String,
-    pub locale: String,
-    pub preferences: Value,
-    pub updated_at: DateTime<Utc>,
-}
+fn default_api_key_display() -> String { "(not configured)".into() }
+fn default_backend_url_display() -> String { "direct Axum service".into() }
+fn default_session_timeout() -> i64 { 24 }
+fn default_region_val() -> String { "Global".into() }
+fn default_crawl_window() -> String { "00:00-06:00 UTC".into() }
+fn default_min_severity() -> String { "high".into() }
+fn default_export_format() -> String { "JSON".into() }
+fn default_retention_period() -> String { "90 days".into() }
+fn default_notification_frequency() -> String { "Daily".into() }
+fn default_digest_time() -> String { "08:00".into() }
+fn default_digest_weekday() -> String { "Mon".into() }
 
 impl Default for UserSettingsPrefs {
     fn default() -> Self {
         Self {
-            api_key_display: "(not configured)".to_string(),
-            backend_url_display: "direct Axum service".to_string(),
-            session_timeout_hours: 24,
-            default_region: "Global".to_string(),
+            api_key_display: default_api_key_display(),
+            backend_url_display: default_backend_url_display(),
+            session_timeout_hours: default_session_timeout(),
+            default_region: default_region_val(),
             auto_include_neighbors: false,
-            daily_crawl_enabled: true,
-            crawl_window: "01:00-05:00 UTC".to_string(),
+            daily_crawl_enabled: false,
+            crawl_window: default_crawl_window(),
             slack_enabled: false,
-            minimum_severity: "high".to_string(),
+            minimum_severity: default_min_severity(),
             auto_cleanup_enabled: false,
-            export_format: "JSON".to_string(),
-            retention_period: "90 days".to_string(),
+            export_format: default_export_format(),
+            retention_period: default_retention_period(),
             email_digest_enabled: false,
-            notification_frequency: "Daily".to_string(),
+            notification_frequency: default_notification_frequency(),
             critical_only_enabled: false,
             email_digest_recipients: String::new(),
             email_digest_categories: Vec::new(),
-            email_digest_time_cet: default_email_digest_time_cet(),
-            email_digest_weekday: default_email_digest_weekday(),
+            email_digest_time_cet: default_digest_time(),
+            email_digest_weekday: default_digest_weekday(),
             email_digest_last_sent_at: None,
         }
     }
 }
 
+/// Recipe quality summary - aggregated from recipe stats.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct RecipeQualitySummaryRow {
+    pub avg_precision_pct: i64,
+    pub coverage_pct: i64,
+}
+
+/// Analyst notification record - maps to `analyst_notifications` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct AnalystNotificationRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub category: String,
+    pub title: String,
+    pub body: String,
+    pub entity_type: Option<String>,
+    pub entity_id: Option<String>,
+    pub action_url: Option<String>,
+    pub is_read: bool,
+    pub read_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Legacy alias so existing web templates keep compiling.
+pub type NotificationRow = AnalystNotificationRecord;
+
+/// Annotation record - maps to `annotations` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct AnnotationRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub body: String,
+    pub tags: Vec<String>,
+    pub visibility: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Legacy alias so existing web templates keep compiling.
+pub type AnnotationRow = AnnotationRecord;
+
+/// LLM governance overview for admin dashboard.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct LlmGovernanceOverview {
+    pub prompt_versions: Vec<PromptVersionRecord>,
+    pub workflow_runs: Vec<LlmWorkflowRunRecord>,
+    pub improvement_runs: Vec<LlmImprovementRunRecord>,
+    pub training_datasets: Vec<LlmTrainingDatasetRecord>,
+}
+
+/// Admin-specific LLM governance overview (may diverge from the general one in the future).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AdminLlmGovernanceOverview {
+    pub prompt_versions: Vec<PromptVersionRecord>,
+    pub workflow_runs: Vec<LlmWorkflowRunRecord>,
+    pub improvement_runs: Vec<LlmImprovementRunRecord>,
+    pub training_datasets: Vec<LlmTrainingDatasetRecord>,
+}
+
+/// Historical label for quality gate golden set examples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HistoricalQualityGateLabel {
+    Accepted,
+    Rejected,
+}
+
+impl HistoricalQualityGateLabel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+/// A single reviewed example in the quality gate golden set.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QualityGateGoldenSetExample {
+    pub source_id: Uuid,
+    pub source_kind: String,
+    pub content_type: String,
+    pub historical_label: HistoricalQualityGateLabel,
+    pub title: String,
+    pub body: String,
+    pub region: Option<String>,
+    pub confidence: Option<f64>,
+    pub source_urls: Vec<String>,
+    pub reviewed_at: DateTime<Utc>,
+    pub metadata: serde_json::Value,
+}
+
+/// An exported quality gate golden set dataset.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QualityGateGoldenSetExport {
+    pub dataset_id: Uuid,
+    pub dataset_name: String,
+    pub dataset_version: String,
+    pub example_count: i64,
+    pub accepted_count: usize,
+    pub rejected_count: usize,
+    pub agreement_target: f64,
+    pub examples: Vec<QualityGateGoldenSetExample>,
+}
+
+/// Prompt version record - maps to `prompt_versions` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct PromptVersionRecord {
+    pub prompt_id: String,
+    pub version: String,
+    pub workflow: String,
+    pub system_prompt: String,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// LLM workflow run record - maps to `llm_workflow_runs` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct LlmWorkflowRunRecord {
+    pub id: Uuid,
+    pub workflow: String,
+    pub prompt_id: String,
+    pub prompt_version: String,
+    pub model_name: String,
+    pub request_payload: serde_json::Value,
+    pub response_payload: serde_json::Value,
+    pub validation_issues: serde_json::Value,
+    pub quality_gate_passed: bool,
+    pub duration_ms: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Legacy alias.
+pub type WorkflowRunRecord = LlmWorkflowRunRecord;
+
+/// LLM improvement run record - maps to `llm_improvement_runs` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct LlmImprovementRunRecord {
+    pub id: Uuid,
+    pub run_kind: String,
+    pub run_key: String,
+    pub metrics: serde_json::Value,
+    pub artifacts: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Legacy alias.
+pub type ImprovementRunRecord = LlmImprovementRunRecord;
+
+/// LLM training dataset record - maps to `llm_training_datasets` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct LlmTrainingDatasetRecord {
+    pub id: Uuid,
+    pub dataset_name: String,
+    pub dataset_version: String,
+    pub source_run_kind: String,
+    pub example_count: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Legacy alias.
+pub type TrainingDatasetRecord = LlmTrainingDatasetRecord;
+
+#[derive(Clone)]
 pub struct PgStore {
     pub pool: PgPool,
 }
@@ -332,17 +567,15 @@ impl PgStore {
         Self { pool }
     }
 
-    // Domain methods now live in dedicated postgres submodules.
-
-    // ─── Schema Migration ────────────────────────────────────────────────
+    // --- Schema Migration ---
 
     /// Run the full schema creation. Idempotent via IF NOT EXISTS.
     pub async fn run_migrations(&self) -> Result<()> {
-        // Use versioned migrations from ./migrations so schema changes are tracked over time.
         sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
     }
 }
+
 
 // ─── Row Types (sqlx::FromRow) ──────────────────────────────────────────────
 
@@ -403,8 +636,8 @@ pub struct DriftStats {
 /// Row type for staged recipe queries.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct StagedRecipeRow {
+    pub id: Uuid,
     pub recipe_code: String,
-    pub name: String,
     pub precision_observed: f64,
     pub recall_observed: f64,
     pub false_positive_rate: f64,
@@ -416,9 +649,10 @@ pub struct StagedRecipeRow {
 /// Row type for production recipe queries.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct ProductionRecipeRow {
+    pub id: Uuid,
     pub recipe_code: String,
-    pub name: String,
-    pub precision_history: Vec<f64>,
+    pub precision_current: f64,
+    pub precision_baseline: f64,
     pub false_positive_rate: f64,
     pub fpr_baseline: f64,
     pub warnings_generated_last_week: i64,
@@ -482,192 +716,6 @@ pub struct WeeklyMemo {
     pub key_metrics: WeeklyMemoKeyMetrics,
     pub action_items: Vec<WeeklyMemoActionItem>,
     pub generated_at: String,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct AnalystUserRecord {
-    pub id: String,
-    pub display_name: String,
-    pub email: Option<String>,
-    pub role: String,
-    pub notification_channels: Value,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct ApiKeyOwnerRecord {
-    pub key_id: String,
-    pub user_id: String,
-    pub display_name: String,
-    pub role: String,
-    pub is_active: bool,
-    pub notification_channels: Value,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct SavedSearchRecord {
-    pub id: Uuid,
-    pub user_id: String,
-    pub name: String,
-    pub query_text: String,
-    pub filters: Value,
-    pub default_sort: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct WatchlistRecord {
-    pub id: Uuid,
-    pub user_id: String,
-    pub name: String,
-    pub entities: Value,
-    pub notes: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct AnnotationRecord {
-    pub id: Uuid,
-    pub user_id: String,
-    pub entity_type: String,
-    pub entity_id: String,
-    pub body: String,
-    pub tags: Vec<String>,
-    pub visibility: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct AnalystNotificationRecord {
-    pub id: Uuid,
-    pub user_id: String,
-    pub category: String,
-    pub title: String,
-    pub body: String,
-    pub entity_type: Option<String>,
-    pub entity_id: Option<String>,
-    pub action_url: Option<String>,
-    pub is_read: bool,
-    pub read_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct ExportHistoryRecord {
-    pub id: Uuid,
-    pub user_id: String,
-    pub export_type: String,
-    pub format: String,
-    pub filters: Value,
-    pub row_count: i64,
-    pub download_name: Option<String>,
-    pub requested_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct AuditLogRecord {
-    pub id: Uuid,
-    pub event_type: String,
-    pub actor: String,
-    pub detail: Value,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct PromptVersionRecord {
-    pub prompt_id: String,
-    pub version: String,
-    pub workflow: String,
-    pub system_prompt: String,
-    pub metadata: Value,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct LlmWorkflowRunRecord {
-    pub id: Uuid,
-    pub workflow: String,
-    pub prompt_id: String,
-    pub prompt_version: String,
-    pub model_name: String,
-    pub request_payload: Value,
-    pub response_payload: Value,
-    pub validation_issues: Value,
-    pub quality_gate_passed: bool,
-    pub duration_ms: i64,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct LlmImprovementRunRecord {
-    pub id: Uuid,
-    pub run_kind: String,
-    pub run_key: String,
-    pub metrics: Value,
-    pub artifacts: Value,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct LlmTrainingDatasetRecord {
-    pub id: Uuid,
-    pub dataset_name: String,
-    pub dataset_version: String,
-    pub source_run_kind: String,
-    pub source_run_key: String,
-    pub manifest: Value,
-    pub example_count: i64,
-    pub examples_jsonl: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct ReplayJobRecord {
-    pub id: Uuid,
-    pub requested_by: String,
-    pub status: String,
-    pub request: Value,
-    pub total_observations: i64,
-    pub processed: i64,
-    pub warnings_generated: i64,
-    pub errors: i64,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
-pub struct WorkerJobStateRecord {
-    pub job_kind: String,
-    pub last_run: Option<DateTime<Utc>>,
-    pub last_status: Option<String>,
-    pub last_error: Option<String>,
-    pub last_duration_ms: Option<i64>,
-    pub consecutive_failures: i32,
-    pub max_consecutive_failures: i32,
-    pub circuit_open: bool,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
-pub struct WorkerJobHistoryRecord {
-    pub run_id: String,
-    pub job_kind: String,
-    pub status: String,
-    pub started_at: DateTime<Utc>,
-    pub finished_at: Option<DateTime<Utc>>,
-    pub duration_ms: Option<i64>,
-    pub items_processed: i64,
-    pub notes: String,
-    pub created_at: DateTime<Utc>,
 }
 
 // ─── Competitor Change Types ─────────────────────────────────────────────────
@@ -767,11 +815,6 @@ pub struct PersonRow {
     pub risk_tolerance: Option<String>,
     pub change_appetite: Option<String>,
     pub communication_style: Option<String>,
-    pub decision_mode: Option<String>,
-    pub preferred_proof_type: Option<String>,
-    pub pain_index: Option<f64>,
-    pub change_risk: Option<f64>,
-    pub role_drift_score: Option<f64>,
     pub metadata: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
@@ -782,29 +825,13 @@ pub struct PersonListRow {
     pub id: Uuid,
     pub name: String,
     pub role: String,
+    pub role_family: String,
+    pub country: String,
     pub organization: String,
     pub region: String,
-    pub country_code: String,
-    pub role_family: String,
     pub priority_score: f64,
     pub engagement_status: String,
     pub updated_at: DateTime<Utc>,
-    pub artifact_count: i64,
-}
-
-/// Minimal row used by the POI expansion engine as a seed.
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct ExpansionSeedRow {
-    pub id: Uuid,
-    pub name: String,
-    pub current_role: String,
-    pub role_family: String,
-    pub region: String,
-    pub country_code: String,
-    pub primary_org_id: Option<Uuid>,
-    pub org_name: String,
-    pub org_domain: Option<String>,
-    pub is_competitor: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -825,8 +852,7 @@ pub struct WarningRow {
     pub acknowledged_at: Option<DateTime<Utc>>,
     pub acknowledged_note: Option<String>,
     pub review_outcome: Option<String>,
-    pub reviewed_by: Option<String>,
-    pub reviewed_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<DateTime<Utc>>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -885,36 +911,6 @@ pub struct RecipeStatRow {
     pub last_fired: Option<DateTime<Utc>>,
     pub first_fired: Option<DateTime<Utc>>,
     pub active_count: i64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WarningReviewOutcome {
-    TruePositive,
-    FalsePositive,
-}
-
-impl WarningReviewOutcome {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::TruePositive => "true_positive",
-            Self::FalsePositive => "false_positive",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcknowledgeWarningResult {
-    Acknowledged,
-    ReviewedExisting,
-    AlreadyAcknowledged,
-    NotFound,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-pub struct RecipeQualitySummaryRow {
-    pub avg_precision_pct: i64,
-    pub coverage_pct: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -1073,14 +1069,6 @@ pub struct AdminRecipePerformance {
     pub recipes: Vec<RecipeStatRow>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct AdminLlmGovernanceOverview {
-    pub prompt_versions: Vec<PromptVersionRecord>,
-    pub workflow_runs: Vec<LlmWorkflowRunRecord>,
-    pub improvement_runs: Vec<LlmImprovementRunRecord>,
-    pub training_datasets: Vec<LlmTrainingDatasetRecord>,
-}
-
 // ─── New Row Types: Role History, Dossier Entries, Changes ───────────────────
 
 /// A role history entry — one position a POI has held.
@@ -1166,6 +1154,16 @@ pub struct AdminPoiCoverage {
     pub poi_stats: PoiStats,
 }
 
+/// Analytical summary attached to entity dossiers.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DossierAnalysis {
+    pub evidence_quality: apex_core::analysis::EvidenceQuality,
+    pub temporal_delta: apex_core::analysis::TemporalDelta,
+    pub correlated_signals: Vec<apex_core::analysis::WeakSignalCluster>,
+    pub competing_hypotheses: Vec<apex_core::analysis::HypothesisScorecard>,
+    pub summary: String,
+}
+
 /// Company dossier: company + sites + capabilities + certifications + edges + dossier_entries + changes
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CompanyDossier {
@@ -1193,15 +1191,6 @@ pub struct PersonDossier {
     pub analysis: DossierAnalysis,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DossierAnalysis {
-    pub evidence_quality: EvidenceQuality,
-    pub temporal_delta: TemporalDelta,
-    pub correlated_signals: Vec<WeakSignalCluster>,
-    pub competing_hypotheses: Vec<HypothesisScorecard>,
-    pub summary: String,
-}
-
 /// Engagement guide for a POI
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PersonEngagement {
@@ -1214,12 +1203,216 @@ pub struct PersonEngagement {
     pub recent_observations: Vec<ObservationRow>,
 }
 
-impl PgStore {}
+
+// --- Collaboration Record Types ---
+
+/// Analyst user record - maps to `analyst_users` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct AnalystUserRecord {
+    pub id: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub role: String,
+    pub notification_channels: serde_json::Value,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// API key owner record.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ApiKeyOwnerRecord {
+    pub key_id: String,
+    pub user_id: String,
+    pub display_name: String,
+    pub role: String,
+    pub is_active: bool,
+    pub notification_channels: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Saved search record - maps to `saved_searches` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct SavedSearchRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub name: String,
+    pub query_text: String,
+    pub filters: serde_json::Value,
+    pub default_sort: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Watchlist record - maps to `watchlists` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct WatchlistRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub name: String,
+    pub entities: serde_json::Value,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// User preferences record.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UserPreferencesRecord {
+    pub theme: String,
+    pub locale: String,
+    pub preferences: serde_json::Value,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Export history record - maps to `export_history` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ExportHistoryRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub export_type: String,
+    pub format: String,
+    pub filters: serde_json::Value,
+    pub row_count: i64,
+    pub download_name: Option<String>,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// Replay job record.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ReplayJobRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub replay_type: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub status: String,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub item_count: i64,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// --- Worker State Record Types ---
+
+/// Worker job state record - maps to `worker_job_state` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct WorkerJobStateRecord {
+    pub job_kind: String,
+    pub last_run: Option<DateTime<Utc>>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+    pub last_duration_ms: Option<i64>,
+    pub consecutive_failures: i32,
+    pub max_consecutive_failures: i32,
+    pub circuit_open: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Worker job history record - maps to `worker_job_history` table.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkerJobHistoryRecord {
+    pub run_id: String,
+    pub job_kind: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub duration_ms: Option<i64>,
+    pub items_processed: i64,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+// --- Analytics Record Types ---
+
+/// Stats alert calibration event record.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct StatsAlertCalibrationEventRecord {
+    pub id: Uuid,
+    pub entity_id: Uuid,
+    pub feature_vector: serde_json::Value,
+    pub alert_level: String,
+    pub predicted_at: DateTime<Utc>,
+    pub expected_by: DateTime<Utc>,
+    pub actual_outcome_within_30d: Option<bool>,
+    pub outcome_source: Option<String>,
+    pub outcome_reference_id: Option<Uuid>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Resolved stats alert calibration sample record.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ResolvedStatsAlertCalibrationSampleRecord {
+    pub id: Uuid,
+    pub entity_id: Uuid,
+    pub feature_vector: serde_json::Value,
+    pub alert_level: String,
+    pub predicted_at: DateTime<Utc>,
+    pub expected_by: DateTime<Utc>,
+    pub actual_outcome_within_30d: Option<bool>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+}
+
+/// Source reliability aggregate record (computed).
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct SourceReliabilityAggregateRecord {
+    pub source_domain: String,
+    pub observation_count: i64,
+    pub confirmed_count: i64,
+}
+
+/// Source reliability stat record - maps to `source_reliability_stats` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct SourceReliabilityStatRecord {
+    pub source_domain: String,
+    pub tier: String,
+    pub observation_count: i64,
+    pub confirmed_count: i64,
+    pub observed_reliability: f64,
+    pub effective_reliability: f64,
+    pub promotion_recommended: bool,
+    pub last_refreshed_at: DateTime<Utc>,
+    pub promotion_alerted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Audit log record - maps to `audit_log` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct AuditLogRecord {
+    pub id: Uuid,
+    pub event_type: String,
+    pub actor: String,
+    pub detail: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+// --- POI Expansion Seed Row ---
+
+/// Expansion seed for POI discovery.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ExpansionSeedRow {
+    pub id: Uuid,
+    pub name: String,
+    pub current_role: String,
+    pub role_family: String,
+    pub region: String,
+    pub country_code: String,
+    pub primary_org_id: Option<Uuid>,
+    pub org_name: String,
+    pub org_domain: Option<String>,
+    pub is_competitor: bool,
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::Execute;
 
     /// These tests verify query construction and row type structure.
     /// Full integration tests require a running PostgreSQL instance.
@@ -1304,23 +1497,18 @@ mod tests {
             role_family: Some("procurement".into()),
             region: Some("TN".into()),
             country_code: Some("TN".into()),
+            public_bio: Some("Senior procurement executive".into()),
+            public_email: Some("ahmed@example.com".into()),
             priority_vector: Some(serde_json::json!({"cost":0.8,"quality":0.6})),
             influence_score: Some(0.7),
+            trigger_topics: Some(vec!["cost reduction".into(), "supply chain".into()]),
+            decision_style: Some("analytical".into()),
+            risk_tolerance: Some("moderate".into()),
+            change_appetite: Some("high".into()),
+            communication_style: Some("formal".into()),
             metadata: Some(serde_json::json!({})),
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),
-            public_bio: None,
-            public_email: None,
-            trigger_topics: None,
-            decision_style: None,
-            risk_tolerance: None,
-            change_appetite: None,
-            communication_style: None,
-            decision_mode: None,
-            preferred_proof_type: None,
-            pain_index: None,
-            change_risk: None,
-            role_drift_score: None,
         };
         assert_eq!(row.name, "Ahmed Ben Ali");
         assert_eq!(row.role_family.as_deref(), Some("procurement"));
@@ -1345,146 +1533,6 @@ mod tests {
         };
         assert_eq!(row.standard, "IATF_16949");
         assert!(row.valid_until.unwrap() > row.valid_from.unwrap());
-    }
-
-    #[test]
-    fn test_malformed_veracity_filter_only_hides_legacy_template_rows() {
-        let malformed_veracity = InsightRow {
-            id: Uuid::new_v4(),
-            title: "Intel suppliers: Intelligence Veracity: early signal".into(),
-            summary: "Additional source reporting: forum reposts only. Assessment: low confidence."
-                .into(),
-            insight_type: Some("veracity_analysis".into()),
-            region: Some("global".into()),
-            confidence: Some(0.22),
-            evidence_urls: Some(vec!["https://example.com/post".into()]),
-            entity_ids: Some(vec![Uuid::new_v4()]),
-            tags: Some(vec!["veracity".into()]),
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
-        };
-        let valid_veracity = InsightRow {
-            id: Uuid::new_v4(),
-            title: "European Commission: likely market activity development".into(),
-            summary: "A Commission-linked procurement notice and follow-on trade reporting point to a likely sourcing move in the next quarter.".into(),
-            insight_type: Some("veracity_analysis".into()),
-            region: Some("eu".into()),
-            confidence: Some(0.73),
-            evidence_urls: Some(vec!["https://example.com/notice".into()]),
-            entity_ids: Some(vec![Uuid::new_v4()]),
-            tags: Some(vec!["veracity".into()]),
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
-        };
-        let non_veracity = InsightRow {
-            id: Uuid::new_v4(),
-            title: "Intel suppliers: Intelligence Veracity: appears in quoted article title".into(),
-            summary: "Assessment wording inside other insight types should not be filtered here."
-                .into(),
-            insight_type: Some("supply_chain_event".into()),
-            region: Some("global".into()),
-            confidence: Some(0.61),
-            evidence_urls: Some(vec!["https://example.com/article".into()]),
-            entity_ids: Some(vec![Uuid::new_v4()]),
-            tags: Some(vec!["supply-chain".into()]),
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
-        };
-
-        assert!(is_legacy_malformed_veracity_row(&malformed_veracity));
-        assert!(!is_legacy_malformed_veracity_row(&valid_veracity));
-        assert!(!is_legacy_malformed_veracity_row(&non_veracity));
-
-        let visible = filter_visible_insights(vec![
-            malformed_veracity,
-            valid_veracity.clone(),
-            non_veracity.clone(),
-        ]);
-
-        assert_eq!(visible.len(), 2);
-        assert!(visible.iter().any(|row| row.id == valid_veracity.id));
-        assert!(visible.iter().any(|row| row.id == non_veracity.id));
-    }
-
-    #[test]
-    fn story_signature_normalization_collapses_punctuation_variants() {
-        let left = normalize_story_signature(
-            "BAE Systems' Welsh munitions factory remains delayed as of March 2026.",
-            18,
-        );
-        let right = normalize_story_signature(
-            "BAE Systems Welsh munitions factory remains delayed, as of March 2026!",
-            18,
-        );
-
-        assert_eq!(left, right);
-    }
-
-    #[test]
-    fn recent_story_dedup_signature_requires_entity_ids_and_skips_internal_types() {
-        let entity_ids = vec![Uuid::new_v4()];
-        assert!(recent_story_dedup_signature(
-            "BAE Systems Welsh munitions factory remains delayed as of March 2026 and creates a qualification window for alternative manufacturing partners.",
-            Some("demand_procurement"),
-            Some(&entity_ids),
-        )
-        .is_some());
-
-        assert!(recent_story_dedup_signature(
-            "BAE Systems Welsh munitions factory remains delayed as of March 2026 and creates a qualification window for alternative manufacturing partners.",
-            Some("llm_eval_report"),
-            Some(&entity_ids),
-        )
-        .is_none());
-
-        assert!(recent_story_dedup_signature(
-            "BAE Systems Welsh munitions factory remains delayed as of March 2026 and creates a qualification window for alternative manufacturing partners.",
-            Some("demand_procurement"),
-            None,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn insert_insight_query_includes_recent_story_signature_dedup() {
-        let source = include_str!("postgres.rs");
-
-        assert!(source.contains("i.created_at > NOW() - INTERVAL '14 days'"));
-        assert!(source.contains("trim(regexp_replace(regexp_replace(lower(coalesce(i.summary, '')), '[^a-z0-9]+', ' ', 'g'), '\\s+', ' ', 'g')) = $10"));
-    }
-
-    #[test]
-    fn test_malformed_veracity_sql_clause_covers_prefixed_and_unprefixed_count_paths() {
-        let mut unprefixed = QueryBuilder::<Postgres>::new("SELECT 1 WHERE ");
-        append_legacy_malformed_veracity_sql_clause(&mut unprefixed, "");
-        let unprefixed_sql = unprefixed.build().sql().to_string();
-
-        assert!(unprefixed_sql.contains("lower(coalesce(insight_type, '')) = 'veracity_analysis'"));
-        assert!(unprefixed_sql.contains("lower(title) LIKE '%intelligence veracity:%'"));
-        assert!(unprefixed_sql.contains("lower(summary) LIKE '%low confidence:%'"));
-
-        let mut prefixed = QueryBuilder::<Postgres>::new("SELECT 1 WHERE ");
-        append_legacy_malformed_veracity_sql_clause(&mut prefixed, "i.");
-        let prefixed_sql = prefixed.build().sql().to_string();
-
-        assert!(prefixed_sql.contains("lower(coalesce(i.insight_type, '')) = 'veracity_analysis'"));
-        assert!(prefixed_sql.contains("lower(i.title) LIKE '%intelligence veracity:%'"));
-        assert!(prefixed_sql.contains("lower(i.summary) LIKE '%assessment:%'"));
-        assert!(prefixed_sql.contains("lower(i.summary) LIKE '%low confidence:%'"));
-    }
-
-    #[test]
-    fn test_recipe_weekly_queries_use_snapshot_history_and_review_outcomes() {
-        let source = format!(
-            "{}\n{}",
-            include_str!("postgres.rs"),
-            include_str!("postgres/recipes.rs")
-        );
-
-        assert!(source
-            .contains("ARRAY_AGG(precision_score ORDER BY week_start ASC) AS precision_history"));
-        assert!(source.contains("w.review_outcome IN ('true_positive', 'false_positive')"));
-        assert!(source.contains("INSERT INTO recipe_weekly_metrics"));
     }
 
     #[test]

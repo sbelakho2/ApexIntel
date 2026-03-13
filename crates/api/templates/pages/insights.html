@@ -14,26 +14,26 @@
 {% endblock %}
 
 {% block content %}
-{% call m::page_header("Insight Feed", "eye", "Ranked insights with evidence links and context.", "<a href=\"/memos\" class=\"rounded-sm border border-border bg-secondary px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] hover:bg-muted\">Use AI</a>") %}
+{% call m::page_header("Insight Feed", "eye", "Ranked insights with evidence links and context.", "<a href=\"/memos\" class=\"apex-action-link px-3 py-1.5 tracking-[0.12em]\">Use AI</a>") %}
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-orange"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Total Insights</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ total }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-red"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">High Impact</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ high_impact_count }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-green"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Confidence</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_confidence_pct }}%</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-steel"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Medium Impact</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ medium_impact_count }}</p>
   </div>
@@ -41,44 +41,13 @@
 
 {# ── Insight Generation Trend (30d) ── #}
 <div class="apex-card p-4 mb-6">
-  <div class="mb-3 flex items-center justify-between">
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">Insight Generation (30d)</h2>
   </div>
-  <div style="height:200px;position:relative">
-    <canvas id="insight-trend-chart"></canvas>
+  <div class="apex-chart-frame apex-chart-frame-dense">
+    {% call m::insight_trend_chart(insight_trend) %}
   </div>
-  <script>
-  (function(){
-    var ctx = document.getElementById('insight-trend-chart');
-    if (!ctx) return;
-    if (ctx._chart) { ctx._chart.destroy(); }
-    ctx._chart = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: [{% for d in insight_trend %}'{{ d.date_label }}',{% endfor %}],
-        datasets: [
-          { label: 'Demand',      data: [{% for d in insight_trend %}{{ d.demand }},{% endfor %}],      backgroundColor: '#FF8C00', stack: 'i' },
-          { label: 'Competitive', data: [{% for d in insight_trend %}{{ d.competitive }},{% endfor %}], backgroundColor: '#D62D2D', stack: 'i' },
-          { label: 'Supply',      data: [{% for d in insight_trend %}{{ d.supply }},{% endfor %}],      backgroundColor: '#FFBE00', stack: 'i' },
-          { label: 'Security',    data: [{% for d in insight_trend %}{{ d.security }},{% endfor %}],    backgroundColor: '#4A90E2', stack: 'i' },
-          { label: 'Macro',       data: [{% for d in insight_trend %}{{ d.macro_s }},{% endfor %}],     backgroundColor: '#2D8C3C', stack: 'i' }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 12, padding: 6 } },
-          tooltip: { mode: 'index' }
-        },
-        scales: {
-          x: { stacked: true, ticks: { font: { size: 9 }, maxRotation: 45, maxTicksLimit: 10 } },
-          y: { stacked: true, beginAtZero: true, ticks: { font: { size: 9 } } }
-        }
-      }
-    });
-  })();
-  </script>
+  <p class="mt-3 text-[11px] text-muted-foreground" data-chart-detail>Tap or focus a bar for exact values.</p>
 </div>
 
 <div class="mb-4 apex-card p-3">
@@ -93,40 +62,40 @@
     <input type="hidden" name="sort" value="{{ sort_field }}" />
     <input type="hidden" name="dir" value="{{ sort_dir }}" />
     {% if show_bookmarked_only %}<input type="hidden" name="bookmarked" value="true" />{% endif %}
-    <button type="submit" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Apply</button>
+    <button type="submit" class="apex-action-link">Apply</button>
     {% if !search_query.is_empty() %}
-    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Clear</a>
+    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Clear</a>
     {% endif %}
   </form>
 
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Type:</span>
     {% for chip in category_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
     <span class="mx-2 h-4 w-px bg-border"></span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Impact:</span>
     {% for chip in impact_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
     <span class="mx-2 h-4 w-px bg-border"></span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Scope:</span>
     {% for chip in bookmarked_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if chip.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ chip.label }}</a>
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
     <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
-    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>
   </div>
 </div>
 
 <div class="apex-card overflow-hidden mb-4">
-  <div class="flex items-center justify-between border-b border-border px-4 py-3">
+  <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
     <div>
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
       <p class="mt-1 text-[11px] text-muted-foreground">Dense insight view for triage, sorting, and export-friendly scanning.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
-      <a href="/api/insights/export" class="rounded-sm border border-border bg-secondary px-2 py-1 text-muted-foreground hover:text-foreground">CSV</a>
+      <a href="/api/insights/export" class="apex-action-link">CSV</a>
     </div>
   </div>
   <div class="overflow-x-auto">
@@ -144,14 +113,14 @@
       </thead>
       <tbody>
         {% for i in insights %}
-        <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/insights/{{ i.id }}">
-          <td class="px-4 py-3 font-semibold">{{ i.title }}</td>
+        <tr class="cursor-pointer border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/insights/{{ i.id }}">
+          <td class="px-4 py-3 font-semibold"><a href="/insights/{{ i.id }}" class="hover:underline">{{ i.title }}</a></td>
           <td class="px-4 py-3"><span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span></td>
           <td class="px-4 py-3 text-muted-foreground">{{ i.company_name }}</td>
           <td class="px-4 py-3 text-right font-bold tabular-nums">{{ i.confidence_pct }}%</td>
           <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ i.created_at }}</td>
           <td class="px-4 py-3 text-muted-foreground">{% if i.tags.is_empty() %}—{% else %}{% for tag in i.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
-          <td class="px-4 py-3">{% if i.bookmarked %}<span class="text-yellow-500">Saved</span>{% else %}<span class="text-muted-foreground">No</span>{% endif %}</td>
+          <td class="px-4 py-3">{% if i.bookmarked %}<span class="apex-text-warning">Saved</span>{% else %}<span class="text-muted-foreground">No</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -165,7 +134,7 @@
   {% else %}
     <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</p>
     {% for i in insights %}
-      <div class="apex-card p-4 hover:bg-muted/30 transition-colors" id="insight-card-{{ i.id }}">
+      <div class="apex-card cursor-pointer p-4 hover:bg-muted/30 transition-colors" id="insight-card-{{ i.id }}" tabindex="0" data-card-link="/insights/{{ i.id }}">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
             <a href="/insights/{{ i.id }}" class="text-sm font-semibold hover:underline">{{ i.title }}</a>
@@ -175,7 +144,7 @@
             </div>
           </div>
           <button hx-post="/insights/{{ i.id }}/bookmark" hx-target="#insight-card-{{ i.id }}" hx-swap="outerHTML"
-            class="shrink-0 rounded-sm border border-border p-1.5 hover:bg-muted {% if i.bookmarked %}text-yellow-500{% else %}text-muted-foreground{% endif %}"
+            class="shrink-0 rounded-sm border border-border p-1.5 hover:bg-muted {% if i.bookmarked %}apex-text-warning{% else %}text-muted-foreground{% endif %}"
             title="{% if i.bookmarked %}Remove bookmark{% else %}Bookmark{% endif %}">
             <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="{% if i.bookmarked %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
           </button>

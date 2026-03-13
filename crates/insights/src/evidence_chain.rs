@@ -23,6 +23,7 @@
 
 use anyhow::{bail, Context, Result};
 use apex_llm::LlmClient;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::warn;
@@ -59,6 +60,8 @@ pub struct EvidenceNode {
     pub citation: Option<String>,
     /// Optional entity this claim pertains to.
     pub entity_id: Option<String>,
+    /// Observation time used for freshness-aware propagation.
+    pub observed_at: Option<DateTime<Utc>>,
 }
 
 impl EvidenceNode {
@@ -71,6 +74,7 @@ impl EvidenceNode {
             confidence: confidence.clamp(0.0, 1.0),
             citation: None,
             entity_id: None,
+            observed_at: None,
         }
     }
 
@@ -83,6 +87,7 @@ impl EvidenceNode {
             confidence: initial_confidence.clamp(0.0, 1.0),
             citation: None,
             entity_id: None,
+            observed_at: None,
         }
     }
 
@@ -95,6 +100,7 @@ impl EvidenceNode {
             confidence: 0.0,
             citation: None,
             entity_id: None,
+            observed_at: None,
         }
     }
 
@@ -107,12 +113,18 @@ impl EvidenceNode {
             confidence: confidence.clamp(0.0, 1.0),
             citation: None,
             entity_id: None,
+            observed_at: None,
         }
     }
 
     /// Builder-style source setter.
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
+        self
+    }
+
+    pub fn with_observed_at(mut self, observed_at: DateTime<Utc>) -> Self {
+        self.observed_at = Some(observed_at);
         self
     }
 }
@@ -199,6 +211,10 @@ impl EvidenceChain {
     /// Inference/Conclusion nodes through `Supports`, `WeaklySupports`, and
     /// `Cites` edges. `Contradicts` edges reduce the target confidence.
     pub fn propagate_confidence(&mut self) {
+        self.propagate_confidence_at(Utc::now());
+    }
+
+    pub fn propagate_confidence_at(&mut self, now: DateTime<Utc>) {
         // Build adjacency list (from → [(to, edge_index)])
         let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
         for (i, edge) in self.edges.iter().enumerate() {
@@ -242,12 +258,13 @@ impl EvidenceChain {
             if let Some(edge_indices) = adj.get(&src).cloned() {
                 for ei in edge_indices {
                     let edge = &self.edges[ei];
+                    let freshness = node_freshness_weight(&self.nodes[src], now);
                     let delta = match edge.kind {
-                        EdgeKind::Supports | EdgeKind::Cites => src_conf * edge.weight,
+                        EdgeKind::Supports | EdgeKind::Cites => src_conf * edge.weight * freshness,
                         EdgeKind::WeaklySupports | EdgeKind::Refines => {
-                            src_conf * edge.weight * 0.5
+                            src_conf * edge.weight * 0.5 * freshness
                         }
-                        EdgeKind::Contradicts => -(src_conf * edge.weight),
+                        EdgeKind::Contradicts => -(src_conf * edge.weight * freshness),
                     };
                     contributions.entry(edge.to).or_default().push(delta);
 
@@ -316,14 +333,31 @@ impl EvidenceChain {
                         .get(e.from)
                         .map(|n| n.confidence >= threshold)
                         .unwrap_or(false)
-                    && self
-                        .nodes
-                        .get(e.to)
-                        .map(|n| n.confidence >= threshold)
-                        .unwrap_or(false)
+                    && self.node_has_supported_claim_confidence(e.to, threshold)
             })
             .map(|e| (e.from, e.to))
             .collect()
+    }
+
+    fn node_has_supported_claim_confidence(&self, node_idx: usize, threshold: f64) -> bool {
+        if self
+            .nodes
+            .get(node_idx)
+            .map(|n| n.confidence >= threshold)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+
+        self.edges
+            .iter()
+            .filter(|edge| edge.to == node_idx && edge.kind == EdgeKind::Supports)
+            .any(|edge| {
+                self.nodes
+                    .get(edge.from)
+                    .map(|source| source.confidence * edge.weight >= threshold)
+                    .unwrap_or(false)
+            })
     }
 
     // ── Chain strength ───────────────────────────────────────────────────────
@@ -370,6 +404,18 @@ impl EvidenceChain {
             has_contradictions: !self.contradictions(0.5).is_empty(),
             has_cycle: self.has_cycle(),
         }
+    }
+}
+
+fn node_freshness_weight(node: &EvidenceNode, now: DateTime<Utc>) -> f64 {
+    let Some(observed_at) = node.observed_at else {
+        return 1.0;
+    };
+    let age_days = (now - observed_at).num_hours().max(0) as f64 / 24.0;
+    if age_days <= 7.0 {
+        1.0
+    } else {
+        0.25_f64.powf((age_days - 7.0) / 83.0).clamp(0.0, 1.0)
     }
 }
 
@@ -501,6 +547,7 @@ impl LlmChainBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     fn build_simple_chain() -> EvidenceChain {
         let mut chain = EvidenceChain::new();
@@ -565,6 +612,53 @@ mod tests {
 
         let contradictions = chain.contradictions(0.5);
         assert!(!contradictions.is_empty());
+    }
+
+    #[test]
+    fn freshness_weight_bands_old_evidence() {
+        let now = Utc::now();
+        let recent = EvidenceNode::observation("recent", 0.9).with_observed_at(now - Duration::days(5));
+        let mid = EvidenceNode::observation("mid", 0.9).with_observed_at(now - Duration::days(45));
+        let stale = EvidenceNode::observation("stale", 0.9).with_observed_at(now - Duration::days(90));
+
+        let recent_weight = node_freshness_weight(&recent, now);
+        let mid_weight = node_freshness_weight(&mid, now);
+        let stale_weight = node_freshness_weight(&stale, now);
+
+        assert!((recent_weight - 1.0).abs() < 1e-9);
+        assert!(mid_weight < recent_weight);
+        assert!((stale_weight - 0.25).abs() < 0.03, "stale={stale_weight}");
+    }
+
+    #[test]
+    fn stale_evidence_reduces_chain_strength() {
+        let now = Utc::now();
+        let mut chain = EvidenceChain::new();
+        let recent = chain.add_node(
+            EvidenceNode::observation("Recent support", 0.9).with_observed_at(now - Duration::days(5)),
+        );
+        let stale = chain.add_node(
+            EvidenceNode::observation("Stale support", 0.9).with_observed_at(now - Duration::days(90)),
+        );
+        let conclusion = chain.add_node(EvidenceNode::conclusion("Conclusion"));
+        chain.add_edge(EvidenceEdge {
+            from: recent,
+            to: conclusion,
+            kind: EdgeKind::Supports,
+            weight: 1.0,
+        });
+        chain.add_edge(EvidenceEdge {
+            from: stale,
+            to: conclusion,
+            kind: EdgeKind::Supports,
+            weight: 1.0,
+        });
+
+        chain.propagate_confidence_at(now);
+
+        let conclusion_confidence = chain.node(conclusion).unwrap().confidence;
+        assert!(conclusion_confidence > 0.9);
+        assert!(conclusion_confidence < 1.0);
     }
 
     #[test]

@@ -457,9 +457,6 @@ pub async fn security_page(
         risk_low_count,
     };
 
-    if is_htmx_request(&headers) {
-        tpl.into_response()
-    } else {
-        tpl.into_response()
-    }
+    let _ = is_htmx_request(&headers);
+    super::render_template(&tpl)
 }

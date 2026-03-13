@@ -7,33 +7,165 @@
   <title>{% block title %}ApexIntel{% endblock %}</title>
 
   <!-- Fonts -->
-  <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/InterVariable.woff2?v=20260311-ui-fix-1" as="font" type="font/woff2" crossorigin>
   <style>
-    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable.woff2') format('woff2-variations'); font-weight: 100 900; font-display: swap; }
-    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable-Italic.woff2') format('woff2-variations'); font-weight: 100 900; font-style: italic; font-display: swap; }
-    @font-face { font-family: 'JetBrainsMono'; src: url('/static/fonts/JetBrainsMono-Variable.ttf') format('truetype-variations'); font-weight: 100 800; font-display: swap; }
+    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable.woff2?v=20260311-ui-fix-1') format('woff2-variations'); font-weight: 100 900; font-display: swap; }
+    @font-face { font-family: 'ApexIntel'; src: url('/static/fonts/InterVariable-Italic.woff2?v=20260311-ui-fix-1') format('woff2-variations'); font-weight: 100 900; font-style: italic; font-display: swap; }
+    @font-face { font-family: 'JetBrainsMono'; src: url('/static/fonts/JetBrainsMono-Variable.ttf?v=20260311-ui-fix-1') format('truetype-variations'); font-weight: 100 800; font-display: swap; }
     :root { --font-apex: 'ApexIntel', ui-sans-serif, system-ui, sans-serif; --font-mono: 'JetBrainsMono', ui-monospace, monospace; }
   </style>
-
-  <!-- Dark mode FOUC prevention -->
   <script>
-    (function(){var t=localStorage.getItem("apex-theme");if(t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme:dark)").matches)){document.documentElement.classList.add("dark");document.documentElement.setAttribute("data-theme","dark")}})();
+    (() => {
+      const storageKey = 'apex-theme';
+      const validThemes = new Set(['light', 'dark', 'system']);
+      const root = document.documentElement;
+      const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+      const normalizeTheme = (value) => validThemes.has(value) ? value : 'system';
+      const resolveTheme = (theme) => theme === 'system'
+        ? (media?.matches ? 'dark' : 'light')
+        : theme;
+
+      const applyTheme = (theme) => {
+        const normalized = normalizeTheme(theme);
+        const resolved = resolveTheme(normalized);
+        root.dataset.theme = normalized;
+        root.classList.toggle('dark', resolved === 'dark');
+        root.style.colorScheme = resolved;
+        window.__apexThemeState = { theme: normalized, resolved };
+        document.dispatchEvent(new CustomEvent('apex:themechange', {
+          detail: { theme: normalized, resolved },
+        }));
+      };
+
+      const getTheme = () => normalizeTheme(window.localStorage?.getItem(storageKey) || root.dataset.theme || 'system');
+      const setTheme = (theme) => {
+        const normalized = normalizeTheme(theme);
+        window.localStorage?.setItem(storageKey, normalized);
+        applyTheme(normalized);
+      };
+      const cycleTheme = () => {
+        const current = getTheme();
+        let next = 'dark';
+        if (current === 'dark') {
+          next = 'light';
+        } else if (current === 'light') {
+          next = 'dark';
+        } else if (resolveTheme(current) === 'dark') {
+          next = 'light';
+        }
+        setTheme(next);
+        return next;
+      };
+
+      window.ApexTheme = { getTheme, setTheme, cycleTheme };
+      applyTheme(getTheme());
+
+      if (media) {
+        const syncTheme = () => {
+          if (getTheme() === 'system') {
+            applyTheme('system');
+          }
+        };
+        if (typeof media.addEventListener === 'function') {
+          media.addEventListener('change', syncTheme);
+        } else if (typeof media.addListener === 'function') {
+          media.addListener(syncTheme);
+        }
+      }
+    })();
   </script>
 
   <!-- CSS (compiled via Tailwind standalone CLI from globals.css) -->
-  <link rel="stylesheet" href="/static/css/tailwind.css">
-
-  <!-- HTMX + App JS -->
-  <script src="/static/js/htmx.min.js" defer></script>
-  <script src="/static/js/app.js" defer></script>
-  <!-- Chart.js – interactive charts -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-  <script>
-    if (window.Chart) {
-      Chart.defaults.font.family = "'ApexIntel', ui-sans-serif, system-ui, sans-serif";
-      Chart.defaults.font.size = 10;
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260311-chart-tableau-2">
+  <script src="/static/js/htmx.min.js?v=20260312-runtime-sweep-2" defer></script>
+  <script src="/static/js/app.js?v=20260312-runtime-sweep-1" defer></script>
+  <style>
+    #mobile-nav {
+      transform: translateX(-100%);
+      transition: transform 180ms ease;
     }
-  </script>
+
+    #mobile-nav.is-open {
+      transform: translateX(0);
+    }
+
+    #mobile-nav-overlay {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease;
+    }
+
+    #mobile-nav-overlay.is-open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .apex-theme-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      border: 1px solid rgb(var(--border));
+      background: rgb(var(--secondary));
+      border-radius: 2px;
+      padding: 0.45rem 0.7rem;
+      color: rgb(var(--foreground));
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .apex-theme-toggle-state {
+      color: rgb(var(--muted-foreground));
+      font-size: 9px;
+    }
+
+    .apex-mobile-tabbar {
+      padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+    }
+
+    .apex-chart-scroll {
+      width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 0.25rem;
+    }
+
+    .apex-chart-scroll-inner {
+      min-width: 34rem;
+    }
+
+    .apex-chart-scroll-inner-wide {
+      min-width: 42rem;
+    }
+
+    @media (max-width: 640px) {
+      .apex-chart-scroll-inner {
+        min-width: 30rem;
+      }
+
+      .apex-chart-scroll-inner-wide {
+        min-width: 38rem;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .apex-theme-toggle {
+        gap: 0.3rem;
+        padding: 0.45rem 0.55rem;
+      }
+
+      .apex-theme-toggle [data-theme-toggle-text] {
+        max-width: 4.8rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+    }
+  </style>
   {% block head %}{% endblock %}
 </head>
 <body data-ws-warnings>
@@ -56,6 +188,46 @@
     </div>
 
     <div class="flex">
+      <div id="mobile-nav-overlay" class="fixed inset-0 z-30 bg-black/40 lg:hidden" hidden aria-hidden="true"></div>
+      <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-40 flex w-[min(18rem,82vw)] flex-col border-r border-border bg-card shadow-2xl lg:hidden" aria-label="Mobile navigation" aria-hidden="true">
+        <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div class="min-w-0">
+            <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Navigation</p>
+            <p class="truncate text-sm font-black uppercase tracking-[0.08em] text-foreground">Menu</p>
+          </div>
+          <button type="button" id="mobile-nav-close" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm border border-border bg-secondary text-foreground" aria-label="Close navigation menu">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+        <nav class="flex-1 space-y-1 overflow-y-auto p-3">
+          {% call nav_item("/", "Overview", "bar-chart-3") %}
+          {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
+          {% call nav_item("/insights", "Insights", "eye") %}
+          {% call nav_item("/memos", "Memos", "file-text") %}
+          {% call nav_item("/notifications", "Inbox", "bell") %}
+          {% call nav_item("/companies", "Companies", "boxes") %}
+          {% call nav_item("/persons", "Persons", "users") %}
+          {% call nav_item("/competitors", "Competitors", "target") %}
+          {% call nav_item("/security", "Security", "shield") %}
+          {% call nav_item("/graph", "Graph", "radio") %}
+          {% call nav_item("/recipes", "Recipes", "zap") %}
+          {% call nav_item("/search", "Search", "search") %}
+          {% call nav_item("/settings", "Settings", "server") %}
+        </nav>
+        <div class="border-t border-border p-3">
+          <div class="space-y-3 px-2">
+            <button type="button" class="apex-theme-toggle w-full justify-between" data-theme-toggle aria-label="Toggle theme">
+              <span data-theme-toggle-text>System</span>
+              <span class="apex-theme-toggle-state" data-theme-toggle-state>Day</span>
+            </button>
+          </div>
+          <div class="mt-3 px-2">
+            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
+            <p class="text-xs font-bold text-foreground">{{ username }}</p>
+          </div>
+        </div>
+      </aside>
+
       <!-- Desktop sidebar -->
       <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-border lg:bg-card" aria-label="Main navigation">
         <div class="min-h-16 border-b border-border px-4 flex flex-col justify-center">
@@ -85,66 +257,30 @@
         </div>
       </aside>
 
-      <!-- Main content -->
-      <!-- Mobile overlay -->
-      <div id="mobile-nav-overlay" class="fixed inset-0 z-50 bg-black/40 lg:hidden opacity-0 pointer-events-none transition-opacity duration-200" onclick="closeMobileNav()" aria-hidden="true"></div>
-
-      <!-- Mobile nav drawer -->
-      <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-card transition-transform duration-200 lg:hidden -translate-x-full" aria-label="Mobile navigation">
-        <div class="flex items-center justify-between px-4 py-5 border-b border-border">
-          <div>
-            <p class="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
-            <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Competitive Intelligence</p>
-          </div>
-          <button onclick="closeMobileNav()"
-            class="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
-            aria-label="Close navigation">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <nav class="flex-1 overflow-y-auto p-3 space-y-1">
-          {% call nav_item("/", "Overview", "bar-chart-3") %}
-          {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
-          {% call nav_item("/insights", "Insights", "eye") %}
-          {% call nav_item("/memos", "Memos", "file-text") %}
-          {% call nav_item("/notifications", "Inbox", "bell") %}
-          {% call nav_item("/companies", "Companies", "boxes") %}
-          {% call nav_item("/persons", "Persons", "users") %}
-          {% call nav_item("/competitors", "Competitors", "target") %}
-          {% call nav_item("/security", "Security", "shield") %}
-          {% call nav_item("/graph", "Graph", "radio") %}
-          {% call nav_item("/recipes", "Recipes", "zap") %}
-          {% call nav_item("/search", "Search", "search") %}
-          {% call nav_item("/settings", "Settings", "server") %}
-        </nav>
-        <div class="border-t border-border p-3">
-          <div class="px-2">
-            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
-            <p class="text-xs font-bold text-foreground">{{ username }}</p>
-          </div>
-        </div>
-      </aside>
-
-      <main id="main-content" class="flex-1 min-w-0 pb-8 md:pb-10" tabindex="-1">
+      <main id="main-content" class="flex-1 min-w-0 pb-24 md:pb-10 lg:pb-8" tabindex="-1">
         <header class="sticky top-0 z-20 bg-background/95">
           <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div class="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-border py-3 sm:flex-nowrap sm:py-0">
-              <div class="flex min-w-0 flex-1 items-center gap-3">
-                <!-- Mobile menu button -->
-                <button onclick="openMobileNav()"
-                  class="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-sm text-muted-foreground hover:text-foreground lg:hidden"
-                  aria-label="Open navigation">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            <div class="flex min-h-12 items-center justify-end border-b border-border py-2 lg:hidden">
+              <div class="flex shrink-0 items-center gap-2">
+                <button type="button" id="mobile-nav-toggle" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm border border-border bg-secondary text-foreground" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open navigation menu">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                  <span class="sr-only">Open navigation menu</span>
                 </button>
-                <p class="hidden text-[10px] font-black uppercase leading-tight tracking-[0.1em] text-muted-foreground sm:block sm:text-[11px] sm:tracking-[0.14em]">Operational Intelligence for EMS, Supply Chain, and Security</p>
-                <p class="hidden text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground md:block">Data freshness: near real-time</p>
               </div>
-              <div class="flex shrink-0 items-center gap-2 self-start sm:self-auto">
-                <button onclick="toggleDarkMode()" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground" title="Toggle dark mode">
-                  Theme
+            </div>
+            <div class="hidden min-h-14 items-center justify-between gap-4 border-b border-border py-2.5 lg:flex">
+              <div class="min-w-0">
+                <div class="flex items-center gap-3">
+                  <p class="text-sm font-black uppercase tracking-[0.08em] text-foreground">ApexIntel</p>
+                  <span class="text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground">Competitive Intelligence</span>
+                </div>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
+                <span class="hidden text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground xl:inline">{{ username }}</span>
+                <button type="button" class="apex-theme-toggle" data-theme-toggle aria-label="Toggle theme">
+                  <span data-theme-toggle-text>System</span>
+                  <span class="apex-theme-toggle-state" data-theme-toggle-state>Day</span>
                 </button>
-                <span class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Live</span>
-                <span class="hidden sm:inline text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ username }}</span>
                 <form action="/logout" method="post" class="inline">
                   <button type="submit"
                     class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:text-destructive hover:border-destructive/40"
@@ -163,39 +299,260 @@
           {% block content %}{% endblock %}
         </div>
       </main>
+
+      <nav class="apex-mobile-tabbar fixed inset-x-0 bottom-0 z-20 border-t border-border bg-card/95 px-2 pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur lg:hidden" aria-label="Quick navigation">
+        <div class="grid grid-cols-5 gap-2">
+          <a href="/"
+             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path == "/" %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+            <span>Home</span>
+          </a>
+          <a href="/warnings"
+             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/warnings") %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+            <span>Alerts</span>
+          </a>
+          <a href="/insights"
+             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/insights") %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+            <span>Intel</span>
+          </a>
+          <a href="/search"
+             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/search") %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+            <span>Search</span>
+          </a>
+          <button type="button"
+                  id="mobile-nav-bottom-toggle"
+                  class="flex min-h-12 flex-col items-center justify-center rounded-sm border border-border bg-secondary px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-foreground"
+                  aria-expanded="false"
+                  aria-controls="mobile-nav">
+            <span>Menu</span>
+          </button>
+        </div>
+      </nav>
     </div>
   </div>
 
   <script>
-    function openMobileNav() {
-      var nav = document.getElementById('mobile-nav');
-      var overlay = document.getElementById('mobile-nav-overlay');
-      if (!nav || !overlay) return;
-      nav.classList.remove('-translate-x-full');
-      nav.classList.add('translate-x-0');
-      overlay.classList.remove('opacity-0', 'pointer-events-none');
-      overlay.classList.add('opacity-100', 'pointer-events-auto');
-      document.body.style.overflow = 'hidden';
-      requestAnimationFrame(function() {
-        var closeBtn = nav.querySelector('button');
-        if (closeBtn) closeBtn.focus();
+    (() => {
+      const mobileNav = document.getElementById('mobile-nav');
+      const mobileNavOverlay = document.getElementById('mobile-nav-overlay');
+      const mobileNavToggle = document.getElementById('mobile-nav-toggle');
+      const mobileNavBottomToggle = document.getElementById('mobile-nav-bottom-toggle');
+      const mobileNavClose = document.getElementById('mobile-nav-close');
+      const routeProgress = document.getElementById('route-progress');
+      const themeButtons = Array.from(document.querySelectorAll('[data-theme-toggle]'));
+      let lastMobileNavTrigger = null;
+
+      const updateThemeButtons = () => {
+        const detail = window.__apexThemeState || { theme: 'system', resolved: 'light' };
+        const label = detail.theme === 'system'
+          ? `System ${detail.resolved === 'dark' ? 'Dark' : 'Light'}`
+          : detail.theme.charAt(0).toUpperCase() + detail.theme.slice(1);
+        const resolvedLabel = detail.resolved === 'dark' ? 'Night' : 'Day';
+        themeButtons.forEach((button) => {
+          button.setAttribute('aria-label', `Theme ${label}. Activate to toggle dark mode.`);
+          const text = button.querySelector('[data-theme-toggle-text]');
+          const state = button.querySelector('[data-theme-toggle-state]');
+          if (text) {
+            text.textContent = label;
+          }
+          if (state) {
+            state.textContent = resolvedLabel;
+          }
+        });
+      };
+
+      const setMobileNavOpen = (isOpen, trigger = lastMobileNavTrigger) => {
+        if (!mobileNav || !mobileNavOverlay) {
+          return;
+        }
+        mobileNav.classList.toggle('is-open', isOpen);
+        mobileNavOverlay.classList.toggle('is-open', isOpen);
+        mobileNavOverlay.hidden = !isOpen;
+        mobileNav.setAttribute('aria-hidden', String(!isOpen));
+        mobileNavToggle?.setAttribute('aria-expanded', String(isOpen));
+        mobileNavBottomToggle?.setAttribute('aria-expanded', String(isOpen));
+        document.body.classList.toggle('overflow-hidden', isOpen);
+        if (isOpen) {
+          lastMobileNavTrigger = trigger || document.activeElement;
+          window.requestAnimationFrame(() => {
+            const firstFocusable = mobileNav.querySelector('a, button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+            if (firstFocusable instanceof HTMLElement) {
+              firstFocusable.focus();
+            }
+          });
+          return;
+        }
+        if (lastMobileNavTrigger instanceof HTMLElement) {
+          lastMobileNavTrigger.focus();
+        }
+      };
+
+      mobileNavToggle?.addEventListener('click', () => {
+        const isOpen = mobileNavToggle.getAttribute('aria-expanded') === 'true';
+        setMobileNavOpen(!isOpen, mobileNavToggle);
       });
-    }
-    function closeMobileNav() {
-      var nav = document.getElementById('mobile-nav');
-      var overlay = document.getElementById('mobile-nav-overlay');
-      if (!nav || !overlay) return;
-      nav.classList.add('-translate-x-full');
-      nav.classList.remove('translate-x-0');
-      overlay.classList.add('opacity-0', 'pointer-events-none');
-      overlay.classList.remove('opacity-100', 'pointer-events-auto');
-      document.body.style.overflow = '';
-    }
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeMobileNav();
-    });
+
+      mobileNavBottomToggle?.addEventListener('click', () => {
+        const isOpen = mobileNavBottomToggle.getAttribute('aria-expanded') === 'true';
+        setMobileNavOpen(!isOpen, mobileNavBottomToggle);
+      });
+
+      mobileNavClose?.addEventListener('click', () => setMobileNavOpen(false));
+
+      themeButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          window.ApexTheme?.cycleTheme?.();
+          updateThemeButtons();
+        });
+      });
+      document.addEventListener('apex:themechange', updateThemeButtons);
+      updateThemeButtons();
+
+      mobileNavOverlay?.addEventListener('click', () => setMobileNavOpen(false));
+      mobileNav?.querySelectorAll('a').forEach((link) => {
+        link.addEventListener('click', () => setMobileNavOpen(false));
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          setMobileNavOpen(false);
+        }
+      });
+
+      const interactiveSelector = 'a, button, input, select, textarea, summary, label, [role="button"]';
+
+      const navigateToDataTarget = (element) => {
+        const href = element?.getAttribute('data-row-link') || element?.getAttribute('data-card-link');
+        if (!href) {
+          return;
+        }
+        if (routeProgress) {
+          routeProgress.classList.add('is-active');
+        }
+        window.location.assign(href);
+      };
+
+      document.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+
+        const interactiveParent = target.closest(interactiveSelector);
+        const container = target.closest('[data-row-link], [data-card-link]');
+        if (container && !interactiveParent) {
+          navigateToDataTarget(container);
+          return;
+        }
+
+        const anchor = target.closest('a[href]');
+        if (!(anchor instanceof HTMLAnchorElement)) {
+          return;
+        }
+        if (anchor.target === '_blank' || anchor.hasAttribute('download')) {
+          return;
+        }
+        const url = new URL(anchor.href, window.location.href);
+        if (url.origin === window.location.origin && routeProgress) {
+          routeProgress.classList.add('is-active');
+        }
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+          return;
+        }
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const container = target.closest('[data-row-link], [data-card-link]');
+        if (!container) {
+          return;
+        }
+        const nestedInteractive = target !== container ? target.closest(interactiveSelector) : null;
+        if (nestedInteractive) {
+          return;
+        }
+        event.preventDefault();
+        navigateToDataTarget(container);
+      });
+
+      const updateChartDetail = (element) => {
+        const title = element.getAttribute('data-chart-point-title');
+        if (!title) {
+          return;
+        }
+        const detail = element.closest('.apex-card')?.querySelector('[data-chart-detail]');
+        if (detail) {
+          detail.textContent = title;
+        }
+      };
+
+      const hydrateChartDetails = (root = document) => {
+        if (!(root instanceof Document || root instanceof Element || root instanceof DocumentFragment)) {
+          return;
+        }
+        root.querySelectorAll?.('.apex-card [data-chart-detail]').forEach((detail) => {
+          const point = detail.closest('.apex-card')?.querySelector('[data-chart-point-title]');
+          if (point instanceof Element) {
+            updateChartDetail(point);
+          }
+        });
+      };
+
+      document.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const point = target.closest('[data-chart-point-title]');
+        if (point) {
+          updateChartDetail(point);
+        }
+      });
+
+      document.addEventListener('pointerover', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const point = target.closest('[data-chart-point-title]');
+        if (point) {
+          updateChartDetail(point);
+        }
+      });
+
+      document.addEventListener('touchstart', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const point = target.closest('[data-chart-point-title]');
+        if (point) {
+          updateChartDetail(point);
+        }
+      }, { passive: true });
+
+      document.addEventListener('focusin', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const point = target.closest('[data-chart-point-title]');
+        if (point) {
+          updateChartDetail(point);
+        }
+      });
+
+      document.addEventListener('DOMContentLoaded', () => hydrateChartDetails());
+      document.addEventListener('htmx:afterSwap', (event) => {
+        hydrateChartDetails(event.target instanceof Element ? event.target : document);
+      });
+    })();
   </script>
-</body>
+  {% block body_end %}{% endblock %}
+
+  </body>
 </html>
 
 {# ── Navigation macros (use template fields: current_path, warning_count) ── #}
@@ -207,7 +564,6 @@
 {% macro nav_item(href, label, icon_name) %}
 <a href="{{ href }}"
    class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
-  {% if href == "/graph" %}hx-boost="false"{% endif %}
    {% if current_path == href %}aria-current="page"{% endif %}>
   <span class="h-1.5 w-1.5 rounded-full {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}bg-primary{% else %}bg-border{% endif %}" aria-hidden="true"></span>
   {{ label }}
@@ -220,9 +576,8 @@
    {% if current_path == href %}aria-current="page"{% endif %}>
   <span class="h-1.5 w-1.5 rounded-full {% if current_path == href || current_path.starts_with(href) %}bg-primary{% else %}bg-border{% endif %}" aria-hidden="true"></span>
   {{ label }}
-  <span id="warning-badge"
-    class="ml-auto rounded-full bg-destructive px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}"
-    hx-get="/api/warnings/unread-count" hx-trigger="every 30s" hx-swap="innerHTML">
+  <span data-warning-badge
+    class="ml-auto rounded-full bg-destructive px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}">
     {{ warning_count }}
   </span>
 </a>

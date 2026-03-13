@@ -61,6 +61,10 @@ pub struct CompanyListItem {
     pub is_competitor: bool,
     pub threat_score: Option<f64>,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub community_badges: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_entropy: Option<f64>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -83,6 +87,12 @@ pub struct CompanyDetail {
     pub sites: Vec<CompanySite>,
     pub key_persons: Vec<CompanyKeyPerson>,
     pub recent_events: Vec<CompanyEvent>,
+    #[serde(default)]
+    pub community_badges: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_entropy: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_quality_label: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -229,6 +239,8 @@ mod tests {
             is_competitor: competitor,
             threat_score: threat,
             capabilities: vec!["pcb_assembly".to_string(), "smt".to_string()],
+            community_badges: vec!["electronics cluster".to_string()],
+            source_entropy: Some(0.42),
             updated_at: Utc::now(),
         }
     }
@@ -358,6 +370,9 @@ mod tests {
             }],
             key_persons: vec![],
             recent_events: vec![],
+            community_badges: vec!["people network".to_string()],
+            source_entropy: Some(0.35),
+            source_quality_label: Some("moderate".to_string()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

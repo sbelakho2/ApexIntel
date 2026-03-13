@@ -24,9 +24,10 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -65,12 +66,14 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
             content: content.into(),
         }
     }
+
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: Role::Assistant,
@@ -90,9 +93,13 @@ pub struct InferenceConfig {
     pub max_tokens: u32,
     /// If true, wrap the request in `response_format: json_object` mode.
     pub json_mode: bool,
+    /// Optional provider-supported seed for deterministic sampling.
+    pub seed: Option<u64>,
     /// If true, append `/no_think` to the system prompt to suppress CoT tokens
     /// (Qwen3-specific).  Reduces latency significantly on short tasks.
     pub suppress_thinking: bool,
+    /// If true, repeat structured calls and assert key fields remain stable.
+    pub enforce_structural_determinism: bool,
     /// Maximum retries on transient errors.  Default `3`.
     pub max_retries: u32,
     /// Base delay for exponential back-off.  Default `1 s`.
@@ -108,7 +115,9 @@ impl Default for InferenceConfig {
             temperature: 0.2,
             max_tokens: 2048,
             json_mode: false,
+            seed: None,
             suppress_thinking: true,
+            enforce_structural_determinism: false,
             max_retries: 3,
             retry_base_delay: Duration::from_secs(1),
             timeout: Duration::from_secs(120),
@@ -133,7 +142,9 @@ impl InferenceConfig {
             temperature: 0.0,
             max_tokens: 1024,
             json_mode: true,
+            seed: Some(0),
             suppress_thinking: true,
+            enforce_structural_determinism: true,
             ..Default::default()
         }
     }
@@ -186,6 +197,10 @@ pub struct CompletionResponse {
     pub total_tokens: u32,
     /// Wall-clock latency of the full HTTP round-trip.
     pub latency: Duration,
+    /// Stable hash of the fully prepared prompt payload.
+    pub prompt_hash: String,
+    /// Stable hash of the returned text payload.
+    pub response_hash: String,
 }
 
 impl CompletionResponse {
@@ -213,6 +228,8 @@ struct ChatRequest<'a> {
     messages: &'a [ChatMessage],
     temperature: f32,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
 }
@@ -310,6 +327,23 @@ impl LlmClient {
             messages
         };
 
+        let prompt_hash = hash_messages(&messages);
+        let response = self.complete_once(&messages, config, &prompt_hash).await?;
+
+        if config.enforce_structural_determinism && config.json_mode && config.temperature == 0.0 {
+            let repeated = self.complete_once(&messages, config, &prompt_hash).await?;
+            assert_structural_determinism(&response.text, &repeated.text)?;
+        }
+
+        Ok(response)
+    }
+
+    async fn complete_once(
+        &self,
+        messages: &[ChatMessage],
+        config: &InferenceConfig,
+        prompt_hash: &str,
+    ) -> Result<CompletionResponse> {
         let response_format = if config.json_mode {
             Some(ResponseFormat {
                 kind: "json_object",
@@ -320,9 +354,10 @@ impl LlmClient {
 
         let body = ChatRequest {
             model: &config.model,
-            messages: &messages,
+            messages,
             temperature: config.temperature,
             max_tokens: config.max_tokens,
+            seed: config.seed,
             response_format,
         };
 
@@ -378,8 +413,8 @@ impl LlmClient {
                         .and_then(|c| c.message.content)
                         .unwrap_or_default();
 
-                    // Strip Qwen3 think tags from the output.
                     let text = strip_think_tags(&raw_text);
+                    let response_hash = hash_text(&text);
 
                     let usage = chat_resp.usage.unwrap_or(UsageInfo {
                         prompt_tokens: Some(0),
@@ -390,8 +425,12 @@ impl LlmClient {
                     debug!(
                         latency_ms = latency.as_millis(),
                         total_tokens = usage.total_tokens.unwrap_or(0),
+                        %prompt_hash,
+                        %response_hash,
+                        seed = ?config.seed,
                         "LLM inference complete"
                     );
+                    info!(%prompt_hash, %response_hash, seed = ?config.seed, "LLM prompt/response hashed");
 
                     return Ok(CompletionResponse {
                         text,
@@ -399,6 +438,8 @@ impl LlmClient {
                         completion_tokens: usage.completion_tokens.unwrap_or(0),
                         total_tokens: usage.total_tokens.unwrap_or(0),
                         latency,
+                        prompt_hash: prompt_hash.to_string(),
+                        response_hash,
                     });
                 }
             }
@@ -521,6 +562,58 @@ fn inject_no_think(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     messages
 }
 
+fn hash_text(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn hash_messages(messages: &[ChatMessage]) -> String {
+    let payload = messages
+        .iter()
+        .map(|message| format!("{}:{}", message.role, message.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    hash_text(&payload)
+}
+
+fn structural_signature(text: &str) -> Result<Option<(String, String)>> {
+    let clean = strip_think_tags(text);
+    let extracted = crate::validators::extract_json(&clean)
+        .ok_or_else(|| anyhow!("No JSON found in deterministic response"))?;
+    let value: serde_json::Value = serde_json::from_str(&extracted)
+        .with_context(|| "Failed to parse deterministic JSON response")?;
+    let Some(object) = value.as_object() else {
+        return Ok(None);
+    };
+    match (object.get("severity"), object.get("category")) {
+        (Some(severity), Some(category)) => Ok(Some((
+            severity.as_str().unwrap_or_default().to_string(),
+            category.as_str().unwrap_or_default().to_string(),
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn assert_structural_determinism(first: &str, second: &str) -> Result<()> {
+    let first_signature = structural_signature(first)?;
+    let second_signature = structural_signature(second)?;
+    if let (Some(first_signature), Some(second_signature)) = (first_signature, second_signature) {
+        if first_signature != second_signature {
+            bail!(
+                "json_structured structural determinism violated: first={:?}, second={:?}",
+                first_signature,
+                second_signature
+            );
+        }
+    }
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -579,6 +672,13 @@ mod tests {
     }
 
     #[test]
+    fn json_structured_enables_seed_and_determinism() {
+        let cfg = InferenceConfig::json_structured();
+        assert_eq!(cfg.seed, Some(0));
+        assert!(cfg.enforce_structural_determinism);
+    }
+
+    #[test]
     fn inference_config_validate_bad_temperature() {
         let mut cfg = InferenceConfig::default();
         cfg.temperature = 5.0;
@@ -612,6 +712,8 @@ mod tests {
             completion_tokens: 5,
             total_tokens: 15,
             latency: Duration::from_millis(100),
+            prompt_hash: "prompt".into(),
+            response_hash: "response".into(),
         };
         let v: serde_json::Value = resp.parse_json().unwrap();
         assert_eq!(v["score"], 0.9);
@@ -625,8 +727,24 @@ mod tests {
             completion_tokens: 0,
             total_tokens: 0,
             latency: Duration::from_secs(0),
+            prompt_hash: "prompt".into(),
+            response_hash: "response".into(),
         };
         let v: serde_json::Value = resp.parse_json().unwrap();
         assert_eq!(v["k"], 1);
+    }
+
+    #[test]
+    fn structural_determinism_accepts_matching_signatures() {
+        let first = r#"{"severity":"warning","category":"supply_chain"}"#;
+        let second = r#"{"severity":"warning","category":"supply_chain"}"#;
+        assert!(assert_structural_determinism(first, second).is_ok());
+    }
+
+    #[test]
+    fn structural_determinism_rejects_mismatch() {
+        let first = r#"{"severity":"critical","category":"financial"}"#;
+        let second = r#"{"severity":"warning","category":"financial"}"#;
+        assert!(assert_structural_determinism(first, second).is_err());
     }
 }

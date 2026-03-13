@@ -4,6 +4,14 @@
 /// is the exact two-sided probability computed by the hypergeometric
 /// distribution, summing all tables at least as extreme as the observed one.
 
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FisherExactResult {
+    pub p_value: f64,
+    pub odds_ratio: f64,
+    pub odds_ratio_ci_low: Option<f64>,
+    pub odds_ratio_ci_high: Option<f64>,
+}
+
 /// Compute the Fisher exact test p-value for a 2×2 table.
 ///
 /// Table layout:
@@ -44,12 +52,78 @@ pub fn p_value(a: u64, b: u64, c: u64, d: u64) -> f64 {
     p.min(1.0)
 }
 
+pub fn analyze(a: u64, b: u64, c: u64, d: u64) -> FisherExactResult {
+    let p_value = p_value(a, b, c, d);
+    let odds_ratio = odds_ratio(a, b, c, d);
+    let (odds_ratio_ci_low, odds_ratio_ci_high) = woolf_odds_ratio_confidence_interval(a, b, c, d)
+        .map(|(low, high)| (Some(low), Some(high)))
+        .unwrap_or((None, None));
+
+    FisherExactResult {
+        p_value,
+        odds_ratio,
+        odds_ratio_ci_low,
+        odds_ratio_ci_high,
+    }
+}
+
 /// Odds ratio for a 2×2 table.
 pub fn odds_ratio(a: u64, b: u64, c: u64, d: u64) -> f64 {
     if b == 0 || c == 0 {
         return f64::INFINITY;
     }
     (a as f64 * d as f64) / (b as f64 * c as f64)
+}
+
+pub fn woolf_odds_ratio_confidence_interval(a: u64, b: u64, c: u64, d: u64) -> Option<(f64, f64)> {
+    let total = a + b + c + d;
+    if total == 0 {
+        return None;
+    }
+
+    let correction = if a == 0 || b == 0 || c == 0 || d == 0 {
+        0.5
+    } else {
+        0.0
+    };
+    let af = a as f64 + correction;
+    let bf = b as f64 + correction;
+    let cf = c as f64 + correction;
+    let df = d as f64 + correction;
+
+    if af <= 0.0 || bf <= 0.0 || cf <= 0.0 || df <= 0.0 {
+        return None;
+    }
+
+    let odds_ratio = (af * df) / (bf * cf);
+    let standard_error = (1.0 / af + 1.0 / bf + 1.0 / cf + 1.0 / df).sqrt();
+    let delta = 1.96 * standard_error;
+    Some(((odds_ratio.ln() - delta).exp(), (odds_ratio.ln() + delta).exp()))
+}
+
+pub fn minimum_detectable_odds_ratio(a: u64, b: u64, c: u64, d: u64, alpha: f64, power: f64) -> f64 {
+    let total = (a + b + c + d) as f64;
+    if total <= 0.0 {
+        return f64::INFINITY;
+    }
+
+    let row1 = (a + b) as f64;
+    let row2 = (c + d) as f64;
+    let col1 = (a + c) as f64;
+    let col2 = (b + d) as f64;
+    if row1 <= 0.0 || row2 <= 0.0 || col1 <= 0.0 || col2 <= 0.0 {
+        return f64::INFINITY;
+    }
+
+    let expected_a = (row1 * col1 / total).max(0.5);
+    let expected_b = (row1 * col2 / total).max(0.5);
+    let expected_c = (row2 * col1 / total).max(0.5);
+    let expected_d = (row2 * col2 / total).max(0.5);
+    let standard_error =
+        (1.0 / expected_a + 1.0 / expected_b + 1.0 / expected_c + 1.0 / expected_d).sqrt();
+    let z_alpha = inverse_standard_normal_cdf(1.0 - alpha / 2.0);
+    let z_power = inverse_standard_normal_cdf(power);
+    ((z_alpha + z_power) * standard_error).exp()
 }
 
 fn log_hypergeometric(a: u64, b: u64, c: u64, d: u64, n: u64) -> f64 {
@@ -100,6 +174,59 @@ fn log_factorial(n: u64) -> f64 {
         + 1.0 / (1260.0 * x.powi(5))
 }
 
+fn inverse_standard_normal_cdf(probability: f64) -> f64 {
+    let p = probability.clamp(1e-12, 1.0 - 1e-12);
+    const A: [f64; 6] = [
+        -39.69683028665376,
+        220.9460984245205,
+        -275.9285104469687,
+        138.357751867269,
+        -30.66479806614716,
+        2.506628277459239,
+    ];
+    const B: [f64; 5] = [
+        -54.47609879822406,
+        161.5858368580409,
+        -155.6989798598866,
+        66.80131188771972,
+        -13.28068155288572,
+    ];
+    const C: [f64; 6] = [
+        -0.007784894002430293,
+        -0.3223964580411365,
+        -2.400758277161838,
+        -2.549732539343734,
+        4.374664141464968,
+        2.938163982698783,
+    ];
+    const D: [f64; 4] = [
+        0.007784695709041462,
+        0.3224671290700398,
+        2.445134137142996,
+        3.754408661907416,
+    ];
+
+    let plow = 0.02425;
+    let phigh = 1.0 - plow;
+
+    if p < plow {
+        let q = (-2.0 * p.ln()).sqrt();
+        return (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0);
+    }
+
+    if p > phigh {
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        return -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0);
+    }
+
+    let q = p - 0.5;
+    let r = q * q;
+    (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+        / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +272,34 @@ mod tests {
     fn test_odds_ratio_zero_cell() {
         let or = odds_ratio(10, 0, 5, 5);
         assert!(or.is_infinite());
+    }
+
+    #[test]
+    fn fisher_analyze_reports_effect_size_and_interval() {
+        let result = analyze(10, 5, 3, 12);
+        assert!((result.odds_ratio - 8.0).abs() < 1e-10);
+        assert!(result.p_value >= 0.0 && result.p_value <= 1.0);
+        assert!(result.odds_ratio_ci_low.is_some());
+        assert!(result.odds_ratio_ci_high.is_some());
+        assert!(result.odds_ratio_ci_low.unwrap() < result.odds_ratio);
+        assert!(result.odds_ratio_ci_high.unwrap() > result.odds_ratio);
+    }
+
+    #[test]
+    fn woolf_interval_handles_zero_cells_with_correction() {
+        let interval = woolf_odds_ratio_confidence_interval(20, 0, 0, 20)
+            .expect("interval should exist with continuity correction");
+        assert!(interval.0.is_finite());
+        assert!(interval.1.is_finite());
+        assert!(interval.1 > interval.0);
+    }
+
+    #[test]
+    fn minimum_detectable_odds_ratio_decreases_with_sample_size() {
+        let small = minimum_detectable_odds_ratio(5, 5, 5, 5, 0.01, 0.80);
+        let large = minimum_detectable_odds_ratio(50, 50, 50, 50, 0.01, 0.80);
+        assert!(small > large);
+        assert!(large > 1.0);
     }
 
     #[test]

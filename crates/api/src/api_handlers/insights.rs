@@ -1,4 +1,6 @@
-use super::super::*;
+#![allow(clippy::disallowed_methods)]
+
+use crate::*;
 
 fn resolve_bookmarked_by(bookmarked: Option<&str>, user_id: &str) -> Option<String> {
     if bookmarked == Some("true") {
@@ -494,7 +496,7 @@ Write EXACTLY 4 paragraphs, each on a new line:
     model_config.timeout_seconds = 300;
     let client = OpenAiCompatibleClient::new(model_config);
 
-    let raw_analysis = match client.generate_text(&system_prompt, &user_prompt).await {
+    let raw_analysis = match client.generate_text(system_prompt, &user_prompt).await {
         Ok(text) => text,
         Err(err) => {
             tracing::error!(request_id = %request_id, "LLM analysis failed: {err:#}");
@@ -527,7 +529,7 @@ Write EXACTLY 4 paragraphs, each on a new line:
 
     let exec_summary = strip_analysis_label(
         paragraphs
-            .get(0)
+            .first()
             .map(|s| s.as_str())
             .unwrap_or("Analysis unavailable."),
     );
@@ -806,7 +808,7 @@ Write EXACTLY 4 paragraphs, each on a new line:
     model_config.timeout_seconds = 300;
     let client = OpenAiCompatibleClient::new(model_config);
 
-    let raw_analysis = match client.generate_text(&system_prompt, &user_prompt).await {
+    let raw_analysis = match client.generate_text(system_prompt, &user_prompt).await {
         Ok(text) => text,
         Err(err) => {
             tracing::error!(request_id = %request_id, "LLM warning analysis failed: {err:#}");
@@ -823,7 +825,7 @@ Write EXACTLY 4 paragraphs, each on a new line:
         .filter(|l| !l.is_empty())
         .collect();
 
-    let threat_text = strip_warning_label(paragraphs.get(0).unwrap_or(&"Assessment unavailable."));
+    let threat_text = strip_warning_label(paragraphs.first().unwrap_or(&"Assessment unavailable."));
     let evidence_text = strip_warning_label(paragraphs.get(1).unwrap_or(&""));
     let impact_text = strip_warning_label(paragraphs.get(2).unwrap_or(&""));
     let response_text = strip_warning_label(paragraphs.get(3).unwrap_or(&""));

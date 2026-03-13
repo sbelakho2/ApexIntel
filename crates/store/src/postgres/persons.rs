@@ -515,12 +515,11 @@ impl PgStore {
                     COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
                     COALESCE(c.name, 'Independent') AS organization,
                     COALESCE(p.region, '') AS region,
-                    COALESCE(p.country_code, '') AS country_code,
+                    COALESCE(p.country_code, '') AS country,
                     COALESCE(p.role_family, 'Unknown') AS role_family,
                     COALESCE(p.influence_score, 0) AS priority_score,
                     COALESCE(p.metadata->>'engagement_status', 'untracked') AS engagement_status,
-                    COALESCE(p.updated_at, p.created_at, now()) AS updated_at,
-                    (SELECT COUNT(*) FROM poi_artifacts a WHERE a.person_id = p.id) AS artifact_count
+                    COALESCE(p.updated_at, p.created_at, now()) AS updated_at
              FROM persons p
              LEFT JOIN companies c ON p.primary_org_id = c.id",
         );
@@ -638,12 +637,11 @@ impl PgStore {
                     COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
                     COALESCE(c.name, 'Independent') AS organization,
                     COALESCE(p.region, '') AS region,
-                    COALESCE(p.country_code, '') AS country_code,
+                    COALESCE(p.country_code, '') AS country,
                     COALESCE(p.role_family, 'Unknown') AS role_family,
                     COALESCE(p.influence_score, 0) AS priority_score,
                     COALESCE(p.metadata->>'engagement_status', 'untracked') AS engagement_status,
-                    COALESCE(p.updated_at, p.created_at, now()) AS updated_at,
-                    (SELECT COUNT(*) FROM poi_artifacts a WHERE a.person_id = p.id) AS artifact_count
+                    COALESCE(p.updated_at, p.created_at, now()) AS updated_at
              FROM persons p
              LEFT JOIN companies c ON p.primary_org_id = c.id
              WHERE p.id != $1
@@ -700,11 +698,6 @@ mod tests {
             risk_tolerance: None,
             change_appetite: None,
             communication_style: None,
-            decision_mode: None,
-            preferred_proof_type: None,
-            pain_index: None,
-            change_risk: None,
-            role_drift_score: None,
             metadata: Some(json!({})),
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),

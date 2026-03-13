@@ -17,30 +17,30 @@
 {% call m::page_header("Settings", "server", "API keys, region coverage, watchlist, and scheduler controls.", "") %}
 
 {% if let Some(message) = save_success %}
-<div class="mb-4 rounded border border-green-500/30 bg-green-500/10 px-3 py-2 text-xs font-semibold text-green-700">{{ message }}</div>
+<div class="apex-alert apex-alert-success mb-4 text-xs font-semibold">{{ message }}</div>
 {% endif %}
 {% if let Some(message) = save_error %}
-<div class="mb-4 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700">{{ message }}</div>
+<div class="apex-alert apex-alert-danger mb-4 text-xs font-semibold">{{ message }}</div>
 {% endif %}
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-steel"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">API Keys</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ api_status }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-green"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Active Regions</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ endpoints_count }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-orange"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Scheduler Jobs</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{% if let Some(hours) = uptime_hours %}{{ hours }}h{% else %}—{% endif %}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-red"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Alerting</p>
     <p class="mt-1.5 apex-metric-number text-2xl">On</p>
   </div>
@@ -155,7 +155,7 @@
         {% for check in health_checks %}
         <div class="flex items-center justify-between px-4 py-3">
           <span class="text-sm font-bold">{{ check.name }}</span>
-          <span class="text-xs font-bold uppercase {% if check.status == "Healthy" %}text-green-600{% else if check.status == "Degraded" %}text-yellow-600{% else %}text-red-500{% endif %}">{{ check.status }}</span>
+          <span class="text-xs font-bold uppercase {% if check.status == "Healthy" %}apex-text-positive{% else if check.status == "Degraded" %}apex-text-warning{% else %}apex-text-danger{% endif %}">{{ check.status }}</span>
         </div>
         {% endfor %}
       </div>
@@ -261,19 +261,4 @@
     <button type="submit" class="inline-flex min-h-[40px] items-center gap-2 rounded border border-border bg-primary px-4 py-2 text-xs font-bold uppercase text-primary-foreground">Save Changes</button>
   </div>
 </form>
-<script>
-  (function() {
-    const frequency = document.getElementById('notification_frequency');
-    const weeklyRow = document.getElementById('weekly_day_row');
-    if (!frequency || !weeklyRow) return;
-
-    const syncWeeklyVisibility = () => {
-      const isWeekly = String(frequency.value || '').toLowerCase() === 'weekly';
-      weeklyRow.style.display = isWeekly ? 'flex' : 'none';
-    };
-
-    frequency.addEventListener('change', syncWeeklyVisibility);
-    syncWeeklyVisibility();
-  })();
-</script>
 {% endblock %}

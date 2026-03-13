@@ -4,6 +4,36 @@ fn normalize_warning_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
 
+fn push_hygiene_filter(qb: &mut QueryBuilder<Postgres>, has_where: &mut bool, exclude: bool) {
+    if !exclude {
+        return;
+    }
+
+    qb.push(if *has_where { " AND " } else { " WHERE " });
+    qb.push(
+        r#"NOT (
+                lower(severity) IN ('low', 'medium')
+                AND (
+                    lower(trim(warning_type)) = 'lookalike_domain'
+                    OR lower(trim(warning_type)) LIKE 'dns!_%' ESCAPE '!'
+                    OR coalesce(lower(trim(title)), '') LIKE '%dns posture%'
+                    OR coalesce(lower(trim(title)), '') LIKE '%dkim%'
+                    OR coalesce(lower(trim(title)), '') LIKE '%spf%'
+                    OR coalesce(lower(trim(title)), '') LIKE '%dmarc%'
+                    OR coalesce(lower(trim(title)), '') LIKE '%lookalike%'
+                    OR coalesce(lower(trim(title)), '') LIKE '%typosquat%'
+                    OR coalesce(lower(trim(description)), '') LIKE '%dns posture%'
+                    OR coalesce(lower(trim(description)), '') LIKE '%dkim%'
+                    OR coalesce(lower(trim(description)), '') LIKE '%spf%'
+                    OR coalesce(lower(trim(description)), '') LIKE '%dmarc%'
+                    OR coalesce(lower(trim(description)), '') LIKE '%lookalike%'
+                    OR coalesce(lower(trim(description)), '') LIKE '%typosquat%'
+                )
+            )"#,
+    );
+    *has_where = true;
+}
+
 impl PgStore {
     pub async fn list_warnings(
         &self,
@@ -20,23 +50,26 @@ impl PgStore {
                        SELECT w.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY
-                                   lower(trim(w.title)),
+                                   CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
+                                   lower(trim(regexp_replace(w.title, '^\[[^]]+\]\s*', ''))),
                                    lower(trim(w.warning_type)),
                                    lower(trim(w.severity)),
                                    coalesce(lower(w.region), ''),
-                                   coalesce(lower(trim(w.description)), '')
+                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 220)
                                ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
                            ) AS rn
                        FROM warnings w
+                       WHERE ($1 OR w.deleted_at IS NULL)
                    ) ranked
                    WHERE ranked.rn = 1
                )
                SELECT id, recipe_code, warning_type, title, description, severity, region,
                       source_urls, entity_ids, confidence, ts_utc, acknowledged,
                       acknowledged_by, acknowledged_at, acknowledged_note,
-                      review_outcome, reviewed_by, reviewed_at, created_at, updated_at
+                      review_outcome, reviewed_by, reviewed_at, deleted_at, created_at, updated_at
                FROM dedup"#,
         );
+        qb.push_bind(filters.include_deleted);
 
         let mut has_where = false;
         if !filters.regions.is_empty() {
@@ -62,6 +95,8 @@ impl PgStore {
                 .push(")");
             has_where = true;
         }
+
+        push_hygiene_filter(&mut qb, &mut has_where, filters.exclude_hygiene_signals);
 
         if let Some(ack) = filters.acknowledged {
             qb.push(if has_where { " AND " } else { " WHERE " });
@@ -119,19 +154,22 @@ impl PgStore {
                        SELECT w.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY
-                                   lower(trim(w.title)),
+                                   CASE WHEN w.deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
+                                   lower(trim(regexp_replace(w.title, '^\[[^]]+\]\s*', ''))),
                                    lower(trim(w.warning_type)),
                                    lower(trim(w.severity)),
                                    coalesce(lower(w.region), ''),
-                                   coalesce(lower(trim(w.description)), '')
+                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 220)
                                ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
                            ) AS rn
                        FROM warnings w
+                       WHERE ($1 OR w.deleted_at IS NULL)
                    ) ranked
                    WHERE ranked.rn = 1
                )
                SELECT COUNT(*) FROM dedup"#,
         );
+        qb.push_bind(filters.include_deleted);
         let mut has_where = false;
 
         if !filters.regions.is_empty() {
@@ -157,6 +195,8 @@ impl PgStore {
                 .push(")");
             has_where = true;
         }
+
+        push_hygiene_filter(&mut qb, &mut has_where, filters.exclude_hygiene_signals);
 
         if let Some(ack) = filters.acknowledged {
             qb.push(if has_where { " AND " } else { " WHERE " });
@@ -207,7 +247,7 @@ impl PgStore {
                    reviewed_by = CASE WHEN $4 IS NULL THEN reviewed_by ELSE $2 END,
                    reviewed_at = CASE WHEN $4 IS NULL THEN reviewed_at ELSE now() END,
                    updated_at = now()
-               WHERE id = $1 AND acknowledged = FALSE"#,
+             WHERE id = $1 AND acknowledged = FALSE AND deleted_at IS NULL"#,
         )
         .bind(id)
         .bind(user_id)
@@ -220,7 +260,7 @@ impl PgStore {
         }
 
         let ack_state = sqlx::query_scalar::<_, Option<bool>>(
-            "SELECT acknowledged FROM warnings WHERE id = $1",
+            "SELECT acknowledged FROM warnings WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(id)
         .fetch_one(&self.pool)
@@ -265,7 +305,7 @@ impl PgStore {
         }
         let (limit, _) = normalize_warning_window(limit, 0);
         let rows = sqlx::query_as::<_, WarningRow>(
-            "SELECT * FROM warnings WHERE entity_ids && $1 ORDER BY created_at DESC LIMIT $2",
+            "SELECT * FROM warnings WHERE deleted_at IS NULL AND entity_ids && $1 ORDER BY created_at DESC LIMIT $2",
         )
         .bind(entity_ids)
         .bind(limit)
@@ -275,7 +315,7 @@ impl PgStore {
     }
 
     pub async fn get_warning(&self, id: Uuid) -> Result<Option<WarningRow>> {
-        let row = sqlx::query_as::<_, WarningRow>("SELECT * FROM warnings WHERE id = $1")
+        let row = sqlx::query_as::<_, WarningRow>("SELECT * FROM warnings WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -296,6 +336,7 @@ impl PgStore {
         confidence: Option<f64>,
     ) -> Result<Uuid> {
         let normalized_title = title.trim().to_string();
+        let warning_title_dedup = normalize_warning_title_for_dedup(&normalized_title);
         let normalized_description = normalize_optional_text(description);
         let normalized_region = normalize_optional_text(region);
         let normalized_recipe_code = normalize_optional_text(recipe_code);
@@ -310,23 +351,36 @@ impl PgStore {
             cleaned.dedup();
             cleaned
         });
+        let recent_warning_signature =
+            recent_warning_dedup_signature(&normalized_title, normalized_description.as_deref());
 
         if let Some((existing_id,)) = sqlx::query_as::<_, (Uuid,)>(
             r#"SELECT id
                  FROM warnings
-                 WHERE lower(trim(title)) = lower(trim($1))
+                                 WHERE deleted_at IS NULL
+                                     AND lower(trim(regexp_replace(title, '^\[[^]]+\]\s*', ''))) = lower(trim($1))
                    AND lower(trim(warning_type)) = lower(trim($2))
                    AND lower(trim(severity)) = lower(trim($3))
                    AND coalesce(lower(region), '') = coalesce(lower($4), '')
-                   AND coalesce(lower(trim(description)), '') = coalesce(lower(trim($5)), '')
+                   AND (
+                       coalesce(lower(trim(description)), '') = coalesce(lower(trim($5)), '')
+                       OR (
+                           $6 IS NOT NULL
+                           AND COALESCE(entity_ids, ARRAY[]::uuid[]) = COALESCE($7, ARRAY[]::uuid[])
+                           AND created_at > NOW() - INTERVAL '21 days'
+                           AND left(trim(regexp_replace(regexp_replace(lower(coalesce(description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 220) = $6
+                       )
+                   )
                  ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, ts_utc DESC, id DESC
                  LIMIT 1"#,
         )
-        .bind(&normalized_title)
+        .bind(&warning_title_dedup)
         .bind(warning_type)
         .bind(severity)
         .bind(&normalized_region)
         .bind(&normalized_description)
+        .bind(&recent_warning_signature)
+        .bind(&normalized_entity_ids)
         .fetch_optional(&self.pool)
         .await?
         {
@@ -388,7 +442,9 @@ impl PgStore {
 
     /// Delete a single warning by ID. Returns true if a row was deleted.
     pub async fn delete_warning(&self, id: Uuid) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM warnings WHERE id = $1")
+        let result = sqlx::query(
+            "UPDATE warnings SET deleted_at = now(), updated_at = now() WHERE id = $1 AND deleted_at IS NULL",
+        )
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -400,7 +456,9 @@ impl PgStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let result = sqlx::query("DELETE FROM warnings WHERE id = ANY($1)")
+        let result = sqlx::query(
+            "UPDATE warnings SET deleted_at = now(), updated_at = now() WHERE id = ANY($1) AND deleted_at IS NULL",
+        )
             .bind(ids)
             .execute(&self.pool)
             .await?;
@@ -409,7 +467,9 @@ impl PgStore {
 
     /// Delete all warnings. Returns the number of rows deleted.
     pub async fn delete_all_warnings(&self) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM warnings")
+        let result = sqlx::query(
+            "UPDATE warnings SET deleted_at = now(), updated_at = now() WHERE deleted_at IS NULL",
+        )
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected())

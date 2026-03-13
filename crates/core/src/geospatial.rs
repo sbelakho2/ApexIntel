@@ -60,6 +60,26 @@ pub fn estimated_road_km(a: GeoPoint, b: GeoPoint) -> f64 {
     haversine_km(a, b) * ROAD_FACTOR
 }
 
+fn normalize_longitude(lon: f64) -> f64 {
+    let wrapped = (lon + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped == -180.0 { 180.0 } else { wrapped }
+}
+
+fn midpoint_longitude(a_lon: f64, b_lon: f64) -> f64 {
+    let start = normalize_longitude(a_lon);
+    let mut end = normalize_longitude(b_lon);
+
+    if (start - end).abs() > 180.0 {
+        if start > end {
+            end += 360.0;
+        } else {
+            end -= 360.0;
+        }
+    }
+
+    normalize_longitude((start + end) / 2.0)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Major ports (EMS/electronics relevant)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -159,11 +179,15 @@ fn nearest_facility(point: GeoPoint, facilities: &[(&str, f64, f64)]) -> NamedPo
 /// Classify the logistics corridor between two points.
 pub fn classify_corridor(a: GeoPoint, b: GeoPoint) -> &'static str {
     let mid_lat = (a.lat + b.lat) / 2.0;
-    let mid_lon = (a.lon + b.lon) / 2.0;
+    let mid_lon = midpoint_longitude(a.lon, b.lon);
 
     // Mediterranean corridor
     if mid_lat > 30.0 && mid_lat < 46.0 && mid_lon > -10.0 && mid_lon < 40.0 {
         return "Mediterranean";
+    }
+    // Pacific corridor
+    if mid_lon > 100.0 || mid_lon < -100.0 {
+        return "Pacific";
     }
     // Atlantic corridor
     if mid_lon < -10.0 && mid_lat > 25.0 && mid_lat < 60.0 {
@@ -172,10 +196,6 @@ pub fn classify_corridor(a: GeoPoint, b: GeoPoint) -> &'static str {
     // Red Sea / Suez corridor
     if mid_lat > 10.0 && mid_lat < 35.0 && mid_lon > 30.0 && mid_lon < 60.0 {
         return "Red Sea / Suez";
-    }
-    // Pacific corridor
-    if mid_lon > 100.0 || mid_lon < -100.0 {
-        return "Pacific";
     }
     // Northern Europe
     if mid_lat > 46.0 && mid_lon > -10.0 && mid_lon < 30.0 {
@@ -282,6 +302,23 @@ mod tests {
             lon: -118.26,
         };
         assert_eq!(classify_corridor(shanghai, la), "Pacific");
+    }
+
+    #[test]
+    fn dateline_midpoint_stays_in_pacific() {
+        let tokyo = GeoPoint {
+            lat: 35.68,
+            lon: 139.69,
+        };
+        let san_francisco = GeoPoint {
+            lat: 37.77,
+            lon: -122.42,
+        };
+
+        let mid_lon = midpoint_longitude(tokyo.lon, san_francisco.lon);
+
+        assert!(mid_lon > 100.0 || mid_lon < -100.0, "mid_lon={mid_lon}");
+        assert_eq!(classify_corridor(tokyo, san_francisco), "Pacific");
     }
 
     #[test]

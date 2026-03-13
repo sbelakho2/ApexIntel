@@ -1,4 +1,4 @@
-use super::super::*;
+use crate::*;
 
 fn build_enhanced_search_query(raw_query: &str) -> String {
     let sanitized = apex_api::routes::semantic_search::sanitize_query(raw_query);
@@ -197,7 +197,7 @@ pub(crate) async fn search(
             updated_at: Utc
                 .timestamp_opt(result.timestamp, 0)
                 .single()
-                .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap()),
+                .unwrap_or(DateTime::<Utc>::UNIX_EPOCH),
         })
         .collect();
 

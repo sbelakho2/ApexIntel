@@ -17,26 +17,10 @@
 {% call m::page_header("POI Browser", "users", "Searchable person-of-interest profiles filtered by region and role.", "") %}
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Persons Tracked</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{{ total_persons }}</p>
-  </div>
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Priority A</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{{ priority_a }}</p>
-  </div>
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Priority B</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{{ priority_b }}</p>
-  </div>
-  <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Influence</p>
-    <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_influence }}</p>
-  </div>
+  {% call m::metric_card("Persons Tracked", total_persons.to_string(), "metric-rail-steel") %}
+  {% call m::metric_card("Priority A", priority_a.to_string(), "metric-rail-red") %}
+  {% call m::metric_card("Priority B", priority_b.to_string(), "metric-rail-orange") %}
+  {% call m::metric_card("Avg Influence", avg_influence.to_string(), "metric-rail-green") %}
 </div>
 
 <div class="apex-card p-4 mb-6">
@@ -47,7 +31,7 @@
   <div class="grid grid-cols-5 gap-3 items-end h-40">
     {% for g in influence_groups %}
     <div class="flex h-full flex-col justify-end">
-      <div class="rounded-sm bg-blue-500/70" style="height:{{ g.pct }}%"></div>
+      <div class="apex-bar-column" style="--apex-bar-height:{{ g.pct }}%"></div>
       <p class="mt-2 text-[10px] text-center font-bold text-muted-foreground">{{ g.range }}</p>
       <p class="text-[10px] text-center text-muted-foreground">{{ g.count }}</p>
     </div>
@@ -61,9 +45,9 @@
     <input id="persons-search" name="q" type="text" value="{{ search_query }}"
            placeholder="Name, role, organization"
            class="w-full sm:min-w-[220px] rounded-sm border border-border bg-background px-2 py-1 text-xs" />
-    <button type="submit" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Apply</button>
+    <button type="submit" class="apex-action-link">Apply</button>
     {% if !search_query.is_empty() %}
-    <a href="/persons" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Clear</a>
+    <a href="/persons" class="apex-action-link">Clear</a>
     {% endif %}
   </form>
 
@@ -71,15 +55,15 @@
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Refine POI list:</span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
     {% for r in region_filters %}
-      <a href="{{ r.href }}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if r.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ r.label }}</a>
+      {% call m::filter_chip(r.label, r.href, r.active, "default", "") %}
     {% endfor %}
     <span class="mx-2 h-4 w-px bg-border"></span>
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Priority:</span>
     {% for p in priority_filters %}
-      <a href="{{ p.href }}" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if p.active %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">{{ p.label }}</a>
+      {% call m::filter_chip(p.label, p.href, p.active, "default", "") %}
     {% endfor %}
     <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
-    <a href="{{ reset_href }}" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset Filters</a>
+    <a href="{{ reset_href }}" class="apex-action-link">Reset Filters</a>
   </div>
 </div>
 
@@ -90,7 +74,7 @@
       <p class="mt-1 text-[11px] text-muted-foreground">Dense POI review for influence ranking, organization coverage, and tag scanning.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
-      <a href="/api/persons/export" class="rounded-sm border border-border bg-secondary px-2 py-1 text-muted-foreground hover:text-foreground">CSV</a>
+      <a href="/api/persons/export" class="apex-action-link">CSV</a>
     </div>
   </div>
   <div class="overflow-x-auto">
@@ -113,7 +97,7 @@
           <td class="px-4 py-3 text-muted-foreground">{{ p.role }}</td>
           <td class="px-4 py-3 text-muted-foreground">{{ p.organization }}</td>
           <td class="px-4 py-3">{{ p.region }}</td>
-          <td class="px-4 py-3"><span class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase">{{ p.priority }}</span></td>
+          <td class="px-4 py-3"><span class="apex-filter-chip apex-filter-chip-muted">{{ p.priority }}</span></td>
           <td class="px-4 py-3 text-right font-bold tabular-nums">{{ p.influence_score }}</td>
           <td class="px-4 py-3 text-muted-foreground">{% if p.tags.is_empty() %}—{% else %}{% for tag in p.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
         </tr>
@@ -135,7 +119,7 @@
           <p class="font-bold text-sm truncate">{{ p.name }}</p>
           <p class="mt-1 text-[10px] uppercase text-muted-foreground truncate">{{ p.role }} · {{ p.organization }}</p>
         </div>
-        <span class="text-[10px] font-black uppercase rounded-sm border border-border bg-secondary px-2 py-1">{{ p.priority }}</span>
+        <span class="apex-filter-chip apex-filter-chip-muted">{{ p.priority }}</span>
       </div>
       <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
         <span>{{ p.region }}</span>

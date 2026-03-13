@@ -27,7 +27,13 @@
 //! - `stats.hazard.hazard_rate`
 //! - `stats.fdr.significant_count`
 
-use crate::{anomaly, bayesian, changepoint, correlation, fdr, graph_risk, hazard, mutual_info};
+use crate::{
+    anomaly, bayesian,
+    calibration::{probability_to_alert_level, AlertCalibrationModel},
+    changepoint, correlation, fdr, graph_risk, granger, hazard, mutual_info,
+};
+#[cfg(test)]
+use crate::calibration::legacy_score_to_probability;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;
@@ -41,6 +47,8 @@ pub struct StatsPipelineInput {
     pub primary_series: Vec<f64>,
     /// Optional secondary series for cross-correlation and MI (same length as primary).
     pub secondary_series: Option<Vec<f64>>,
+    /// Optional named signal series for Granger causality and predictive signal graphing.
+    pub signal_series: HashMap<String, Vec<f64>>,
     /// Evidence items for Bayesian fusion: (p_if_true, p_if_false) per signal.
     pub bayesian_likelihoods: Vec<(f64, f64)>,
     /// Prior probability for Bayesian fusion. Default: 0.05.
@@ -57,6 +65,10 @@ pub struct StatsPipelineInput {
     pub survival_times: Vec<f64>,
     /// Event indicators for hazard analysis (1=event, 0=censored).
     pub survival_events: Vec<u8>,
+    /// Optional covariates for multivariate Cox proportional hazards.
+    pub survival_covariates: Vec<Vec<f64>>,
+    /// Optional binary group assignments for log-rank comparison.
+    pub survival_groups: Vec<u8>,
     /// Changepoint detection penalty. Default: 3.0.
     pub changepoint_penalty: f64,
     /// Anomaly MAD threshold. Default: 3.5.
@@ -81,6 +93,7 @@ impl StatsPipelineInput {
             entity_id: entity_id.into(),
             primary_series,
             secondary_series: None,
+            signal_series: HashMap::new(),
             bayesian_likelihoods: Vec::new(),
             bayesian_prior: 0.05,
             p_values: Vec::new(),
@@ -89,6 +102,8 @@ impl StatsPipelineInput {
             graph_edges: HashMap::new(),
             survival_times: Vec::new(),
             survival_events: Vec::new(),
+            survival_covariates: Vec::new(),
+            survival_groups: Vec::new(),
             changepoint_penalty: 3.0,
             anomaly_mad_threshold: 3.5,
             ewma_alpha: 0.2,
@@ -104,8 +119,16 @@ pub struct StatsPipelineResult {
     pub entity_id: String,
     /// Computed features keyed by `stats.<module>.<metric>`.
     pub features: HashMap<String, f64>,
+    /// Non-numeric labels emitted by the pipeline.
+    pub labels: HashMap<String, String>,
     /// Stage-level warnings (e.g. insufficient data).
     pub warnings: Vec<StageWarning>,
+    /// Raw additive alert score before calibration.
+    pub alert_score: f64,
+    /// Calibrated event probability used for thresholding.
+    pub alert_probability: f64,
+    /// Calibration method used for `alert_probability`.
+    pub calibration_method: String,
     /// Overall statistical alert level: None | Low | Medium | High
     pub alert_level: AlertLevel,
 }
@@ -142,13 +165,21 @@ impl StatsPipelineResult {
         Self {
             entity_id,
             features: HashMap::new(),
+            labels: HashMap::new(),
             warnings: Vec::new(),
+            alert_score: 0.0,
+            alert_probability: 0.0,
+            calibration_method: "legacy".to_string(),
             alert_level: AlertLevel::None,
         }
     }
 
     fn insert(&mut self, key: impl Into<String>, value: f64) {
         self.features.insert(key.into(), value);
+    }
+
+    fn label(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.labels.insert(key.into(), value.into());
     }
 
     fn warn(&mut self, stage: impl Into<String>, message: impl Into<String>) {
@@ -165,6 +196,13 @@ impl StatsPipelineResult {
 
 /// Run the full statistical analysis pipeline.
 pub fn run_pipeline(input: &StatsPipelineInput) -> StatsPipelineResult {
+    run_pipeline_with_calibration(input, None)
+}
+
+pub fn run_pipeline_with_calibration(
+    input: &StatsPipelineInput,
+    calibration_model: Option<&AlertCalibrationModel>,
+) -> StatsPipelineResult {
     let mut result = StatsPipelineResult::new(input.entity_id.clone());
 
     // 1. Changepoint detection
@@ -176,23 +214,38 @@ pub fn run_pipeline(input: &StatsPipelineInput) -> StatsPipelineResult {
     // 3. Cross-correlation (if secondary series available)
     run_correlation_stage(input, &mut result);
 
-    // 4. Mutual information (if secondary series available)
+    // 4. Granger causality and predictive signal graphing
+    run_granger_stage(input, &mut result);
+
+    // 5. Mutual information (if secondary series available)
     run_mutual_info_stage(input, &mut result);
 
-    // 5. Bayesian evidence fusion
+    // 6. Bayesian evidence fusion
     run_bayesian_stage(input, &mut result);
 
-    // 6. Graph risk propagation
+    // 7. Graph risk propagation
     run_graph_risk_stage(input, &mut result);
 
-    // 7. FDR correction
+    // 8. FDR correction
     run_fdr_stage(input, &mut result);
 
-    // 8. Hazard / survival analysis
+    // 9. Hazard / survival analysis
     run_hazard_stage(input, &mut result);
 
-    // Derive overall alert level from combined features
-    result.alert_level = derive_alert_level(&result.features);
+    let alert_score = alert_score_from_features(&result.features);
+    let fallback_model = AlertCalibrationModel::Legacy;
+    let model = calibration_model.unwrap_or(&fallback_model);
+    let alert_probability = model.predict(alert_score).clamp(0.0, 1.0);
+
+    result.alert_score = alert_score;
+    result.alert_probability = alert_probability;
+    result.calibration_method = model.method_name().to_string();
+    result.alert_level = match probability_to_alert_level(alert_probability) {
+        "high" => AlertLevel::High,
+        "medium" => AlertLevel::Medium,
+        "low" => AlertLevel::Low,
+        _ => AlertLevel::None,
+    };
 
     result
 }
@@ -211,22 +264,38 @@ fn run_changepoint_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
 
     let config = changepoint::PeltConfig {
         penalty: input.changepoint_penalty,
+        adaptive_penalty: true,
         min_segment: 2,
     };
 
+    let effective_penalty = changepoint::effective_penalty(&input.primary_series, &config);
     let cps = changepoint::detect_changepoints(&input.primary_series, &config);
+    let online_cps = changepoint::detect_changepoints_bocpd(
+        &input.primary_series,
+        &changepoint::BocpdConfig::default(),
+    );
     let count = cps.len() as f64;
     let last_idx = cps.last().map(|&i| i as f64).unwrap_or(-1.0);
+    let online_count = online_cps.len() as f64;
+    let online_last_idx = online_cps.last().map(|&i| i as f64).unwrap_or(-1.0);
 
     result.insert("stats.changepoint.detected_count", count);
     result.insert("stats.changepoint.last_index", last_idx);
+    result.insert("stats.changepoint.penalty_beta", effective_penalty);
+    result.insert("stats.changepoint.streaming_detected_count", online_count);
+    result.insert("stats.changepoint.streaming_last_index", online_last_idx);
 
     // Flag if a changepoint was detected in the last 3 observations
     let n = input.primary_series.len();
     let recent_cp = cps.iter().any(|&i| i >= n.saturating_sub(3));
+    let recent_online_cp = online_cps.iter().any(|&i| i >= n.saturating_sub(3));
     result.insert(
         "stats.changepoint.recent_shift",
         if recent_cp { 1.0 } else { 0.0 },
+    );
+    result.insert(
+        "stats.changepoint.streaming_recent_shift",
+        if recent_online_cp { 1.0 } else { 0.0 },
     );
 
     if count > 0.0 {
@@ -384,6 +453,68 @@ fn run_correlation_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
     );
 }
 
+fn run_granger_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
+    let mut signal_series = input.signal_series.clone();
+    signal_series
+        .entry("primary".to_string())
+        .or_insert_with(|| input.primary_series.clone());
+    if let Some(secondary) = &input.secondary_series {
+        signal_series
+            .entry("secondary".to_string())
+            .or_insert_with(|| secondary.clone());
+    }
+
+    if signal_series.len() < 2 {
+        result.insert("stats.granger.min_p_value", 1.0);
+        result.insert("stats.granger.best_lag", 0.0);
+        result.insert("stats.granger.best_f_stat", 0.0);
+        result.insert("stats.granger.significant_edge_count", 0.0);
+        return;
+    }
+
+    let lags = [1_usize, 7, 14, 30];
+    let edges = granger::build_predictive_signal_graph(&signal_series, &lags, input.fdr_alpha);
+    let mut best_result: Option<(String, String, granger::GrangerLagResult)> = None;
+
+    for (source_name, source_series) in &signal_series {
+        for (target_name, target_series) in &signal_series {
+            if source_name == target_name {
+                continue;
+            }
+
+            if let Some(candidate) = granger::best_granger_lag(source_series, target_series, &lags) {
+                let should_replace = best_result
+                    .as_ref()
+                    .map(|(_, _, current)| candidate.p_value < current.p_value)
+                    .unwrap_or(true);
+                if should_replace {
+                    best_result = Some((source_name.clone(), target_name.clone(), candidate));
+                }
+            }
+        }
+    }
+
+    if let Some((best_source, best_target, best)) = best_result {
+        result.insert("stats.granger.min_p_value", best.p_value);
+        result.insert("stats.granger.best_lag", best.lag as f64);
+        result.insert("stats.granger.best_f_stat", best.f_stat);
+        result.labels.insert("stats.granger.best_source".into(), best_source.clone());
+        result.labels.insert("stats.granger.best_target".into(), best_target.clone());
+        let alerts = granger::predictive_alerts_for_signal(&best_source, &edges);
+        if !alerts.is_empty() {
+            result
+                .labels
+                .insert("stats.granger.predictive_alerts".into(), alerts.join(" | "));
+        }
+    } else {
+        result.insert("stats.granger.min_p_value", 1.0);
+        result.insert("stats.granger.best_lag", 0.0);
+        result.insert("stats.granger.best_f_stat", 0.0);
+    }
+
+    result.insert("stats.granger.significant_edge_count", edges.len() as f64);
+}
+
 fn run_mutual_info_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
     let secondary = match &input.secondary_series {
         Some(s) => s,
@@ -399,34 +530,58 @@ fn run_mutual_info_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
         return;
     }
 
-    let mi = mutual_info::estimate(&input.primary_series, secondary, 10);
+    let mi = mutual_info::estimate_adaptive(&input.primary_series, secondary);
     result.insert("stats.mutual_info.mi", mi);
-    // Use the pre-built normalized_mi directly
-    let nmi = mutual_info::normalized_mi(&input.primary_series, secondary, 10);
+    let nmi = mutual_info::normalized_mi_adaptive(&input.primary_series, secondary);
     result.insert("stats.mutual_info.normalized_mi", nmi.clamp(0.0, 1.0));
 }
 
 fn run_bayesian_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
     if input.bayesian_likelihoods.is_empty() {
         result.insert("stats.bayesian.posterior", input.bayesian_prior);
+        result.insert("stats.bayesian.cap_trigger_rate", 0.0);
+        result.insert("stats.bayesian.capped_updates", 0.0);
+        result.label("stats.bayesian.interpretation", "against");
         return;
     }
 
-    let posterior = bayesian::fuse_signals(input.bayesian_prior, &input.bayesian_likelihoods);
-    let lift = posterior / input.bayesian_prior.max(1e-9);
+    let fusion = bayesian::fuse_signals_detailed(input.bayesian_prior, &input.bayesian_likelihoods);
+    let lift = fusion.posterior / input.bayesian_prior.max(1e-9);
 
-    result.insert("stats.bayesian.posterior", posterior);
+    result.insert("stats.bayesian.posterior", fusion.posterior);
     result.insert("stats.bayesian.lift", lift.clamp(0.0, 1000.0));
+    result.insert("stats.bayesian.cap_trigger_rate", fusion.cap_trigger_rate);
+    result.insert("stats.bayesian.capped_updates", fusion.capped_updates as f64);
     result.insert(
         "stats.bayesian.is_significant",
-        if posterior >= 0.5 { 1.0 } else { 0.0 },
+        if fusion.posterior >= 0.5 { 1.0 } else { 0.0 },
     );
+    result.label("stats.bayesian.interpretation", fusion.interpretation);
+    if fusion.cap_trigger_rate > 0.05 {
+        result.warn(
+            "bayesian",
+            format!(
+                "Bayesian evidence capping triggered in {:.1}% of updates ({}/{}); interpretation={}",
+                fusion.cap_trigger_rate * 100.0,
+                fusion.capped_updates,
+                input.bayesian_likelihoods.len(),
+                fusion.interpretation,
+            ),
+        );
+    }
 }
 
 fn run_graph_risk_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
     if input.graph_node_scores.is_empty() {
         result.insert("stats.graph_risk.propagated", 0.0);
         result.insert("stats.graph_risk.max_node_risk", 0.0);
+        result.insert("stats.graph_risk.network_size", 0.0);
+        result.insert("stats.graph_risk.monotonic_non_increasing", 1.0);
+        result.insert("stats.graph_risk.exponential_entity_risk", 0.0);
+        result.insert("stats.graph_risk.inverse_square_entity_risk", 0.0);
+        result.insert("stats.graph_risk.simulation_mean", 0.0);
+        result.insert("stats.graph_risk.simulation_p05", 0.0);
+        result.insert("stats.graph_risk.simulation_p95", 0.0);
         return;
     }
 
@@ -442,12 +597,67 @@ fn run_graph_risk_stage(input: &StatsPipelineInput, result: &mut StatsPipelineRe
         })
         .collect();
     let propagated = graph_risk::propagate(&adjacency, &input.graph_node_scores, 3, 0.5);
+    let monotonic = graph_risk::monotonic_non_increasing_with_hop(
+        &adjacency,
+        &input.graph_node_scores,
+        3,
+        graph_risk::DecayModel::Exponential { lambda: 0.7 },
+    );
+    let exponential = graph_risk::propagate_with_decay(
+        &adjacency,
+        &input.graph_node_scores,
+        3,
+        graph_risk::DecayModel::Exponential { lambda: 0.7 },
+    );
+    let inverse_square = graph_risk::propagate_with_decay(
+        &adjacency,
+        &input.graph_node_scores,
+        3,
+        graph_risk::DecayModel::InverseSquare,
+    );
+    let simulation = graph_risk::contagion_simulation(
+        &adjacency,
+        &input.graph_node_scores,
+        3,
+        graph_risk::DecayModel::Linear(0.5),
+        0.15,
+        256,
+        42,
+    );
     let max_risk = propagated.values().copied().fold(0.0_f64, f64::max);
     let entity_risk = propagated.get(&input.entity_id).copied().unwrap_or(0.0);
 
     result.insert("stats.graph_risk.propagated", entity_risk);
     result.insert("stats.graph_risk.max_node_risk", max_risk);
     result.insert("stats.graph_risk.network_size", propagated.len() as f64);
+    result.insert(
+        "stats.graph_risk.monotonic_non_increasing",
+        if monotonic { 1.0 } else { 0.0 },
+    );
+    result.insert(
+        "stats.graph_risk.exponential_entity_risk",
+        exponential.get(&input.entity_id).copied().unwrap_or(0.0),
+    );
+    result.insert(
+        "stats.graph_risk.inverse_square_entity_risk",
+        inverse_square.get(&input.entity_id).copied().unwrap_or(0.0),
+    );
+    result.insert(
+        "stats.graph_risk.simulation_mean",
+        simulation
+            .per_node_mean
+            .get(&input.entity_id)
+            .copied()
+            .unwrap_or(0.0),
+    );
+    result.insert(
+        "stats.graph_risk.simulation_p05",
+        simulation.per_node_p05.get(&input.entity_id).copied().unwrap_or(0.0),
+    );
+    result.insert(
+        "stats.graph_risk.simulation_p95",
+        simulation.per_node_p95.get(&input.entity_id).copied().unwrap_or(0.0),
+    );
 }
 
 fn run_fdr_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
@@ -471,6 +681,8 @@ fn run_fdr_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
 fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult) {
     if input.survival_times.is_empty() || input.survival_events.is_empty() {
         result.insert("stats.hazard.hazard_rate", 0.0);
+        result.insert("stats.hazard.cox.concordance", 0.0);
+        result.insert("stats.hazard.log_rank.chi_square", 0.0);
         return;
     }
 
@@ -480,6 +692,8 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
             "survival_times and survival_events length mismatch",
         );
         result.insert("stats.hazard.hazard_rate", 0.0);
+        result.insert("stats.hazard.cox.concordance", 0.0);
+        result.insert("stats.hazard.log_rank.chi_square", 0.0);
         return;
     }
 
@@ -515,6 +729,82 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
         "stats.hazard.event_count",
         input.survival_events.iter().filter(|&&e| e == 1).count() as f64,
     );
+
+    if input.survival_covariates.is_empty() {
+        result.insert("stats.hazard.cox.concordance", 0.0);
+    } else if input.survival_covariates.len() != input.survival_times.len() {
+        result.warn(
+            "hazard",
+            "survival_covariates length mismatch with survival_times",
+        );
+        result.insert("stats.hazard.cox.concordance", 0.0);
+    } else {
+        let observations: Vec<hazard::CoxObservation> = input
+            .survival_times
+            .iter()
+            .zip(input.survival_events.iter())
+            .zip(input.survival_covariates.iter())
+            .map(|((&time, &event), covariates)| hazard::CoxObservation {
+                time,
+                event: event == 1,
+                covariates: covariates.clone(),
+            })
+            .collect();
+        if let Some(model) = hazard::fit_cox_ph(&observations) {
+            result.insert("stats.hazard.cox.concordance", model.concordance_index);
+            result.insert(
+                "stats.hazard.cox.log_partial_likelihood",
+                model.log_partial_likelihood,
+            );
+            result.insert(
+                "stats.hazard.cox.converged",
+                if model.converged { 1.0 } else { 0.0 },
+            );
+            for (idx, coefficient) in model.coefficients.iter().enumerate() {
+                result.insert(format!("stats.hazard.cox.beta_{idx}"), *coefficient);
+            }
+            for (idx, hazard_ratio) in model.hazard_ratios.iter().enumerate() {
+                result.insert(format!("stats.hazard.cox.hr_{idx}"), *hazard_ratio);
+            }
+        } else {
+            result.warn("hazard", "cox proportional hazards fit failed");
+            result.insert("stats.hazard.cox.concordance", 0.0);
+        }
+    }
+
+    if input.survival_groups.is_empty() {
+        result.insert("stats.hazard.log_rank.chi_square", 0.0);
+    } else if input.survival_groups.len() != input.survival_times.len() {
+        result.warn("hazard", "survival_groups length mismatch with survival_times");
+        result.insert("stats.hazard.log_rank.chi_square", 0.0);
+    } else {
+        let mut group_zero = Vec::new();
+        let mut group_one = Vec::new();
+        for ((&time, &event), &group) in input
+            .survival_times
+            .iter()
+            .zip(input.survival_events.iter())
+            .zip(input.survival_groups.iter())
+        {
+            let point = (time, event == 1);
+            if group == 0 {
+                group_zero.push(point);
+            } else {
+                group_one.push(point);
+            }
+        }
+        if let Some(log_rank) = hazard::log_rank_test(&group_zero, &group_one) {
+            result.insert("stats.hazard.log_rank.chi_square", log_rank.chi_square);
+            result.insert("stats.hazard.log_rank.p_value", log_rank.p_value);
+            result.insert(
+                "stats.hazard.log_rank.observed_minus_expected",
+                log_rank.observed_minus_expected,
+            );
+        } else {
+            result.warn("hazard", "log-rank comparison unavailable for provided groups");
+            result.insert("stats.hazard.log_rank.chi_square", 0.0);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -522,7 +812,7 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Combine stats pipeline features into a single alert level.
-fn derive_alert_level(features: &HashMap<String, f64>) -> AlertLevel {
+pub fn alert_score_from_features(features: &HashMap<String, f64>) -> f64 {
     let mut score = 0.0_f64;
 
     // Changepoints are strong signals
@@ -619,11 +909,16 @@ fn derive_alert_level(features: &HashMap<String, f64>) -> AlertLevel {
         score += 0.5;
     }
 
-    match score as u32 {
-        0 => AlertLevel::None,
-        1..=2 => AlertLevel::Low,
-        3..=4 => AlertLevel::Medium,
-        _ => AlertLevel::High,
+    score
+}
+
+#[cfg(test)]
+fn derive_alert_level(features: &HashMap<String, f64>) -> AlertLevel {
+    match probability_to_alert_level(legacy_score_to_probability(alert_score_from_features(features))) {
+        "high" => AlertLevel::High,
+        "medium" => AlertLevel::Medium,
+        "low" => AlertLevel::Low,
+        _ => AlertLevel::None,
     }
 }
 
@@ -656,10 +951,26 @@ mod tests {
     fn pipeline_with_full_data_produces_all_features() {
         let mut input = make_input(30);
         input.secondary_series = Some((0..30_usize).map(|i| (i as f64 * 1.1).sin()).collect());
+        input.signal_series.insert(
+            "signal_a".into(),
+            (0..60_usize).map(|i| (i as f64 / 5.0).sin()).collect(),
+        );
+        input.signal_series.insert(
+            "signal_b".into(),
+            (0..60_usize).map(|i| (i as f64 / 5.0).cos()).collect(),
+        );
         input.bayesian_likelihoods = vec![(0.8, 0.2), (0.7, 0.3)];
         input.p_values = vec![0.001, 0.03, 0.04, 0.1, 0.5];
         input.survival_times = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         input.survival_events = vec![1, 1, 0, 1, 0];
+        input.survival_covariates = vec![
+            vec![1.8, 1.0],
+            vec![1.5, 1.0],
+            vec![1.1, 0.0],
+            vec![0.8, 0.0],
+            vec![0.4, 0.0],
+        ];
+        input.survival_groups = vec![0, 0, 0, 1, 1];
 
         let result = run_pipeline(&input);
 
@@ -674,10 +985,15 @@ mod tests {
         assert!(result
             .features
             .contains_key("stats.correlation.max_lagged_r"));
+        assert!(result.features.contains_key("stats.granger.min_p_value"));
         assert!(result.features.contains_key("stats.mutual_info.mi"));
         assert!(result.features.contains_key("stats.bayesian.posterior"));
         assert!(result.features.contains_key("stats.fdr.significant_count"));
         assert!(result.features.contains_key("stats.hazard.hazard_rate"));
+        assert!(result.features.contains_key("stats.graph_risk.monotonic_non_increasing"));
+        assert!(result.features.contains_key("stats.graph_risk.simulation_mean"));
+        assert!(result.features.contains_key("stats.hazard.cox.concordance"));
+        assert!(result.features.contains_key("stats.hazard.log_rank.chi_square"));
     }
 
     #[test]
@@ -718,6 +1034,48 @@ mod tests {
         );
         assert_eq!(result.features.get("stats.mutual_info.mi"), Some(&0.0));
         assert_eq!(result.features.get("stats.hazard.hazard_rate"), Some(&0.0));
+        assert_eq!(result.features.get("stats.hazard.cox.concordance"), Some(&0.0));
+        assert_eq!(
+            result.features.get("stats.hazard.log_rank.chi_square"),
+            Some(&0.0)
+        );
+    }
+
+    #[test]
+    fn hazard_stage_emits_multivariate_survival_features() {
+        let mut input = StatsPipelineInput::new("hazard-multi", vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        input.survival_times = vec![1.0, 1.8, 2.2, 3.5, 4.8, 5.2, 6.5, 7.0];
+        input.survival_events = vec![1, 1, 1, 1, 0, 0, 1, 0];
+        input.survival_covariates = vec![
+            vec![2.5, 1.0],
+            vec![2.1, 1.0],
+            vec![1.7, 0.0],
+            vec![1.3, 0.0],
+            vec![1.0, 0.0],
+            vec![0.8, 0.0],
+            vec![0.4, 0.0],
+            vec![0.2, 0.0],
+        ];
+        input.survival_groups = vec![0, 0, 0, 0, 1, 1, 1, 1];
+
+        let result = run_pipeline(&input);
+        assert!(
+            result
+                .features
+                .get("stats.hazard.cox.concordance")
+                .copied()
+                .unwrap_or(0.0)
+                > 0.6
+        );
+        assert!(
+            result
+                .features
+                .get("stats.hazard.log_rank.chi_square")
+                .copied()
+                .unwrap_or(0.0)
+                > 0.0
+        );
+        assert!(result.features.contains_key("stats.hazard.cox.converged"));
     }
 
     #[test]

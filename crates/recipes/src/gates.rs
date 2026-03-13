@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 /// | `min_entities`            | 5       | Gate 5: entity stability minimum count           |
 /// | `max_false_alarm_rate`    | 0.02    | Gate 7: max tolerated FP rate                    |
 /// | `counterfactual_min_change`| 0.1    | Gate 8: min effect change when signal removed    |
+/// | `reproducibility_check`   | false   | Run the gate battery twice and compare outputs   |
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateConfig {
     /// Minimum required odds-ratio uplift for Gate 1.  Default: `1.5`.
@@ -50,6 +51,8 @@ pub struct GateConfig {
     pub max_false_alarm_rate: f64,
     /// Minimum effect-size change when a signal is removed (Gate 8).  Default: `0.1`.
     pub counterfactual_min_change: f64,
+    /// Run the gate battery twice and assert byte-identical outputs. Default: `false`.
+    pub reproducibility_check: bool,
 }
 
 impl Default for GateConfig {
@@ -64,6 +67,7 @@ impl Default for GateConfig {
             min_entities: 5,
             max_false_alarm_rate: 0.02,
             counterfactual_min_change: 0.1,
+            reproducibility_check: false,
         }
     }
 }
@@ -233,19 +237,7 @@ pub fn check_counterfactual(evidence: &GateEvidence, config: &GateConfig) -> boo
     evidence.counterfactual_change >= config.counterfactual_min_change
 }
 
-// ────────────────────────────────────────────
-// Gate report
-// ────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GateResult {
-    pub name: String,
-    pub passed: bool,
-    pub detail: String,
-}
-
-/// Run all 8 gates and produce a report.
-pub fn run_all_gates(evidence: &GateEvidence, config: &GateConfig) -> Vec<GateResult> {
+fn run_all_gates_once(evidence: &GateEvidence, config: &GateConfig) -> Vec<GateResult> {
     vec![
         GateResult {
             name: "effect_size".to_string(),
@@ -315,6 +307,34 @@ pub fn run_all_gates(evidence: &GateEvidence, config: &GateConfig) -> Vec<GateRe
             ),
         },
     ]
+}
+
+// ────────────────────────────────────────────
+// Gate report
+// ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateResult {
+    pub name: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+/// Run all 8 gates and produce a report.
+pub fn run_all_gates(evidence: &GateEvidence, config: &GateConfig) -> Vec<GateResult> {
+    let first = run_all_gates_once(evidence, config);
+    if !config.reproducibility_check {
+        return first;
+    }
+
+    let second = run_all_gates_once(evidence, config);
+    let first_bytes = serde_json::to_vec(&first).expect("gate results must serialize");
+    let second_bytes = serde_json::to_vec(&second).expect("gate results must serialize");
+    assert_eq!(
+        first_bytes, second_bytes,
+        "reproducibility_check detected non-deterministic gate results"
+    );
+    first
 }
 
 /// Check if all gates pass.
@@ -629,6 +649,7 @@ mod tests {
             min_entities: 2,
             max_false_alarm_rate: 0.1,
             counterfactual_min_change: 0.01,
+            reproducibility_check: false,
         };
         // With lenient config, previously failing evidence should mostly pass
         let ev = failing_evidence();
@@ -711,6 +732,10 @@ mod tests {
             (cfg.counterfactual_min_change - 0.1).abs() < f64::EPSILON,
             "counterfactual_min_change default is 0.1"
         );
+        assert!(
+            !cfg.reproducibility_check,
+            "reproducibility_check default is false"
+        );
     }
 
     // B291: GateConfig::validate
@@ -781,6 +806,7 @@ mod tests {
             min_entities: 0,                // < 1
             max_false_alarm_rate: 0.0,      // <= 0
             counterfactual_min_change: 0.0, // <= 0
+            reproducibility_check: false,
         };
         let errs = cfg.validate();
         // Check all nine broken fields are represented
@@ -792,5 +818,21 @@ mod tests {
         assert!(errs.iter().any(|e| e.contains("min_entities")));
         assert!(errs.iter().any(|e| e.contains("max_false_alarm_rate")));
         assert!(errs.iter().any(|e| e.contains("counterfactual_min_change")));
+    }
+
+    #[test]
+    fn test_reproducibility_check_returns_identical_gate_results() {
+        let config = GateConfig {
+            reproducibility_check: true,
+            ..GateConfig::default()
+        };
+
+        let results_a = run_all_gates(&passing_evidence(), &config);
+        let results_b = run_all_gates(&passing_evidence(), &config);
+
+        assert_eq!(
+            serde_json::to_vec(&results_a).unwrap(),
+            serde_json::to_vec(&results_b).unwrap()
+        );
     }
 }

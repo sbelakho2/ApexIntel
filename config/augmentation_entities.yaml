@@ -1,0 +1,91 @@
+ems_companies:
+  - [Foxconn, TW, 2354.TW, Ems]
+  - [Jabil Inc., US, JBL, Ems]
+  - [Flex Ltd., SG, FLEX, Ems]
+  - [Celestica, CA, CLS, Ems]
+  - [Benchmark Electronics, US, BHE, Ems]
+  - [Plexus Corp., US, PLXS, Ems]
+  - [Venture Corporation, SG, V03.SI, Ems]
+  - [Sanmina, US, SANM, Ems]
+  - [SMTC Corporation, CA, SMTX, Ems]
+  - [KeyTronik, US, KTEC, Ems]
+  - [Kimball Electronics, US, KE, Ems]
+  - [Creation Technologies, CA, null, Ems]
+  - [Pegatron, TW, 4938.TW, Ems]
+  - [Wistron, TW, 3231.TW, Ems]
+  - [Inventec, TW, 2356.TW, Ems]
+  - [Quanta Computer, TW, 2382.TW, Ems]
+  - [Compal Electronics, TW, 2324.TW, Ems]
+  - [Cal-Comp Electronics, TH, null, Ems]
+  - [USI (Universal Scientific), TW, 3536.TW, Ems]
+  - [Delta Electronics, TW, 2308.TW, Ems]
+  - [Starz Electronics, TN, null, Ems]
+oem_companies:
+  - [Airbus Defence, FR, AIR.PA, Oem]
+  - [BAE Systems, GB, BA.L, Oem]
+  - [Thales Group, FR, HO.PA, Oem]
+  - [Leonardo S.p.A., IT, LDO.MI, Oem]
+  - [Rheinmetall, DE, RHM.DE, Oem]
+  - [Saab AB, SE, SAAB-B.ST, Oem]
+  - [IAI (Israel Aerospace Industries), IL, null, Oem]
+  - [Elbit Systems, IL, ESLT, Oem]
+  - [Northrop Grumman, US, NOC, Oem]
+  - [Raytheon Technologies, US, RTX, Oem]
+  - [Lockheed Martin, US, LMT, Oem]
+  - [General Dynamics, US, GD, Oem]
+capabilities:
+  - SMT Assembly
+  - Through-Hole Assembly
+  - BGA Rework
+  - PCB Fabrication (Rigid)
+  - PCB Fabrication (Flex)
+  - Box Build Assembly
+  - Cable Assembly
+  - Wire Harness
+  - Clean Room Assembly (ISO 7)
+  - Conformal Coating
+  - Potting & Encapsulation
+  - AOI (Automated Optical Inspection)
+  - X-Ray Inspection
+  - Flying Probe Test
+  - ICT (In-Circuit Test)
+  - Functional Test
+  - Burn-In Test
+  - Environmental Stress Screening
+certifications:
+  - ISO 9001:2015
+  - ISO 14001:2015
+  - ISO 13485:2016
+  - ISO 27001:2022
+  - AS9100D
+  - IATF 16949:2016
+  - NADCAP
+  - IPC-A-610 Class 3
+  - IPC-6012 Class 3
+  - J-STD-001 CIS
+  - ITAR Registered
+industries:
+  - aerospace
+  - defense
+  - automotive
+  - medical
+  - telecom
+  - industrial
+  - consumer
+  - iot
+  - energy
+  - semiconductor
+regions: [US, CA, MX, DE, FR, GB, IL, TN, MA, TW, CN, JP, KR, SG, IN, IT, SE, NL]
+roles:
+  - [CEO, Executive]
+  - [CTO, Technology]
+  - [CFO, Finance]
+  - [COO, Operations]
+  - [VP Engineering, Technology]
+  - [VP Supply Chain, Operations]
+  - [Plant Manager, Operations]
+  - [Quality Director, Quality]
+  - [Procurement Director, Procurement]
+  - [Sales Director, Sales]
+first_names: [James, Sarah, Michael, Jennifer, Robert, Emily, David, Lisa, Thomas, Maria, Pierre, Francois, Hans, Keiko, Yuki, Wei, Chen, Ahmed, Fatima, Sami]
+last_names: [Smith, Johnson, Williams, Brown, Davis, Miller, Wilson, Taylor, Anderson, Lee, Dupont, Muller, Tanaka, Yamamoto, Wang, Zhang, Al-Rashid, Ben Ali, Cohen, Levy]

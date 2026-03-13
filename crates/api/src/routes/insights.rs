@@ -39,6 +39,16 @@ pub struct InsightResponse {
     pub evidence_urls: Vec<String>,
     pub entity_ids: Vec<String>,
     pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub information_gain_bits: Option<f64>,
+    #[serde(default)]
+    pub information_gain_sparkline: Vec<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diversity_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diversity_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causal_flag: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,6 +167,11 @@ mod tests {
             evidence_urls: vec![],
             entity_ids: vec![],
             tags: tags.into_iter().map(|t| t.to_string()).collect(),
+            information_gain_bits: Some(0.12),
+            information_gain_sparkline: vec![0.02, 0.07, 0.12],
+            diversity_score: Some(0.66),
+            diversity_label: Some("diverse".to_string()),
+            causal_flag: None,
             created_at: ts,
             updated_at: ts,
             bookmarked: None,

@@ -1,4 +1,6 @@
-use super::super::*;
+#![allow(clippy::disallowed_methods)]
+
+use crate::*;
 
 #[cfg(feature = "llm")]
 use apex_llm::prompt_registry::{workflow_prompt, PromptKey, RegisteredPrompt};

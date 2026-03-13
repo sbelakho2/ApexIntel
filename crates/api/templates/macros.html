@@ -5,8 +5,8 @@
 {% endmacro %}
 
 {% macro page_header(title, icon_name, subtitle, actions) %}
-<div class="mb-6 flex items-start justify-between gap-4 border-b border-border pb-4">
-  <div class="flex items-start gap-3">
+<div class="page-header mb-6 flex items-start justify-between gap-4 border-b border-border pb-4">
+  <div class="page-header-main flex items-start gap-3">
     <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
       {% call icon(icon_name, "h-4 w-4") %}
     </div>
@@ -15,41 +15,67 @@
       {% if !subtitle.is_empty() %}<p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{{ subtitle }}</p>{% endif %}
     </div>
   </div>
-  {{ actions|safe }}
+  <div class="page-header-actions">{{ actions|safe }}</div>
 </div>
+{% endmacro %}
+
+{% macro metric_card(label, value, rail_class) %}
+<div class="apex-metric-card">
+  <div class="apex-metric-rail {{ rail_class }}"></div>
+  <p class="apex-metric-label">{{ label }}</p>
+  <p class="mt-1.5 apex-metric-number text-2xl">{{ value }}</p>
+</div>
+{% endmacro %}
+
+{% macro filter_chip(label, href, active, variant, extra_attrs) %}
+<a href="{{ href }}" {{ extra_attrs|safe }} class="apex-filter-chip {% if active %}{% if variant == "accent" %}apex-filter-chip-accent{% else %}apex-filter-chip-active{% endif %}{% else %}apex-filter-chip-idle{% endif %}">{{ label }}</a>
+{% endmacro %}
+
+{% macro legend_item(label, swatch_class, size) %}
+<span class="apex-chart-legend-item">
+  <span class="{% if size == "wide" %}apex-legend-swatch-wide{% else if size == "small" %}apex-legend-swatch-sm{% else %}apex-legend-swatch{% endif %} {{ swatch_class }}"></span>
+  {{ label }}
+</span>
+{% endmacro %}
+
+{% macro color_legend_item(label, value, color) %}
+<span class="apex-chart-legend-item">
+  <span class="apex-legend-swatch apex-legend-swatch-dynamic" style="--apex-swatch-color: {{ color }}"></span>
+  {{ label }}{% if !value.is_empty() %} ({{ value }}){% endif %}
+</span>
 {% endmacro %}
 
 {% macro severity_badge(severity) %}
 {% if severity == "critical" %}
-<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-red-500/10 text-red-600 border-red-500/20">
-  <span class="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></span>critical
+<span class="apex-badge apex-badge-critical">
+  <span class="apex-badge-dot"></span>critical
 </span>
 {% else if severity == "high" %}
-<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-orange-500/10 text-orange-600 border-orange-500/20">
-  <span class="h-1.5 w-1.5 rounded-full bg-orange-500"></span>high
+<span class="apex-badge apex-badge-high">
+  <span class="apex-badge-dot"></span>high
 </span>
 {% else if severity == "medium" %}
-<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-yellow-500/10 text-yellow-700 border-yellow-500/20">
-  <span class="h-1.5 w-1.5 rounded-full bg-yellow-500"></span>medium
+<span class="apex-badge apex-badge-medium">
+  <span class="apex-badge-dot"></span>medium
 </span>
 {% else %}
-<span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-blue-400/10 text-blue-600 border-blue-400/20">
-  <span class="h-1.5 w-1.5 rounded-full bg-blue-400"></span>low
+<span class="apex-badge apex-badge-low">
+  <span class="apex-badge-dot"></span>low
 </span>
 {% endif %}
 {% endmacro %}
 
 {% macro status_badge(status, variant) %}
 {% if variant == "success" %}
-<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-green-500/10 text-green-700 border-green-500/20">{{ status }}</span>
+<span class="apex-badge apex-badge-success"><span class="apex-badge-dot"></span>{{ status }}</span>
 {% else if variant == "warning" %}
-<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-yellow-500/10 text-yellow-700 border-yellow-500/20">{{ status }}</span>
+<span class="apex-badge apex-badge-medium"><span class="apex-badge-dot"></span>{{ status }}</span>
 {% else if variant == "error" %}
-<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-red-500/10 text-red-600 border-red-500/20">{{ status }}</span>
+<span class="apex-badge apex-badge-critical"><span class="apex-badge-dot"></span>{{ status }}</span>
 {% else if variant == "info" %}
-<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-blue-500/10 text-blue-600 border-blue-500/20">{{ status }}</span>
+<span class="apex-badge apex-badge-info"><span class="apex-badge-dot"></span>{{ status }}</span>
 {% else %}
-<span class="inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] bg-muted/50 text-muted-foreground border-border">{{ status }}</span>
+<span class="apex-badge apex-badge-neutral"><span class="apex-badge-dot"></span>{{ status }}</span>
 {% endif %}
 {% endmacro %}
 
@@ -60,7 +86,7 @@
 {% endmacro %}
 
 {% macro score_ring(score, size) %}
-<div class="inline-flex items-center justify-center rounded-full border-2 {% if score >= 85 %}border-red-500 text-red-600{% else if score >= 65 %}border-yellow-500 text-yellow-700{% else %}border-blue-400 text-blue-600{% endif %}" style="width: {{ size }}px; height: {{ size }}px;">
+<div class="apex-score-ring {% if score >= 85 %}apex-score-ring-critical{% else if score >= 65 %}apex-score-ring-warning{% else %}apex-score-ring-info{% endif %}" style="--apex-ring-size: {{ size }}px;">
   <span class="text-[10px] font-black">{{ score }}</span>
 </div>
 {% endmacro %}
@@ -74,7 +100,7 @@
   </div>
   {% endif %}
   <div class="intel-score-bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{ max }}">
-    <div class="intel-score-fill" style="width: {{ value }}%; background-color: {{ color }}"></div>
+    <div class="intel-score-fill intel-score-fill-dynamic" style="--intel-score-width: {{ value }}%; --intel-score-color: {{ color }}"></div>
   </div>
 </div>
 {% endmacro %}
@@ -92,8 +118,8 @@
 {% macro confidence_meter(value, label) %}
 <div class="flex items-center gap-2">
   {% if !label.is_empty() %}<span class="text-[10px] font-bold uppercase text-muted-foreground">{{ label }}</span>{% endif %}
-  <div class="h-2 w-24 rounded-full bg-secondary overflow-hidden">
-    <div class="h-full rounded-full {% if value >= 70 %}bg-green-600{% else if value >= 40 %}bg-yellow-500{% else %}bg-red-500{% endif %}" style="width: {{ value }}%"></div>
+  <div class="h-2 w-24 rounded-sm bg-secondary overflow-hidden">
+    <div class="apex-meter-fill {% if value >= 70 %}apex-meter-fill-high{% else if value >= 40 %}apex-meter-fill-medium{% else %}apex-meter-fill-low{% endif %}" style="--apex-meter-width: {{ value }}%"></div>
   </div>
   <span class="text-xs font-bold tabular-nums">{{ value }}%</span>
 </div>
@@ -107,30 +133,191 @@
 {# segments: Vec<DonutSegment> with precomputed dash_array, dash_offset  #}
 {# size: i32, stroke_width: i32, half: i32 (= size/2), radius: i32      #}
 {% macro donut_chart(segments, size, stroke_width, half, radius) %}
-<div class="inline-flex flex-col items-center gap-2">
-  <svg width="{{ size }}" height="{{ size }}" viewBox="0 0 {{ size }} {{ size }}" class="transform -rotate-90">
-    {# Background ring #}
-    <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
-      fill="none" stroke="currentColor" stroke-width="{{ stroke_width }}"
-      class="text-border" opacity="0.3"/>
-    {# Segments — dash_array and dash_offset precomputed in Rust #}
+<div class="apex-donut-chart">
+  <div class="apex-donut-shell">
+    <svg width="{{ size }}" height="{{ size }}" viewBox="0 0 {{ size }} {{ size }}" class="apex-donut-svg transform -rotate-90">
+      <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
+        fill="none" stroke="currentColor" stroke-width="{{ stroke_width }}"
+        class="text-border" opacity="0.06"/>
+      {% for seg in segments %}
+      <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
+        fill="none" stroke="{{ seg.color }}" stroke-width="{{ stroke_width }}"
+        stroke-dasharray="{{ seg.dash_array }}"
+        stroke-dashoffset="{{ seg.dash_offset }}"
+        stroke-linecap="round"
+        class="apex-donut-segment">
+        <title>{{ seg.label }}: {{ seg.count }}</title>
+      </circle>
+      {% endfor %}
+    </svg>
+    <div class="apex-donut-center">
+      <span class="apex-donut-center-kicker">Mix</span>
+      <span class="apex-donut-center-value">{{ segments.len() }}</span>
+    </div>
+  </div>
+  <div class="flex flex-wrap justify-center gap-x-2 gap-y-2">
     {% for seg in segments %}
-    <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
-      fill="none" stroke="{{ seg.color }}" stroke-width="{{ stroke_width }}"
-      stroke-dasharray="{{ seg.dash_array }}"
-      stroke-dashoffset="{{ seg.dash_offset }}"
-      stroke-linecap="butt">
-      <title>{{ seg.label }}: {{ seg.count }}</title>
+    {% call color_legend_item(seg.label, seg.count.to_string(), seg.color) %}
+    {% endfor %}
+  </div>
+</div>
+{% endmacro %}
+
+{% macro region_donut_chart(slices, size, stroke_width, half, radius) %}
+<div class="apex-donut-chart">
+  <div class="apex-donut-shell">
+    <svg width="{{ size }}" height="{{ size }}" viewBox="0 0 {{ size }} {{ size }}" class="apex-donut-svg transform -rotate-90">
+      <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
+        fill="none" stroke="currentColor" stroke-width="{{ stroke_width }}"
+        class="text-border" opacity="0.06"/>
+      {% for slice in slices %}
+      <circle cx="{{ half }}" cy="{{ half }}" r="{{ radius }}"
+        fill="none" stroke="{{ slice.color }}" stroke-width="{{ stroke_width }}"
+        stroke-dasharray="{{ slice.dash_array }}"
+        stroke-dashoffset="{{ slice.dash_offset }}"
+        stroke-linecap="round"
+        class="apex-donut-segment">
+        <title>{{ slice.name }}: {{ slice.count }}</title>
+      </circle>
+      {% endfor %}
+    </svg>
+    <div class="apex-donut-center">
+      <span class="apex-donut-center-kicker">Regions</span>
+      <span class="apex-donut-center-value">{{ slices.len() }}</span>
+    </div>
+  </div>
+  <div class="flex flex-wrap justify-center gap-x-2 gap-y-2">
+    {% for slice in slices %}
+    {% call color_legend_item(slice.name, slice.count.to_string(), slice.color) %}
+    {% endfor %}
+  </div>
+</div>
+{% endmacro %}
+
+{% macro warning_trend_chart(days) %}
+<div class="apex-chart-scroll">
+  <div class="apex-chart-scroll-inner apex-chart-scroll-inner-wide">
+    <div class="apex-viz-frame" role="img" aria-label="Warning trend chart over time">
+      {% for day in days %}
+      <div class="apex-viz-column" title="{{ day.date_label }}: {{ day.total }} total warnings" tabindex="0" role="button" aria-label="{{ day.date_label }}: {{ day.total }} total warnings" data-chart-point-title="{{ day.date_label }}: {{ day.total }} total warnings">
+        <span class="apex-viz-value">{{ day.total }}</span>
+        <div class="apex-viz-track">
+          <div class="apex-viz-stack" style="height: {{ day.bar_h }}%">
+            {% if day.low > 0 %}<div class="apex-viz-segment apex-viz-segment-low" style="height: {{ day.low_h }}%"></div>{% endif %}
+            {% if day.medium > 0 %}<div class="apex-viz-segment apex-viz-segment-medium" style="height: {{ day.medium_h }}%"></div>{% endif %}
+            {% if day.high > 0 %}<div class="apex-viz-segment apex-viz-segment-high" style="height: {{ day.high_h }}%"></div>{% endif %}
+            {% if day.critical > 0 %}<div class="apex-viz-segment apex-viz-segment-critical" style="height: {{ day.critical_h }}%"></div>{% endif %}
+          </div>
+        </div>
+        <span class="apex-viz-label">{{ day.date_label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro insight_trend_chart(days) %}
+<div class="apex-chart-scroll">
+  <div class="apex-chart-scroll-inner apex-chart-scroll-inner-wide">
+    <div class="apex-viz-frame" role="img" aria-label="Insight generation trend over time">
+      {% for day in days %}
+      <div class="apex-viz-column" title="{{ day.date_label }}: {{ day.total }} insights" tabindex="0" role="button" aria-label="{{ day.date_label }}: {{ day.total }} insights" data-chart-point-title="{{ day.date_label }}: {{ day.total }} insights">
+        <span class="apex-viz-value">{{ day.total }}</span>
+        <div class="apex-viz-track">
+          <div class="apex-viz-stack" style="height: {{ day.bar_h }}%">
+            {% if day.macro_s > 0 %}<div class="apex-viz-segment apex-viz-segment-macro" style="height: {{ day.macro_h }}%"></div>{% endif %}
+            {% if day.security > 0 %}<div class="apex-viz-segment apex-viz-segment-security" style="height: {{ day.security_h }}%"></div>{% endif %}
+            {% if day.supply > 0 %}<div class="apex-viz-segment apex-viz-segment-supply" style="height: {{ day.supply_h }}%"></div>{% endif %}
+            {% if day.competitive > 0 %}<div class="apex-viz-segment apex-viz-segment-competitive" style="height: {{ day.competitive_h }}%"></div>{% endif %}
+            {% if day.demand > 0 %}<div class="apex-viz-segment apex-viz-segment-demand" style="height: {{ day.demand_h }}%"></div>{% endif %}
+          </div>
+        </div>
+        <span class="apex-viz-label">{{ day.date_label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro crawl_activity_chart(hours) %}
+<div class="apex-chart-scroll">
+  <div class="apex-chart-scroll-inner">
+    <div class="apex-viz-frame apex-viz-frame-dual" role="img" aria-label="Crawl activity grouped bar chart">
+      {% for hour in hours %}
+      <div class="apex-viz-column" title="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations" tabindex="0" role="button" aria-label="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations" data-chart-point-title="{{ hour.hour_label }}: {{ hour.success }} pages crawled, {{ hour.errors }} observations">
+        <span class="apex-viz-value">{{ hour.success }}</span>
+        <span class="apex-viz-value-secondary">{{ hour.errors }}</span>
+        <div class="apex-viz-track apex-viz-track-dual">
+          <div class="apex-viz-dual-bar apex-viz-dual-bar-success" style="height: {{ hour.success_h }}%"></div>
+          <div class="apex-viz-dual-bar apex-viz-dual-bar-errors" style="height: {{ hour.errors_h }}%"></div>
+        </div>
+        <span class="apex-viz-label">{{ hour.hour_label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro recipe_line_chart(chart_width, precision_points, recall_points, fpr_points, rows) %}
+<div class="overflow-x-auto">
+  <svg class="apex-line-chart" viewBox="0 0 {{ chart_width + 18 }} 120" role="img" aria-label="Recipe quality trend lines" preserveAspectRatio="none">
+    <rect x="0" y="10" width="{{ chart_width }}" height="90" rx="10" class="apex-line-chart-plot" />
+    <line x1="0" y1="100" x2="{{ chart_width }}" y2="100" class="apex-line-chart-axis" />
+    <line x1="0" y1="75" x2="{{ chart_width }}" y2="75" class="apex-line-chart-grid" />
+    <line x1="0" y1="50" x2="{{ chart_width }}" y2="50" class="apex-line-chart-grid" />
+    <line x1="0" y1="25" x2="{{ chart_width }}" y2="25" class="apex-line-chart-grid" />
+    <polyline points="{{ precision_points }}" class="apex-line-chart-stroke apex-line-chart-stroke-precision" />
+    <polyline points="{{ recall_points }}" class="apex-line-chart-stroke apex-line-chart-stroke-recall" />
+    <polyline points="{{ fpr_points }}" class="apex-line-chart-stroke apex-line-chart-stroke-fpr" />
+    {% for row in rows %}
+    <circle cx="{{ loop.index0 * 22 }}" cy="{{ 100 - row.precision_pct }}" r="3" class="apex-line-chart-point apex-line-chart-point-precision">
+      <title>{{ row.month }} precision {{ row.precision_pct }}%</title>
     </circle>
+    <circle cx="{{ loop.index0 * 22 }}" cy="{{ 100 - row.recall_pct }}" r="3" class="apex-line-chart-point apex-line-chart-point-recall">
+      <title>{{ row.month }} recall {{ row.recall_pct }}%</title>
+    </circle>
+    <circle cx="{{ loop.index0 * 22 }}" cy="{{ 100 - row.fpr_pct }}" r="3" class="apex-line-chart-point apex-line-chart-point-fpr">
+      <title>{{ row.month }} false positive rate {{ row.fpr_pct }}%</title>
+    </circle>
+    {% if loop.last %}
+    <text x="{{ loop.index0 * 22 + 5 }}" y="{{ 96 - row.precision_pct }}" class="apex-line-chart-value">P {{ row.precision_pct }}%</text>
+    <text x="{{ loop.index0 * 22 + 5 }}" y="{{ 96 - row.recall_pct }}" class="apex-line-chart-value">R {{ row.recall_pct }}%</text>
+    <text x="{{ loop.index0 * 22 + 5 }}" y="{{ 96 - row.fpr_pct }}" class="apex-line-chart-value">F {{ row.fpr_pct }}%</text>
+    {% endif %}
+    <text x="{{ loop.index0 * 22 }}" y="114" text-anchor="start" class="apex-line-chart-label">{{ row.month }}</text>
     {% endfor %}
   </svg>
-  {# Legend #}
-  <div class="flex flex-wrap justify-center gap-x-3 gap-y-1">
-    {% for seg in segments %}
-    <span class="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
-      <span class="h-2 w-2 rounded-full" style="background-color: {{ seg.color }}"></span>
-      {{ seg.label }} ({{ seg.count }})
-    </span>
+</div>
+{% endmacro %}
+
+{% macro competitor_comparison_chart(competitors, chart_width) %}
+<div class="overflow-x-auto">
+  <svg class="apex-line-chart" viewBox="0 0 {{ chart_width + 8 }} 120" role="img" aria-label="Competitor threat versus overlap chart" preserveAspectRatio="none">
+    <rect x="0" y="12" width="{{ chart_width }}" height="72" rx="10" class="apex-line-chart-plot" />
+    <line x1="0" y1="84" x2="{{ chart_width }}" y2="84" class="apex-line-chart-axis" />
+    <line x1="0" y1="63" x2="{{ chart_width }}" y2="63" class="apex-line-chart-grid" />
+    <line x1="0" y1="42" x2="{{ chart_width }}" y2="42" class="apex-line-chart-grid" />
+    <line x1="0" y1="21" x2="{{ chart_width }}" y2="21" class="apex-line-chart-grid" />
+    {% for c in competitors %}
+    <g>
+      <rect x="{{ c.chart_group_x + 6 }}" y="{{ c.chart_threat_y + 4 }}" width="14" height="{{ c.chart_threat_h }}" class="apex-compare-bar apex-compare-bar-threat" rx="2">
+        <title>{{ c.name }} threat: {{ c.risk_score }}</title>
+      </rect>
+      <rect x="{{ c.chart_group_x + 24 }}" y="{{ c.chart_overlap_y + 4 }}" width="14" height="{{ c.chart_overlap_h }}" class="apex-compare-bar apex-compare-bar-overlap" rx="2">
+        <title>{{ c.name }} overlap: {{ c.overlap_pct }}%</title>
+      </rect>
+      <text x="{{ c.chart_group_x + 13 }}" y="{{ c.chart_threat_y }}" class="apex-compare-value">{{ c.risk_score }}</text>
+      <text x="{{ c.chart_group_x + 31 }}" y="{{ c.chart_overlap_y }}" class="apex-compare-value">{{ c.overlap_pct }}%</text>
+      <text x="{{ c.chart_label_x }}" y="102" text-anchor="middle" class="apex-line-chart-label">{{ loop.index }}</text>
+    </g>
+    {% endfor %}
+  </svg>
+  <div class="mt-2 grid gap-1 text-[10px] text-muted-foreground sm:grid-cols-2">
+    {% for c in competitors %}
+    <div><span class="font-bold text-foreground">{{ loop.index }}.</span> {{ c.name }}</div>
     {% endfor %}
   </div>
 </div>
@@ -143,10 +330,10 @@
 
 {# ── Tier color class helper ─────────────────────────────────────────── #}
 {% macro tier_color_class(tier) %}
-{% if tier == "critical" %}text-red-600{% else if tier == "high" %}text-orange-500{% else if tier == "medium" %}text-yellow-600{% else %}text-blue-500{% endif %}
+{% if tier == "critical" %}apex-tier-critical{% else if tier == "high" %}apex-tier-high{% else if tier == "medium" %}apex-tier-medium{% else %}apex-tier-low{% endif %}
 {% endmacro %}
 
 {# ── Role family color class helper ──────────────────────────────────── #}
 {% macro role_family_color_class(family) %}
-{% if family == "Executive" %}text-red-600{% else if family == "Technical" %}text-blue-600{% else if family == "Operations" %}text-green-600{% else if family == "Legal" %}text-purple-600{% else if family == "Finance" %}text-amber-600{% else %}text-muted-foreground{% endif %}
+{% if family == "Executive" %}apex-role-executive{% else if family == "Technical" %}apex-role-technical{% else if family == "Operations" %}apex-role-operations{% else if family == "Legal" %}apex-role-legal{% else if family == "Finance" %}apex-role-finance{% else %}text-muted-foreground{% endif %}
 {% endmacro %}

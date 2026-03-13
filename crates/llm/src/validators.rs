@@ -519,6 +519,22 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_json_extract_no_panic() {
+        let cases = [
+            "",
+            "not json at all",
+            "```json\n{broken}\n```",
+            "[{\"ok\":true}] trailing text",
+            "{\"unicode\":\"شركة\"}",
+        ];
+
+        for case in cases {
+            let _ = extract_json(case);
+            let _ = parse_json_response(case);
+        }
+    }
+
+    #[test]
     fn test_check_content_quality_repetition() {
         let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let issues = check_content_quality(text);

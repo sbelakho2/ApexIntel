@@ -1,5 +1,58 @@
 use super::*;
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ReviewedWarningGoldenSetRow {
+    id: Uuid,
+    recipe_code: Option<String>,
+    warning_type: String,
+    title: String,
+    description: Option<String>,
+    severity: String,
+    region: Option<String>,
+    source_urls: Option<Vec<String>>,
+    confidence: Option<f64>,
+    review_outcome: String,
+    reviewed_at: Option<DateTime<Utc>>,
+    ts_utc: DateTime<Utc>,
+}
+
+fn serialize_quality_gate_examples_jsonl(
+    examples: &[QualityGateGoldenSetExample],
+) -> Result<String> {
+    let mut lines = Vec::with_capacity(examples.len());
+    for example in examples {
+        lines.push(serde_json::to_string(example)?);
+    }
+    Ok(lines.join("\n"))
+}
+
+fn map_reviewed_warning_golden_example(
+    row: ReviewedWarningGoldenSetRow,
+) -> QualityGateGoldenSetExample {
+    let historical_label = match row.review_outcome.as_str() {
+        "true_positive" => HistoricalQualityGateLabel::Accepted,
+        _ => HistoricalQualityGateLabel::Rejected,
+    };
+
+    QualityGateGoldenSetExample {
+        source_id: row.id,
+        source_kind: "warning".to_string(),
+        content_type: row.warning_type.clone(),
+        historical_label,
+        title: row.title,
+        body: row.description.unwrap_or_default(),
+        region: row.region,
+        confidence: row.confidence,
+        source_urls: row.source_urls.unwrap_or_default(),
+        reviewed_at: row.reviewed_at.unwrap_or(row.ts_utc),
+        metadata: serde_json::json!({
+            "severity": row.severity,
+            "recipe_code": row.recipe_code,
+            "review_outcome": row.review_outcome,
+        }),
+    }
+}
+
 impl PgStore {
     pub async fn list_prompt_versions(&self, limit: i64) -> Result<Vec<PromptVersionRecord>> {
         let limit = clamp_limit(limit);
@@ -214,6 +267,124 @@ impl PgStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    pub async fn export_quality_gate_reviewed_warning_golden_set(
+        &self,
+        accepted_limit: i64,
+        rejected_limit: i64,
+    ) -> Result<QualityGateGoldenSetExport> {
+        let accepted_limit = clamp_limit(accepted_limit).max(1);
+        let rejected_limit = clamp_limit(rejected_limit).max(1);
+
+        let rows = sqlx::query_as::<_, ReviewedWarningGoldenSetRow>(
+            r#"WITH ranked AS (
+                   SELECT id, recipe_code, warning_type, title, description, severity, region,
+                          source_urls, confidence, review_outcome, reviewed_at, ts_utc,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY review_outcome
+                              ORDER BY reviewed_at DESC NULLS LAST, ts_utc DESC, id DESC
+                          ) AS outcome_rank
+                   FROM warnings
+                   WHERE review_outcome IN ('true_positive', 'false_positive')
+                                         AND deleted_at IS NULL
+                     AND coalesce(trim(title), '') <> ''
+                     AND coalesce(trim(description), '') <> ''
+               )
+               SELECT id, recipe_code, warning_type, title, description, severity, region,
+                      source_urls, confidence, review_outcome, reviewed_at, ts_utc
+               FROM ranked
+               WHERE (review_outcome = 'true_positive' AND outcome_rank <= $1)
+                  OR (review_outcome = 'false_positive' AND outcome_rank <= $2)
+               ORDER BY CASE review_outcome WHEN 'true_positive' THEN 0 ELSE 1 END,
+                        reviewed_at DESC NULLS LAST,
+                        ts_utc DESC,
+                        id DESC"#,
+        )
+        .bind(accepted_limit)
+        .bind(rejected_limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let examples = rows
+            .into_iter()
+            .map(map_reviewed_warning_golden_example)
+            .collect::<Vec<_>>();
+        let accepted_count = examples
+            .iter()
+            .filter(|example| example.historical_label == HistoricalQualityGateLabel::Accepted)
+            .count();
+        let rejected_count = examples
+            .iter()
+            .filter(|example| example.historical_label == HistoricalQualityGateLabel::Rejected)
+            .count();
+        let dataset_version = format!(
+            "{}-{}a-{}r",
+            Utc::now().format("%Y%m%dT%H%M%SZ"),
+            accepted_count,
+            rejected_count
+        );
+        let agreement_target = 0.95;
+        let examples_jsonl = serialize_quality_gate_examples_jsonl(&examples)?;
+        let dataset_manifest = serde_json::json!({
+            "dataset_name": "quality_gate_reviewed_warning_golden_set",
+            "dataset_version": dataset_version,
+            "schema": "quality_gate_warning_jsonl_v1",
+            "accepted_target": accepted_limit,
+            "rejected_target": rejected_limit,
+            "accepted_count": accepted_count,
+            "rejected_count": rejected_count,
+            "agreement_target": agreement_target,
+            "source_kind": "reviewed_warnings",
+            "historical_labels": ["accepted", "rejected"],
+        });
+        let dataset = self
+            .record_llm_training_dataset(
+                "quality_gate_reviewed_warning_golden_set",
+                &dataset_version,
+                "quality_gate_golden_set_export",
+                &dataset_version,
+                &dataset_manifest,
+                examples.len() as i64,
+                &examples_jsonl,
+            )
+            .await?;
+
+        let export_metrics = serde_json::json!({
+            "dataset_id": dataset.id,
+            "dataset_version": dataset.dataset_version,
+            "example_count": examples.len(),
+            "accepted_count": accepted_count,
+            "rejected_count": rejected_count,
+            "agreement_target": agreement_target,
+        });
+        let export_artifacts = serde_json::json!({
+            "dataset_name": dataset.dataset_name,
+            "dataset_version": dataset.dataset_version,
+            "preview_ids": examples
+                .iter()
+                .take(10)
+                .map(|example| example.source_id.to_string())
+                .collect::<Vec<_>>(),
+        });
+        self.record_llm_improvement_run(
+            "quality_gate_golden_set_export",
+            &dataset.dataset_version,
+            &export_metrics,
+            &export_artifacts,
+        )
+        .await?;
+
+        Ok(QualityGateGoldenSetExport {
+            dataset_id: dataset.id,
+            dataset_name: dataset.dataset_name,
+            dataset_version: dataset.dataset_version,
+            example_count: dataset.example_count,
+            accepted_count,
+            rejected_count,
+            agreement_target,
+            examples,
+        })
     }
 
     pub async fn list_audit_log(

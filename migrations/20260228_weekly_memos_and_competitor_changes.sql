@@ -116,7 +116,9 @@ SELECT
     NOW() - INTERVAL '3 days',
     'https://example.com/news/ev-expansion',
     0.75
-FROM companies c WHERE c.name = 'Jabil' AND c.is_competitor = true
+FROM companies c
+WHERE c.name = 'Jabil'
+    AND COALESCE((c.metadata->>'is_competitor')::boolean, false) = true
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
@@ -128,7 +130,9 @@ SELECT
     NOW() - INTERVAL '5 days',
     'https://example.com/news/defense-contract',
     0.85
-FROM companies c WHERE c.name = 'NOTE AB' AND c.is_competitor = true
+FROM companies c
+WHERE c.name = 'NOTE AB'
+    AND COALESCE((c.metadata->>'is_competitor')::boolean, false) = true
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
@@ -140,7 +144,9 @@ SELECT
     NOW() - INTERVAL '7 days',
     'https://example.com/news/acquisition',
     0.9
-FROM companies c WHERE c.name = 'Cicor Group' AND c.is_competitor = true
+FROM companies c
+WHERE c.name = 'Cicor Group'
+    AND COALESCE((c.metadata->>'is_competitor')::boolean, false) = true
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
@@ -152,7 +158,9 @@ SELECT
     NOW() - INTERVAL '2 days',
     'https://example.com/news/ceo-change',
     0.65
-FROM companies c WHERE c.name = 'Sanmina' AND c.is_competitor = true
+FROM companies c
+WHERE c.name = 'Sanmina'
+    AND COALESCE((c.metadata->>'is_competitor')::boolean, false) = true
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
@@ -164,5 +172,7 @@ SELECT
     NOW() - INTERVAL '4 days',
     'https://example.com/news/smart-factory',
     0.7
-FROM companies c WHERE c.name = 'Flex' AND c.is_competitor = true
+FROM companies c
+WHERE c.name = 'Flex'
+    AND COALESCE((c.metadata->>'is_competitor')::boolean, false) = true
 ON CONFLICT DO NOTHING;

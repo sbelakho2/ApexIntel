@@ -44,14 +44,14 @@
     <a href="/api/v1/admin/llm-governance" class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground hover:text-foreground">JSON API</a>
   </div>
   <div class="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2">
-    <div class="rounded-2xl border border-border/70 bg-background/70 p-3">
+    <div class="apex-panel">
       <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Prompt Versions</h3>
       {% if prompt_versions.is_empty() %}
       <p class="mt-3 text-sm text-muted-foreground">No prompt versions recorded yet.</p>
       {% else %}
       <div class="mt-3 space-y-2">
         {% for item in prompt_versions %}
-        <div class="rounded-xl border border-border/60 px-3 py-2">
+        <div class="rounded-sm border border-border/60 px-3 py-2">
           <div class="flex flex-wrap items-start justify-between gap-2">
             <span class="min-w-0 flex-1 text-sm font-semibold">{{ item.prompt_id }}</span>
             <span class="mobile-wrap-token text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">{{ item.version }}</span>
@@ -66,17 +66,17 @@
       {% endif %}
     </div>
 
-    <div class="rounded-2xl border border-border/70 bg-background/70 p-3">
+    <div class="apex-panel">
       <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Workflow Runs</h3>
       {% if workflow_runs.is_empty() %}
       <p class="mt-3 text-sm text-muted-foreground">No workflow runs recorded yet.</p>
       {% else %}
       <div class="mt-3 space-y-2">
         {% for item in workflow_runs %}
-        <div class="rounded-xl border border-border/60 px-3 py-2">
+        <div class="rounded-sm border border-border/60 px-3 py-2">
           <div class="flex flex-wrap items-start justify-between gap-2">
             <span class="text-sm font-semibold">{{ item.workflow }}</span>
-            <span class="text-[10px] font-black uppercase tracking-[0.12em] {% if item.gate_status == "passed" %}text-emerald-500{% else %}text-amber-500{% endif %}">{{ item.gate_status }}</span>
+            <span class="text-[10px] font-black uppercase tracking-[0.12em] {% if item.gate_status == "passed" %}apex-text-positive{% else %}apex-text-warning{% endif %}">{{ item.gate_status }}</span>
           </div>
           <div class="mt-1 text-[11px] text-muted-foreground">{{ item.prompt_label }} · {{ item.model_name }}</div>
           <div class="mt-1 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
@@ -89,14 +89,14 @@
       {% endif %}
     </div>
 
-    <div class="rounded-2xl border border-border/70 bg-background/70 p-3">
+    <div class="apex-panel">
       <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Improvement Runs</h3>
       {% if improvement_runs.is_empty() %}
       <p class="mt-3 text-sm text-muted-foreground">No improvement runs recorded yet.</p>
       {% else %}
       <div class="mt-3 space-y-2">
         {% for item in improvement_runs %}
-        <div class="rounded-xl border border-border/60 px-3 py-2">
+        <div class="rounded-sm border border-border/60 px-3 py-2">
           <div class="flex flex-wrap items-start justify-between gap-2">
             <span class="text-sm font-semibold">{{ item.run_kind }}</span>
             <span class="text-[11px] text-muted-foreground">{{ item.created_at }}</span>
@@ -108,14 +108,14 @@
       {% endif %}
     </div>
 
-    <div class="rounded-2xl border border-border/70 bg-background/70 p-3">
+    <div class="apex-panel">
       <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Training Datasets</h3>
       {% if training_datasets.is_empty() %}
       <p class="mt-3 text-sm text-muted-foreground">No persisted training datasets recorded yet.</p>
       {% else %}
       <div class="mt-3 space-y-2">
         {% for item in training_datasets %}
-        <div class="rounded-xl border border-border/60 px-3 py-2">
+        <div class="rounded-sm border border-border/60 px-3 py-2">
           <div class="flex flex-wrap items-start justify-between gap-2">
             <span class="min-w-0 flex-1 text-sm font-semibold">{{ item.dataset_name }}</span>
             <span class="mobile-wrap-token text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">{{ item.dataset_version }}</span>
@@ -144,7 +144,7 @@
       <span class="text-sm font-semibold">{{ m.name }}</span>
       <div class="flex items-center gap-2">
         <span class="text-[11px]">{{ m.value }}</span>
-        <span class="h-2 w-2 rounded-full {% if m.status == "ok" %}bg-green-500{% else if m.status == "warning" %}bg-yellow-500{% else %}bg-red-500{% endif %}"></span>
+        <span class="apex-dot-sm {% if m.status == "ok" %}apex-dot-green{% else if m.status == "warning" %}apex-dot-orange{% else %}apex-dot-red{% endif %}"></span>
       </div>
     </div>
     {% endfor %}
@@ -201,7 +201,7 @@
       <div class="flex gap-4 text-[11px] tabular-nums">
         <span>Depth: {{ q.depth }}</span>
         <span>Processing: {{ q.processing }}</span>
-        <span class="{% if q.failed > 0 %}text-red-500{% endif %}">Failed: {{ q.failed }}</span>
+        <span class="{% if q.failed > 0 %}apex-text-danger{% endif %}">Failed: {{ q.failed }}</span>
       </div>
     </div>
     {% endfor %}

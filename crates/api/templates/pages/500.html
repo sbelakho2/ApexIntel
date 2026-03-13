@@ -1,25 +1,32 @@
 {% extends "base.html" %}
+{% import "macros.html" as m %}
 
 {% block title %}Error — ApexIntel{% endblock %}
 
 {% block content %}
-<div class="flex flex-col items-center justify-center py-20">
-  <div class="mb-6 flex h-16 w-16 items-center justify-center rounded-sm border border-destructive/30 bg-destructive/10 text-destructive">
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/>
-      <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-    </svg>
-  </div>
-  <h1 class="text-4xl font-black">500</h1>
-  <p class="mt-2 text-sm text-muted-foreground">An internal error occurred. Our team has been notified.</p>
-  {% if !error_message.is_empty() %}
-  <p class="mt-2 max-w-md text-center text-[11px] text-muted-foreground">{{ error_message }}</p>
-  {% endif %}
-  {% if !request_id.is_empty() %}
-  <p class="mt-3 text-[10px] font-mono text-muted-foreground">Request ID: {{ request_id }}</p>
-  {% endif %}
-  <a href="/" class="mt-6 rounded-sm border border-border bg-secondary px-4 py-2 text-[10px] font-black uppercase tracking-[0.12em] hover:bg-muted">
-    Return to Dashboard
-  </a>
+<div class="flex min-h-[70vh] items-center justify-center py-12">
+  <section class="apex-state-panel text-center">
+    <p class="text-[10px] font-black uppercase tracking-[0.16em] text-muted-foreground">System Fault</p>
+    <div class="mx-auto mt-5 flex h-16 w-16 items-center justify-center rounded-sm border border-destructive/30 bg-destructive/10 text-destructive">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/>
+        <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+    </div>
+    <h1 class="mt-5 text-4xl font-black">500</h1>
+    <p class="mx-auto mt-3 text-sm text-muted-foreground">An internal error interrupted the current operator workflow.</p>
+    {% if !error_message.is_empty() %}
+    <div class="apex-alert apex-alert-danger mx-auto mt-4 max-w-xl text-left">
+      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Error Context</p>
+      <p class="mt-2 text-[11px] text-foreground">{{ error_message }}</p>
+    </div>
+    {% endif %}
+    {% if !request_id.is_empty() %}
+    <p class="mt-4 text-[10px] font-mono text-muted-foreground">Request ID: {{ request_id }}</p>
+    {% endif %}
+    <div class="mt-6 flex items-center justify-center">
+      <a href="/" class="apex-btn apex-btn-secondary">Return to Dashboard</a>
+    </div>
+  </section>
 </div>
 {% endblock %}

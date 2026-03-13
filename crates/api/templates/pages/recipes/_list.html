@@ -3,27 +3,27 @@
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 mb-6">
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-steel"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Recipes</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ active_recipes_count }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-green"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Production</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ production_count }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-red"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Precision %</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_precision }}%</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-orange"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Coverage %</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_recall }}%</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1" style="background-color:#9B59B6"></div>
+    <div class="absolute top-0 left-0 w-full h-1 metric-rail-violet"></div>
     <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Alerts (7d)</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ total_fired }}</p>
   </div>
@@ -35,56 +35,22 @@
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">Precision / Recall / FPR Trend (30d)</h2>
     <div class="flex items-center gap-2">
       <span class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">Precision</span>
-      <span class="rounded-sm border border-border bg-secondary text-muted-foreground px-2 py-1 text-[9px] font-black uppercase">Recall</span>
-      <span class="rounded-sm border border-border bg-secondary text-muted-foreground px-2 py-1 text-[9px] font-black uppercase">FPR</span>
-      <span class="rounded-sm border border-border bg-secondary text-muted-foreground px-2 py-1 text-[9px] font-black uppercase">Smoothing: On</span>
+      <span class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">Recall</span>
+      <span class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">FPR</span>
     </div>
   </div>
-  <div style="height:200px;position:relative">
-    <canvas id="recipe-perf-chart"></canvas>
+  <div class="apex-chart-frame">
+    {% call m::recipe_line_chart(recipe_chart_w, precision_points, recall_points, fpr_points, recipe_perf_trend) %}
   </div>
-  <script>
-  (function(){
-    var ctx = document.getElementById('recipe-perf-chart');
-    if (!ctx) return;
-    if (ctx._chart) { ctx._chart.destroy(); }
-    ctx._chart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: [{% for row in recipe_perf_trend %}'{{ row.month }}',{% endfor %}],
-        datasets: [
-          { label: 'Precision', data: [{% for row in recipe_perf_trend %}{{ row.precision_pct }},{% endfor %}], borderColor: '#D62D2D', backgroundColor: 'rgba(214,45,45,0.08)', tension: 0.3, fill: true, pointRadius: 4, pointHoverRadius: 6 },
-          { label: 'Recall',    data: [{% for row in recipe_perf_trend %}{{ row.recall_pct }},{% endfor %}],    borderColor: '#4A90E2', backgroundColor: 'rgba(74,144,226,0.08)',  tension: 0.3, fill: true, pointRadius: 4, pointHoverRadius: 6 },
-          { label: 'FPR',       data: [{% for row in recipe_perf_trend %}{{ row.fpr_pct }},{% endfor %}],       borderColor: '#FFBE00', backgroundColor: 'rgba(255,190,0,0.08)',    tension: 0.3, fill: true, pointRadius: 4, pointHoverRadius: 6 }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 12, padding: 6 } },
-          tooltip: {
-            mode: 'index',
-            callbacks: { label: function(c) { return c.dataset.label + ': ' + c.raw + '%'; } }
-          }
-        },
-        scales: {
-          x: { ticks: { font: { size: 9 }, maxRotation: 35 } },
-          y: { min: 0, max: 100, ticks: { font: { size: 9 }, callback: function(v){ return v + '%'; } } }
-        }
-      }
-    });
-  })();
-  </script>
   <details class="mt-3">
     <summary class="text-[10px] font-bold uppercase cursor-pointer text-muted-foreground hover:text-foreground select-none">Chart data table</summary>
     <div class="mt-2 overflow-x-auto">
       <table class="w-full min-w-[34rem] text-[10px]">
         <thead><tr class="border-b border-border">
           <th class="py-1 pr-3 text-left font-bold uppercase text-muted-foreground">Month</th>
-          <th class="py-1 pr-3 text-right font-bold uppercase" style="color:#D62D2D">Precision %</th>
-          <th class="py-1 pr-3 text-right font-bold uppercase" style="color:#4A90E2">Recall %</th>
-          <th class="py-1 text-right font-bold uppercase" style="color:#FFBE00">FPR %</th>
+          <th class="py-1 pr-3 text-right font-bold uppercase metric-text-red">Precision %</th>
+          <th class="py-1 pr-3 text-right font-bold uppercase metric-text-steel">Recall %</th>
+          <th class="py-1 text-right font-bold uppercase metric-text-orange">FPR %</th>
         </tr></thead>
         <tbody class="divide-y divide-border">
           {% for row in recipe_perf_trend %}
@@ -104,12 +70,12 @@
 <div class="mb-4 apex-card p-3">
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Status:</span>
-    <a href="/recipes" hx-get="/recipes" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status.is_empty() %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">All</a>
-    <a href="/recipes?status=production" hx-get="/recipes?status=production" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "production" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">production</a>
-    <a href="/recipes?status=staging" hx-get="/recipes?status=staging" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "staging" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">staging</a>
-    <a href="/recipes?status=deprecated" hx-get="/recipes?status=deprecated" hx-target="#main-results" hx-push-url="true" class="rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] {% if active_status == "deprecated" %}border-foreground bg-foreground text-background{% else %}border-border bg-secondary text-muted-foreground hover:text-foreground{% endif %}">deprecated</a>
+    <a href="/recipes" hx-get="/recipes" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status.is_empty() %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">All</a>
+    <a href="/recipes?status=production" hx-get="/recipes?status=production" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status == "production" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">production</a>
+    <a href="/recipes?status=staging" hx-get="/recipes?status=staging" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status == "staging" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">staging</a>
+    <a href="/recipes?status=deprecated" hx-get="/recipes?status=deprecated" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status == "deprecated" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">deprecated</a>
     <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_status.is_empty() %}0{% else %}1{% endif %}</span>
-    <a href="/recipes" hx-get="/recipes" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground">Reset</a>
+    <a href="/recipes" hx-get="/recipes" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset</a>
   </div>
 </div>
 

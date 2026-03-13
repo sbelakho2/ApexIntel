@@ -5,7 +5,6 @@
 //! while read-heavy endpoints (search, list) get more generous ones.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -43,6 +42,16 @@ impl RateTier {
     /// Time window for the rate limit.
     pub fn window(&self) -> Duration {
         Duration::from_secs(60)
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Standard => "standard",
+            Self::Generous => "generous",
+            Self::Search => "search",
+            Self::Internal => "internal",
+        }
     }
 }
 
@@ -122,11 +131,9 @@ pub struct RateLimiter {
 }
 
 struct RateLimiterInner {
-    buckets: HashMap<(IpAddr, RateTier), TokenBucket>,
-    /// IPs that are permanently allowed (e.g., internal services)
-    allowlist: Vec<IpAddr>,
-    /// IPs that are permanently blocked
-    blocklist: Vec<IpAddr>,
+    buckets: HashMap<(String, String, u32, u64), TokenBucket>,
+    allowlist: Vec<String>,
+    blocklist: Vec<String>,
     /// Last cleanup time
     last_cleanup: Instant,
 }
@@ -152,47 +159,60 @@ impl RateLimiter {
         }
     }
 
-    /// Add an IP to the permanent allowlist.
-    pub fn allow_ip(&self, ip: IpAddr) {
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.allowlist.contains(&ip) {
-            inner.allowlist.push(ip);
+    pub fn allow_identifier(&self, identifier: &str) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| panic!("rate limiter lock poisoned: {err}"));
+        if !inner.allowlist.iter().any(|allowed| allowed == identifier) {
+            inner.allowlist.push(identifier.to_string());
         }
     }
 
-    /// Block an IP permanently.
-    pub fn block_ip(&self, ip: IpAddr) {
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.blocklist.contains(&ip) {
-            inner.blocklist.push(ip);
+    pub fn block_identifier(&self, identifier: &str) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| panic!("rate limiter lock poisoned: {err}"));
+        if !inner.blocklist.iter().any(|blocked| blocked == identifier) {
+            inner.blocklist.push(identifier.to_string());
         }
     }
 
-    /// Check if a request from `ip` to an endpoint with `tier` is allowed.
-    pub fn check(&self, ip: IpAddr, tier: RateTier) -> RateLimitResult {
-        let mut inner = self.inner.lock().unwrap();
+    pub fn check(&self, identifier: &str, tier: RateTier) -> RateLimitResult {
+        self.check_with_limit(identifier, tier.label(), tier.max_requests(), tier.window())
+    }
 
-        // Always allow allowlisted IPs
-        if inner.allowlist.contains(&ip) {
+    pub fn check_with_limit(
+        &self,
+        identifier: &str,
+        bucket_name: &str,
+        max_requests: u32,
+        window: Duration,
+    ) -> RateLimitResult {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| panic!("rate limiter lock poisoned: {err}"));
+
+        if inner.allowlist.iter().any(|allowed| allowed == identifier) {
             return RateLimitResult {
                 allowed: true,
-                remaining: tier.max_requests(),
-                limit: tier.max_requests(),
+                remaining: max_requests,
+                limit: max_requests,
                 retry_after_secs: 0,
             };
         }
 
-        // Always block blocklisted IPs
-        if inner.blocklist.contains(&ip) {
+        if inner.blocklist.iter().any(|blocked| blocked == identifier) {
             return RateLimitResult {
                 allowed: false,
                 remaining: 0,
-                limit: tier.max_requests(),
-                retry_after_secs: 60,
+                limit: max_requests,
+                retry_after_secs: window.as_secs(),
             };
         }
 
-        // Periodic cleanup of stale buckets (every 5 minutes)
         if inner.last_cleanup.elapsed() > Duration::from_secs(300) {
             inner
                 .buckets
@@ -200,11 +220,16 @@ impl RateLimiter {
             inner.last_cleanup = Instant::now();
         }
 
-        let key = (ip, tier);
+        let key = (
+            identifier.to_string(),
+            bucket_name.to_string(),
+            max_requests,
+            window.as_secs(),
+        );
         let bucket = inner
             .buckets
             .entry(key)
-            .or_insert_with(|| TokenBucket::new(tier.max_requests(), tier.window()));
+            .or_insert_with(|| TokenBucket::new(max_requests, window));
 
         let allowed = bucket.try_consume();
         let remaining = bucket.tokens_remaining();
@@ -213,9 +238,21 @@ impl RateLimiter {
         RateLimitResult {
             allowed,
             remaining,
-            limit: tier.max_requests(),
+            limit: max_requests,
             retry_after_secs: retry_after.as_secs(),
         }
+    }
+
+    pub fn allow_ip(&self, ip: std::net::IpAddr) {
+        self.allow_identifier(&ip.to_string());
+    }
+
+    pub fn block_ip(&self, ip: std::net::IpAddr) {
+        self.block_identifier(&ip.to_string());
+    }
+
+    pub fn check_ip(&self, ip: std::net::IpAddr, tier: RateTier) -> RateLimitResult {
+        self.check(&ip.to_string(), tier)
     }
 
     /// Generate rate-limit HTTP headers for the response.
@@ -279,9 +316,9 @@ mod tests {
     #[test]
     fn test_rate_limiter_allows_within_limit() {
         let limiter = RateLimiter::new();
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let ip = std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         for _ in 0..10 {
-            let result = limiter.check(ip, RateTier::Strict);
+            let result = limiter.check_ip(ip, RateTier::Strict);
             assert!(result.allowed);
         }
     }
@@ -289,22 +326,22 @@ mod tests {
     #[test]
     fn test_rate_limiter_blocks_over_limit() {
         let limiter = RateLimiter::new();
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip = std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         for _ in 0..10 {
-            limiter.check(ip, RateTier::Strict);
+            limiter.check_ip(ip, RateTier::Strict);
         }
-        let result = limiter.check(ip, RateTier::Strict);
+        let result = limiter.check_ip(ip, RateTier::Strict);
         assert!(!result.allowed);
-        assert!(result.retry_after_secs > 0 || result.retry_after_secs == 0);
+        assert!(result.retry_after_secs > 0);
     }
 
     #[test]
     fn test_allowlist_bypasses_limits() {
         let limiter = RateLimiter::new();
-        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let ip = std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
         limiter.allow_ip(ip);
         for _ in 0..50 {
-            let result = limiter.check(ip, RateTier::Strict);
+            let result = limiter.check_ip(ip, RateTier::Strict);
             assert!(result.allowed);
         }
     }
@@ -312,23 +349,44 @@ mod tests {
     #[test]
     fn test_blocklist_always_rejects() {
         let limiter = RateLimiter::new();
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let ip = std::net::IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
         limiter.block_ip(ip);
-        let result = limiter.check(ip, RateTier::Generous);
+        let result = limiter.check_ip(ip, RateTier::Generous);
         assert!(!result.allowed);
     }
 
     #[test]
     fn test_different_ips_independent() {
         let limiter = RateLimiter::new();
-        let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let ip1 = std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         for _ in 0..10 {
-            limiter.check(ip1, RateTier::Strict);
+            limiter.check_ip(ip1, RateTier::Strict);
         }
-        // ip2 should still be unaffected
-        let result = limiter.check(ip2, RateTier::Strict);
+        let result = limiter.check_ip(ip2, RateTier::Strict);
         assert!(result.allowed);
+    }
+
+    #[test]
+    fn test_custom_limit_is_enforced_per_identifier_and_bucket() {
+        let limiter = RateLimiter::new();
+        for _ in 0..3 {
+            let result = limiter.check_with_limit(
+                "api-key-1",
+                "GET:/api/observations",
+                3,
+                Duration::from_secs(60),
+            );
+            assert!(result.allowed);
+        }
+
+        let result = limiter.check_with_limit(
+            "api-key-1",
+            "GET:/api/observations",
+            3,
+            Duration::from_secs(60),
+        );
+        assert!(!result.allowed);
     }
 
     #[test]

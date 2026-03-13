@@ -139,11 +139,7 @@ pub fn highlight_snippet(text: &str, tokens: &[String], max_len: usize) -> Strin
         .min()
         .unwrap_or(0);
 
-    let start = if best_char_pos > max_len / 4 {
-        best_char_pos - max_len / 4
-    } else {
-        0
-    };
+    let start = best_char_pos.saturating_sub(max_len / 4);
     let end = (start + max_len).min(total_chars);
     // HTML-escape the raw text before inserting <mark> tags to prevent XSS.
     let mut snippet: String = html_escape(&chars[start..end].iter().collect::<String>());

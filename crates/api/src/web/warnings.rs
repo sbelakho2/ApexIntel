@@ -28,6 +28,7 @@ use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 pub struct WarningsQuery {
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+    pub scope: Option<String>,
     pub severity: Option<String>,
     pub warning_type: Option<String>,
     pub region: Option<String>,
@@ -93,7 +94,9 @@ fn url_encode_component(input: &str) -> String {
     byte_serialize(input.as_bytes()).collect::<String>()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_warnings_href(
+    scope: Option<&str>,
     severity: Option<&str>,
     status: Option<&str>,
     warning_type: Option<&str>,
@@ -104,6 +107,7 @@ fn build_warnings_href(
 ) -> String {
     let mut params: Vec<String> = Vec::new();
     for (k, v) in [
+        ("scope", scope),
         ("severity", severity),
         ("status", status),
         ("warning_type", warning_type),
@@ -189,8 +193,10 @@ pub struct WarningsListPage {
     pub low_count: i64,
     pub warning_trend: Vec<WarningTrendDay>,
     pub active_status: String,
+    pub active_scope: String,
     pub severity_filters: Vec<WarningFilterChip>,
     pub status_filters: Vec<WarningFilterChip>,
+    pub scope_filters: Vec<WarningFilterChip>,
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
@@ -217,8 +223,10 @@ pub struct WarningsListPartial {
     pub low_count: i64,
     pub warning_trend: Vec<WarningTrendDay>,
     pub active_status: String,
+    pub active_scope: String,
     pub severity_filters: Vec<WarningFilterChip>,
     pub status_filters: Vec<WarningFilterChip>,
+    pub scope_filters: Vec<WarningFilterChip>,
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
@@ -274,6 +282,10 @@ pub async fn list_warnings(
     Extension(store): Extension<Arc<PgStore>>,
     axum::extract::Query(params): axum::extract::Query<WarningsQuery>,
 ) -> impl IntoResponse {
+    let active_scope = match params.scope.as_deref() {
+        Some("all") => "all".to_string(),
+        _ => "focused".to_string(),
+    };
     let active_severity = params.severity.clone().unwrap_or_default();
     let active_type = params.warning_type.clone().unwrap_or_default();
     let active_region = params.region.clone().unwrap_or_default();
@@ -284,12 +296,56 @@ pub async fn list_warnings(
 
     let severity_values = ["", "critical", "high", "medium", "low"];
     let status_values = ["", "active", "acknowledged", "resolved"];
+    let scope_values = ["focused", "all"];
+
+    let scope_filters = scope_values
+        .iter()
+        .map(|value| WarningFilterChip {
+            label: if *value == "focused" {
+                "Focused".to_string()
+            } else {
+                "All Signals".to_string()
+            },
+            href: build_warnings_href(
+                Some(*value),
+                if active_severity.is_empty() {
+                    None
+                } else {
+                    Some(active_severity.as_str())
+                },
+                if active_status.is_empty() {
+                    None
+                } else {
+                    Some(active_status.as_str())
+                },
+                if active_type.is_empty() {
+                    None
+                } else {
+                    Some(active_type.as_str())
+                },
+                if active_region.is_empty() {
+                    None
+                } else {
+                    Some(active_region.as_str())
+                },
+                if search_query.is_empty() {
+                    None
+                } else {
+                    Some(search_query.as_str())
+                },
+                Some(sort_field.as_str()),
+                Some(sort_dir_str.as_str()),
+            ),
+            active: active_scope == *value,
+        })
+        .collect::<Vec<_>>();
 
     let severity_filters = severity_values
         .iter()
         .map(|value| WarningFilterChip {
             label: if value.is_empty() { "All" } else { value }.to_string(),
             href: build_warnings_href(
+                Some(active_scope.as_str()),
                 if value.is_empty() { None } else { Some(*value) },
                 if active_status.is_empty() {
                     None
@@ -323,6 +379,7 @@ pub async fn list_warnings(
         .map(|value| WarningFilterChip {
             label: if value.is_empty() { "All" } else { value }.to_string(),
             href: build_warnings_href(
+                Some(active_scope.as_str()),
                 if active_severity.is_empty() {
                     None
                 } else {
@@ -357,6 +414,7 @@ pub async fn list_warnings(
         + i64::from(!active_type.is_empty())
         + i64::from(!active_region.is_empty());
     let reset_href = build_warnings_href(
+        Some(active_scope.as_str()),
         None,
         None,
         None,
@@ -366,6 +424,7 @@ pub async fn list_warnings(
         Some(sort_dir_str.as_str()),
     );
     let current_filters_href = build_warnings_href(
+        Some(active_scope.as_str()),
         if active_severity.is_empty() {
             None
         } else {
@@ -432,6 +491,7 @@ pub async fn list_warnings(
         } else {
             Some(search_query.clone())
         },
+        exclude_hygiene_signals: active_scope != "all",
         ..Default::default()
     };
 
@@ -588,8 +648,10 @@ pub async fn list_warnings(
         low_count,
         warning_trend,
         active_status,
+        active_scope,
         severity_filters,
         status_filters,
+        scope_filters,
         active_filters,
         reset_href,
         page_base_href,
@@ -614,15 +676,17 @@ pub async fn list_warnings(
             low_count: tpl.low_count,
             warning_trend: tpl.warning_trend.clone(),
             active_status: tpl.active_status.clone(),
+            active_scope: tpl.active_scope.clone(),
             severity_filters: tpl.severity_filters.clone(),
             status_filters: tpl.status_filters.clone(),
+            scope_filters: tpl.scope_filters.clone(),
             active_filters: tpl.active_filters,
             reset_href: tpl.reset_href.clone(),
             page_base_href: tpl.page_base_href.clone(),
         };
-        partial.into_response()
+        super::render_template(&partial)
     } else {
-        tpl.into_response()
+        super::render_template(&tpl)
     }
 }
 
@@ -749,7 +813,7 @@ pub async fn get_warning(
 
     // For HTMX detail requests, still render the full template since it
     // replaces #main-results via hx-boost.
-    tpl.into_response()
+    super::render_template(&tpl)
 }
 
 /// POST /warnings/:id/acknowledge — acknowledge a warning, return updated card HTML.

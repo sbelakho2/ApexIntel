@@ -576,9 +576,9 @@ pub async fn list_companies(
             reset_href: tpl.reset_href.clone(),
             page_base_href: tpl.page_base_href.clone(),
         };
-        partial.into_response()
+        super::render_template(&partial)
     } else {
-        tpl.into_response()
+        super::render_template(&tpl)
     }
 }
 
@@ -801,7 +801,7 @@ pub async fn get_company(
         total_insights: 0,
     };
 
-    tpl.into_response()
+    super::render_template(&tpl)
 }
 
 /// GET /companies/:id/changes — HTMX partial: company changes tab.
@@ -837,7 +837,7 @@ pub async fn company_changes_tab(
         .collect();
 
     let partial = CompanyChangesTabPartial { events };
-    partial.into_response()
+    super::render_template(&partial)
 }
 
 /// GET /companies/:id/dossier — HTMX partial: company dossier tab.
@@ -876,5 +876,5 @@ pub async fn company_dossier_tab(
         .collect();
 
     let partial = CompanyDossierTabPartial { dossier_entries };
-    partial.into_response()
+    super::render_template(&partial)
 }

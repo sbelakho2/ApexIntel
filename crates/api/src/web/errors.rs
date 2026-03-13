@@ -43,7 +43,7 @@ pub async fn not_found() -> impl IntoResponse {
         requested_path: String::new(),
     };
 
-    (StatusCode::NOT_FOUND, tpl).into_response()
+    super::render_template_with_status(StatusCode::NOT_FOUND, &tpl)
 }
 
 /// Handler for internal server errors — render 500 page with a request ID
@@ -58,7 +58,7 @@ pub async fn internal_error(error_message: &str, request_id: &str) -> Response {
         request_id: request_id.to_string(),
     };
 
-    (StatusCode::INTERNAL_SERVER_ERROR, tpl).into_response()
+    super::render_template_with_status(StatusCode::INTERNAL_SERVER_ERROR, &tpl)
 }
 
 /// Convenience function: build a 404 response with session context.
@@ -71,7 +71,7 @@ pub fn not_found_with_context(username: &str, path: &str, warning_count: i64) ->
         requested_path: path.to_string(),
     };
 
-    (StatusCode::NOT_FOUND, tpl).into_response()
+    super::render_template_with_status(StatusCode::NOT_FOUND, &tpl)
 }
 
 /// Convenience function: build a 500 response with session context.
@@ -90,5 +90,5 @@ pub fn internal_error_with_context(
         request_id: request_id.to_string(),
     };
 
-    (StatusCode::INTERNAL_SERVER_ERROR, tpl).into_response()
+    super::render_template_with_status(StatusCode::INTERNAL_SERVER_ERROR, &tpl)
 }

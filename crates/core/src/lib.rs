@@ -16,4 +16,5 @@ pub mod schemas;
 pub mod similarity;
 pub mod sla;
 pub mod text;
+pub mod timeline;
 pub mod validation;

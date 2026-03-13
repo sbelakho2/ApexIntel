@@ -166,9 +166,9 @@ pub async fn search_page(
     };
 
     if is_htmx_request(&headers) {
-        Html(format!("<!-- htmx partial: search results -->")).into_response()
+        Html("<!-- htmx partial: search results -->".to_string()).into_response()
     } else {
-        tpl.into_response()
+        super::render_template(&tpl)
     }
 }
 

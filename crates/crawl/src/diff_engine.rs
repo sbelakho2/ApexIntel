@@ -122,10 +122,10 @@ pub fn compute_diff(old: &str, new: &str) -> DiffResult {
         .filter(|l| l.kind == DiffKind::Context)
         .count();
 
-    let total_change = added + removed;
+    let effective_change = added.max(removed);
     let total_lines = old_lines.len().max(new_lines.len()).max(1);
-    let change_ratio = total_change as f64 / total_lines as f64;
-    let magnitude = if change_ratio < 0.1 {
+    let change_ratio = effective_change as f64 / total_lines as f64;
+    let magnitude = if change_ratio <= 0.1 {
         "minor"
     } else if change_ratio < 0.4 {
         "moderate"

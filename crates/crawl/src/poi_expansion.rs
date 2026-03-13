@@ -287,21 +287,30 @@ impl PoiExpansionEngine {
             }
 
             // Strategy 4 — Conference / speaker directories
-            // DISABLED: Conference speaker search (TED, Sessionize, Conf.tube) searches by
-            // person NAME which returns random speakers unrelated to our monitored entities.
-            // For supply chain intelligence, we want people connected to the seed's ORGANIZATION,
-            // not random people who share a name search query.
-            // TODO: Re-enable if we can find conference APIs that search by org/industry.
-            //
-            // let from_conf = self.expand_conference_speakers(seed).await;
-            // for d in from_conf { ... }
+            let from_conf = self.expand_conference_speakers(seed).await;
+            for d in from_conf {
+                let key = d.name.to_lowercase();
+                if !seen_names.contains(&key) {
+                    seen_names.insert(key);
+                    all.push(d);
+                    if all.len() >= limit {
+                        break;
+                    }
+                }
+            }
 
             // Strategy 5 — Semantic Scholar / academic co-authors
-            // DISABLED: Academic co-author search returns random academics, not business POIs.
-            // Only useful for R&D-focused intelligence, not supply chain/EMS monitoring.
-            //
-            // let from_scholar = self.expand_semantic_scholar(seed).await;
-            // for d in from_scholar { ... }
+            let from_scholar = self.expand_semantic_scholar(seed).await;
+            for d in from_scholar {
+                let key = d.name.to_lowercase();
+                if !seen_names.contains(&key) {
+                    seen_names.insert(key);
+                    all.push(d);
+                    if all.len() >= limit {
+                        break;
+                    }
+                }
+            }
         }
 
         info!(discovered = all.len(), "poi_expansion: complete");
@@ -398,7 +407,6 @@ impl PoiExpansionEngine {
 
     // ─── Strategy 4: Conference speakers ─────────────────────────────────
 
-    #[allow(dead_code)]
     async fn expand_conference_speakers(&self, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
         // Query Lanyrd / Sessionize / Eventbrite speaker search (public JSON endpoints).
         let queries = build_conference_queries(&seed.name, &seed.organization, &seed.role_family);
@@ -431,7 +439,6 @@ impl PoiExpansionEngine {
 
     // ─── Strategy 5: Semantic Scholar co-authors ──────────────────────────
 
-    #[allow(dead_code)]
     async fn expand_semantic_scholar(&self, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
         let url = format!(
             "https://api.semanticscholar.org/graph/v1/author/search?query={}&fields=name,affiliations,paperCount&limit=5",
@@ -526,12 +533,8 @@ fn extract_names_from_leadership_html(
             let start = cap.get(0).map(|m| m.start()).unwrap_or(0);
             let vicinity = &html[start.saturating_sub(200)..std::cmp::min(start + 500, html.len())];
             let role = RE_TITLE_AT.captures(vicinity).map(|c| c[1].to_string());
-            let role = infer_target_role(vicinity).or(role);
-            if !role
-                .as_deref()
-                .map(is_target_decision_role)
-                .unwrap_or(false)
-            {
+            let role = sanitize_leadership_role(infer_target_role(vicinity).or(role));
+            if role.is_none() {
                 continue;
             }
             let email = RE_EMAIL.find(vicinity).map(|m| m.as_str().to_lowercase());
@@ -566,12 +569,8 @@ fn extract_names_from_leadership_html(
                 if role.is_none() {
                     continue; // Skip names not followed by a recognizable title
                 }
-                let role = infer_target_role(&context).or(role);
-                if !role
-                    .as_deref()
-                    .map(is_target_decision_role)
-                    .unwrap_or(false)
-                {
+                let role = sanitize_leadership_role(infer_target_role(&context).or(role));
+                if role.is_none() {
                     continue;
                 }
 
@@ -824,7 +823,6 @@ fn parse_opencorporates_officers(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPo
 }
 
 /// Build conference speaker query URLs for a given seed.
-#[allow(dead_code)]
 fn build_conference_queries(name: &str, _org: &str, _role_family: &str) -> Vec<String> {
     // Sessionize public speaker search (CFP aggregator).
     let sessions_url = format!(
@@ -848,7 +846,6 @@ fn build_conference_queries(name: &str, _org: &str, _role_family: &str) -> Vec<S
 ///
 /// Only returns names that pass `looks_like_person_name()` validation to filter
 /// out website navigation, topic labels, error messages, and other non-person text.
-#[allow(dead_code)]
 fn extract_speakers_from_html(html: &str) -> Vec<(String, Option<String>)> {
     let stripped = RE_HTML_TAGS.replace_all(html, " ");
     let mut seen = HashSet::new();
@@ -871,7 +868,6 @@ fn extract_speakers_from_html(html: &str) -> Vec<(String, Option<String>)> {
 }
 
 /// Parse Semantic Scholar author search response and return co-author candidates.
-#[allow(dead_code)]
 fn parse_semantic_scholar_coauthors(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
     // Response: { "data": [ { "authorId": "...", "name": "...", "affiliations": ["..."] } ] }
     let author_re = Regex::new(r#""name"\s*:\s*"([^"]{3,80})""#).unwrap();
@@ -974,6 +970,30 @@ fn is_plausible_org_leadership_candidate(name: &str, org: &str) -> bool {
     overlapping < 2 && overlapping < candidate_words.len()
 }
 
+fn sanitize_leadership_role(role: Option<String>) -> Option<String> {
+    let role = role?.trim().to_string();
+    if role.is_empty() {
+        return None;
+    }
+
+    let lower = role.to_ascii_lowercase();
+    let junk_roles = [
+        "postgres",
+        "postgresql",
+        "mysql",
+        "mariadb",
+        "mongodb",
+        "redis",
+        "nginx",
+        "apache",
+    ];
+    if junk_roles.contains(&lower.as_str()) {
+        return None;
+    }
+
+    is_target_decision_role(&role).then_some(role)
+}
+
 fn infer_target_role(context: &str) -> Option<String> {
     let lc = context.to_ascii_lowercase();
     let patterns: [(&str, &str); 25] = [
@@ -1013,18 +1033,85 @@ fn infer_target_role(context: &str) -> Option<String> {
 
 fn is_target_decision_role(role: &str) -> bool {
     let r = role.to_ascii_lowercase();
-    // Exclude top-level executive and ceremonial positions.
-    let top_level = [
+    let junk = [
+        "investor relations",
+        "media",
+        "press",
+        "communications",
+        "marketing",
+        "sales",
+        "business development",
+        "customer service",
+        "support",
+        "assistant",
+        "coordinator",
+        "specialist",
+        "analyst",
+        "recruiter",
+        "talent acquisition",
+        "human resources",
+        "office manager",
+        "administrator",
+        "receptionist",
+    ];
+    if junk.iter().any(|k| r.contains(k)) {
+        return false;
+    }
+
+    let executive = [
         "ceo",
         "chief executive",
+        "chief financial",
+        "chief operating",
+        "chief technology",
+        "chief information",
+        "chief procurement",
+        "chief commercial",
+        "chief strategy",
+        "chief security",
+        "chief legal",
         "chairman",
         "chairwoman",
+        "chair",
         "board",
         "president",
         "founder",
         "co-founder",
         "owner",
         "managing partner",
+        "managing director",
+        "executive vice president",
+        "senior vice president",
+        "vice president",
+        "vp",
+        "general manager",
+        "board member",
+        "supervisory board",
+    ];
+    if executive.iter().any(|k| r.contains(k)) {
+        return true;
+    }
+
+    let government = [
+        "director general",
+        "deputy director general",
+        "deputy director",
+        "department director",
+        "department head",
+        "head of procurement",
+        "procurement director",
+        "procurement manager",
+        "policy director",
+        "policy manager",
+        "program director",
+        "program manager",
+        "licensing director",
+        "regulatory affairs director",
+        "regulatory affairs manager",
+        "compliance director",
+        "compliance manager",
+        "acquisition director",
+        "acquisition manager",
         "minister",
         "secretary of state",
         "governor",
@@ -1035,21 +1122,11 @@ fn is_target_decision_role(role: &str) -> bool {
         "admiral",
         "general",
     ];
-    if top_level.iter().any(|k| r.contains(k)) {
-        return false;
+    if government.iter().any(|k| r.contains(k)) {
+        return true;
     }
 
-    // Prioritize middle-management decision makers in government and companies.
-    let target = [
-        "director",
-        "deputy director",
-        "director general",
-        "deputy",
-        "department head",
-        "head of",
-        "manager",
-        "program",
-        "policy",
+    let functional_scope = [
         "procurement",
         "purchasing",
         "sourcing",
@@ -1067,7 +1144,20 @@ fn is_target_decision_role(role: &str) -> bool {
         "tender",
         "acquisition",
     ];
-    target.iter().any(|k| r.contains(k))
+    let seniority = [
+        "head of",
+        "director",
+        "manager",
+        "vice president",
+        "vp",
+        "chief",
+        "lead",
+        "officer",
+        "general manager",
+    ];
+
+    functional_scope.iter().any(|k| r.contains(k))
+        && seniority.iter().any(|k| r.contains(k))
 }
 
 #[cfg(test)]
@@ -1183,6 +1273,39 @@ mod tests {
     }
 
     #[test]
+    fn target_role_filter_rejects_generic_contact_roles() {
+        assert!(!is_target_decision_role("Investor Relations Contact"));
+        assert!(!is_target_decision_role("Human Resources Specialist"));
+        assert!(!is_target_decision_role("Marketing Coordinator"));
+    }
+
+    #[test]
+    fn person_name_validation_rejects_temporal_phrase_names() {
+        assert!(!looks_like_person_name("Through December"));
+        assert!(!is_plausible_org_leadership_candidate(
+            "Through December",
+            "NXP Semiconductors"
+        ));
+    }
+
+    #[test]
+    fn leadership_role_sanitizer_rejects_infrastructure_terms() {
+        assert_eq!(sanitize_leadership_role(Some("postgres".to_string())), None);
+        assert_eq!(
+            sanitize_leadership_role(Some("Vice President".to_string())),
+            Some("Vice President".to_string())
+        );
+    }
+
+    #[test]
+    fn target_role_filter_keeps_real_decision_makers() {
+        assert!(is_target_decision_role("Procurement Manager"));
+        assert!(is_target_decision_role("VP Supply Chain"));
+        assert!(is_target_decision_role("Chief Operating Officer"));
+        assert!(is_target_decision_role("Director of Engineering"));
+    }
+
+    #[test]
     fn gdelt_rejects_recent_sentence_fragments_seen_in_production() {
         let seed = SeedPoi {
             id: "seed-1".to_string(),
@@ -1285,6 +1408,9 @@ fn looks_like_person_name(s: &str) -> bool {
     if NON_PERSON_PHRASES.iter().any(|phrase| lower == *phrase) {
         return false;
     }
+    if looks_like_temporal_phrase(&words) {
+        return false;
+    }
     // Reject if ANY word is a common non-person keyword.
     if words
         .iter()
@@ -1293,6 +1419,22 @@ fn looks_like_person_name(s: &str) -> bool {
         return false;
     }
     true
+}
+
+fn looks_like_temporal_phrase(words: &[&str]) -> bool {
+    if words.len() < 2 {
+        return false;
+    }
+
+    let first = words[0].to_ascii_lowercase();
+    if !TEMPORAL_PREFIX_WORDS.contains(&first.as_str()) {
+        return false;
+    }
+
+    words[1..]
+        .iter()
+        .map(|word| word.to_ascii_lowercase())
+        .any(|word| MONTH_WORDS.contains(&word.as_str()))
 }
 
 /// Common capitalized phrases that are NOT person names.
@@ -1369,6 +1511,7 @@ static NON_PERSON_PHRASES: &[&str] = &[
     "united states",
     "session replay",
     "new relic warning",
+    "through december",
     // Generic labels
     "read more",
     "learn more",
@@ -1551,6 +1694,31 @@ static NON_PERSON_WORDS: &[&str] = &[
     "marksmen",
     "tag",
     "manager",
+];
+
+static TEMPORAL_PREFIX_WORDS: &[&str] = &[
+    "through",
+    "during",
+    "until",
+    "before",
+    "after",
+    "since",
+    "from",
+];
+
+static MONTH_WORDS: &[&str] = &[
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
 ];
 
 static ORG_ENTITY_WORDS: &[&str] = &[

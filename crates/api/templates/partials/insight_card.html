@@ -11,7 +11,7 @@
       </div>
     </div>
     <button hx-post="/insights/{{ id }}/bookmark" hx-target="#insight-card-{{ id }}" hx-swap="outerHTML"
-      class="shrink-0 rounded-sm border border-border p-1.5 hover:bg-muted {% if bookmarked %}text-yellow-500{% else %}text-muted-foreground{% endif %}"
+      class="shrink-0 rounded-sm border border-border p-1.5 hover:bg-muted {% if bookmarked %}apex-text-warning{% else %}text-muted-foreground{% endif %}"
       title="{% if bookmarked %}Remove bookmark{% else %}Bookmark{% endif %}">
       <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="{% if bookmarked %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
     </button>

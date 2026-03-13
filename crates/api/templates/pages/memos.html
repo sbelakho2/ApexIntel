@@ -21,8 +21,8 @@
     <p class="mt-2 text-sm text-muted-foreground">Print and PDF-friendly weekly memo layout.</p>
   </div>
   <div class="flex flex-wrap items-center gap-2">
-    <a href="/memos" class="mobile-toolbar-control rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Interactive View</a>
-    <button type="button" onclick="window.print()" class="mobile-toolbar-control rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
+    <a href="/memos" class="mobile-toolbar-control apex-btn apex-btn-secondary">Interactive View</a>
+    <button type="button" class="mobile-toolbar-control apex-btn apex-btn-primary">Print / PDF</button>
   </div>
 </div>
 {% endif %}
@@ -38,9 +38,9 @@
     </div>
     <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
       {% if !briefing_mode %}
-      <a href="/memos?briefing=true" class="mobile-toolbar-control no-print rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing Layout</a>
+      <a href="/memos?briefing=true" class="mobile-toolbar-control no-print apex-btn apex-btn-secondary">Briefing Layout</a>
       {% endif %}
-      <span class="mobile-inline-chip rounded-sm border border-green-500/30 bg-green-500/10 px-2 py-1 text-[10px] font-black uppercase text-green-600">Current</span>
+      <span class="mobile-inline-chip apex-badge apex-badge-success"><span class="apex-badge-dot"></span>Current</span>
     </div>
   </div>
 
@@ -138,11 +138,11 @@
     <div class="apex-card p-4">
       <h3 class="text-xs font-black uppercase tracking-[0.12em] mb-2">Key sections</h3>
       <ul class="space-y-1.5 text-sm text-muted-foreground">
-        <li class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-primary"></span>Executive Summary</li>
-        <li class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-red-500"></span>Critical Warnings</li>
-        <li class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>Market Insights</li>
-        <li class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-green-500"></span>Competitor Moves</li>
-        <li class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-blue-500"></span>Priority Actions</li>
+        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-primary"></span>Executive Summary</li>
+        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-red"></span>Critical Warnings</li>
+        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-orange"></span>Market Insights</li>
+        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-green"></span>Competitor Moves</li>
+        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-steel"></span>Priority Actions</li>
       </ul>
     </div>
     <div class="apex-card p-4">
@@ -153,22 +153,22 @@
 
   <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mt-6">
     <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 w-full h-1" style="background-color:#4A90E2"></div>
+      <div class="absolute top-0 left-0 h-1 w-full metric-rail-steel"></div>
       <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Total Memos</p>
       <p class="mt-1.5 apex-metric-number text-2xl">0</p>
     </div>
     <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 w-full h-1" style="background-color:#2D8C3C"></div>
+      <div class="absolute top-0 left-0 h-1 w-full metric-rail-green"></div>
       <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">This Period</p>
       <p class="mt-1.5 apex-metric-number text-2xl">—</p>
     </div>
     <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 w-full h-1" style="background-color:#FFBE00"></div>
+      <div class="absolute top-0 left-0 h-1 w-full metric-rail-orange"></div>
       <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Actions</p>
       <p class="mt-1.5 apex-metric-number text-2xl">—</p>
     </div>
     <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 w-full h-1" style="background-color:#D62D2D"></div>
+      <div class="absolute top-0 left-0 h-1 w-full metric-rail-red"></div>
       <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Schedule</p>
       <p class="mt-1.5 apex-metric-number text-2xl">Weekly</p>
     </div>

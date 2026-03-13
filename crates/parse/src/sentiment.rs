@@ -22,6 +22,7 @@ pub struct SentimentResult {
     pub label: SentimentLabel,
     pub positive_hits: Vec<String>,
     pub negative_hits: Vec<String>,
+    pub aspect_scores: HashMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -33,6 +34,14 @@ pub enum SentimentLabel {
     VeryNegative,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct KeywordDescriptor {
+    term: &'static str,
+    polarity: f64,
+    aspect: &'static str,
+    idf_weight: f64,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Keyword dictionaries
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,7 +51,9 @@ fn get_positive_keywords(lang: &str) -> &'static [&'static str] {
         "en" => &[
             "growth",
             "expansion",
+            "expand",
             "profit",
+            "profitable",
             "revenue",
             "innovation",
             "partnership",
@@ -109,6 +120,7 @@ fn get_positive_keywords(lang: &str) -> &'static [&'static str] {
             "צמיחה",
             "הרחבה",
             "רווח",
+            "רווחי",
             "הכנסות",
             "חדשנות",
             "שותפות",
@@ -250,6 +262,7 @@ fn get_negative_keywords(lang: &str) -> &'static [&'static str] {
         "ar" => &[
             "تراجع",
             "خسارة",
+            "لم تتحقق",
             "تسريح",
             "إغلاق",
             "إفلاس",
@@ -272,6 +285,7 @@ fn get_negative_keywords(lang: &str) -> &'static [&'static str] {
         "he" => &[
             "ירידה",
             "הפסד",
+            "לא רווחי",
             "פיטורים",
             "סגירה",
             "פשיטת רגל",
@@ -365,20 +379,181 @@ fn get_negative_keywords(lang: &str) -> &'static [&'static str] {
     }
 }
 
+fn domain_positive_keywords(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "en" => &[
+            "awarded contract",
+            "expand capacity",
+            "expanded capacity",
+            "passed audit",
+            "tier 1 qualified",
+            "tier-1 qualified",
+            "production ramp",
+        ],
+        _ => &[],
+    }
+}
+
+fn domain_negative_keywords(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "en" => &[
+            "force majeure",
+            "supply disruption",
+            "debarred",
+            "dpas rated shortage",
+            "dpas-rated shortage",
+            "lot rejection",
+        ],
+        _ => &[],
+    }
+}
+
+fn negation_terms() -> &'static [&'static str] {
+    &[
+        "not", "no", "never", "n't", "without", "lack", "lack of", "sans", "без",
+        "لا", "لم", "לא",
+    ]
+}
+
+fn hedge_terms() -> &'static [&'static str] {
+    &[
+        "might",
+        "could",
+        "possibly",
+        "uncertain",
+        "allegedly",
+        "reportedly",
+    ]
+}
+
+fn keyword_aspect(term: &str) -> &'static str {
+    match term {
+        "profit" | "revenue" | "growth" | "loss" | "bankruptcy" | "default"
+        | "investment" => "financial",
+        "expansion" | "delay" | "shortage" | "expanded capacity" | "production ramp"
+        | "supply disruption" | "lot rejection" | "passed audit" => "operational",
+        "penalty" | "violation" | "sanction" | "approved" | "certification"
+        | "debarred" | "investigation" | "dpas rated shortage" | "dpas-rated shortage" => {
+            "regulatory"
+        }
+        _ => "reputational",
+    }
+}
+
+fn keyword_idf_weight(term: &str) -> f64 {
+    match term {
+        "growth" | "success" | "risk" | "warning" | "contract" => 0.65,
+        "award" | "partnership" | "delay" | "shortage" => 0.8,
+        "awarded contract" | "passed audit" | "production ramp" | "force majeure"
+        | "supply disruption" | "debarred" | "dpas rated shortage" | "lot rejection" => 1.25,
+        _ => 1.0,
+    }
+}
+
+fn keyword_catalog(language: &str) -> Vec<KeywordDescriptor> {
+    let positives = get_positive_keywords(language)
+        .iter()
+        .map(|term| KeywordDescriptor {
+            term,
+            polarity: 1.0,
+            aspect: keyword_aspect(term),
+            idf_weight: keyword_idf_weight(term),
+        });
+    let negatives = get_negative_keywords(language)
+        .iter()
+        .map(|term| KeywordDescriptor {
+            term,
+            polarity: -1.0,
+            aspect: keyword_aspect(term),
+            idf_weight: keyword_idf_weight(term),
+        });
+    let domain_positives = domain_positive_keywords(language)
+        .iter()
+        .map(|term| KeywordDescriptor {
+            term,
+            polarity: 1.0,
+            aspect: keyword_aspect(term),
+            idf_weight: keyword_idf_weight(term),
+        });
+    let domain_negatives = domain_negative_keywords(language)
+        .iter()
+        .map(|term| KeywordDescriptor {
+            term,
+            polarity: -1.0,
+            aspect: keyword_aspect(term),
+            idf_weight: keyword_idf_weight(term),
+        });
+
+    positives
+        .chain(negatives)
+        .chain(domain_positives)
+        .chain(domain_negatives)
+        .collect()
+}
+
+fn tokenize_lower(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '\'') )
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn phrase_tokens(term: &str) -> Vec<String> {
+    term.to_lowercase()
+        .split_whitespace()
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn phrase_positions(tokens: &[String], phrase: &[String]) -> Vec<usize> {
+    if phrase.is_empty() || tokens.len() < phrase.len() {
+        return Vec::new();
+    }
+
+    tokens
+        .windows(phrase.len())
+        .enumerate()
+        .filter_map(|(index, window)| if window == phrase { Some(index) } else { None })
+        .collect()
+}
+
+fn has_window_term(tokens: &[String], keyword_start: usize, window_terms: &[&str]) -> bool {
+    let window_start = keyword_start.saturating_sub(3);
+    let context = tokens[window_start..keyword_start].join(" ");
+    window_terms.iter().any(|term| {
+        let normalized = term.to_lowercase();
+        if normalized.contains(' ') {
+            context.contains(&normalized)
+        } else {
+            tokens[window_start..keyword_start]
+                .iter()
+                .any(|token| token == &normalized)
+        }
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sentiment analysis engine
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Detect the language of a text (simple heuristic based on character ranges).
 pub fn detect_language(text: &str) -> &'static str {
+    if text
+        .chars()
+        .any(|ch| matches!(ch, '\u{3040}'..='\u{309F}' | '\u{30A0}'..='\u{30FF}'))
+    {
+        return "ja";
+    }
+
     let mut counts: HashMap<&str, usize> = HashMap::new();
 
     for ch in text.chars() {
         let lang = match ch {
             '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' => "ar",
             '\u{0590}'..='\u{05FF}' => "he",
-            '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' => "zh",
             '\u{3040}'..='\u{309F}' | '\u{30A0}'..='\u{30FF}' => "ja",
+            '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' => "zh",
             '\u{AC00}'..='\u{D7AF}' | '\u{1100}'..='\u{11FF}' => "ko",
             // German-specific chars (ß, ä, ö, ü) — check before broader Latin range
             '\u{00DF}' | '\u{00E4}' | '\u{00F6}' | '\u{00FC}' => "de",
@@ -402,30 +577,64 @@ pub fn detect_language(text: &str) -> &'static str {
 /// Analyze sentiment of text in a given language.
 pub fn analyze_sentiment(text: &str, language: &str) -> SentimentResult {
     let text_lower = text.to_lowercase();
-    let positive = get_positive_keywords(language);
-    let negative = get_negative_keywords(language);
+    let tokens = tokenize_lower(text);
+    let token_count = tokens.len().max(1) as f64;
+    let catalog = keyword_catalog(language);
 
     let mut pos_hits = Vec::new();
     let mut neg_hits = Vec::new();
+    let mut aspect_scores: HashMap<String, f64> = HashMap::new();
+    let mut weighted_score = 0.0;
+    let mut weighted_magnitude = 0.0;
 
-    for kw in positive {
-        if text_lower.contains(&kw.to_lowercase()) {
-            pos_hits.push(kw.to_string());
+    for descriptor in catalog {
+        let phrase = phrase_tokens(descriptor.term);
+        let mut positions = if !tokens.is_empty() {
+            phrase_positions(&tokens, &phrase)
+        } else {
+            Vec::new()
+        };
+        if positions.is_empty() && text_lower.contains(&descriptor.term.to_lowercase()) {
+            positions.push(0);
+        }
+
+        if positions.is_empty() {
+            continue;
+        }
+
+        let tf = positions.len() as f64 / token_count;
+        let tfidf_weight = (1.0 + tf).ln() * descriptor.idf_weight;
+
+        for position in positions {
+            let negated = has_window_term(&tokens, position, negation_terms());
+            let hedged = has_window_term(&tokens, position, hedge_terms());
+            let hedge_scale = if hedged { 0.5 } else { 1.0 };
+            let mut signed_weight = descriptor.polarity * tfidf_weight * hedge_scale;
+            if negated {
+                signed_weight *= -1.0;
+            }
+
+            weighted_score += signed_weight;
+            weighted_magnitude += tfidf_weight * hedge_scale;
+            *aspect_scores
+                .entry(descriptor.aspect.to_string())
+                .or_default() += signed_weight;
+
+            if signed_weight >= 0.0 {
+                if !pos_hits.iter().any(|hit| hit == descriptor.term) {
+                    pos_hits.push(descriptor.term.to_string());
+                }
+            } else if !neg_hits.iter().any(|hit| hit == descriptor.term) {
+                neg_hits.push(descriptor.term.to_string());
+            }
         }
     }
 
-    for kw in negative {
-        if text_lower.contains(&kw.to_lowercase()) {
-            neg_hits.push(kw.to_string());
-        }
-    }
-
-    let total = pos_hits.len() + neg_hits.len();
-    let (score, magnitude) = if total == 0 {
+    let (score, magnitude) = if weighted_magnitude <= f64::EPSILON {
         (0.0, 0.0)
     } else {
-        let raw = (pos_hits.len() as f64 - neg_hits.len() as f64) / total as f64;
-        let mag = total as f64 / (text.split_whitespace().count().max(1) as f64);
+        let raw = weighted_score / weighted_magnitude;
+        let mag = weighted_magnitude / token_count;
         (raw.clamp(-1.0, 1.0), mag.clamp(0.0, 1.0))
     };
 
@@ -449,6 +658,7 @@ pub fn analyze_sentiment(text: &str, language: &str) -> SentimentResult {
         label,
         positive_hits: pos_hits,
         negative_hits: neg_hits,
+        aspect_scores,
     }
 }
 
@@ -545,5 +755,63 @@ mod tests {
             "de",
         );
         assert!(result.score > 0.0);
+    }
+
+    #[test]
+    fn negation_flips_polarity() {
+        let result = analyze_sentiment("The company did not report growth after the warning", "en");
+        assert!(result.score < 0.0);
+        assert!(result.negative_hits.iter().any(|hit| hit == "growth"));
+    }
+
+    #[test]
+    fn hedging_reduces_magnitude() {
+        let direct = analyze_sentiment("The company announced an awarded contract", "en");
+        let hedged = analyze_sentiment("The company might announce an awarded contract", "en");
+        assert!(hedged.magnitude < direct.magnitude);
+    }
+
+    #[test]
+    fn negation_polarity_inversion() {
+        let not_profitable = analyze_sentiment("The company is not profitable", "en");
+        let profits_declined = analyze_sentiment("Profits declined after the warning", "en");
+        assert!(not_profitable.score <= 0.0);
+        assert!(profits_declined.score < 0.0);
+    }
+
+    #[test]
+    fn hedging_magnitude_reduction() {
+        let direct = analyze_sentiment("The company will expand capacity", "en");
+        let hedged = analyze_sentiment("The company might expand capacity", "en");
+        assert!(hedged.magnitude < direct.magnitude);
+    }
+
+    #[test]
+    fn multilingual_negation() {
+        let arabic = analyze_sentiment("مكاسب لم تتحقق", "ar");
+        let hebrew = analyze_sentiment("לא רווחי", "he");
+        assert!(arabic.score <= 0.0);
+        assert!(hebrew.score < 0.0);
+    }
+
+    #[test]
+    fn domain_specific_lexicon_applies() {
+        let result = analyze_sentiment(
+            "The supplier passed audit and began a production ramp after an awarded contract",
+            "en",
+        );
+        assert!(result.score > 0.0);
+        assert!(result.positive_hits.iter().any(|hit| hit == "passed audit"));
+    }
+
+    #[test]
+    fn aspect_scores_separate_dimensions() {
+        let result = analyze_sentiment(
+            "Revenue growth offset reputational risk after an investigation and passed audit",
+            "en",
+        );
+        assert!(result.aspect_scores.contains_key("financial"));
+        assert!(result.aspect_scores.contains_key("regulatory"));
+        assert!(result.aspect_scores.contains_key("operational"));
     }
 }

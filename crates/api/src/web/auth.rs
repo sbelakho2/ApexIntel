@@ -70,17 +70,25 @@ pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
     }
 
     // Create session token: base64url(JSON payload) + "." + HMAC-SHA256 hex
-    let payload = serde_json::json!({
-        "sub": form.username,
-        "iat": chrono::Utc::now().timestamp_millis()
-    });
-    let payload_bytes = serde_json::to_vec(&payload).unwrap();
+    #[derive(serde::Serialize)]
+    struct SessionPayload<'a> {
+        sub: &'a str,
+        iat: i64,
+    }
+
+    let payload = SessionPayload {
+        sub: &form.username,
+        iat: chrono::Utc::now().timestamp_millis(),
+    };
+    let payload_bytes = serde_json::to_vec(&payload)
+        .unwrap_or_else(|err| panic!("failed to serialize session payload: {err}"));
 
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_bytes);
 
-    let mut mac = HmacSha256::new_from_slice(session_secret.as_bytes()).unwrap();
+    let mut mac = HmacSha256::new_from_slice(session_secret.as_bytes())
+        .unwrap_or_else(|err| panic!("failed to initialize session HMAC: {err}"));
     mac.update(&payload_bytes);
     let sig = hex::encode(mac.finalize().into_bytes());
 

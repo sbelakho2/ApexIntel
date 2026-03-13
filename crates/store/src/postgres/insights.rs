@@ -23,8 +23,9 @@ impl PgStore {
             ids.dedup();
             ids
         });
+        let normalized_summary = summary.trim();
         let recent_story_signature =
-            recent_story_dedup_signature(summary, insight_type, normalized_entity_ids.as_deref());
+            recent_story_dedup_signature(normalized_summary, insight_type, normalized_entity_ids.as_deref());
         let row: (Uuid,) = sqlx::query_as(
             r#"WITH existing AS (
                    SELECT i.id
@@ -38,7 +39,8 @@ impl PgStore {
                       OR (
                          $10 IS NOT NULL
                          AND COALESCE(i.entity_ids, ARRAY[]::uuid[]) = COALESCE($8, ARRAY[]::uuid[])
-                         AND i.created_at > NOW() - INTERVAL '14 days'
+                                 AND COALESCE(i.insight_type, '') = COALESCE($4, '')
+                                 AND i.created_at > NOW() - INTERVAL '21 days'
                          AND trim(regexp_replace(regexp_replace(lower(coalesce(i.summary, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')) = $10
                      )
                    ORDER BY i.updated_at DESC NULLS LAST, i.created_at DESC NULLS LAST, i.id DESC
@@ -53,6 +55,7 @@ impl PgStore {
                        END,
                        title_hash = md5($2),
                        summary = $3,
+                       region = COALESCE($5, i.region),
                        tags = $9,
                        evidence_urls = CASE
                            WHEN $7 IS NULL THEN i.evidence_urls
@@ -78,7 +81,7 @@ impl PgStore {
         )
         .bind(id)
         .bind(normalized_title)
-        .bind(summary)
+        .bind(normalized_summary)
         .bind(insight_type)
         .bind(region)
         .bind(confidence)

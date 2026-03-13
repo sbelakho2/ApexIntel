@@ -111,10 +111,7 @@ pub fn compute_page_meta(params: &PageParams, total_items: u64) -> PageMeta {
     let total_pages = if total_items == 0 {
         0u32
     } else {
-        let tp = total_items
-            .checked_add(per_page as u64 - 1)
-            .unwrap_or(u64::MAX)
-            / per_page.max(1) as u64;
+        let tp = total_items.saturating_add(per_page as u64 - 1) / per_page.max(1) as u64;
         tp.min(u32::MAX as u64) as u32
     };
     let page = params.page.max(1).min(total_pages.max(1));
@@ -409,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_paginated_response_serialization() {
-        let resp = paginate_in_memory(&vec![1, 2, 3], &PageParams::new(1, 10));
+        let resp = paginate_in_memory(&[1, 2, 3], &PageParams::new(1, 10));
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"data\""));
         assert!(json.contains("\"meta\""));

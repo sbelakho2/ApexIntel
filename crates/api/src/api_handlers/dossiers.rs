@@ -1,4 +1,4 @@
-use super::super::*;
+use crate::*;
 use apex_api::routes::dossiers::validate_dossier_id;
 
 fn parse_dossier_uuid(id: &str) -> Result<Uuid, ApiError> {

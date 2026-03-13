@@ -13,6 +13,8 @@ members = [
     "crates/insights",
     "crates/api",
     "crates/worker",
+    "crates/shared",
+    "crates/frontend",
 ]
 resolver = "2"
 

@@ -17,6 +17,12 @@ pub mod security;
 pub mod settings;
 pub mod warnings;
 
+use askama::Template;
+use axum::{
+    http::StatusCode,
+    response::{Html, IntoResponse, Response},
+};
+
 use crate::middleware::session::WebSession;
 
 /// Helper: extract session from request extensions.
@@ -29,6 +35,26 @@ pub fn get_session(extensions: &axum::http::Extensions) -> Option<WebSession> {
 /// because boost sends HX-Boosted: true and needs a full-page response.
 pub fn is_htmx_request(headers: &axum::http::HeaderMap) -> bool {
     headers.contains_key("hx-request") && !headers.contains_key("hx-boosted")
+}
+
+pub fn render_template<T: Template>(template: &T) -> Response {
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            tracing::error!("failed to render template: {error}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to render page".to_string()),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub fn render_template_with_status<T: Template>(status: StatusCode, template: &T) -> Response {
+    let mut response = render_template(template);
+    *response.status_mut() = status;
+    response
 }
 
 /// Common fields injected into every authenticated page template.

@@ -6,7 +6,16 @@
 use chrono::{DateTime, Datelike, NaiveTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use uuid::Uuid;
+
+/// Default job timeout in seconds, overridable via `JOB_TIMEOUT_SECS` env var.
+static JOB_TIMEOUT_SECS: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("JOB_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1800)
+});
 
 // ────────────────────────────────────────────
 // Constants
@@ -975,7 +984,7 @@ pub fn default_scheduler() -> Scheduler {
             },
         )
         .with_jitter(240)
-        .with_timeout(1800),
+        .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // ── Self-improvement loop (weekly, Mon 09:00–11:00 UTC) ──
@@ -991,7 +1000,7 @@ pub fn default_scheduler() -> Scheduler {
             },
         )
         .with_jitter(0)
-        .with_timeout(1800), // 30 min
+        .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // Cross-domain combination mining: discover synergistic multi-signal patterns.
@@ -1019,7 +1028,7 @@ pub fn default_scheduler() -> Scheduler {
             },
         )
         .with_jitter(60)
-        .with_timeout(1800),
+        .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // ── Security compliance jobs ──────────────────────────────────────────────
@@ -1044,7 +1053,7 @@ pub fn default_scheduler() -> Scheduler {
             },
         )
         .with_jitter(120)
-        .with_timeout(1800), // 30 min
+        .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // Recipe fire: nightly at 02:15 UTC — run seed recipes against observation counts to generate insights.
@@ -1057,7 +1066,7 @@ pub fn default_scheduler() -> Scheduler {
             },
         )
         .with_jitter(60) // +1 min
-        .with_timeout(1800), // 30 min
+        .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // SLA enforcement: every 10 minutes — re-escalate unacknowledged warnings past SLA.
@@ -1082,7 +1091,7 @@ pub fn default_scheduler() -> Scheduler {
             },
         )
         .with_jitter(120)
-        .with_timeout(1800), // 30 min
+        .with_timeout(*JOB_TIMEOUT_SECS),
     );
 
     // KEV catalog fetch: daily at 04:30 UTC — download CISA KEV catalog.
@@ -1585,18 +1594,34 @@ mod tests {
     #[test]
     fn test_default_scheduler_job_count() {
         let s = default_scheduler();
-        assert_eq!(s.jobs.len(), 11);
-        assert!(s.jobs.contains_key("crawl_cycle"));
-        assert!(s.jobs.contains_key("pattern_mining"));
-        assert!(s.jobs.contains_key("hypothesis_generation"));
-        assert!(s.jobs.contains_key("poi_refresh"));
-        assert!(s.jobs.contains_key("promotion_board"));
-        assert!(s.jobs.contains_key("strategy_memo"));
-        assert!(s.jobs.contains_key("recipe_deprecation"));
-        assert!(s.jobs.contains_key("feature_drift_check"));
-        assert!(s.jobs.contains_key("source_scoring"));
-        assert!(s.jobs.contains_key("cross_domain_mining"));
-        assert!(s.jobs.contains_key("outcome_tracking"));
+        let expected_jobs = [
+            "crawl_cycle",
+            "pattern_mining",
+            "hypothesis_generation",
+            "poi_refresh",
+            "poi_discovery",
+            "promotion_board",
+            "strategy_memo",
+            "recipe_deprecation",
+            "feature_drift_check",
+            "source_scoring",
+            "cross_domain_mining",
+            "outcome_tracking",
+            "breach_scan",
+            "sanctions_screen",
+            "recipe_fire",
+            "sla_enforcement",
+            "dns_posture_scan",
+            "kev_catalog_fetch",
+            "lookalike_domain_scan",
+            "update_email_digest",
+            "self_improvement_cycle",
+        ];
+
+        assert_eq!(s.jobs.len(), expected_jobs.len());
+        for expected_job in expected_jobs {
+            assert!(s.jobs.contains_key(expected_job), "missing default job {expected_job}");
+        }
     }
 
     #[test]

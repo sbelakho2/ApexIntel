@@ -1,4 +1,6 @@
-use super::super::*;
+#![allow(clippy::disallowed_methods)]
+
+use crate::*;
 
 fn resolve_person_priority_bounds(params: &ListPersonsQuery) -> (Option<f64>, Option<f64>) {
     let (tier_min, tier_max): (Option<f64>, Option<f64>) = match params.tier.as_deref() {
@@ -290,8 +292,8 @@ pub(crate) async fn get_company_detail(
         }
     };
 
-    let row = match tracing::info_span!("db.get_company", request_id = %request_id)
-        .in_scope(|| state.store.get_company(company_id))
+    let dossier = match tracing::info_span!("db.get_company_dossier", request_id = %request_id)
+        .in_scope(|| state.store.get_company_dossier(company_id))
         .await
     {
         Ok(Some(value)) => value,
@@ -313,11 +315,7 @@ pub(crate) async fn get_company_detail(
         }
     };
 
-    let (sites, certifications, persons) = match tokio::try_join!(
-        state.store.get_sites_for_company(company_id),
-        state.store.get_certifications_for_company(company_id),
-        state.store.list_persons_by_org(company_id),
-    ) {
+    let persons = match state.store.list_persons_by_org(company_id).await {
         Ok(values) => values,
         Err(err) => {
             tracing::error!(request_id = %request_id, "company detail lookup failed: {err:#}");
@@ -330,7 +328,12 @@ pub(crate) async fn get_company_detail(
         }
     };
 
-    let detail = company_row_to_detail(row, sites, certifications, persons);
+    let detail = company_row_to_detail(
+        dossier.company.clone(),
+        dossier.sites.clone(),
+        dossier.certifications.clone(),
+        persons,
+    );
     let duration_ms = start.elapsed().as_millis() as u64;
     let meta = ResponseMeta::now()
         .with_request_id(request_id)
@@ -422,16 +425,41 @@ pub(crate) async fn get_person_detail(
         }
     };
 
-    let detail = person_row_to_detail(
+    let mut detail = person_row_to_detail(
         row,
         org_name,
-        org_id,
         artifacts,
-        role_history_rows,
-        peer_rows,
-        related_warnings.len() as i64,
-        related_insights.len() as i64,
+        &state.config.priority_weights,
     );
+    detail.role_history = role_history_rows
+        .into_iter()
+        .map(|entry| routes::persons::RoleHistoryEntry {
+            organization: entry.org_name,
+            role: entry.title,
+            role_family: entry.role_family,
+            start_date: entry.start_date.map(|value| value.to_string()),
+            end_date: entry.end_date.map(|value| value.to_string()),
+            is_current: entry.end_date.is_none(),
+            confidence: entry.confidence,
+        })
+        .collect();
+    detail.peers = peer_rows
+        .into_iter()
+        .map(|peer| {
+            let item = person_row_to_item(peer);
+            routes::persons::PeerSummary {
+                id: item.id,
+                name: item.name,
+                role: item.role,
+                organization: item.organization,
+                region: item.region,
+                priority_score: item.priority_score,
+                influence_tier: item.influence_tier,
+            }
+        })
+        .collect();
+    detail.warning_count = related_warnings.len() as i64;
+    detail.insight_count = related_insights.len() as i64;
     let duration_ms = start.elapsed().as_millis() as u64;
     let meta = ResponseMeta::now()
         .with_request_id(request_id)

@@ -19,10 +19,10 @@
       {% for d in dns_posture %}
       <tr class="hover:bg-muted/30 transition-colors">
         <td class="px-4 py-2 text-sm">{{ d.domain }}</td>
-        <td class="px-4 py-2 text-center {% if d.has_spf %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_spf %}✓{% else %}✗{% endif %}</td>
-        <td class="px-4 py-2 text-center {% if d.has_dkim %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_dkim %}✓{% else %}✗{% endif %}</td>
-        <td class="px-4 py-2 text-center {% if d.has_dmarc %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_dmarc %}✓{% else %}✗{% endif %}</td>
-        <td class="px-4 py-2 text-center {% if d.has_dnssec %}text-green-600{% else %}text-red-500{% endif %}">{% if d.has_dnssec %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center {% if d.has_spf %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_spf %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center {% if d.has_dkim %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_dkim %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center {% if d.has_dmarc %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_dmarc %}✓{% else %}✗{% endif %}</td>
+        <td class="px-4 py-2 text-center {% if d.has_dnssec %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_dnssec %}✓{% else %}✗{% endif %}</td>
         <td class="px-4 py-2 text-center font-bold tabular-nums">{{ d.score }}</td>
       </tr>
       {% endfor %}

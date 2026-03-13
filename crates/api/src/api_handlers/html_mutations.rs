@@ -1,6 +1,8 @@
 use super::super::*;
 use axum::response::Html;
+use axum::response::Redirect;
 use axum::Form;
+use serde::de::DeserializeOwned;
 
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct TriggerScanFormRequest {
@@ -18,6 +20,20 @@ pub(crate) struct RecipeCreateHtmlResponse {
 pub(crate) struct RecipeTestHtmlResponse {
     matches: usize,
     sample_warnings: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct RecipeBuilderHtmlForm {
+    name: String,
+    description: Option<String>,
+    severity: Option<String>,
+    cooldown_hours: Option<i64>,
+    enabled: Option<String>,
+    narrative_template: Option<String>,
+    signals_json: Option<String>,
+    transforms_json: Option<String>,
+    thresholds_json: Option<String>,
+    actions_json: Option<String>,
 }
 
 fn slugify_recipe_code(input: &str) -> String {
@@ -38,6 +54,82 @@ fn slugify_recipe_code(input: &str) -> String {
         "recipe".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn parse_recipe_section<T: DeserializeOwned>(raw: Option<&str>, field_name: &str) -> Result<Vec<T>, String> {
+    let source = raw.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("[]");
+    serde_json::from_str(source).map_err(|error| format!("{field_name}: {error}"))
+}
+
+fn build_recipe_payload_from_form(form: RecipeBuilderHtmlForm) -> Result<RecipeBuilderPayload, String> {
+    Ok(RecipeBuilderPayload {
+        name: form.name,
+        description: form.description,
+        severity: form.severity,
+        cooldown_hours: form.cooldown_hours,
+        enabled: Some(form.enabled.is_some()),
+        narrative_template: form.narrative_template,
+        signals: parse_recipe_section(form.signals_json.as_deref(), "signals_json")?,
+        transforms: parse_recipe_section(form.transforms_json.as_deref(), "transforms_json")?,
+        thresholds: parse_recipe_section(form.thresholds_json.as_deref(), "thresholds_json")?,
+        actions: parse_recipe_section(form.actions_json.as_deref(), "actions_json")?,
+    })
+}
+
+pub(crate) async fn post_recipe_create_form(
+    State(state): State<AppState>,
+    Form(form): Form<RecipeBuilderHtmlForm>,
+) -> impl IntoResponse {
+    let payload = match build_recipe_payload_from_form(form) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(format!(
+                    "<div class=\"rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700\">Invalid recipe form payload: {error}</div>",
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    let name = payload.name.trim();
+    let mut code = slugify_recipe_code(name);
+    if code.len() > 56 {
+        code.truncate(56);
+    }
+    let suffix = Uuid::new_v4().simple().to_string();
+    let short = &suffix[..8];
+    code = format!("{}_{}", code, short);
+
+    let definition = serde_json::json!({
+        "name": name,
+        "description": payload.description.unwrap_or_default(),
+        "severity": payload.severity.unwrap_or_else(|| "medium".to_string()),
+        "cooldown_hours": payload.cooldown_hours.unwrap_or(24),
+        "enabled": payload.enabled.unwrap_or(true),
+        "narrative_template": payload.narrative_template.unwrap_or_default(),
+        "signals": payload.signals,
+        "transforms": payload.transforms,
+        "thresholds": payload.thresholds,
+        "actions": payload.actions,
+    });
+
+    match state
+        .store
+        .upsert_recipe_definition(&code, name, "staging", &definition)
+        .await
+    {
+        Ok(_) => Redirect::to("/recipes").into_response(),
+        Err(err) => {
+            tracing::error!("recipe create form failed: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700\">Failed to create recipe</div>".to_string()),
+            )
+                .into_response()
+        }
     }
 }
 

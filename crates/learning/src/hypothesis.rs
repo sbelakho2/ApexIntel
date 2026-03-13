@@ -144,6 +144,8 @@ pub fn build_user_prompt(candidate: &PatternCandidate, existing_ids: &[String]) 
 - signals: {}
 - best_lag_days: {}
 - effect_size: {:.3}
+- odds_ratio_ci: [{}, {}]
+- minimum_detectable_effect: {:.3}
 - p_value: {:.6}
 - stability: {:.2}
 - segments: {}
@@ -155,6 +157,15 @@ Generate a Recipe JSON for this pattern."#,
         signals_str,
         candidate.best_lag_days,
         candidate.effect_size,
+        candidate
+            .odds_ratio_ci_low
+            .map(|value| format!("{value:.3}"))
+            .unwrap_or_else(|| "n/a".to_string()),
+        candidate
+            .odds_ratio_ci_high
+            .map(|value| format!("{value:.3}"))
+            .unwrap_or_else(|| "n/a".to_string()),
+        candidate.minimum_detectable_effect,
         candidate.p_value,
         candidate.stability,
         segments_str,
@@ -165,12 +176,21 @@ Generate a Recipe JSON for this pattern."#,
 /// Format a candidate for a bulk summary prompt.
 pub fn format_candidate_summary(candidate: &PatternCandidate, index: usize) -> String {
     format!(
-        "{}. outcome={}, signals={:?}, lag={}, effect={:.2}, p={:.4}, stability={:.2}",
+        "{}. outcome={}, signals={:?}, lag={}, effect={:.2}, ci=[{}, {}], mde={:.2}, p={:.4}, stability={:.2}",
         index + 1,
         candidate.outcome,
         candidate.signals,
         candidate.best_lag_days,
         candidate.effect_size,
+        candidate
+            .odds_ratio_ci_low
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".to_string()),
+        candidate
+            .odds_ratio_ci_high
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".to_string()),
+        candidate.minimum_detectable_effect,
         candidate.p_value,
         candidate.stability,
     )
@@ -426,6 +446,9 @@ mod tests {
             signals: vec!["late_filing".to_string(), "layoff_announcement".to_string()],
             best_lag_days: 30,
             effect_size: 3.5,
+            odds_ratio_ci_low: Some(1.8),
+            odds_ratio_ci_high: Some(6.4),
+            minimum_detectable_effect: 1.7,
             p_value: 0.003,
             q_value: 0.01,
             stability: 0.85,

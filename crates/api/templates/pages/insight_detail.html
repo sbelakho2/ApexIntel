@@ -23,24 +23,24 @@
       <div class="mt-2 flex items-center gap-2">
         <span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ category }}</span>
         <span class="text-[11px] tabular-nums text-muted-foreground">Confidence: {{ confidence }}%</span>
-        {% if bookmarked %}<span class="text-[10px] font-bold text-yellow-600 uppercase">Bookmarked</span>{% endif %}
+        {% if bookmarked %}<span class="text-[10px] font-bold uppercase apex-text-warning">Bookmarked</span>{% endif %}
       </div>
     </div>
     <div class="flex items-center gap-2">
-      <a href="/insights/{{ id }}?briefing=1" class="apex-btn-sm border border-border bg-secondary text-[10px] font-bold uppercase px-3 py-1 rounded hover:bg-muted">Briefing</a>
+            <a href="/insights/{{ id }}?briefing=1" class="apex-btn apex-btn-secondary">Briefing</a>
       <button hx-post="/insights/{{ id }}/bookmark"
               hx-target="#bookmark-status"
               hx-swap="innerHTML"
-              class="apex-btn-sm border border-yellow-500/30 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 text-[10px] font-bold uppercase px-3 py-1 rounded">
+              class="apex-btn apex-btn-primary">
         {% if bookmarked %}Unbookmark{% else %}Bookmark{% endif %}
       </button>
       <button hx-post="/insights/{{ id }}/analyze"
               hx-target="#analysis-panel"
               hx-swap="outerHTML"
               hx-indicator="#analyze-spinner"
-              class="apex-btn-sm border border-border bg-secondary text-[10px] font-bold uppercase px-3 py-1 rounded hover:bg-muted">
+                class="apex-btn apex-btn-secondary">
         Analyze
-        <span id="analyze-spinner" class="htmx-indicator ml-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"></span>
+              <span id="analyze-spinner" class="htmx-indicator ml-1 apex-spinner-sm"></span>
       </button>
     </div>
   </div>
@@ -74,7 +74,7 @@
           Tags
           <input type="text" name="tags" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="memo, escalation, competitor">
         </label>
-        <button type="submit" class="rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Add Note</button>
+        <button type="submit" class="apex-btn apex-btn-secondary">Add Note</button>
       </form>
     </div>
 

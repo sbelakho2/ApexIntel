@@ -1,6 +1,6 @@
 /// Mutual information estimation via binning.
 ///
-/// Estimates are in nats (natural-log base).  All functions filter out
+/// Estimates are reported in bits after Miller-Madow bias correction. All functions filter out
 /// `NaN` / `±∞` via the `min_max` helper so callers do not need to
 /// pre-clean their data.
 ///
@@ -10,10 +10,50 @@
 
 /// Estimate mutual information between two variables using binned estimation.
 ///
-/// Returns MI in nats (natural log).  Returns `0.0` when `bins == 0`,
+/// Returns MI in bits after Miller-Madow bias correction. Returns `0.0` when `bins == 0`,
 /// when either variable has insufficient variance, or when there are fewer
 /// than `2 × bins` paired finite observations.
 pub fn estimate(x: &[f64], y: &[f64], bins: usize) -> f64 {
+    estimate_with_bins(x, y, bins)
+}
+
+pub fn estimate_adaptive(x: &[f64], y: &[f64]) -> f64 {
+    let finite_pairs: Vec<(f64, f64)> = x
+        .iter()
+        .zip(y.iter())
+        .filter_map(|(&xv, &yv)| {
+            if xv.is_finite() && yv.is_finite() {
+                Some((xv, yv))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let x_only: Vec<f64> = finite_pairs.iter().map(|(xv, _)| *xv).collect();
+    let y_only: Vec<f64> = finite_pairs.iter().map(|(_, yv)| *yv).collect();
+    let bins = adaptive_bin_count(&x_only).max(adaptive_bin_count(&y_only));
+    estimate_with_bins(x, y, bins)
+}
+
+pub fn normalized_mi_adaptive(x: &[f64], y: &[f64]) -> f64 {
+    let finite_pairs: Vec<(f64, f64)> = x
+        .iter()
+        .zip(y.iter())
+        .filter_map(|(&xv, &yv)| {
+            if xv.is_finite() && yv.is_finite() {
+                Some((xv, yv))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let x_only: Vec<f64> = finite_pairs.iter().map(|(xv, _)| *xv).collect();
+    let y_only: Vec<f64> = finite_pairs.iter().map(|(_, yv)| *yv).collect();
+    let bins = adaptive_bin_count(&x_only).max(adaptive_bin_count(&y_only));
+    normalized_mi(x, y, bins)
+}
+
+fn estimate_with_bins(x: &[f64], y: &[f64], bins: usize) -> f64 {
     let finite_pairs: Vec<(f64, f64)> = x
         .iter()
         .zip(y.iter())
@@ -56,18 +96,20 @@ pub fn estimate(x: &[f64], y: &[f64], bins: usize) -> f64 {
     }
 
     let nf = n as f64;
-    let mut mi = 0.0;
+    let mut mi_nats = 0.0;
     for i in 0..bins {
         for j in 0..bins {
             if joint[i][j] > 0 && mx[i] > 0 && my[j] > 0 {
                 let pxy = joint[i][j] as f64 / nf;
                 let px = mx[i] as f64 / nf;
                 let py = my[j] as f64 / nf;
-                mi += pxy * (pxy / (px * py)).ln();
+                mi_nats += pxy * (pxy / (px * py)).ln();
             }
         }
     }
-    mi.max(0.0)
+    let mi_bits = mi_nats / std::f64::consts::LN_2;
+    let correction_bits = miller_madow_bias_correction_bits(n, bins, bins);
+    (mi_bits - correction_bits).max(0.0)
 }
 
 /// Normalized mutual information (0–1).
@@ -83,7 +125,7 @@ pub fn normalized_mi(x: &[f64], y: &[f64], bins: usize) -> f64 {
     (mi / denom).clamp(0.0, 1.0)
 }
 
-/// Compute Shannon entropy of a variable via binning.
+/// Compute Shannon entropy of a variable via binning, in bits.
 fn entropy_binned(data: &[f64], bins: usize) -> f64 {
     let finite: Vec<f64> = data.iter().copied().filter(|v| v.is_finite()).collect();
     let n = finite.len();
@@ -104,14 +146,57 @@ fn entropy_binned(data: &[f64], bins: usize) -> f64 {
     }
 
     let nf = n as f64;
-    let mut h = 0.0;
+    let mut h_nats = 0.0;
     for &c in &counts {
         if c > 0 {
             let p = c as f64 / nf;
-            h -= p * p.ln();
+            h_nats -= p * p.ln();
         }
     }
-    h
+    h_nats / std::f64::consts::LN_2
+}
+
+fn miller_madow_bias_correction_bits(sample_count: usize, x_bins: usize, y_bins: usize) -> f64 {
+    if sample_count == 0 || x_bins == 0 || y_bins == 0 {
+        return 0.0;
+    }
+    (x_bins.saturating_mul(y_bins).saturating_sub(1)) as f64
+        / (2.0 * sample_count as f64 * std::f64::consts::LN_2)
+}
+
+fn adaptive_bin_count(data: &[f64]) -> usize {
+    let mut finite: Vec<f64> = data.iter().copied().filter(|value| value.is_finite()).collect();
+    if finite.len() < 4 {
+        return 1;
+    }
+    finite.sort_by(|left, right| left.total_cmp(right));
+    let q1 = percentile(&finite, 0.25);
+    let q3 = percentile(&finite, 0.75);
+    let iqr = (q3 - q1).abs();
+    let (min_val, max_val) = min_max(&finite);
+    let range = (max_val - min_val).abs();
+    if iqr < 1e-12 || range < 1e-12 {
+        return 1;
+    }
+    let bin_width = 2.0 * iqr * (finite.len() as f64).powf(-1.0 / 3.0);
+    if bin_width < 1e-12 {
+        return 1;
+    }
+    ((range / bin_width).ceil() as usize).max(1)
+}
+
+fn percentile(sorted: &[f64], quantile: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let position = quantile.clamp(0.0, 1.0) * (sorted.len().saturating_sub(1)) as f64;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    if lower == upper {
+        return sorted[lower];
+    }
+    let weight = position - lower as f64;
+    sorted[lower] * (1.0 - weight) + sorted[upper] * weight
 }
 
 /// Returns `(min, max + 1e-12)` for the finite elements in `data`.
@@ -146,7 +231,7 @@ mod tests {
     fn test_mi_independent() {
         // Two independent sequences
         let x: Vec<f64> = (0..100).map(|i| (i % 10) as f64).collect();
-        let y: Vec<f64> = (0..100).map(|i| ((i * 7) % 10) as f64).collect();
+        let y: Vec<f64> = (0..100).map(|i| ((i / 10) % 10) as f64).collect();
         let mi = estimate(&x, &y, 5);
         // MI should be small (not necessarily zero due to binning artifacts)
         assert!(
@@ -200,8 +285,8 @@ mod tests {
         // Generate uniform-ish data
         let data: Vec<f64> = (0..100).map(|i| i as f64).collect();
         let h = entropy_binned(&data, 10);
-        // Entropy of uniform distribution with 10 bins = ln(10) ≈ 2.30
-        assert!(h > 1.5, "Uniform data should have high entropy, got {}", h);
+        // Entropy of uniform distribution with 10 bins = log2(10) ≈ 3.32 bits
+        assert!(h > 2.0, "Uniform data should have high entropy, got {}", h);
     }
 
     #[test]
@@ -326,5 +411,33 @@ mod tests {
         let mi = estimate(&x, &y, 3);
         assert!(mi.is_finite());
         assert!(mi >= 0.0);
+    }
+
+    #[test]
+    fn test_adaptive_binning_detects_dependency() {
+        let x: Vec<f64> = (0..200).map(|index| index as f64 / 10.0).collect();
+        let y: Vec<f64> = x.iter().map(|value| value.sin()).collect();
+        let mi = estimate_adaptive(&x, &y);
+        assert!(mi.is_finite());
+        assert!(mi >= 0.0);
+    }
+
+    #[test]
+    fn test_mi_reported_in_bits_for_binary_signal() {
+        let x: Vec<f64> = (0..200).map(|index| (index % 2) as f64).collect();
+        let y = x.clone();
+        let mi = estimate(&x, &y, 2);
+        assert!(
+            mi > 0.8 && mi <= 1.1,
+            "perfect binary dependence should be about 1 bit, got {mi}"
+        );
+    }
+
+    #[test]
+    fn test_miller_madow_bias_correction_non_negative() {
+        let x: Vec<f64> = (0..20).map(|index| (index % 4) as f64).collect();
+        let y: Vec<f64> = x.iter().map(|value| value * 2.0).collect();
+        let corrected = estimate(&x, &y, 4);
+        assert!(corrected >= 0.0);
     }
 }

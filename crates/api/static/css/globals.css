@@ -72,6 +72,26 @@
     --brand-800: 29 45 102;
     --brand-900: 20 32 73;
 
+    /* Chart Colors — Tableau-inspired vibrant palette */
+    --chart-bg-top: 255 255 255;
+    --chart-bg-bottom: 247 249 252;
+    --chart-grid: 189 198 210;
+    --chart-grid-soft: 225 230 238;
+    --chart-axis: 100 110 130;
+    --chart-label: 108 118 138;
+    --chart-shadow: 15 23 42;
+    --chart-spotlight: 255 255 255;
+    --chart-series-blue: 59 130 246;
+    --chart-series-green: 34 197 94;
+    --chart-series-amber: 245 158 11;
+    --chart-series-orange: 249 115 22;
+    --chart-series-red: 239 68 68;
+    --chart-series-slate: 148 163 184;
+    --chart-series-violet: 139 92 246;
+    --chart-series-cyan: 6 182 212;
+    --chart-series-pink: 236 72 153;
+    --chart-series-teal: 20 184 166;
+
     --space-1: 4px;
     --space-2: 8px;
     --space-3: 12px;
@@ -114,6 +134,15 @@
     --surface-700: 210 214 220;
     --surface-800: 232 235 240;
     --surface-900: 244 246 250;
+
+    --chart-bg-top: 24 27 31;
+    --chart-bg-bottom: 18 21 24;
+    --chart-grid: 88 98 111;
+    --chart-grid-soft: 53 60 70;
+    --chart-axis: 165 177 194;
+    --chart-label: 184 193 205;
+    --chart-shadow: 2 6 23;
+    --chart-spotlight: 38 42 48;
 
     --rams-chassis: #1A1A1A;
     --rams-module: #252525;
@@ -285,12 +314,12 @@
       width: fit-content;
       max-width: 100%;
       align-items: flex-start;
-      white-space: normal;
+      white-space: nowrap;
       line-height: 1.25;
       letter-spacing: 0.03em !important;
       text-transform: none;
-      overflow-wrap: anywhere;
-      word-break: break-word;
+      overflow-wrap: normal;
+      word-break: normal;
     }
 
     .mobile-toolbar-control {
@@ -323,6 +352,31 @@
       row-gap: 0.5rem;
     }
 
+    .page-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .page-header-main {
+      min-width: 0;
+    }
+
+    .page-header-actions {
+      display: flex;
+      width: 100%;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .page-header-actions > * {
+      max-width: 100%;
+    }
+
+    .page-header-actions > .apex-action-link,
+    .page-header-actions > .apex-btn {
+      justify-content: center;
+    }
+
     .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 > label,
     .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 > input,
     .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 > button,
@@ -341,6 +395,32 @@
     .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 > input[type='search'] {
       flex: 1 1 100%;
       min-width: 0;
+    }
+
+    .apex-card.p-3 > .flex.flex-wrap.items-center.gap-2 > .h-4.w-px.bg-border,
+    .apex-card.p-3 > .flex.flex-wrap.items-center.justify-between.gap-2 > .h-4.w-px.bg-border,
+    .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 + .flex.flex-wrap.items-center.gap-2 > .h-4.w-px.bg-border {
+      display: none;
+    }
+
+    .apex-card.p-3 > .flex.flex-wrap.items-center.gap-2 > span.text-\[10px\].font-bold.uppercase.text-muted-foreground,
+    .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 + .flex.flex-wrap.items-center.gap-2 > span.text-\[10px\].font-bold.uppercase.text-muted-foreground {
+      flex-basis: 100%;
+      margin-right: 0;
+    }
+
+    .apex-card.p-3 .apex-action-link,
+    .apex-card.p-3 .apex-filter-chip {
+      min-height: 2rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 > .apex-action-link,
+    .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 > button.apex-action-link,
+    .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2 > a.apex-action-link {
+      flex: 1 1 calc(50% - 0.25rem);
     }
 
     .graph-toolbar {
@@ -433,6 +513,618 @@
     @apply border-warning/70 bg-secondary;
   }
 
+  .apex-metric-card {
+    @apply apex-card p-4 relative overflow-hidden;
+  }
+
+  .apex-metric-rail {
+    @apply absolute top-0 left-0 h-1 w-full;
+  }
+
+  .apex-metric-label {
+    @apply text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground;
+  }
+
+  .apex-chart-frame,
+  .apex-chart-frame-tall {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid rgb(var(--chart-grid-soft) / 0.55);
+    border-radius: 12px;
+    background:
+      linear-gradient(180deg, rgb(var(--chart-bg-top)), rgb(var(--chart-bg-bottom)));
+    box-shadow:
+      0 1px 2px rgb(var(--chart-shadow) / 0.06),
+      0 4px 12px -4px rgb(var(--chart-shadow) / 0.08);
+    padding: 1rem 0.95rem 0.8rem;
+  }
+
+  .apex-chart-frame {
+    height: 220px;
+  }
+
+  .apex-chart-frame-tall {
+    height: 246px;
+  }
+
+  .apex-chart-frame::before,
+  .apex-chart-frame-tall::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(to bottom, rgb(var(--chart-grid-soft) / 0.1) 1px, transparent 1px);
+    background-size: 100% 25%;
+    pointer-events: none;
+    opacity: 0.5;
+  }
+
+  .apex-chart-frame > *,
+  .apex-chart-frame-tall > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .apex-donut-chart {
+    display: grid;
+    place-items: center;
+    height: 100%;
+    gap: 0.75rem;
+  }
+
+  .apex-donut-shell {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+
+  .apex-donut-svg {
+    overflow: visible;
+    filter: drop-shadow(0 4px 8px rgb(var(--chart-shadow) / 0.08));
+  }
+
+  .apex-donut-segment {
+    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms ease, filter 200ms ease;
+    transform-origin: center;
+  }
+
+  .apex-donut-segment:hover {
+    transform: scale(1.03);
+    opacity: 0.92;
+    filter: drop-shadow(0 0 6px rgb(var(--chart-shadow) / 0.18));
+  }
+
+  .apex-donut-center {
+    position: absolute;
+    display: grid;
+    gap: 0.1rem;
+    place-items: center;
+    text-align: center;
+    pointer-events: none;
+  }
+
+  .apex-donut-center-kicker {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgb(var(--chart-label));
+  }
+
+  .apex-donut-center-value {
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: rgb(var(--foreground));
+  }
+
+  .apex-viz-frame {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(18px, 1fr);
+    gap: 0.5rem;
+    align-items: end;
+    height: 100%;
+    overflow-x: auto;
+    padding: 0.1rem 0.15rem 0.25rem;
+  }
+
+  .apex-viz-frame-dual {
+    grid-auto-columns: minmax(22px, 1fr);
+  }
+
+  .apex-viz-column {
+    min-width: 20px;
+    display: grid;
+    gap: 0.38rem;
+    align-items: end;
+    height: 100%;
+  }
+
+  .apex-viz-value,
+  .apex-viz-value-secondary {
+    display: block;
+    text-align: center;
+    white-space: nowrap;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .apex-viz-value {
+    font-size: 9px;
+    color: rgb(var(--foreground));
+  }
+
+  .apex-viz-value-secondary {
+    margin-top: -0.24rem;
+    font-size: 8px;
+    color: rgb(var(--chart-label));
+  }
+
+  .apex-viz-track {
+    position: relative;
+    height: 168px;
+    display: flex;
+    align-items: end;
+    justify-content: center;
+    padding: 0 0.12rem;
+    border-radius: 6px;
+    background: rgb(var(--chart-grid-soft) / 0.18);
+  }
+
+  .apex-viz-track::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: rgb(var(--chart-axis) / 0.25);
+    border-radius: 1px;
+    pointer-events: none;
+  }
+
+  .apex-viz-track-dual {
+    gap: 0.22rem;
+  }
+
+  .apex-viz-stack {
+    width: 100%;
+    max-width: 20px;
+    min-height: 4px;
+    display: flex;
+    flex-direction: column-reverse;
+    overflow: hidden;
+    border-radius: 4px 4px 2px 2px;
+    box-shadow: 0 2px 6px -2px rgb(var(--chart-shadow) / 0.12);
+    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .apex-viz-column:hover .apex-viz-stack,
+  .apex-viz-column:focus-within .apex-viz-stack,
+  .apex-viz-column:hover .apex-viz-dual-bar,
+  .apex-viz-column:focus-within .apex-viz-dual-bar {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px -4px rgb(var(--chart-shadow) / 0.18);
+  }
+
+  .apex-viz-segment,
+  .apex-viz-dual-bar {
+    width: 100%;
+    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), filter 200ms ease;
+  }
+
+  .apex-viz-segment-low { background: rgb(var(--chart-series-blue)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-medium { background: rgb(var(--chart-series-amber)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-high { background: rgb(var(--chart-series-orange)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-critical { background: rgb(var(--chart-series-red)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-demand { background: rgb(var(--chart-series-red)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-competitive { background: rgb(var(--chart-series-orange)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-supply { background: rgb(var(--chart-series-amber)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-security { background: rgb(var(--chart-series-blue)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-macro { background: rgb(var(--chart-series-slate)); border-radius: 2px 2px 0 0; }
+
+  .apex-viz-dual-bar {
+    width: 44%;
+    min-height: 4px;
+    border-radius: 4px 4px 2px 2px;
+    box-shadow: 0 2px 6px -2px rgb(var(--chart-shadow) / 0.12);
+    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .apex-viz-dual-bar-success { background: rgb(var(--chart-series-green)); }
+  .apex-viz-dual-bar-errors { background: rgb(var(--chart-series-blue)); }
+
+  .apex-viz-label {
+    display: block;
+    text-align: center;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: rgb(var(--chart-label));
+    white-space: nowrap;
+    letter-spacing: 0.04em;
+  }
+
+  .apex-line-chart,
+  .apex-compare-chart {
+    width: 100%;
+    height: 100%;
+    min-width: 320px;
+    overflow: visible;
+  }
+
+  .apex-line-chart-plot {
+    fill: rgb(var(--chart-grid-soft) / 0.18);
+    stroke: rgb(var(--chart-grid-soft) / 0.4);
+    stroke-width: 1;
+  }
+
+  .apex-line-chart-axis {
+    stroke: rgb(var(--chart-axis) / 0.4);
+    stroke-width: 1;
+  }
+
+  .apex-line-chart-grid {
+    stroke: rgb(var(--chart-grid) / 0.18);
+    stroke-width: 1;
+    stroke-dasharray: 3 4;
+  }
+
+  .apex-line-chart-stroke {
+    fill: none;
+    stroke-width: 2.4;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    filter: drop-shadow(0 2px 4px rgb(var(--chart-shadow) / 0.08));
+  }
+
+  .apex-line-chart-stroke-precision { stroke: rgb(var(--chart-series-red)); }
+  .apex-line-chart-stroke-recall { stroke: rgb(var(--chart-series-blue)); }
+  .apex-line-chart-stroke-fpr { stroke: rgb(var(--chart-series-amber)); }
+
+  .apex-line-chart-point {
+    stroke: rgb(var(--chart-bg-top));
+    stroke-width: 2;
+    filter: drop-shadow(0 2px 4px rgb(var(--chart-shadow) / 0.1));
+  }
+
+  .apex-line-chart-point-precision { fill: rgb(var(--chart-series-red)); }
+  .apex-line-chart-point-recall { fill: rgb(var(--chart-series-blue)); }
+  .apex-line-chart-point-fpr { fill: rgb(var(--chart-series-amber)); }
+
+  .apex-line-chart-value {
+    fill: rgb(var(--foreground));
+    font-size: 8px;
+    font-weight: 700;
+  }
+
+  .apex-line-chart-label {
+    fill: rgb(var(--chart-label));
+    font-size: 8px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .apex-compare-bar {
+    filter: drop-shadow(0 2px 6px rgb(var(--chart-shadow) / 0.08));
+  }
+
+  .apex-compare-bar-threat { fill: rgb(var(--chart-series-red)); }
+  .apex-compare-bar-overlap { fill: rgb(var(--chart-series-blue)); }
+
+  .apex-compare-value {
+    fill: rgb(var(--foreground));
+    font-size: 8px;
+    font-weight: 800;
+    text-anchor: middle;
+  }
+
+  @media (max-width: 640px) {
+    .apex-chart-frame {
+      height: 196px;
+    }
+
+    .apex-chart-frame-tall {
+      height: 220px;
+    }
+
+    .apex-viz-frame {
+      grid-auto-columns: minmax(12px, 1fr);
+      gap: 0.34rem;
+      padding-inline: 0.125rem;
+    }
+
+    .apex-viz-frame-dual {
+      grid-auto-columns: minmax(14px, 1fr);
+      gap: 0.18rem;
+    }
+
+    .apex-viz-column {
+      min-width: 14px;
+      gap: 0.25rem;
+    }
+
+    .apex-viz-track {
+      height: 146px;
+    }
+
+    .apex-viz-stack {
+      max-width: 14px;
+    }
+
+    .apex-viz-label {
+      max-width: 2.5rem;
+      margin-inline: auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 8px;
+      letter-spacing: 0.02em;
+    }
+
+    /* Crawl activity (24 cols): show every 3rd label at tablet */
+    .apex-viz-frame-dual .apex-viz-column .apex-viz-label {
+      font-size: 7px;
+      letter-spacing: 0;
+    }
+    .apex-viz-frame-dual .apex-viz-column:not(:nth-child(3n + 1)) .apex-viz-label {
+      visibility: hidden;
+    }
+
+    /* Hide secondary values on dual bar at tablet */
+    .apex-viz-frame-dual .apex-viz-value-secondary {
+      font-size: 7px;
+    }
+
+    .apex-line-chart,
+    .apex-compare-chart {
+      min-width: 260px;
+    }
+
+    .apex-line-chart-value {
+      font-size: 7px;
+    }
+
+    .apex-line-chart-label {
+      font-size: 7px;
+    }
+
+    .apex-chart-legend {
+      justify-content: flex-start;
+      gap: 0.5rem 0.75rem;
+      font-size: 9px;
+    }
+
+    .apex-chart-legend-item {
+      font-size: 9px;
+    }
+
+    .apex-chart-frame-dense .apex-viz-frame {
+      gap: 0.2rem;
+      grid-auto-columns: minmax(10px, 1fr);
+    }
+
+    .apex-chart-frame-dense .apex-viz-column {
+      min-width: 10px;
+    }
+
+    .apex-chart-frame-dense .apex-viz-stack {
+      max-width: 12px;
+    }
+
+    .apex-chart-frame-dense .apex-viz-label {
+      max-width: 1.9rem;
+      font-size: 7px;
+      letter-spacing: 0;
+    }
+
+    .apex-chart-frame-dense .apex-viz-column:not(:nth-child(3n + 1)) .apex-viz-label {
+      opacity: 0.35;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .apex-viz-column:nth-child(even) .apex-viz-label {
+      opacity: 0.55;
+    }
+
+    /* Crawl activity (24 cols): show only every 6th label on phone (0h, 6h, 12h, 18h) */
+    .apex-viz-frame-dual .apex-viz-column .apex-viz-label {
+      visibility: hidden;
+    }
+    .apex-viz-frame-dual .apex-viz-column:nth-child(6n + 1) .apex-viz-label {
+      visibility: visible;
+    }
+
+    /* Hide value labels on dual bar for cleanliness */
+    .apex-viz-frame-dual .apex-viz-value,
+    .apex-viz-frame-dual .apex-viz-value-secondary {
+      font-size: 0;
+    }
+
+    .apex-line-chart,
+    .apex-compare-chart {
+      min-width: 232px;
+    }
+
+    .apex-chart-frame-dense .apex-viz-column:not(:nth-child(4n + 1)) .apex-viz-label {
+      opacity: 0;
+    }
+  }
+
+  .apex-chart-legend {
+    @apply mt-3 flex flex-wrap items-center justify-center gap-2 text-[10px] font-semibold uppercase;
+  }
+
+  .apex-chart-legend-item {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase text-muted-foreground;
+    border-color: rgb(var(--chart-grid-soft) / 0.5);
+    background: rgb(var(--chart-bg-top) / 0.6);
+  }
+
+  .apex-legend-swatch {
+    @apply inline-block h-2.5 w-2.5 rounded-full;
+    box-shadow: 0 0 0 1.5px rgb(var(--chart-bg-top) / 0.8);
+  }
+
+  .apex-legend-swatch-dynamic {
+    background-color: var(--apex-swatch-color, var(--rams-line));
+  }
+
+  .apex-legend-swatch-sm {
+    @apply inline-block h-2 w-2 rounded-full;
+  }
+
+  .apex-legend-swatch-wide {
+    @apply inline-block h-2 w-3 rounded-full;
+  }
+
+  .apex-filter-chip {
+    @apply rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] transition-none;
+  }
+
+  .apex-filter-chip-idle {
+    @apply border-border bg-secondary text-muted-foreground hover:text-foreground;
+  }
+
+  .apex-filter-chip-active {
+    @apply border-foreground bg-foreground text-background;
+  }
+
+  .apex-filter-chip-accent {
+    @apply border-primary bg-primary/15 text-foreground hover:text-foreground;
+  }
+
+  .apex-filter-chip-muted {
+    @apply border-border bg-secondary text-muted-foreground;
+  }
+
+  .apex-action-link {
+    @apply rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground;
+  }
+
+  .apex-mini-kind {
+    @apply mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-[8px] font-black uppercase;
+  }
+
+  .apex-mini-kind-warning {
+    @apply bg-orange-500/15 text-orange-600;
+  }
+
+  .apex-mini-kind-insight {
+    @apply bg-blue-500/15 text-blue-500;
+  }
+
+  .apex-dot {
+    @apply inline-block h-1.5 w-1.5 rounded-sm align-middle;
+    background-color: var(--apex-dot-color, var(--rams-line));
+  }
+
+  .apex-dot-sm {
+    @apply inline-block h-2 w-2 rounded-sm;
+    background-color: var(--apex-dot-color, var(--rams-line));
+  }
+
+  .apex-spinner-sm {
+    @apply inline-block h-3 w-3 animate-spin rounded-sm border-2 border-current border-r-transparent;
+  }
+
+  .apex-text-positive {
+    color: var(--rams-green);
+  }
+
+  .apex-text-danger {
+    color: var(--rams-red);
+  }
+
+  .apex-text-warning {
+    color: var(--rams-orange);
+  }
+
+  .apex-text-info {
+    color: var(--rams-steel);
+  }
+
+  .apex-text-competitor {
+    color: color-mix(in srgb, var(--rams-orange) 76%, black);
+  }
+
+  .apex-link-steel {
+    color: var(--rams-steel);
+  }
+
+  .apex-tier-critical {
+    color: var(--rams-red);
+  }
+
+  .apex-tier-high,
+  .apex-tier-medium {
+    color: var(--rams-orange);
+  }
+
+  .apex-tier-low {
+    color: var(--rams-steel);
+  }
+
+  .apex-role-executive {
+    color: var(--rams-red);
+  }
+
+  .apex-role-technical,
+  .apex-role-legal {
+    color: var(--rams-steel);
+  }
+
+  .apex-role-operations {
+    color: var(--rams-green);
+  }
+
+  .apex-role-finance {
+    color: var(--rams-orange);
+  }
+
+  .apex-dot-primary { --apex-dot-color: var(--rams-orange); }
+  .apex-dot-red { --apex-dot-color: var(--rams-red); }
+  .apex-dot-orange { --apex-dot-color: var(--rams-orange); }
+  .apex-dot-green { --apex-dot-color: var(--rams-green); }
+  .apex-dot-steel { --apex-dot-color: var(--rams-steel); }
+
+  .apex-score-ring {
+    @apply inline-flex items-center justify-center rounded-sm border-2 font-black;
+    width: var(--apex-ring-size, 40px);
+    height: var(--apex-ring-size, 40px);
+  }
+
+  .apex-score-ring-critical {
+    border-color: var(--rams-red);
+    color: var(--rams-red);
+  }
+
+  .apex-score-ring-warning {
+    border-color: var(--rams-orange);
+    color: color-mix(in srgb, var(--rams-orange) 72%, black);
+  }
+
+  .apex-score-ring-info {
+    border-color: var(--rams-steel);
+    color: var(--rams-steel);
+  }
+
+  .metric-rail-blue { background-color: var(--rams-steel); }
+  .metric-rail-navy { background-color: color-mix(in srgb, var(--rams-steel) 45%, black); }
+  .metric-rail-gold { background-color: var(--rams-orange); }
+  .metric-swatch-blue { background-color: var(--rams-steel); }
+  .metric-swatch-navy { background-color: color-mix(in srgb, var(--rams-steel) 45%, black); }
+  .metric-swatch-gold { background-color: var(--rams-orange); }
+
+  .apex-bar-column {
+    height: var(--apex-bar-height, 0%);
+    @apply rounded-sm;
+    background-color: color-mix(in srgb, var(--rams-steel) 84%, white);
+  }
+
   .apex-card p,
   .apex-card a,
   .apex-card span,
@@ -497,6 +1189,28 @@
   }
   .intel-score-fill {
     @apply h-full rounded-full bg-primary transition-[width] duration-500;
+  }
+
+  .intel-score-fill-dynamic {
+    width: var(--intel-score-width, 0%);
+    background-color: var(--intel-score-color, var(--rams-orange));
+  }
+
+  .apex-meter-fill {
+    @apply h-full rounded-sm;
+    width: var(--apex-meter-width, 0%);
+  }
+
+  .apex-meter-fill-high {
+    background-color: var(--rams-green);
+  }
+
+  .apex-meter-fill-medium {
+    background-color: var(--rams-orange);
+  }
+
+  .apex-meter-fill-low {
+    background-color: var(--rams-red);
   }
 
   .route-progress {

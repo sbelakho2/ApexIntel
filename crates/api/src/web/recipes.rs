@@ -324,9 +324,9 @@ pub async fn list_recipes(
             recipe_chart_w: tpl.recipe_chart_w,
             recipe_perf_trend: tpl.recipe_perf_trend.clone(),
         };
-        partial.into_response()
+        super::render_template(&partial)
     } else {
-        tpl.into_response()
+        super::render_template(&tpl)
     }
 }
 
@@ -352,9 +352,6 @@ pub async fn new_recipe(
         theme: ctx.theme,
     };
 
-    if is_htmx_request(&headers) {
-        tpl.into_response()
-    } else {
-        tpl.into_response()
-    }
+    let _ = is_htmx_request(&headers);
+    super::render_template(&tpl)
 }

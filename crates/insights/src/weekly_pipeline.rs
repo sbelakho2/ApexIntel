@@ -15,11 +15,12 @@
 //! without narrative enrichment (degrades gracefully).
 
 use crate::memo::{generate_weekly_memo, WeeklyMemo};
-use crate::renderer::{group_by_region, InsightCard};
+use crate::renderer::{card_information_gain_bits, group_by_region, rank_insights, InsightCard};
 use anyhow::{Context, Result};
 use apex_llm::LlmClient;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -71,6 +72,19 @@ pub struct PipelineOutput {
     pub llm_narrated: bool,
     /// Execution duration in milliseconds.
     pub duration_ms: u64,
+    /// Weekly information-gain summaries per entity, including crawl priority recommendations.
+    pub entity_information_gain: Vec<EntityInformationGainSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityInformationGainSummary {
+    pub entity_id: Uuid,
+    pub entity_name: String,
+    pub cumulative_information_gain_bits: f64,
+    pub mean_information_gain_bits: f64,
+    pub insight_count: usize,
+    pub plateaued: bool,
+    pub crawl_priority_multiplier: f64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,11 +125,7 @@ impl WeeklyPipelineRunner {
 
         // Stage 2: Sort by score descending (highest priority first)
         let mut ranked = qualified;
-        ranked.sort_by(|a, b| {
-            b.priority_score
-                .partial_cmp(&a.priority_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        rank_insights(&mut ranked);
         ranked.truncate(self.config.max_body_cards);
 
         // Stage 3: Extract top executive-level cards
@@ -170,10 +180,19 @@ impl WeeklyPipelineRunner {
         memo.executive_summary = exec_summary;
 
         let duration_ms = start.elapsed().as_millis() as u64;
+        let entity_information_gain = summarize_entity_information_gain(&enriched_cards);
+        let plateaued_entities = entity_information_gain
+            .iter()
+            .filter(|summary| summary.plateaued)
+            .count();
 
         info!(
             cards_processed = total,
-            cards_discarded, llm_narrated, duration_ms, "Weekly pipeline complete"
+            cards_discarded,
+            llm_narrated,
+            duration_ms,
+            plateaued_entities,
+            "Weekly pipeline complete"
         );
 
         Ok(PipelineOutput {
@@ -182,6 +201,7 @@ impl WeeklyPipelineRunner {
             cards_discarded,
             llm_narrated,
             duration_ms,
+            entity_information_gain,
         })
     }
 
@@ -316,6 +336,46 @@ impl WeeklyPipelineRunner {
     }
 }
 
+pub fn summarize_entity_information_gain(cards: &[InsightCard]) -> Vec<EntityInformationGainSummary> {
+    let mut grouped: std::collections::HashMap<Uuid, (String, f64, usize)> = std::collections::HashMap::new();
+    for card in cards {
+        let entry = grouped
+            .entry(card.entity_id)
+            .or_insert_with(|| (card.entity_name.clone(), 0.0, 0));
+        entry.1 += card_information_gain_bits(card);
+        entry.2 += 1;
+    }
+
+    let mut summaries: Vec<EntityInformationGainSummary> = grouped
+        .into_iter()
+        .map(|(entity_id, (entity_name, cumulative_information_gain_bits, insight_count))| {
+            let mean_information_gain_bits = if insight_count == 0 {
+                0.0
+            } else {
+                cumulative_information_gain_bits / insight_count as f64
+            };
+            let plateaued = insight_count >= 2 && mean_information_gain_bits < 0.1;
+            EntityInformationGainSummary {
+                entity_id,
+                entity_name,
+                cumulative_information_gain_bits,
+                mean_information_gain_bits,
+                insight_count,
+                plateaued,
+                crawl_priority_multiplier: if plateaued { 0.75 } else { 1.0 },
+            }
+        })
+        .collect();
+
+    summaries.sort_by(|a, b| {
+        a.crawl_priority_multiplier
+            .partial_cmp(&b.crawl_priority_multiplier)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.entity_name.cmp(&b.entity_name))
+    });
+    summaries
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,6 +426,7 @@ mod tests {
         assert!(!output.memo.executive_summary.is_empty());
         assert!(!output.llm_narrated);
         assert_eq!(output.cards_received, 10);
+        assert!(!output.entity_information_gain.is_empty());
     }
 
     #[tokio::test]
@@ -380,5 +441,53 @@ mod tests {
         ];
         let output = runner.run(cards).await.unwrap();
         assert_eq!(output.cards_discarded, 2);
+    }
+
+    #[test]
+    fn entity_information_gain_plateau_recommends_lower_crawl_priority() {
+        let entity_id = uuid::Uuid::new_v4();
+        let cards = vec![
+            InsightCard {
+                id: uuid::Uuid::new_v4(),
+                recipe_code: "LOW-A".to_string(),
+                entity_id,
+                entity_name: "Plateau Co".to_string(),
+                severity: "info".to_string(),
+                category: "ops".to_string(),
+                title: "Low IG A".to_string(),
+                narrative: String::new(),
+                actions: vec![],
+                citations: vec![],
+                confidence: 0.05,
+                impact: 0.2,
+                impact_label: "Info".to_string(),
+                priority_score: 0.1,
+                region: None,
+                rendered_at: Utc::now(),
+            },
+            InsightCard {
+                id: uuid::Uuid::new_v4(),
+                recipe_code: "LOW-B".to_string(),
+                entity_id,
+                entity_name: "Plateau Co".to_string(),
+                severity: "info".to_string(),
+                category: "ops".to_string(),
+                title: "Low IG B".to_string(),
+                narrative: String::new(),
+                actions: vec![],
+                citations: vec![],
+                confidence: 0.08,
+                impact: 0.2,
+                impact_label: "Info".to_string(),
+                priority_score: 0.1,
+                region: None,
+                rendered_at: Utc::now(),
+            },
+        ];
+
+        let summary = summarize_entity_information_gain(&cards);
+        assert_eq!(summary.len(), 1);
+        assert!(summary[0].plateaued);
+        assert!(summary[0].crawl_priority_multiplier < 1.0);
     }
 }

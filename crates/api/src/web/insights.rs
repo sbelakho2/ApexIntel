@@ -13,6 +13,7 @@ use axum::{
     response::{Html, IntoResponse, Redirect},
     Extension,
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
@@ -467,8 +468,7 @@ pub async fn list_insights(
                 confidence,
                 confidence_pct: confidence_to_pct(confidence),
                 company_name: String::new(),
-                created_at: i
-                    .updated_at
+                created_at: insight_display_time(i)
                     .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_default(),
                 bookmarked: false,
@@ -546,11 +546,10 @@ pub async fn list_insights(
                 continue;
             }
 
-            let date = row
-                .updated_at
-                .unwrap_or_else(Utc::now)
-                .format("%b %d")
-                .to_string();
+            let Some(event_time) = insight_display_time(row) else {
+                continue;
+            };
+            let date = event_time.format("%b %d").to_string();
             if let Some((d, c, su, sec, m)) = by_day.get_mut(&date) {
                 let kind = row
                     .insight_type
@@ -678,9 +677,9 @@ pub async fn list_insights(
             reset_href: tpl.reset_href.clone(),
             page_base_href: tpl.page_base_href.clone(),
         };
-        partial.into_response()
+        super::render_template(&partial)
     } else {
-        tpl.into_response()
+        super::render_template(&tpl)
     }
 }
 
@@ -791,7 +790,7 @@ pub async fn get_insight(
         ai_analysis: None,
     };
 
-    tpl.into_response()
+    super::render_template(&tpl)
 }
 
 fn confidence_to_pct(value: f64) -> i64 {
@@ -800,6 +799,10 @@ fn confidence_to_pct(value: f64) -> i64 {
     } else {
         value.round() as i64
     }
+}
+
+fn insight_display_time(row: &apex_store::postgres::InsightRow) -> Option<DateTime<Utc>> {
+    row.created_at.or(row.updated_at)
 }
 
 /// POST /insights/:id/bookmark — toggle bookmark, return updated card fragment.

@@ -4,6 +4,7 @@
 //! and produces human-readable insight cards with narratives, actions, and citations.
 
 use apex_core::validation::normalize_url;
+use apex_stats::mutual_info;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,13 @@ pub struct Citation {
     pub source_url: String,
     pub source_domain: String,
     pub observed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvidenceRedundancyLink {
+    pub left_index: usize,
+    pub right_index: usize,
+    pub normalized_mutual_information: f64,
 }
 
 // ────────────────────────────────────────────
@@ -269,6 +277,91 @@ pub fn priority_score(impact: f64, confidence: f64, severity: &str) -> f64 {
     impact * confidence * urgency
 }
 
+pub fn information_gain_bits(confidence: f64, severity: &str) -> f64 {
+    let prior = default_state_distribution();
+    let posterior = posterior_state_distribution(prior, severity_target_state(severity), confidence);
+    (shannon_entropy_bits(&prior) - shannon_entropy_bits(&posterior)).max(0.0)
+}
+
+pub fn card_information_gain_bits(card: &InsightCard) -> f64 {
+    information_gain_bits(card.confidence, &card.severity)
+}
+
+pub fn effective_evidence_weights(evidence: &[EvidenceSlot]) -> Vec<f64> {
+    let mut seen_counts: HashMap<String, usize> = HashMap::new();
+    evidence
+        .iter()
+        .map(|slot| {
+            let source_type = evidence_source_type(slot);
+            let count = seen_counts.entry(source_type).or_default();
+            *count += 1;
+            1.0 / (*count as f64)
+        })
+        .collect()
+}
+
+pub fn evidence_diversity_score(evidence: &[EvidenceSlot]) -> f64 {
+    if evidence.is_empty() {
+        return 0.0;
+    }
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for slot in evidence {
+        *counts.entry(evidence_source_type(slot)).or_default() += 1;
+    }
+
+    let total = evidence.len() as f64;
+    let concentration: f64 = counts
+        .values()
+        .map(|count| {
+            let proportion = *count as f64 / total;
+            proportion * proportion
+        })
+        .sum();
+    (1.0 - concentration).clamp(0.0, 1.0)
+}
+
+pub fn pairwise_evidence_redundancy(evidence: &[EvidenceSlot]) -> Vec<EvidenceRedundancyLink> {
+    let mut links = Vec::new();
+    for left_idx in 0..evidence.len() {
+        for right_idx in (left_idx + 1)..evidence.len() {
+            let Some(nmi) = evidence_pair_normalized_mi(&evidence[left_idx].value, &evidence[right_idx].value) else {
+                continue;
+            };
+            links.push(EvidenceRedundancyLink {
+                left_index: left_idx,
+                right_index: right_idx,
+                normalized_mutual_information: nmi,
+            });
+        }
+    }
+    links.sort_by(|a, b| {
+        b.normalized_mutual_information
+            .partial_cmp(&a.normalized_mutual_information)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.left_index.cmp(&b.left_index))
+            .then_with(|| a.right_index.cmp(&b.right_index))
+    });
+    links
+}
+
+pub fn evidence_support_multiplier(evidence: &[EvidenceSlot]) -> f64 {
+    if evidence.is_empty() {
+        return 1.0;
+    }
+
+    let weights = effective_evidence_weights(evidence);
+    let weight_factor = weights.iter().sum::<f64>() / evidence.len() as f64;
+    let diversity_bonus = 0.75 + 0.375 * evidence_diversity_score(evidence);
+    let redundant_pairs = pairwise_evidence_redundancy(evidence)
+        .iter()
+        .filter(|link| link.normalized_mutual_information > 0.8)
+        .count() as f64;
+    let redundancy_penalty = 1.0 / (1.0 + 0.25 * redundant_pairs);
+
+    (weight_factor * diversity_bonus * redundancy_penalty).clamp(0.35, 1.15)
+}
+
 fn normalize_card_severity(severity: &str) -> String {
     match severity.trim().to_lowercase().as_str() {
         "critical" => "critical".to_string(),
@@ -429,7 +522,8 @@ pub fn render_insight(candidate: &InsightCandidate) -> InsightCard {
         &candidate.entity_name,
     );
     let severity = normalize_card_severity(&candidate.severity);
-    let score = priority_score(candidate.impact, candidate.confidence, &severity);
+    let score = priority_score(candidate.impact, candidate.confidence, &severity)
+        * evidence_support_multiplier(&evidence);
 
     InsightCard {
         id: Uuid::new_v4(),
@@ -454,7 +548,14 @@ pub fn render_insight(candidate: &InsightCandidate) -> InsightCard {
 /// Rank insight cards by priority score (descending).
 pub fn rank_insights(cards: &mut [InsightCard]) {
     cards.sort_by(|a, b| {
-        // Primary: priority score DESC (higher is more important)
+        let ig_order = card_information_gain_bits(b)
+            .partial_cmp(&card_information_gain_bits(a))
+            .unwrap_or(std::cmp::Ordering::Equal);
+        if ig_order != std::cmp::Ordering::Equal {
+            return ig_order;
+        }
+
+        // Secondary: priority score DESC (higher is more important)
         let score_order = b
             .priority_score
             .partial_cmp(&a.priority_score)
@@ -558,10 +659,11 @@ pub fn format_card_text(card: &InsightCard) -> String {
     let mut lines = Vec::new();
     lines.push(format!("### {}", card.title));
     lines.push(format!(
-        "**Severity:** {} | **Impact:** {} | **Confidence:** {:.0}%",
+        "**Severity:** {} | **Impact:** {} | **Confidence:** {:.0}% | **Information Gain:** {:.2} bits",
         card.severity,
         card.impact_label,
-        card.confidence * 100.0
+        card.confidence * 100.0,
+        card_information_gain_bits(card)
     ));
     lines.push(String::new());
     lines.push(card.narrative.clone());
@@ -590,6 +692,122 @@ pub fn format_card_text(card: &InsightCard) -> String {
     }
 
     lines.join("\n")
+}
+
+fn default_state_distribution() -> [f64; 3] {
+    [0.70, 0.20, 0.10]
+}
+
+fn severity_target_state(severity: &str) -> usize {
+    match severity.trim().to_lowercase().as_str() {
+        "critical" | "high" => 2,
+        "warning" | "medium" => 1,
+        _ => 0,
+    }
+}
+
+fn posterior_state_distribution(prior: [f64; 3], target_state: usize, confidence: f64) -> [f64; 3] {
+    let confidence = confidence.clamp(0.0, 1.0);
+    let mut posterior = [0.0; 3];
+    for (idx, probability) in prior.iter().enumerate() {
+        posterior[idx] = probability * (1.0 - confidence);
+    }
+    posterior[target_state] += confidence;
+    let total: f64 = posterior.iter().sum();
+    if total > 0.0 {
+        for probability in &mut posterior {
+            *probability /= total;
+        }
+    }
+    posterior
+}
+
+fn shannon_entropy_bits(distribution: &[f64]) -> f64 {
+    distribution
+        .iter()
+        .copied()
+        .filter(|probability| *probability > 0.0)
+        .map(|probability| -probability * probability.log2())
+        .sum()
+}
+
+fn evidence_source_type(slot: &EvidenceSlot) -> String {
+    if let Some(domain) = slot.source_domain.as_ref().filter(|domain| !domain.trim().is_empty()) {
+        return domain.trim().to_lowercase();
+    }
+    if let Some(url) = slot.source_url.as_ref().filter(|url| !url.trim().is_empty()) {
+        return extract_domain(url).to_lowercase();
+    }
+    slot.slot_name.trim().to_lowercase()
+}
+
+fn evidence_pair_normalized_mi(left: &str, right: &str) -> Option<f64> {
+    let left_tokens = tokenize_signal(left);
+    let right_tokens = tokenize_signal(right);
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return None;
+    }
+    if left_tokens == right_tokens {
+        return Some(1.0);
+    }
+
+    let mut vocabulary: Vec<String> = left_tokens
+        .iter()
+        .chain(right_tokens.iter())
+        .cloned()
+        .collect();
+    vocabulary.sort();
+    vocabulary.dedup();
+
+    let token_to_id: HashMap<String, usize> = vocabulary
+        .into_iter()
+        .enumerate()
+        .map(|(idx, token)| (token, idx + 1))
+        .collect();
+
+    let mut left_ids: Vec<f64> = left_tokens
+        .into_iter()
+        .filter_map(|token| token_to_id.get(&token).copied())
+        .map(|idx| idx as f64)
+        .collect();
+    let mut right_ids: Vec<f64> = right_tokens
+        .into_iter()
+        .filter_map(|token| token_to_id.get(&token).copied())
+        .map(|idx| idx as f64)
+        .collect();
+
+    left_ids.sort_by(|a, b| a.total_cmp(b));
+    right_ids.sort_by(|a, b| a.total_cmp(b));
+    let target_len = left_ids.len().max(right_ids.len());
+    if target_len < 2 {
+        return None;
+    }
+    left_ids.resize(target_len, 0.0);
+    right_ids.resize(target_len, 0.0);
+
+    Some(mutual_info::normalized_mi_adaptive(&left_ids, &right_ids).clamp(0.0, 1.0))
+}
+
+fn tokenize_signal(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in value.chars() {
+        if ch.is_alphanumeric() {
+            current.extend(ch.to_lowercase());
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            tokens.push(trimmed.to_lowercase());
+        }
+    }
+    tokens
 }
 
 // ────────────────────────────────────────────
@@ -871,8 +1089,9 @@ mod tests {
         assert!(card.actions[0].contains("Register on Foxconn supplier portal"));
         assert_eq!(card.citations.len(), 2);
         assert_eq!(card.region, Some("TN".to_string()));
-        // priority = 0.7 * 0.85 * 1.5 (warning)
+        // With three independent evidence types, the support multiplier stays neutral.
         assert!((card.priority_score - 0.7 * 0.85 * 1.5).abs() < 1e-10);
+        assert!(card_information_gain_bits(&card) > 0.1);
     }
 
     #[test]
@@ -880,7 +1099,7 @@ mod tests {
         let c1 = InsightCandidate {
             recipe_code: "A001".to_string(),
             impact: 0.3,
-            confidence: 0.5,
+            confidence: 0.2,
             severity: "info".to_string(),
             ..sample_candidate()
         };
@@ -968,10 +1187,167 @@ mod tests {
         assert!(text.contains("**Severity:** warning"));
         assert!(text.contains("**Impact:** High"));
         assert!(text.contains("**Confidence:** 85%"));
+        assert!(text.contains("**Information Gain:**"));
         assert!(text.contains("**Recommended Actions:**"));
         assert!(text.contains("1. Register on Foxconn supplier portal"));
         assert!(text.contains("**Sources:**"));
         assert!(text.contains("foxconn.com"));
+    }
+
+    #[test]
+    fn test_information_gain_increases_with_confidence() {
+        let low = information_gain_bits(0.35, "warning");
+        let high = information_gain_bits(0.85, "warning");
+        assert!(high > low, "higher confidence should increase information gain");
+        assert!(high > 0.1, "high-confidence signals should clear the noise floor");
+    }
+
+    #[test]
+    fn test_redundant_evidence_reduces_priority_score() {
+        let repeated = InsightCandidate {
+            evidence: vec![
+                EvidenceSlot {
+                    slot_name: "signal_a".to_string(),
+                    value: "supplier expansion capacity increase".to_string(),
+                    source_url: Some("https://same.example/a".to_string()),
+                    source_domain: Some("same.example".to_string()),
+                    observed_at: None,
+                },
+                EvidenceSlot {
+                    slot_name: "signal_b".to_string(),
+                    value: "supplier expansion capacity increase".to_string(),
+                    source_url: Some("https://same.example/b".to_string()),
+                    source_domain: Some("same.example".to_string()),
+                    observed_at: None,
+                },
+                EvidenceSlot {
+                    slot_name: "signal_c".to_string(),
+                    value: "supplier expansion capacity increase".to_string(),
+                    source_url: Some("https://same.example/c".to_string()),
+                    source_domain: Some("same.example".to_string()),
+                    observed_at: None,
+                },
+            ],
+            ..sample_candidate()
+        };
+        let diversified = sample_candidate();
+        let repeated_card = render_insight(&repeated);
+        let diversified_card = render_insight(&diversified);
+        assert!(repeated_card.priority_score < diversified_card.priority_score);
+        assert!(evidence_diversity_score(&repeated.evidence) < evidence_diversity_score(&diversified.evidence));
+    }
+
+    #[test]
+    fn test_pairwise_evidence_redundancy_detects_duplicate_signals() {
+        let evidence = vec![
+            EvidenceSlot {
+                slot_name: "a".to_string(),
+                value: "new procurement jobs in mexico".to_string(),
+                source_url: None,
+                source_domain: Some("jobs.example.com".to_string()),
+                observed_at: None,
+            },
+            EvidenceSlot {
+                slot_name: "b".to_string(),
+                value: "new procurement jobs in mexico".to_string(),
+                source_url: None,
+                source_domain: Some("mirror.example.com".to_string()),
+                observed_at: None,
+            },
+            EvidenceSlot {
+                slot_name: "c".to_string(),
+                value: "export permit delay in tunisia".to_string(),
+                source_url: None,
+                source_domain: Some("permits.example.com".to_string()),
+                observed_at: None,
+            },
+        ];
+        let links = pairwise_evidence_redundancy(&evidence);
+        assert!(!links.is_empty());
+        assert!(links[0].normalized_mutual_information > 0.8, "expected duplicated signals to be redundant");
+    }
+
+    #[test]
+    fn insight_information_gain_ordering() {
+        let flip = information_gain_bits(0.95, "critical");
+        let confirm = information_gain_bits(0.55, "info");
+        assert!(flip > confirm);
+    }
+
+    #[test]
+    fn evidence_redundancy_detection() {
+        let evidence = vec![
+            EvidenceSlot {
+                slot_name: "a".to_string(),
+                value: "same rss feed duplicate signal".to_string(),
+                source_url: None,
+                source_domain: Some("rss.example.com".to_string()),
+                observed_at: None,
+            },
+            EvidenceSlot {
+                slot_name: "b".to_string(),
+                value: "same rss feed duplicate signal".to_string(),
+                source_url: None,
+                source_domain: Some("rss.example.com".to_string()),
+                observed_at: None,
+            },
+            EvidenceSlot {
+                slot_name: "c".to_string(),
+                value: "same rss feed duplicate signal".to_string(),
+                source_url: None,
+                source_domain: Some("rss.example.com".to_string()),
+                observed_at: None,
+            },
+        ];
+        let links = pairwise_evidence_redundancy(&evidence);
+        assert!(links.iter().any(|link| link.normalized_mutual_information > 0.8));
+    }
+
+    #[test]
+    fn test_rank_insights_prefers_higher_information_gain() {
+        use chrono::Utc;
+        let entity_a = Uuid::new_v4();
+        let entity_b = Uuid::new_v4();
+        let mut cards = vec![
+            InsightCard {
+                id: Uuid::new_v4(),
+                recipe_code: "LOW-IG".to_string(),
+                entity_id: entity_a,
+                entity_name: "Entity A".to_string(),
+                severity: "warning".to_string(),
+                category: "demand".to_string(),
+                title: "Low IG".to_string(),
+                narrative: String::new(),
+                actions: vec![],
+                citations: vec![],
+                confidence: 0.45,
+                impact: 0.7,
+                impact_label: "High".to_string(),
+                priority_score: 0.75,
+                region: None,
+                rendered_at: Utc::now(),
+            },
+            InsightCard {
+                id: Uuid::new_v4(),
+                recipe_code: "HIGH-IG".to_string(),
+                entity_id: entity_b,
+                entity_name: "Entity B".to_string(),
+                severity: "warning".to_string(),
+                category: "demand".to_string(),
+                title: "High IG".to_string(),
+                narrative: String::new(),
+                actions: vec![],
+                citations: vec![],
+                confidence: 0.9,
+                impact: 0.5,
+                impact_label: "Medium".to_string(),
+                priority_score: 0.70,
+                region: None,
+                rendered_at: Utc::now(),
+            },
+        ];
+        rank_insights(&mut cards);
+        assert_eq!(cards[0].recipe_code, "HIGH-IG");
     }
 
     // ── B184: generate_title with unknown category ──

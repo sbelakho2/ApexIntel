@@ -5,6 +5,330 @@ fn saturating_count_to_u64(value: i64) -> u64 {
 }
 
 impl PgStore {
+    pub async fn get_daily_observation_counts_per_entity(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<(Uuid, i64, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT entity_id,
+                      DATE_PART('day', date_trunc('day', ts_utc) - date_trunc('day', $1))::BIGINT AS day_offset,
+                      COUNT(*)::BIGINT AS cnt
+               FROM observations
+               WHERE entity_id IS NOT NULL AND ts_utc >= $1
+               GROUP BY entity_id, day_offset
+               ORDER BY entity_id, day_offset"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let entity_id: Uuid = row.try_get("entity_id").ok()?;
+                let day_offset: i64 = row.try_get("day_offset").ok()?;
+                let cnt: i64 = row.try_get("cnt").ok()?;
+                Some((entity_id, day_offset, cnt))
+            })
+            .collect())
+    }
+
+    pub async fn get_daily_warning_counts_per_entity(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<(Uuid, i64, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT unnest(entity_ids) AS entity_id,
+                      DATE_PART('day', date_trunc('day', COALESCE(created_at, ts_utc)) - date_trunc('day', $1))::BIGINT AS day_offset,
+                      COUNT(*)::BIGINT AS cnt
+               FROM warnings
+               WHERE entity_ids IS NOT NULL
+                                 AND deleted_at IS NULL
+                 AND array_length(entity_ids, 1) > 0
+                 AND COALESCE(created_at, ts_utc) >= $1
+               GROUP BY entity_id, day_offset
+               ORDER BY entity_id, day_offset"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let entity_id: Uuid = row.try_get("entity_id").ok()?;
+                let day_offset: i64 = row.try_get("day_offset").ok()?;
+                let cnt: i64 = row.try_get("cnt").ok()?;
+                Some((entity_id, day_offset, cnt))
+            })
+            .collect())
+    }
+
+    pub async fn record_stats_alert_calibration_event(
+        &self,
+        entity_id: Uuid,
+        feature_vector: &Value,
+        alert_level: &str,
+        predicted_at: DateTime<Utc>,
+        expected_by: DateTime<Utc>,
+        metadata: &Value,
+    ) -> Result<StatsAlertCalibrationEventRecord> {
+        Ok(sqlx::query_as::<_, StatsAlertCalibrationEventRecord>(
+            r#"INSERT INTO stats_alert_calibration_events (
+                   entity_id, feature_vector, alert_level, predicted_at, expected_by, metadata
+               )
+               VALUES ($1, $2, $3, $4, $5, $6)
+               RETURNING id, entity_id, feature_vector, alert_level, predicted_at, expected_by,
+                         actual_outcome_within_30d, outcome_source, outcome_reference_id,
+                         resolved_at, metadata, created_at"#,
+        )
+        .bind(entity_id)
+        .bind(feature_vector)
+        .bind(alert_level)
+        .bind(predicted_at)
+        .bind(expected_by)
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn resolve_stats_alert_calibration_events(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            r#"WITH outcome_match AS (
+                   SELECT e.id,
+                          EXISTS(
+                              SELECT 1
+                              FROM warnings w
+                              WHERE w.entity_ids IS NOT NULL
+                                                                AND w.deleted_at IS NULL
+                                AND e.entity_id = ANY(w.entity_ids)
+                                AND COALESCE(w.created_at, w.ts_utc) >= e.predicted_at
+                                AND COALESCE(w.created_at, w.ts_utc) <= e.expected_by
+                          ) AS has_outcome,
+                          (
+                              SELECT w.id
+                              FROM warnings w
+                              WHERE w.entity_ids IS NOT NULL
+                                                                AND w.deleted_at IS NULL
+                                AND e.entity_id = ANY(w.entity_ids)
+                                AND COALESCE(w.created_at, w.ts_utc) >= e.predicted_at
+                                AND COALESCE(w.created_at, w.ts_utc) <= e.expected_by
+                              ORDER BY COALESCE(w.created_at, w.ts_utc) ASC, w.id ASC
+                              LIMIT 1
+                          ) AS warning_id
+                   FROM stats_alert_calibration_events e
+                   WHERE e.actual_outcome_within_30d IS NULL
+                     AND e.expected_by <= $1
+               )
+               UPDATE stats_alert_calibration_events e
+               SET actual_outcome_within_30d = outcome_match.has_outcome,
+                   outcome_source = CASE WHEN outcome_match.has_outcome THEN 'warning' ELSE 'none' END,
+                   outcome_reference_id = outcome_match.warning_id,
+                   resolved_at = $1
+               FROM outcome_match
+               WHERE e.id = outcome_match.id"#,
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn list_resolved_stats_alert_calibration_samples(
+        &self,
+        since: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<ResolvedStatsAlertCalibrationSampleRecord>> {
+        let limit = clamp_limit(limit);
+        match since {
+            Some(since) => Ok(sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
+                r#"SELECT id, entity_id, feature_vector, alert_level,
+                          actual_outcome_within_30d, resolved_at, metadata
+                   FROM stats_alert_calibration_events
+                   WHERE actual_outcome_within_30d IS NOT NULL
+                     AND resolved_at IS NOT NULL
+                     AND resolved_at >= $1
+                   ORDER BY resolved_at DESC, id DESC
+                   LIMIT $2"#,
+            )
+            .bind(since)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?),
+            None => Ok(sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
+                r#"SELECT id, entity_id, feature_vector, alert_level,
+                          actual_outcome_within_30d, resolved_at, metadata
+                   FROM stats_alert_calibration_events
+                   WHERE actual_outcome_within_30d IS NOT NULL
+                     AND resolved_at IS NOT NULL
+                   ORDER BY resolved_at DESC, id DESC
+                   LIMIT $1"#,
+            )
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?),
+        }
+    }
+
+    pub async fn aggregate_source_reliability_outcomes(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<SourceReliabilityAggregateRecord>> {
+        let sql = r#"WITH normalized_observations AS (
+                   SELECT entity_id,
+                          ts_utc,
+                          lower(
+                              regexp_replace(
+                                  split_part(
+                                      split_part(
+                                          regexp_replace(
+                                              COALESCE(
+                                                  NULLIF(provenance->>'source_domain', ''),
+                                                  NULLIF(provenance->>'domain', ''),
+                                                  NULLIF(provenance->>'source_url', ''),
+                                                  NULLIF(provenance->>'url', '')
+                                              ),
+                                              '^https?://',
+                                              ''
+                                          ),
+                                          '/',
+                                          1
+                                      ),
+                                      ':',
+                                      1
+                                  ),
+                                  '^www\\.',
+                                  ''
+                              )
+                          ) AS source_domain
+                   FROM observations
+                   WHERE entity_id IS NOT NULL
+                     AND ($1::timestamptz IS NULL OR ts_utc >= $1)
+               )
+               SELECT o.source_domain,
+                      COUNT(*)::BIGINT AS observation_count,
+                      COUNT(*) FILTER (
+                          WHERE EXISTS (
+                              SELECT 1
+                              FROM warnings w
+                              WHERE w.entity_ids IS NOT NULL
+                                                                AND w.deleted_at IS NULL
+                                AND o.entity_id = ANY(w.entity_ids)
+                                AND COALESCE(w.created_at, w.ts_utc) >= o.ts_utc
+                                AND COALESCE(w.created_at, w.ts_utc) <= o.ts_utc + INTERVAL '30 days'
+                          )
+                      )::BIGINT AS confirmed_count
+               FROM normalized_observations o
+               WHERE o.source_domain IS NOT NULL
+                 AND o.source_domain <> ''
+               GROUP BY o.source_domain
+               ORDER BY observation_count DESC, o.source_domain ASC"#;
+
+        Ok(sqlx::query_as::<_, SourceReliabilityAggregateRecord>(sql)
+            .bind(since)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
+    pub async fn upsert_source_reliability_stat(
+        &self,
+        source_domain: &str,
+        tier: &str,
+        observation_count: i64,
+        confirmed_count: i64,
+        observed_reliability: f64,
+        effective_reliability: f64,
+        promotion_recommended: bool,
+        last_refreshed_at: DateTime<Utc>,
+    ) -> Result<SourceReliabilityStatRecord> {
+        Ok(sqlx::query_as::<_, SourceReliabilityStatRecord>(
+            r#"INSERT INTO source_reliability_stats (
+                   source_domain,
+                   tier,
+                   observation_count,
+                   confirmed_count,
+                   observed_reliability,
+                   effective_reliability,
+                   promotion_recommended,
+                   last_refreshed_at
+               )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (source_domain) DO UPDATE SET
+                   tier = EXCLUDED.tier,
+                   observation_count = EXCLUDED.observation_count,
+                   confirmed_count = EXCLUDED.confirmed_count,
+                   observed_reliability = EXCLUDED.observed_reliability,
+                   effective_reliability = EXCLUDED.effective_reliability,
+                   promotion_recommended = EXCLUDED.promotion_recommended,
+                   last_refreshed_at = EXCLUDED.last_refreshed_at,
+                   promotion_alerted_at = CASE
+                       WHEN EXCLUDED.promotion_recommended THEN source_reliability_stats.promotion_alerted_at
+                       ELSE NULL
+                   END,
+                   updated_at = NOW()
+               RETURNING source_domain, tier, observation_count, confirmed_count,
+                         observed_reliability, effective_reliability,
+                         promotion_recommended, last_refreshed_at,
+                         promotion_alerted_at, created_at, updated_at"#,
+        )
+        .bind(source_domain)
+        .bind(tier)
+        .bind(observation_count)
+        .bind(confirmed_count)
+        .bind(observed_reliability)
+        .bind(effective_reliability)
+        .bind(promotion_recommended)
+        .bind(last_refreshed_at)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn list_pending_source_reliability_promotions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<SourceReliabilityStatRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, SourceReliabilityStatRecord>(
+            r#"SELECT source_domain, tier, observation_count, confirmed_count,
+                      observed_reliability, effective_reliability,
+                      promotion_recommended, last_refreshed_at,
+                      promotion_alerted_at, created_at, updated_at
+               FROM source_reliability_stats
+               WHERE promotion_recommended = TRUE
+                 AND promotion_alerted_at IS NULL
+               ORDER BY effective_reliability DESC, observation_count DESC, source_domain ASC
+               LIMIT $1"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn mark_source_reliability_promotion_alerted(
+        &self,
+        source_domain: &str,
+        alerted_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE source_reliability_stats
+               SET promotion_alerted_at = $2,
+                   updated_at = NOW()
+               WHERE source_domain = $1
+                 AND promotion_recommended = TRUE
+                 AND promotion_alerted_at IS NULL"#,
+        )
+        .bind(source_domain)
+        .bind(alerted_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn get_obs_type_counts_per_entity(
         &self,
         since: DateTime<Utc>,
@@ -437,7 +761,7 @@ impl PgStore {
             .unwrap_or(0);
 
         let warnings_generated: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE created_at >= $1")
+            sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND created_at >= $1")
                 .bind(since)
                 .fetch_one(&self.pool)
                 .await
@@ -460,7 +784,8 @@ impl PgStore {
         let top_regions_rows = sqlx::query_as::<_, (String,)>(
             r#"SELECT region
                FROM warnings
-               WHERE created_at >= $1
+                             WHERE deleted_at IS NULL
+                                 AND created_at >= $1
                  AND region IS NOT NULL
                  AND region <> ''
                GROUP BY region
@@ -479,7 +804,8 @@ impl PgStore {
         let notable_events_rows = sqlx::query_as::<_, (String,)>(
             r#"SELECT title
                FROM warnings
-               WHERE created_at >= $1
+                             WHERE deleted_at IS NULL
+                                 AND created_at >= $1
                ORDER BY confidence DESC NULLS LAST, created_at DESC
                LIMIT 5"#,
         )
@@ -510,11 +836,11 @@ impl PgStore {
         let total_persons: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM persons")
             .fetch_one(&self.pool)
             .await?;
-        let total_warnings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM warnings")
+        let total_warnings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL")
             .fetch_one(&self.pool)
             .await?;
         let unacknowledged_warnings: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE acknowledged = false")
+            sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND acknowledged = false")
                 .fetch_one(&self.pool)
                 .await?;
         let total_insights: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM insights")
@@ -533,7 +859,7 @@ impl PgStore {
         .await
         .unwrap_or(0);
         let new_warnings_24h: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM warnings WHERE created_at > now() - interval '24 hours'",
+            "SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND created_at > now() - interval '24 hours'",
         )
         .fetch_one(&self.pool)
         .await
@@ -547,7 +873,7 @@ impl PgStore {
         .unwrap_or_default();
 
         let threat_distribution: Vec<SeverityCount> = sqlx::query_as(
-            "SELECT severity, COUNT(*) as count FROM warnings GROUP BY severity ORDER BY count DESC"
+            "SELECT severity, COUNT(*) as count FROM warnings WHERE deleted_at IS NULL GROUP BY severity ORDER BY count DESC"
         )
         .fetch_all(&self.pool)
         .await

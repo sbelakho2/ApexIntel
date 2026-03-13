@@ -9,6 +9,7 @@ use crate::miner::{build_contingency, fisher_p_value, odds_ratio, EventRecord, P
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 // ────────────────────────────────────────────
 // Config & types
@@ -117,6 +118,62 @@ fn shuffle_entities(signals: &[EventRecord], rng: &mut impl rand::Rng) -> Vec<Ev
         .collect()
 }
 
+fn sorted_event_fingerprints(events: &[EventRecord]) -> Vec<String> {
+    let mut fingerprints: Vec<String> = events
+        .iter()
+        .map(|(entity_id, timestamp)| format!("{entity_id}@{timestamp}"))
+        .collect();
+    fingerprints.sort();
+    fingerprints
+}
+
+fn canonical_seed_material(
+    candidate: &PatternCandidate,
+    outcomes: &[EventRecord],
+    signals: &[EventRecord],
+    config: &NegativeControlConfig,
+    shuffle_kind: &ShuffleKind,
+) -> String {
+    let mut candidate_signals = candidate.signals.clone();
+    candidate_signals.sort();
+
+    let shuffle_label = match shuffle_kind {
+        ShuffleKind::TimeShuffle => "time",
+        ShuffleKind::EntityShuffle => "entity",
+    };
+
+    format!(
+        "base_seed={}|shuffle={}|outcome={}|lag={}|window_days={}|candidate_signals={}|outcomes={}|signals={}",
+        config.seed,
+        shuffle_label,
+        candidate.outcome,
+        candidate.best_lag_days,
+        config.window_days,
+        candidate_signals.join(","),
+        sorted_event_fingerprints(outcomes).join("|"),
+        sorted_event_fingerprints(signals).join("|"),
+    )
+}
+
+pub fn permutation_seed_for_inputs(
+    candidate: &PatternCandidate,
+    outcomes: &[EventRecord],
+    signals: &[EventRecord],
+    config: &NegativeControlConfig,
+    shuffle_kind: &ShuffleKind,
+) -> u64 {
+    let material = canonical_seed_material(candidate, outcomes, signals, config, shuffle_kind);
+    let digest = Sha256::digest(material.as_bytes());
+    let mut seed_bytes = [0u8; 8];
+    seed_bytes.copy_from_slice(&digest[..8]);
+    let seed = u64::from_le_bytes(seed_bytes);
+    if seed == 0 {
+        1
+    } else {
+        seed
+    }
+}
+
 // ────────────────────────────────────────────
 // Permutation test
 // ────────────────────────────────────────────
@@ -156,7 +213,9 @@ pub fn run_permutation_test(
     let observed_p = fisher_p_value(a, b, c, d);
 
     // Permutation distribution
-    let mut rng = rand::rngs::StdRng::seed_from_u64(config.seed);
+    let derived_seed =
+        permutation_seed_for_inputs(candidate, outcomes, signals, config, &shuffle_kind);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(derived_seed);
     let mut permuted_effects = Vec::with_capacity(effective_perms);
     let mut count_ge = 0usize;
 
@@ -332,6 +391,9 @@ mod tests {
             signals: vec!["sqe_hiring".to_string()],
             best_lag_days: lag,
             effect_size: 3.0,
+            odds_ratio_ci_low: Some(1.5),
+            odds_ratio_ci_high: Some(5.5),
+            minimum_detectable_effect: 1.6,
             p_value: 0.005,
             q_value: 0.01,
             stability: 0.8,
@@ -615,6 +677,104 @@ mod tests {
         assert_eq!(r1.permuted_effects, r2.permuted_effects);
     }
 
+    #[test]
+    fn test_permutation_seed_is_order_invariant() {
+        let (mut outcomes, mut signals) = genuine_pattern(12);
+        outcomes.reverse();
+        signals.reverse();
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig {
+            permutations: 50,
+            alpha: 0.05,
+            window_days: 5,
+            seed: 12345,
+        };
+
+        let mut sorted_outcomes = outcomes.clone();
+        sorted_outcomes.sort();
+        let mut sorted_signals = signals.clone();
+        sorted_signals.sort();
+
+        let seed_a = permutation_seed_for_inputs(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            &ShuffleKind::TimeShuffle,
+        );
+        let seed_b = permutation_seed_for_inputs(
+            &candidate,
+            &sorted_outcomes,
+            &sorted_signals,
+            &config,
+            &ShuffleKind::TimeShuffle,
+        );
+
+        assert_eq!(seed_a, seed_b);
+    }
+
+    #[test]
+    fn test_permutation_seed_changes_with_input_identity() {
+        let (outcomes, mut signals) = genuine_pattern(12);
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig {
+            permutations: 50,
+            alpha: 0.05,
+            window_days: 5,
+            seed: 12345,
+        };
+
+        let baseline_seed = permutation_seed_for_inputs(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            &ShuffleKind::EntityShuffle,
+        );
+
+        signals.push(("extra-entity".to_string(), 777 * 86400));
+
+        let changed_seed = permutation_seed_for_inputs(
+            &candidate,
+            &outcomes,
+            &signals,
+            &config,
+            &ShuffleKind::EntityShuffle,
+        );
+
+        assert_ne!(baseline_seed, changed_seed);
+    }
+
+    #[test]
+    fn negative_control_seeded_reproducibility() {
+        let (outcomes, signals) = genuine_pattern(20);
+        let candidate = sample_candidate(0);
+        let config = NegativeControlConfig {
+            permutations: 60,
+            alpha: 0.05,
+            window_days: 5,
+            seed: 98765,
+        };
+
+        let runs: Vec<NegativeControlResult> = (0..10)
+            .map(|_| {
+                run_permutation_test(
+                    &candidate,
+                    &outcomes,
+                    &signals,
+                    &config,
+                    ShuffleKind::TimeShuffle,
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let first = serde_json::to_vec(&runs[0]).unwrap();
+        for run in runs.iter().skip(1) {
+            assert_eq!(serde_json::to_vec(run).unwrap(), first);
+        }
+    }
+
     // ── Full negative control ──────────────────
 
     #[test]
@@ -672,6 +832,9 @@ mod tests {
             signals: vec!["my_signal".to_string()],
             best_lag_days: 0,
             effect_size: 5.0,
+            odds_ratio_ci_low: Some(2.5),
+            odds_ratio_ci_high: Some(9.5),
+            minimum_detectable_effect: 1.8,
             p_value: 0.001,
             q_value: 0.005,
             stability: 0.9,

@@ -13,10 +13,12 @@ Generates high-quality training examples for identified gaps:
 """
 
 import json, uuid, random, os, pathlib
+from eval_harness import check_content_quality, extract_json, eval_schema_only
 
 random.seed(42)
 OUT = pathlib.Path(__file__).parent.parent / "training_data" / "instruction_tuning"
 OUT.mkdir(parents=True, exist_ok=True)
+CONFIG_DIR = pathlib.Path(__file__).parent.parent / "config"
 
 def uid():
     return str(uuid.uuid4())
@@ -42,7 +44,7 @@ SYS_SUPPLY = "Analyze the supply chain risk described below. Return valid JSON w
 # ──────────────────────────────────────────────────
 # Data pools for generation variety
 # ──────────────────────────────────────────────────
-EMS_COMPANIES = [
+DEFAULT_EMS_COMPANIES = [
     ("Foxconn", "TW", "2354.TW", "Ems"), ("Jabil Inc.", "US", "JBL", "Ems"),
     ("Flex Ltd.", "SG", "FLEX", "Ems"), ("Celestica", "CA", "CLS", "Ems"),
     ("Benchmark Electronics", "US", "BHE", "Ems"), ("Plexus Corp.", "US", "PLXS", "Ems"),
@@ -55,7 +57,7 @@ EMS_COMPANIES = [
     ("USI (Universal Scientific)", "TW", "3536.TW", "Ems"), ("Delta Electronics", "TW", "2308.TW", "Ems"),
     ("Starz Electronics", "TN", None, "Ems"),
 ]
-OEM_COMPANIES = [
+DEFAULT_OEM_COMPANIES = [
     ("Airbus Defence", "FR", "AIR.PA", "Oem"), ("BAE Systems", "GB", "BA.L", "Oem"),
     ("Thales Group", "FR", "HO.PA", "Oem"), ("Leonardo S.p.A.", "IT", "LDO.MI", "Oem"),
     ("Rheinmetall", "DE", "RHM.DE", "Oem"), ("Saab AB", "SE", "SAAB-B.ST", "Oem"),
@@ -67,7 +69,7 @@ OEM_COMPANIES = [
     ("Samsung Electronics", "KR", "005930.KS", "Oem"), ("Sony Group", "JP", "6758.T", "Oem"),
     ("Panasonic", "JP", "6752.T", "Oem"), ("Huawei", "CN", None, "Oem"),
 ]
-CAPABILITIES = [
+DEFAULT_CAPABILITIES = [
     "SMT Assembly", "Through-Hole Assembly", "BGA Rework", "PCB Fabrication (Rigid)",
     "PCB Fabrication (Flex)", "Box Build Assembly", "Cable Assembly", "Wire Harness",
     "Clean Room Assembly (ISO 7)", "Conformal Coating", "Potting & Encapsulation",
@@ -79,19 +81,19 @@ CAPABILITIES = [
     "Power Electronics Assembly", "Automotive Electronics", "Medical Device Assembly",
     "Aerospace Assembly", "Component Sourcing", "Supply Chain Management", "RMA Management",
 ]
-CERTIFICATIONS = [
+DEFAULT_CERTIFICATIONS = [
     "ISO 9001:2015", "ISO 14001:2015", "ISO 13485:2016", "ISO 27001:2022",
     "AS9100D", "IATF 16949:2016", "NADCAP", "IPC-A-610 Class 3", "IPC-6012 Class 3",
     "J-STD-001 CIS", "Mil-PRF-31032", "Mil-PRF-55110", "UL Listed",
     "CE Marking", "RoHS Compliant", "REACH Compliant", "ITAR Registered",
     "IPC-A-620 Class 3", "IPC-7711/7721", "ESD S20.20",
 ]
-INDUSTRIES = [
+DEFAULT_INDUSTRIES = [
     "aerospace", "defense", "automotive", "medical", "telecom", "industrial",
     "consumer", "iot", "energy", "semiconductor", "marine", "railway",
 ]
-REGIONS = ["US", "CA", "MX", "DE", "FR", "GB", "IL", "TN", "MA", "TW", "CN", "JP", "KR", "SG", "IN", "IT", "SE", "NL"]
-ROLES = [
+DEFAULT_REGIONS = ["US", "CA", "MX", "DE", "FR", "GB", "IL", "TN", "MA", "TW", "CN", "JP", "KR", "SG", "IN", "IT", "SE", "NL"]
+DEFAULT_ROLES = [
     ("CEO", "Executive"), ("CTO", "Technology"), ("CFO", "Finance"),
     ("COO", "Operations"), ("VP Engineering", "Technology"), ("VP Supply Chain", "Operations"),
     ("Plant Manager", "Operations"), ("Quality Director", "Quality"),
@@ -99,9 +101,9 @@ ROLES = [
     ("R&D Director", "Technology"), ("General Manager", "Executive"),
     ("Chief Procurement Officer", "Procurement"), ("Production Manager", "Operations"),
 ]
-FIRST_NAMES = ["James", "Sarah", "Michael", "Jennifer", "Robert", "Emily", "David", "Lisa", "Thomas", "Maria",
+DEFAULT_FIRST_NAMES = ["James", "Sarah", "Michael", "Jennifer", "Robert", "Emily", "David", "Lisa", "Thomas", "Maria",
                "Pierre", "François", "Hans", "Keiko", "Yuki", "Wei", "Chen", "Ahmed", "Fatima", "Sami"]
-LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Davis", "Miller", "Wilson", "Taylor", "Anderson", "Lee",
+DEFAULT_LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Davis", "Miller", "Wilson", "Taylor", "Anderson", "Lee",
               "Dupont", "Müller", "Tanaka", "Yamamoto", "Wang", "Zhang", "Al-Rashid", "Ben Ali", "Cohen", "Levy"]
 WARNING_TYPES = ["Competitor Move", "Supply Chain Disruption", "Regulatory Change", "Market Shift", "Cybersecurity Threat",
                  "Geopolitical Risk", "Technology Obsolescence", "M&A Activity", "Price Volatility", "Capacity Alert"]
@@ -127,6 +129,123 @@ SIGNAL_TYPES = ["TenderPosted", "CommodityPrice", "FxRate", "WebChange", "Compet
 RECIPE_CATEGORIES = ["demand", "supply_chain", "competitor", "security", "poi"]
 STAT_TESTS = ["hazard_uplift", "chi_squared", "mann_whitney", "z_test", "ks_test", "granger_causality"]
 TRANSFORM_TYPES = ["diff", "zscore", "rolling_mean", "ratio", "log_return", "ewma", "rank"]
+
+
+def load_generation_entities():
+    config_path = CONFIG_DIR / "augmentation_entities.yaml"
+    if not config_path.exists():
+        return {
+            "ems_companies": DEFAULT_EMS_COMPANIES,
+            "oem_companies": DEFAULT_OEM_COMPANIES,
+            "capabilities": DEFAULT_CAPABILITIES,
+            "certifications": DEFAULT_CERTIFICATIONS,
+            "industries": DEFAULT_INDUSTRIES,
+            "regions": DEFAULT_REGIONS,
+            "roles": DEFAULT_ROLES,
+            "first_names": DEFAULT_FIRST_NAMES,
+            "last_names": DEFAULT_LAST_NAMES,
+        }
+    import yaml
+
+    with open(config_path, "r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    return {
+        "ems_companies": data.get("ems_companies", DEFAULT_EMS_COMPANIES),
+        "oem_companies": data.get("oem_companies", DEFAULT_OEM_COMPANIES),
+        "capabilities": data.get("capabilities", DEFAULT_CAPABILITIES),
+        "certifications": data.get("certifications", DEFAULT_CERTIFICATIONS),
+        "industries": data.get("industries", DEFAULT_INDUSTRIES),
+        "regions": data.get("regions", DEFAULT_REGIONS),
+        "roles": data.get("roles", DEFAULT_ROLES),
+        "first_names": data.get("first_names", DEFAULT_FIRST_NAMES),
+        "last_names": data.get("last_names", DEFAULT_LAST_NAMES),
+    }
+
+
+_entities = load_generation_entities()
+EMS_COMPANIES = _entities["ems_companies"]
+OEM_COMPANIES = _entities["oem_companies"]
+CAPABILITIES = _entities["capabilities"]
+CERTIFICATIONS = _entities["certifications"]
+INDUSTRIES = _entities["industries"]
+REGIONS = _entities["regions"]
+ROLES = _entities["roles"]
+FIRST_NAMES = _entities["first_names"]
+LAST_NAMES = _entities["last_names"]
+
+
+def validate_example(example):
+    assert isinstance(example, dict) and "messages" in example, "example must have messages"
+    messages = example["messages"]
+    assert len(messages) == 3, "expected system/user/assistant messages"
+    assert [m["role"] for m in messages] == ["system", "user", "assistant"], "invalid message role ordering"
+    assistant = messages[-1]["content"]
+    payload = extract_json(assistant)
+    quality_issues = filtered_quality_issues(assistant)
+    assert not quality_issues, f"quality issues: {quality_issues}"
+    _validate_required_payload(messages[0]["content"], payload)
+    _validate_severity_fields(payload)
+    assert passes_training_quality_gate(messages[0]["content"], assistant), "quality gate rejected augmented example"
+
+
+def _validate_required_payload(system_prompt, payload):
+    schema = None
+    lower = system_prompt.lower()
+    if "warning" in lower:
+        schema = {"required_fields": ["warning_type", "severity", "affected_entity", "narrative", "recommended_actions"]}
+    elif "compliance" in lower:
+        schema = {"required_fields": ["risk_level", "entities_of_concern", "applicable_regulations", "red_flags", "recommended_actions"]}
+    elif "supply chain risk" in lower:
+        schema = {"required_fields": ["risk_summary", "affected_components", "severity", "impact_assessment", "mitigation_options", "timeline", "alternative_suppliers"]}
+    elif "weekly strategy memo" in lower:
+        schema = {"required_fields": ["executive_summary", "total_insights", "critical_count", "warning_count", "info_count", "top_actions", "regional_sections", "security_summary"]}
+    if schema is not None:
+        result = eval_schema_only(json.dumps(payload, ensure_ascii=False), schema)
+        assert result["json_valid"] and result["schema_ok"], f"schema check failed: {result}"
+
+
+def _validate_severity_fields(payload):
+    allowed = {"critical", "warning", "info"}
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "severity" and isinstance(value, str):
+                    assert value in allowed, f"invalid severity: {value}"
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+
+
+def passes_training_quality_gate(system_prompt, assistant_content):
+    quality_issues = filtered_quality_issues(assistant_content)
+    if quality_issues:
+        return False
+    try:
+        payload = extract_json(assistant_content)
+    except Exception:
+        return False
+    try:
+        _validate_required_payload(system_prompt, payload)
+        _validate_severity_fields(payload)
+    except AssertionError:
+        return False
+    return True
+
+
+def filtered_quality_issues(text):
+    issues = check_content_quality(text)
+    if issues == ["Content has excessive character repetition"]:
+        try:
+            payload = extract_json(text)
+            if isinstance(payload, dict) and len(payload) >= 4:
+                return []
+        except Exception:
+            pass
+    return issues
 
 # ──────────────────────────────────────────────────
 # 1. ADVERSARIAL ENTITY EXTRACTION (40 examples)
@@ -290,6 +409,109 @@ def gen_adversarial():
     for text, answer in mixed_texts:
         examples.append(msg(SYS_ENTITY, text, answer))
 
+    return examples
+
+
+def gen_failure_mode_negatives():
+    examples = []
+
+    for _ in range(20):
+        co = random.choice(EMS_COMPANIES)
+        cert = random.choice(["AS9100D", "NADCAP", "ISO 13485:2016"])
+        user_text = (
+            f"Warning type: Certification Rumor\nCategory: compliance\nEntity: {co[0]}\n"
+            f"Trigger signals:\n"
+            f"- Anonymous forum post claims {co[0]} may pursue {cert}\n"
+            f"- No certificate registry entry or official filing is available\n"
+        )
+        answer = {
+            "warning_type": "Certification Rumor",
+            "severity": "info",
+            "affected_entity": co[0],
+            "narrative": f"There is no hard evidence that {co[0]} has obtained {cert}; treat the rumor as low-confidence monitoring only.",
+            "recommended_actions": [
+                "Monitor official certification registries",
+                "Do not escalate until documentary evidence appears",
+            ],
+        }
+        examples.append(msg(SYS_WARNING, user_text, answer))
+
+    for _ in range(20):
+        co = random.choice(EMS_COMPANIES)
+        user_text = (
+            f"Warning type: DNS Hygiene Drift\nCategory: security\nEntity: {co[0]}\n"
+            f"Trigger signals:\n"
+            f"- SPF misconfiguration detected\n"
+            f"- DMARC policy missing\n"
+            f"- No confirmed intrusion, credential theft, or malware evidence\n"
+        )
+        answer = {
+            "warning_type": "DNS Hygiene Drift",
+            "severity": "warning",
+            "affected_entity": co[0],
+            "narrative": f"{co[0]} shows email-security hygiene weaknesses, but there is no evidence of an actual breach.",
+            "recommended_actions": [
+                "Correct SPF and DMARC records",
+                "Increase monitoring for phishing indicators",
+            ],
+        }
+        examples.append(msg(SYS_WARNING, user_text, answer))
+
+    for _ in range(20):
+        supplier = random.choice(EMS_COMPANIES)
+        customer = random.choice([company for company in OEM_COMPANIES if company[0] != supplier[0]])
+        user_text = (
+            f"Warning type: Customer Exposure\nCategory: competitor\nEntity: {supplier[0]}\n"
+            f"Trigger signals:\n"
+            f"- Trade-shows mention a major aerospace customer\n"
+            f"- Linked hiring suggests program ramp-up\n"
+            f"- Customer identity can be inferred from the disclosed program code: {customer[0]}\n"
+        )
+        answer = {
+            "warning_type": "Customer Exposure",
+            "severity": "warning",
+            "affected_entity": supplier[0],
+            "narrative": f"The likely customer is {customer[0]}, and the warning should name that company explicitly rather than leaving the target anonymous.",
+            "recommended_actions": [
+                f"Track additional signals tied to {customer[0]}",
+                "Validate the program linkage with public procurement or hiring evidence",
+            ],
+        }
+        examples.append(msg(SYS_WARNING, user_text, answer))
+
+    return examples
+
+
+def gen_constraint_following():
+    examples = []
+    ambiguous_signals = [
+        "single reseller comment with no corroboration",
+        "one low-confidence social mention",
+        "resume wording that could reflect historic experience",
+        "website wording change without supporting filings",
+        "forum speculation about a customer award",
+    ]
+    for _ in range(50):
+        co = random.choice(EMS_COMPANIES + OEM_COMPANIES)
+        signal = random.choice(ambiguous_signals)
+        user_text = (
+            f"Warning type: Ambiguous Competitive Signal\nCategory: competitor\nEntity: {co[0]}\n"
+            f"Trigger signals:\n"
+            f"- {signal}\n"
+            f"- No second independent source\n"
+            f"- No official confirmation\n"
+        )
+        answer = {
+            "warning_type": "Ambiguous Competitive Signal",
+            "severity": "info",
+            "affected_entity": co[0],
+            "narrative": f"Available evidence is ambiguous and insufficient to justify escalation for {co[0]}; continue monitoring until corroboration appears.",
+            "recommended_actions": [
+                "Collect corroboration from at least one additional independent source",
+                "Reassess only after documentary or official evidence emerges",
+            ],
+        }
+        examples.append(msg(SYS_WARNING, user_text, answer))
     return examples
 
 
@@ -1100,6 +1322,7 @@ def write_jsonl(filename, examples):
     path = OUT / filename
     with open(path, "w", encoding="utf-8") as f:
         for ex in examples:
+            validate_example(ex)
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
     print(f"  ✓ {filename}: {len(examples)} examples ({path.stat().st_size / 1024:.1f} KB)")
 
@@ -1109,6 +1332,12 @@ if __name__ == "__main__":
 
     adversarial = gen_adversarial()
     write_jsonl("adversarial_training.jsonl", adversarial)
+
+    failure_mode_negatives = gen_failure_mode_negatives()
+    write_jsonl("failure_mode_negative_examples.jsonl", failure_mode_negatives)
+
+    constraint_following = gen_constraint_following()
+    write_jsonl("constraint_following_examples.jsonl", constraint_following)
 
     multilingual = gen_multilingual()
     write_jsonl("multilingual_entity_extraction.jsonl", multilingual)
@@ -1131,7 +1360,7 @@ if __name__ == "__main__":
     supply = gen_supply_chain()
     write_jsonl("supply_chain_risk_augmented.jsonl", supply)
 
-    total = len(adversarial) + len(multilingual) + len(warnings) + len(competitive) + len(compliance) + len(memos) + len(recipes) + len(supply)
+    total = len(adversarial) + len(failure_mode_negatives) + len(constraint_following) + len(multilingual) + len(warnings) + len(competitive) + len(compliance) + len(memos) + len(recipes) + len(supply)
     print(f"\nTotal augmented examples: {total}")
     print("Original data: 3,200 examples")
     print(f"New total: {3200 + total} examples")

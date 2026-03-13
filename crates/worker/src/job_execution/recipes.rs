@@ -1,19 +1,34 @@
 use std::collections::HashMap;
+#[cfg(feature = "llm")]
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use apex_core::analysis::{assess_evidence_quality, EvidenceRecord, EvidenceStance};
+use apex_core::quality_score::{build_source_reliability_stats, SourceReliability};
+use apex_recipes::stats_enrichment::{
+    alert_score_from_features, alert_score_rank_correlation, analyze_with_calibration, calibration_curve,
+    fit_best_alert_calibration_model, CalibrationSample,
+    StatsEnrichmentInput,
+};
 use uuid::Uuid;
 
 use crate::*;
 
 #[cfg(feature = "llm")]
-fn evidence_quality_from_signals(evidence_signals: &[EvidenceSignal]) -> f64 {
+fn evidence_quality_from_signals(
+    evidence_signals: &[EvidenceSignal],
+    source_reliability_scores: &HashMap<String, f64>,
+) -> f64 {
     let now = Utc::now();
     let records: Vec<EvidenceRecord> = evidence_signals
         .iter()
         .map(|signal| {
+            let relevance = blended_evidence_relevance(
+                signal.relevance_score as f64,
+                source_reliability_for_url(&signal.source_url, source_reliability_scores),
+            );
             let mut record =
-                EvidenceRecord::new(signal.relevance_score as f64, EvidenceStance::Supports)
+                EvidenceRecord::new(relevance, EvidenceStance::Supports)
                     .with_source_url(signal.source_url.clone())
                     .with_source_type(signal.signal_type.clone());
             if let Some(date_context) = signal.date_context.as_deref() {
@@ -27,18 +42,175 @@ fn evidence_quality_from_signals(evidence_signals: &[EvidenceSignal]) -> f64 {
     assess_evidence_quality(&records, now).overall_score
 }
 
-fn evidence_quality_from_urls(urls: &[String]) -> f64 {
+fn evidence_quality_from_urls(urls: &[String], source_reliability_scores: &HashMap<String, f64>) -> f64 {
     let now = Utc::now();
     let records: Vec<EvidenceRecord> = urls
         .iter()
-        .map(|url| EvidenceRecord::new(0.6, EvidenceStance::Supports).with_source_url(url.clone()))
+        .map(|url| {
+            let relevance = blended_evidence_relevance(
+                0.6,
+                source_reliability_for_url(url, source_reliability_scores),
+            );
+            EvidenceRecord::new(relevance, EvidenceStance::Supports).with_source_url(url.clone())
+        })
         .collect();
     assess_evidence_quality(&records, now).overall_score
+}
+
+fn normalized_source_domain(value: &str) -> Option<String> {
+    let trimmed = value.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed.as_str());
+    let host = without_scheme
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .split('?')
+        .next()
+        .unwrap_or(without_scheme)
+        .split('#')
+        .next()
+        .unwrap_or(without_scheme)
+        .split(':')
+        .next()
+        .unwrap_or(without_scheme)
+        .trim_start_matches("www.")
+        .trim();
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+fn source_reliability_for_url(
+    value: &str,
+    source_reliability_scores: &HashMap<String, f64>,
+) -> Option<f64> {
+    normalized_source_domain(value).and_then(|domain| source_reliability_scores.get(&domain).copied())
+}
+
+fn blended_evidence_relevance(base_relevance: f64, source_reliability: Option<f64>) -> f64 {
+    match source_reliability {
+        Some(source_reliability) => {
+            (0.65 * base_relevance.clamp(0.0, 1.0) + 0.35 * source_reliability.clamp(0.0, 1.0))
+                .clamp(0.0, 1.0)
+        }
+        None => base_relevance.clamp(0.0, 1.0),
+    }
+}
+
+fn build_daily_entity_series(
+    rows: &[(Uuid, i64, i64)],
+    total_days: usize,
+) -> HashMap<Uuid, Vec<f64>> {
+    let mut series_by_entity: HashMap<Uuid, Vec<f64>> = HashMap::new();
+    for (entity_id, day_offset, count) in rows {
+        if *day_offset < 0 {
+            continue;
+        }
+        let index = *day_offset as usize;
+        if index >= total_days {
+            continue;
+        }
+        let series = series_by_entity
+            .entry(*entity_id)
+            .or_insert_with(|| vec![0.0; total_days]);
+        series[index] += *count as f64;
+    }
+    series_by_entity
+}
+
+fn parse_feature_vector_map(value: &serde_json::Value) -> HashMap<String, f64> {
+    value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, value)| value.as_f64().map(|score| (key.clone(), score)))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default()
+}
+
+fn recipe_warning_severity(
+    recipe_code: &str,
+    category: &str,
+    candidate_severity: &str,
+    confidence: f64,
+    impact: f64,
+) -> Option<&'static str> {
+    let normalized_category = category.trim().to_ascii_lowercase();
+    let normalized_candidate_severity = candidate_severity.trim().to_ascii_lowercase();
+    let normalized_recipe_code = recipe_code.trim().to_ascii_uppercase();
+    let is_dns_hygiene_recipe = matches!(normalized_recipe_code.as_str(), "N001" | "N002");
+
+    if normalized_candidate_severity == "critical" && confidence >= 0.82 {
+        return Some("critical");
+    }
+
+    if normalized_candidate_severity == "warning" {
+        if is_dns_hygiene_recipe {
+            return (confidence >= 0.92 && impact >= 0.75).then_some("medium");
+        }
+
+        let severity = if confidence >= 0.9 || impact >= 1.1 {
+            "high"
+        } else {
+            "medium"
+        };
+        return (confidence >= 0.75).then_some(severity);
+    }
+
+    let promoted_category = matches!(
+        normalized_category.as_str(),
+        "demand_procurement"
+            | "competitor_market"
+            | "supply_chain_risk"
+            | "regulatory_policy"
+            | "cybersecurity_threat"
+    ) || normalized_category.contains("compliance")
+        || normalized_category.contains("sanction");
+
+    if !promoted_category {
+        return None;
+    }
+
+    let min_confidence = match normalized_category.as_str() {
+        "regulatory_policy" | "supply_chain_risk" => 0.74,
+        "demand_procurement" | "competitor_market" => 0.78,
+        "cybersecurity_threat" => 0.84,
+        _ => 0.8,
+    };
+    let min_impact = match normalized_category.as_str() {
+        "demand_procurement" | "competitor_market" => 0.55,
+        "regulatory_policy" | "supply_chain_risk" => 0.45,
+        "cybersecurity_threat" => 0.7,
+        _ => 0.5,
+    };
+
+    if confidence < min_confidence || impact < min_impact {
+        return None;
+    }
+
+    Some(match normalized_category.as_str() {
+        "regulatory_policy" | "supply_chain_risk" | "cybersecurity_threat" => "high",
+        _ => "medium",
+    })
 }
 
 pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
+    let now = Utc::now();
+    let mut source_reliability_scores = HashMap::new();
 
     #[cfg(feature = "llm")]
     let insight_llm_client = {
@@ -49,7 +221,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         let mut config = apex_llm::inference::InferenceConfig::default();
         config.model = model;
         config.max_tokens = 2048;
-        config.timeout = std::time::Duration::from_secs(180);
+        config.timeout = crate::config::llm_timeout();
         InferenceLlmClient::new(base_url, api_key, config)
     };
 
@@ -67,7 +239,149 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
     let engine = RecipeEngine::load(engine_recipes);
 
-    let since = Utc::now() - chrono::Duration::days(30);
+    let since = now - chrono::Duration::days(30);
+    if let Err(error) = store.resolve_stats_alert_calibration_events(now).await {
+        tracing::warn!(%error, "recipe_fire: failed to resolve mature stats alert calibration events");
+    }
+    let resolved_calibration_rows = store
+        .list_resolved_stats_alert_calibration_samples(Some(now - chrono::Duration::days(365)), 5_000)
+        .await
+        .unwrap_or_default();
+    let calibration_samples = resolved_calibration_rows
+        .iter()
+        .map(|row| CalibrationSample {
+            raw_score: alert_score_from_features(&parse_feature_vector_map(&row.feature_vector)),
+            actual_outcome: row.actual_outcome_within_30d.unwrap_or(false),
+        })
+        .collect::<Vec<_>>();
+    let alert_calibration_model = fit_best_alert_calibration_model(&calibration_samples);
+    if !calibration_samples.is_empty() {
+        let reliability_bins = calibration_curve(&calibration_samples, &alert_calibration_model, 10);
+        let rank_correlation = alert_score_rank_correlation(&calibration_samples, &alert_calibration_model);
+        let detail = serde_json::json!({
+            "week_start": now.date_naive().to_string(),
+            "sample_count": calibration_samples.len(),
+            "calibration_method": alert_calibration_model.method_name(),
+            "rank_correlation": rank_correlation,
+            "bins": reliability_bins,
+        });
+        if let Err(error) = store
+            .record_audit_event("system", "stats_alert_calibration_curve_published", &detail)
+            .await
+        {
+            tracing::warn!(%error, "recipe_fire: failed to publish calibration curve artifact");
+        }
+    }
+    let source_reliability_aggregates = store
+        .aggregate_source_reliability_outcomes(None)
+        .await
+        .unwrap_or_default();
+    for aggregate in source_reliability_aggregates {
+        let observation_count = aggregate.observation_count.max(0) as u64;
+        let confirmed_count = aggregate.confirmed_count.max(0) as u64;
+        let tier = SourceReliability::from_url(&aggregate.source_domain);
+        let stats = build_source_reliability_stats(
+            aggregate.source_domain.clone(),
+            tier,
+            observation_count,
+            confirmed_count,
+        );
+        if let Err(error) = store
+            .upsert_source_reliability_stat(
+                &stats.source_domain,
+                stats.tier.as_str(),
+                stats.observation_count as i64,
+                stats.confirmed_count as i64,
+                stats.observed_reliability,
+                stats.effective_reliability,
+                stats.promotion_recommended,
+                now,
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                source_domain = %stats.source_domain,
+                "recipe_fire: failed to persist source reliability stat"
+            );
+            continue;
+        }
+        source_reliability_scores.insert(stats.source_domain.clone(), stats.effective_reliability);
+    }
+    let pending_source_promotions = store
+        .list_pending_source_reliability_promotions(50)
+        .await
+        .unwrap_or_default();
+    if !pending_source_promotions.is_empty() {
+        let analyst_users = store
+            .list_analyst_users()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|user| user.is_active)
+            .collect::<Vec<_>>();
+        for promotion in pending_source_promotions {
+            let detail = serde_json::json!({
+                "source_domain": promotion.source_domain,
+                "tier": promotion.tier,
+                "observation_count": promotion.observation_count,
+                "confirmed_count": promotion.confirmed_count,
+                "observed_reliability": promotion.observed_reliability,
+                "effective_reliability": promotion.effective_reliability,
+            });
+            if let Err(error) = store
+                .record_audit_event("system", "source_reliability_promotion_candidate", &detail)
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    source_domain = %promotion.source_domain,
+                    "recipe_fire: failed to publish source promotion audit event"
+                );
+            }
+            for analyst in &analyst_users {
+                let title = format!(
+                    "Promote source candidate: {}",
+                    promotion.source_domain
+                );
+                let body = format!(
+                    "Observed reliability {:.2} over {} observations ({} confirmed) exceeds the promotion threshold for unknown sources.",
+                    promotion.observed_reliability,
+                    promotion.observation_count,
+                    promotion.confirmed_count
+                );
+                if let Err(error) = store
+                    .create_notification(
+                        &analyst.id,
+                        "source_reliability",
+                        &title,
+                        &body,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        %error,
+                        user_id = %analyst.id,
+                        source_domain = %promotion.source_domain,
+                        "recipe_fire: failed to create source promotion notification"
+                    );
+                }
+            }
+            if let Err(error) = store
+                .mark_source_reliability_promotion_alerted(&promotion.source_domain, now)
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    source_domain = %promotion.source_domain,
+                    "recipe_fire: failed to mark source promotion alert"
+                );
+            }
+        }
+    }
     let obs_counts = match store.get_obs_type_counts_per_entity(since).await {
         Ok(v) => v,
         Err(e) => {
@@ -111,6 +425,16 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .await
         .unwrap_or_default();
     let graph_feats = store.get_graph_edge_features().await.unwrap_or_default();
+    let daily_obs_series = store
+        .get_daily_observation_counts_per_entity(since)
+        .await
+        .unwrap_or_default();
+    let daily_warning_series = store
+        .get_daily_warning_counts_per_entity(since)
+        .await
+        .unwrap_or_default();
+    let observation_series_by_entity = build_daily_entity_series(&daily_obs_series, 31);
+    let warning_series_by_entity = build_daily_entity_series(&daily_warning_series, 31);
 
     if obs_counts.is_empty() && warn_counts.is_empty() {
         run.skip("recipe_fire: no observations or warnings in last 30 days");
@@ -131,19 +455,15 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     "LookalikeDomain.count",
                     "LookalikeDomain.active",
                     "LookalikeDomain.any",
-                    "Security.risk",
-                    "Security.count",
                 ] {
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
+                if count_f >= 2.0 {
+                    *fm.entry("Security.risk".into()).or_default() += 1.0;
+                }
             }
             "dns_posture" => {
-                for k in &[
-                    "DNSPosture.degraded",
-                    "DNSPosture.count",
-                    "Security.count",
-                    "Compliance.cybersecurity",
-                ] {
+                for k in &["DNSPosture.degraded", "DNSPosture.count"] {
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
             }
@@ -1049,6 +1369,63 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         }
     }
 
+    for (entity_id, feature_map) in entity_maps.iter_mut() {
+        let stats_input = StatsEnrichmentInput {
+            entity_id: entity_id.to_string(),
+            primary_series: observation_series_by_entity
+                .get(entity_id)
+                .cloned()
+                .unwrap_or_else(|| vec![0.0; 31]),
+            secondary_series: Some(
+                warning_series_by_entity
+                    .get(entity_id)
+                    .cloned()
+                    .unwrap_or_else(|| vec![0.0; 31]),
+            ),
+            ..Default::default()
+        };
+        let stats_result = analyze_with_calibration(&stats_input, Some(&alert_calibration_model));
+        for (key, value) in &stats_result.features {
+            feature_map.insert(key.clone(), *value);
+        }
+
+        if stats_result.alert_level.to_string() != "none" {
+            let feature_vector =
+                serde_json::to_value(&stats_result.features).unwrap_or_else(|_| serde_json::json!({}));
+            let metadata = serde_json::json!({
+                "window_days": 30,
+                "stage_warning_count": stats_result.warnings.len(),
+                "alert_score": stats_result.alert_score,
+                "alert_probability": stats_result.alert_probability,
+                "calibration_method": stats_result.calibration_method,
+                "observation_series_total": stats_input.primary_series.iter().sum::<f64>(),
+                "warning_series_total": stats_input
+                    .secondary_series
+                    .as_ref()
+                    .map(|series| series.iter().sum::<f64>())
+                    .unwrap_or(0.0),
+            });
+            if let Err(error) = store
+                .record_stats_alert_calibration_event(
+                    *entity_id,
+                    &feature_vector,
+                    &stats_result.alert_level.to_string(),
+                    now,
+                    now + chrono::Duration::days(30),
+                    &metadata,
+                )
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    entity_id = %entity_id,
+                    alert_level = %stats_result.alert_level,
+                    "recipe_fire: failed to persist stats alert calibration tuple"
+                );
+            }
+        }
+    }
+
     tracing::info!(
         entities = entity_maps.len(),
         obs_rows = obs_counts.len(),
@@ -1497,7 +1874,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
     let mut dedup_map: HashMap<(String, String), usize> = HashMap::new();
     for (idx, c) in candidates.iter().enumerate() {
-        let key = (c.recipe_code.clone(), c.entity_id.clone());
+        let key = (c.entity_id.clone(), c.category.clone());
         let dominated = match dedup_map.get(&key) {
             Some(&prev_idx) => {
                 let prev = &candidates[prev_idx];
@@ -1530,7 +1907,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let cross_run_dedup: std::collections::HashSet<(String, String)> = {
         let rows = sqlx::query(
             "SELECT DISTINCT unnest(tags) AS tag, unnest(entity_ids)::text AS eid \
-             FROM insights WHERE created_at > NOW() - INTERVAL '4 days'",
+             FROM insights WHERE created_at > NOW() - INTERVAL '7 days'",
         )
         .fetch_all(&store.pool)
         .await;
@@ -1571,7 +1948,9 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             continue;
         }
 
-        if cross_run_dedup.contains(&(c.recipe_code.clone(), c.entity_id.clone())) {
+        if cross_run_dedup.contains(&(c.category.clone(), c.entity_id.clone()))
+            || cross_run_dedup.contains(&(c.recipe_code.clone(), c.entity_id.clone()))
+        {
             skipped_cross_run += 1;
             continue;
         }
@@ -1753,13 +2132,20 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .cloned()
                 .unwrap_or_default();
 
+            let distinct_signal_types = evidence_signals
+                .iter()
+                .map(|signal| normalize_gate_text(&signal.signal_type))
+                .collect::<HashSet<_>>()
+                .len();
+            let diversity_multiplier = signal_diversity_multiplier(distinct_signal_types);
+
             for sig in &mut evidence_signals {
                 sig.relevance_score = calculate_relevance(
                     &sig.title,
                     &sig.description,
                     &sig.signal_type,
                     &c.category,
-                );
+                ) * diversity_multiplier;
             }
 
             evidence_signals.sort_by(|a, b| {
@@ -1767,7 +2153,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     .partial_cmp(&a.relevance_score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            evidence_signals.truncate(12);
+            evidence_signals.truncate(*crate::config::LLM_MAX_EVIDENCE_SIGNALS);
 
             let entity_ctx = entity_contexts
                 .get(&c.entity_id)
@@ -1850,7 +2236,8 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     llm_source_urls,
                     evidence_signals,
                 )) => {
-                    let evidence_quality = evidence_quality_from_signals(&evidence_signals);
+                    let evidence_quality =
+                        evidence_quality_from_signals(&evidence_signals, &source_reliability_scores);
                     let stored_confidence =
                         (0.75 * c.confidence + 0.15 * llm_confidence + 0.10 * evidence_quality)
                             .clamp(0.0, 1.0);
@@ -1875,7 +2262,8 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .get(&c.entity_id)
                 .cloned()
                 .unwrap_or_default();
-            let evidence_quality = evidence_quality_from_urls(&evidence_urls);
+            let evidence_quality =
+                evidence_quality_from_urls(&evidence_urls, &source_reliability_scores);
             (0.85 * c.confidence + 0.15 * evidence_quality).clamp(0.0, 1.0)
         };
         #[cfg(not(feature = "llm"))]
@@ -1922,6 +2310,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 c.confidence,
                 c.evidence_ids.len(),
             );
+            crate::observability::WORKER_METRICS.record_insight_fallback();
             (title, summary)
         };
 
@@ -1945,7 +2334,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
         #[cfg(not(feature = "llm"))]
         if let Some(urls) = maybe_evidence_urls.as_ref() {
-            let evidence_quality = evidence_quality_from_urls(urls);
+            let evidence_quality = evidence_quality_from_urls(urls, &source_reliability_scores);
             tags.push(format!(
                 "evidence:{}",
                 if evidence_quality >= 0.75 {
@@ -1958,6 +2347,11 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             ));
         }
 
+        // LLM-enriched insights already pass 15+ individual quality gates
+        // (narrative_words, references, readability, etc.) inside generate_llm_insight.
+        // The shared gate's 8-sentence cap rejects the longer LLM narratives, so
+        // only apply it to the non-LLM fallback path.
+        #[cfg(not(feature = "llm"))]
         if !passes_shared_insight_quality_gate(&title, &summary, Some(c.category.as_str())) {
             tracing::warn!(
                 recipe = %c.recipe_code,
@@ -1968,12 +2362,18 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             continue;
         }
 
+        let region_param = if entity_region.is_empty() {
+            None
+        } else {
+            Some(entity_region.as_str())
+        };
+
         match store
             .insert_insight(
                 &title,
                 &summary,
                 Some(c.category.as_str()),
-                None,
+                region_param,
                 Some(stored_confidence),
                 maybe_evidence_urls,
                 entity_ids.clone(),
@@ -1988,14 +2388,20 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         }
 
         #[cfg(feature = "llm")]
-        if (c.severity == "warning" || c.severity == "critical") && stored_confidence >= 0.75 {
+        if let Some(warning_severity) = recipe_warning_severity(
+            &c.recipe_code,
+            &c.category,
+            &c.severity,
+            stored_confidence,
+            c.impact,
+        ) {
             let warn_title = format!("[{}] {}", c.recipe_code, title);
             let _ = store
                 .insert_warning(
                     &c.category,
                     &warn_title,
                     Some(&warning_action),
-                    &c.severity,
+                    warning_severity,
                     None,
                     Some(&c.recipe_code),
                     entity_ids.clone(),
@@ -2007,14 +2413,20 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         }
 
         #[cfg(not(feature = "llm"))]
-        if (c.severity == "warning" || c.severity == "critical") && c.confidence >= 0.75 {
+        if let Some(warning_severity) = recipe_warning_severity(
+            &c.recipe_code,
+            &c.category,
+            &c.severity,
+            c.confidence,
+            c.impact,
+        ) {
             let warn_title = format!("[{}] {}", c.recipe_code, title);
             let _ = store
                 .insert_warning(
                     &c.category,
                     &warn_title,
                     Some(&rendered_action),
-                    &c.severity,
+                    warning_severity,
                     None,
                     Some(&c.recipe_code),
                     entity_ids.clone(),
@@ -2023,6 +2435,363 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 )
                 .await;
             warnings_inserted += 1;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ADVANCED GENERATORS — diversify beyond recipe-only cert-gap insights
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[cfg(feature = "llm")]
+    {
+        // ── 1. Predictive forward-looking insights ──────────────────────
+        let patterns = predefined_patterns();
+        let mut predictive_count: u64 = 0;
+        for entity_uuid in &all_entity_uuids {
+            let eid = entity_uuid.to_string();
+            let signals: Vec<&str> = entity_evidence
+                .get(&eid)
+                .map(|sigs| sigs.iter().map(|s| s.signal_type.as_str()).collect())
+                .unwrap_or_default();
+            if signals.is_empty() {
+                continue;
+            }
+            let (entity_name, entity_region, _entity_type) = company_names
+                .get(&eid)
+                .cloned()
+                .unwrap_or_else(|| ("Unknown".into(), None, None));
+
+            for pattern in &patterns {
+                let triggers_present = pattern
+                    .triggers
+                    .iter()
+                    .all(|t| signals.iter().any(|s| s.contains(t.as_str())));
+                if !triggers_present {
+                    continue;
+                }
+                let prediction = pattern.predict(*entity_uuid, &entity_name);
+                let title = format!(
+                    "Predictive: {} likely within {} days for {}",
+                    prediction.predicted_outcome, prediction.prediction_window_days, entity_name
+                );
+                let summary = format!(
+                    "{}.\n\nPrediction: {} is {:.0}% likely to experience '{}' within {} days \
+                     (95% CI: {:.0}%–{:.0}%), based on {} historical observations.\n\n\
+                     Pattern: {}",
+                    pattern.prediction_statement(),
+                    entity_name,
+                    prediction.probability * 100.0,
+                    prediction.predicted_outcome,
+                    prediction.prediction_window_days,
+                    prediction.probability_ci_lower * 100.0,
+                    prediction.probability_ci_upper * 100.0,
+                    pattern.observation_count,
+                    pattern.description,
+                );
+                let region_param = entity_region.as_deref();
+                let _ = store
+                    .insert_insight(
+                        &title,
+                        &summary,
+                        Some("predictive_forward"),
+                        region_param,
+                        Some(prediction.probability),
+                        None,
+                        Some(vec![*entity_uuid]),
+                        Some(vec!["predictive".to_string(), pattern.id.clone()]),
+                    )
+                    .await;
+                predictive_count += 1;
+            }
+        }
+        if predictive_count > 0 {
+            tracing::info!(count = predictive_count, "recipe_fire: predictive insights inserted");
+            insights_inserted += predictive_count;
+        }
+
+        // ── 2. Hypothesis ACH scoring per entity ────────────────────────
+        let mut hypothesis_count: u64 = 0;
+        for entity_uuid in &all_entity_uuids {
+            let eid = entity_uuid.to_string();
+            let evidence_signals = match entity_evidence.get(&eid) {
+                Some(sigs) if sigs.len() >= 2 => sigs,
+                _ => continue,
+            };
+            let (entity_name, entity_region, _) = company_names
+                .get(&eid)
+                .cloned()
+                .unwrap_or_else(|| ("Unknown".into(), None, None));
+
+            let mut tracker = EntityHypothesisTracker::new(*entity_uuid, entity_name.clone());
+            for sig in evidence_signals {
+                let ev_type = HypothesisEvidenceType::from_signal_type(&sig.signal_type);
+                tracker.update_with_evidence(ev_type);
+            }
+            let summary = tracker.summary();
+            if summary.total_evidence < 2 {
+                continue;
+            }
+            let posteriors_text: String = summary
+                .all_posteriors
+                .iter()
+                .map(|(label, prob)| format!("  - {}: {:.0}%", label, prob * 100.0))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let leading = summary
+                .leading_hypothesis
+                .as_deref()
+                .unwrap_or("unclear");
+            let anchoring_note = summary
+                .anchoring_warning()
+                .unwrap_or_default();
+            let diagnostic_note = summary
+                .top_diagnostic
+                .as_deref()
+                .unwrap_or("No high-value diagnostic evidence identified.");
+            let title = format!(
+                "Strategic Assessment: {} most likely {} (ACH)",
+                entity_name, leading
+            );
+            let insight_summary = format!(
+                "Analysis of Competing Hypotheses for {} based on {} evidence signals:\n\n\
+                 Hypothesis Posteriors:\n{}\n\n\
+                 Leading assessment: {} ({:.0}% posterior probability)\n\n\
+                 {}\n\n\
+                 Next best diagnostic: {}",
+                entity_name,
+                summary.total_evidence,
+                posteriors_text,
+                leading,
+                summary.leading_posterior.unwrap_or(0.0) * 100.0,
+                anchoring_note,
+                diagnostic_note,
+            );
+            let region_param = entity_region.as_deref();
+            let _ = store
+                .insert_insight(
+                    &title,
+                    &insight_summary,
+                    Some("hypothesis_ach"),
+                    region_param,
+                    summary.leading_posterior,
+                    None,
+                    Some(vec![*entity_uuid]),
+                    Some(vec!["hypothesis".to_string(), "ach".to_string()]),
+                )
+                .await;
+            hypothesis_count += 1;
+        }
+        if hypothesis_count > 0 {
+            tracing::info!(count = hypothesis_count, "recipe_fire: hypothesis ACH insights inserted");
+            insights_inserted += hypothesis_count;
+        }
+
+        // ── 3. Cross-region arbitrage detection ─────────────────────────
+        let detector = ArbitrageDetector::with_defaults();
+        let profiles = arbitrage_default_profiles();
+        let opportunities = detector.scan_all(&profiles);
+        let mut arbitrage_count: u64 = 0;
+        for opp in &opportunities {
+            let _ = store
+                .insert_insight(
+                    &opp.title,
+                    &opp.description,
+                    Some("arbitrage_cost_window"),
+                    Some(&opp.advantaged_region),
+                    Some((opp.cost_advantage_pct / 100.0).min(0.99)),
+                    None,
+                    None,
+                    Some(vec![
+                        "arbitrage".to_string(),
+                        format!("region:{}", opp.advantaged_region),
+                        format!("market:{}", opp.target_market),
+                    ]),
+                )
+                .await;
+            arbitrage_count += 1;
+        }
+        if arbitrage_count > 0 {
+            tracing::info!(count = arbitrage_count, "recipe_fire: arbitrage insights inserted");
+            insights_inserted += arbitrage_count;
+        }
+
+        // ── 4. Competitive comparison matrix ────────────────────────────
+        // Build Starz (self-company) capabilities from cap_feats and cert_feats
+        let starz_uuid = all_entity_uuids.iter().find(|id| {
+            company_names
+                .get(&id.to_string())
+                .and_then(|(_name, _region, ctype)| ctype.as_ref())
+                .map(|t| t == "self" || t == "starz")
+                .unwrap_or(false)
+        });
+        if let Some(starz_id) = starz_uuid {
+            let starz_eid = starz_id.to_string();
+            let starz_caps: Vec<(String, String, bool)> = cap_feats
+                .iter()
+                .filter(|(eid, _, _)| eid == starz_id)
+                .map(|(_, cap, count)| (cap.clone(), "production".to_string(), *count > 0))
+                .collect();
+
+            let competitor_data: Vec<(String, String, f64, f64, Vec<(String, String, bool)>)> =
+                company_names
+                    .iter()
+                    .filter(|(eid, _)| *eid != &starz_eid)
+                    .take(10)
+                    .map(|(eid, (name, region, _))| {
+                        let caps: Vec<(String, String, bool)> = cap_feats
+                            .iter()
+                            .filter(|(e, _, _)| e.to_string() == *eid)
+                            .map(|(_, cap, count)| {
+                                (cap.clone(), "claimed".to_string(), *count > 0)
+                            })
+                            .collect();
+                        let ctx = entity_contexts.get(eid);
+                        let threat = ctx.and_then(|c| c.threat_score).unwrap_or(0.5);
+                        let overlap = ctx.and_then(|c| c.overlap_score).unwrap_or(0.3);
+                        (
+                            name.clone(),
+                            region.clone().unwrap_or_default(),
+                            threat,
+                            overlap,
+                            caps,
+                        )
+                    })
+                    .collect();
+
+            if !starz_caps.is_empty() && !competitor_data.is_empty() {
+                let matrix = build_comparison_matrix(&starz_caps, &competitor_data);
+                let unique_str = matrix.summary.starz_unique_capabilities.join(", ");
+                let gaps_str = matrix.summary.starz_cert_gap.join(", ");
+                let advantages_str = matrix.summary.starz_cert_advantage.join(", ");
+                let regional_str = matrix.summary.regional_advantages.join("; ");
+                let title = format!(
+                    "Competitive Landscape: {} unique strengths vs {} competitors",
+                    matrix.summary.starz_unique_capabilities.len(),
+                    matrix.competitors.len()
+                );
+                let summary = format!(
+                    "Competitive comparison across {} capabilities and {} competitors.\n\n\
+                     Unique Starz capabilities: {}\n\
+                     Certification advantages: {}\n\
+                     Certification gaps to close: {}\n\
+                     Regional advantages: {}\n\n\
+                     Shared capabilities: {} | Competitor-only: {}",
+                    matrix.capability_rows.len(),
+                    matrix.competitors.len(),
+                    if unique_str.is_empty() { "none" } else { &unique_str },
+                    if advantages_str.is_empty() { "none" } else { &advantages_str },
+                    if gaps_str.is_empty() { "none" } else { &gaps_str },
+                    if regional_str.is_empty() { "none identified" } else { &regional_str },
+                    matrix.summary.common_capabilities.len(),
+                    matrix.summary.competitor_unique_capabilities.len(),
+                );
+                let _ = store
+                    .insert_insight(
+                        &title,
+                        &summary,
+                        Some("competitive_comparison"),
+                        None,
+                        Some(0.85),
+                        None,
+                        Some(vec![*starz_id]),
+                        Some(vec!["comparison".to_string(), "competitive".to_string()]),
+                    )
+                    .await;
+                insights_inserted += 1;
+                tracing::info!("recipe_fire: competitive comparison insight inserted");
+            }
+        }
+
+        // ── 5. Bias mitigation / devil's advocate ───────────────────────
+        // Generate counter-narratives for high-confidence insights from this run
+        let mut bias_count: u64 = 0;
+        let da_config = DevilsAdvocateConfig::default();
+        for entity_uuid in &all_entity_uuids {
+            let eid = entity_uuid.to_string();
+            let evidence_signals = match entity_evidence.get(&eid) {
+                Some(sigs) if sigs.len() >= 3 => sigs,
+                _ => continue,
+            };
+            let (entity_name, entity_region, _) = company_names
+                .get(&eid)
+                .cloned()
+                .unwrap_or_else(|| ("Unknown".into(), None, None));
+
+            // Build evidence items for bias module
+            let bias_evidence: Vec<BiasEvidenceItem> = evidence_signals
+                .iter()
+                .map(|sig| BiasEvidenceItem {
+                    id: Uuid::new_v4(),
+                    description: format!("{}: {}", sig.signal_type, sig.title),
+                    source: sig.source_url.clone(),
+                    timestamp: chrono::Utc::now(),
+                    supports_claim: true,
+                    strength: sig.relevance_score as f64,
+                })
+                .collect();
+
+            // Use the leading hypothesis as the claim
+            let claim = format!(
+                "Entity {} shows significant strategic activity based on {} signals",
+                entity_name,
+                evidence_signals.len()
+            );
+            let conclusion = format!(
+                "Strategic shift is underway at {}",
+                entity_name
+            );
+
+            if let Some(result) = generate_devils_advocate(
+                &claim,
+                &conclusion,
+                &bias_evidence,
+                Severity::High,
+                &da_config,
+            ) {
+                let questions_text: String = result
+                    .investigative_questions
+                    .iter()
+                    .take(3)
+                    .map(|q| format!("  • {}", q))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let title = format!(
+                    "Devil's Advocate: Alternative view on {}",
+                    entity_name
+                );
+                let summary = format!(
+                    "{}\n\nAlternative explanations:\n{}\n\nKey questions to investigate:\n{}\n\n\
+                     Confidence adjustment: reduce by {:.0}% based on counter-evidence strength.",
+                    result.counter_narrative,
+                    result
+                        .alternative_explanations
+                        .iter()
+                        .take(3)
+                        .map(|e| format!("  • {}", e))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    questions_text,
+                    result.confidence_reduction * 100.0,
+                );
+                let region_param = entity_region.as_deref();
+                let _ = store
+                    .insert_insight(
+                        &title,
+                        &summary,
+                        Some("bias_mitigation"),
+                        region_param,
+                        Some(1.0 - result.confidence_reduction),
+                        None,
+                        Some(vec![*entity_uuid]),
+                        Some(vec!["devils_advocate".to_string(), "bias_check".to_string()]),
+                    )
+                    .await;
+                bias_count += 1;
+            }
+        }
+        if bias_count > 0 {
+            tracing::info!(count = bias_count, "recipe_fire: bias mitigation insights inserted");
+            insights_inserted += bias_count;
         }
     }
 
@@ -2049,4 +2818,33 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         ),
     );
     run
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recipe_warning_severity;
+
+    #[test]
+    fn suppresses_low_signal_dns_hygiene_recipe_alerts() {
+        assert_eq!(
+            recipe_warning_severity("N002", "cybersecurity_threat", "warning", 0.88, 0.7),
+            None
+        );
+        assert_eq!(
+            recipe_warning_severity("N002", "cybersecurity_threat", "warning", 0.93, 0.8),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn promotes_high_signal_business_categories() {
+        assert_eq!(
+            recipe_warning_severity("A001", "demand_procurement", "info", 0.8, 0.65),
+            Some("medium")
+        );
+        assert_eq!(
+            recipe_warning_severity("G001", "regulatory_policy", "info", 0.78, 0.6),
+            Some("high")
+        );
+    }
 }
