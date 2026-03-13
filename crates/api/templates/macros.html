@@ -263,7 +263,7 @@
 
 {% macro recipe_line_chart(chart_width, precision_points, recall_points, fpr_points, rows) %}
 <div class="overflow-x-auto">
-  <svg class="apex-line-chart" viewBox="0 0 {{ chart_width + 18 }} 120" role="img" aria-label="Recipe quality trend lines" preserveAspectRatio="none">
+  <svg class="apex-line-chart" viewBox="0 0 {{ chart_width + 18 }} 120" role="img" aria-label="Recipe quality trend lines" preserveAspectRatio="xMinYMid meet">
     <rect x="0" y="10" width="{{ chart_width }}" height="90" rx="10" class="apex-line-chart-plot" />
     <line x1="0" y1="100" x2="{{ chart_width }}" y2="100" class="apex-line-chart-axis" />
     <line x1="0" y1="75" x2="{{ chart_width }}" y2="75" class="apex-line-chart-grid" />
@@ -295,7 +295,7 @@
 
 {% macro competitor_comparison_chart(competitors, chart_width) %}
 <div class="overflow-x-auto">
-  <svg class="apex-line-chart" viewBox="0 0 {{ chart_width + 8 }} 120" role="img" aria-label="Competitor threat versus overlap chart" preserveAspectRatio="none">
+  <svg class="apex-compare-chart" viewBox="0 0 {{ chart_width + 8 }} 120" role="img" aria-label="Competitor threat versus overlap chart" preserveAspectRatio="xMinYMid meet">
     <rect x="0" y="12" width="{{ chart_width }}" height="72" rx="10" class="apex-line-chart-plot" />
     <line x1="0" y1="84" x2="{{ chart_width }}" y2="84" class="apex-line-chart-axis" />
     <line x1="0" y1="63" x2="{{ chart_width }}" y2="63" class="apex-line-chart-grid" />

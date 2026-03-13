@@ -16,6 +16,12 @@
   <div class="apex-chart-frame apex-chart-frame-dense">
     {% call m::warning_trend_chart(warning_trend) %}
   </div>
+  <div class="apex-chart-legend">
+    {% call m::legend_item("Critical", "metric-swatch-red", "small") %}
+    {% call m::legend_item("High", "metric-swatch-orange", "small") %}
+    {% call m::legend_item("Medium", "metric-swatch-amber", "small") %}
+    {% call m::legend_item("Low", "metric-swatch-steel", "small") %}
+  </div>
   </div>
 
 <div class="mb-4 apex-card p-3">

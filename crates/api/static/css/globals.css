@@ -529,7 +529,7 @@
   .apex-chart-frame-tall {
     position: relative;
     isolation: isolate;
-    overflow: hidden;
+    overflow: visible;
     border: 1px solid rgb(var(--chart-grid-soft) / 0.55);
     border-radius: 12px;
     background:
@@ -548,6 +548,40 @@
     height: 246px;
   }
 
+  /* Dense variant: compact columns for 30-day views inside insights/warnings */
+  .apex-chart-frame-dense {
+    height: 200px;
+  }
+
+  .apex-chart-frame-dense .apex-viz-frame {
+    grid-auto-columns: minmax(14px, 1fr);
+    gap: 0.3rem;
+  }
+
+  .apex-chart-frame-dense .apex-viz-column {
+    min-width: 12px;
+  }
+
+  .apex-chart-frame-dense .apex-viz-stack {
+    max-width: 16px;
+  }
+
+  .apex-chart-frame-dense .apex-viz-track {
+    height: 130px;
+  }
+
+  .apex-chart-frame-dense .apex-viz-label {
+    font-size: 8px;
+    letter-spacing: 0.02em;
+    max-width: 2.4rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .apex-chart-frame-dense .apex-viz-value {
+    font-size: 8px;
+  }
+
   .apex-chart-frame::before,
   .apex-chart-frame-tall::before {
     content: "";
@@ -558,6 +592,8 @@
     background-size: 100% 25%;
     pointer-events: none;
     opacity: 0.5;
+    border-radius: inherit;
+    overflow: hidden;
   }
 
   .apex-chart-frame > *,
@@ -570,7 +606,8 @@
     display: grid;
     place-items: center;
     height: 100%;
-    gap: 0.75rem;
+    gap: 0.5rem;
+    overflow: visible;
   }
 
   .apex-donut-shell {
@@ -753,6 +790,7 @@
     height: 100%;
     min-width: 320px;
     overflow: visible;
+    display: block;
   }
 
   .apex-line-chart-plot {
@@ -829,6 +867,14 @@
 
     .apex-chart-frame-tall {
       height: 220px;
+    }
+
+    .apex-chart-frame-dense {
+      height: 180px;
+    }
+
+    .apex-chart-frame-dense .apex-viz-track {
+      height: 110px;
     }
 
     .apex-viz-frame {
@@ -951,6 +997,18 @@
 
     .apex-chart-frame-dense .apex-viz-column:not(:nth-child(4n + 1)) .apex-viz-label {
       opacity: 0;
+    }
+
+    .apex-chart-frame-dense {
+      height: 160px;
+    }
+
+    .apex-chart-frame-dense .apex-viz-track {
+      height: 96px;
+    }
+
+    .apex-chart-frame-dense .apex-viz-value {
+      font-size: 7px;
     }
   }
 
@@ -1115,9 +1173,29 @@
   .metric-rail-blue { background-color: var(--rams-steel); }
   .metric-rail-navy { background-color: color-mix(in srgb, var(--rams-steel) 45%, black); }
   .metric-rail-gold { background-color: var(--rams-orange); }
+  .metric-rail-red { background: rgb(var(--chart-series-red)); }
+  .metric-rail-orange { background: rgb(var(--chart-series-orange)); }
+  .metric-rail-amber { background: rgb(var(--chart-series-amber)); }
+  .metric-rail-green { background: rgb(var(--chart-series-green)); }
+  .metric-rail-steel { background-color: var(--rams-steel); }
+  .metric-rail-violet { background: rgb(var(--chart-series-violet)); }
+
   .metric-swatch-blue { background-color: var(--rams-steel); }
   .metric-swatch-navy { background-color: color-mix(in srgb, var(--rams-steel) 45%, black); }
   .metric-swatch-gold { background-color: var(--rams-orange); }
+  .metric-swatch-red { background: rgb(var(--chart-series-red)); }
+  .metric-swatch-orange { background: rgb(var(--chart-series-orange)); }
+  .metric-swatch-amber { background: rgb(var(--chart-series-amber)); }
+  .metric-swatch-green { background: rgb(var(--chart-series-green)); }
+  .metric-swatch-steel { background-color: var(--rams-steel); }
+  .metric-swatch-slate { background: rgb(var(--chart-series-slate)); }
+
+  .metric-text-red { color: rgb(var(--chart-series-red)); }
+  .metric-text-orange { color: rgb(var(--chart-series-orange)); }
+  .metric-text-amber { color: rgb(var(--chart-series-amber)); }
+  .metric-text-green { color: rgb(var(--chart-series-green)); }
+  .metric-text-steel { color: var(--rams-steel); }
+  .metric-text-blue { color: var(--rams-steel); }
 
   .apex-bar-column {
     height: var(--apex-bar-height, 0%);
