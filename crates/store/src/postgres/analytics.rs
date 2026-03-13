@@ -524,16 +524,29 @@ impl PgStore {
             .collect())
     }
 
-    pub async fn get_certification_features_per_company(&self) -> Result<Vec<(Uuid, String, i64)>> {
+    /// Return certification features only for certs that represent *dynamic* signals:
+    /// recently added/updated (within `since`) or expiring within 90 days.
+    /// Static/long-held certifications are excluded to prevent feature inflation.
+    pub async fn get_certification_features_per_company(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<(Uuid, String, i64)>> {
         let rows = sqlx::query(
             r#"SELECT company_id,
                       standard,
                       COUNT(*)::BIGINT AS cnt
                FROM certifications
                WHERE company_id IS NOT NULL
+                 AND (
+                   updated_at >= $1
+                   OR created_at >= $1
+                   OR (valid_until IS NOT NULL
+                       AND valid_until BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days')
+                 )
                GROUP BY company_id, standard
                ORDER BY company_id"#,
         )
+        .bind(since)
         .fetch_all(&self.pool)
         .await?;
 

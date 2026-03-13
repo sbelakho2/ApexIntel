@@ -413,7 +413,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         .await
         .unwrap_or_default();
     let cert_feats = store
-        .get_certification_features_per_company()
+        .get_certification_features_per_company(since)
         .await
         .unwrap_or_default();
     let cap_feats = store
@@ -486,6 +486,90 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     "SocialPost.any",
                     "News.count",
                     "News.any",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "PersonMove" => {
+                for k in &[
+                    "PersonMention.role_change",
+                    "PersonMention.count",
+                    "RoleChange.count",
+                    "RoleChange.any",
+                    "SocialSignal.leadership_change",
+                    "JobPost.executive.new_function",
+                    "POI.role_change.imminent",
+                    "POI.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "TenderNotice" => {
+                for k in &[
+                    "Tender.count",
+                    "Tender.any",
+                    "Tender.public.posted",
+                    "Procurement.count",
+                    "Procurement.any",
+                    "Contract.count",
+                    "Demand.count",
+                    "Demand.any",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "PatentPublication" => {
+                for k in &[
+                    "Patent.count",
+                    "Patent.any",
+                    "Patent.recent",
+                    "PatentPublished.competitor.cluster",
+                    "PatentPublished.technology_overlap",
+                    "IP.count",
+                    "IP.any",
+                    "Technology.count",
+                    "Technology.any",
+                    "Innovation.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "RegulatoryFiling" => {
+                for k in &[
+                    "Regulatory.count",
+                    "Regulatory.change",
+                    "Compliance.count",
+                    "Compliance.any",
+                    "Compliance.risk",
+                    "Filing.count",
+                    "Filing.any",
+                    "Policy.count",
+                    "Policy.any",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "FinancialDisclosure" => {
+                for k in &[
+                    "Filing.count",
+                    "Filing.any",
+                    "Company.filing.new",
+                    "Company.earnings.call",
+                    "CompanyProfile.count",
+                    "Industry.count",
+                    "Industry.trend",
+                    "Market.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "CompetitorEvent" => {
+                for k in &[
+                    "Competitor.count",
+                    "Competitor.activity",
+                    "CompetitorEvent.count",
+                    "Industry.count",
+                    "Industry.trend",
                 ] {
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
@@ -1751,6 +1835,107 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             }
         }
 
+        // ── POI evidence signals ──────────────────────────────────────
+        // Persons-of-interest are the #1 recipe category (93 recipe
+        // conditions) but previously had zero evidence signals, making
+        // LLM-generated POI insights vague.  Load key persons per
+        // entity as evidence so recipes in the strategic_poi, talent_ip,
+        // and personnel categories have concrete data to reason about.
+        for entity_uuid in all_entity_uuids.iter() {
+            let entity_id_str = entity_uuid.to_string();
+            if let Ok(persons) = store.list_persons_by_org(*entity_uuid).await {
+                for person in persons.iter().take(6) {
+                    let role = person.current_role.as_deref().unwrap_or("Unknown role");
+                    let influence = person.influence_score.unwrap_or(0.0);
+                    let bio_excerpt = person.public_bio.as_deref().unwrap_or("").chars().take(200).collect::<String>();
+                    let topics = person.trigger_topics.as_ref()
+                        .map(|t| t.join(", "))
+                        .unwrap_or_default();
+
+                    let mut facts = vec![
+                        format!("Role: {}", role),
+                        format!("Influence: {:.2}", influence),
+                    ];
+                    if !topics.is_empty() {
+                        facts.push(format!("Trigger topics: {}", topics));
+                    }
+                    if let Some(style) = &person.decision_style {
+                        facts.push(format!("Decision style: {}", style));
+                    }
+
+                    let relevance = if influence > 0.7 { 0.75 }
+                        else if influence > 0.5 { 0.6 }
+                        else { 0.45 };
+
+                    let sig = EvidenceSignal {
+                        title: format!("{} – {}", person.name, role),
+                        description: if bio_excerpt.is_empty() {
+                            format!("{} serves as {} with influence score {:.2}", person.name, role, influence)
+                        } else {
+                            format!("{}: {}…", role, bio_excerpt)
+                        },
+                        source_url: String::new(),
+                        signal_type: "poi".to_string(),
+                        extracted_facts: facts,
+                        date_context: person.updated_at
+                            .map(|d| d.format("%Y-%m-%d").to_string()),
+                        relevance_score: relevance,
+                    };
+                    evidence_map
+                        .entry(entity_id_str.clone())
+                        .or_default()
+                        .push(sig);
+                }
+            }
+        }
+
+        // ── Site / facility evidence signals ──────────────────────────
+        // Facility/production features (37 Supplier refs, 4 Production
+        // refs, 4 Facility refs) fire recipes but had no corresponding
+        // evidence signals for the LLM to reference.
+        for entity_uuid in all_entity_uuids.iter() {
+            let entity_id_str = entity_uuid.to_string();
+            if let Ok(sites) = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<Vec<String>>)>(
+                "SELECT name, city, country_code, site_type, capabilities FROM sites WHERE company_id = $1 LIMIT 6"
+            )
+            .bind(entity_uuid)
+            .fetch_all(&store.pool)
+            .await {
+                for (sname, city, cc, stype, caps) in &sites {
+                    let location = city.as_deref().unwrap_or(cc.as_deref().unwrap_or("Unknown"));
+                    let type_str = stype.as_deref().unwrap_or("facility");
+                    let caps_str = caps.as_ref().map(|c| c.join(", ")).unwrap_or_default();
+
+                    let mut facts = vec![
+                        format!("Site: {}", sname),
+                        format!("Type: {}", type_str),
+                        format!("Location: {}", location),
+                    ];
+                    if !caps_str.is_empty() {
+                        facts.push(format!("Capabilities: {}", caps_str));
+                    }
+
+                    let sig = EvidenceSignal {
+                        title: format!("Facility: {} ({})", sname, location),
+                        description: if caps_str.is_empty() {
+                            format!("{} {} in {}", type_str, sname, location)
+                        } else {
+                            format!("{} {} in {} — capabilities: {}", type_str, sname, location, caps_str)
+                        },
+                        source_url: String::new(),
+                        signal_type: "facility".to_string(),
+                        extracted_facts: facts,
+                        date_context: None,
+                        relevance_score: 0.45,
+                    };
+                    evidence_map
+                        .entry(entity_id_str.clone())
+                        .or_default()
+                        .push(sig);
+                }
+            }
+        }
+
         match store
             .get_warnings_by_entity_ids(&all_entity_uuids, 500)
             .await
@@ -1801,9 +1986,38 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
         let unique_entity_uuids: std::collections::HashSet<Uuid> =
             all_entity_uuids.iter().cloned().collect();
+
+        // ── Type-stratified observation evidence ──────────────────────
+        // Instead of loading the 10 most-recent observations (biased
+        // towards high-volume types like WebChange), load a balanced
+        // sample across observation types so that tender notices,
+        // patent publications, regulatory filings, financial disclosures,
+        // and person moves all get fair representation as evidence.
+        let diverse_obs_types = [
+            "TenderNotice",
+            "PatentPublication",
+            "RegulatoryFiling",
+            "FinancialDisclosure",
+            "PersonMove",
+            "WebChange",
+            "SocialPost",
+            "CompetitorEvent",
+        ];
         for entity_uuid in unique_entity_uuids.iter() {
-            if let Ok(obs_rows) = store.get_observations_by_entity(*entity_uuid, 10).await {
-                for obs in obs_rows {
+            // Track how many signals we've added per type so we can
+            // cap the total while preserving diversity.
+            let mut type_counts: HashMap<String, u32> = HashMap::new();
+            let obs_rows = match store.get_observations_by_entity(*entity_uuid, 30).await {
+                Ok(rows) => rows,
+                Err(_) => continue,
+            };
+
+            // First pass: prioritize rare/high-value types
+            for obs_type in &diverse_obs_types {
+                for obs in obs_rows.iter().filter(|o| o.observation_type == *obs_type) {
+                    let count = type_counts.entry(obs_type.to_string()).or_default();
+                    if *count >= 3 { break; }
+
                     let (title, description) = if let Some(obj) = obs.value.as_object() {
                         let title = obj
                             .get("title")
@@ -1841,6 +2055,18 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
                     let extracted = extract_facts_from_text(&format!("{} {}", title, description));
 
+                    // Assign higher relevance to rarer, more actionable types
+                    let relevance = match *obs_type {
+                        "TenderNotice" => 0.80,
+                        "PatentPublication" => 0.70,
+                        "RegulatoryFiling" => 0.70,
+                        "FinancialDisclosure" => 0.65,
+                        "PersonMove" => 0.75,
+                        "CompetitorEvent" => 0.70,
+                        "SocialPost" => 0.55,
+                        _ => 0.50,
+                    };
+
                     let sig = EvidenceSignal {
                         title,
                         description,
@@ -1848,13 +2074,74 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                         signal_type: obs.observation_type.clone(),
                         extracted_facts: extracted,
                         date_context: Some(obs.ts_utc.format("%Y-%m-%d").to_string()),
-                        relevance_score: 0.5,
+                        relevance_score: relevance,
                     };
                     evidence_map
                         .entry(entity_uuid.to_string())
                         .or_default()
                         .push(sig);
+                    *count += 1;
                 }
+            }
+
+            // Second pass: fill remaining slots with any type not yet seen
+            for obs in &obs_rows {
+                let type_count = *type_counts.get(&obs.observation_type).unwrap_or(&0);
+                if type_count >= 3 { continue; }
+                let total: u32 = type_counts.values().sum();
+                if total >= 15 { break; }
+
+                let (title, description) = if let Some(obj) = obs.value.as_object() {
+                    let title = obj
+                        .get("title")
+                        .or_else(|| obj.get("headline"))
+                        .or_else(|| obj.get("role"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("{} update", obs.observation_type));
+                    let desc = obj
+                        .get("description")
+                        .or_else(|| obj.get("text"))
+                        .or_else(|| obj.get("summary"))
+                        .or_else(|| obj.get("content"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    (title, desc)
+                } else if let Some(s) = obs.value.as_str() {
+                    (obs.observation_type.clone(), s.to_string())
+                } else {
+                    continue;
+                };
+
+                if description.is_empty() && !title.contains(':') {
+                    continue;
+                }
+
+                let source_url = obs
+                    .provenance
+                    .as_object()
+                    .and_then(|p| p.get("source_url").or_else(|| p.get("url")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let extracted = extract_facts_from_text(&format!("{} {}", title, description));
+
+                let sig = EvidenceSignal {
+                    title,
+                    description,
+                    source_url,
+                    signal_type: obs.observation_type.clone(),
+                    extracted_facts: extracted,
+                    date_context: Some(obs.ts_utc.format("%Y-%m-%d").to_string()),
+                    relevance_score: 0.5,
+                };
+                evidence_map
+                    .entry(entity_uuid.to_string())
+                    .or_default()
+                    .push(sig);
+                *type_counts.entry(obs.observation_type.clone()).or_default() += 1;
             }
         }
 
