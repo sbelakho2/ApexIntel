@@ -20,9 +20,11 @@
   <div class="flex items-start justify-between gap-4">
     <div>
       <h1>{{ title }}</h1>
-      <div class="mt-2 flex items-center gap-2">
-        <span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ category }}</span>
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <span class="mobile-inline-chip inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ category_css }}">{{ category_label }}</span>
+        <span class="inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ impact_css }}">{{ impact_tier }}</span>
         <span class="text-[11px] tabular-nums text-muted-foreground">Confidence: {{ confidence }}%</span>
+        {% if !region.is_empty() %}<span class="text-[10px] text-muted-foreground">{{ region }}</span>{% endif %}
         {% if bookmarked %}<span class="text-[10px] font-bold uppercase apex-text-warning">Bookmarked</span>{% endif %}
       </div>
     </div>
@@ -51,9 +53,11 @@
     <div class="text-sm font-semibold mb-2">{{ summary|safe }}</div>
     {% endif %}
     <div class="text-sm leading-relaxed">{{ body|safe }}</div>
-    <div class="mt-4 grid grid-cols-2 gap-4 text-[11px]">
+    <div class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-[11px]">
       <div><span class="font-black uppercase text-muted-foreground">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline">{{ company_name }}</a></div>
-      <div><span class="font-black uppercase text-muted-foreground">Created</span><br>{{ created_at }}</div>
+      <div><span class="font-black uppercase text-muted-foreground">Created</span><br>{{ created_at }}{% if !age_label.is_empty() %} <span class="text-muted-foreground">({{ age_label }})</span>{% endif %}</div>
+      <div><span class="font-black uppercase text-muted-foreground">Evidence</span><br>{{ evidence_count }} source{% if evidence_count != 1 %}s{% endif %}{% if !source_diversity.is_empty() && source_diversity != "None" %} · {{ source_diversity }} diversity{% endif %}</div>
+      <div><span class="font-black uppercase text-muted-foreground">Updated</span><br>{% if !updated_at.is_empty() %}{{ updated_at }}{% else %}—{% endif %}</div>
     </div>
     {% if !tags.is_empty() %}
     <div class="mt-3 flex flex-wrap gap-1">

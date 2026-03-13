@@ -22,6 +22,9 @@
   </div>
   <div class="apex-chart-legend">
     {% call m::legend_item("Macro", "metric-swatch-slate", "small") %}
+    {% call m::legend_item("Pricing", "metric-swatch-teal", "small") %}
+    {% call m::legend_item("Predictive", "metric-swatch-cyan", "small") %}
+    {% call m::legend_item("Regulatory", "metric-swatch-violet", "small") %}
     {% call m::legend_item("Security", "metric-swatch-steel", "small") %}
     {% call m::legend_item("Supply", "metric-swatch-amber", "small") %}
     {% call m::legend_item("Competitive", "metric-swatch-orange", "small") %}
@@ -84,10 +87,12 @@
         <tr>
           <th class="px-4 py-3">Title</th>
           <th class="px-4 py-3">Type</th>
+          <th class="px-4 py-3">Impact</th>
           <th class="px-4 py-3">Company</th>
           <th class="px-4 py-3 text-right">Confidence</th>
+          <th class="px-4 py-3">Region</th>
+          <th class="px-4 py-3 text-right">Evidence</th>
           <th class="px-4 py-3"><a href="{{ page_base_href }}sort=created_at&dir={% if sort_field == "created_at" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Created</a></th>
-          <th class="px-4 py-3">Tags</th>
           <th class="px-4 py-3">Bookmark</th>
         </tr>
       </thead>
@@ -95,12 +100,14 @@
         {% for i in insights %}
         <tr class="cursor-pointer border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/insights/{{ i.id }}">
           <td class="px-4 py-3 font-semibold"><a href="/insights/{{ i.id }}" class="hover:underline">{{ i.title }}</a></td>
-          <td class="px-4 py-3"><span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span></td>
+          <td class="px-4 py-3"><span class="mobile-inline-chip inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.category_css }}">{{ i.category_label }}</span></td>
+          <td class="px-4 py-3"><span class="inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.impact_css }}">{{ i.impact_tier }}</span></td>
           <td class="px-4 py-3 text-muted-foreground">{{ i.company_name }}</td>
           <td class="px-4 py-3 text-right font-bold tabular-nums">{{ i.confidence_pct }}%</td>
-          <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ i.created_at }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{% if i.tags.is_empty() %}—{% else %}{% for tag in i.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
-          <td class="px-4 py-3">{% if i.bookmarked %}<span class="apex-text-warning">Saved</span>{% else %}<span class="text-muted-foreground">No</span>{% endif %}</td>
+          <td class="px-4 py-3 text-muted-foreground">{% if i.region.is_empty() %}—{% else %}{{ i.region }}{% endif %}</td>
+          <td class="px-4 py-3 text-right tabular-nums text-muted-foreground">{{ i.evidence_count }}</td>
+          <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ i.age_label }}</td>
+          <td class="px-4 py-3">{% if i.bookmarked %}<span class="apex-text-warning">Saved</span>{% else %}<span class="text-muted-foreground">—</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -119,9 +126,14 @@
         <div class="min-w-0 flex-1">
           <a href="/insights/{{ i.id }}" class="text-sm font-semibold hover:underline">{{ i.title }}</a>
           <div class="mt-1.5 flex flex-wrap items-center gap-2">
-            <span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.category }}</span>
-              <span class="text-xs font-bold tabular-nums text-muted-foreground">{{ i.confidence_pct }}%</span>
+            <span class="mobile-inline-chip inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.category_css }}">{{ i.category_label }}</span>
+            <span class="inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.impact_css }}">{{ i.impact_tier }}</span>
+            <span class="text-xs font-bold tabular-nums text-muted-foreground">{{ i.confidence_pct }}%</span>
+            {% if !i.region.is_empty() %}<span class="text-[10px] text-muted-foreground">{{ i.region }}</span>{% endif %}
           </div>
+          {% if !i.summary_preview.is_empty() %}
+          <p class="mt-2 text-xs text-muted-foreground leading-relaxed">{{ i.summary_preview }}</p>
+          {% endif %}
         </div>
         <button hx-post="/insights/{{ i.id }}/bookmark" hx-target="#insight-card-{{ i.id }}" hx-swap="outerHTML"
           class="shrink-0 rounded-sm border border-border p-1.5 hover:bg-muted {% if i.bookmarked %}apex-text-warning{% else %}text-muted-foreground{% endif %}"
@@ -130,8 +142,12 @@
         </button>
       </div>
       <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{{ i.company_name }}</span>
-        <span class="tabular-nums">{{ i.created_at }}</span>
+        <div class="flex items-center gap-3">
+          <span>{{ i.company_name }}</span>
+          {% if i.evidence_count > 0 %}<span class="tabular-nums">{{ i.evidence_count }} source{% if i.evidence_count != 1 %}s{% endif %}</span>{% endif %}
+          {% if !i.source_diversity.is_empty() && i.source_diversity != "None" %}<span>{{ i.source_diversity }} diversity</span>{% endif %}
+        </div>
+        <span class="tabular-nums">{{ i.age_label }}</span>
       </div>
       {% if !i.tags.is_empty() %}
       <div class="mt-2 flex flex-wrap gap-1">{% for tag in i.tags %}{% call m::tag_pill(tag) %}{% endfor %}</div>

@@ -761,6 +761,9 @@
   .apex-viz-segment-supply { background: rgb(var(--chart-series-amber)); border-radius: 2px 2px 0 0; }
   .apex-viz-segment-security { background: rgb(var(--chart-series-blue)); border-radius: 2px 2px 0 0; }
   .apex-viz-segment-macro { background: rgb(var(--chart-series-slate)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-regulatory { background: rgb(var(--chart-series-violet)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-predictive { background: rgb(var(--chart-series-cyan)); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-pricing { background: rgb(var(--chart-series-teal)); border-radius: 2px 2px 0 0; }
 
   .apex-viz-dual-bar {
     width: 44%;
@@ -1059,6 +1062,27 @@
     @apply border-border bg-secondary text-muted-foreground;
   }
 
+  .apex-tier-critical {
+    background: rgb(var(--destructive) / 0.15);
+    color: rgb(var(--destructive));
+    border: 1px solid rgb(var(--destructive) / 0.4);
+  }
+  .apex-tier-high {
+    background: rgb(var(--chart-series-orange) / 0.12);
+    color: rgb(var(--chart-series-orange));
+    border: 1px solid rgb(var(--chart-series-orange) / 0.35);
+  }
+  .apex-tier-medium {
+    background: rgb(var(--chart-series-amber) / 0.12);
+    color: rgb(var(--chart-series-amber));
+    border: 1px solid rgb(var(--chart-series-amber) / 0.35);
+  }
+  .apex-tier-low {
+    background: rgb(var(--secondary) / 0.5);
+    color: rgb(var(--muted-foreground));
+    border: 1px solid rgb(var(--border));
+  }
+
   .apex-action-link {
     @apply rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground;
   }
@@ -1189,6 +1213,9 @@
   .metric-swatch-green { background: rgb(var(--chart-series-green)); }
   .metric-swatch-steel { background-color: var(--rams-steel); }
   .metric-swatch-slate { background: rgb(var(--chart-series-slate)); }
+  .metric-swatch-violet { background: rgb(var(--chart-series-violet)); }
+  .metric-swatch-cyan { background: rgb(var(--chart-series-cyan)); }
+  .metric-swatch-teal { background: rgb(var(--chart-series-teal)); }
 
   .metric-text-red { color: rgb(var(--chart-series-red)); }
   .metric-text-orange { color: rgb(var(--chart-series-orange)); }

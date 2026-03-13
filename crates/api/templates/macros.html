@@ -227,6 +227,9 @@
         <div class="apex-viz-track">
           <div class="apex-viz-stack" style="height: {{ day.bar_h }}%">
             {% if day.macro_s > 0 %}<div class="apex-viz-segment apex-viz-segment-macro" style="height: {{ day.macro_h }}%"></div>{% endif %}
+            {% if day.pricing > 0 %}<div class="apex-viz-segment apex-viz-segment-pricing" style="height: {{ day.pricing_h }}%"></div>{% endif %}
+            {% if day.predictive > 0 %}<div class="apex-viz-segment apex-viz-segment-predictive" style="height: {{ day.predictive_h }}%"></div>{% endif %}
+            {% if day.regulatory > 0 %}<div class="apex-viz-segment apex-viz-segment-regulatory" style="height: {{ day.regulatory_h }}%"></div>{% endif %}
             {% if day.security > 0 %}<div class="apex-viz-segment apex-viz-segment-security" style="height: {{ day.security_h }}%"></div>{% endif %}
             {% if day.supply > 0 %}<div class="apex-viz-segment apex-viz-segment-supply" style="height: {{ day.supply_h }}%"></div>{% endif %}
             {% if day.competitive > 0 %}<div class="apex-viz-segment apex-viz-segment-competitive" style="height: {{ day.competitive_h }}%"></div>{% endif %}

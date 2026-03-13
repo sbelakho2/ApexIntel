@@ -48,6 +48,9 @@ pub struct InsightTrendDay {
     pub supply: i64,
     pub security: i64,
     pub macro_s: i64,
+    pub regulatory: i64,
+    pub predictive: i64,
+    pub pricing: i64,
     pub total: i64,
     pub bar_h: i64,
     pub demand_h: i64,
@@ -55,6 +58,9 @@ pub struct InsightTrendDay {
     pub supply_h: i64,
     pub security_h: i64,
     pub macro_h: i64,
+    pub regulatory_h: i64,
+    pub predictive_h: i64,
+    pub pricing_h: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -62,12 +68,21 @@ pub struct InsightListItem {
     pub id: String,
     pub title: String,
     pub category: String,
+    pub category_label: String,
+    pub category_css: String,
     pub confidence: f64,
     pub confidence_pct: i64,
+    pub impact_tier: String,
+    pub impact_css: String,
     pub company_name: String,
+    pub region: String,
     pub created_at: String,
+    pub age_label: String,
     pub bookmarked: bool,
     pub tags: Vec<String>,
+    pub summary_preview: String,
+    pub evidence_count: i64,
+    pub source_diversity: String,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +166,103 @@ fn is_internal_insight_type(insight_type: &str) -> bool {
     insight_type.trim().to_ascii_lowercase().starts_with("llm_")
 }
 
+fn insight_category_label(raw: &str) -> &'static str {
+    match raw {
+        "demand_signal" | "demand_procurement" | "demand" => "Demand Signal",
+        "supply_risk" | "supply_chain_risk" | "supply_chain" => "Supply Risk",
+        "competitive_intel" | "competitive_comparison" | "competitor_market" | "competitor" => "Competitive Intel",
+        "security_posture" | "security" => "Security Posture",
+        "macro_shift" => "Macro Shift",
+        "poi_movement" | "poi" => "POI Movement",
+        "predictive_forward" => "Predictive",
+        "hypothesis_ach" => "Hypothesis (ACH)",
+        "bias_mitigation" => "Bias Check",
+        "regulatory_policy" => "Regulatory",
+        "pricing_market" => "Pricing / Market",
+        "geopolitical_analysis" => "Geopolitical",
+        "arbitrage_cost_window" => "Arbitrage",
+        _ => "Analysis",
+    }
+}
+
+fn insight_category_css(raw: &str) -> &'static str {
+    match raw {
+        "demand_signal" | "demand_procurement" | "demand" => "bg-destructive/10 text-destructive border-destructive/30",
+        "supply_risk" | "supply_chain_risk" | "supply_chain" => "bg-primary/10 text-primary border-primary/40",
+        "competitive_intel" | "competitive_comparison" | "competitor_market" | "competitor" => "bg-secondary border-border",
+        "security_posture" | "security" => "bg-secondary/50 border-border text-muted-foreground",
+        "predictive_forward" | "hypothesis_ach" => "bg-primary/10 border-primary/40 text-primary",
+        "bias_mitigation" => "bg-destructive/10 border-destructive/30 text-destructive",
+        "regulatory_policy" | "geopolitical_analysis" => "bg-secondary border-border",
+        "pricing_market" | "arbitrage_cost_window" => "bg-primary/10 border-primary/40",
+        _ => "bg-secondary border-border",
+    }
+}
+
+fn impact_tier(confidence: f64) -> (&'static str, &'static str) {
+    if confidence >= 0.8 {
+        ("Critical", "apex-tier-critical")
+    } else if confidence >= 0.7 {
+        ("High", "apex-tier-high")
+    } else if confidence >= 0.4 {
+        ("Medium", "apex-tier-medium")
+    } else {
+        ("Low", "apex-tier-low")
+    }
+}
+
+fn relative_age(dt: Option<DateTime<Utc>>) -> String {
+    let Some(dt) = dt else { return String::new() };
+    let delta = Utc::now() - dt;
+    let hours = delta.num_hours();
+    if hours < 1 {
+        format!("{}m ago", delta.num_minutes().max(1))
+    } else if hours < 24 {
+        format!("{}h ago", hours)
+    } else if hours < 168 {
+        format!("{}d ago", delta.num_days())
+    } else {
+        format!("{}w ago", delta.num_weeks())
+    }
+}
+
+fn source_diversity_label(evidence_urls: &[String]) -> &'static str {
+    let mut domains: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for url in evidence_urls {
+        if let Some(domain) = url.split('/').nth(2) {
+            domains.insert(domain);
+        }
+    }
+    match domains.len() {
+        0 => "None",
+        1 => "Single",
+        2..=3 => "Moderate",
+        _ => "High",
+    }
+}
+
+/// Map an insight_type string to one of the 8 trend chart buckets.
+fn trend_bucket(kind: &str) -> &'static str {
+    let k = kind.to_ascii_lowercase();
+    if k.contains("demand") || k.contains("procurement") {
+        "demand"
+    } else if k.contains("competitive") || k.contains("competitor") {
+        "competitive"
+    } else if k.contains("supply") || k.contains("arbitrage") {
+        "supply"
+    } else if k.contains("security") {
+        "security"
+    } else if k.contains("regulat") || k.contains("geopolit") {
+        "regulatory"
+    } else if k.contains("predict") || k.contains("hypothes") || k.contains("bias") {
+        "predictive"
+    } else if k.contains("pricing") || k.contains("market") {
+        "pricing"
+    } else {
+        "macro"
+    }
+}
+
 // ─── Templates ──────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -224,16 +336,24 @@ pub struct InsightDetailPage {
     pub id: String,
     pub title: String,
     pub category: String,
+    pub category_label: String,
+    pub category_css: String,
     pub confidence: i64,
+    pub impact_tier: String,
+    pub impact_css: String,
     pub summary: String,
     pub body: String,
     pub company_name: String,
     pub company_id: String,
+    pub region: String,
     pub created_at: String,
     pub updated_at: String,
+    pub age_label: String,
     pub bookmarked: bool,
     pub tags: Vec<String>,
     pub evidence: Vec<InsightEvidence>,
+    pub evidence_count: usize,
+    pub source_diversity: String,
     pub entities: Vec<InsightEntity>,
     pub annotations: Vec<InsightNoteItem>,
     pub ai_analysis: Option<String>,
@@ -271,6 +391,13 @@ pub async fn list_insights(
         "competitive_intel",
         "security_posture",
         "macro_shift",
+        "regulatory_policy",
+        "predictive_forward",
+        "hypothesis_ach",
+        "pricing_market",
+        "geopolitical_analysis",
+        "arbitrage_cost_window",
+        "bias_mitigation",
         "poi_movement",
     ];
     let impact_values = ["", "high", "medium", "low"];
@@ -461,18 +588,37 @@ pub async fn list_insights(
         .iter()
         .map(|i| {
             let confidence = i.confidence.unwrap_or(0.0);
+            let raw_cat = i.insight_type.clone().unwrap_or_default();
+            let (tier, tier_css) = impact_tier(confidence);
+            let ev_urls = i.evidence_urls.as_deref().unwrap_or(&[]);
             InsightListItem {
                 id: i.id.to_string(),
                 title: i.title.clone(),
-                category: i.insight_type.clone().unwrap_or_default(),
+                category: raw_cat.clone(),
+                category_label: insight_category_label(&raw_cat).to_string(),
+                category_css: insight_category_css(&raw_cat).to_string(),
                 confidence,
                 confidence_pct: confidence_to_pct(confidence),
+                impact_tier: tier.to_string(),
+                impact_css: tier_css.to_string(),
                 company_name: String::new(),
+                region: i.region.clone().unwrap_or_default(),
                 created_at: insight_display_time(i)
                     .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_default(),
+                age_label: relative_age(insight_display_time(i)),
                 bookmarked: false,
                 tags: i.tags.clone().unwrap_or_default(),
+                summary_preview: {
+                    let s = i.summary.trim();
+                    if s.len() > 160 {
+                        format!("{}…", &s[..s.char_indices().nth(160).map(|(i, _)| i).unwrap_or(s.len())])
+                    } else {
+                        s.to_string()
+                    }
+                },
+                evidence_count: ev_urls.len() as i64,
+                source_diversity: source_diversity_label(ev_urls).to_string(),
             }
         })
         .collect();
@@ -527,12 +673,13 @@ pub async fn list_insights(
     let insight_trend: Vec<InsightTrendDay> = {
         use chrono::{Duration, Utc};
         use std::collections::BTreeMap;
-        let mut by_day: BTreeMap<String, (i64, i64, i64, i64, i64)> = BTreeMap::new();
+        // 8 buckets: demand, competitive, supply, security, macro, regulatory, predictive, pricing
+        let mut by_day: BTreeMap<String, [i64; 8]> = BTreeMap::new();
         for i in 0..30 {
             let label = (Utc::now() - Duration::days(29 - i))
                 .format("%b %d")
                 .to_string();
-            by_day.insert(label, (0, 0, 0, 0, 0));
+            by_day.insert(label, [0; 8]);
         }
         for row in &visible_insight_rows {
             let confidence = row.confidence.unwrap_or(0.0);
@@ -550,65 +697,56 @@ pub async fn list_insights(
                 continue;
             };
             let date = event_time.format("%b %d").to_string();
-            if let Some((d, c, su, sec, m)) = by_day.get_mut(&date) {
+            if let Some(buckets) = by_day.get_mut(&date) {
                 let kind = row
                     .insight_type
                     .clone()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if kind.contains("demand") {
-                    *d += 1;
-                } else if kind.contains("competitive") {
-                    *c += 1;
-                } else if kind.contains("supply") {
-                    *su += 1;
-                } else if kind.contains("security") {
-                    *sec += 1;
-                } else {
-                    *m += 1;
+                    .unwrap_or_default();
+                match trend_bucket(&kind) {
+                    "demand" => buckets[0] += 1,
+                    "competitive" => buckets[1] += 1,
+                    "supply" => buckets[2] += 1,
+                    "security" => buckets[3] += 1,
+                    "regulatory" => buckets[5] += 1,
+                    "predictive" => buckets[6] += 1,
+                    "pricing" => buckets[7] += 1,
+                    _ => buckets[4] += 1, // macro
                 }
             }
         }
-        let raw: Vec<(String, i64, i64, i64, i64, i64)> = by_day
-            .into_iter()
-            .map(|(label, (d, c, su, sec, m))| (label, d, c, su, sec, m))
-            .collect();
+        let raw: Vec<(String, [i64; 8])> = by_day.into_iter().collect();
 
         let max_total = raw
             .iter()
-            .map(|(_, d, c, su, sec, m)| d + c + su + sec + m)
+            .map(|(_, b)| b.iter().sum::<i64>())
             .max()
             .unwrap_or(1)
             .max(1);
         raw.into_iter()
-            .map(|(label, d, c, su, sec, m)| {
-                let tot = d + c + su + sec + m;
+            .map(|(label, b)| {
+                let tot: i64 = b.iter().sum();
                 let bar_h = tot * 100 / max_total;
-                let (dh, ch, suh, sech, mh) = if tot == 0 {
-                    (0, 0, 0, 0, 0)
-                } else {
-                    (
-                        d * 100 / tot,
-                        c * 100 / tot,
-                        su * 100 / tot,
-                        sec * 100 / tot,
-                        m * 100 / tot,
-                    )
-                };
+                let pct = |v: i64| if tot == 0 { 0 } else { v * 100 / tot };
                 InsightTrendDay {
                     date_label: label,
-                    demand: d,
-                    competitive: c,
-                    supply: su,
-                    security: sec,
-                    macro_s: m,
+                    demand: b[0],
+                    competitive: b[1],
+                    supply: b[2],
+                    security: b[3],
+                    macro_s: b[4],
+                    regulatory: b[5],
+                    predictive: b[6],
+                    pricing: b[7],
                     total: tot,
                     bar_h,
-                    demand_h: dh,
-                    competitive_h: ch,
-                    supply_h: suh,
-                    security_h: sech,
-                    macro_h: mh,
+                    demand_h: pct(b[0]),
+                    competitive_h: pct(b[1]),
+                    supply_h: pct(b[2]),
+                    security_h: pct(b[3]),
+                    macro_h: pct(b[4]),
+                    regulatory_h: pct(b[5]),
+                    predictive_h: pct(b[6]),
+                    pricing_h: pct(b[7]),
                 }
             })
             .collect()
@@ -745,6 +883,12 @@ pub async fn get_insight(
         })
         .collect();
 
+    let raw_type = insight.insight_type.clone().unwrap_or_default();
+    let conf = insight.confidence.unwrap_or(0.0);
+    let (tier, tier_css) = impact_tier(conf);
+    let ev_urls = insight.evidence_urls.clone().unwrap_or_default();
+    let diversity = source_diversity_label(&ev_urls);
+
     let tpl = InsightDetailPage {
         current_path: ctx.current_path,
         username: ctx.username,
@@ -752,12 +896,17 @@ pub async fn get_insight(
         theme: ctx.theme,
         id: insight.id.to_string(),
         title: insight.title.clone(),
-        category: insight.insight_type.clone().unwrap_or_default(),
-        confidence: confidence_to_pct(insight.confidence.unwrap_or(0.0)),
+        category: raw_type.clone(),
+        category_label: insight_category_label(&raw_type).to_string(),
+        category_css: insight_category_css(&raw_type).to_string(),
+        confidence: confidence_to_pct(conf),
+        impact_tier: tier.to_string(),
+        impact_css: tier_css.to_string(),
         summary: insight.summary.clone(),
         body: insight.summary.clone(),
         company_name: String::new(),
         company_id: String::new(),
+        region: insight.region.clone().unwrap_or_default(),
         created_at: insight
             .created_at
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
@@ -766,12 +915,15 @@ pub async fn get_insight(
             .updated_at
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default(),
+        age_label: relative_age(insight.created_at),
         bookmarked: store
             .get_bookmarked_insight_ids(&session.username, &[insight.id])
             .await
             .map(|ids| ids.contains(&insight.id))
             .unwrap_or(false),
         tags: insight.tags.clone().unwrap_or_default(),
+        evidence_count: evidence.len(),
+        source_diversity: diversity.to_string(),
         evidence,
         entities: vec![],
         annotations: store
