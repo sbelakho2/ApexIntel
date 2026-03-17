@@ -31,6 +31,12 @@ pub fn propagate_weighted_risk(
     propagate_weighted_risk_with_decay(adjacency, initial_risk, hops, DecayModel::Linear(decay))
 }
 
+/// Propagates risk through the graph with decay, tracking saturation accurately.
+/// 
+/// The propagation maintains accurate risk accumulation by:
+/// 1. Clamping individual propagated values before accumulation
+/// 2. Using C1-continuous soft saturation (piecewise exponential with knee at 0.8) instead of hard clamping to preserve relative differences
+/// 3. Clamping final results to [0,1] only at output time
 pub fn propagate_weighted_risk_with_decay(
     adjacency: &HashMap<String, Vec<(String, f64)>>,
     initial_risk: &HashMap<String, f64>,
@@ -58,14 +64,47 @@ pub fn propagate_weighted_risk_with_decay(
         for (node, delta) in new_frontier.iter_mut() {
             let entry = total_risk.entry(node.clone()).or_insert(0.0);
             let old = *entry;
-            *entry = (old + *delta).min(1.0);
+            *entry = soft_saturate(old + *delta);
+            // Frontier delta = actual risk increment (for next-hop propagation)
             *delta = *entry - old;
         }
 
         frontier = new_frontier;
     }
 
+    // Final clamp to ensure output is strictly in [0,1]
+    for value in total_risk.values_mut() {
+        *value = value.clamp(0.0, 1.0);
+    }
+
     total_risk
+}
+
+/// C1-continuous soft saturation that preserves relative risk differences.
+///
+/// Below the knee (0.8) the function is the identity, preserving exact values
+/// in the normal range.  Above the knee it transitions to an exponential
+/// approach toward 1.0, so nodes hit by many risk sources remain
+/// distinguishable instead of all hard-clamping to 1.0.
+///
+/// Properties:
+/// - f(0) = 0, f(KNEE) = KNEE, lim f(x->inf) = 1
+/// - f and f' are continuous everywhere (C1 at the knee)
+/// - Monotonically increasing
+fn soft_saturate(x: f64) -> f64 {
+    /// Risk level at which the curve starts bending toward 1.0.
+    const KNEE: f64 = 0.8;
+    if x <= 0.0 {
+        0.0
+    } else if x <= KNEE {
+        x
+    } else {
+        let headroom = 1.0 - KNEE;
+        // 1 - exp(0) = 0 at the knee, giving continuity: KNEE + 0 = KNEE.
+        // Derivative at the knee: headroom * (1/headroom) * exp(0) = 1, matching
+        // the identity slope from the left (C1).
+        KNEE + headroom * (1.0 - (-(x - KNEE) / headroom).exp())
+    }
 }
 
 pub fn validate_monotonic_non_increasing(
@@ -226,7 +265,11 @@ mod tests {
 
         let result = propagate_weighted_risk(&adjacency, &initial, 1, 1.0);
 
-        assert_eq!(result.get("C").copied(), Some(1.0));
+        // With soft saturation the raw sum 1.1 maps to ~0.95 instead of
+        // hard-clamping to 1.0, preserving relative risk ordering.
+        let c_risk = result.get("C").copied().unwrap_or(0.0);
+        assert!(c_risk > 0.9, "expected high risk from two overlapping sources, got {c_risk}");
+        assert!(c_risk <= 1.0, "risk must not exceed 1.0, got {c_risk}");
     }
 
     #[test]

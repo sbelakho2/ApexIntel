@@ -18,3 +18,7 @@ pub mod predictive;
 pub mod renderer;
 pub mod shortage_correlation;
 pub mod weekly_pipeline;
+pub mod entity_relevance;
+pub mod dynamic_poi_discovery;
+pub mod cross_entity_correlation;
+pub mod insight_feedback;

@@ -7,6 +7,16 @@ static RE_NON_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\w\s]").un
 static RE_MULTI_WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 /// Normalize a company name for cross-crate fuzzy matching and dedup.
+/// 
+/// This function:
+/// 1. Strips diacritics (accents, etc.)
+/// 2. Normalizes mixed-script confusables (Cyrillic → Latin, etc.)
+/// 3. Converts to lowercase
+/// 4. Replaces non-word characters with spaces
+/// 5. Collapses consecutive single-letter tokens (e.g., "A B C" → "ABC")
+/// 6. Removes common company suffixes (inc, ltd, gmbh, etc.)
+/// 
+/// The suffix removal loop is bounded to prevent infinite loops.
 pub fn normalize_company_name(name: &str) -> String {
     let stripped = strip_diacritics(name);
     let normalized_script = normalize_mixed_script_confusables(&stripped);
@@ -23,10 +33,27 @@ pub fn normalize_company_name(name: &str) -> String {
     ];
 
     let mut result = compact;
+    // Bounded loop: maximum iterations equals number of suffixes
+    // This prevents any theoretical infinite loop
+    let max_iterations = suffixes.len();
+    let mut iterations = 0;
+    
     loop {
+        if iterations >= max_iterations {
+            // Safety exit: should never reach here with valid input
+            tracing::debug!(
+                original = %name,
+                current = %result,
+                "company name normalization reached max iterations"
+            );
+            break;
+        }
+        
         let prev_len = result.len();
         for suffix in &suffixes {
             let bare_suffix = suffix.trim();
+            // Check if the result equals the bare suffix (e.g., just "inc")
+            // In this case, clear the result to avoid empty-match edge cases
             if result == bare_suffix {
                 result.clear();
                 break;
@@ -39,6 +66,7 @@ pub fn normalize_company_name(name: &str) -> String {
         if result.len() == prev_len {
             break;
         }
+        iterations += 1;
     }
 
     result

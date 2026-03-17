@@ -156,8 +156,9 @@ fn time_range(outcomes: &[EventRecord], signals: &[EventRecord]) -> Option<(i64,
     if all_ts.is_empty() {
         return None;
     }
-    let min = *all_ts.iter().min().unwrap();
-    let max = *all_ts.iter().max().unwrap();
+    // Safety: `all_ts` is guaranteed non-empty by the check above.
+    let min = *all_ts.iter().min().expect("checked non-empty above");
+    let max = *all_ts.iter().max().expect("checked non-empty above");
     if max <= min {
         return None;
     }

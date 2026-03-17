@@ -180,7 +180,14 @@ async fn main() -> Result<()> {
     let address = format!("{}:{}", state.config.server.host, state.config.server.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(address = %address, "API server listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("received shutdown signal, draining connections");
+        })
+        .await?;
+    state.store.pool.close().await;
+    tracing::info!("database pool closed, shutdown complete");
     Ok(())
 }
 
@@ -247,6 +254,9 @@ async fn build_state() -> Result<AppState> {
 
 fn load_api_keys() -> HashMap<String, ApiKey> {
     let mut registry = HashMap::new();
+    let mut skipped_count = 0;
+    let mut loaded_count = 0;
+    
     for index in 1..=50 {
         let env_key = format!("API_KEY_{}", index);
         let Ok(value) = std::env::var(&env_key) else {
@@ -254,12 +264,26 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
         };
         let parts: Vec<&str> = value.splitn(4, ',').collect();
         if parts.len() < 3 {
-            tracing::warn!(env_key = %env_key, "invalid api key format");
+            tracing::warn!(
+                env_key = %env_key, 
+                parts_count = parts.len(),
+                expected_format = "raw_key,name,role[,owner_user_id]",
+                "invalid api key format - skipping this key"
+            );
+            skipped_count += 1;
             continue;
         }
         let raw_key = parts[0].trim();
         let name = parts[1].trim();
-        let role = parts[2].trim().parse::<ApiRole>().unwrap_or(ApiRole::Viewer);
+        let role_str = parts[2].trim();
+        let role = role_str.parse::<ApiRole>().unwrap_or_else(|_| {
+            tracing::warn!(
+                env_key = %env_key, 
+                invalid_role = %role_str,
+                "unknown role, defaulting to 'viewer'"
+            );
+            ApiRole::Viewer
+        });
         let key_id = format!("key-{}", index);
         let owner_user_id = parts
             .get(3)
@@ -267,6 +291,15 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string())
             .unwrap_or_else(|| format!("usr-{}", key_id));
+        
+        tracing::debug!(
+            env_key = %env_key,
+            key_id = %key_id,
+            name = %name,
+            role = %role.as_str(),
+            "loaded api key"
+        );
+        
         registry.insert(
             key_id.clone(),
             ApiKey {
@@ -282,7 +315,20 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
                 allowed_origins: vec![],
             },
         );
+        loaded_count += 1;
     }
+    
+    tracing::info!(
+        loaded = loaded_count,
+        skipped = skipped_count,
+        total_configured = loaded_count + skipped_count,
+        "api key loading complete"
+    );
+    
+    if loaded_count == 0 {
+        tracing::warn!("no api keys were loaded - server will reject all authenticated requests");
+    }
+    
     registry
 }
 
@@ -476,10 +522,37 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
         }
     };
 
+    let redis_check = match &state.redis {
+        Some(manager) => {
+            let mut conn = manager.clone();
+            match redis::cmd("PING")
+                .query_async::<String>(&mut conn)
+                .await
+            {
+                Ok(_) => ComponentHealth {
+                    name: "redis".to_string(),
+                    status: HealthStatus::Healthy,
+                    message: Some("PING OK".to_string()),
+                },
+                Err(e) => ComponentHealth {
+                    name: "redis".to_string(),
+                    status: HealthStatus::Degraded,
+                    message: Some(format!("PING failed: {}", e)),
+                },
+            }
+        }
+        None => ComponentHealth {
+            name: "redis".to_string(),
+            status: HealthStatus::Degraded,
+            message: Some("Not configured".to_string()),
+        },
+    };
+
     let checks = vec![
         database,
         search,
         api_keys,
+        redis_check,
         ComponentHealth {
             name: "api".to_string(),
             status: HealthStatus::Healthy,
@@ -731,6 +804,25 @@ struct WarningsWsAuthQuery {
     access_token: Option<String>,
 }
 
+/// Static response strings for WebSocket auth failures.
+/// These avoid runtime allocation for error messages.
+mod ws_auth_responses {
+    pub const MISSING_AUTH: &str = "Missing authentication";
+    pub const INVALID_TOKEN: &str = "Invalid or expired token";
+    pub const INTERNAL_ERROR: &str = "Internal server error";
+}
+
+fn ws_unauthorized_response(body: &'static str) -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| {
+            // This branch should never execute since we're using a valid status code
+            // and a static body, but we provide a fallback for completeness
+            axum::response::Response::new(axum::body::Body::from(ws_auth_responses::INTERNAL_ERROR))
+        })
+}
+
 async fn warnings_ws(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<AppState>,
@@ -743,19 +835,15 @@ async fn warnings_ws(
         WebSocketAuthOptions::default(),
     ) {
         Ok(token) => token,
-        Err(_) => {
-            return axum::response::Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .body(axum::body::Body::from("Missing authentication"))
-                .unwrap_or_else(|err| panic!("failed to build unauthorized websocket response: {err}"));
+        Err(error) => {
+            tracing::warn!(error = ?error, "WebSocket auth: missing or invalid token");
+            return ws_unauthorized_response(&ws_auth_responses::MISSING_AUTH);
         }
     };
 
-    if validate_websocket_token(&token, state.api_keys.as_ref(), Utc::now()).is_err() {
-        return axum::response::Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .body(axum::body::Body::from("Invalid or expired token"))
-            .unwrap_or_else(|err| panic!("failed to build websocket auth failure response: {err}"));
+    if let Err(error) = validate_websocket_token(&token, state.api_keys.as_ref(), Utc::now()) {
+        tracing::warn!(error = ?error, "WebSocket auth: token validation failed");
+        return ws_unauthorized_response(&ws_auth_responses::INVALID_TOKEN);
     }
 
     ws.on_upgrade(move |socket| warnings_ws_stream(socket, state))

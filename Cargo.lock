@@ -102,6 +102,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "lazy_static",
+ "parking_lot",
  "prometheus",
  "redis",
  "regex",
@@ -370,6 +371,7 @@ dependencies = [
 name = "apex-worker"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "apex-core",
  "apex-crawl",

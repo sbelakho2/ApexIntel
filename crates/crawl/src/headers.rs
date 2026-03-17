@@ -148,8 +148,8 @@ pub fn random_headers(region: Option<&str>) -> HeaderMap {
 pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut R) -> HeaderMap {
     let mut headers = HeaderMap::new();
 
-    let ua = USER_AGENTS.choose(rng).unwrap();
-    headers.insert("User-Agent", HeaderValue::from_str(ua).unwrap());
+    let ua = USER_AGENTS.choose(rng).expect("USER_AGENTS is non-empty");
+    headers.insert("User-Agent", HeaderValue::from_str(ua).expect("static UA is valid ASCII"));
 
     let is_mobile = ua.contains("Mobile")
         || ua.contains("iPhone")
@@ -170,8 +170,8 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
         .find(|(k, _)| *k == lang_key)
         .map(|(_, v)| *v)
         .unwrap_or(ACCEPT_LANGUAGES[0].1);
-    let lang = langs.choose(rng).unwrap();
-    headers.insert("Accept-Language", HeaderValue::from_str(lang).unwrap());
+    let lang = langs.choose(rng).expect("langs slice is non-empty");
+    headers.insert("Accept-Language", HeaderValue::from_str(lang).expect("static lang is valid ASCII"));
 
     headers.insert(
         "Accept-Encoding",
@@ -224,13 +224,13 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
             // Standard Chrome brand hint — rotate the "Not A Brand" string spelling
             let not_brand = ["Not-A.Brand", "Not_A Brand", "Not(A:Brand", "Not;A=Brand"]
                 .choose(rng)
-                .unwrap();
+                .expect("not_brand array is non-empty");
             format!(
                 "\"Google Chrome\";v=\"{version}\", \"Chromium\";v=\"{version}\", \"{not_brand}\";v=\"99\""
             )
         };
 
-        headers.insert("Sec-CH-UA", HeaderValue::from_str(&ch_ua).unwrap());
+        headers.insert("Sec-CH-UA", HeaderValue::from_str(&ch_ua).expect("formatted ch_ua is valid ASCII"));
         headers.insert(
             "Sec-CH-UA-Mobile",
             HeaderValue::from_static(if is_mobile { "?1" } else { "?0" }),
@@ -250,7 +250,7 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
         };
         headers.insert(
             "Sec-CH-UA-Platform",
-            HeaderValue::from_str(platform).unwrap(),
+            HeaderValue::from_str(platform).expect("static platform string is valid ASCII"),
         );
     }
 
@@ -266,7 +266,7 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
     };
     let referer = referer_pool.choose(rng).unwrap_or(&&"");
     if !referer.is_empty() {
-        headers.insert("Referer", HeaderValue::from_str(referer).unwrap());
+        headers.insert("Referer", HeaderValue::from_str(referer).expect("static referer is valid ASCII"));
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("cross-site"));
     } else {
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("none"));

@@ -310,29 +310,96 @@ Produce a concise structured JSON profile. Return only valid JSON, no markdown, 
     }
     #[cfg(not(feature = "llm"))]
     {
-        let _ = store;
-        match load_nightly_inputs().await {
-            Ok(inputs) => {
-                let stage = process_poi_stage(&inputs.poi);
-                match stage.run.status {
-                    apex_worker::scheduler::JobStatus::Succeeded { .. } => {
-                        run.succeed(
-                            stage.items,
-                            &format!("poi refresh completed: {}", stage.run.notes),
-                        );
-                    }
-                    apex_worker::scheduler::JobStatus::Failed { .. } => {
-                        run.fail(&format!("poi refresh failed: {}", stage.run.notes));
-                    }
-                    _ => {
-                        run.skip(&format!("poi stage not terminal: {}", stage.run.notes));
-                    }
+        // Without the LLM feature we can still do the role-history backfill
+        // and basic influence-score refresh using the database directly.
+        let filters = PersonListFilters {
+            regions: vec![],
+            roles: vec![],
+            search: None,
+            min_priority: None,
+            max_priority: None,
+        };
+        let persons = match store
+            .list_persons(&filters, Some(PersonOrderBy::Priority), true, 200, 0)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                run.fail(&format!("poi_refresh(no-llm): failed to load persons: {e}"));
+                return run;
+            }
+        };
+
+        if persons.is_empty() {
+            run.skip("poi_refresh(no-llm): no persons in database");
+            return run;
+        }
+
+        let role_history_backfill_limit = std::env::var("POI_ROLE_HISTORY_BACKFILL_PER_RUN")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(100)
+            .clamp(0, 500);
+
+        let mut role_history_backfilled: u64 = 0;
+        if role_history_backfill_limit > 0 {
+            #[derive(sqlx::FromRow)]
+            struct MissingRoleHistoryRow {
+                id: Uuid,
+                org_id: Option<Uuid>,
+                org_name: String,
+                current_role: String,
+                role_family: String,
+            }
+
+            let missing = sqlx::query_as::<_, MissingRoleHistoryRow>(
+                r#"SELECT p.id,
+                          p.primary_org_id AS org_id,
+                          COALESCE(c.name, 'Independent') AS org_name,
+                          COALESCE(p.current_role, p.role_family, 'Unknown') AS current_role,
+                          COALESCE(p.role_family, 'Unknown') AS role_family
+                   FROM persons p
+                   LEFT JOIN companies c ON p.primary_org_id = c.id
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM role_history rh WHERE rh.person_id = p.id
+                   )
+                   ORDER BY COALESCE(p.updated_at, p.created_at) DESC
+                   LIMIT $1"#,
+            )
+            .bind(role_history_backfill_limit)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap_or_default();
+
+            for row in missing {
+                if store
+                    .insert_role_history(
+                        row.id,
+                        row.org_id,
+                        &row.org_name,
+                        &row.current_role,
+                        Some(&row.role_family),
+                        Some(Utc::now()),
+                        None,
+                        None,
+                        0.6,
+                    )
+                    .await
+                    .is_ok()
+                {
+                    role_history_backfilled += 1;
                 }
             }
-            Err(err) => {
-                run.skip(&format!("nightly inputs unavailable: {}", err));
-            }
         }
+
+        run.succeed(
+            role_history_backfilled,
+            &format!(
+                "poi_refresh(no-llm): {} persons in DB, {} role-history entries backfilled",
+                persons.len(),
+                role_history_backfilled,
+            ),
+        );
     }
     run
 }

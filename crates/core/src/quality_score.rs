@@ -309,18 +309,36 @@ pub fn filter_quality(
 }
 
 /// SQL to update quality_score column on observations.
+/// 
+/// This SQL mirrors the Rust `compute_quality` function exactly:
+/// - Source reliability: 40% weight (Official=1.0, Established=0.85, TradePress=0.70, Social=0.45, Unknown=0.25)
+/// - Extraction confidence: 35% weight (clamped to [0,1], defaults to 0.5)
+/// - Freshness: 25% weight (exponential decay with 30-day half-life)
+/// 
+/// Note: This SQL uses the tier-based prior score, not the adaptive effective_reliability
+/// from SourceReliabilityStats. For adaptive scoring, use the Rust `compute_quality` function.
 pub fn update_quality_sql() -> &'static str {
     r#"
     UPDATE observations SET quality_score = (
+        -- Source reliability component (40% weight)
+        -- Matches SourceReliability::score() in Rust
         CASE
-            WHEN provenance->>'source_reliability' = 'Official' THEN 1.0
-            WHEN provenance->>'source_reliability' = 'Established' THEN 0.85
-            WHEN provenance->>'source_reliability' = 'TradePress' THEN 0.70
-            WHEN provenance->>'source_reliability' = 'Social' THEN 0.45
-            ELSE 0.25
+            WHEN provenance->>'source_reliability' ILIKE 'official' THEN 1.0
+            WHEN provenance->>'source_reliability' ILIKE 'established' THEN 0.85
+            WHEN provenance->>'source_reliability' ILIKE 'tradepress' OR provenance->>'source_reliability' ILIKE 'trade_press' THEN 0.70
+            WHEN provenance->>'source_reliability' ILIKE 'social' THEN 0.45
+            ELSE 0.25  -- Unknown tier
         END * 0.40
-        + COALESCE((provenance->>'extraction_confidence')::float, 0.5) * 0.35
-        + POWER(0.5, EXTRACT(EPOCH FROM (NOW() - observed_at)) / 86400.0 / 30.0) * 0.25
+        -- Extraction confidence component (35% weight)
+        -- Clamped to [0,1], defaults to 0.5 if missing
+        + LEAST(1.0, GREATEST(0.0, COALESCE((provenance->>'extraction_confidence')::float, 0.5))) * 0.35
+        -- Freshness component (25% weight)
+        -- Exponential decay with 30-day half-life: 0.5^(age_days / 30)
+        -- For future observations (age < 0), freshness = 1.0
+        + CASE
+            WHEN EXTRACT(EPOCH FROM (NOW() - observed_at)) < 0 THEN 1.0
+            ELSE POWER(0.5, EXTRACT(EPOCH FROM (NOW() - observed_at)) / 86400.0 / 30.0)
+        END * 0.25
     )
     WHERE quality_score IS NULL OR quality_score = 0
     "#

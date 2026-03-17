@@ -83,7 +83,11 @@ pub fn find_best_match<'a>(
 
         let sim = score_entity_match(&norm, &norm_candidate).similarity;
         if sim >= threshold {
-            if best.is_none() || sim > best.unwrap().1 {
+            let dominated = match best {
+                Some((_, prev_sim)) => sim > prev_sim,
+                None => true,
+            };
+            if dominated {
                 best = Some((candidate.as_str(), sim));
             }
         }
@@ -1054,5 +1058,32 @@ mod tests {
         assert_eq!(metrics.merged_pairs, 1);
         assert_eq!(metrics.potential_false_positive_pairs, 0);
         assert!((metrics.potential_false_positive_rate - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn find_best_match_empty_candidates_returns_none() {
+        let result = find_best_match("ACME Corp", &[], 0.8);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_best_match_all_below_threshold_returns_none() {
+        let candidates = vec!["Totally Different Name".to_string()];
+        let result = find_best_match("ACME Corp", &candidates, 0.99);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn cluster_entities_empty_input() {
+        let names: Vec<String> = vec![];
+        let clusters = cluster_entities(&names, 0.9);
+        assert!(clusters.is_empty());
+    }
+
+    #[test]
+    fn cluster_entities_single_name() {
+        let names = vec!["Sole Corp".to_string()];
+        let clusters = cluster_entities(&names, 0.9);
+        assert_eq!(clusters.len(), 1);
     }
 }

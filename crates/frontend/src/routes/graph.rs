@@ -206,9 +206,10 @@ fn force_layout(graph: &api::GraphOverview, labels: &HashMap<String, String>) ->
                 let dy = sy - ty;
                 let distance_sq = (dx * dx + dy * dy).max(25.0);
                 let repulsion = 2400.0 / distance_sq;
-                let entry = delta.get_mut(&source.id).unwrap();
-                entry.0 += dx * repulsion;
-                entry.1 += dy * repulsion;
+                if let Some(entry) = delta.get_mut(&source.id) {
+                    entry.0 += dx * repulsion;
+                    entry.1 += dy * repulsion;
+                }
             }
         }
 
@@ -218,12 +219,14 @@ fn force_layout(graph: &api::GraphOverview, labels: &HashMap<String, String>) ->
             let dx = tx - sx;
             let dy = ty - sy;
             let attraction = 0.0012 * edge.weight.max(0.3);
-            let source_delta = delta.get_mut(&edge.source).unwrap();
-            source_delta.0 += dx * attraction;
-            source_delta.1 += dy * attraction;
-            let target_delta = delta.get_mut(&edge.target).unwrap();
-            target_delta.0 -= dx * attraction;
-            target_delta.1 -= dy * attraction;
+            if let Some(source_delta) = delta.get_mut(&edge.source) {
+                source_delta.0 += dx * attraction;
+                source_delta.1 += dy * attraction;
+            }
+            if let Some(target_delta) = delta.get_mut(&edge.target) {
+                target_delta.0 -= dx * attraction;
+                target_delta.1 -= dy * attraction;
+            }
         }
 
         for node in &graph.nodes {

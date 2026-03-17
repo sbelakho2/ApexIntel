@@ -42,7 +42,45 @@ pub struct NamedPoint {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const EARTH_RADIUS_KM: f64 = 6371.0;
-const ROAD_FACTOR: f64 = 1.35; // empirical straight → road multiplier
+
+/// Default road factor for converting straight-line distance to estimated road distance.
+/// This is an empirical multiplier based on typical road network inefficiency.
+pub const DEFAULT_ROAD_FACTOR: f64 = 1.35;
+
+/// Configuration for geospatial calculations.
+#[derive(Debug, Clone, Copy)]
+pub struct GeospatialConfig {
+    /// Multiplier for converting straight-line distance to estimated road distance.
+    /// Default is 1.35 (roads are ~35% longer than straight-line distance).
+    pub road_factor: f64,
+}
+
+impl Default for GeospatialConfig {
+    fn default() -> Self {
+        Self {
+            road_factor: DEFAULT_ROAD_FACTOR,
+        }
+    }
+}
+
+impl GeospatialConfig {
+    /// Create a new configuration with the specified road factor.
+    pub fn new(road_factor: f64) -> Self {
+        Self {
+            road_factor: road_factor.clamp(1.0, 3.0), // Reasonable bounds
+        }
+    }
+
+    /// Load configuration from environment variables.
+    pub fn from_env() -> Self {
+        let road_factor = std::env::var("APEX_ROAD_FACTOR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_ROAD_FACTOR)
+            .clamp(1.0, 3.0);
+        Self { road_factor }
+    }
+}
 
 /// Haversine great-circle distance in kilometers.
 pub fn haversine_km(a: GeoPoint, b: GeoPoint) -> f64 {
@@ -55,9 +93,14 @@ pub fn haversine_km(a: GeoPoint, b: GeoPoint) -> f64 {
     2.0 * EARTH_RADIUS_KM * h.sqrt().asin()
 }
 
-/// Estimated driving distance (Haversine × road factor).
+/// Estimated driving distance using default road factor.
 pub fn estimated_road_km(a: GeoPoint, b: GeoPoint) -> f64 {
-    haversine_km(a, b) * ROAD_FACTOR
+    estimated_road_km_with_config(a, b, &GeospatialConfig::default())
+}
+
+/// Estimated driving distance with custom road factor.
+pub fn estimated_road_km_with_config(a: GeoPoint, b: GeoPoint, config: &GeospatialConfig) -> f64 {
+    haversine_km(a, b) * config.road_factor
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
@@ -177,17 +220,24 @@ fn nearest_facility(point: GeoPoint, facilities: &[(&str, f64, f64)]) -> NamedPo
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Classify the logistics corridor between two points.
+/// 
+/// Uses both midpoint and endpoint analysis to correctly handle routes
+/// crossing the antimeridian or near corridor boundaries.
 pub fn classify_corridor(a: GeoPoint, b: GeoPoint) -> &'static str {
     let mid_lat = (a.lat + b.lat) / 2.0;
     let mid_lon = midpoint_longitude(a.lon, b.lon);
 
+    // Check if route crosses the Pacific (antimeridian crossing)
+    let crosses_pacific = (a.lon > 100.0 && b.lon < -100.0) || (a.lon < -100.0 && b.lon > 100.0);
+    
+    // Pacific corridor - explicitly handle antimeridian crossings
+    if crosses_pacific || mid_lon > 100.0 || mid_lon < -100.0 {
+        return "Pacific";
+    }
+
     // Mediterranean corridor
     if mid_lat > 30.0 && mid_lat < 46.0 && mid_lon > -10.0 && mid_lon < 40.0 {
         return "Mediterranean";
-    }
-    // Pacific corridor
-    if mid_lon > 100.0 || mid_lon < -100.0 {
-        return "Pacific";
     }
     // Atlantic corridor
     if mid_lon < -10.0 && mid_lat > 25.0 && mid_lat < 60.0 {
@@ -208,10 +258,15 @@ pub fn classify_corridor(a: GeoPoint, b: GeoPoint) -> &'static str {
 // Full proximity analysis
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compute a full proximity analysis between two points.
+/// Compute a full proximity analysis between two points using default config.
 pub fn compute_proximity(a: GeoPoint, b: GeoPoint) -> ProximityResult {
+    compute_proximity_with_config(a, b, &GeospatialConfig::default())
+}
+
+/// Compute a full proximity analysis between two points with custom config.
+pub fn compute_proximity_with_config(a: GeoPoint, b: GeoPoint, config: &GeospatialConfig) -> ProximityResult {
     let straight = haversine_km(a, b);
-    let road = straight * ROAD_FACTOR;
+    let road = straight * config.road_factor;
     let mid = GeoPoint {
         lat: (a.lat + b.lat) / 2.0,
         lon: (a.lon + b.lon) / 2.0,

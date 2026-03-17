@@ -53,7 +53,10 @@ fn csv_stream_response(
         .header("x-export-cursor", cursor.to_string())
         .header("x-export-chunk-size", chunk_size.to_string())
         .body(body)
-        .unwrap_or_else(|err| panic!("failed to build csv stream response: {err}"))
+        .unwrap_or_else(|err| {
+            tracing::error!(%err, "failed to build csv stream response");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response()
+        })
 }
 
 type CsvByteStream = std::pin::Pin<

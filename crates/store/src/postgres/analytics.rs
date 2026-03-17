@@ -1017,12 +1017,28 @@ impl PgStore {
         .await
         .unwrap_or(0);
 
-        let top_regions: Vec<RegionCount> = sqlx::query_as(
-            "SELECT COALESCE(region, 'Unknown') as region, COUNT(*) as count FROM companies GROUP BY region ORDER BY count DESC LIMIT 10"
-        )
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        let top_regions: Vec<RegionCount> = {
+            let mut rows: Vec<RegionCount> = sqlx::query_as(
+                "SELECT COALESCE(region, 'Unknown') as region, COUNT(*) as count FROM companies GROUP BY region ORDER BY count DESC"
+            )
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+            // Collapse regions beyond top 9 into an "Other" bucket so the
+            // donut chart accounts for every company.
+            if rows.len() > 9 {
+                let other_count: i64 = rows[9..].iter().map(|r| r.count).sum();
+                rows.truncate(9);
+                if other_count > 0 {
+                    rows.push(RegionCount {
+                        region: "Other".to_string(),
+                        count: other_count,
+                    });
+                }
+            }
+            rows
+        };
 
         let threat_distribution: Vec<SeverityCount> = sqlx::query_as(
             "SELECT severity, COUNT(*) as count FROM warnings WHERE deleted_at IS NULL GROUP BY severity ORDER BY count DESC"

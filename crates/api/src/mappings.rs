@@ -193,7 +193,7 @@ mod tests {
 
         let mapped = person_row_to_item(row);
         assert_eq!(mapped.priority, "A");
-        assert_eq!(mapped.influence_tier, "tier_1");
+        assert_eq!(mapped.influence_tier, "critical");
         assert_eq!(mapped.influence_score, 81);
     }
 }

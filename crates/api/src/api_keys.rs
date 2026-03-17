@@ -60,7 +60,10 @@ impl ApiKeyManager {
     pub fn snapshot(&self) -> Arc<HashMap<String, ApiKey>> {
         self.keys
             .read()
-            .unwrap_or_else(|err| panic!("api key snapshot lock poisoned: {err}"))
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("api key snapshot lock poisoned, recovering");
+                poisoned.into_inner()
+            })
             .clone()
     }
 
@@ -74,7 +77,10 @@ impl ApiKeyManager {
             let current_modified = *self
                 .modified_at
                 .read()
-                .unwrap_or_else(|err| panic!("api key modified lock poisoned: {err}"));
+                .unwrap_or_else(|poisoned| {
+                    tracing::error!("api key modified lock poisoned, recovering");
+                    poisoned.into_inner()
+                });
             if next_modified == current_modified {
                 return Ok(false);
             }
@@ -84,11 +90,17 @@ impl ApiKeyManager {
         *self
             .keys
             .write()
-            .unwrap_or_else(|err| panic!("api key update lock poisoned: {err}")) = Arc::new(keys);
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("api key update lock poisoned, recovering");
+                poisoned.into_inner()
+            }) = Arc::new(keys);
         *self
             .modified_at
             .write()
-            .unwrap_or_else(|err| panic!("api key modified update lock poisoned: {err}")) = modified_at;
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("api key modified update lock poisoned, recovering");
+                poisoned.into_inner()
+            }) = modified_at;
         Ok(true)
     }
 }

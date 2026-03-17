@@ -59,7 +59,11 @@ impl PgStore {
                                ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
                            ) AS rn
                        FROM warnings w
-                       WHERE ($1 OR w.deleted_at IS NULL)
+                       WHERE ("#,
+        );
+        qb.push_bind(filters.include_deleted);
+        qb.push(
+            r#" OR w.deleted_at IS NULL)
                    ) ranked
                    WHERE ranked.rn = 1
                )
@@ -69,7 +73,6 @@ impl PgStore {
                       review_outcome, reviewed_by, reviewed_at, deleted_at, created_at, updated_at
                FROM dedup"#,
         );
-        qb.push_bind(filters.include_deleted);
 
         let mut has_where = false;
         if !filters.regions.is_empty() {
@@ -163,13 +166,16 @@ impl PgStore {
                                ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
                            ) AS rn
                        FROM warnings w
-                       WHERE ($1 OR w.deleted_at IS NULL)
+                       WHERE ("#,
+        );
+        qb.push_bind(filters.include_deleted);
+        qb.push(
+            r#" OR w.deleted_at IS NULL)
                    ) ranked
                    WHERE ranked.rn = 1
                )
                SELECT COUNT(*) FROM dedup"#,
         );
-        qb.push_bind(filters.include_deleted);
         let mut has_where = false;
 
         if !filters.regions.is_empty() {

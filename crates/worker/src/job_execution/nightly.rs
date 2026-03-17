@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use aho_corasick::AhoCorasick;
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 use apex_crawl::sources::select_sources_for_crawl;
 
@@ -9,6 +10,67 @@ use crate::*;
 
 const NIGHTLY_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const NIGHTLY_STAGE_ATTEMPTS: usize = 3;
+
+/// Precomputed entity matching index combining Aho-Corasick automaton with
+/// a UUID lookup table.  The automaton matches all known entity names in a
+/// single O(n + matches) pass over the text, replacing the previous O(n*m)
+/// approach.
+struct EntityMatcher {
+    automaton: AhoCorasick,
+    /// Ordered parallel to the patterns fed to the automaton:
+    /// `ids[pattern_index]` gives the UUID for that entity.
+    ids: Vec<Uuid>,
+    /// Lengths of the original patterns so we can pick the longest match.
+    lengths: Vec<usize>,
+}
+
+/// Build a case-insensitive lookup table mapping known entity name tokens to
+/// their company UUID.  When a crawled page body contains one of these names
+/// the resulting observation is linked to that entity so that downstream jobs
+/// (recipe_fire, pattern_mining, etc.) can attribute the data.
+///
+/// Also constructs an Aho-Corasick automaton for efficient single-pass
+/// matching.
+async fn build_entity_name_lookup(store: &Arc<PgStore>) -> (HashMap<String, Uuid>, EntityMatcher) {
+    let index = store.list_entity_name_index().await.unwrap_or_default();
+    let mut lookup: HashMap<String, Uuid> = HashMap::with_capacity(index.len());
+    for (id, name) in &index {
+        // Skip very short names (≤2 chars) to avoid false-positive matches
+        // against common words.
+        if name.len() > 2 {
+            lookup.entry(name.clone()).or_insert(*id);
+        }
+    }
+
+    // Build Aho-Corasick automaton from the lookup keys.
+    let patterns: Vec<&str> = lookup.keys().map(|s| s.as_str()).collect();
+    let ids: Vec<Uuid> = lookup.keys().map(|k| lookup[k]).collect();
+    let lengths: Vec<usize> = patterns.iter().map(|p| p.len()).collect();
+    let automaton = AhoCorasick::builder()
+        .ascii_case_insensitive(true)
+        .build(&patterns)
+        .expect("entity name patterns should be valid");
+
+    let matcher = EntityMatcher { automaton, ids, lengths };
+    (lookup, matcher)
+}
+
+/// Scan a text blob for the best matching entity name.  Uses the precomputed
+/// Aho-Corasick automaton for O(n + matches) matching.  Returns the entity
+/// UUID of the longest match so that more specific names win over shorter
+/// prefixes.
+fn match_entity_in_text(text: &str, matcher: &EntityMatcher) -> Option<Uuid> {
+    let mut best: Option<(usize, Uuid)> = None;
+    for mat in matcher.automaton.find_iter(text) {
+        let idx = mat.pattern().as_usize();
+        let len = matcher.lengths[idx];
+        match best {
+            Some((best_len, _)) if len <= best_len => {}
+            _ => best = Some((len, matcher.ids[idx])),
+        }
+    }
+    best.map(|(_, id)| id)
+}
 
 pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(JobKind::CrawlCycle);
@@ -54,7 +116,17 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         }
     };
 
+    // Pre-load entity name index so we can link observations to known
+    // companies/competitors.  Without this mapping recipe_fire sees zero
+    // entity-linked observations and skips, producing no warnings or insights.
+    let (entity_lookup, entity_matcher) = build_entity_name_lookup(store).await;
+    tracing::info!(
+        entity_names = entity_lookup.len(),
+        "crawl_cycle: entity name index loaded for observation linking"
+    );
+
     let mut ingested: u64 = 0;
+    let mut entity_linked: u64 = 0;
     let mut errors: u64 = 0;
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
@@ -97,19 +169,39 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                     "body_len": body.len(),
                 });
 
-                let obs = Observation::new(
-                    ObservationType::WebChange,
-                    Utc::now(),
-                    obs_value,
-                    serde_json::json!({
-                        "source": src.slug,
-                        "tier": src.tier,
-                        "category": format!("{:?}", src.category),
-                    }),
-                );
+                let obs = {
+                    let mut o = Observation::new(
+                        ObservationType::WebChange,
+                        Utc::now(),
+                        obs_value.clone(),
+                        serde_json::json!({
+                            "source": src.slug,
+                            "tier": src.tier,
+                            "category": format!("{:?}", src.category),
+                        }),
+                    );
+
+                    // Attempt entity linking: scan the crawled page text for a
+                    // known company/competitor name and attach its UUID so
+                    // downstream jobs (recipe_fire) can attribute the observation.
+                    let linkable_text = format!(
+                        "{} {} {}",
+                        obs_value.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        obs_value.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                        obs_value.get("body_excerpt").and_then(|v| v.as_str()).unwrap_or(""),
+                    );
+                    if let Some(eid) = match_entity_in_text(&linkable_text, &entity_matcher) {
+                        o.entity_id = Some(eid);
+                        o.entity_type = Some("company".to_string());
+                    }
+                    o
+                };
                 match store.insert_observation(&obs).await {
                     Ok(_) => {
                         ingested += 1;
+                        if obs.entity_id.is_some() {
+                            entity_linked += 1;
+                        }
                         successful_sources.insert(src.slug.clone());
                     }
                     Err(e) => {
@@ -194,10 +286,11 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: {}/{} sources attempted; {} observations ingested, {} errors; success_ratio={:.2}",
+            "crawl_cycle: {}/{} sources attempted; {} observations ingested ({} entity-linked), {} errors; success_ratio={:.2}",
             fetch_sources.len(),
             sources.iter().filter(|s| s.enabled).count(),
             ingested,
+            entity_linked,
             errors,
             success_ratio,
         ),

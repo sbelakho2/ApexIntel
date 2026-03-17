@@ -357,8 +357,13 @@ pub async fn dashboard(
         .map(|mut slice| {
             if region_total > 0.0 {
                 let fraction = slice.count as f64 / region_total;
-                slice.dash_array = format!("{:.2} {:.2}", fraction * region_circumference, region_circumference);
-                slice.dash_offset = format!("{:.2}", region_circumference * 0.25 - cumulative_region * region_circumference);
+                let dash = fraction * region_circumference;
+                let gap = region_circumference - dash;
+                slice.dash_array = format!("{:.2} {:.2}", dash, gap);
+                // Negative cumulative offset positions each segment right
+                // after the previous one; the SVG already has -rotate-90 to
+                // start at 12-o'clock, so no extra 0.25-turn shift is needed.
+                slice.dash_offset = format!("{:.2}", -(cumulative_region * region_circumference));
                 cumulative_region += fraction;
             }
             slice

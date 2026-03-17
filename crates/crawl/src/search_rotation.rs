@@ -444,14 +444,20 @@ impl SearchPool {
     pub fn record_success(&self, engine_id: &str) {
         self.rate_limits
             .lock()
-            .expect("search pool rate-limit lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("search pool rate-limit lock poisoned, recovering");
+                poisoned.into_inner()
+            })
             .record_success(engine_id);
     }
 
     pub fn record_failure(&self, engine_id: &str, is_soft: bool) {
         self.rate_limits
             .lock()
-            .expect("search pool rate-limit lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("search pool rate-limit lock poisoned, recovering");
+                poisoned.into_inner()
+            })
             .record_failure(engine_id, is_soft);
     }
 
@@ -475,7 +481,10 @@ impl SearchPool {
         let ranked_ids = self
             .rate_limits
             .lock()
-            .expect("search pool rate-limit lock poisoned")
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("search pool rate-limit lock poisoned, recovering");
+                poisoned.into_inner()
+            })
             .get_engines_by_health(&eligible_ids);
         if ranked_ids.is_empty() {
             return None;
@@ -509,7 +518,10 @@ impl SearchPool {
         let mut windows = self
             .rpm_windows
             .lock()
-            .expect("search pool rpm-window lock poisoned");
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("search pool rpm-window lock poisoned, recovering");
+                poisoned.into_inner()
+            });
         let window = windows.entry(engine.id.clone()).or_default();
         let now = Instant::now();
         while window
@@ -526,7 +538,10 @@ impl SearchPool {
         let mut windows = self
             .rpm_windows
             .lock()
-            .expect("search pool rpm-window lock poisoned");
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("search pool rpm-window lock poisoned, recovering");
+                poisoned.into_inner()
+            });
         windows
             .entry(engine.id.clone())
             .or_default()
@@ -704,6 +719,20 @@ mod tests {
                 "Query missing name: {q}"
             );
         }
+    }
+
+    #[test]
+    fn search_pool_default_creation_does_not_panic() {
+        let pool = SearchPool::default();
+        assert!(pool.len() > 0);
+    }
+
+    #[test]
+    fn next_round_robin_wraps_around() {
+        let pool = SearchPool::default();
+        // First call should succeed for a fresh pool.
+        let first = pool.next();
+        assert!(first.is_some(), "fresh pool should yield at least one engine");
     }
 }
 

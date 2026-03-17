@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use subtle::ConstantTimeEq;
 
 const AUTH_BACKOFF_STEPS_SECS: [i64; 4] = [1, 2, 4, 8];
@@ -43,20 +45,14 @@ impl AuthAttemptTracker {
     }
 
     pub fn evaluate(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        let mut inner = self.inner.lock();
         let state = inner.entry(attempt_key.to_string()).or_default();
         prune_attempt_state(state, now);
         throttle_status_from_state(state, now)
     }
 
     pub fn record_failure(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        let mut inner = self.inner.lock();
         let state = inner.entry(attempt_key.to_string()).or_default();
         prune_attempt_state(state, now);
         state.failures_10m.push(now);
@@ -85,18 +81,12 @@ impl AuthAttemptTracker {
     }
 
     pub fn record_success(&self, attempt_key: &str) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        let mut inner = self.inner.lock();
         inner.remove(attempt_key);
     }
 
     pub fn clear_lock(&self, attempt_key: &str) -> bool {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|err| panic!("auth attempt tracker lock poisoned: {err}"));
+        let mut inner = self.inner.lock();
         if let Some(state) = inner.get_mut(attempt_key) {
             state.failures_10m.clear();
             state.failures_1h.clear();

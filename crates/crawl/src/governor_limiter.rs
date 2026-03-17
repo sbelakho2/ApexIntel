@@ -23,9 +23,10 @@ impl CrawlGovernor {
     pub fn with_limits(domain_rps: u32, global_rps: u32) -> Self {
         let domain_rps = domain_rps.max(1);
         let global_rps = global_rps.max(1);
-        let domain_quota = Quota::per_second(NonZeroU32::new(domain_rps).unwrap())
-            .allow_burst(NonZeroU32::new(1).unwrap());
-        let global_quota = Quota::per_second(NonZeroU32::new(global_rps).unwrap());
+        // Safety: max(1) guarantees values are ≥1, so NonZeroU32::new always returns Some.
+        let domain_quota = Quota::per_second(NonZeroU32::new(domain_rps).expect("guaranteed ≥1 by max(1)"))
+            .allow_burst(NonZeroU32::new(1).expect("literal 1"));
+        let global_quota = Quota::per_second(NonZeroU32::new(global_rps).expect("guaranteed ≥1 by max(1)"));
 
         Self {
             domain_limiter: Arc::new(RateLimiter::keyed(domain_quota)),

@@ -123,7 +123,10 @@ pub fn role_drift_score(history: &[(i64, f64)]) -> f64 {
     let mut sorted: Vec<(i64, f64)> = history.to_vec();
     sorted.sort_by_key(|(ts, _)| *ts);
 
-    let recent = sorted.last().unwrap().1;
+    let recent = match sorted.last() {
+        Some((_, val)) => *val,
+        None => return 0.0,
+    };
     let prev = sorted[sorted.len() - 2].1;
 
     let delta = (recent - prev).abs() / 100.0;
@@ -466,5 +469,23 @@ mod tests {
             "Drift should be 0.25, got {}",
             drift
         );
+    }
+
+    #[test]
+    fn role_drift_score_empty_history() {
+        assert!((role_drift_score(&[]) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn role_drift_score_single_entry() {
+        assert!((role_drift_score(&[(1000, 50.0)]) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn network_leverage_unknown_person_returns_empty() {
+        let g = AdjacencyGraph::new();
+        let ecosystem = vec!["node_a".to_string()];
+        let result = network_leverage(&g, "ghost", &ecosystem);
+        assert!(result.is_empty());
     }
 }

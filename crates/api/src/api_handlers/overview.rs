@@ -44,7 +44,7 @@ fn result_matches_filters(
     entity_match && region_match && from_match && to_match
 }
 
-fn append_or_filter(mut base_query: String, field: &str, values: &[String]) -> String {
+fn append_or_filter(base_query: &str, field: &str, values: &[String]) -> String {
     let clause = values
         .iter()
         .filter(|value| {
@@ -55,10 +55,14 @@ fn append_or_filter(mut base_query: String, field: &str, values: &[String]) -> S
         .map(|value| format!("{}:{}", field, value))
         .collect::<Vec<_>>()
         .join(" OR ");
-    if !clause.is_empty() {
-        base_query = format!("({}) AND ({})", base_query, clause);
+    if clause.is_empty() {
+        return base_query.to_string();
     }
-    base_query
+    format!("({}) AND ({})", base_query, clause)
+}
+
+fn append_timestamp_range(base_query: &str, from: i64, to: i64) -> String {
+    format!("({}) AND timestamp:[{} TO {}]", base_query, from, to)
 }
 
 pub(crate) async fn search(
@@ -102,7 +106,7 @@ pub(crate) async fn search(
             }
         };
         if !types.is_empty() {
-            full_query = append_or_filter(full_query, "entity_type", &types);
+            full_query = append_or_filter(&full_query, "entity_type", &types);
         }
     }
     if params.regions.is_some() {
@@ -122,7 +126,7 @@ pub(crate) async fn search(
             );
         }
         if !regions.is_empty() {
-            full_query = append_or_filter(full_query, "region", &regions);
+            full_query = append_or_filter(&full_query, "region", &regions);
         }
     }
 
@@ -147,7 +151,7 @@ pub(crate) async fn search(
         }
         let from = from_dt.map(|dt| dt.timestamp()).unwrap_or(i64::MIN / 2);
         let to = to_dt.map(|dt| dt.timestamp()).unwrap_or(i64::MAX / 2);
-        full_query = format!("({}) AND timestamp:[{} TO {}]", full_query, from, to);
+        full_query = append_timestamp_range(&full_query, from, to);
     }
 
     let (results, total_hits) =
@@ -727,7 +731,7 @@ mod tests {
     #[test]
     fn test_append_or_filter_wraps_existing_query() {
         let query = append_or_filter(
-            "chips".to_string(),
+            "chips",
             "entity_type",
             &["company".to_string(), "person".to_string()],
         );
@@ -741,7 +745,7 @@ mod tests {
     #[test]
     fn test_append_or_filter_ignores_unsafe_tokens() {
         let query = append_or_filter(
-            "chips".to_string(),
+            "chips",
             "region",
             &["US".to_string(), "EU OR *".to_string()],
         );

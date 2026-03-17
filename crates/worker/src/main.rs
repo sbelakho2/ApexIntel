@@ -101,14 +101,12 @@ use apex_poi::model::{
 #[cfg(feature = "llm")]
 use apex_poi::updater::refresh_profile;
 use apex_recipes::engine::{FeatureMap, RecipeEngine};
-use apex_store::postgres::{InsightListFilters, PgStore};
+use apex_store::postgres::{InsightListFilters, PersonListFilters, PersonOrderBy, PgStore};
 #[cfg(feature = "llm")]
 use apex_store::postgres::{
-    HistoricalQualityGateLabel, PersonListFilters, PersonOrderBy, QualityGateGoldenSetExample,
+    HistoricalQualityGateLabel, QualityGateGoldenSetExample,
     WarningListFilters,
 };
-#[cfg(not(feature = "llm"))]
-use apex_worker::nightly::process_poi_stage;
 use apex_worker::nightly::{
     process_drift_stage, process_mining_stage, CrawlStageResult, DriftCheckStageResult,
     MiningStageResult, PoiRefreshStageResult,
@@ -603,6 +601,7 @@ struct EntityContext {
 /// Returns the supply chain role for non-EMS, non-government entities.
 /// These entities need differentiated LLM prompting — not the default
 /// "customer/prospect" framing that leads to nonsensical partnership proposals.
+#[cfg(feature = "llm")]
 fn supply_chain_role(entity_type: Option<&str>) -> Option<&'static str> {
     match entity_type
         .unwrap_or_default()
@@ -1936,6 +1935,9 @@ async fn main() -> Result<()> {
     // Create database pool for recipe insertion
     let pool = PgPoolOptions::new()
         .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .idle_timeout(std::time::Duration::from_secs(600))
+        .max_lifetime(std::time::Duration::from_secs(1800))
         .connect(config.database_url_value())
         .await?;
     tracing::info!("connected to database");
@@ -2068,6 +2070,8 @@ async fn main() -> Result<()> {
             }
         }
     }
+    pool.close().await;
+    tracing::info!("database pool closed");
     Ok(())
 }
 
@@ -3867,6 +3871,7 @@ async fn read_file_with_size_check(path: &str) -> Result<String> {
     Ok(content)
 }
 
+#[allow(dead_code)] // utility prepared for nightly pipeline consumption
 async fn load_nightly_inputs() -> Result<NightlyInputs> {
     let path = std::env::var("NIGHTLY_INPUT_PATH")
         .unwrap_or_else(|_| "runtime/nightly_inputs.json".to_string());

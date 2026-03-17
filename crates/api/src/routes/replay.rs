@@ -111,7 +111,9 @@ impl ReplayStatus {
 // ─── SQL generators ─────────────────────────────────────────────────────
 
 /// SQL to fetch observations for replay within the given window.
-pub fn replay_observations_sql(request: &ReplayRequest) -> String {
+/// Returns (sql, param_count) where param_count is the total number
+/// of `$N` placeholders used.  The LIMIT is always the last param.
+pub fn replay_observations_sql(request: &ReplayRequest) -> (String, usize) {
     let mut sql = String::from(
         "SELECT id, observation_type, entity_id, value, provenance, observed_at \
          FROM observations \
@@ -134,14 +136,13 @@ pub fn replay_observations_sql(request: &ReplayRequest) -> String {
         }
     }
 
-    let _ = param_idx; // suppress unused warning
-
     sql.push_str(&format!(
-        " ORDER BY observed_at ASC LIMIT {}",
-        request.limit()
+        " ORDER BY observed_at ASC LIMIT ${}",
+        param_idx
     ));
+    let total_params = param_idx;
 
-    sql
+    (sql, total_params)
 }
 
 /// SQL to insert a replay job record.
@@ -238,9 +239,10 @@ mod tests {
     #[test]
     fn test_sql_generation() {
         let req = make_request(7);
-        let sql = replay_observations_sql(&req);
+        let (sql, param_count) = replay_observations_sql(&req);
         assert!(sql.contains("observed_at >= $1"));
-        assert!(sql.contains("LIMIT 10000"));
+        assert!(sql.contains("LIMIT $3"));
+        assert_eq!(param_count, 3);
     }
 
     #[test]
@@ -256,10 +258,11 @@ mod tests {
             limit: Some(500),
             background: None,
         };
-        let sql = replay_observations_sql(&req);
+        let (sql, param_count) = replay_observations_sql(&req);
         assert!(sql.contains("observation_type = ANY"));
         assert!(sql.contains("entity_id = ANY"));
-        assert!(sql.contains("LIMIT 500"));
+        assert!(sql.contains("LIMIT $5"));
+        assert_eq!(param_count, 5);
     }
 
     #[test]

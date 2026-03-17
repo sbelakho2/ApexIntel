@@ -29,6 +29,13 @@ static RE_EMAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap());
 static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\+?[\d\s\-\(\)]{8,20}").unwrap());
 
+/// PwnDB HTML row parser.
+static RE_PWNDB_ROW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"<li>luser:\s*(.+?)\s*</li>\s*<li>domain:\s*(.+?)\s*</li>(?:\s*<li>password:\s*(.+?)\s*</li>)?"
+    ).unwrap()
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Output types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,9 +342,7 @@ fn build_tor_client() -> Result<reqwest::Client> {
 fn parse_pwndb_html(html: &str, domain: &str) -> Vec<BreachRecord> {
     // PwnDB returns an HTML table with rows like: luser | domain | password
     // We do a lightweight regex parse rather than a full HTML parser.
-    let row_re = Regex::new(
-        r"<li>luser:\s*(.+?)\s*</li>\s*<li>domain:\s*(.+?)\s*</li>(?:\s*<li>password:\s*(.+?)\s*</li>)?"
-    ).unwrap();
+    let row_re = &*RE_PWNDB_ROW;
 
     row_re
         .captures_iter(html)

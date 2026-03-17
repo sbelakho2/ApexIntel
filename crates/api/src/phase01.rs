@@ -164,7 +164,7 @@ async fn api_features() -> Json<Value> {
             versioned_api_alias: crate::API_VERSIONED_ALIAS_ENABLED,
             openapi: crate::API_OPENAPI_ENABLED,
         })
-        .unwrap_or_else(|err| panic!("failed to serialize phase01 feature matrix: {err}")),
+        .unwrap_or_else(|_| serde_json::json!({"error": "serialization failed"})),
     )
 }
 

@@ -230,13 +230,17 @@ cd ~/IdeaProjects/ApexIntel
 cargo install cargo-zigbuild
 brew install zig  # or equivalent for your OS
 
-# Build release binary for ARM64 Linux:
+# Build release binaries for ARM64 Linux:
 cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
 
-# Upload binary (~15 MB):
+# Upload binaries:
 scp -i ~/.ssh/hetzner-db-mac \
   target/aarch64-unknown-linux-gnu/release/apex-api \
   root@77.42.65.89:/opt/apexintel/bin/apex-api
+scp -i ~/.ssh/hetzner-db-mac \
+  target/aarch64-unknown-linux-gnu/release/apex-worker \
+  root@77.42.65.89:/opt/apexintel/bin/apex-worker
 
 # Upload static assets:
 scp -i ~/.ssh/hetzner-db-mac -r \
@@ -245,9 +249,9 @@ scp -i ~/.ssh/hetzner-db-mac -r \
 
 # Set permissions on server:
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
-  "chmod 700 /opt/apexintel/bin/apex-api && \
+  "chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker && \
    chown -R apexintel:apexintel /opt/apexintel/bin /opt/apexintel/static && \
-   systemctl restart apexintel-api"
+   systemctl restart apexintel-api apexintel-worker"
 ```
 
 ### 3.3 Build on Server (Alternative)
@@ -255,8 +259,10 @@ ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
 ```bash
 cd /opt/apexintel/src
 cargo build --release -p apex-api --features llm
+cargo build --release -p apex-worker
 cp target/release/apex-api /opt/apexintel/bin/
-chown apexintel:apexintel /opt/apexintel/bin/apex-api
+cp target/release/apex-worker /opt/apexintel/bin/
+chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker
 ```
 
 ### 3.4 Database Migrations
@@ -682,9 +688,11 @@ ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
 # 5. Cross-compile and upload:
 # (on local machine)
 cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
 scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-api root@77.42.65.89:/opt/apexintel/bin/
+scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-worker root@77.42.65.89:/opt/apexintel/bin/
 scp -i ~/.ssh/hetzner-db-mac -r crates/api/static/* root@77.42.65.89:/opt/apexintel/static/
-ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "chown -R apexintel:apexintel /opt/apexintel && chmod 700 /opt/apexintel/bin/apex-api"
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "chown -R apexintel:apexintel /opt/apexintel && chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker"
 
 # 6. Configure nginx + SSL (section 6)
 # 7. Start services
@@ -699,19 +707,24 @@ cd ~/IdeaProjects/ApexIntel
 
 # 1. Build
 cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
 
 # 2. Upload
 scp -i ~/.ssh/hetzner-db-mac \
   target/aarch64-unknown-linux-gnu/release/apex-api \
   root@77.42.65.89:/tmp/apex-api-new
+scp -i ~/.ssh/hetzner-db-mac \
+  target/aarch64-unknown-linux-gnu/release/apex-worker \
+  root@77.42.65.89:/tmp/apex-worker-new
 
 # 3. Install & restart
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 << 'EOF'
-systemctl stop apexintel-api
+systemctl stop apexintel-api apexintel-worker
 cp /tmp/apex-api-new /opt/apexintel/bin/apex-api
-chmod 700 /opt/apexintel/bin/apex-api
-chown apexintel:apexintel /opt/apexintel/bin/apex-api
-systemctl start apexintel-api
+cp /tmp/apex-worker-new /opt/apexintel/bin/apex-worker
+chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker
+chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker
+systemctl start apexintel-api apexintel-worker
 curl -sf http://127.0.0.1:8080/api/health | jq
 EOF
 ```

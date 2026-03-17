@@ -17,6 +17,7 @@ const CONNECTOR_WORDS: &[&str] = &[
 ];
 
 const BLOCKED_TERMS: &[&str] = &[
+    // English company suffixes
     "holdings",
     "limited",
     "ltd",
@@ -35,6 +36,18 @@ const BLOCKED_TERMS: &[&str] = &[
     "ventures",
     "manufacturing",
     "electronics",
+    // Non-English company suffixes (≥4 chars, safe for substring match)
+    "gmbh",           // German
+    "sarl",           // French
+    "spzoo",          // Polish (sp. z o.o.)
+];
+
+/// Short company suffixes that must match as whole words only.
+const BLOCKED_WORD_TERMS: &[&str] = &[
+    "ag", "sa", "sas", "bv", "nv", "spa", "srl", "sl",
+    "oo", "za", "ao", "kft", "rt", "as", "ab", "oy",
+    "pty", "cc", "co", "plc", "llp", "lp", "llc", "jsc",
+    "kda", "ykk", "kk",
 ];
 
 const BLOCKED_PHRASES: &[&str] = &[
@@ -130,6 +143,9 @@ pub fn looks_like_person_name(value: &str) -> bool {
     let lowered = cleaned.to_lowercase();
     if BLOCKED_PHRASES.contains(&lowered.as_str())
         || BLOCKED_TERMS.iter().any(|term| lowered.contains(term))
+        || lowered
+            .split_whitespace()
+            .any(|word| BLOCKED_WORD_TERMS.contains(&word))
     {
         return false;
     }

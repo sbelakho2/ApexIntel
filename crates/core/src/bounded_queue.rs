@@ -82,7 +82,7 @@ impl<T> BoundedQueue<T> {
     /// Push an item onto the queue, applying backpressure if full.
     ///
     /// Returns `Ok(())` if the item was enqueued (possibly after dropping another),
-    /// or `Err(item)` if the backpressure strategy is `Reject` and queue is full.
+    /// or `Err(item)` if the backpressure strategy is `Reject` or `DropNewest` and queue is full.
     pub fn push(&mut self, item: T) -> Result<(), T> {
         if self.inner.len() < self.capacity {
             self.inner.push_back(item);
@@ -106,6 +106,8 @@ impl<T> BoundedQueue<T> {
                 Ok(())
             }
             BackpressureStrategy::DropNewest => {
+                // DropNewest rejects the incoming item (the "newest")
+                // We still count this as a drop for consistent metrics
                 self.drop_count += 1;
                 if self.drop_count % 100 == 1 {
                     warn!(
@@ -116,7 +118,12 @@ impl<T> BoundedQueue<T> {
                 }
                 Err(item)
             }
-            BackpressureStrategy::Reject => Err(item),
+            BackpressureStrategy::Reject => {
+                // Reject strategy: return error without counting as a "drop"
+                // This distinguishes intentional backpressure (DropOldest/DropNewest)
+                // from simple capacity rejection in metrics
+                Err(item)
+            }
         }
     }
 

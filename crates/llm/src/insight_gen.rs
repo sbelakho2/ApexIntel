@@ -225,6 +225,8 @@ fn event_aliases(event_type: &str) -> Vec<String> {
 }
 
 pub fn extract_temporal_claims(text: &str, timeline: &EntityTimeline) -> Vec<TemporalClaim> {
+    use apex_core::timeline::ClaimRequirement;
+    
     let normalized = normalize_temporal_text(text);
     let event_types = timeline.known_event_types();
     let mut claims = Vec::new();
@@ -236,6 +238,7 @@ pub fn extract_temporal_claims(text: &str, timeline: &EntityTimeline) -> Vec<Tem
                     claims.push(TemporalClaim::EventPrecedesReference {
                         event_type: event_type.clone(),
                         marker: marker.to_string(),
+                        requirement: ClaimRequirement::Optional, // Extracted claims are optional by default
                     });
                     break;
                 }
@@ -259,6 +262,7 @@ pub fn extract_temporal_claims(text: &str, timeline: &EntityTimeline) -> Vec<Tem
                             earlier_event_type: earlier_event.clone(),
                             later_event_type: later_event.clone(),
                             connector: "before".to_string(),
+                            requirement: ClaimRequirement::Optional, // Extracted claims are optional by default
                         });
                         matched = true;
                         break;
@@ -268,6 +272,7 @@ pub fn extract_temporal_claims(text: &str, timeline: &EntityTimeline) -> Vec<Tem
                             earlier_event_type: earlier_event.clone(),
                             later_event_type: later_event.clone(),
                             connector: "after".to_string(),
+                            requirement: ClaimRequirement::Optional, // Extracted claims are optional by default
                         });
                         matched = true;
                         break;

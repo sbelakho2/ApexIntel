@@ -45,170 +45,17 @@ pub async fn deep_health_check(
     llm_base_url: &str,
     start_time: Instant,
 ) -> DeepHealthCheck {
-    let mut checks = Vec::new();
+    // Run all checks concurrently for faster response.
+    let (pg_check, redis_check, nats_check, minio_check, llm_check, table_check) = tokio::join!(
+        check_postgres(pool),
+        check_redis(redis_url),
+        check_nats(nats_url),
+        check_minio(minio_endpoint),
+        check_llm(llm_base_url),
+        check_schema(pool),
+    );
 
-    // ── 1. PostgreSQL ───────────────────────────────────────────
-    let pg_start = Instant::now();
-    let pg_check = match sqlx::query_scalar::<_, i32>("SELECT 1")
-        .fetch_one(pool)
-        .await
-    {
-        Ok(_) => ComponentCheck {
-            component: "postgresql".into(),
-            status: "ok".into(),
-            latency_ms: pg_start.elapsed().as_millis() as u64,
-            message: None,
-        },
-        Err(e) => ComponentCheck {
-            component: "postgresql".into(),
-            status: "error".into(),
-            latency_ms: pg_start.elapsed().as_millis() as u64,
-            message: Some(format!("Connection failed: {}", e)),
-        },
-    };
-    checks.push(pg_check);
-
-    // ── 2. Redis ────────────────────────────────────────────────
-    let redis_start = Instant::now();
-    let redis_check = match redis::Client::open(redis_url) {
-        Ok(client) => match client.get_multiplexed_async_connection().await {
-            Ok(mut conn) => match redis::cmd("PING").query_async::<String>(&mut conn).await {
-                Ok(_) => ComponentCheck {
-                    component: "redis".into(),
-                    status: "ok".into(),
-                    latency_ms: redis_start.elapsed().as_millis() as u64,
-                    message: None,
-                },
-                Err(e) => ComponentCheck {
-                    component: "redis".into(),
-                    status: "error".into(),
-                    latency_ms: redis_start.elapsed().as_millis() as u64,
-                    message: Some(format!("PING failed: {}", e)),
-                },
-            },
-            Err(e) => ComponentCheck {
-                component: "redis".into(),
-                status: "error".into(),
-                latency_ms: redis_start.elapsed().as_millis() as u64,
-                message: Some(format!("Connection failed: {}", e)),
-            },
-        },
-        Err(e) => ComponentCheck {
-            component: "redis".into(),
-            status: "error".into(),
-            latency_ms: redis_start.elapsed().as_millis() as u64,
-            message: Some(format!("Client creation failed: {}", e)),
-        },
-    };
-    checks.push(redis_check);
-
-    // ── 3. NATS ─────────────────────────────────────────────────
-    let nats_start = Instant::now();
-    let nats_check = match async_nats::connect(nats_url).await {
-        Ok(_) => ComponentCheck {
-            component: "nats".into(),
-            status: "ok".into(),
-            latency_ms: nats_start.elapsed().as_millis() as u64,
-            message: None,
-        },
-        Err(e) => ComponentCheck {
-            component: "nats".into(),
-            status: "error".into(),
-            latency_ms: nats_start.elapsed().as_millis() as u64,
-            message: Some(format!("Connection failed: {}", e)),
-        },
-    };
-    checks.push(nats_check);
-
-    // ── 4. MinIO / S3 ──────────────────────────────────────────
-    let minio_start = Instant::now();
-    let minio_check = match reqwest::Client::new()
-        .get(format!("{}/minio/health/live", minio_endpoint))
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => ComponentCheck {
-            component: "minio".into(),
-            status: "ok".into(),
-            latency_ms: minio_start.elapsed().as_millis() as u64,
-            message: None,
-        },
-        Ok(resp) => ComponentCheck {
-            component: "minio".into(),
-            status: "degraded".into(),
-            latency_ms: minio_start.elapsed().as_millis() as u64,
-            message: Some(format!("HTTP {}", resp.status())),
-        },
-        Err(e) => ComponentCheck {
-            component: "minio".into(),
-            status: "error".into(),
-            latency_ms: minio_start.elapsed().as_millis() as u64,
-            message: Some(format!("Unreachable: {}", e)),
-        },
-    };
-    checks.push(minio_check);
-
-    // ── 5. LLM Server ──────────────────────────────────────────
-    let llm_start = Instant::now();
-    let llm_check = match reqwest::Client::new()
-        .get(format!("{}/health", llm_base_url))
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => ComponentCheck {
-            component: "llm_server".into(),
-            status: "ok".into(),
-            latency_ms: llm_start.elapsed().as_millis() as u64,
-            message: None,
-        },
-        Ok(resp) => ComponentCheck {
-            component: "llm_server".into(),
-            status: "degraded".into(),
-            latency_ms: llm_start.elapsed().as_millis() as u64,
-            message: Some(format!("HTTP {}", resp.status())),
-        },
-        Err(_) => ComponentCheck {
-            component: "llm_server".into(),
-            status: "degraded".into(),
-            latency_ms: llm_start.elapsed().as_millis() as u64,
-            message: Some("LLM server unreachable — rule-based fallback active".into()),
-        },
-    };
-    checks.push(llm_check);
-
-    // ── 6. Schema integrity ─────────────────────────────────────
-    let table_start = Instant::now();
-    let table_check = match sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
-    )
-    .fetch_one(pool)
-    .await
-    {
-        Ok(count) if count >= 15 => ComponentCheck {
-            component: "schema_integrity".into(),
-            status: "ok".into(),
-            latency_ms: table_start.elapsed().as_millis() as u64,
-            message: Some(format!("{} tables present", count)),
-        },
-        Ok(count) => ComponentCheck {
-            component: "schema_integrity".into(),
-            status: "degraded".into(),
-            latency_ms: table_start.elapsed().as_millis() as u64,
-            message: Some(format!(
-                "Only {} tables — expected ≥15. Run migrations.",
-                count
-            )),
-        },
-        Err(e) => ComponentCheck {
-            component: "schema_integrity".into(),
-            status: "error".into(),
-            latency_ms: table_start.elapsed().as_millis() as u64,
-            message: Some(format!("Query failed: {}", e)),
-        },
-    };
-    checks.push(table_check);
+    let checks = vec![pg_check, redis_check, nats_check, minio_check, llm_check, table_check];
 
     // ── Overall status ──────────────────────────────────────────
     let overall = if checks.iter().any(|c| c.status == "error") {
@@ -225,6 +72,163 @@ pub async fn deep_health_check(
         uptime_seconds: start_time.elapsed().as_secs(),
         checks,
         timestamp: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+async fn check_postgres(pool: &sqlx::PgPool) -> ComponentCheck {
+    let start = Instant::now();
+    match sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(pool)
+        .await
+    {
+        Ok(_) => {
+            let size = pool.size();
+            let idle = pool.num_idle();
+            ComponentCheck {
+                component: "postgresql".into(),
+                status: "ok".into(),
+                latency_ms: start.elapsed().as_millis() as u64,
+                message: Some(format!("pool: {}/{} active, {} idle", size - idle as u32, size, idle)),
+            }
+        }
+        Err(e) => ComponentCheck {
+            component: "postgresql".into(),
+            status: "error".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("Connection failed: {}", e)),
+        },
+    }
+}
+
+async fn check_redis(redis_url: &str) -> ComponentCheck {
+    let start = Instant::now();
+    let result = async {
+        let client = redis::Client::open(redis_url)?;
+        let mut conn = client.get_multiplexed_async_connection().await?;
+        redis::cmd("PING").query_async::<String>(&mut conn).await
+    }
+    .await;
+    match result {
+        Ok(_) => ComponentCheck {
+            component: "redis".into(),
+            status: "ok".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: None,
+        },
+        Err(e) => ComponentCheck {
+            component: "redis".into(),
+            status: "error".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("Failed: {}", e)),
+        },
+    }
+}
+
+async fn check_nats(nats_url: &str) -> ComponentCheck {
+    let start = Instant::now();
+    match async_nats::connect(nats_url).await {
+        Ok(_) => ComponentCheck {
+            component: "nats".into(),
+            status: "ok".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: None,
+        },
+        Err(e) => ComponentCheck {
+            component: "nats".into(),
+            status: "error".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("Connection failed: {}", e)),
+        },
+    }
+}
+
+async fn check_minio(minio_endpoint: &str) -> ComponentCheck {
+    let start = Instant::now();
+    match reqwest::Client::new()
+        .get(format!("{}/minio/health/live", minio_endpoint))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => ComponentCheck {
+            component: "minio".into(),
+            status: "ok".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: None,
+        },
+        Ok(resp) => ComponentCheck {
+            component: "minio".into(),
+            status: "degraded".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("HTTP {}", resp.status())),
+        },
+        Err(e) => ComponentCheck {
+            component: "minio".into(),
+            status: "error".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("Unreachable: {}", e)),
+        },
+    }
+}
+
+async fn check_llm(llm_base_url: &str) -> ComponentCheck {
+    let start = Instant::now();
+    match reqwest::Client::new()
+        .get(format!("{}/health", llm_base_url))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => ComponentCheck {
+            component: "llm_server".into(),
+            status: "ok".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: None,
+        },
+        Ok(resp) => ComponentCheck {
+            component: "llm_server".into(),
+            status: "degraded".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("HTTP {}", resp.status())),
+        },
+        Err(_) => ComponentCheck {
+            component: "llm_server".into(),
+            status: "degraded".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some("LLM server unreachable — rule-based fallback active".into()),
+        },
+    }
+}
+
+async fn check_schema(pool: &sqlx::PgPool) -> ComponentCheck {
+    let start = Instant::now();
+    match sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
+    )
+    .fetch_one(pool)
+    .await
+    {
+        Ok(count) if count >= 15 => ComponentCheck {
+            component: "schema_integrity".into(),
+            status: "ok".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("{} tables present", count)),
+        },
+        Ok(count) => ComponentCheck {
+            component: "schema_integrity".into(),
+            status: "degraded".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!(
+                "Only {} tables — expected ≥15. Run migrations.",
+                count
+            )),
+        },
+        Err(e) => ComponentCheck {
+            component: "schema_integrity".into(),
+            status: "error".into(),
+            latency_ms: start.elapsed().as_millis() as u64,
+            message: Some(format!("Query failed: {}", e)),
+        },
     }
 }
 

@@ -57,6 +57,7 @@ sqlx = { workspace = true }
 serde_yaml = "0.9"
 redis = { workspace = true }
 regex = "1"
+aho-corasick = "1"
 lazy_static = "1"
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder"] }
 chrono-tz = "0.10"

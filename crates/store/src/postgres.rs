@@ -553,11 +553,24 @@ pub struct PgStore {
 
 impl PgStore {
     pub async fn connect(database_url: &str) -> Result<Self> {
+        let max_conns: u32 = std::env::var("PG_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20);
         let pool = PgPoolOptions::new()
-            .max_connections(20)
+            .max_connections(max_conns)
+            .min_connections(2)
             .acquire_timeout(std::time::Duration::from_secs(5))
             .idle_timeout(std::time::Duration::from_secs(600))
             .max_lifetime(std::time::Duration::from_secs(1800))
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET statement_timeout = '30s'")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect(database_url)
             .await?;
         Ok(Self { pool })

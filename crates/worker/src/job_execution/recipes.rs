@@ -176,24 +176,33 @@ fn recipe_warning_severity(
             | "supply_chain_risk"
             | "regulatory_policy"
             | "cybersecurity_threat"
+            | "competitive_comparison"
+            | "talent_movement"
+            | "market_intelligence"
+            | "technology_innovation"
+            | "geopolitical_risk"
     ) || normalized_category.contains("compliance")
-        || normalized_category.contains("sanction");
+        || normalized_category.contains("sanction")
+        || normalized_category.contains("security")
+        || normalized_category.contains("competitive")
+        || normalized_category.contains("supply_chain")
+        || normalized_category.contains("procurement");
 
     if !promoted_category {
         return None;
     }
 
     let min_confidence = match normalized_category.as_str() {
-        "regulatory_policy" | "supply_chain_risk" => 0.74,
-        "demand_procurement" | "competitor_market" => 0.78,
-        "cybersecurity_threat" => 0.84,
-        _ => 0.8,
+        "regulatory_policy" | "supply_chain_risk" => 0.62,
+        "demand_procurement" | "competitor_market" => 0.65,
+        "cybersecurity_threat" => 0.70,
+        _ => 0.60,
     };
     let min_impact = match normalized_category.as_str() {
-        "demand_procurement" | "competitor_market" => 0.55,
-        "regulatory_policy" | "supply_chain_risk" => 0.45,
-        "cybersecurity_threat" => 0.7,
-        _ => 0.5,
+        "demand_procurement" | "competitor_market" => 0.40,
+        "regulatory_policy" | "supply_chain_risk" => 0.35,
+        "cybersecurity_threat" => 0.55,
+        _ => 0.35,
     };
 
     if confidence < min_confidence || impact < min_impact {
@@ -2621,7 +2630,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             continue;
         }
 
-        if c.confidence < 0.45 {
+        if c.confidence < 0.30 {
             skipped_low_conf += 1;
             continue;
         }
@@ -2762,7 +2771,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             &slots,
         ));
         #[cfg(not(feature = "llm"))]
-        let rendered_action =
+        let warning_action =
             clean_rendered_text(&resolve_evidence_placeholders(&c.action_template, &slots));
 
         #[cfg(not(feature = "llm"))]
@@ -2948,7 +2957,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         let (title, summary) = {
             if !should_emit_fallback_insight(
                 &signal_details,
-                &rendered_action,
+                &warning_action,
                 c.confidence,
                 c.evidence_ids.len(),
             ) {
@@ -2977,7 +2986,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .unwrap_or_default();
             let summary = build_fallback_summary(
                 &analytical_narrative,
-                &rendered_action,
+                &warning_action,
                 &signal_details,
                 &evidence_urls,
                 &entity_label,
@@ -3029,16 +3038,13 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         // (narrative_words, references, readability, etc.) inside generate_llm_insight.
         // The shared gate's 8-sentence cap rejects the longer LLM narratives, so
         // only apply it to the non-LLM fallback path.
+        // NOTE: the gate only controls insight insertion; warnings are always
+        // generated so the analyst warnings page stays populated.
         #[cfg(not(feature = "llm"))]
-        if !passes_shared_insight_quality_gate(&title, &summary, Some(c.category.as_str())) {
-            tracing::warn!(
-                recipe = %c.recipe_code,
-                category = %c.category,
-                title = %title,
-                "recipe_fire: shared insight quality gate rejected summary"
-            );
-            continue;
-        }
+        let insight_gate_passed =
+            passes_shared_insight_quality_gate(&title, &summary, Some(c.category.as_str()));
+        #[cfg(feature = "llm")]
+        let insight_gate_passed = true;
 
         let region_param = if entity_region.is_empty() {
             None
@@ -3048,23 +3054,32 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
         let warning_evidence_urls = maybe_evidence_urls.clone();
 
-        match store
-            .insert_insight(
-                &title,
-                &summary,
-                Some(c.category.as_str()),
-                region_param,
-                Some(stored_confidence),
-                maybe_evidence_urls,
-                entity_ids.clone(),
-                Some(tags),
-            )
-            .await
-        {
-            Ok(_) => insights_inserted += 1,
-            Err(e) => {
-                tracing::warn!(recipe = %c.recipe_code, "recipe_fire: insert_insight failed: {e}")
+        if insight_gate_passed {
+            match store
+                .insert_insight(
+                    &title,
+                    &summary,
+                    Some(c.category.as_str()),
+                    region_param,
+                    Some(stored_confidence),
+                    maybe_evidence_urls,
+                    entity_ids.clone(),
+                    Some(tags),
+                )
+                .await
+            {
+                Ok(_) => insights_inserted += 1,
+                Err(e) => {
+                    tracing::warn!(recipe = %c.recipe_code, "recipe_fire: insert_insight failed: {e}")
+                }
             }
+        } else {
+            tracing::warn!(
+                recipe = %c.recipe_code,
+                category = %c.category,
+                title = %title,
+                "recipe_fire: shared insight quality gate rejected summary"
+            );
         }
 
         #[cfg(feature = "llm")]
@@ -3117,7 +3132,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .insert_warning(
                     &c.category,
                     &warn_title,
-                    Some(&rendered_action),
+                    Some(&warning_action),
                     warning_severity,
                     warn_region,
                     Some(&c.recipe_code),

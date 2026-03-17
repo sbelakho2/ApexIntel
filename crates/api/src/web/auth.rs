@@ -80,15 +80,25 @@ pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
         sub: &form.username,
         iat: chrono::Utc::now().timestamp_millis(),
     };
-    let payload_bytes = serde_json::to_vec(&payload)
-        .unwrap_or_else(|err| panic!("failed to serialize session payload: {err}"));
+    let payload_bytes = match serde_json::to_vec(&payload) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::error!(%err, "failed to serialize session payload");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+        }
+    };
 
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_bytes);
 
-    let mut mac = HmacSha256::new_from_slice(session_secret.as_bytes())
-        .unwrap_or_else(|err| panic!("failed to initialize session HMAC: {err}"));
+    let mut mac = match HmacSha256::new_from_slice(session_secret.as_bytes()) {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::error!(%err, "failed to initialize session HMAC");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+        }
+    };
     mac.update(&payload_bytes);
     let sig = hex::encode(mac.finalize().into_bytes());
 

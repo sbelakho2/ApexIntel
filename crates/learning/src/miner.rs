@@ -279,8 +279,14 @@ pub fn compute_stability(
         .chain(signals.iter())
         .map(|(_, ts)| *ts)
         .collect();
-    let min_ts = *all_ts.iter().min().unwrap();
-    let max_ts = *all_ts.iter().max().unwrap();
+    let min_ts = match all_ts.iter().min() {
+        Some(v) => *v,
+        None => return 0.0,
+    };
+    let max_ts = match all_ts.iter().max() {
+        Some(v) => *v,
+        None => return 0.0,
+    };
 
     if max_ts <= min_ts {
         return 0.0;
@@ -1097,5 +1103,29 @@ mod tests {
             outcomes1, outcomes2,
             "rank_candidates must be deterministic"
         );
+    }
+
+    #[test]
+    fn compute_stability_empty_outcomes_returns_zero() {
+        let signals: Vec<EventRecord> = vec![("e1".into(), 100)];
+        assert!((compute_stability(&[], &signals, 1, 3) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn compute_stability_empty_signals_returns_zero() {
+        let outcomes: Vec<EventRecord> = vec![("e1".into(), 100)];
+        assert!((compute_stability(&outcomes, &[], 1, 3) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn compute_stability_zero_splits_returns_zero() {
+        let data: Vec<EventRecord> = vec![("e1".into(), 100)];
+        assert!((compute_stability(&data, &data, 1, 0) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn compute_stability_single_timestamp_returns_zero() {
+        let data: Vec<EventRecord> = vec![("e1".into(), 100)];
+        assert!((compute_stability(&data, &data, 1, 3) - 0.0).abs() < 1e-10);
     }
 }

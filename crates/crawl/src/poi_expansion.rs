@@ -75,6 +75,28 @@ static RE_LINKEDIN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_%]+)").unwrap()
 });
 
+/// GDELT title extractor.
+static RE_GDELT_TITLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""title"\s*:\s*"([^"]{10,200})""#).unwrap());
+
+/// GDELT URL extractor.
+static RE_GDELT_URL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""url"\s*:\s*"([^"]+)""#).unwrap());
+
+/// OpenCorporates officer extractor.
+static RE_OFFICER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""name"\s*:\s*"([^"]{3,80})"\s*,\s*"position"\s*:\s*"([^"]{3,50})""#)
+        .unwrap()
+});
+
+/// Semantic Scholar author name extractor.
+static RE_SCHOLAR_AUTHOR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""name"\s*:\s*"([^"]{3,80})""#).unwrap());
+
+/// Semantic Scholar affiliations extractor.
+static RE_SCHOLAR_AFFIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""affiliations"\s*:\s*\[([^\]]*)\]"#).unwrap());
+
 /// Downstream worker logic drops GDELT candidates below 0.55 before LLM validation.
 const GDELT_BASE_CONFIDENCE: f32 = 0.55;
 
@@ -596,15 +618,11 @@ fn parse_gdelt_response(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
     let mut results = vec![];
     let mut seen = HashSet::new();
 
-    // Quick regex scan for article titles — extract any name NOT the seed.
-    let title_re = Regex::new(r#""title"\s*:\s*"([^"]{10,200})""#).unwrap();
-    let url_re = Regex::new(r#""url"\s*:\s*"([^"]+)""#).unwrap();
-
-    let titles: Vec<&str> = title_re
+    let titles: Vec<&str> = RE_GDELT_TITLE
         .captures_iter(json)
         .filter_map(|c| Some(c.get(1)?.as_str()))
         .collect();
-    let urls: Vec<&str> = url_re
+    let urls: Vec<&str> = RE_GDELT_URL
         .captures_iter(json)
         .filter_map(|c| Some(c.get(1)?.as_str()))
         .collect();
@@ -783,8 +801,7 @@ fn extract_candidate_leadership_urls(base: &str, html: &str) -> Vec<String> {
 fn parse_opencorporates_officers(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
     // Extract officer names from the nested JSON without a full parser.
     // "name":"Jane Smith","position":"director"
-    let officer_re =
-        Regex::new(r#""name"\s*:\s*"([^"]{3,80})"\s*,\s*"position"\s*:\s*"([^"]{3,50})""#).unwrap();
+    let officer_re = &*RE_OFFICER;
 
     let seed_name_lower = seed.name.to_lowercase();
     let mut results = vec![];
@@ -870,8 +887,8 @@ fn extract_speakers_from_html(html: &str) -> Vec<(String, Option<String>)> {
 /// Parse Semantic Scholar author search response and return co-author candidates.
 fn parse_semantic_scholar_coauthors(json: &str, seed: &SeedPoi) -> Vec<DiscoveredPoi> {
     // Response: { "data": [ { "authorId": "...", "name": "...", "affiliations": ["..."] } ] }
-    let author_re = Regex::new(r#""name"\s*:\s*"([^"]{3,80})""#).unwrap();
-    let affil_re = Regex::new(r#""affiliations"\s*:\s*\[([^\]]*)\]"#).unwrap();
+    let author_re = &*RE_SCHOLAR_AUTHOR;
+    let affil_re = &*RE_SCHOLAR_AFFIL;
 
     let seed_name_lower = seed.name.to_lowercase();
     let mut results = vec![];

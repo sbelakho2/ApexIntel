@@ -441,8 +441,8 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
 
     async fn start_test_server(responses: Vec<&'static str>) -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("test: bind ephemeral port");
+        let addr = listener.local_addr().expect("test: get local addr");
         let queue = StdArc::new(TokioMutex::new(
             responses
                 .into_iter()
@@ -458,10 +458,10 @@ mod tests {
                         break;
                     };
 
-                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let (mut stream, _) = listener.accept().await.expect("test: accept connection");
                     let mut buf = [0_u8; 2048];
-                    let _ = stream.read(&mut buf).await.unwrap();
-                    stream.write_all(response.as_bytes()).await.unwrap();
+                    let _ = stream.read(&mut buf).await.expect("test: read request");
+                    stream.write_all(response.as_bytes()).await.expect("test: write response");
                 }
             }
         });
@@ -480,11 +480,11 @@ mod tests {
             max_retries: 1,
             ..CrawlClientConfig::default()
         };
-        let client = CrawlClient::new(config).unwrap();
+        let client = CrawlClient::new(config).expect("test: build crawl client");
         let response = client
             .fetch_text(&CrawlRequest::new(&format!("http://{addr}/feed")).source_id("test_feed"))
             .await
-            .unwrap();
+            .expect("test: fetch should succeed after retry");
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "ok");
@@ -499,7 +499,7 @@ mod tests {
             "example.com",
             RobotsRules::parse("User-agent: *\nDisallow: /private\n", DEFAULT_USER_AGENT),
         );
-        let client = CrawlClient::new(config).unwrap();
+        let client = CrawlClient::new(config).expect("test: build crawl client");
         let error = client
             .fetch_text(&CrawlRequest::new("http://example.com/private/report"))
             .await

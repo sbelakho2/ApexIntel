@@ -18,6 +18,10 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 const CSRF_COOKIE_NAME: &str = "apex_csrf";
+
+/// Cached session secret — read from env once at first use instead of on every request.
+static SESSION_SECRET: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| std::env::var("SESSION_SECRET").unwrap_or_default());
 const CSRF_HEADER_NAME: &str = "x-csrf-token";
 const CSRF_FORM_FIELD: &str = "csrf_token";
 const MAX_CSRF_FORM_BYTES: usize = 16 * 1024;
@@ -156,7 +160,7 @@ fn validate_csrf_request(method: &Method, headers: &HeaderMap, body: &[u8]) -> b
 
 /// Axum middleware: require a valid session cookie, redirect to `/login` otherwise.
 pub async fn require_session(request: Request, next: Next) -> Response {
-    let session_secret = std::env::var("SESSION_SECRET").unwrap_or_default();
+    let session_secret = &*SESSION_SECRET;
     if session_secret.is_empty() {
         tracing::error!("SESSION_SECRET not set — rejecting all web sessions");
         return Redirect::to("/login").into_response();

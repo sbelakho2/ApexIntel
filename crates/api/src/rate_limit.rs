@@ -5,8 +5,10 @@
 //! while read-heavy endpoints (search, list) get more generous ones.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -160,20 +162,14 @@ impl RateLimiter {
     }
 
     pub fn allow_identifier(&self, identifier: &str) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|err| panic!("rate limiter lock poisoned: {err}"));
+        let mut inner = self.inner.lock();
         if !inner.allowlist.iter().any(|allowed| allowed == identifier) {
             inner.allowlist.push(identifier.to_string());
         }
     }
 
     pub fn block_identifier(&self, identifier: &str) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|err| panic!("rate limiter lock poisoned: {err}"));
+        let mut inner = self.inner.lock();
         if !inner.blocklist.iter().any(|blocked| blocked == identifier) {
             inner.blocklist.push(identifier.to_string());
         }
@@ -190,10 +186,7 @@ impl RateLimiter {
         max_requests: u32,
         window: Duration,
     ) -> RateLimitResult {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|err| panic!("rate limiter lock poisoned: {err}"));
+        let mut inner = self.inner.lock();
 
         if inner.allowlist.iter().any(|allowed| allowed == identifier) {
             return RateLimitResult {
