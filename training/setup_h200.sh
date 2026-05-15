@@ -10,7 +10,7 @@
 set -euo pipefail
 
 WORK_DIR="${WORK_DIR:-/workspace/ApexIntel}"
-cd /workspace
+cd "$WORK_DIR"
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  ApexIntel H200 Setup"

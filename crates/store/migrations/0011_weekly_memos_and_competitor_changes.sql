@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS competitor_changes (
     description TEXT NOT NULL DEFAULT '',
     detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     source_url TEXT,
-    impact_score REAL NOT NULL DEFAULT 0.5,
+    impact_score DOUBLE PRECISION NOT NULL DEFAULT 0.5,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -96,7 +96,7 @@ SELECT
     'Added EV Battery Module Assembly',
     'Expanded manufacturing capabilities to include EV battery module assembly and testing facilities.',
     NOW() - INTERVAL '3 days',
-    'https://example.com/news/ev-expansion',
+    'https://docs.apexintel.local/placeholders/seed-data/ev-expansion',
     0.75
 FROM companies c
 WHERE c.name = 'Jabil'
@@ -110,7 +110,7 @@ SELECT
     'Nordic Defense Contract Win',
     'Secured major defense electronics contract with Nordic government agency.',
     NOW() - INTERVAL '5 days',
-    'https://example.com/news/defense-contract',
+    'https://docs.apexintel.local/placeholders/seed-data/defense-contract',
     0.85
 FROM companies c
 WHERE c.name = 'NOTE AB'
@@ -124,7 +124,7 @@ SELECT
     'Acquired German Specialty EMS Firm',
     'Completed acquisition of specialized medical device manufacturing firm in Munich.',
     NOW() - INTERVAL '7 days',
-    'https://example.com/news/acquisition',
+    'https://docs.apexintel.local/placeholders/seed-data/acquisition',
     0.9
 FROM companies c
 WHERE c.name = 'Cicor Group'
@@ -138,7 +138,7 @@ SELECT
     'New CEO Appointed',
     'Former VP of Operations appointed as new Chief Executive Officer effective March 2026.',
     NOW() - INTERVAL '2 days',
-    'https://example.com/news/ceo-change',
+    'https://docs.apexintel.local/placeholders/seed-data/ceo-change',
     0.65
 FROM companies c
 WHERE c.name = 'Sanmina'
@@ -152,7 +152,7 @@ SELECT
     'Smart Factory Platform Launch',
     'Launched proprietary AI-powered smart factory management platform for customers.',
     NOW() - INTERVAL '4 days',
-    'https://example.com/news/smart-factory',
+    'https://docs.apexintel.local/placeholders/seed-data/smart-factory',
     0.7
 FROM companies c
 WHERE c.name = 'Flex'

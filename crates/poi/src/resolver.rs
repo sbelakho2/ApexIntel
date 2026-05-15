@@ -15,7 +15,9 @@ use tracing::{debug, warn};
 pub const MAX_RESOLVE_BATCH_SIZE: usize = 10_000;
 
 /// Pre-compiled whitespace regex to avoid O(n²) recompilation in `normalize_name`.
-static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s+").unwrap_or_else(|error| panic!("valid whitespace regex: {error}"))
+});
 
 /// A candidate match between two POI records.
 #[derive(Debug, Clone)]
@@ -279,6 +281,8 @@ fn normalize_email(email: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::assertions_on_constants)]
+
     use super::*;
 
     fn make_poi(id: &str, name: &str, org: &str, email: Option<&str>) -> PoiProfile {

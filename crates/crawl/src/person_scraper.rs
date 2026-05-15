@@ -356,7 +356,7 @@ LIMIT 25
                 // Only add once
                 if !artifacts
                     .iter()
-                    .any(|a: &RawPersonArtifact| a.meta.get("country").is_some())
+                    .any(|artifact: &RawPersonArtifact| artifact.meta.contains_key("country"))
                 {
                     artifacts.push(a);
                 }
@@ -883,6 +883,7 @@ LIMIT 25
     /// Run all scrapers concurrently and return combined artifacts.
     ///
     /// This is the high-level entry point. Results are deduplicated by title.
+    #[allow(clippy::disallowed_methods)]
     pub async fn aggregate(&self, name: &str, company: &str) -> Vec<RawPersonArtifact> {
         // Launch Wikipedia, Wikidata, OpenCorporates, GDELT in parallel
         let (wiki, wikidata, opencorp, gdelt, scholar, social_mentions) = tokio::join!(
@@ -1302,7 +1303,7 @@ mod tests {
     fn test_parse_gdelt_date() {
         let ts = parse_gdelt_date("20240315T123045Z");
         assert!(ts.is_some());
-        assert!(ts.unwrap() > 1_700_000_000);
+        assert!(matches!(ts, Some(value) if value > 1_700_000_000));
     }
 
     #[test]
@@ -1332,6 +1333,6 @@ mod tests {
         assert_eq!(a.source, "test");
         assert_eq!(a.confidence, 0.9);
         assert!(a.url.is_some());
-        assert_eq!(a.meta.get("k").unwrap(), "v");
+        assert_eq!(a.meta.get("k").map(String::as_str), Some("v"));
     }
 }

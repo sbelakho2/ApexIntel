@@ -23,7 +23,8 @@ pub struct ChangeDetector {
 }
 
 static RE_VOLATILE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(last\s+updated|updated\s+at|timestamp|©\s*\d{4}|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}:\d{2}\b)").unwrap()
+    Regex::new(r"(?i)(last\s+updated|updated\s+at|timestamp|©\s*\d{4}|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}:\d{2}\b)")
+        .unwrap_or_else(|error| panic!("invalid volatile-content regex: {error}"))
 });
 
 impl ChangeDetector {
@@ -266,7 +267,11 @@ mod tests {
         let pairs = [
             ("https://example.com/a", "plain text", "plain text"),
             ("https://example.com/b", "شركة التقنية", "شركة التقنية 2"),
-            ("https://example.com/c", "<div>html</div>", "<div>html changed</div>"),
+            (
+                "https://example.com/c",
+                "<div>html</div>",
+                "<div>html changed</div>",
+            ),
         ];
         for (url, left, right) in pairs {
             let _ = detector.has_changed(url, left.as_bytes());

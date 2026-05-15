@@ -9,7 +9,10 @@ pub struct SourceEntropyReport {
     pub anomalous: bool,
 }
 
-pub fn source_entropy_report(source_counts: &HashMap<String, usize>, top_k: usize) -> SourceEntropyReport {
+pub fn source_entropy_report(
+    source_counts: &HashMap<String, usize>,
+    top_k: usize,
+) -> SourceEntropyReport {
     let mut counts = source_counts.values().copied().collect::<Vec<_>>();
     counts.sort_unstable_by(|left, right| right.cmp(left));
     counts.truncate(top_k);

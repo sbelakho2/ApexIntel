@@ -3,8 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aho_corasick::AhoCorasick;
+#[cfg(feature = "llm")]
+use apex_core::entities::{Company, CompanyType};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 use apex_crawl::sources::select_sources_for_crawl;
+#[cfg(feature = "llm")]
+use apex_insights::dynamic_poi_discovery::{
+    DiscoveredEntity, DynamicPoiDiscovery, EntityType, PoiCandidate, Recommendation,
+};
 
 use crate::*;
 
@@ -49,9 +55,13 @@ async fn build_entity_name_lookup(store: &Arc<PgStore>) -> (HashMap<String, Uuid
     let automaton = AhoCorasick::builder()
         .ascii_case_insensitive(true)
         .build(&patterns)
-        .expect("entity name patterns should be valid");
+        .unwrap_or_else(|error| panic!("entity name patterns should be valid: {error}"));
 
-    let matcher = EntityMatcher { automaton, ids, lengths };
+    let matcher = EntityMatcher {
+        automaton,
+        ids,
+        lengths,
+    };
     (lookup, matcher)
 }
 
@@ -72,6 +82,191 @@ fn match_entity_in_text(text: &str, matcher: &EntityMatcher) -> Option<Uuid> {
     best.map(|(_, id)| id)
 }
 
+#[cfg(feature = "llm")]
+fn normalize_dynamic_company_name(raw: &str) -> Option<String> {
+    let normalized = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|character: char| {
+            matches!(
+                character,
+                '-' | '|' | ',' | ':' | ';' | '.' | '(' | ')' | '[' | ']'
+            )
+        })
+        .trim()
+        .to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+#[cfg(feature = "llm")]
+fn is_discoverable_dynamic_company_name(name: &str) -> bool {
+    let Some(normalized) = normalize_dynamic_company_name(name) else {
+        return false;
+    };
+    if normalized.len() < 3 || normalized.len() > 96 {
+        return false;
+    }
+
+    let lower = normalized.to_ascii_lowercase();
+    let blocked_exact = [
+        "conference program",
+        "registration",
+        "speaker list",
+        "download brochure",
+        "event partners",
+        "more exhibitors",
+    ];
+    if blocked_exact.iter().any(|blocked| lower == *blocked) {
+        return false;
+    }
+
+    let blocked_fragments = [
+        "click here",
+        "learn more",
+        "read more",
+        "sponsor",
+        "speaker",
+        "conference",
+        "summit",
+        "expo 202",
+        "2026 exhibitors",
+        "2025 exhibitors",
+    ];
+    if blocked_fragments
+        .iter()
+        .any(|blocked| lower.contains(blocked))
+    {
+        return false;
+    }
+
+    let alpha_count = normalized
+        .chars()
+        .filter(|character| character.is_ascii_alphabetic())
+        .count();
+    let token_count = normalized.split_whitespace().count();
+    alpha_count >= 2 && token_count <= 8
+}
+
+#[cfg(feature = "llm")]
+fn recommendation_label(recommendation: &Recommendation) -> &'static str {
+    match recommendation {
+        Recommendation::AddNow => "add_now",
+        Recommendation::ReviewRequired => "review_required",
+        Recommendation::MonitorFurther => "monitor_further",
+        Recommendation::Discard => "discard",
+    }
+}
+
+#[cfg(feature = "llm")]
+async fn persist_dynamic_discovery_candidates(
+    store: &Arc<PgStore>,
+    candidates: &[PoiCandidate],
+    discovered: &[DiscoveredEntity],
+    inserted_names: &mut HashSet<String>,
+    now: chrono::DateTime<Utc>,
+) -> Result<u64> {
+    let insert_limit = std::env::var("CRAWL_DYNAMIC_DISCOVERY_INSERT_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20)
+        .clamp(1, 200);
+
+    let discovered_by_name: HashMap<String, &DiscoveredEntity> = discovered
+        .iter()
+        .map(|entity| (entity.normalized_name.to_ascii_lowercase(), entity))
+        .collect();
+
+    let mut inserted = 0_u64;
+    for candidate in candidates {
+        if inserted as usize >= insert_limit {
+            break;
+        }
+        if !matches!(
+            candidate.entity_type,
+            EntityType::Company | EntityType::Organization
+        ) {
+            continue;
+        }
+        if !matches!(
+            candidate.recommended_action,
+            Recommendation::AddNow | Recommendation::ReviewRequired
+        ) {
+            continue;
+        }
+        if candidate.confidence < 0.72 {
+            continue;
+        }
+        if candidate.co_occurrence_count == 0 && candidate.source_diversity < 2 {
+            continue;
+        }
+
+        let Some(name) = normalize_dynamic_company_name(&candidate.name) else {
+            continue;
+        };
+        if !is_discoverable_dynamic_company_name(&name) {
+            continue;
+        }
+
+        let dedup_key = name.to_ascii_lowercase();
+        if !inserted_names.insert(dedup_key.clone()) {
+            continue;
+        }
+        if store.get_company_by_name_ci(&name).await?.is_some() {
+            continue;
+        }
+
+        let discovered_entity = discovered_by_name.get(&dedup_key).copied();
+        let mut company = Company::new(
+            name.clone(),
+            CompanyType::Other("crawl_discovered".to_string()),
+        );
+        company.metadata = serde_json::json!({
+            "discovered_via": "crawl_dynamic_discovery",
+            "recommended_action": recommendation_label(&candidate.recommended_action),
+            "confidence": candidate.confidence,
+            "emergence_score": candidate.emergence_score,
+            "co_occurrence_count": candidate.co_occurrence_count,
+            "source_diversity": candidate.source_diversity,
+            "context": discovered_entity
+                .map(|entity| crate::truncate_text(&entity.context, 220))
+                .unwrap_or_default(),
+            "source_url": discovered_entity
+                .map(|entity| entity.source_url.clone())
+                .unwrap_or_default(),
+            "topics": discovered_entity
+                .map(|entity| entity.topics.clone())
+                .unwrap_or_default(),
+            "geography": discovered_entity
+                .map(|entity| entity.geography.clone())
+                .unwrap_or_default(),
+            "associated_entities": discovered_entity
+                .map(|entity| entity.associated_entities.clone())
+                .unwrap_or_default(),
+            "is_competitor": false,
+            "discovery_track": "crawl_dynamic",
+        });
+        company.created_at = now;
+        company.updated_at = now;
+
+        store.insert_company(&company).await?;
+        inserted += 1;
+        tracing::info!(
+            company = %company.name,
+            confidence = candidate.confidence,
+            recommendation = %recommendation_label(&candidate.recommended_action),
+            "crawl_cycle: inserted dynamically discovered company"
+        );
+    }
+
+    Ok(inserted)
+}
+
+#[allow(clippy::disallowed_methods)]
 pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(JobKind::CrawlCycle);
     run.start();
@@ -125,8 +320,16 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         "crawl_cycle: entity name index loaded for observation linking"
     );
 
+    #[cfg(feature = "llm")]
+    let mut dynamic_discovery =
+        DynamicPoiDiscovery::new(entity_lookup.keys().cloned().collect::<Vec<_>>());
+    #[cfg(feature = "llm")]
+    let mut discovered_company_names: HashSet<String> = HashSet::new();
+
     let mut ingested: u64 = 0;
     let mut entity_linked: u64 = 0;
+    #[allow(unused_mut)]
+    let mut dynamically_discovered_companies: u64 = 0;
     let mut errors: u64 = 0;
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
@@ -186,9 +389,18 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                     // downstream jobs (recipe_fire) can attribute the observation.
                     let linkable_text = format!(
                         "{} {} {}",
-                        obs_value.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                        obs_value.get("description").and_then(|v| v.as_str()).unwrap_or(""),
-                        obs_value.get("body_excerpt").and_then(|v| v.as_str()).unwrap_or(""),
+                        obs_value
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
+                        obs_value
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
+                        obs_value
+                            .get("body_excerpt")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
                     );
                     if let Some(eid) = match_entity_in_text(&linkable_text, &entity_matcher) {
                         o.entity_id = Some(eid);
@@ -201,6 +413,52 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                         ingested += 1;
                         if obs.entity_id.is_some() {
                             entity_linked += 1;
+                        }
+                        #[cfg(feature = "llm")]
+                        {
+                            let discovery_text = format!(
+                                "{}\n{}\n{}",
+                                obs_value
+                                    .get("title")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or(""),
+                                obs_value
+                                    .get("description")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or(""),
+                                obs_value
+                                    .get("body_excerpt")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or(""),
+                            );
+                            let discovered = dynamic_discovery.process_content(
+                                &discovery_text,
+                                url,
+                                Utc::now().timestamp(),
+                            );
+                            if !discovered.is_empty() {
+                                let candidates = dynamic_discovery.generate_candidates(&discovered);
+                                match persist_dynamic_discovery_candidates(
+                                    store,
+                                    &candidates,
+                                    &discovered,
+                                    &mut discovered_company_names,
+                                    Utc::now(),
+                                )
+                                .await
+                                {
+                                    Ok(inserted) => {
+                                        dynamically_discovered_companies += inserted;
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            source = %src.slug,
+                                            error = %error,
+                                            "crawl_cycle: dynamic discovery persistence failed"
+                                        );
+                                    }
+                                }
+                            }
                         }
                         successful_sources.insert(src.slug.clone());
                     }
@@ -286,11 +544,12 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: {}/{} sources attempted; {} observations ingested ({} entity-linked), {} errors; success_ratio={:.2}",
+            "crawl_cycle: {}/{} sources attempted; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; success_ratio={:.2}",
             fetch_sources.len(),
             sources.iter().filter(|s| s.enabled).count(),
             ingested,
             entity_linked,
+            dynamically_discovered_companies,
             errors,
             success_ratio,
         ),
@@ -302,6 +561,16 @@ pub(super) async fn run_pattern_mining(kind: &JobKind, store: &Arc<PgStore>) -> 
     let mut run = JobRun::new(kind.clone());
     run.start();
     let since = Utc::now() - chrono::Duration::hours(24);
+
+    // Materialize candidates from recent observations before reading stats
+    match store.materialize_pattern_candidates(since).await {
+        Ok(n) => tracing::info!(
+            candidates_materialized = n,
+            "pattern_mining: materialized candidates"
+        ),
+        Err(e) => tracing::warn!(error = %e, "pattern_mining: candidate materialization failed"),
+    }
+
     let mining_stats = match super::resilience::run_stage_with_retry(
         "pattern_mining.load_stats",
         NIGHTLY_STAGE_TIMEOUT,
@@ -399,6 +668,16 @@ pub(super) async fn run_hypothesis_generation(kind: &JobKind, store: &Arc<PgStor
 pub(super) async fn run_feature_drift_check(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
+
+    // Materialize feature rows from recent observations before checking drift
+    match store.materialize_feature_rows().await {
+        Ok(n) => tracing::info!(
+            features_materialized = n,
+            "feature_drift_check: materialized features"
+        ),
+        Err(e) => tracing::warn!(error = %e, "feature_drift_check: feature materialization failed"),
+    }
+
     let drift_stats = match super::resilience::run_stage_with_retry(
         "feature_drift_check.load_stats",
         NIGHTLY_STAGE_TIMEOUT,

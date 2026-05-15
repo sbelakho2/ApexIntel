@@ -480,25 +480,39 @@ impl BreachMonitor {
 
         // Step 1: submit search
         let search_url = "https://2.intelx.io/intelligent/search";
-        let search_body = serde_json::json!({
-            "term": query,
-            "buckets": [],
-            "lookuplevel": 0,
-            "maxresults": 20,
-            "timeout": 10,
-            "datefrom": "",
-            "dateto": "",
-            "sort": 4,
-            "media": 0,
-            "terminate": []
-        });
+        #[derive(Serialize)]
+        struct IntelXSearchBody<'a> {
+            term: &'a str,
+            buckets: Vec<String>,
+            lookuplevel: u8,
+            maxresults: u8,
+            timeout: u8,
+            datefrom: &'static str,
+            dateto: &'static str,
+            sort: u8,
+            media: u8,
+            terminate: Vec<String>,
+        }
+
+        let search_body = IntelXSearchBody {
+            term: query,
+            buckets: Vec::new(),
+            lookuplevel: 0,
+            maxresults: 20,
+            timeout: 10,
+            datefrom: "",
+            dateto: "",
+            sort: 4,
+            media: 0,
+            terminate: Vec::new(),
+        };
 
         let search_resp = self
             .client
             .post(search_url)
             .header("x-key", &key)
             .header("Content-Type", "application/json")
-            .body(search_body.to_string())
+            .json(&search_body)
             .send()
             .await
             .context("IntelX search submit")?;
@@ -547,7 +561,7 @@ impl BreachMonitor {
         let records = results.records.unwrap_or_default();
         let events: Vec<BreachEvent> = records
             .into_iter()
-            .filter_map(|r| {
+            .map(|r| {
                 let name = r.name.unwrap_or_else(|| {
                     format!("intelx-{}", r.system_id.as_deref().unwrap_or("unknown"))
                 });
@@ -556,7 +570,7 @@ impl BreachMonitor {
                     .as_deref()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc));
-                Some(BreachEvent {
+                BreachEvent {
                     source: "intelx".into(),
                     breach_name: name,
                     domain: query.to_string(),
@@ -575,7 +589,7 @@ impl BreachMonitor {
                         .system_id
                         .map(|id| format!("https://intelx.io/?did={}", id)),
                     paste_snippet: None,
-                })
+                }
             })
             .collect();
 
@@ -616,7 +630,7 @@ impl BreachMonitor {
             )
         } else {
             // Public endpoint — no key needed but capped at recent 25
-            format!("https://scrape.pastebin.com/api_scraping.php?limit=25")
+            "https://scrape.pastebin.com/api_scraping.php?limit=25".to_string()
         };
 
         let list_resp = self
@@ -812,17 +826,24 @@ mod tests {
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
+    #[allow(clippy::disallowed_methods)]
     #[tokio::test]
     async fn monitor_constructs_without_keys() {
-        let monitor = BreachMonitor::new(None, None, None).unwrap();
+        let monitor = BreachMonitor::new(None, None, None)
+            .unwrap_or_else(|error| panic!("breach monitor should build: {error}"));
         // Without HIBP key, domain check returns empty
-        let result = monitor.check_domain("example.com").await.unwrap();
+        let result = monitor
+            .check_domain("example.com")
+            .await
+            .unwrap_or_else(|error| panic!("domain check without key should succeed: {error}"));
         assert!(result.is_empty());
     }
 
+    #[allow(clippy::disallowed_methods)]
     #[tokio::test]
     async fn password_range_check_bad_prefix() {
-        let monitor = BreachMonitor::new(None, None, None).unwrap();
+        let monitor = BreachMonitor::new(None, None, None)
+            .unwrap_or_else(|error| panic!("breach monitor should build: {error}"));
         let result = monitor.check_password_hash_prefix("abc").await;
         assert!(result.is_err()); // too short
     }

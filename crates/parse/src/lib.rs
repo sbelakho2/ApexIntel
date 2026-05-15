@@ -1,5 +1,7 @@
+pub mod award;
 pub mod cert;
 pub mod commodity;
+pub mod directory;
 pub mod html;
 pub mod job_post;
 pub mod multilingual;

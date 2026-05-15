@@ -3,34 +3,36 @@ use regex::{Regex, RegexBuilder};
 use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
-static RE_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static RE_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s+").unwrap_or_else(|error| panic!("invalid whitespace regex: {error}"))
+});
 static RE_SCRIPT_STYLE_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     RegexBuilder::new(r"(?is)<(script|style)[^>]*>.*?</(script|style)>")
         .size_limit(1_000_000)
         .dfa_size_limit(1_000_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid script/style regex: {error}"))
 });
 static RE_HTML_TAG: LazyLock<Regex> = LazyLock::new(|| {
     RegexBuilder::new(r"<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[^>]+>")
         .size_limit(1_000_000)
         .dfa_size_limit(1_000_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid HTML tag regex: {error}"))
 });
 static RE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
     RegexBuilder::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid email regex: {error}"))
 });
 static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| {
     RegexBuilder::new(r"\+?\d[\d\s\-().]{7,}\d")
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid phone regex: {error}"))
 });
 
 static RE_BOILERPLATE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -43,7 +45,9 @@ static RE_BOILERPLATE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)©\s*\d{4}",
     ]
     .iter()
-    .map(|pat| Regex::new(pat).unwrap())
+    .map(|pat| {
+        Regex::new(pat).unwrap_or_else(|error| panic!("invalid boilerplate regex `{pat}`: {error}"))
+    })
     .collect()
 });
 
@@ -89,17 +93,10 @@ pub fn strip_diacritics(text: &str) -> String {
         .collect()
 }
 
-/// Truncate text to max character count for safe snippet lengths.
-/// Returns text bounded to `max_chars`, with ellipsis appended when truncated.
-
 /// Parse a locale-tolerant number string into f64.
 /// Handles commas as thousand separators or decimal separators.
 pub fn parse_number(text: &str) -> Option<f64> {
-    let mut s = text
-        .trim()
-        .replace('\u{00a0}', "")
-        .replace(' ', "")
-        .replace('\'', "");
+    let mut s = text.trim().replace(['\u{00a0}', ' ', '\''], "");
     if s.is_empty() {
         return None;
     }
@@ -204,19 +201,19 @@ pub fn is_valid_date_range(text: &str) -> bool {
     // - January 15-17, 2025
     // - 15-17 March 2025
     if Regex::new(r"(?i)^(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\s*[-–]\s*\d{1,2},?\s+\d{4}$")
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid month-first date range regex: {error}"))
         .is_match(raw)
     {
         return true;
     }
     if Regex::new(r"(?i)^\d{1,2}\s*[-–]\s*\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}$")
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid day-first date range regex: {error}"))
         .is_match(raw)
     {
         return true;
     }
     if Regex::new(r"^\d{4}[-/]\d{2}[-/]\d{2}\s*(?:to|[-–])\s*\d{4}[-/]\d{2}[-/]\d{2}$")
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid ISO date range regex: {error}"))
         .is_match(raw)
     {
         return true;

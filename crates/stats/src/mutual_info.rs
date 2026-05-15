@@ -1,12 +1,12 @@
-/// Mutual information estimation via binning.
-///
-/// Estimates are reported in bits after Miller-Madow bias correction. All functions filter out
-/// `NaN` / `±∞` via the `min_max` helper so callers do not need to
-/// pre-clean their data.
-///
-/// **Bins parameter**: must be ≥ 1.  `bins = 0` is treated as having
-/// insufficient data and returns `0.0` immediately.  More bins improve
-/// resolution but require more data; a rule of thumb is `bins ≈ √(n/5)`.
+//! Mutual information estimation via binning.
+//!
+//! Estimates are reported in bits after Miller-Madow bias correction. All functions filter out
+//! `NaN` / `±∞` via the `min_max` helper so callers do not need to
+//! pre-clean their data.
+//!
+//! **Bins parameter**: must be ≥ 1.  `bins = 0` is treated as having
+//! insufficient data and returns `0.0` immediately.  More bins improve
+//! resolution but require more data; a rule of thumb is `bins ≈ √(n/5)`.
 
 /// Estimate mutual information between two variables using binned estimation.
 ///
@@ -165,7 +165,11 @@ fn miller_madow_bias_correction_bits(sample_count: usize, x_bins: usize, y_bins:
 }
 
 fn adaptive_bin_count(data: &[f64]) -> usize {
-    let mut finite: Vec<f64> = data.iter().copied().filter(|value| value.is_finite()).collect();
+    let mut finite: Vec<f64> = data
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect();
     if finite.len() < 4 {
         return 1;
     }
@@ -267,7 +271,7 @@ mod tests {
         let y: Vec<f64> = (0..100).map(|i| i as f64 + 1.0).collect();
         let nmi = normalized_mi(&x, &y, 10);
         assert!(
-            nmi >= 0.0 && nmi <= 1.0,
+            (0.0..=1.0).contains(&nmi),
             "NMI should be in [0,1], got {}",
             nmi
         );

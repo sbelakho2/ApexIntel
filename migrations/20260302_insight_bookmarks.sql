@@ -8,7 +8,7 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS insight_bookmarks (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     insight_id  UUID NOT NULL REFERENCES insights(id) ON DELETE CASCADE,
-    user_id     TEXT NOT NULL DEFAULT 'default',
+    user_id     TEXT NOT NULL,
     note        TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(insight_id, user_id)

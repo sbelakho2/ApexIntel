@@ -242,7 +242,11 @@ impl TwitterScraper {
                             .map(|h| format!("https://twitter.com{}", h))
                             .unwrap_or_default();
 
-                        let post_id = post_url.split('/').last().unwrap_or("unknown").to_string();
+                        let post_id = post_url
+                            .split('/')
+                            .next_back()
+                            .unwrap_or("unknown")
+                            .to_string();
 
                         // Extract author handle
                         let author = extract_attr(block, "class=\"username\"")
@@ -318,7 +322,7 @@ fn strip_html_tags(html: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
-fn extract_attr<'a>(html: &'a str, attr: &str) -> Option<String> {
+fn extract_attr(html: &str, attr: &str) -> Option<String> {
     let start_idx = html.find(attr)?;
     let after = &html[start_idx + attr.len()..];
     let val_start = after.find('"')? + 1;
@@ -343,7 +347,8 @@ mod tests {
 
     #[test]
     fn map_tweets_handles_empty() {
-        let scraper = TwitterScraper::new(None, None).unwrap();
+        let scraper = TwitterScraper::new(None, None)
+            .unwrap_or_else(|error| panic!("twitter scraper should build: {error}"));
         let posts = scraper.map_tweets(vec![]);
         assert!(posts.is_empty());
     }

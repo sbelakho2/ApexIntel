@@ -37,6 +37,7 @@ pub struct ComponentCheck {
 // Deep health check runner
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::disallowed_methods)]
 pub async fn deep_health_check(
     pool: &sqlx::PgPool,
     redis_url: &str,
@@ -55,7 +56,14 @@ pub async fn deep_health_check(
         check_schema(pool),
     );
 
-    let checks = vec![pg_check, redis_check, nats_check, minio_check, llm_check, table_check];
+    let checks = vec![
+        pg_check,
+        redis_check,
+        nats_check,
+        minio_check,
+        llm_check,
+        table_check,
+    ];
 
     // ── Overall status ──────────────────────────────────────────
     let overall = if checks.iter().any(|c| c.status == "error") {
@@ -88,7 +96,12 @@ async fn check_postgres(pool: &sqlx::PgPool) -> ComponentCheck {
                 component: "postgresql".into(),
                 status: "ok".into(),
                 latency_ms: start.elapsed().as_millis() as u64,
-                message: Some(format!("pool: {}/{} active, {} idle", size - idle as u32, size, idle)),
+                message: Some(format!(
+                    "pool: {}/{} active, {} idle",
+                    size - idle as u32,
+                    size,
+                    idle
+                )),
             }
         }
         Err(e) => ComponentCheck {

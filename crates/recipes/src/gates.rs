@@ -328,8 +328,10 @@ pub fn run_all_gates(evidence: &GateEvidence, config: &GateConfig) -> Vec<GateRe
     }
 
     let second = run_all_gates_once(evidence, config);
-    let first_bytes = serde_json::to_vec(&first).expect("gate results must serialize");
-    let second_bytes = serde_json::to_vec(&second).expect("gate results must serialize");
+    let first_bytes = serde_json::to_vec(&first)
+        .unwrap_or_else(|error| panic!("gate results must serialize: {error}"));
+    let second_bytes = serde_json::to_vec(&second)
+        .unwrap_or_else(|error| panic!("gate results must serialize: {error}"));
     assert_eq!(
         first_bytes, second_bytes,
         "reproducibility_check detected non-deterministic gate results"
@@ -391,6 +393,8 @@ pub fn format_gate_report(evidence: &GateEvidence, config: &GateConfig) -> Strin
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     fn passing_evidence() -> GateEvidence {

@@ -183,7 +183,7 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
         .map(|row| crate::weekly::MemoWarning {
             id: row.id.to_string(),
             headline: row.title,
-            impact: row.description.unwrap_or_else(|| row.warning_type),
+            impact: row.description.unwrap_or(row.warning_type),
             confidence: row.confidence.unwrap_or(0.0).clamp(0.0, 1.0),
         })
         .collect();
@@ -269,12 +269,10 @@ pub async fn build_memo_inputs(ctx: &StorageContext) -> Result<MemoInputs> {
 mod tests {
     use super::*;
     use apex_store::postgres::{ProductionRecipeRow, StagedRecipeRow};
-    use uuid::Uuid;
 
     #[test]
     fn staged_recipe_mapping_uses_recipe_code_and_clamps_counts() {
         let row = StagedRecipeRow {
-            id: Uuid::new_v4(),
             recipe_code: "R-STAGE-1".to_string(),
             precision_observed: 0.9,
             recall_observed: 0.55,
@@ -294,7 +292,6 @@ mod tests {
     #[test]
     fn production_recipe_mapping_uses_recent_warning_volume() {
         let row = ProductionRecipeRow {
-            id: Uuid::new_v4(),
             recipe_code: "R-PROD-1".to_string(),
             precision_current: 0.78,
             precision_baseline: 0.75,

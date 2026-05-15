@@ -13,6 +13,9 @@
     <div><span class="font-black uppercase text-muted-foreground">Warnings</span><br>{{ warning_count }}</div>
     <div><span class="font-black uppercase text-muted-foreground">Insights</span><br>{{ insight_count }}</div>
   </div>
+  {% if !strategic_context.is_empty() %}
+  <p class="mt-2 text-[10px] italic text-muted-foreground">{{ strategic_context }}</p>
+  {% endif %}
   {% if let Some(change) = recent_change %}
   <p class="mt-2 text-[10px] text-muted-foreground">Latest: {{ change }}</p>
   {% endif %}

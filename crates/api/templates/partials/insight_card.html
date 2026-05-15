@@ -7,7 +7,7 @@
       <a href="/insights/{{ id }}" class="text-sm font-semibold hover:underline">{{ title }}</a>
       <div class="mt-1.5 flex flex-wrap items-center gap-2">
         <span class="mobile-inline-chip inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ category }}</span>
-        {% call m::confidence_meter(confidence, "") %}
+        <span title="Confidence score from {{ evidence_count }} source{% if evidence_count != 1 %}s{% endif %}{% if !source_diversity.is_empty() && source_diversity != "None" %} ({{ source_diversity }} diversity){% endif %}">{% call m::confidence_meter(confidence, "") %}</span>
       </div>
     </div>
     <button hx-post="/insights/{{ id }}/bookmark" hx-target="#insight-card-{{ id }}" hx-swap="outerHTML"
@@ -20,6 +20,9 @@
     <span>{{ company_name }}</span>
     <span class="tabular-nums">{{ created_at }}</span>
   </div>
+  {% if !summary_preview.is_empty() %}
+  <p class="mt-1.5 text-[11px] leading-snug text-muted-foreground line-clamp-2">{{ summary_preview }}</p>
+  {% endif %}
   {% if !tags.is_empty() %}
   <div class="mt-2 flex flex-wrap gap-1">
     {% for tag in tags %}{% call m::tag_pill(tag) %}{% endfor %}

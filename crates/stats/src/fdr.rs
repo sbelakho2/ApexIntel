@@ -1,9 +1,9 @@
-/// Benjamini-Hochberg False Discovery Rate correction.
-///
-/// The BH procedure ranks non-`NaN` p-values from smallest to largest and
-/// computes q-values as `min(p × m / rank, prev_q)` over the `m` non-`NaN`
-/// tests.  `NaN` p-values are preserved at their original positions in the
-/// output (B258).  All non-`NaN` q-values are clamped to `[0.0, 1.0]`.
+//! Benjamini-Hochberg False Discovery Rate correction.
+//!
+//! The BH procedure ranks non-`NaN` p-values from smallest to largest and
+//! computes q-values as `min(p × m / rank, prev_q)` over the `m` non-`NaN`
+//! tests.  `NaN` p-values are preserved at their original positions in the
+//! output (B258).  All non-`NaN` q-values are clamped to `[0.0, 1.0]`.
 
 /// Apply Benjamini-Hochberg FDR correction to a vector of p-values.
 ///
@@ -142,7 +142,7 @@ mod tests {
         let pvals = vec![0.01, 0.05, 0.10, 0.50, 0.99];
         let q = bh_correct(&pvals);
         for qv in &q {
-            assert!(*qv >= 0.0 && *qv <= 1.0, "q-value out of range: {}", qv);
+            assert!((0.0..=1.0).contains(qv), "q-value out of range: {}", qv);
         }
     }
 
@@ -173,7 +173,10 @@ mod tests {
         for (i, &qv) in q.iter().enumerate() {
             if i != 1 {
                 assert!(qv.is_finite(), "q[{i}] should be finite; got {qv}");
-                assert!(qv >= 0.0 && qv <= 1.0, "q[{i}] must be in [0,1]; got {qv}");
+                assert!(
+                    (0.0..=1.0).contains(&qv),
+                    "q[{i}] must be in [0,1]; got {qv}"
+                );
             }
         }
     }

@@ -1,6 +1,9 @@
 use leptos::*;
 
-use crate::{api, components::cards::{PageHeader, SurfaceCard}};
+use crate::{
+    api,
+    components::cards::{PageHeader, SurfaceCard},
+};
 
 #[component]
 pub fn SearchPage() -> impl IntoView {
@@ -39,7 +42,7 @@ pub fn SearchPage() -> impl IntoView {
                             </div>
                         </SurfaceCard>
                     }.into_view(),
-                    Err(message) => view! { <SurfaceCard title="Search" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                    Err(message) => view! { <SurfaceCard title="Search" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                 })}
             </Suspense>
         </div>

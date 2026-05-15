@@ -1,9 +1,9 @@
 pub mod brier_score_heatmap;
-pub mod confidence_band;
-pub mod community_graph;
 pub mod causal_graph;
+pub mod community_graph;
+pub mod confidence_band;
 pub mod probability_gauge;
 pub mod reliability_diagram;
-pub mod sparkline;
 pub mod source_entropy_gauge;
+pub mod sparkline;
 pub mod survival_curve;

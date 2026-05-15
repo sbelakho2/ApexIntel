@@ -7,9 +7,18 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-BASE_URL = "https://starzerp.fi"
-USERNAME = "aaron"
-SESSION_SECRET = "94eaff21c290ca4ff353ed53470995cbbb2f2899b073bde2ada4d7d85ed97143"
+import os
+
+BASE_URL = os.getenv("APEX_BASE_URL", "https://starzerp.fi")
+USERNAME = os.getenv("APEX_E2E_USERNAME", "aaron")
+SESSION_SECRET = os.getenv(
+    "APEX_HMAC_SECRET",
+    os.getenv("SESSION_SECRET", ""),
+)
+if not SESSION_SECRET:
+    raise RuntimeError(
+        "APEX_HMAC_SECRET or SESSION_SECRET environment variable must be set"
+    )
 
 ROUTES = {
     "/": "overview",

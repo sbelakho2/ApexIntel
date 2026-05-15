@@ -126,22 +126,18 @@ impl EdgeExpiryEngine {
         edges.iter().filter(|e| !self.is_stale(e, now)).collect()
     }
 
-    /// SQL to flag stale edges in the database.
+    /// SQL to flag stale edges in the database. Uses `$1` for parameterized bind.
     pub fn flag_stale_sql(&self) -> String {
-        format!(
-            "UPDATE graph_edges SET stale = true \
-             WHERE last_seen < NOW() - INTERVAL '{} days' AND stale = false",
-            self.config.stale_threshold_days
-        )
+        "UPDATE graph_edges SET stale = true \
+         WHERE last_seen < NOW() - ($1::text || ' days')::INTERVAL AND stale = false"
+            .to_string()
     }
 
-    /// SQL to archive (soft-delete) very old edges.
+    /// SQL to archive (soft-delete) very old edges. Uses `$1` for parameterized bind.
     pub fn archive_sql(&self) -> String {
-        format!(
-            "UPDATE graph_edges SET archived = true \
-             WHERE last_seen < NOW() - INTERVAL '{} days'",
-            self.config.archive_threshold_days
-        )
+        "UPDATE graph_edges SET archived = true \
+         WHERE last_seen < NOW() - ($1::text || ' days')::INTERVAL"
+            .to_string()
     }
 
     /// SQL to exclude stale edges from influence queries.
@@ -232,8 +228,8 @@ mod tests {
     fn test_sql_generation() {
         let engine = EdgeExpiryEngine::with_defaults();
         let sql = engine.flag_stale_sql();
-        assert!(sql.contains("180 days"));
+        assert!(sql.contains("$1"), "SQL must use parameterized $1 bind");
         let archive = engine.archive_sql();
-        assert!(archive.contains("365 days"));
+        assert!(archive.contains("$1"), "SQL must use parameterized $1 bind");
     }
 }

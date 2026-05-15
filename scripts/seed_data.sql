@@ -1,5 +1,6 @@
 -- ApexIntel Seed Data — Real EMS/Electronics Supply Chain Companies
--- Run with: PGPASSWORD=ApexIntel2026Secure psql -h 127.0.0.1 -U apexintel -d apexintel -f seed_data.sql
+-- Run with: PGPASSWORD="${PGPASSWORD}" psql -h 127.0.0.1 -U apexintel -d apexintel -f seed_data.sql
+--         or: PGPASSWORD="${DB_PASSWORD}" psql -h 127.0.0.1 -U apexintel -d apexintel -f seed_data.sql
 
 BEGIN;
 

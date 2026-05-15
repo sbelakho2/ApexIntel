@@ -144,6 +144,8 @@ impl PgStore {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::{normalize_memo_window, weekly_memo_from_parts};
     use chrono::{NaiveDate, Utc};
     use serde_json::json;

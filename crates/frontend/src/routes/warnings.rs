@@ -20,7 +20,11 @@ pub fn WarningsPage() -> impl IntoView {
         |(page, severity)| async move {
             api::fetch_warnings(
                 page,
-                if severity.is_empty() { None } else { Some(severity) },
+                if severity.is_empty() {
+                    None
+                } else {
+                    Some(severity)
+                },
             )
             .await
         },
@@ -33,7 +37,7 @@ pub fn WarningsPage() -> impl IntoView {
             <PageHeader
                 eyebrow="Operational Feed"
                 title="Warnings"
-                subtitle="Live warnings are loaded from the JSON API with severity filters and WASM-side pagination."
+                subtitle="Operational risk signals filtered by severity with calibrated confidence scoring."
             />
 
             <FilterBar title="Severity">
@@ -52,10 +56,10 @@ pub fn WarningsPage() -> impl IntoView {
             <Suspense fallback=move || view! { <SurfaceCard title="Warnings" subtitle="Loading live warning feed."><p class="muted-copy">"Loading..."</p></SurfaceCard> }>
                 {move || warnings.get().map(|result| match result {
                     Ok(payload) => view! {
-                        <SurfaceCard title="Latest Warnings" subtitle="Confidence is shown directly from the API payload while richer probability fields await backend exposure.">
+                        <SurfaceCard title="Latest Warnings" subtitle="Severity-rated warnings with calibrated probability and Bayesian interpretation.">
                             <div class="warning-list">
                                 <For each=move || payload.items.clone() key=|item| item.id.clone() let:item>
-                                    {let severity_badge = format!("severity-chip severity-{}", item.severity.to_lowercase()); let severity_text = item.severity.clone(); let calibrated_probability = item.calibrated_probability.unwrap_or(item.confidence); let bayesian_badge = item.bayesian_interpretation.clone().map(|interpretation| view! { <BayesianBadge interpretation=interpretation /> }.into_view()).unwrap_or_else(|| view! { <></> }.into_view()); let evidence_quality_badge = item.evidence_quality_label.clone().map(|label| view! { <span class="source-badge tier-established">{label}</span> }.into_view()).unwrap_or_else(|| view! { <></> }.into_view()); let confidence_interval_copy = item.confidence_interval.clone(); let confidence_interval_view = confidence_interval_copy.as_ref().map(|interval| format!("95% CI {:.0}-{:.0}%", interval.lower * 100.0, interval.upper * 100.0)).map(|text| view! { <span class="muted-copy">{text}</span> }.into_view()).unwrap_or_else(|| view! { <></> }.into_view()); view! {
+                                    {let severity_badge = format!("severity-chip severity-{}", item.severity.to_lowercase()); let severity_text = item.severity.clone(); let calibrated_probability = item.calibrated_probability.unwrap_or(item.confidence); let bayesian_badge = item.bayesian_interpretation.clone().map(|interpretation| view! { <BayesianBadge interpretation=interpretation /> }.into_view()).unwrap_or_else(|| ().into_view()); let evidence_quality_badge = item.evidence_quality_label.clone().map(|label| view! { <span class="source-badge tier-established">{label}</span> }.into_view()).unwrap_or_else(|| ().into_view()); let confidence_interval_copy = item.confidence_interval.clone(); let confidence_interval_view = confidence_interval_copy.as_ref().map(|interval| format!("95% CI {:.0}-{:.0}%", interval.lower * 100.0, interval.upper * 100.0)).map(|text| view! { <span class="muted-copy">{text}</span> }.into_view()).unwrap_or_else(|| ().into_view()); view! {
                                     <article class="warning-item">
                                         <div class="warning-item-head">
                                             <div>
@@ -87,7 +91,7 @@ pub fn WarningsPage() -> impl IntoView {
                     }
                     .into_view(),
                     Err(message) => view! {
-                        <SurfaceCard title="Warnings" subtitle="The API request failed.">
+                        <SurfaceCard title="Warnings" subtitle="The API request failed. Try refreshing the page.">
                             <p class="error-copy">{message}</p>
                         </SurfaceCard>
                     }

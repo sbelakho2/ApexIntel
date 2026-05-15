@@ -3,27 +3,59 @@ use std::collections::{HashMap, HashSet};
 use apex_shared::{BridgeNode, CommunityCluster, GraphNodeLayout, SnapshotDelta, TypedEdge};
 use leptos::*;
 
-use crate::{api, components::{cards::{PageHeader, SurfaceCard}, charts::community_graph::CommunityGraph}};
+use crate::{
+    api,
+    components::{
+        cards::{PageHeader, SurfaceCard},
+        charts::community_graph::CommunityGraph,
+    },
+};
 
 fn snapshot_delta(previous: &api::GraphOverview, current: &api::GraphOverview) -> SnapshotDelta {
     let previous_edges = previous
         .edges
         .iter()
-        .map(|edge| (edge.source.clone(), edge.target.clone(), edge.edge_type.clone()))
+        .map(|edge| {
+            (
+                edge.source.clone(),
+                edge.target.clone(),
+                edge.edge_type.clone(),
+            )
+        })
         .collect::<HashSet<_>>();
     let current_edges = current
         .edges
         .iter()
-        .map(|edge| (edge.source.clone(), edge.target.clone(), edge.edge_type.clone()))
+        .map(|edge| {
+            (
+                edge.source.clone(),
+                edge.target.clone(),
+                edge.edge_type.clone(),
+            )
+        })
         .collect::<HashSet<_>>();
-    let previous_nodes = previous.nodes.iter().map(|node| node.id.clone()).collect::<HashSet<_>>();
-    let current_nodes = current.nodes.iter().map(|node| node.id.clone()).collect::<HashSet<_>>();
+    let previous_nodes = previous
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<HashSet<_>>();
+    let current_nodes = current
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<HashSet<_>>();
 
     SnapshotDelta {
         added_edges: current
             .edges
             .iter()
-            .filter(|edge| !previous_edges.contains(&(edge.source.clone(), edge.target.clone(), edge.edge_type.clone())))
+            .filter(|edge| {
+                !previous_edges.contains(&(
+                    edge.source.clone(),
+                    edge.target.clone(),
+                    edge.edge_type.clone(),
+                ))
+            })
             .map(|edge| TypedEdge {
                 source: edge.source.clone(),
                 target: edge.target.clone(),
@@ -34,7 +66,13 @@ fn snapshot_delta(previous: &api::GraphOverview, current: &api::GraphOverview) -
         removed_edges: previous
             .edges
             .iter()
-            .filter(|edge| !current_edges.contains(&(edge.source.clone(), edge.target.clone(), edge.edge_type.clone())))
+            .filter(|edge| {
+                !current_edges.contains(&(
+                    edge.source.clone(),
+                    edge.target.clone(),
+                    edge.edge_type.clone(),
+                ))
+            })
             .map(|edge| TypedEdge {
                 source: edge.source.clone(),
                 target: edge.target.clone(),
@@ -84,13 +122,21 @@ fn detect_communities(graph: &api::GraphOverview) -> HashMap<String, String> {
     }
 
     for edge in &graph.edges {
-        adjacency.entry(edge.source.clone()).or_default().push(edge.target.clone());
-        adjacency.entry(edge.target.clone()).or_default().push(edge.source.clone());
+        adjacency
+            .entry(edge.source.clone())
+            .or_default()
+            .push(edge.target.clone());
+        adjacency
+            .entry(edge.target.clone())
+            .or_default()
+            .push(edge.source.clone());
     }
 
     for _ in 0..8 {
         for node in &graph.nodes {
-            let Some(neighbors) = adjacency.get(&node.id) else { continue; };
+            let Some(neighbors) = adjacency.get(&node.id) else {
+                continue;
+            };
             let mut counts: HashMap<String, usize> = HashMap::new();
             for neighbor in neighbors {
                 if let Some(label) = labels.get(neighbor) {
@@ -106,7 +152,10 @@ fn detect_communities(graph: &api::GraphOverview) -> HashMap<String, String> {
     labels
 }
 
-fn build_communities(graph: &api::GraphOverview, labels: &HashMap<String, String>) -> Vec<CommunityCluster> {
+fn build_communities(
+    graph: &api::GraphOverview,
+    labels: &HashMap<String, String>,
+) -> Vec<CommunityCluster> {
     let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
     let names = graph
         .nodes
@@ -116,7 +165,12 @@ fn build_communities(graph: &api::GraphOverview, labels: &HashMap<String, String
 
     for node in &graph.nodes {
         grouped
-            .entry(labels.get(&node.id).cloned().unwrap_or_else(|| node.id.clone()))
+            .entry(
+                labels
+                    .get(&node.id)
+                    .cloned()
+                    .unwrap_or_else(|| node.id.clone()),
+            )
             .or_default()
             .push(node.id.clone());
     }
@@ -163,7 +217,11 @@ fn bridge_nodes(graph: &api::GraphOverview, labels: &HashMap<String, String>) ->
                 .iter()
                 .filter(|edge| edge.source == node_id || edge.target == node_id)
                 .filter_map(|edge| {
-                    let other = if edge.source == node_id { &edge.target } else { &edge.source };
+                    let other = if edge.source == node_id {
+                        &edge.target
+                    } else {
+                        &edge.source
+                    };
                     labels.get(other).cloned()
                 })
                 .collect::<HashSet<_>>()
@@ -171,12 +229,19 @@ fn bridge_nodes(graph: &api::GraphOverview, labels: &HashMap<String, String>) ->
                 .collect(),
         })
         .collect::<Vec<_>>();
-    bridges.sort_by(|a, b| b.betweenness_centrality.partial_cmp(&a.betweenness_centrality).unwrap_or(std::cmp::Ordering::Equal));
+    bridges.sort_by(|a, b| {
+        b.betweenness_centrality
+            .partial_cmp(&a.betweenness_centrality)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     bridges.truncate(8);
     bridges
 }
 
-fn force_layout(graph: &api::GraphOverview, labels: &HashMap<String, String>) -> Vec<GraphNodeLayout> {
+fn force_layout(
+    graph: &api::GraphOverview,
+    labels: &HashMap<String, String>,
+) -> Vec<GraphNodeLayout> {
     let count = graph.nodes.len().max(1) as f64;
     let mut positions = graph
         .nodes
@@ -184,7 +249,10 @@ fn force_layout(graph: &api::GraphOverview, labels: &HashMap<String, String>) ->
         .enumerate()
         .map(|(index, node)| {
             let angle = index as f64 / count * std::f64::consts::TAU;
-            (node.id.clone(), (500.0 + angle.cos() * 220.0, 340.0 + angle.sin() * 220.0))
+            (
+                node.id.clone(),
+                (500.0 + angle.cos() * 220.0, 340.0 + angle.sin() * 220.0),
+            )
         })
         .collect::<HashMap<_, _>>();
 
@@ -232,15 +300,21 @@ fn force_layout(graph: &api::GraphOverview, labels: &HashMap<String, String>) ->
         for node in &graph.nodes {
             let (dx, dy) = delta[&node.id];
             let (x, y) = positions[&node.id];
-            positions.insert(node.id.clone(), ((x + dx).clamp(80.0, 920.0), (y + dy).clamp(80.0, 680.0)));
+            positions.insert(
+                node.id.clone(),
+                ((x + dx).clamp(80.0, 920.0), (y + dy).clamp(80.0, 680.0)),
+            );
         }
     }
 
-    let degree_map = graph.edges.iter().fold(HashMap::<String, usize>::new(), |mut map, edge| {
-        *map.entry(edge.source.clone()).or_insert(0) += 1;
-        *map.entry(edge.target.clone()).or_insert(0) += 1;
-        map
-    });
+    let degree_map = graph
+        .edges
+        .iter()
+        .fold(HashMap::<String, usize>::new(), |mut map, edge| {
+            *map.entry(edge.source.clone()).or_insert(0) += 1;
+            *map.entry(edge.target.clone()).or_insert(0) += 1;
+            map
+        });
     let max_degree = degree_map.values().copied().max().unwrap_or(1) as f64;
 
     graph
@@ -253,7 +327,10 @@ fn force_layout(graph: &api::GraphOverview, labels: &HashMap<String, String>) ->
                 label: node.label.clone(),
                 x,
                 y,
-                community_id: labels.get(&node.id).cloned().unwrap_or_else(|| node.id.clone()),
+                community_id: labels
+                    .get(&node.id)
+                    .cloned()
+                    .unwrap_or_else(|| node.id.clone()),
                 betweenness: degree_map.get(&node.id).copied().unwrap_or(0) as f64 / max_degree,
             }
         })
@@ -313,7 +390,21 @@ pub fn GraphPage() -> impl IntoView {
                             </div>
                         }.into_view()
                     }
-                    Err(message) => view! { <SurfaceCard title="Community View" subtitle="The graph request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                    Err(message) => view! {
+                        <div class="chart-layout chart-layout-graph">
+                            <div class="chart-scroll-shell chart-scroll-shell-wide">
+                                <SurfaceCard title="Community View" subtitle="The graph request failed.">
+                                    <p class="error-copy">{message}</p>
+                                </SurfaceCard>
+                            </div>
+                            <div class="graph-side-panel">
+                                <div class="graph-side-header">
+                                    <h3 class="graph-side-title">"Graph Unavailable"</h3>
+                                </div>
+                                <p class="muted-copy">"The graph workspace is still available while the data request is retried."</p>
+                            </div>
+                        </div>
+                    }.into_view(),
                 })}
             </Suspense>
         </div>

@@ -207,6 +207,9 @@ mod tests {
 
         let authorization = authorize_delete_all_warnings(&headers, &admin_auth_context())
             .expect("admin should be allowed");
-        assert_eq!(authorization.reason, "cleanup duplicate warnings after backfill");
+        assert_eq!(
+            authorization.reason,
+            "cleanup duplicate warnings after backfill"
+        );
     }
 }

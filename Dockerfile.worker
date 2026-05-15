@@ -25,6 +25,9 @@ COPY config/ /opt/apexintel/config/
 RUN mkdir -p /opt/apexintel/data /opt/apexintel/logs && \
     chown -R apexintel:apexintel /opt/apexintel
 
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=30s \
+    CMD test "$(cat /proc/1/comm)" = "apex-worker" || exit 1
+
 USER apexintel
 ENV RUST_LOG=info
 

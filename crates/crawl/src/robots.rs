@@ -108,7 +108,7 @@ impl RobotsRules {
         for pattern in &self.allowed {
             if path_matches(path, pattern) {
                 let len = pattern.len();
-                if best_allow.map_or(true, |prev| len > prev) {
+                if best_allow.is_none_or(|prev| len > prev) {
                     best_allow = Some(len);
                 }
             }
@@ -116,7 +116,7 @@ impl RobotsRules {
         for pattern in &self.disallowed {
             if path_matches(path, pattern) {
                 let len = pattern.len();
-                if best_disallow.map_or(true, |prev| len > prev) {
+                if best_disallow.is_none_or(|prev| len > prev) {
                     best_disallow = Some(len);
                 }
             }
@@ -149,8 +149,8 @@ fn path_matches(path: &str, pattern: &str) -> bool {
         return true; // Disallow all
     }
     // Extract end-of-path anchor ($) first, then handle wildcards.
-    let (pat, must_end) = if pattern.ends_with('$') {
-        (&pattern[..pattern.len() - 1], true)
+    let (pat, must_end) = if let Some(stripped) = pattern.strip_suffix('$') {
+        (stripped, true)
     } else {
         (pattern, false)
     };
@@ -333,7 +333,9 @@ Sitemap: https://example.com/sitemap.xml
     #[test]
     fn test_crawl_delay_duration() {
         let rules = RobotsRules::parse(SAMPLE_ROBOTS, "MyBot");
-        let delay = rules.crawl_delay_duration().unwrap();
+        let delay = rules
+            .crawl_delay_duration()
+            .unwrap_or_else(|| panic!("sample robots should include crawl delay"));
         assert_eq!(delay, Duration::from_secs(2));
     }
 

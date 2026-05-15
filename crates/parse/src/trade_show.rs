@@ -12,7 +12,7 @@ static RE_LOCATION: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid trade-show location regex: {error}"))
 });
 
 static DATE_RANGE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -27,7 +27,7 @@ static DATE_RANGE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
             .size_limit(100_000)
             .dfa_size_limit(100_000)
             .build()
-            .unwrap()
+            .unwrap_or_else(|error| panic!("invalid trade-show date-range regex `{p}`: {error}"))
     })
     .collect()
 });
@@ -37,7 +37,7 @@ static RE_BOOTH: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid trade-show booth regex: {error}"))
 });
 
 static RE_HALL: LazyLock<Regex> = LazyLock::new(|| {
@@ -45,7 +45,7 @@ static RE_HALL: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid trade-show hall regex: {error}"))
 });
 
 static RE_COUNTRY: LazyLock<Regex> = LazyLock::new(|| {
@@ -53,7 +53,7 @@ static RE_COUNTRY: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid trade-show country regex: {error}"))
 });
 
 static RE_SPEAKERS: LazyLock<Regex> = LazyLock::new(|| {
@@ -66,7 +66,7 @@ static RE_SPEAKERS: LazyLock<Regex> = LazyLock::new(|| {
     .size_limit(200_000)
     .dfa_size_limit(200_000)
     .build()
-    .unwrap()
+    .unwrap_or_else(|error| panic!("invalid trade-show speakers regex: {error}"))
 });
 
 /// Patterns that introduce a session/presentation topic near a speaker mention.
@@ -77,7 +77,7 @@ static RE_TOPIC: LazyLock<Regex> = LazyLock::new(|| {
     .size_limit(200_000)
     .dfa_size_limit(200_000)
     .build()
-    .unwrap()
+    .unwrap_or_else(|error| panic!("invalid trade-show topic regex: {error}"))
 });
 
 /// Extracted exhibitor or speaker from a trade show / conference.
@@ -118,8 +118,8 @@ pub fn extract_trade_show(body_text: &str, title: &str, url: &str) -> TradeShowE
     let normalized_body = normalizer::normalize_whitespace(body_text);
     let location = extract_location(&normalized_body);
     let date_range = extract_date_range(&normalized_body);
-    let exhibitors = extract_exhibitors(&normalized_body);
-    let speakers = extract_speakers(&normalized_body);
+    let exhibitors = extract_exhibitors(body_text);
+    let speakers = extract_speakers(body_text);
     let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
 
     TradeShowExtract {
@@ -134,9 +134,10 @@ pub fn extract_trade_show(body_text: &str, title: &str, url: &str) -> TradeShowE
 }
 
 fn extract_location(text: &str) -> Option<String> {
-    RE_LOCATION
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_LOCATION.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_date_range(text: &str) -> Option<String> {
@@ -172,21 +173,22 @@ pub fn extract_exhibitors(text: &str) -> Vec<ExhibitorExtract> {
         if has_booth {
             let booth = RE_BOOTH
                 .captures(trimmed)
-                .map(|c| c.get(1).unwrap().as_str().to_string());
+                .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
 
             let hall = RE_HALL
                 .captures(trimmed)
-                .map(|c| c.get(1).unwrap().as_str().to_string());
+                .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
 
-            let country = RE_COUNTRY
-                .captures(trimmed)
-                .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()));
+            let country = RE_COUNTRY.captures(trimmed).and_then(|c| {
+                c.get(1)
+                    .map(|m| normalizer::normalize_whitespace(m.as_str()))
+            });
 
             // Name is typically the first part before any delimiter
             let name = trimmed
                 .split(&['-', '–', '|', ','][..])
                 .next()
-                .map(|s| normalizer::normalize_whitespace(s))
+                .map(normalizer::normalize_whitespace)
                 .unwrap_or_default();
 
             if !name.is_empty() {
@@ -212,7 +214,10 @@ pub fn extract_speakers(text: &str) -> Vec<SpeakerExtract> {
 
     // Pattern: "Name, Title at Company" or "Name (Company)"
     for caps in RE_SPEAKERS.captures_iter(text) {
-        let name = normalizer::normalize_whitespace(caps.get(1).unwrap().as_str());
+        let Some(name_match) = caps.get(1) else {
+            continue;
+        };
+        let name = normalizer::normalize_whitespace(name_match.as_str());
         let title = caps
             .get(2)
             .map(|m| normalizer::normalize_whitespace(m.as_str()));
@@ -286,11 +291,30 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_trade_show_preserves_multiline_exhibitors() {
+        let body = "Exhibitor list:\n\
+                    Sagemcom - Booth A101 - Hall 5\n\
+                    Lacroix Electronics - Booth B202 - Hall 3\n\
+                    Speaker: Jane Doe, VP Strategy at Sagemcom.";
+        let show = extract_trade_show(body, "IPC APEX Expo 2026", "https://example.com/ipc-apex");
+
+        assert_eq!(show.exhibitors.len(), 2);
+        assert!(show
+            .exhibitors
+            .iter()
+            .any(|exhibitor| exhibitor.name == "Sagemcom"));
+        assert!(show
+            .exhibitors
+            .iter()
+            .any(|exhibitor| exhibitor.name == "Lacroix Electronics"));
+    }
+
+    #[test]
     fn test_extract_location() {
         let text = "Venue: Messe München, Munich, Germany";
         let loc = extract_location(text);
         assert!(loc.is_some());
-        assert!(loc.unwrap().contains("München"));
+        assert!(matches!(loc.as_deref(), Some(value) if value.contains("München")));
     }
 
     #[test]

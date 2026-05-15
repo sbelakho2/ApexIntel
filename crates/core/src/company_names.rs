@@ -3,11 +3,17 @@ use std::sync::LazyLock;
 use regex::Regex;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
-static RE_NON_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\w\s]").unwrap());
-static RE_MULTI_WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static RE_NON_WORD: LazyLock<Regex> = LazyLock::new(|| match Regex::new(r"[^\w\s]") {
+    Ok(regex) => regex,
+    Err(err) => panic!("RE_NON_WORD regex is static and known-valid: {err}"),
+});
+static RE_MULTI_WS: LazyLock<Regex> = LazyLock::new(|| match Regex::new(r"\s+") {
+    Ok(regex) => regex,
+    Err(err) => panic!("RE_MULTI_WS regex is static and known-valid: {err}"),
+});
 
 /// Normalize a company name for cross-crate fuzzy matching and dedup.
-/// 
+///
 /// This function:
 /// 1. Strips diacritics (accents, etc.)
 /// 2. Normalizes mixed-script confusables (Cyrillic → Latin, etc.)
@@ -15,7 +21,7 @@ static RE_MULTI_WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap
 /// 4. Replaces non-word characters with spaces
 /// 5. Collapses consecutive single-letter tokens (e.g., "A B C" → "ABC")
 /// 6. Removes common company suffixes (inc, ltd, gmbh, etc.)
-/// 
+///
 /// The suffix removal loop is bounded to prevent infinite loops.
 pub fn normalize_company_name(name: &str) -> String {
     let stripped = strip_diacritics(name);
@@ -28,16 +34,37 @@ pub fn normalize_company_name(name: &str) -> String {
     let compact = collapse_letter_sequences(&compact);
 
     let suffixes = [
-        " inc", " ltd", " llc", " corp", " s a", " sa", " s a r l", " sarl", " gmbh", " ag",
-        " sas", " co", " plc", " n v", " nv",
+        " inc",
+        " ltd",
+        " llc",
+        " corp",
+        " s a",
+        " sa",
+        " s a r l",
+        " sarl",
+        " gmbh",
+        " ag",
+        " sas",
+        " co",
+        " plc",
+        " n v",
+        " nv",
+        // CJK company suffixes
+        "有限公司",
+        "股份有限公司",
+        "集团",
+        "株式会社",
+        // Arabic company suffixes
+        "المحدودة",
+        "للصناعات",
     ];
 
-    let mut result = compact;
+    let mut result = compact.clone();
     // Bounded loop: maximum iterations equals number of suffixes
     // This prevents any theoretical infinite loop
     let max_iterations = suffixes.len();
     let mut iterations = 0;
-    
+
     loop {
         if iterations >= max_iterations {
             // Safety exit: should never reach here with valid input
@@ -48,7 +75,7 @@ pub fn normalize_company_name(name: &str) -> String {
             );
             break;
         }
-        
+
         let prev_len = result.len();
         for suffix in &suffixes {
             let bare_suffix = suffix.trim();
@@ -67,6 +94,12 @@ pub fn normalize_company_name(name: &str) -> String {
             break;
         }
         iterations += 1;
+    }
+
+    // If normalization ate the entire name (e.g. pure suffix like "N.V."),
+    // fall back to the compacted form before suffix stripping.
+    if result.is_empty() && !compact.is_empty() {
+        return compact;
     }
 
     result
@@ -172,7 +205,9 @@ mod tests {
     #[test]
     fn normalize_company_name_collapses_letter_sequences() {
         assert_eq!(normalize_company_name("A.B.C. Corp."), "abc");
-        assert_eq!(normalize_company_name("N.V."), "");
+        // "N.V." collapses to "nv" which is a suffix; previously returned ""
+        // but now falls back to pre-stripping form to avoid data loss
+        assert_eq!(normalize_company_name("N.V."), "nv");
     }
 
     #[test]

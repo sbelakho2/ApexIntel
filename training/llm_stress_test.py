@@ -413,59 +413,110 @@ def check_test(test: Dict[str, Any], output_text: str) -> Dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════
 
 def load_model(model_dir: str, adapter_path: str | None = None):
+    """Load model from disk with error handling and flash attention fallback logging."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
 
-    print(f"Loading model: {model_dir}")
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if not os.path.isdir(model_dir):
+        print(f"FATAL: Model directory not found at {model_dir}", flush=True)
+        sys.exit(1)
 
-    # Detect best attention implementation
+    print(f"Loading model: {model_dir}", flush=True)
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+    except Exception as e:
+        print(f"FATAL: Failed to load tokenizer: {e}", flush=True)
+        sys.exit(1)
+
+    # Detect best attention implementation with explicit logging
     attn = "flash_attention_2"
     try:
         import flash_attn  # noqa: F401
+        print(f"  ✓ Using flash_attention_2", flush=True)
     except (ImportError, ModuleNotFoundError):
         attn = "sdpa"
-        print("  flash-attn not available, using SDPA")
+        print("  ⚠ WARNING: flash-attn not available — falling back to SDPA", flush=True)
+        print("    This will be significantly slower for batched inference.", flush=True)
+        print("    Install with: pip install flash-attn --no-build-isolation", flush=True)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_dir,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        attn_implementation=attn,
-        trust_remote_code=True,
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation=attn,
+            trust_remote_code=True,
+        )
+    except torch.cuda.OutOfMemoryError as e:
+        print(f"FATAL: CUDA OOM loading model: {e}", flush=True)
+        print("  Try using a smaller model or enabling CPU offloading", flush=True)
+        sys.exit(1)
+    except (OSError, IOError) as e:
+        print(f"FATAL: Error reading model files: {e}", flush=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"FATAL: Unexpected error loading model: {e}", flush=True)
+        sys.exit(1)
 
     if adapter_path and os.path.isdir(adapter_path):
-        print(f"Merging adapter: {adapter_path}")
-        model = PeftModel.from_pretrained(model, adapter_path)
-        model = model.merge_and_unload()
+        print(f"Merging adapter: {adapter_path}", flush=True)
+        try:
+            model = PeftModel.from_pretrained(model, adapter_path)
+            model = model.merge_and_unload()
+            print(f"  ✓ Adapter merged", flush=True)
+        except Exception as e:
+            print(f"FATAL: Failed to merge adapter: {e}", flush=True)
+            sys.exit(1)
 
     model.eval()
     return model, tokenizer
 
 
 def generate(model, tokenizer, system: str, user: str, max_new_tokens: int) -> str:
+    """Generate text with error handling around CUDA calls."""
     import torch
+    import gc
+
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        out = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=1.0,    # greedy (do_sample=False overrides)
-            repetition_penalty=1.05,
-        )
-    prompt_len = inputs["input_ids"].shape[1]
-    decoded = tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
-    return decoded.strip()
+    try:
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    except Exception as e:
+        print(f"  ERROR during tokenization: {e}", flush=True)
+        return ""
+
+    try:
+        with torch.no_grad():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=1.0,    # greedy (do_sample=False overrides)
+                repetition_penalty=1.05,
+            )
+        prompt_len = inputs["input_ids"].shape[1]
+        decoded = tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
+        return decoded.strip()
+    except torch.cuda.OutOfMemoryError as e:
+        print(f"  ERROR: CUDA OOM during generation: {e}", flush=True)
+        return ""
+    except RuntimeError as e:
+        print(f"  ERROR: Runtime error during generation: {e}", flush=True)
+        return ""
+    except Exception as e:
+        print(f"  ERROR: Unexpected error during generation: {e}", flush=True)
+        return ""
+    finally:
+        del inputs
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 # ═══════════════════════════════════════════════════════════════════

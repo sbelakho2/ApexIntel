@@ -40,18 +40,20 @@ static RE_DEGREE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)\b(B\.?Sc?\.?|B\.?A\.?|M\.?Sc?\.?|M\.?B\.?A\.?|Ph\.?D\.?|M\.?Eng\.?|LLB|LLM|BEng|MEng|DBA)\.?
         (?:\s+(?:in|of|d[eu])\s+([A-Za-z][A-Za-z ]{2,40}))?",
-    ).unwrap()
+    ).unwrap_or_else(|error| panic!("valid degree regex: {error}"))
 });
 
 /// Captures a 4-digit graduation/class year (1960-2030).
-static RE_YEAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(19[6-9]\d|20[0-3]\d)\b").unwrap());
+static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(19[6-9]\d|20[0-3]\d)\b")
+        .unwrap_or_else(|error| panic!("valid year regex: {error}"))
+});
 
 /// Flexible date: DD/MM/YYYY, MM-DD-YYYY, "Month DD, YYYY", "DD Month YYYY".
 static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)\b(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\.?\s+\d{4})\b",
-    ).unwrap()
+    ).unwrap_or_else(|error| panic!("valid date regex: {error}"))
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,7 +223,7 @@ impl<'a> BackgroundBuilder<'a> {
                     .captures(summary)
                     .map(|c| {
                         (
-                            Some(c.get(1).unwrap().as_str().to_string()),
+                            c.get(1).map(|degree| degree.as_str().to_string()),
                             c.get(2).map(|m| m.as_str().trim().to_string()),
                         )
                     })
@@ -231,7 +233,7 @@ impl<'a> BackgroundBuilder<'a> {
                 let year_graduation = RE_YEAR
                     .find(summary)
                     .and_then(|m| m.as_str().parse::<u32>().ok())
-                    .filter(|&y| y >= 1960 && y <= 2030);
+                    .filter(|y| (1960..=2030).contains(y));
 
                 EducationRecord {
                     institution: a.title.clone(),

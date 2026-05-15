@@ -7,6 +7,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Sentinel value returned as `days_since_observation` when an entity has no
+/// observations at all.  This value must exceed any plausible `stale_threshold_days`
+/// or `archive_threshold_days` so that entities without observations are always
+/// flagged as stale candidates.
+const NO_OBSERVATION_SENTINEL_DAYS: i64 = i64::MAX;
+
 // ─── Configuration ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -112,7 +118,7 @@ impl StalePruner {
         let days_since = entity
             .last_observation_at
             .map(|last| (now - last).num_days())
-            .unwrap_or(999);
+            .unwrap_or(NO_OBSERVATION_SENTINEL_DAYS);
 
         if days_since < self.config.stale_threshold_days {
             return None; // still fresh
@@ -191,30 +197,28 @@ impl StalePruner {
         }
     }
 
-    /// SQL to find stale entities.
+    /// SQL to find stale entities. Uses `$1` for parameterized bind.
     pub fn stale_entities_sql(&self) -> String {
-        format!(
-            r#"
-            SELECT
-                e.id, e.name, e.entity_type,
-                MAX(o.observed_at) AS last_observation_at,
-                COUNT(o.id) AS observation_count,
-                e.created_at, e.region
-            FROM (
-                SELECT id, canonical_name AS name, 'company' AS entity_type, created_at, region
-                FROM companies
-                UNION ALL
-                SELECT id, full_name AS name, 'person' AS entity_type, created_at, NULL AS region
-                FROM persons
-            ) e
-            LEFT JOIN observations o ON o.entity_id = e.id
-            GROUP BY e.id, e.name, e.entity_type, e.created_at, e.region
-            HAVING MAX(o.observed_at) IS NULL
-               OR MAX(o.observed_at) < NOW() - INTERVAL '{} days'
-            ORDER BY MAX(o.observed_at) ASC NULLS FIRST
-            "#,
-            self.config.stale_threshold_days
-        )
+        r#"
+        SELECT
+            e.id, e.name, e.entity_type,
+            MAX(o.observed_at) AS last_observation_at,
+            COUNT(o.id) AS observation_count,
+            e.created_at, e.region
+        FROM (
+            SELECT id, canonical_name AS name, 'company' AS entity_type, created_at, region
+            FROM companies
+            UNION ALL
+            SELECT id, full_name AS name, 'person' AS entity_type, created_at, NULL AS region
+            FROM persons
+        ) e
+        LEFT JOIN observations o ON o.entity_id = e.id
+        GROUP BY e.id, e.name, e.entity_type, e.created_at, e.region
+        HAVING MAX(o.observed_at) IS NULL
+           OR MAX(o.observed_at) < NOW() - ($1::text || ' days')::INTERVAL
+        ORDER BY MAX(o.observed_at) ASC NULLS FIRST
+        "#
+        .to_string()
     }
 
     /// SQL to flag stale entities.
@@ -273,7 +277,9 @@ mod tests {
     fn test_archive_recommendation() {
         let pruner = StalePruner::with_defaults();
         let entity = make_entity("e-3", "company", 200, 3);
-        let result = pruner.evaluate(&entity, Utc::now()).unwrap();
+        let result = pruner
+            .evaluate(&entity, Utc::now())
+            .unwrap_or_else(|| panic!("archive entity should be stale"));
         assert_eq!(result.recommendation, StaleRecommendation::Archive);
     }
 
@@ -281,7 +287,9 @@ mod tests {
     fn test_refresh_recommendation() {
         let pruner = StalePruner::with_defaults();
         let entity = make_entity("e-4", "company", 95, 50); // many observations, recently went stale
-        let result = pruner.evaluate(&entity, Utc::now()).unwrap();
+        let result = pruner
+            .evaluate(&entity, Utc::now())
+            .unwrap_or_else(|| panic!("refresh entity should be stale"));
         assert_eq!(result.recommendation, StaleRecommendation::RefreshNow);
     }
 
@@ -312,7 +320,9 @@ mod tests {
             created_at: Utc::now() - Duration::days(365),
             region: None,
         };
-        let result = pruner.evaluate(&entity, Utc::now()).unwrap();
+        let result = pruner
+            .evaluate(&entity, Utc::now())
+            .unwrap_or_else(|| panic!("entity without observations should be stale"));
         assert_eq!(result.recommendation, StaleRecommendation::Archive);
     }
 
@@ -320,7 +330,8 @@ mod tests {
     fn test_sql_generation() {
         let pruner = StalePruner::with_defaults();
         let sql = pruner.stale_entities_sql();
-        assert!(sql.contains("90 days"));
+        // Verify parameterized bind syntax is used (no string interpolation)
+        assert!(sql.contains("$1"), "SQL must use parameterized $1 bind");
         assert!(sql.contains("companies"));
         assert!(sql.contains("persons"));
     }

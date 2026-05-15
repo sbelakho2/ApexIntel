@@ -68,8 +68,6 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1       # catch NCCL errors early
 export OMP_NUM_THREADS=24                      # 192 cores / 8 GPUs = 24
 export TOKENIZERS_PARALLELISM=false            # avoid tokenizer fork deadlocks
 export CUDA_LAUNCH_BLOCKING=0                  # async kernel launches
-export TORCH_CUDA_ALLOC_CONF=expandable_segments:True  # reduce fragmentation
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOGFILE="$LOG_DIR/pipeline_${TIMESTAMP}.log"
@@ -181,11 +179,15 @@ fi
 # ── Step 5: Phase 2 SFT ───────────────────────────────────────────────────
 
 if [ "$SKIP_SFT" = "0" ]; then
-    # Pre-merge Phase 1 adapter into base model (single-process, CPU)
-    # This avoids OOM when ZeRO-3 tries to move the full 30B model to GPU
-    step_start "[5a/9] Pre-merge Phase 1 adapter"
-    python3 training/pre_merge_phase1.py 2>&1 | tee -a "$LOGFILE"
-    step_done "Phase 1 adapter merge complete"
+    if [ -f training/pre_merge_phase1.py ]; then
+        # Pre-merge Phase 1 adapter into base model (single-process, CPU)
+        # This avoids OOM when ZeRO-3 tries to move the full 30B model to GPU
+        step_start "[5a/9] Pre-merge Phase 1 adapter"
+        python3 training/pre_merge_phase1.py 2>&1 | tee -a "$LOGFILE"
+        step_done "Phase 1 adapter merge complete"
+    else
+        log "[5a/9] Pre-merge Phase 1 adapter SKIPPED (training/pre_merge_phase1.py not present)"
+    fi
 
     step_start "[5b/9] Phase 2: Supervised Fine-Tuning (8×5090)"
     log "  Effective batch: 1×8×8 = 64 | seq_len: 2048 | epochs: 3 | SDPA + NEFTune | FSDP FULL_SHARD"

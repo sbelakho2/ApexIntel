@@ -47,7 +47,10 @@ fn stable_logistic(value: f64) -> f64 {
 }
 
 fn has_both_classes(samples: &[CalibrationSample]) -> bool {
-    let positives = samples.iter().filter(|sample| sample.actual_outcome).count();
+    let positives = samples
+        .iter()
+        .filter(|sample| sample.actual_outcome)
+        .count();
     positives > 0 && positives < samples.len()
 }
 
@@ -183,12 +186,17 @@ impl AlertCalibrationModel {
             Self::Legacy => legacy_score_to_probability(raw_score),
             Self::Platt(model) => stable_logistic(model.slope * raw_score + model.intercept),
             Self::Isotonic(model) => {
-                for (threshold, prediction) in model.thresholds.iter().zip(model.predictions.iter()) {
+                for (threshold, prediction) in model.thresholds.iter().zip(model.predictions.iter())
+                {
                     if raw_score <= *threshold {
                         return *prediction;
                     }
                 }
-                model.predictions.last().copied().unwrap_or_else(|| legacy_score_to_probability(raw_score))
+                model
+                    .predictions
+                    .last()
+                    .copied()
+                    .unwrap_or_else(|| legacy_score_to_probability(raw_score))
             }
         }
     }
@@ -246,7 +254,10 @@ pub fn predicted_probabilities(
         .collect()
 }
 
-pub fn alert_score_rank_correlation(samples: &[CalibrationSample], model: &AlertCalibrationModel) -> f64 {
+pub fn alert_score_rank_correlation(
+    samples: &[CalibrationSample],
+    model: &AlertCalibrationModel,
+) -> f64 {
     if samples.len() < 2 || !has_both_classes(samples) {
         return 0.0;
     }
@@ -277,7 +288,8 @@ mod tests {
 
     #[test]
     fn platt_scaling_monotonicity() {
-        let model = fit_platt_scaling(&synthetic_samples(120)).expect("platt model");
+        let model = fit_platt_scaling(&synthetic_samples(120))
+            .unwrap_or_else(|| panic!("platt model should fit synthetic samples"));
         let low = stable_logistic(model.slope * 1.0 + model.intercept);
         let high = stable_logistic(model.slope * 4.0 + model.intercept);
         assert!(low < high);
@@ -288,7 +300,10 @@ mod tests {
         let samples = synthetic_samples(100);
         let model = fit_best_alert_calibration_model(&samples);
         let correlation = alert_score_rank_correlation(&samples, &model);
-        assert!(correlation > 0.5, "expected rank correlation > 0.5, got {correlation}");
+        assert!(
+            correlation > 0.5,
+            "expected rank correlation > 0.5, got {correlation}"
+        );
     }
 
     #[test]

@@ -135,7 +135,8 @@ fn detect_charset(html_bytes: &[u8]) -> Option<&'static Encoding> {
 }
 
 fn extract_title(doc: &Html) -> String {
-    let sel = Selector::parse("title").unwrap();
+    let sel = Selector::parse("title")
+        .unwrap_or_else(|error| panic!("invalid title selector: {error:?}"));
     doc.select(&sel)
         .next()
         .map(|el| normalizer::normalize_whitespace(&el.text().collect::<String>()))
@@ -200,8 +201,10 @@ fn has_meta_description(doc: &Html) -> bool {
 fn extract_body_text(doc: &Html) -> String {
     // Skip <script>, <style>, and <noscript> elements to avoid contaminating body text
     // with JavaScript code, CSS rules, or fallback content.
-    let body_sel = Selector::parse("body").unwrap();
-    let skip_sel = Selector::parse("script, style, noscript").unwrap();
+    let body_sel =
+        Selector::parse("body").unwrap_or_else(|error| panic!("invalid body selector: {error:?}"));
+    let skip_sel = Selector::parse("script, style, noscript")
+        .unwrap_or_else(|error| panic!("invalid script/style selector: {error:?}"));
 
     match doc.select(&body_sel).next() {
         Some(body) => {
@@ -238,7 +241,8 @@ fn extract_body_text(doc: &Html) -> String {
 }
 
 fn extract_links(doc: &Html) -> Vec<ExtractedLink> {
-    let sel = Selector::parse("a[href]").unwrap();
+    let sel = Selector::parse("a[href]")
+        .unwrap_or_else(|error| panic!("invalid link selector: {error:?}"));
     doc.select(&sel)
         .filter_map(|el| {
             let href = el.value().attr("href")?.to_string();
@@ -274,8 +278,10 @@ pub fn extract_table(html_content: &str, table_selector: &str) -> Vec<Vec<String
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let tr_sel = Selector::parse("tr").unwrap();
-    let td_sel = Selector::parse("td, th").unwrap();
+    let tr_sel = Selector::parse("tr")
+        .unwrap_or_else(|error| panic!("invalid table-row selector: {error:?}"));
+    let td_sel = Selector::parse("td, th")
+        .unwrap_or_else(|error| panic!("invalid table-cell selector: {error:?}"));
 
     let mut rows = Vec::new();
     if let Some(table) = doc.select(&table_sel).next() {
@@ -318,28 +324,32 @@ mod tests {
     </html>
     "#;
 
+    fn sample_page(html: &str) -> PageContent {
+        extract_page(html).unwrap_or_else(|error| panic!("sample HTML should parse: {error}"))
+    }
+
     #[test]
     fn test_extract_page_title() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         assert_eq!(page.title, "Starz Electronics - EMS Manufacturer");
     }
 
     #[test]
     fn test_extract_page_description() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         assert_eq!(page.description, "Leading EMS provider in Tunisia");
     }
 
     #[test]
     fn test_extract_page_body() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         assert!(page.body_text.contains("SMT assembly"));
         assert!(page.body_text.contains("PCB manufacturing"));
     }
 
     #[test]
     fn test_extract_page_emails() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         assert!(page
             .emails
             .contains(&"info@starz-electronics.com".to_string()));
@@ -347,13 +357,13 @@ mod tests {
 
     #[test]
     fn test_extract_page_phones() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         assert!(!page.phones.is_empty());
     }
 
     #[test]
     fn test_extract_page_links() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         // Should exclude #top link
         let hrefs: Vec<&str> = page.links.iter().map(|l| l.href.as_str()).collect();
         assert!(hrefs.contains(&"https://starz-electronics.com/about"));
@@ -363,7 +373,7 @@ mod tests {
 
     #[test]
     fn test_extract_page_language() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         assert_eq!(page.language, "en");
     }
 
@@ -376,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_extract_empty_html() {
-        let page = extract_page("").unwrap();
+        let page = sample_page("");
         assert!(page.title.is_empty());
         assert!(page.description.is_empty());
         assert!(page.body_text.is_empty());
@@ -385,7 +395,7 @@ mod tests {
     #[test]
     fn test_extract_malformed_html() {
         let malformed = "<html><head><title>Test<title><body><p>hello";
-        let page = extract_page(malformed).unwrap();
+        let page = sample_page(malformed);
         assert!(page.title.contains("Test"));
         assert!(page.body_text.contains("hello"));
     }
@@ -393,7 +403,7 @@ mod tests {
     #[test]
     fn test_extract_rtl_text() {
         let html = "<html><body><p>مرحبا   بك</p></body></html>";
-        let page = extract_page(html).unwrap();
+        let page = sample_page(html);
         assert!(page.body_text.contains("مرحبا بك"));
     }
 
@@ -417,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_extract_page_empty_html() {
-        let page = extract_page("").unwrap();
+        let page = sample_page("");
         assert_eq!(page.title, "");
         assert_eq!(page.description, "");
         assert!(page.body_text.is_empty());
@@ -426,7 +436,7 @@ mod tests {
     #[test]
     fn test_extract_page_malformed_html() {
         let html = "<html><head><title>Broken<title></head><body><p>Test";
-        let page = extract_page(html).unwrap();
+        let page = sample_page(html);
         assert!(page.title.contains("Broken"));
         assert!(page.body_text.contains("Test"));
     }
@@ -439,7 +449,7 @@ mod tests {
             <p>Nous offrons des services de fabrication électronique.</p>
             <p>电子制造服务</p>
         </body></html>"#;
-        let page = extract_page(html).unwrap();
+        let page = sample_page(html);
         assert!(page.body_text.contains("Welcome"));
         assert!(page.body_text.contains("مرحبا"));
         assert!(page.body_text.contains("电子制造"));
@@ -453,7 +463,7 @@ mod tests {
         let html = r#"<html><head><title>Tracker</title></head>
         <body><script>var x = 1; document.write('hello');</script>
         <style>.cls { display: none; }</style></body></html>"#;
-        let page = extract_page(html).unwrap();
+        let page = sample_page(html);
         // Body should be empty or near-empty since only scripts/styles
         assert!(page.body_text.len() < 10 || page.field_confidence.body_text < 0.5);
     }
@@ -461,14 +471,14 @@ mod tests {
     // B109: Confidence scores present
     #[test]
     fn test_field_confidence_scores() {
-        let page = extract_page(SAMPLE_HTML).unwrap();
+        let page = sample_page(SAMPLE_HTML);
         assert!(page.field_confidence.title > 0.0);
         assert!(page.field_confidence.description > 0.0);
         assert!(page.field_confidence.body_text > 0.0);
         assert!(page.field_confidence.language > 0.0);
 
         // Empty HTML should have zero confidence
-        let empty = extract_page("").unwrap();
+        let empty = sample_page("");
         assert_eq!(empty.field_confidence.title, 0.0);
         assert_eq!(empty.field_confidence.body_text, 0.0);
     }
@@ -479,7 +489,7 @@ mod tests {
         let html = r#"<html><body>
             <p>Contact a@b.com or a@b.com or x@y.com</p>
         </body></html>"#;
-        let page = extract_page(html).unwrap();
+        let page = sample_page(html);
         assert_eq!(page.emails.len(), 2); // deduped
     }
 }

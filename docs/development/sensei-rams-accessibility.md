@@ -105,12 +105,27 @@ Before merge:
 
 ## 7. Validation Commands
 
-From `frontend/`:
+### WASM Frontend (Leptos)
 
 ```bash
-npm run type-check
-npm run test:ui
+# Build the WASM frontend and check for compile errors
+cd crates/frontend && trunk build
+
+# Run E2E tests (includes accessibility checks)
+npx playwright test -c playwright.config.cjs
+
+# Run specific test file for UI parity
+npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js
+```
+
+### Server-Rendered UI (Askama/HTMX)
+
+```bash
+# Compile-time template validation (catches syntax errors)
+cargo check -p apex-api
+
+# Compile Tailwind CSS
+npx tailwindcss -i crates/api/static/css/input.css -o crates/api/static/css/tailwind.css --minify
 ```
 
 Use browser a11y tooling (axe/Lighthouse) during review for additional verification.
-

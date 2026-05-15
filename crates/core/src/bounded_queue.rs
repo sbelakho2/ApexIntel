@@ -60,23 +60,25 @@ pub struct BoundedQueue<T> {
 impl<T> BoundedQueue<T> {
     /// Create a new bounded queue with the given capacity and backpressure strategy.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `capacity` is 0 or exceeds `MAX_QUEUE_CAPACITY`.
-    pub fn new(capacity: usize, strategy: BackpressureStrategy) -> Self {
-        assert!(capacity > 0, "Queue capacity must be > 0");
-        assert!(
-            capacity <= MAX_QUEUE_CAPACITY,
-            "Queue capacity {} exceeds maximum {}",
-            capacity,
-            MAX_QUEUE_CAPACITY
-        );
-        Self {
+    /// Returns an error if `capacity` is 0 or exceeds `MAX_QUEUE_CAPACITY`.
+    pub fn new(capacity: usize, strategy: BackpressureStrategy) -> Result<Self, String> {
+        if capacity == 0 {
+            return Err("Queue capacity must be > 0".to_string());
+        }
+        if capacity > MAX_QUEUE_CAPACITY {
+            return Err(format!(
+                "Queue capacity {} exceeds maximum {}",
+                capacity, MAX_QUEUE_CAPACITY
+            ));
+        }
+        Ok(Self {
             inner: VecDeque::with_capacity(capacity),
             capacity,
             strategy,
             drop_count: 0,
-        }
+        })
     }
 
     /// Push an item onto the queue, applying backpressure if full.
@@ -172,9 +174,13 @@ impl<T> BoundedQueue<T> {
 mod tests {
     use super::*;
 
+    fn make_q<T>(capacity: usize, strategy: BackpressureStrategy) -> BoundedQueue<T> {
+        BoundedQueue::new(capacity, strategy).expect("valid queue config")
+    }
+
     #[test]
     fn test_bounded_queue_basic_operations() {
-        let mut q = BoundedQueue::new(3, BackpressureStrategy::Reject);
+        let mut q = make_q(3, BackpressureStrategy::Reject);
         assert!(q.is_empty());
         assert!(!q.is_full());
         assert_eq!(q.len(), 0);
@@ -192,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_drop_oldest_strategy() {
-        let mut q = BoundedQueue::new(3, BackpressureStrategy::DropOldest);
+        let mut q = make_q(3, BackpressureStrategy::DropOldest);
         assert!(q.push(1).is_ok());
         assert!(q.push(2).is_ok());
         assert!(q.push(3).is_ok());
@@ -209,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_drop_newest_strategy() {
-        let mut q = BoundedQueue::new(3, BackpressureStrategy::DropNewest);
+        let mut q = make_q(3, BackpressureStrategy::DropNewest);
         assert!(q.push(1).is_ok());
         assert!(q.push(2).is_ok());
         assert!(q.push(3).is_ok());
@@ -226,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_reject_strategy() {
-        let mut q = BoundedQueue::new(2, BackpressureStrategy::Reject);
+        let mut q = make_q(2, BackpressureStrategy::Reject);
         assert!(q.push(1).is_ok());
         assert!(q.push(2).is_ok());
 
@@ -239,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut q = BoundedQueue::new(5, BackpressureStrategy::Reject);
+        let mut q = make_q(5, BackpressureStrategy::Reject);
         q.push(1).unwrap();
         q.push(2).unwrap();
         q.push(3).unwrap();
@@ -252,26 +258,28 @@ mod tests {
 
     #[test]
     fn test_capacity_enforcement() {
-        let q = BoundedQueue::<i32>::new(100, BackpressureStrategy::Reject);
+        let q = BoundedQueue::<i32>::new(100, BackpressureStrategy::Reject).unwrap();
         assert_eq!(q.capacity(), 100);
         assert!(!q.is_full());
     }
 
     #[test]
-    #[should_panic(expected = "Queue capacity must be > 0")]
-    fn test_zero_capacity_panics() {
-        BoundedQueue::<i32>::new(0, BackpressureStrategy::Reject);
+    fn test_zero_capacity_returns_error() {
+        let result = BoundedQueue::<i32>::new(0, BackpressureStrategy::Reject);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be > 0"));
     }
 
     #[test]
-    #[should_panic(expected = "exceeds maximum")]
-    fn test_excessive_capacity_panics() {
-        BoundedQueue::<i32>::new(MAX_QUEUE_CAPACITY + 1, BackpressureStrategy::Reject);
+    fn test_excessive_capacity_returns_error() {
+        let result = BoundedQueue::<i32>::new(MAX_QUEUE_CAPACITY + 1, BackpressureStrategy::Reject);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum"));
     }
 
     #[test]
     fn test_drop_count_tracking() {
-        let mut q = BoundedQueue::new(2, BackpressureStrategy::DropOldest);
+        let mut q = make_q(2, BackpressureStrategy::DropOldest);
         q.push(1).unwrap();
         q.push(2).unwrap();
         assert_eq!(q.drop_count(), 0);
@@ -285,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_peek_does_not_remove() {
-        let mut q = BoundedQueue::new(3, BackpressureStrategy::Reject);
+        let mut q = make_q(3, BackpressureStrategy::Reject);
         q.push(10).unwrap();
         q.push(20).unwrap();
 
@@ -298,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_is_full_accurate() {
-        let mut q = BoundedQueue::new(2, BackpressureStrategy::Reject);
+        let mut q = make_q(2, BackpressureStrategy::Reject);
         assert!(!q.is_full());
 
         q.push(1).unwrap();
@@ -314,7 +322,7 @@ mod tests {
     #[test]
     fn test_circular_buffer_pattern_with_drop_oldest() {
         // Common use case: circular buffer for last N items
-        let mut q = BoundedQueue::new(5, BackpressureStrategy::DropOldest);
+        let mut q = make_q(5, BackpressureStrategy::DropOldest);
 
         for i in 0..20 {
             q.push(i).unwrap();

@@ -1,37 +1,39 @@
 #![cfg_attr(test, allow(dead_code))]
+#![allow(clippy::duplicated_attributes, clippy::too_many_arguments)]
 
-mod job_execution;
-mod evidence_scoring;
-mod quality_gates;
-mod llm_orchestration;
-mod title_formatting;
-mod fallback_generation;
-mod digest_filtering;
 mod config;
+mod digest_filtering;
+#[allow(dead_code)]
+mod evidence_scoring;
+#[allow(dead_code)]
+mod fallback_generation;
+mod job_execution;
+#[allow(dead_code)]
+mod llm_orchestration;
 mod observability;
+#[allow(dead_code)]
+mod quality_gates;
 mod runtime;
+#[allow(dead_code)]
+mod title_formatting;
 
+#[cfg(feature = "llm")]
+pub(crate) use digest_filtering::is_promoted_business_insight_type;
 use digest_filtering::{
     canonical_digest_key, digest_tokens, expand_digest_categories, token_jaccard_similarity,
 };
-use fallback_generation::{
-    concrete_signal_details, detect_strategy_signal_flags,
-};
 #[cfg(feature = "llm")]
 use digest_filtering::{has_excessive_phrase_repetition, is_readable_and_useful_digest_text};
-#[cfg(feature = "llm")]
-use fallback_generation::format_sources_footer_from_urls;
-#[cfg(test)]
-use fallback_generation::{count_concrete_signal_details, is_generic_action_hint};
 pub(crate) use digest_filtering::{is_digest_insight_quality, passes_shared_insight_quality_gate};
 #[cfg(feature = "llm")]
-pub(crate) use digest_filtering::is_promoted_business_insight_type;
+use fallback_generation::format_sources_footer_from_urls;
+#[allow(unused_imports)]
 pub(crate) use fallback_generation::{build_fallback_summary, should_emit_fallback_insight};
+use fallback_generation::{category_relevant_signal_details, detect_strategy_signal_flags};
+#[cfg(test)]
+use fallback_generation::{count_concrete_signal_details, is_generic_action_hint};
+#[allow(unused_imports)]
 pub(crate) use title_formatting::build_analytical_title;
-#[cfg(feature = "llm")]
-pub(crate) use title_formatting::describe_entity_type_with_article;
-#[cfg(feature = "llm")]
-pub(crate) use title_formatting::build_rich_headline;
 
 #[cfg(feature = "llm")]
 use anyhow::Context;
@@ -61,7 +63,7 @@ use apex_crawl::sources::all_sources;
 #[cfg(feature = "llm")]
 use apex_crawl::tor_client::{DarkWebPersonIntel, TorClient};
 #[cfg(feature = "llm")]
-use apex_insights::arbitrage::{ArbitrageDetector, default_profiles as arbitrage_default_profiles};
+use apex_insights::arbitrage::{default_profiles as arbitrage_default_profiles, ArbitrageDetector};
 #[cfg(feature = "llm")]
 use apex_insights::bias_mitigation::{
     generate_devils_advocate, DevilsAdvocateConfig, EvidenceItem as BiasEvidenceItem, Severity,
@@ -101,12 +103,11 @@ use apex_poi::model::{
 #[cfg(feature = "llm")]
 use apex_poi::updater::refresh_profile;
 use apex_recipes::engine::{FeatureMap, RecipeEngine};
-use apex_store::postgres::{InsightListFilters, PersonListFilters, PersonOrderBy, PgStore};
 #[cfg(feature = "llm")]
 use apex_store::postgres::{
-    HistoricalQualityGateLabel, QualityGateGoldenSetExample,
-    WarningListFilters,
+    HistoricalQualityGateLabel, QualityGateGoldenSetExample, WarningListFilters,
 };
+use apex_store::postgres::{InsightListFilters, PersonListFilters, PersonOrderBy, PgStore};
 use apex_worker::nightly::{
     process_drift_stage, process_mining_stage, CrawlStageResult, DriftCheckStageResult,
     MiningStageResult, PoiRefreshStageResult,
@@ -123,23 +124,6 @@ use apex_worker::scheduler::{
 use apex_worker::storage::{
     build_memo_inputs, load_production_recipes, load_staged_recipes, StorageContext,
 };
-#[cfg(feature = "llm")]
-use evidence_scoring::{
-    calculate_relevance, clean_signal_title, dedup_signals, extract_article_titles, noisy_or,
-    signal_diversity_multiplier,
-};
-#[cfg(feature = "llm")]
-use llm_orchestration::build_llm_retry_guidance;
-#[cfg(feature = "llm")]
-use quality_gates::{
-    contains_causal_link, contains_security_hygiene_marker, contains_soft_certification_pressure_marker,
-    has_low_usefulness_public_sector_analysis, has_temporal_incoherence,
-    has_unnamed_customer_targeting, has_unsupported_certification_escalation,
-    has_unsupported_public_sector_commercialization, has_unsupported_security_escalation,
-    low_signal_certification_warning_case, recommendation_has_action_timing, weighted_phrase_score,
-};
-#[cfg(feature = "llm")]
-pub(crate) use quality_gates::normalize_gate_text;
 use apex_worker::weekly::{
     run_weekly_pipeline, DeprecationPolicy, MemoInputs, ProductionRecipe, PromotionPolicy,
     StagedRecipe,
@@ -148,9 +132,31 @@ use apex_worker::weekly::{
 use chrono::DateTime;
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::Europe::Berlin;
+#[cfg(all(feature = "llm", test))]
+use evidence_scoring::noisy_or;
+#[cfg(feature = "llm")]
+use evidence_scoring::{calculate_relevance, signal_diversity_multiplier};
 use lettre::message::{header::ContentType, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+#[cfg(feature = "llm")]
+use llm_orchestration::build_llm_retry_guidance;
+#[cfg(feature = "llm")]
+pub(crate) use quality_gates::normalize_gate_text;
+#[cfg(all(feature = "llm", test))]
+use quality_gates::{
+    contains_causal_link, contains_security_hygiene_marker,
+    contains_soft_certification_pressure_marker,
+};
+#[cfg(feature = "llm")]
+use quality_gates::{
+    has_formulaic_commercial_language, has_low_usefulness_public_sector_analysis,
+    has_temporal_incoherence, has_unnamed_customer_targeting,
+    has_unsupported_certification_commercialization, has_unsupported_certification_escalation,
+    has_unsupported_named_target_provenance, has_unsupported_public_sector_commercialization,
+    has_unsupported_security_escalation, low_signal_certification_warning_case,
+    recommendation_has_action_timing, weighted_phrase_score,
+};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
 use std::collections::HashMap;
@@ -192,6 +198,7 @@ struct NightlyInputs {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct WeeklyInputs {
     staged_recipes: Vec<StagedRecipe>,
     production_recipes: Vec<ProductionRecipe>,
@@ -217,11 +224,19 @@ fn build_paid_proxy_url_from_env() -> Option<String> {
     let username = std::env::var("PROXY_USERNAME")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| std::env::var("PROXY_USER").ok().filter(|v| !v.trim().is_empty()))?;
+        .or_else(|| {
+            std::env::var("PROXY_USER")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })?;
     let password = std::env::var("PROXY_PASSWORD")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| std::env::var("PROXY_PASS").ok().filter(|v| !v.trim().is_empty()))?;
+        .or_else(|| {
+            std::env::var("PROXY_PASS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })?;
     Some(format!("http://{username}:{password}@{host}:{port}"))
 }
 
@@ -256,6 +271,7 @@ fn build_proxy_rotator_from_env() -> Option<ProxyRotator> {
 /// Resolve `{{evidence:KEY}}` placeholders in a template string.
 /// Replaces each `{{evidence:key}}` with the corresponding value from `slots`,
 /// or with a contextual fallback (e.g. "(entity)" for company_name, "N/A" for others).
+#[allow(dead_code)]
 fn resolve_evidence_placeholders(template: &str, slots: &HashMap<String, String>) -> String {
     let mut result = String::with_capacity(template.len());
     let mut rest = template;
@@ -322,10 +338,16 @@ fn clean_rendered_text(s: &str) -> String {
         text = text.replace("  ", " ");
     }
     for _ in 0..3 {
-        text = text.replace(", .", ".").replace(",,", ",").replace(", ,", ",");
+        text = text
+            .replace(", .", ".")
+            .replace(",,", ",")
+            .replace(", ,", ",");
         text = text.replace(". .", ".").replace("..", ".");
         text = text.replace(" .", ".").replace(" ,", ",");
-        text = text.replace(":.", ".").replace(": .", ".").replace(":,", ",");
+        text = text
+            .replace(":.", ".")
+            .replace(": .", ".")
+            .replace(":,", ",");
         text = text.replace("( ", "(").replace(" )", ")");
         text = text.replace(". . ", ". ");
     }
@@ -394,7 +416,10 @@ fn is_low_quality_narrative(text: &str) -> bool {
         "showing conflict",
         "showing including",
     ];
-    if double_prep_patterns.iter().any(|pattern| lower.contains(pattern)) {
+    if double_prep_patterns
+        .iter()
+        .any(|pattern| lower.contains(pattern))
+    {
         return true;
     }
 
@@ -431,6 +456,7 @@ fn is_low_quality_narrative(text: &str) -> bool {
 }
 
 /// Build an analytical narrative paragraph from structured signal data.
+#[allow(dead_code)]
 fn build_analytical_narrative(
     entity_label: &str,
     entity_region: &str,
@@ -472,18 +498,22 @@ fn build_analytical_narrative(
     };
 
     let mut parts = Vec::new();
-    let flags = detect_strategy_signal_flags(category, signal_details, "");
+    let relevant_details = category_relevant_signal_details(category, signal_details);
+    let flags = detect_strategy_signal_flags(category, &relevant_details, "");
     let is_public_sector = is_public_sector_entity(entity_label, entity_type);
-    let concrete_details = concrete_signal_details(signal_details);
+    let concrete_details = relevant_details;
 
-    parts.push(format!("{entity_ctx} has been flagged for {category_desc}."));
+    parts.push(format!("{entity_ctx} shows {category_desc}."));
 
-    if !signal_details.is_empty() {
-        parts.push(format!("Our monitoring detected: {}.", signal_details.join("; ")));
+    if !concrete_details.is_empty() {
+        parts.push(format!(
+            "Observed signals include: {}.",
+            concrete_details.join("; ")
+        ));
     }
     if !concrete_details.is_empty() {
         parts.push(format!(
-            "The clearest current evidence is {}.",
+            "Most specific current evidence: {}.",
             concrete_details
                 .iter()
                 .take(2)
@@ -554,7 +584,13 @@ fn build_analytical_narrative(
             "Taken together, these signals matter because they change commercial timing, supplier choice, or executive priorities rather than representing isolated informational noise.".to_string()
         );
     }
-    parts.push(implications.into_iter().take(3).collect::<Vec<_>>().join(" "));
+    parts.push(
+        implications
+            .into_iter()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
 
     parts.join(" ")
 }
@@ -617,6 +653,272 @@ fn supply_chain_role(entity_type: Option<&str>) -> Option<&'static str> {
         "trade_association" => Some("TRADE_ASSOCIATION"),
         _ => None,
     }
+}
+
+#[cfg(feature = "llm")]
+fn inferred_supply_chain_role(entity_ctx: &EntityContext) -> Option<&'static str> {
+    let corpus = format!(
+        "{} {} {} {} {}",
+        entity_ctx.name,
+        entity_ctx.entity_type.as_deref().unwrap_or_default(),
+        entity_ctx.industry_tags.join(" "),
+        entity_ctx.capabilities.join(" "),
+        entity_ctx.sites_summary.join(" "),
+    )
+    .to_ascii_lowercase();
+
+    let has_any = |markers: &[&str]| markers.iter().any(|marker| corpus.contains(marker));
+
+    if has_any(&[
+        "trade association",
+        "industry association",
+        "industry body",
+        "standards body",
+        "chamber of commerce",
+        "industry council",
+    ]) {
+        return Some("TRADE_ASSOCIATION");
+    }
+
+    if has_any(&[
+        "semiconductor",
+        "microcontroller",
+        "mcu",
+        "analog chip",
+        "power management ic",
+        "sensor ic",
+        "chipmaker",
+        "fabless",
+        "wafer",
+    ]) {
+        return Some("SEMICONDUCTOR");
+    }
+
+    if has_any(&[
+        "defense prime",
+        "defence prime",
+        "munitions",
+        "missile",
+        "radar",
+        "electronic warfare",
+        "defense contractor",
+        "defence contractor",
+        "aerospace and defense",
+    ]) {
+        return Some("DEFENSE_PRIME");
+    }
+
+    if has_any(&[
+        "distributor",
+        "electronics distribution",
+        "component distributor",
+        "authorized distributor",
+        "broadline distribution",
+    ]) {
+        return Some("DISTRIBUTOR");
+    }
+
+    if has_any(&[
+        "printed circuit board",
+        "pcb manufacturer",
+        "pcb fabrication",
+        "bare board",
+        "bare pcb",
+    ]) {
+        return Some("PCB_MANUFACTURER");
+    }
+
+    if has_any(&[
+        "test and measurement",
+        "test & measurement",
+        "oscilloscope",
+        "metrology",
+        "signal analyzer",
+    ]) {
+        return Some("TEST_MEASUREMENT");
+    }
+
+    if has_any(&[
+        " oem",
+        "original equipment manufacturer",
+        "medical device manufacturer",
+        "automotive oem",
+        "industrial oem",
+    ]) {
+        return Some("OEM");
+    }
+
+    supply_chain_role(entity_ctx.entity_type.as_deref())
+}
+
+#[cfg(feature = "llm")]
+fn contains_semiconductor_sales_pitch(corpus: &str) -> bool {
+    weighted_phrase_score(
+        corpus,
+        &[
+            ("our company", 0.20),
+            ("our services", 0.25),
+            ("our facility", 0.20),
+            ("our facilities", 0.20),
+            ("our capability", 0.20),
+            ("our capabilities", 0.20),
+            ("our as9100", 0.25),
+            ("our iatf", 0.25),
+            ("our iso 14001", 0.30),
+            ("our iso 9001", 0.25),
+            ("our iso 13485", 0.25),
+            ("our north africa", 0.20),
+            ("our tunisia", 0.20),
+            ("our morocco", 0.20),
+            ("our european manufacturing", 0.25),
+            ("manufacturing capabilities", 0.25),
+            ("green manufacturing", 0.25),
+            ("reliable partner", 0.20),
+            ("detailed proposal", 0.25),
+            ("qualification support", 0.25),
+            ("compliance support", 0.25),
+            ("supply chain optimization", 0.25),
+            ("opportunity for our company", 0.30),
+            ("immediate qualification support", 0.25),
+            ("aerospace focused ems services", 0.30),
+            ("ems services", 0.25),
+        ],
+    ) >= 0.25
+}
+
+#[cfg(feature = "llm")]
+fn violates_supply_chain_role_guidance(
+    supply_chain_role: Option<&str>,
+    headline: &str,
+    narrative: &str,
+    recommendation: &str,
+) -> bool {
+    let Some(role) = supply_chain_role else {
+        return false;
+    };
+
+    let corpus = format!("{}\n{}\n{}", headline, narrative, recommendation).to_ascii_lowercase();
+
+    match role {
+        "SEMICONDUCTOR" => {
+            [
+                "outsourcing opportunit",
+                "ems opportunit",
+                "nearshore ems",
+                "sell assembly",
+                "assembly services",
+                "manufacturing services",
+                "ems partner",
+                "partner with microchip",
+                "partner with nxp",
+            ]
+            .iter()
+            .any(|phrase| corpus.contains(phrase))
+                || contains_semiconductor_sales_pitch(&corpus)
+        }
+        "DEFENSE_PRIME" => [
+            "outsourcing opportunit",
+            "ems opportunit",
+            "nearshore ems",
+            "direct outreach to bae",
+            "direct outreach to l3harris",
+            "sell assembly services",
+            "offer our services to bae",
+            "offer our services to l3harris",
+        ]
+        .iter()
+        .any(|phrase| corpus.contains(phrase)),
+        _ => false,
+    }
+}
+
+#[cfg(feature = "llm")]
+fn topic_marker_hits(corpus: &str, markers: &[&str]) -> usize {
+    markers
+        .iter()
+        .filter(|marker| corpus.contains(**marker))
+        .count()
+}
+
+#[cfg(feature = "llm")]
+fn violates_entity_topic_alignment(
+    entity_ctx: &EntityContext,
+    evidence_signals: &[EvidenceSignal],
+    headline: &str,
+    narrative: &str,
+    recommendation: &str,
+) -> bool {
+    let support_corpus = format!(
+        "{} {} {} {} {} {} {}",
+        entity_ctx.name,
+        entity_ctx.entity_type.as_deref().unwrap_or_default(),
+        entity_ctx.industry_tags.join(" "),
+        entity_ctx.capabilities.join(" "),
+        entity_ctx.sites_summary.join(" "),
+        entity_ctx.recent_changes.join(" "),
+        evidence_signals
+            .iter()
+            .map(|signal| {
+                format!(
+                    "{} {} {} {}",
+                    signal.title,
+                    signal.description,
+                    signal.signal_type,
+                    signal.extracted_facts.join(" ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+    .to_ascii_lowercase();
+    let output_corpus =
+        format!("{} {} {}", headline, narrative, recommendation).to_ascii_lowercase();
+
+    let unsupported_bundles: [&[&str]; 4] = [
+        &[
+            "middle east oil",
+            "oil surge",
+            "oil price",
+            "brent",
+            "crude",
+            "opec",
+            "petrochemical",
+            "refinery",
+            "lng",
+            "gas field",
+        ],
+        &[
+            "mining",
+            "ore",
+            "smelter",
+            "lithium",
+            "nickel",
+            "copper concentrate",
+            "rare earth",
+        ],
+        &[
+            "agriculture",
+            "crop",
+            "harvest",
+            "grain",
+            "fertilizer",
+            "farm",
+            "food processing",
+        ],
+        &[
+            "retail chain",
+            "store rollout",
+            "consumer packaged",
+            "apparel",
+            "fashion",
+        ],
+    ];
+
+    unsupported_bundles.iter().any(|markers| {
+        let output_hits = topic_marker_hits(&output_corpus, markers);
+        let support_hits = topic_marker_hits(&support_corpus, markers);
+        output_hits >= 2 && support_hits == 0
+    })
 }
 
 fn is_public_sector_entity(entity_label: &str, entity_type: Option<&str>) -> bool {
@@ -711,8 +1013,8 @@ fn public_sector_procurement_or_program_case(evidence_signals: &[EvidenceSignal]
 // Quality gate types and functions extracted to llm_orchestration module
 #[cfg(feature = "llm")]
 use llm_orchestration::{
-    quality_gate_blocker, quality_gate_passes_ensemble, quality_gate_requirement,
-    emit_quality_gate_decisions,
+    emit_quality_gate_decisions, quality_gate_blocker, quality_gate_passes_ensemble,
+    quality_gate_requirement,
 };
 
 /// Extract key facts from evidence text using pattern matching.
@@ -836,7 +1138,7 @@ async fn generate_llm_insight(
     entity_ctx: &EntityContext,
     category: &str,
     evidence_signals: &[EvidenceSignal],
-) -> Result<(String, String, String, f64)> {
+) -> Result<(String, String, String, f64, serde_json::Value)> {
     use apex_llm::inference::{ChatMessage, InferenceConfig};
 
     if evidence_signals.is_empty() {
@@ -963,7 +1265,7 @@ async fn generate_llm_insight(
         profile_parts.push(format!("Competitor intelligence: {}", events_str));
     }
     // Competitor classification — tells the LLM how to treat this entity
-    let sc_role = supply_chain_role(entity_ctx.entity_type.as_deref());
+    let sc_role = inferred_supply_chain_role(entity_ctx);
     if entity_ctx.is_competitor {
         profile_parts.push(
             "⚠️ ENTITY CLASSIFICATION: DIRECT EMS COMPETITOR — Do NOT recommend offering our services \
@@ -1001,8 +1303,9 @@ and supply chain gaps. Recommend qualification paths and specific programs where
             "SEMICONDUCTOR" => format!(
                 "🔬 ENTITY CLASSIFICATION: SEMICONDUCTOR COMPANY — {} designs or manufactures chips/ICs. \
 They are NOT an EMS prospect. Do NOT recommend selling assembly services to them. \
-Instead, analyse how their product launches, shortages, EOL notices, or pricing changes \
-affect our customers' BOMs and procurement. Recommend supply chain actions for our customer base.",
+    Do NOT frame them as a consulting, compliance-support, proposal, or facility-pitch target either. \
+    Instead, analyse how their product launches, shortages, EOL notices, or pricing changes \
+    affect our customers' BOMs and procurement. Recommend supply chain actions for our customer base.",
                 entity_ctx.name
             ),
             "PCB_MANUFACTURER" => format!(
@@ -1203,9 +1506,10 @@ STRICT RULES:\n\
             "🔬 SEMICONDUCTOR INTELLIGENCE MODE: This entity designs/manufactures chips — NOT an EMS prospect.\n\
 STRICT RULES:\n\
 1. NEVER recommend selling EMS services to this semiconductor company.\n\
-2. Analyse how their product launches, shortages, EOL notices, or pricing shifts affect our customers' BOMs.\n\
-3. Recommend supply chain actions (alternate parts, redesign triggers, pre-buy strategies) for our customer base.\n\
-4. Any recommendation that pitches assembly or manufacturing to this chip company is WRONG."
+2. NEVER pitch our certifications, facilities, consulting support, compliance packages, proposals, or generic manufacturing capabilities to this semiconductor company or treat it as a direct services lead.\n\
+3. Analyse how their product launches, shortages, EOL notices, or pricing shifts affect our customers' BOMs.\n\
+4. Recommend supply chain actions (alternate parts, redesign triggers, pre-buy strategies) for our customer base.\n\
+5. Any recommendation that pitches assembly, qualification support, compliance support, or manufacturing to this chip company is WRONG."
         } else if sc_role == Some("PCB_MANUFACTURER") {
             "🟢 PCB MANUFACTURER INTELLIGENCE MODE: This entity makes bare PCBs — they are an upstream supplier.\n\
 STRICT RULES:\n\
@@ -1227,9 +1531,12 @@ STRICT RULES:\n\
 3. Recommend engagement for visibility, networking, and business development — not direct sales."
         } else if sc_role == Some("DEFENSE_PRIME") {
             "🛡️ DEFENSE PRIME MODE: This is a large defense/aerospace prime contractor that subcontracts EMS work.\n\
-Analyse their program timelines, subcontractor needs, compliance requirements, offset obligations, and supply chain gaps.\n\
-Recommend qualification paths and specific programs where our capabilities (nearshore, AS9100, ITAR-free) create an advantage.\n\
-Frame recommendations around winning Tier-2/Tier-3 subcontracting positions."
+STRICT RULES:\n\
+1. Do NOT frame this entity as a generic EMS sales prospect or as an 'outsourcing opportunity'.\n\
+2. Do NOT use headline language such as 'nearshore EMS opportunities' or 'EMS outsourcing opportunities'.\n\
+3. Analyse program timelines, subcontractor needs, compliance requirements, offset obligations, and supply chain gaps.\n\
+4. Recommend qualification paths and named programs where our capabilities (nearshore, AS9100, ITAR-free) create an advantage.\n\
+5. Frame recommendations around winning Tier-2/Tier-3 subcontracting or supplier-qualification positions."
         } else if sc_role == Some("OEM") {
             "🏭 OEM / END CUSTOMER MODE: This entity designs end products and may outsource manufacturing.\n\
 Analyse their outsourcing needs, product roadmap signals, supply chain vulnerabilities, and qualification requirements.\n\
@@ -1271,7 +1578,8 @@ Respond with valid JSON only:
   "headline": "Action-oriented headline (<=140 chars) that names {entity_name} and the specific opportunity or threat",
         "narrative": "120-320 words of commercially-driven analysis in natural prose. Cite evidence as [1], [2], [3]. Explain what changed, why it matters, the causal chain, and which commercial choices are opened or constrained now. Do not use section labels or template headings.",
         "recommendation": "2-4 strategic suggestions in plain prose spanning at least two distinct lanes from {suggestion_axes}. Suggestions should be option-oriented rather than canned playbook text. Name REAL companies, roles, facilities, or programs from the evidence when possible, explain why each lane fits now, include timing when the evidence supports it, and cite at least one supporting evidence reference such as [1] or [2].",
-  "confidence": 0.0
+    "confidence": 0.0,
+    "severity": "<critical|high|medium|low based on likely business impact>"
 }}
 
 MANDATORY:
@@ -1346,6 +1654,8 @@ MANDATORY:
         #[serde(default, deserialize_with = "deserialize_recommendation")]
         recommendation: Option<String>,
         confidence: f64,
+        #[serde(default)]
+        severity: String,
     }
 
     /// Accept recommendation as string, array of strings, or array of objects.
@@ -1414,10 +1724,22 @@ MANDATORY:
         }
     }
 
+    fn normalize_assessment_severity(raw: &str, confidence: f64) -> &'static str {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "critical" => "critical",
+            "high" => "high",
+            "warning" | "medium" => "medium",
+            "info" | "low" => "low",
+            _ if confidence >= 0.8 => "critical",
+            _ if confidence >= 0.7 => "high",
+            _ if confidence >= 0.4 => "medium",
+            _ => "low",
+        }
+    }
+
     // Ban truly formulaic/filler phrases that indicate passive analysis.
     let generic_phrases: &[&str] = &[
         "continue monitoring",
-        "monitor the situation",
         "various developments",
         "warranting focused analysis",
         "further developments",
@@ -1444,7 +1766,13 @@ MANDATORY:
 
     let mut previous_failure_reasons: Vec<&'static str> = Vec::new();
     for attempt in 1..=*crate::config::LLM_MAX_RETRIES {
-        let retry_guidance = build_llm_retry_guidance(entity_ctx, category, &previous_failure_reasons);
+        // Exponential backoff: 0s on first attempt, 1s, 2s, 4s...
+        if attempt > 1 {
+            let backoff_ms = 1000u64 * (1u64 << (attempt - 2).min(4));
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+        }
+        let retry_guidance =
+            build_llm_retry_guidance(entity_ctx, category, &previous_failure_reasons);
         let mut messages = vec![
             ChatMessage::system(system.as_str()),
             ChatMessage::user(&user),
@@ -1477,12 +1805,25 @@ MANDATORY:
         let recommendation = parsed.recommendation.unwrap_or_default().trim().to_string();
         let narrative = parsed.narrative.trim().to_string();
         let headline = parsed.headline.trim().to_string();
+        let role_guidance_violation =
+            violates_supply_chain_role_guidance(sc_role, &headline, &narrative, &recommendation);
+        let topic_alignment_violation = violates_entity_topic_alignment(
+            entity_ctx,
+            evidence_signals,
+            &headline,
+            &narrative,
+            &recommendation,
+        );
 
+        let headline_lower = headline.to_lowercase();
         let narrative_lower = narrative.to_lowercase();
         let recommendation_lower = recommendation.to_lowercase();
-        let is_generic = generic_phrases
-            .iter()
-            .any(|p| narrative_lower.contains(p) || recommendation_lower.contains(p));
+        let is_generic =
+            generic_phrases.iter().any(|p| {
+                headline_lower.contains(p)
+                    || narrative_lower.contains(p)
+                    || recommendation_lower.contains(p)
+            }) || has_formulaic_commercial_language(&headline, &narrative, &recommendation);
 
         let words = narrative.split_whitespace().count();
         let reference_count = count_numbered_references(&narrative, 12);
@@ -1506,7 +1847,8 @@ MANDATORY:
         let has_counterfactual = narrative_lower.contains("if ")
             && (narrative_lower.contains(" would ") || narrative_lower.contains(" could "));
         let has_reasoning_depth = has_causal_language || has_counterfactual;
-        let recommendation_has_deadline = recommendation_has_action_timing(category, &recommendation);
+        let recommendation_has_deadline =
+            recommendation_has_action_timing(category, &recommendation);
         let malformed = malformed_fragments.iter().any(|f| {
             headline.to_ascii_lowercase().contains(f)
                 || narrative_lower.contains(f)
@@ -1529,6 +1871,13 @@ MANDATORY:
         );
         let unsupported_certification_escalation =
             has_unsupported_certification_escalation(&narrative, &recommendation, evidence_signals);
+        let unsupported_certification_commercialization =
+            has_unsupported_certification_commercialization(
+                &headline,
+                &narrative,
+                &recommendation,
+                evidence_signals,
+            );
         let unsupported_public_sector_commercialization =
             has_unsupported_public_sector_commercialization(
                 entity_ctx,
@@ -1545,14 +1894,17 @@ MANDATORY:
             &recommendation,
             evidence_signals,
         );
-        let temporal_incoherence = has_temporal_incoherence(
-            &entity_ctx.name,
-            &narrative,
-            Utc::now(),
-            evidence_signals,
-        );
+        let temporal_incoherence =
+            has_temporal_incoherence(&entity_ctx.name, &narrative, Utc::now(), evidence_signals);
         let unnamed_customer_targeting =
             has_unnamed_customer_targeting(&narrative, &recommendation);
+        let unsupported_named_target_provenance = has_unsupported_named_target_provenance(
+            entity_ctx,
+            &headline,
+            &narrative,
+            &recommendation,
+            evidence_signals,
+        );
 
         // Reject if recommendation contains bracket placeholders like [Company X], [specific service], [date]
         let placeholder_patterns: &[&str] = &[
@@ -1600,7 +1952,11 @@ MANDATORY:
             ),
             quality_gate_requirement(
                 "recommendation_timing",
-                if recommendation_has_deadline { 1.0 } else { 0.0 },
+                if recommendation_has_deadline {
+                    1.0
+                } else {
+                    0.0
+                },
                 0.5,
             ),
             quality_gate_requirement(
@@ -1613,39 +1969,52 @@ MANDATORY:
                 if readable_recommendation { 1.0 } else { 0.0 },
                 0.5,
             ),
-            quality_gate_blocker(
-                "security_escalation",
-                unsupported_security_escalation,
-                true,
-            ),
+            quality_gate_blocker("security_escalation", unsupported_security_escalation, true),
             quality_gate_blocker(
                 "certification_escalation",
                 unsupported_certification_escalation,
                 false,
             ),
             quality_gate_blocker(
+                "certification_commercialization",
+                unsupported_certification_commercialization,
+                true,
+            ),
+            quality_gate_blocker(
                 "public_sector_commercialization",
                 unsupported_public_sector_commercialization,
-                false,
+                true,
             ),
             quality_gate_blocker(
                 "public_sector_low_usefulness",
                 low_usefulness_public_sector_analysis,
-                false,
+                true,
             ),
             quality_gate_blocker("temporal_incoherence", temporal_incoherence, true),
             quality_gate_blocker(
                 "unnamed_customer_targeting",
                 unnamed_customer_targeting,
-                false,
+                true,
             ),
+            quality_gate_blocker(
+                "named_target_provenance",
+                unsupported_named_target_provenance,
+                true,
+            ),
+            quality_gate_blocker("topic_alignment", topic_alignment_violation, true),
+            quality_gate_blocker("role_guidance", role_guidance_violation, true),
             quality_gate_requirement(
                 "headline_length",
                 if is_headline_ok { 1.0 } else { 0.0 },
                 0.5,
             ),
         ];
-        emit_quality_gate_decisions(&entity_ctx.name, category, attempt as usize, &gate_decisions);
+        emit_quality_gate_decisions(
+            &entity_ctx.name,
+            category,
+            attempt as usize,
+            &gate_decisions,
+        );
 
         let passes = quality_gate_passes_ensemble(&gate_decisions);
         let ensemble_failures = gate_decisions
@@ -1659,11 +2028,81 @@ MANDATORY:
         if passes {
             crate::observability::WORKER_METRICS.record_llm_success();
             crate::observability::WORKER_METRICS.record_insight_accepted();
+            let parsed_confidence = parsed.confidence.clamp(0.0, 1.0);
+            let assessment_severity =
+                normalize_assessment_severity(&parsed.severity, parsed_confidence);
+            let mut consensus_reached = true;
+            let mut dissenting_opinions = Vec::new();
+
+            if assessment_severity == "critical" {
+                for sample_idx in 1..=2 {
+                    let sample_instruction = format!(
+                        "Independent review sample {}. Reassess the evidence from scratch, remain evidence-bound, and return the same JSON schema.",
+                        sample_idx
+                    );
+                    let sample_messages = vec![
+                        ChatMessage::system(system.as_str()),
+                        ChatMessage::user(&user),
+                        ChatMessage::user(sample_instruction),
+                    ];
+
+                    match llm_client
+                        .complete_with_config(sample_messages, &config)
+                        .await
+                    {
+                        Ok(sample_resp) => match sample_resp.parse_json::<LlmInsightResponse>() {
+                            Ok(sample) => {
+                                let sample_confidence = sample.confidence.clamp(0.0, 1.0);
+                                let sample_severity = normalize_assessment_severity(
+                                    &sample.severity,
+                                    sample_confidence,
+                                );
+                                if sample_severity != assessment_severity {
+                                    consensus_reached = false;
+                                    dissenting_opinions.push(serde_json::json!({
+                                        "severity": sample_severity,
+                                        "category": category,
+                                        "confidence": sample_confidence,
+                                        "rationale_summary": crate::truncate_text(
+                                            sample.narrative.trim(),
+                                            200,
+                                        ),
+                                    }));
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    entity = %entity_ctx.name,
+                                    sample_idx,
+                                    %error,
+                                    "LLM consensus sample JSON parse failed"
+                                );
+                            }
+                        },
+                        Err(error) => {
+                            tracing::warn!(
+                                entity = %entity_ctx.name,
+                                sample_idx,
+                                %error,
+                                "LLM consensus sample request failed"
+                            );
+                        }
+                    }
+                }
+            }
+
+            let metadata = serde_json::json!({
+                "assessment_severity": assessment_severity,
+                "assessment_category": category,
+                "consensus_reached": consensus_reached,
+                "dissenting_opinions": dissenting_opinions,
+            });
             return Ok((
                 headline,
                 narrative,
                 recommendation,
-                parsed.confidence.clamp(0.0, 1.0),
+                parsed_confidence,
+                metadata,
             ));
         }
 
@@ -1680,8 +2119,26 @@ MANDATORY:
         if unnamed_customer_targeting {
             previous_failure_reasons.push("unnamed_customer_targeting");
         }
+        if unsupported_named_target_provenance {
+            previous_failure_reasons.push("named_target_provenance");
+        }
+        if unsupported_public_sector_commercialization {
+            previous_failure_reasons.push("public_sector_commercialization");
+        }
+        if low_usefulness_public_sector_analysis {
+            previous_failure_reasons.push("public_sector_low_usefulness");
+        }
+        if topic_alignment_violation {
+            previous_failure_reasons.push("topic_alignment");
+        }
+        if role_guidance_violation {
+            previous_failure_reasons.push("role_guidance");
+        }
         if unsupported_certification_escalation {
             previous_failure_reasons.push("certification_escalation");
+        }
+        if unsupported_certification_commercialization {
+            previous_failure_reasons.push("certification_commercialization");
         }
         if unsupported_security_escalation {
             previous_failure_reasons.push("security_escalation");
@@ -1703,9 +2160,13 @@ MANDATORY:
             readable_recommendation,
             unsupported_security_escalation,
             unsupported_certification_escalation,
+            unsupported_certification_commercialization,
             unsupported_public_sector_commercialization,
             low_usefulness_public_sector_analysis,
             unnamed_customer_targeting,
+            unsupported_named_target_provenance,
+            topic_alignment_violation,
+            role_guidance_violation,
             ensemble_failures,
             veto_rejected,
             recommendation_words = recommendation.split_whitespace().count(),
@@ -1727,6 +2188,7 @@ MANDATORY:
     )
 }
 
+#[allow(dead_code)]
 fn push_entity_source_url(
     urls_by_entity: &mut HashMap<String, Vec<String>>,
     entity_id: Uuid,
@@ -1882,9 +2344,11 @@ fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::SeedRecipe) -> 
     } else {
         sr.action_playbook.join("; ")
     };
-    let severity = if sr.category.contains("security") || sr.category.contains("risk") {
-        "warning"
-    } else if sr.category.contains("supply") || sr.category.contains("sanction") {
+    let severity = if sr.category.contains("security")
+        || sr.category.contains("risk")
+        || sr.category.contains("supply")
+        || sr.category.contains("sanction")
+    {
         "warning"
     } else {
         "info"
@@ -1903,6 +2367,7 @@ fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::SeedRecipe) -> 
 }
 
 #[tokio::main]
+#[allow(clippy::disallowed_methods)]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let log_level = std::env::var("WORKER_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
@@ -2081,7 +2546,7 @@ async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStore>) {
 }
 
 fn parse_digest_recipients(raw: &str) -> Vec<String> {
-    raw.split(|c| c == ',' || c == ';' || c == '\n')
+    raw.split([',', ';', '\n'])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
@@ -2330,6 +2795,18 @@ async fn run_quality_gate_golden_set_regression(
         .export_quality_gate_reviewed_warning_golden_set(accepted_limit, rejected_limit)
         .await
         .context("quality gate golden set export failed")?;
+    if export.examples.is_empty() {
+        tracing::info!(
+            "quality_gate_golden_set: no reviewed warnings yet, skipping regression check"
+        );
+        return Ok(QualityGateGoldenSetRegressionResult {
+            total_examples: 0,
+            accepted_examples: 0,
+            rejected_examples: 0,
+            agreement: 1.0,
+            disagreements: Vec::new(),
+        });
+    }
     let regression = evaluate_quality_gate_golden_set(&export.examples);
     let metrics = serde_json::json!({
         "dataset_id": export.dataset_id,
@@ -2576,7 +3053,8 @@ async fn run_update_email_digest_job(store: &Arc<PgStore>) -> Result<(u64, u64)>
                 .any(|(seen_title, seen_summary)| {
                     let title_sim = token_jaccard_similarity(&title_tokens, seen_title);
                     let summary_sim = token_jaccard_similarity(&summary_tokens, seen_summary);
-                    title_sim >= *config::DEDUP_TITLE_THRESHOLD && summary_sim >= *config::DEDUP_SUMMARY_THRESHOLD
+                    title_sim >= *config::DEDUP_TITLE_THRESHOLD
+                        && summary_sim >= *config::DEDUP_SUMMARY_THRESHOLD
                 });
             if near_duplicate {
                 continue;
@@ -2778,6 +3256,7 @@ async fn resolve_discovered_company_id(
     parent_seed: Option<&apex_store::postgres::ExpansionSeedRow>,
     now: chrono::DateTime<Utc>,
 ) -> Result<Option<Uuid>> {
+    let seed_is_competitor = parent_seed.map(|seed| seed.is_competitor).unwrap_or(false);
     let inferred_org = disc
         .inferred_org
         .as_deref()
@@ -2793,12 +3272,20 @@ async fn resolve_discovered_company_id(
     let inferred_domain = extract_candidate_company_domain(disc);
     if let Some(domain) = inferred_domain.as_deref() {
         if let Some(existing) = store.get_company_by_domain(domain).await? {
+            if seed_is_competitor {
+                persist_discovered_company_context(store, &existing, disc, parent_seed, now)
+                    .await?;
+            }
             return Ok(Some(existing.id));
         }
     }
 
     if let Some(org_name) = inferred_org {
         if let Some(existing) = store.get_company_by_name_ci(org_name).await? {
+            if seed_is_competitor {
+                persist_discovered_company_context(store, &existing, disc, parent_seed, now)
+                    .await?;
+            }
             return Ok(Some(existing.id));
         }
 
@@ -2815,7 +3302,9 @@ async fn resolve_discovered_company_id(
             "confidence": disc.confidence,
             "seed_org_name": parent_seed.map(|seed| seed.org_name.as_str()),
             "seed_org_id": parent_seed.and_then(|seed| seed.primary_org_id).map(|id| id.to_string()),
-            "seed_is_competitor": parent_seed.map(|seed| seed.is_competitor).unwrap_or(false),
+            "seed_is_competitor": seed_is_competitor,
+            "is_competitor": seed_is_competitor,
+            "discovery_track": if seed_is_competitor { "competitor" } else { "partner_or_prospect" },
         });
         company.created_at = now;
         company.updated_at = now;
@@ -2832,6 +3321,143 @@ async fn resolve_discovered_company_id(
     Ok(parent_seed.and_then(|seed| seed.primary_org_id))
 }
 
+#[cfg(feature = "llm")]
+async fn persist_discovered_company_context(
+    store: &PgStore,
+    existing: &apex_store::postgres::CompanyRow,
+    disc: &DiscoveredPoi,
+    parent_seed: Option<&apex_store::postgres::ExpansionSeedRow>,
+    now: chrono::DateTime<Utc>,
+) -> Result<()> {
+    let seed_is_competitor = parent_seed.map(|seed| seed.is_competitor).unwrap_or(false);
+    let existing_is_competitor = existing
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("is_competitor"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    let Some(mut metadata) = existing.metadata.clone() else {
+        let mut empty = serde_json::Map::new();
+        empty.insert(
+            "discovered_via".to_string(),
+            serde_json::Value::String("poi_discovery".to_string()),
+        );
+        update_existing_company_context(
+            store,
+            existing,
+            serde_json::Value::Object(empty),
+            disc,
+            parent_seed,
+            seed_is_competitor,
+            now,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    if !seed_is_competitor && existing_is_competitor {
+        return Ok(());
+    }
+
+    update_existing_company_context(
+        store,
+        existing,
+        metadata.take(),
+        disc,
+        parent_seed,
+        seed_is_competitor,
+        now,
+    )
+    .await
+}
+
+#[cfg(feature = "llm")]
+async fn update_existing_company_context(
+    store: &PgStore,
+    existing: &apex_store::postgres::CompanyRow,
+    metadata: serde_json::Value,
+    disc: &DiscoveredPoi,
+    parent_seed: Option<&apex_store::postgres::ExpansionSeedRow>,
+    seed_is_competitor: bool,
+    now: chrono::DateTime<Utc>,
+) -> Result<()> {
+    let mut metadata_obj = metadata.as_object().cloned().unwrap_or_default();
+    metadata_obj.insert(
+        "discovered_via".to_string(),
+        serde_json::Value::String("poi_discovery".to_string()),
+    );
+    metadata_obj.insert(
+        "discovery_method".to_string(),
+        serde_json::Value::String(disc.discovery_method.clone()),
+    );
+    metadata_obj.insert(
+        "source_url".to_string(),
+        serde_json::Value::String(disc.source_url.clone()),
+    );
+    metadata_obj.insert(
+        "seed_person_id".to_string(),
+        serde_json::Value::String(disc.seed_person_id.to_string()),
+    );
+    metadata_obj.insert(
+        "confidence".to_string(),
+        serde_json::Value::from(disc.confidence as f64),
+    );
+    if let Some(seed) = parent_seed {
+        metadata_obj.insert(
+            "seed_org_name".to_string(),
+            serde_json::Value::String(seed.org_name.clone()),
+        );
+        if let Some(seed_org_id) = seed.primary_org_id {
+            metadata_obj.insert(
+                "seed_org_id".to_string(),
+                serde_json::Value::String(seed_org_id.to_string()),
+            );
+        }
+    }
+    if seed_is_competitor {
+        metadata_obj.insert(
+            "seed_is_competitor".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        metadata_obj.insert("is_competitor".to_string(), serde_json::Value::Bool(true));
+        metadata_obj.insert(
+            "discovery_track".to_string(),
+            serde_json::Value::String("competitor".to_string()),
+        );
+    } else {
+        metadata_obj
+            .entry("seed_is_competitor".to_string())
+            .or_insert(serde_json::Value::Bool(false));
+        metadata_obj
+            .entry("discovery_track".to_string())
+            .or_insert_with(|| serde_json::Value::String("partner_or_prospect".to_string()));
+    }
+
+    let mut company = Company::new(
+        existing.name.clone(),
+        CompanyType::from_str(existing.company_type.as_deref().unwrap_or("other")),
+    );
+    company.id = existing.id;
+    company.legal_name = existing.legal_name.clone();
+    company.domain = existing.domain.clone();
+    company.country_code = existing.country_code.clone();
+    company.region = existing.region.clone();
+    company.industry_tags = existing.industry_tags.clone().unwrap_or_default();
+    company.employee_estimate = existing.employee_estimate;
+    company.revenue_estimate_usd = existing.revenue_estimate_usd;
+    company.risk_score = existing.risk_score.unwrap_or(0.0);
+    company.threat_score = existing.threat_score.unwrap_or(0.0);
+    company.overlap_score = existing.overlap_score.unwrap_or(0.0);
+    company.strategic_relevance = existing.strategic_relevance.unwrap_or(0.0);
+    company.metadata = serde_json::Value::Object(metadata_obj);
+    company.created_at = existing.created_at.unwrap_or(now);
+    company.updated_at = now;
+    store.insert_company(&company).await?;
+    tracing::info!(company = %company.name, competitor = seed_is_competitor, "poi_discovery: refreshed company discovery context");
+    Ok(())
+}
+
 /// Classify an inferred role title into a canonical `RoleFamily`.
 #[cfg(feature = "llm")]
 fn classify_role_family(role: Option<&str>) -> RoleFamily {
@@ -2839,6 +3465,11 @@ fn classify_role_family(role: Option<&str>) -> RoleFamily {
         Some(s) if !s.is_empty() => s.to_lowercase(),
         _ => return RoleFamily::Other("Unknown".to_string()),
     };
+
+    if looks_like_buyer_candidate_role(Some(&r)) {
+        return RoleFamily::Procurement;
+    }
+
     // C-suite / executive
     if r.contains("ceo")
         || r.contains("chief executive")
@@ -2881,11 +3512,11 @@ fn classify_role_family(role: Option<&str>) -> RoleFamily {
         if r.contains("engineer") || r.contains("technology") || r.contains("r&d") {
             return RoleFamily::Engineering;
         }
+        if looks_like_buyer_candidate_role(Some(&r)) {
+            return RoleFamily::Procurement;
+        }
         if r.contains("operation") || r.contains("supply chain") || r.contains("manufacturing") {
             return RoleFamily::Operations;
-        }
-        if r.contains("procurement") || r.contains("sourcing") {
-            return RoleFamily::Procurement;
         }
         if r.contains("quality") {
             return RoleFamily::Quality;
@@ -2945,6 +3576,29 @@ fn classify_role_family(role: Option<&str>) -> RoleFamily {
         return RoleFamily::Logistics;
     }
     RoleFamily::Other(role.unwrap_or("Unknown").to_string())
+}
+
+#[cfg(feature = "llm")]
+fn looks_like_buyer_candidate_role(role: Option<&str>) -> bool {
+    let Some(role) = role else {
+        return false;
+    };
+
+    let lower = role.to_lowercase();
+    lower.contains("buyer")
+        || lower.contains("procurement")
+        || lower.contains("purchas")
+        || lower.contains("sourcing")
+        || lower.contains("supply chain")
+        || lower.contains("commodity")
+        || lower.contains("category manager")
+        || lower.contains("vendor management")
+        || lower.contains("supplier diversity")
+        || lower.contains("supply planning")
+        || lower.contains("inventory")
+        || lower.contains("approvisionnement")
+        || lower.contains("achat")
+        || lower.contains("achats")
 }
 
 /// Validates that a discovered POI candidate is a real person name (not a topic,
@@ -3188,7 +3842,9 @@ fn build_quality_llm_client() -> Arc<dyn LlmClient> {
             llm_config.model_name = model;
         }
     }
-    llm_config.api_key = std::env::var("LLM_API_KEY").ok();
+    llm_config.api_key = std::env::var("LLM_API_KEY")
+        .ok()
+        .map(apex_llm::ApiKeySecret::from);
     Arc::new(OpenAiCompatibleClient::new(llm_config))
 }
 
@@ -3280,25 +3936,9 @@ async fn run_llm_continuous_improvement_cycle(
         &eval_summary,
         Some("llm_eval_report"),
     ) {
-        if let Err(e) = store
-            .insert_insight(
-                "LLM Eval Gate Report",
-                &eval_summary,
-                Some("llm_eval_report"),
-                Some("global"),
-                Some(eval_pass_rate),
-                None,
-                None,
-                Some(vec![
-                    "llm".to_string(),
-                    "self_improvement".to_string(),
-                    "eval".to_string(),
-                ]),
-            )
-            .await
-        {
-            tracing::warn!(error = %e, "self_improvement_cycle: failed to persist llm eval report insight");
-        }
+        tracing::info!(
+            "self_improvement_cycle: llm eval report passed quality gate; storing governance artifact only"
+        );
     }
 
     if eval_pass_rate < min_eval_pass_rate
@@ -3469,25 +4109,9 @@ async fn run_llm_continuous_improvement_cycle(
         &improvement_summary,
         Some("llm_self_improvement"),
     ) {
-        if let Err(e) = store
-            .insert_insight(
-                "LLM Continuous Improvement Cycle",
-                &improvement_summary,
-                Some("llm_self_improvement"),
-                Some("global"),
-                Some(cycle_report.avg_critique_score.clamp(0.0, 1.0)),
-                None,
-                None,
-                Some(vec![
-                    "llm".to_string(),
-                    "self_improvement".to_string(),
-                    "continuous_learning".to_string(),
-                ]),
-            )
-            .await
-        {
-            tracing::warn!(error = %e, "self_improvement_cycle: failed to persist continuous improvement insight");
-        }
+        tracing::info!(
+            "self_improvement_cycle: continuous improvement summary passed quality gate; storing governance artifact only"
+        );
     }
 
     let jsonl_examples = ImprovementCycleReport::to_jsonl(&training_examples);
@@ -3880,6 +4504,7 @@ async fn load_nightly_inputs() -> Result<NightlyInputs> {
     Ok(payload)
 }
 
+#[allow(dead_code)]
 async fn load_weekly_inputs() -> Result<WeeklyInputs> {
     let path = std::env::var("WEEKLY_INPUT_PATH")
         .unwrap_or_else(|_| "runtime/weekly_inputs.json".to_string());
@@ -3943,9 +4568,36 @@ fn generate_typosquat_variants(domain: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::absurd_extreme_comparisons
+    )]
+
     use super::*;
     #[cfg(feature = "llm")]
-    use crate::llm_orchestration::{QualityGateReview, summarize_quality_gate_reviews};
+    use crate::llm_orchestration::{summarize_quality_gate_reviews, QualityGateReview};
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn classify_role_family_detects_supply_chain_buyers() {
+        assert_eq!(
+            classify_role_family(Some("Senior Buyer")),
+            RoleFamily::Procurement
+        );
+        assert_eq!(
+            classify_role_family(Some("Head of Supply Chain")),
+            RoleFamily::Procurement
+        );
+        assert_eq!(
+            classify_role_family(Some("Category Manager, Packaging")),
+            RoleFamily::Procurement
+        );
+        assert_eq!(
+            classify_role_family(Some("Responsable Achats")),
+            RoleFamily::Procurement
+        );
+    }
 
     #[cfg(feature = "llm")]
     fn matrix_entity_context(public_sector: bool) -> EntityContext {
@@ -3985,6 +4637,218 @@ mod tests {
                 "keytronic.com".to_string()
             }),
         }
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn inferred_supply_chain_role_detects_semiconductor_from_context() {
+        let entity_ctx = EntityContext {
+            name: "Microchip Technology".to_string(),
+            region: "US".to_string(),
+            entity_type: Some("OEM".to_string()),
+            is_competitor: false,
+            industry_tags: vec!["semiconductor".to_string(), "automotive".to_string()],
+            certifications: vec![],
+            capabilities: vec![
+                "MCU portfolio".to_string(),
+                "power management ICs".to_string(),
+            ],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: None,
+        };
+
+        assert_eq!(
+            inferred_supply_chain_role(&entity_ctx),
+            Some("SEMICONDUCTOR")
+        );
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn role_guidance_rejects_semiconductor_ems_pitch_language() {
+        assert!(violates_supply_chain_role_guidance(
+            Some("SEMICONDUCTOR"),
+            "Microchip Technology's CEO shift opens EMS outsourcing opportunities",
+            "Microchip Technology is a chip supplier, but this creates nearshore EMS opportunities for us [1].",
+            "Offer assembly services to Microchip procurement [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn role_guidance_rejects_semiconductor_proposal_pitch_language() {
+        assert!(violates_supply_chain_role_guidance(
+            Some("SEMICONDUCTOR"),
+            "NXP Semiconductors faces supply chain risks due to regulatory changes",
+            "NXP Semiconductors is navigating regulatory shifts that could affect procurement, creating an opportunity for our company to position itself as a reliable partner in maintaining compliance.",
+            "Reach out to NXP's operations leadership within 30 days and prepare a detailed proposal highlighting our ISO 14001 certification and green manufacturing capabilities.",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn role_guidance_rejects_semiconductor_qualification_support_pitch_language() {
+        assert!(violates_supply_chain_role_guidance(
+            Some("SEMICONDUCTOR"),
+            "NVIDIA's AS9100 gap risks aerospace contracts",
+            "NVIDIA's AS9100 compliance gap creates a direct opportunity for our aerospace-focused EMS services because defense-adjacent buyers may need alternative qualification paths.",
+            "Offer expedited qualification support using our Tunisia and Morocco facilities before Q3 2026 [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn role_guidance_allows_semiconductor_customer_supply_advisory() {
+        assert!(!violates_supply_chain_role_guidance(
+            Some("SEMICONDUCTOR"),
+            "NXP regulatory update may affect automotive sourcing windows",
+            "The regulatory shift could narrow documentation timing for automotive OEMs that depend on NXP MCUs [1].",
+            "Advise affected automotive customers to review buffer stock, alternate-part qualification, and redesign triggers before the next sourcing cycle [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn inferred_supply_chain_role_detects_defense_prime_from_context() {
+        let entity_ctx = EntityContext {
+            name: "BAE Systems".to_string(),
+            region: "UK".to_string(),
+            entity_type: Some("company".to_string()),
+            is_competitor: false,
+            industry_tags: vec!["aerospace and defense".to_string()],
+            certifications: vec!["AS9100D".to_string()],
+            capabilities: vec!["munitions systems".to_string()],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec!["Glascoed munitions facility".to_string()],
+            competitor_events: vec![],
+            domain: None,
+        };
+
+        assert_eq!(
+            inferred_supply_chain_role(&entity_ctx),
+            Some("DEFENSE_PRIME")
+        );
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn role_guidance_rejects_defense_prime_generic_ems_opportunity_language() {
+        assert!(violates_supply_chain_role_guidance(
+            Some("DEFENSE_PRIME"),
+            "BAE Systems' munitions factory delay opens nearshore EMS opportunities",
+            "The delay creates an EMS opportunity for direct outreach to BAE Systems [1].",
+            "Position nearshore EMS capacity to BAE Systems immediately [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn topic_alignment_rejects_unsupported_oil_narrative() {
+        let entity_ctx = EntityContext {
+            name: "NVIDIA".to_string(),
+            region: "US".to_string(),
+            entity_type: Some("semiconductor".to_string()),
+            is_competitor: false,
+            industry_tags: vec!["semiconductor".to_string(), "ai".to_string()],
+            certifications: vec![],
+            capabilities: vec![
+                "GPU platforms".to_string(),
+                "data center accelerators".to_string(),
+            ],
+            key_persons: vec![],
+            recent_changes: vec!["Blackwell server launch".to_string()],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: None,
+        };
+        let evidence_signals = vec![EvidenceSignal {
+            title: "NVIDIA expands AI server program".to_string(),
+            description:
+                "Hyperscaler demand is lifting GPU server deployments and data center capacity planning."
+                    .to_string(),
+            source_url: "https://example.com/nvidia".to_string(),
+            signal_type: "news".to_string(),
+            extracted_facts: vec!["GPU server".to_string(), "data center".to_string()],
+            date_context: Some("2026-03-18".to_string()),
+            relevance_score: 1.0,
+        }];
+
+        assert!(violates_entity_topic_alignment(
+            &entity_ctx,
+            &evidence_signals,
+            "Middle East oil surge changes NVIDIA demand",
+            "NVIDIA now sits in the path of a Middle East oil surge and refinery spending wave that will reshape its sales mix [1] [2].",
+            "Brief the account team on oil price and refinery demand exposure within 30 days [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn topic_alignment_allows_supported_semiconductor_narrative() {
+        let entity_ctx = EntityContext {
+            name: "NVIDIA".to_string(),
+            region: "US".to_string(),
+            entity_type: Some("semiconductor".to_string()),
+            is_competitor: false,
+            industry_tags: vec!["semiconductor".to_string(), "ai".to_string()],
+            certifications: vec![],
+            capabilities: vec![
+                "GPU platforms".to_string(),
+                "data center accelerators".to_string(),
+            ],
+            key_persons: vec![],
+            recent_changes: vec!["Blackwell server launch".to_string()],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: None,
+        };
+        let evidence_signals = vec![EvidenceSignal {
+            title: "NVIDIA expands AI server program".to_string(),
+            description:
+                "Hyperscaler demand is lifting GPU server deployments and data center capacity planning."
+                    .to_string(),
+            source_url: "https://example.com/nvidia".to_string(),
+            signal_type: "news".to_string(),
+            extracted_facts: vec!["GPU server".to_string(), "data center".to_string()],
+            date_context: Some("2026-03-18".to_string()),
+            relevance_score: 1.0,
+        }];
+
+        assert!(!violates_entity_topic_alignment(
+            &entity_ctx,
+            &evidence_signals,
+            "AI server demand lifts NVIDIA planning urgency",
+            "NVIDIA is seeing stronger data center demand because hyperscalers are accelerating GPU server deployment windows [1] [2].",
+            "Prepare a response plan for the next data center qualification cycle within 30 days [1].",
+        ));
     }
 
     #[cfg(feature = "llm")]
@@ -4099,8 +4963,10 @@ mod tests {
     fn matrix_case_passes(category: &str, public_sector: bool, quality: &str) -> bool {
         let entity_ctx = matrix_entity_context(public_sector);
         let evidence_signals = matrix_signal(category, public_sector);
-        let (headline, narrative, recommendation, _) = matrix_payload(category, public_sector, quality);
+        let (headline, narrative, recommendation, _) =
+            matrix_payload(category, public_sector, quality);
 
+        let headline_lower = headline.to_lowercase();
         let narrative_lower = narrative.to_lowercase();
         let recommendation_lower = recommendation.to_lowercase();
         let generic_phrases = [
@@ -4142,9 +5008,12 @@ mod tests {
             "[contact ",
         ];
 
-        let is_generic = generic_phrases
-            .iter()
-            .any(|phrase| narrative_lower.contains(phrase) || recommendation_lower.contains(phrase));
+        let is_generic =
+            generic_phrases.iter().any(|phrase| {
+                headline_lower.contains(phrase)
+                    || narrative_lower.contains(phrase)
+                    || recommendation_lower.contains(phrase)
+            }) || has_formulaic_commercial_language(&headline, &narrative, &recommendation);
         let malformed = malformed_fragments.iter().any(|fragment| {
             headline.to_ascii_lowercase().contains(fragment)
                 || narrative_lower.contains(fragment)
@@ -4153,15 +5022,26 @@ mod tests {
         let words = narrative.split_whitespace().count();
         let reference_count = count_numbered_references(&narrative, 12);
         let recommendation_reference_count = count_numbered_references(&recommendation, 12);
-        let has_digits = narrative.chars().any(|character| character.is_ascii_digit());
+        let has_digits = narrative
+            .chars()
+            .any(|character| character.is_ascii_digit());
         let _has_recommendation = recommendation.split_whitespace().count() >= 12;
         let is_headline_ok = !headline.is_empty() && headline.len() <= 160;
-        let has_causal_language = ["because", "therefore", "as a result", "which means", "implies", "drives", "leads to"]
-            .iter()
-            .any(|phrase| narrative_lower.contains(phrase));
+        let has_causal_language = [
+            "because",
+            "therefore",
+            "as a result",
+            "which means",
+            "implies",
+            "drives",
+            "leads to",
+        ]
+        .iter()
+        .any(|phrase| narrative_lower.contains(phrase));
         let has_counterfactual = narrative_lower.contains("if ")
             && (narrative_lower.contains(" would ") || narrative_lower.contains(" could "));
-        let recommendation_has_deadline = recommendation_has_action_timing(category, &recommendation);
+        let recommendation_has_deadline =
+            recommendation_has_action_timing(category, &recommendation);
         let readable_narrative = is_readable_and_useful_digest_text(&narrative)
             && !has_excessive_phrase_repetition(&recommendation);
         let readable_recommendation = recommendation
@@ -4181,13 +5061,21 @@ mod tests {
             &recommendation,
             &evidence_signals,
         );
-        let unsupported_public_sector_commercialization = has_unsupported_public_sector_commercialization(
-            &entity_ctx,
-            category,
-            &narrative,
-            &recommendation,
-            &evidence_signals,
-        );
+        let unsupported_certification_commercialization =
+            has_unsupported_certification_commercialization(
+                &headline,
+                &narrative,
+                &recommendation,
+                &evidence_signals,
+            );
+        let unsupported_public_sector_commercialization =
+            has_unsupported_public_sector_commercialization(
+                &entity_ctx,
+                category,
+                &narrative,
+                &recommendation,
+                &evidence_signals,
+            );
         let low_usefulness_public_sector_analysis = has_low_usefulness_public_sector_analysis(
             &entity_ctx,
             category,
@@ -4196,7 +5084,15 @@ mod tests {
             &recommendation,
             &evidence_signals,
         );
-        let unnamed_customer_targeting = has_unnamed_customer_targeting(&narrative, &recommendation);
+        let topic_alignment_violation = violates_entity_topic_alignment(
+            &entity_ctx,
+            &evidence_signals,
+            &headline,
+            &narrative,
+            &recommendation,
+        );
+        let unnamed_customer_targeting =
+            has_unnamed_customer_targeting(&narrative, &recommendation);
         let has_placeholders = placeholder_patterns
             .iter()
             .any(|pattern| recommendation_lower.contains(pattern));
@@ -4224,12 +5120,20 @@ mod tests {
             ),
             quality_gate_requirement(
                 "reasoning_depth",
-                if has_causal_language || has_counterfactual { 1.0 } else { 0.0 },
+                if has_causal_language || has_counterfactual {
+                    1.0
+                } else {
+                    0.0
+                },
                 0.5,
             ),
             quality_gate_requirement(
                 "recommendation_timing",
-                if recommendation_has_deadline { 1.0 } else { 0.0 },
+                if recommendation_has_deadline {
+                    1.0
+                } else {
+                    0.0
+                },
                 0.5,
             ),
             quality_gate_requirement(
@@ -4249,6 +5153,11 @@ mod tests {
                 false,
             ),
             quality_gate_blocker(
+                "certification_commercialization",
+                unsupported_certification_commercialization,
+                true,
+            ),
+            quality_gate_blocker(
                 "public_sector_commercialization",
                 unsupported_public_sector_commercialization,
                 false,
@@ -4256,13 +5165,14 @@ mod tests {
             quality_gate_blocker(
                 "public_sector_low_usefulness",
                 low_usefulness_public_sector_analysis,
-                false,
+                true,
             ),
             quality_gate_blocker(
                 "unnamed_customer_targeting",
                 unnamed_customer_targeting,
                 false,
             ),
+            quality_gate_blocker("topic_alignment", topic_alignment_violation, true),
             quality_gate_requirement(
                 "headline_length",
                 if is_headline_ok { 1.0 } else { 0.0 },
@@ -4386,7 +5296,9 @@ mod tests {
         let security_evidence = vec![
             EvidenceSignal {
                 title: "El Sewedy DNS posture degradation".to_string(),
-                description: "DNS posture score at 70 with missing DKIM record and elevated spoofing risk.".to_string(),
+                description:
+                    "DNS posture score at 70 with missing DKIM record and elevated spoofing risk."
+                        .to_string(),
                 source_url: "https://example.com/dns".to_string(),
                 signal_type: "warning".to_string(),
                 extracted_facts: vec![
@@ -4430,11 +5342,14 @@ mod tests {
             ),
         ];
         for (narrative, recommendation) in certification_variants {
-            assert!(has_unsupported_certification_escalation(
-                narrative,
-                recommendation,
-                &certification_evidence,
-            ), "certification variant slipped: {narrative} || {recommendation}");
+            assert!(
+                has_unsupported_certification_escalation(
+                    narrative,
+                    recommendation,
+                    &certification_evidence,
+                ),
+                "certification variant slipped: {narrative} || {recommendation}"
+            );
         }
 
         let security_variants = [
@@ -4460,12 +5375,15 @@ mod tests {
             ),
         ];
         for (narrative, recommendation) in security_variants {
-            assert!(has_unsupported_security_escalation(
-                "security_compliance",
-                narrative,
-                recommendation,
-                &security_evidence,
-            ), "security variant slipped: {narrative} || {recommendation}");
+            assert!(
+                has_unsupported_security_escalation(
+                    "security_compliance",
+                    narrative,
+                    recommendation,
+                    &security_evidence,
+                ),
+                "security variant slipped: {narrative} || {recommendation}"
+            );
         }
 
         let targeting_variants = [
@@ -4476,10 +5394,10 @@ mod tests {
             "Go after their buyer base with a near-term switch campaign [1].",
         ];
         for recommendation in targeting_variants {
-            assert!(has_unnamed_customer_targeting(
-                "Generic risk narrative.",
-                recommendation,
-            ), "targeting variant slipped: {recommendation}");
+            assert!(
+                has_unnamed_customer_targeting("Generic risk narrative.", recommendation,),
+                "targeting variant slipped: {recommendation}"
+            );
         }
     }
 
@@ -4568,12 +5486,14 @@ mod tests {
 
         assert_eq!(count_concrete_signal_details(&signal_details), 0);
         assert!(!should_emit_fallback_insight(
+            "security_compliance",
             &signal_details,
             "Monitor sentiment trajectory; Assess customer impact",
             0.48,
             2,
         ));
         assert!(!should_emit_fallback_insight(
+            "security_compliance",
             &signal_details,
             "Convene cross-functional risk assessment; Scenario-plan for operational disruption",
             0.82,
@@ -4653,6 +5573,61 @@ mod tests {
         assert!(title.contains("procurement signal emerging"));
         assert!(!title.contains("RFQ or customer engagement activity"));
         assert!(!title.contains("18 job posting(s) observed"));
+    }
+
+    #[test]
+    fn business_fallback_summary_passes_gate_and_ignores_security_hygiene_noise() {
+        let signal_details = vec![
+            "8 lookalike domain(s) detected".to_string(),
+            "Named RFQ issued for avionics subassembly".to_string(),
+            "Supplier portal opened for Q3 RFQ".to_string(),
+        ];
+
+        let title = build_analytical_title(
+            "Acme EMS",
+            "Europe",
+            "demand_procurement",
+            &signal_details,
+            Some("EMS"),
+        );
+        let analytical = build_analytical_narrative(
+            "Acme EMS",
+            "Europe",
+            Some("EMS"),
+            "demand_procurement",
+            &signal_details,
+            0.78,
+            &[],
+        );
+        let summary = build_fallback_summary(
+            &analytical,
+            "",
+            &signal_details,
+            &[],
+            "Acme EMS",
+            "Europe",
+            Some("EMS"),
+            "demand_procurement",
+            "warning",
+            0.78,
+            3,
+        );
+
+        assert!(
+            title.contains("Named RFQ issued for avionics subassembly")
+                || title.contains("Supplier portal opened for Q3 RFQ")
+        );
+        assert!(!title.contains("lookalike domain"));
+        assert!(!summary
+            .to_ascii_lowercase()
+            .contains("has been flagged for"));
+        assert!(!summary
+            .to_ascii_lowercase()
+            .contains("our monitoring detected:"));
+        assert!(
+            passes_shared_insight_quality_gate(&title, &summary, Some("demand_procurement"),),
+            "title={title}\nsummary={summary}"
+        );
     }
 
     #[test]
@@ -4970,6 +5945,308 @@ mod tests {
 
     #[cfg(feature = "llm")]
     #[test]
+    fn soft_certification_opportunity_headline_is_rejected() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "Celestica certifications page updated".to_string(),
+                description: "The capabilities page shows ISO 9001 and ISO 13485 certifications with a generic renewal notice and no explicit downstream impact.".to_string(),
+                source_url: "https://example.com/celestica-certs".to_string(),
+                signal_type: "certification".to_string(),
+                extracted_facts: vec![
+                    "ISO 9001 certification renewed".to_string(),
+                    "ISO 13485 certification renewed".to_string(),
+                    "Generic renewal notice posted".to_string(),
+                ],
+                date_context: Some("2026-03-12".to_string()),
+                relevance_score: 0.9,
+            },
+            EvidenceSignal {
+                title: "Celestica compliance notice".to_string(),
+                description: "A generic compliance update was detected without named audit action or downstream qualification changes.".to_string(),
+                source_url: "https://example.com/celestica-compliance".to_string(),
+                signal_type: "warning".to_string(),
+                extracted_facts: vec!["Generic compliance update".to_string()],
+                date_context: Some("2026-03-12".to_string()),
+                relevance_score: 0.8,
+            },
+        ];
+
+        assert!(has_unsupported_certification_commercialization(
+            "Celestica's ISO 9001/13485 Certifications Expire in 2026 - Target Nearshoring Opportunities",
+            "Celestica's certification timeline suggests regulated buyers may revisit confidence, creating a strategic outreach opportunity for our North Africa footprint.",
+            "Target nearshoring opportunities with EU industrial customers this quarter and position our services as a safer manufacturing option [1].",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn live_brand_sentiment_formulaic_pitch_is_rejected() {
+        assert!(has_formulaic_commercial_language(
+            "Plexus Corp's AI API gateway expansion: Strategic outreach opportunities",
+            "Plexus Corp's recent announcement of a unified API gateway for multiple AI providers [1] signals a strategic pivot toward AI-integrated electronics solutions. This development, coupled with their existing aerospace and defense industry focus [3], creates a commercial opening for targeted EMS partnerships. The AI gateway initiative likely requires robust hardware integration capabilities, which aligns with our ISO 9001 and AS9100-certified facilities in North Africa and Europe [3].",
+            "Reach out to Plexus's procurement team by April 5, 2026, emphasizing our defense-qualified facilities and AI hardware integration experience [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn formulaic_headline_is_rejected_even_when_body_is_concrete() {
+        assert!(has_formulaic_commercial_language(
+            "Government of India's NDC 3.0 strategy presents climate-tech qualification opportunities",
+            "The March 2026 policy update [1] names a concrete planning artifact, and the current evidence still needs procurement-path verification before any commercial move.",
+            "Brief the account team this week on the named policy update and confirm whether a tender or qualification pathway is actually present before proposing outreach [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn live_flex_nearshore_ems_pitch_is_rejected() {
+        assert!(has_formulaic_commercial_language(
+            "Flex Ltd faces nearshoring pressure; nearshore EMS opportunities emerge",
+            "Flex Ltd's compliance gaps and procurement risks create nearshore EMS opportunities. This matters because our ISO 13485 and AS9100-certified facilities in Tunisia and Morocco position us to target Flex's medical and aerospace clients if those qualification concerns widen.",
+            "",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn live_benchmark_competitor_targeting_pitch_is_rejected() {
+        assert!(has_formulaic_commercial_language(
+            "Benchmark Electronics' DNS risks and R&D activity signal customer vulnerabilities",
+            "Benchmark Electronics faces heightened supply chain risks due to its insecure DNS posture, and this dual vulnerability creates opportunities for competitors to target Benchmark's aerospace clients, particularly those with strict compliance requirements.",
+            "",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn soft_certification_nearshore_manufacturing_pitch_is_rejected() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "Venture certifications profile".to_string(),
+                description: "Venture's public certifications page lists ISO standards and a generic compliance status update with no explicit qualification disruption.".to_string(),
+                source_url: "https://example.com/venture-certs".to_string(),
+                signal_type: "certification".to_string(),
+                extracted_facts: vec![
+                    "ISO certification listed".to_string(),
+                    "Generic compliance status update".to_string(),
+                ],
+                date_context: Some("2026-03-12".to_string()),
+                relevance_score: 0.9,
+            },
+        ];
+
+        assert!(has_unsupported_certification_commercialization(
+            "Venture Corporation's Asia-Pacific EMS network offers nearshore manufacturing opportunities",
+            "The certification posture can be framed as a manufacturing opportunity because some buyers may want more resilient options.",
+            "Offer nearshore manufacturing to industrial customer opportunities before the next quarter [1].",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn hard_certification_failure_does_not_trigger_commercialization_gate() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "Supplier removed after failed audit".to_string(),
+                description: "The supplier was removed from an approved vendor list after a failed audit and certificate suspension affecting a named medical device program.".to_string(),
+                source_url: "https://example.com/audit-failure".to_string(),
+                signal_type: "certification".to_string(),
+                extracted_facts: vec![
+                    "Failed audit".to_string(),
+                    "Certificate suspended".to_string(),
+                    "Supplier removed from approved list".to_string(),
+                ],
+                date_context: Some("2026-03-12".to_string()),
+                relevance_score: 1.0,
+            },
+        ];
+
+        assert!(!has_unsupported_certification_commercialization(
+            "Supplier audit failure disrupts named medical program",
+            "The failed audit and supplier removal create a concrete qualification gap for the named device program because procurement now has to re-source an approved build path.",
+            "Meet the program sourcing lead this week with an approved alternative package tied to the removed supplier event [1].",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn live_jabil_certification_client_targeting_pitch_is_rejected_with_sparse_cert_evidence() {
+        let evidence_signals = vec![EvidenceSignal {
+            title: "Jabil medical certifications page updated".to_string(),
+            description: "Jabil refreshed its medical manufacturing certifications page and capabilities overview with a generic renewal update and no named customer disruption.".to_string(),
+            source_url: "https://example.com/jabil-iso13485".to_string(),
+            signal_type: "certification".to_string(),
+            extracted_facts: vec![
+                "ISO 13485 certification listed".to_string(),
+                "medical manufacturing capabilities page updated".to_string(),
+                "generic renewal update".to_string(),
+            ],
+            date_context: Some("2026-04-12".to_string()),
+            relevance_score: 0.89,
+        }];
+
+        assert!(has_unsupported_certification_commercialization(
+            "Jabil's ISO 13485 gaps threaten medical device clients",
+            "Jabil's ISO 13485 certification for medical device manufacturing is nearing expiration on 2026-08-31, creating urgent risks for its healthcare clients. This certification gap directly impacts clients like Medtronic and Boston Scientific, who rely on Jabil's verified SMT and additive manufacturing services. Our ISO 13485-certified SMT and additive manufacturing services offer a direct alternative, with proven capabilities in 01005 SMT and EU-compliant supply chains.",
+            "Approach Medtronic with our ISO 13485-certified SMT services by 2026-08-31. Engage Boston Scientific with our 01005 SMT expertise to mitigate potential delays. Target Siemens Healthineers with our EU-compliant supply chain management by 2026-08-31.",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn live_blue_solutions_nearshore_pitch_is_rejected_with_sparse_cert_evidence() {
+        let evidence_signals = vec![EvidenceSignal {
+            title: "Blue Solutions IATF certificate page updated".to_string(),
+            description: "Blue Solutions published an IATF 16949 certificate status page and generic compliance documentation with a renewal timeline and no named customer disruption.".to_string(),
+            source_url: "https://example.com/blue-solutions-iatf".to_string(),
+            signal_type: "certification".to_string(),
+            extracted_facts: vec![
+                "IATF 16949 certificate listed".to_string(),
+                "generic compliance documentation updated".to_string(),
+                "renewal timeline".to_string(),
+            ],
+            date_context: Some("2026-04-12".to_string()),
+            relevance_score: 0.88,
+        }];
+
+        assert!(has_unsupported_certification_commercialization(
+            "Blue Solutions' IATF gaps threaten automotive clients",
+            "Blue Solutions' IATF 16949 certification gaps create immediate risks for automotive clients relying on their compliance. If Blue's compliance issues persist, automotive clients could switch to nearshore EMS providers with verified EU compliance. This creates a window to approach AutoTech Systems' procurement lead with our rapid qualification process before their April 2026 deadline.",
+            "Approach AutoTech Systems' procurement lead before April 2026 with our IATF 16949-certified facilities. Engage EuroMotive Motors' supply chain manager with our secure, audit-ready manufacturing. Target DigiDrive Automotive's engineering team with our aerospace-qualified facilities in Tunisia.",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn low_signal_security_hygiene_displacement_is_rejected_outside_security_categories() {
+        let evidence_signals = vec![EvidenceSignal {
+            title: "GPV Group lookalike domains detected".to_string(),
+            description: "Monitoring found multiple lookalike domains and missing DMARC enforcement alongside routine email-authentication hygiene drift.".to_string(),
+            source_url: "https://example.com/gpv-lookalikes".to_string(),
+            signal_type: "warning".to_string(),
+            extracted_facts: vec![
+                "lookalike domains".to_string(),
+                "missing DMARC enforcement".to_string(),
+                "email authentication gap".to_string(),
+            ],
+            date_context: Some("2026-04-04".to_string()),
+            relevance_score: 0.92,
+        }];
+
+        assert!(has_unsupported_security_escalation(
+            "quality_compliance",
+            "GPV Group's lookalike domains and email authentication gap now create customer risk because affected buyers may view the supplier as a weaker option.",
+            "Offer a direct alternative to industrial customers this quarter before they switch providers [1].",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn negated_hard_failure_security_markers_still_count_as_low_signal_hygiene() {
+        let evidence_signals = vec![EvidenceSignal {
+            title: "Mouser lookalike domains detected".to_string(),
+            description: "Monitoring found multiple lookalike domains with no confirmed compromise or supplier removal, only routine email-authentication hygiene drift.".to_string(),
+            source_url: "https://example.com/mouser-lookalikes".to_string(),
+            signal_type: "warning".to_string(),
+            extracted_facts: vec![
+                "lookalike domains".to_string(),
+                "missing DMARC enforcement".to_string(),
+                "routine email-authentication hygiene drift".to_string(),
+            ],
+            date_context: Some("2026-04-06".to_string()),
+            relevance_score: 0.9,
+        }];
+
+        assert!(quality_gates::low_signal_security_hygiene_case(
+            "cybersecurity_threat",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn security_hygiene_procurement_portal_conversion_is_rejected_in_security_category() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "Mouser lookalike domains detected".to_string(),
+                description: "Monitoring found eight lookalike domains around Mouser's supplier-facing infrastructure alongside routine email authentication hygiene gaps.".to_string(),
+                source_url: "https://example.com/mouser-lookalikes".to_string(),
+                signal_type: "warning".to_string(),
+                extracted_facts: vec![
+                    "8 lookalike domains".to_string(),
+                    "email authentication gap".to_string(),
+                ],
+                date_context: Some("2026-04-06".to_string()),
+                relevance_score: 0.95,
+            },
+            EvidenceSignal {
+                title: "Mouser supplier portal notice".to_string(),
+                description: "A supplier portal page references an onboarding process for distributor partners in March 2026.".to_string(),
+                source_url: "https://example.com/mouser-supplier-portal".to_string(),
+                signal_type: "procurement".to_string(),
+                extracted_facts: vec![
+                    "supplier portal onboarding".to_string(),
+                    "March 2026 notice".to_string(),
+                ],
+                date_context: Some("2026-03-15".to_string()),
+                relevance_score: 0.72,
+            },
+        ];
+
+        assert!(has_unsupported_security_escalation(
+            "cybersecurity_threat",
+            "Mouser's lookalike domains suggest heightened fraud risk around supplier access and portal credentials [1].",
+            "Register on Mouser's supplier portal within 30 days, prepare PPAP and IMDS documentation, and use the portal notice to accelerate qualification [2].",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn soft_certification_deadline_bom_disruption_is_rejected() {
+        let evidence_signals = vec![
+            EvidenceSignal {
+                title: "STMicroelectronics certification page updated".to_string(),
+                description: "STMicroelectronics lists ISO 9001 on a public site with a generic validity window and no explicit disruption or supplier removal.".to_string(),
+                source_url: "https://example.com/st-certs".to_string(),
+                signal_type: "certification".to_string(),
+                extracted_facts: vec![
+                    "ISO 9001 listed".to_string(),
+                    "valid until 2027".to_string(),
+                ],
+                date_context: Some("2026-04-06".to_string()),
+                relevance_score: 0.84,
+            },
+            EvidenceSignal {
+                title: "STMicroelectronics R&D update".to_string(),
+                description: "The company highlighted 300mm wafer work and SiC/FDSOI roadmap investment in Crolles with no direct customer impact described.".to_string(),
+                source_url: "https://example.com/st-rd".to_string(),
+                signal_type: "news".to_string(),
+                extracted_facts: vec![
+                    "300mm wafer capabilities".to_string(),
+                    "SiC roadmap".to_string(),
+                ],
+                date_context: Some("2026-04-06".to_string()),
+                relevance_score: 0.79,
+            },
+        ];
+
+        assert!(has_unsupported_certification_escalation(
+            "STMicroelectronics' ISO 9001 deadline could disrupt deliveries if compliance transitions slip, forcing urgent BOM revisions for automotive customers.",
+            "Alert customers to begin alternate part qualification before the 2027 certification deadline creates delivery risk [1].",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
     fn soft_certification_marker_is_unicode_normalized() {
         assert!(contains_soft_certification_pressure_marker(
             "A certificati\u{301}on warning was posted after the latest compliance review."
@@ -5016,6 +6293,119 @@ mod tests {
         let recommendation = "Contact Flex Ltd's procurement lead Revathi Advaithi within 30 days to propose a capacity audit for their automotive and industrial programs [1].";
 
         assert!(!has_unnamed_customer_targeting(narrative, recommendation));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn unnamed_customer_targeting_in_narrative_is_rejected() {
+        let narrative = "NOTE AB's lookalike domains suggest aggressive competitive outreach, and their aerospace clients may now be open to a switch.";
+        let recommendation =
+            "Prioritize a displacement plan before the next sourcing cycle closes [1].";
+
+        assert!(has_unnamed_customer_targeting(narrative, recommendation));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn unnamed_customer_targeting_rejects_generic_customer_cohorts() {
+        assert!(has_unnamed_customer_targeting(
+            "Digi-Key's Part-DB update may unsettle qualification timelines for regulated buyers.",
+            "Act on aerospace and medical customers before the next sourcing cycle [1].",
+        ));
+        assert!(has_unnamed_customer_targeting(
+            "Jabil's ISO 13485 renewal timeline could raise review questions.",
+            "Approach their medical device clients with a direct alternative this quarter [1].",
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn named_target_provenance_rejects_hallucinated_downstream_company() {
+        let entity_ctx = EntityContext {
+            name: "Jabil".to_string(),
+            region: "North America".to_string(),
+            entity_type: Some("company".to_string()),
+            is_competitor: false,
+            industry_tags: vec!["electronics manufacturing services".to_string()],
+            certifications: vec!["ISO 13485".to_string()],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec!["Flex".to_string()],
+            sites_summary: vec!["St. Petersburg medical manufacturing campus".to_string()],
+            competitor_events: vec![],
+            domain: Some("jabil.com".to_string()),
+        };
+        let evidence_signals = vec![EvidenceSignal {
+            title: "Jabil ISO 13485 page updated".to_string(),
+            description: "Jabil updated its medical manufacturing certifications page with an ISO 13485 renewal note and no named customer impact.".to_string(),
+            source_url: "https://example.com/jabil-iso13485".to_string(),
+            signal_type: "certification".to_string(),
+            extracted_facts: vec![
+                "ISO 13485 renewal note".to_string(),
+                "medical manufacturing campus".to_string(),
+            ],
+            date_context: Some("2026-04-04".to_string()),
+            relevance_score: 0.86,
+        }];
+
+        assert!(has_unsupported_named_target_provenance(
+            &entity_ctx,
+            "Jabil's ISO 13485 renewal may unsettle regulated sourcing reviews",
+            "The renewal timing could create questions for regulated builds if buyers want a backup path [1].",
+            "Approach MedTech Innovators Ltd. before Q3 sourcing reviews begin [1].",
+            &evidence_signals,
+        ));
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn named_target_provenance_allows_named_company_present_in_evidence() {
+        let entity_ctx = EntityContext {
+            name: "Digi-Key".to_string(),
+            region: "North America".to_string(),
+            entity_type: Some("distributor".to_string()),
+            is_competitor: false,
+            industry_tags: vec!["electronics distribution".to_string()],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: Some("digikey.com".to_string()),
+        };
+        let evidence_signals = vec![EvidenceSignal {
+            title: "Digi-Key names Acme Medical Systems in rollout update".to_string(),
+            description: "The update names Acme Medical Systems as a launch customer for the new workflow and ties the rollout to regulated sourcing reviews.".to_string(),
+            source_url: "https://example.com/partdb-acme".to_string(),
+            signal_type: "product_update".to_string(),
+            extracted_facts: vec![
+                "Acme Medical Systems launch customer".to_string(),
+                "regulated sourcing reviews".to_string(),
+            ],
+            date_context: Some("2026-04-04".to_string()),
+            relevance_score: 0.91,
+        }];
+
+        assert!(!has_unsupported_named_target_provenance(
+            &entity_ctx,
+            "Digi-Key rollout could affect regulated sourcing timing",
+            "Because Acme Medical Systems is explicitly named in the rollout evidence, the account impact can be discussed directly [1].",
+            "Approach Acme Medical Systems this quarter [1].",
+            &evidence_signals,
+        ));
     }
 
     #[cfg(feature = "llm")]
@@ -5290,7 +6680,10 @@ mod tests {
         ];
 
         for variant in variants {
-            assert!(contains_security_hygiene_marker(variant), "missed variant: {variant}");
+            assert!(
+                contains_security_hygiene_marker(variant),
+                "missed variant: {variant}"
+            );
         }
     }
 
@@ -5306,7 +6699,10 @@ mod tests {
         ];
 
         for variant in variants {
-            assert!(has_unnamed_customer_targeting("Generic risk narrative.", variant), "missed variant: {variant}");
+            assert!(
+                has_unnamed_customer_targeting("Generic risk narrative.", variant),
+                "missed variant: {variant}"
+            );
         }
     }
 

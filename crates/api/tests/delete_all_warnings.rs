@@ -11,7 +11,9 @@ use tower::ServiceExt;
 async fn delete_all_warnings_rejects_without_confirmation_header() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
+    request
+        .headers_mut()
+        .insert("authorization", support::admin_auth_header());
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 422);
@@ -22,13 +24,17 @@ async fn delete_all_warnings_rejects_without_confirmation_header() {
 async fn delete_all_warnings_rejects_wrong_confirmation_value() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("not-warnings"));
-    request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
+        .insert("authorization", support::admin_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("not-warnings"),
+    );
+    request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 422);
@@ -39,10 +45,13 @@ async fn delete_all_warnings_rejects_wrong_confirmation_value() {
 async fn delete_all_warnings_rejects_without_reason() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
+        .insert("authorization", support::admin_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 422);
@@ -53,13 +62,17 @@ async fn delete_all_warnings_rejects_without_reason() {
 async fn delete_all_warnings_rejects_readonly_principal() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::viewer_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
+        .insert("authorization", support::viewer_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 403);
@@ -70,13 +83,17 @@ async fn delete_all_warnings_rejects_readonly_principal() {
 async fn delete_all_warnings_allows_admin_principal() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
+        .insert("authorization", support::admin_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 200);
@@ -87,7 +104,9 @@ async fn delete_all_warnings_allows_admin_principal() {
 async fn delete_all_warnings_returns_422_before_store_delete_when_confirmation_missing() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
+    request
+        .headers_mut()
+        .insert("authorization", support::admin_auth_header());
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 422);
@@ -98,13 +117,17 @@ async fn delete_all_warnings_returns_422_before_store_delete_when_confirmation_m
 async fn delete_all_warnings_does_not_touch_store_on_forbidden_request() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::viewer_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
+        .insert("authorization", support::viewer_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 403);
@@ -115,13 +138,17 @@ async fn delete_all_warnings_does_not_touch_store_on_forbidden_request() {
 async fn delete_all_warnings_emits_audit_event_with_actor_reason_and_count() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
+        .insert("authorization", support::admin_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 200);
@@ -139,13 +166,17 @@ async fn delete_all_warnings_emits_audit_event_with_actor_reason_and_count() {
 async fn delete_all_warnings_logs_audit_event_before_success_response() {
     let (app, store) = support::build_test_router();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
+        .insert("authorization", support::admin_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 200);
@@ -157,13 +188,17 @@ async fn delete_all_warnings_marks_rows_deleted_without_physical_removal() {
     let (app, store) = support::build_test_router();
     let original_len = store.warnings_snapshot().len();
     let mut request = support::request("DELETE", "/api/warnings");
-    request.headers_mut().insert("authorization", support::admin_auth_header());
     request
         .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
+        .insert("authorization", support::admin_auth_header());
+    request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 200);
@@ -181,13 +216,18 @@ async fn list_warnings_excludes_soft_deleted_rows_by_default() {
     delete_request
         .headers_mut()
         .insert("authorization", support::admin_auth_header());
-    delete_request
-        .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    delete_request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
-    app.clone().oneshot(delete_request).await.expect("delete response");
+    delete_request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    delete_request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
+    app.clone()
+        .oneshot(delete_request)
+        .await
+        .expect("delete response");
 
     let mut list_request = support::request("GET", "/api/warnings");
     list_request
@@ -196,7 +236,12 @@ async fn list_warnings_excludes_soft_deleted_rows_by_default() {
 
     let response = app.oneshot(list_request).await.expect("response");
     assert_eq!(response.status(), 200);
-    let body = response.into_body().collect().await.expect("body").to_bytes();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
     let payload: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(payload["data"]["items"].as_array().expect("items").len(), 0);
 }
@@ -209,13 +254,18 @@ async fn admin_list_warnings_can_include_soft_deleted_rows() {
     delete_request
         .headers_mut()
         .insert("authorization", support::admin_auth_header());
-    delete_request
-        .headers_mut()
-        .insert("x-apex-confirm-delete", HeaderValue::from_static("warnings"));
-    delete_request
-        .headers_mut()
-        .insert("x-apex-delete-reason", HeaderValue::from_static("cleanup stale rows"));
-    app.clone().oneshot(delete_request).await.expect("delete response");
+    delete_request.headers_mut().insert(
+        "x-apex-confirm-delete",
+        HeaderValue::from_static("warnings"),
+    );
+    delete_request.headers_mut().insert(
+        "x-apex-delete-reason",
+        HeaderValue::from_static("cleanup stale rows"),
+    );
+    app.clone()
+        .oneshot(delete_request)
+        .await
+        .expect("delete response");
 
     let mut request = support::request("GET", "/api/warnings?include_deleted=true");
     request
@@ -224,7 +274,12 @@ async fn admin_list_warnings_can_include_soft_deleted_rows() {
 
     let response = app.oneshot(request).await.expect("response");
     assert_eq!(response.status(), 200);
-    let body = response.into_body().collect().await.expect("body").to_bytes();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
     let payload: Value = serde_json::from_slice(&body).expect("json");
     let items = payload["data"]["items"].as_array().expect("items");
     assert_eq!(items.len(), 1);

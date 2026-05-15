@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BandClass {
     Narrow,
+    #[default]
     Moderate,
     Wide,
-}
-
-impl Default for BandClass {
-    fn default() -> Self {
-        Self::Moderate
-    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

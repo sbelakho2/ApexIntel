@@ -31,9 +31,9 @@
 //! // let alerts = engine.process_observation(&obs);
 //! ```
 
-use chrono::{DateTime, Duration, Utc};
-use apex_core::timeline::{EntityTimeline, TimelineEvent, TemporalValidationReport};
+use apex_core::timeline::{EntityTimeline, TemporalValidationReport, TimelineEvent};
 use apex_llm::insight_gen::extract_temporal_claims;
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, info};
@@ -994,6 +994,14 @@ pub fn validate_insight_temporal_consistency(
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+        clippy::needless_borrows_for_generic_args,
+        clippy::cloned_ref_to_slice_refs
+    )]
+
     use super::*;
 
     fn make_event(event_type: &str, entity_id: Option<Uuid>, ts: DateTime<Utc>) -> SecurityEvent {

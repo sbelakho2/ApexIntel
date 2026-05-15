@@ -321,7 +321,7 @@ mod tests {
     fn extract_href_finds_link() {
         let html = r#"<a href="/story.php?id=123&ref=m">text</a>"#;
         let href = extract_href(html, "/story.php");
-        assert_eq!(href.unwrap(), "/story.php?id=123&ref=m");
+        assert_eq!(href.as_deref(), Some("/story.php?id=123&ref=m"));
     }
 
     #[test]

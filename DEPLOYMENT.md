@@ -232,7 +232,7 @@ brew install zig  # or equivalent for your OS
 
 # Build release binaries for ARM64 Linux:
 cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm
 
 # Upload binaries:
 scp -i ~/.ssh/hetzner-db-mac \
@@ -707,7 +707,7 @@ cd ~/IdeaProjects/ApexIntel
 
 # 1. Build
 cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api
-cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker --features llm
 
 # 2. Upload
 scp -i ~/.ssh/hetzner-db-mac \

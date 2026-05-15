@@ -126,10 +126,10 @@ pub fn validate_recipe_json(value: &Value) -> Vec<String> {
     }
 
     // B204: action_playbook must be a non-empty string
-    if !missing.contains(&"action_playbook".to_string()) {
-        if !check_string_field(value, "action_playbook") {
-            errors.push("action_playbook must be a non-empty string".to_string());
-        }
+    if !missing.contains(&"action_playbook".to_string())
+        && !check_string_field(value, "action_playbook")
+    {
+        errors.push("action_playbook must be a non-empty string".to_string());
     }
 
     if !check_array_field(value, "signals") && !missing.contains(&"signals".to_string()) {
@@ -327,35 +327,46 @@ pub fn validate_recipe_response(raw: &str, existing_ids: &[&str]) -> Result<Valu
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
+
+    fn extract_json_or_panic(raw: &str) -> String {
+        extract_json(raw).unwrap_or_else(|| panic!("expected JSON to be extracted from test input"))
+    }
+
+    fn parse_json_or_panic(raw: &str) -> Value {
+        parse_json_response(raw)
+            .unwrap_or_else(|error| panic!("expected JSON response to parse: {error}"))
+    }
 
     // -- JSON extraction --
 
     #[test]
     fn test_extract_json_bare() {
         let raw = r#"{"key": "value"}"#;
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, r#"{"key": "value"}"#);
     }
 
     #[test]
     fn test_extract_json_code_fence() {
         let raw = "Here is the result:\n```json\n{\"key\": \"value\"}\n```\nDone.";
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, r#"{"key": "value"}"#);
     }
 
     #[test]
     fn test_extract_json_code_fence_no_lang() {
         let raw = "```\n{\"key\": 42}\n```";
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, r#"{"key": 42}"#);
     }
 
     #[test]
     fn test_extract_json_array() {
         let raw = "[1, 2, 3]";
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, "[1, 2, 3]");
     }
 
@@ -370,7 +381,7 @@ mod tests {
         let raw = r#"```json
 {"id": "R001", "name": "test"}
 ```"#;
-        let value = parse_json_response(raw).unwrap();
+        let value = parse_json_or_panic(raw);
         assert_eq!(value["id"], "R001");
     }
 
@@ -634,8 +645,9 @@ mod tests {
     fn test_extract_json_nested_backticks_in_string() {
         // JSON value contains backticks — should still extract correctly
         let raw = "```json\n{\"code\": \"use `var`\"}\n```";
-        let result = extract_json(raw).unwrap();
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let result = extract_json_or_panic(raw);
+        let parsed: Value = serde_json::from_str(&result)
+            .unwrap_or_else(|error| panic!("extracted JSON should parse: {error}"));
         assert_eq!(parsed["code"], "use `var`");
     }
 
@@ -819,7 +831,7 @@ mod tests {
     #[test]
     fn test_extract_json_leading_text_before_fence() {
         let raw = "Sure, here is the JSON:\n```json\n{\"key\": \"value\"}\n```";
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, r#"{"key": "value"}"#);
     }
 
@@ -834,21 +846,21 @@ mod tests {
     #[test]
     fn test_extract_json_leading_whitespace_bare_object() {
         let raw = "  \n  {\"key\": 42}";
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, r#"{"key": 42}"#);
     }
 
     #[test]
     fn test_extract_json_leading_text_with_trailing_text() {
         let raw = "Analysis complete.\n```json\n[1,2,3]\n```\nEnd of response.";
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, "[1,2,3]");
     }
 
     #[test]
     fn test_extract_json_multiple_code_blocks_prefers_first_json_block() {
         let raw = "```text\nnot json\n```\n\n```json\n{\"id\":\"R001\"}\n```\n\n```json\n{\"id\":\"R002\"}\n```";
-        let result = extract_json(raw).unwrap();
+        let result = extract_json_or_panic(raw);
         assert_eq!(result, "{\"id\":\"R001\"}");
     }
 

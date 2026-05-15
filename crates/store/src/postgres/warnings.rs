@@ -55,7 +55,7 @@ impl PgStore {
                                    lower(trim(w.warning_type)),
                                    lower(trim(w.severity)),
                                    coalesce(lower(w.region), ''),
-                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 220)
+                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380)
                                ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
                            ) AS rn
                        FROM warnings w
@@ -162,7 +162,7 @@ impl PgStore {
                                    lower(trim(w.warning_type)),
                                    lower(trim(w.severity)),
                                    coalesce(lower(w.region), ''),
-                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 220)
+                                   left(trim(regexp_replace(regexp_replace(lower(coalesce(w.description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380)
                                ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC NULLS LAST, w.ts_utc DESC, w.id DESC
                            ) AS rn
                        FROM warnings w
@@ -321,10 +321,12 @@ impl PgStore {
     }
 
     pub async fn get_warning(&self, id: Uuid) -> Result<Option<WarningRow>> {
-        let row = sqlx::query_as::<_, WarningRow>("SELECT * FROM warnings WHERE id = $1 AND deleted_at IS NULL")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query_as::<_, WarningRow>(
+            "SELECT * FROM warnings WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row)
     }
 
@@ -374,7 +376,7 @@ impl PgStore {
                            $6 IS NOT NULL
                            AND COALESCE(entity_ids, ARRAY[]::uuid[]) = COALESCE($7, ARRAY[]::uuid[])
                            AND created_at > NOW() - INTERVAL '21 days'
-                           AND left(trim(regexp_replace(regexp_replace(lower(coalesce(description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 220) = $6
+                           AND left(trim(regexp_replace(regexp_replace(lower(coalesce(description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380) = $6
                        )
                    )
                  ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, ts_utc DESC, id DESC
@@ -476,8 +478,8 @@ impl PgStore {
         let result = sqlx::query(
             "UPDATE warnings SET deleted_at = now(), updated_at = now() WHERE deleted_at IS NULL",
         )
-            .execute(&self.pool)
-            .await?;
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected())
     }
 }

@@ -118,7 +118,10 @@ impl ApiRuntimeConfig {
                 allow_degraded_startup: parse_bool_env("API_ALLOW_DEGRADED_SEARCH_STARTUP", true)?,
             },
             api_keys: ApiKeysConfig {
-                file_path: std::env::var("API_KEYS_FILE").ok().filter(|value| !value.trim().is_empty()).map(PathBuf::from),
+                file_path: std::env::var("API_KEYS_FILE")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(PathBuf::from),
                 reload_interval_secs: parse_u64_env("API_KEYS_RELOAD_INTERVAL_SECS", 15)?,
                 env_slots: parse_usize_env("API_KEYS_ENV_SLOTS", 50)?,
             },
@@ -126,7 +129,10 @@ impl ApiRuntimeConfig {
                 decision_power: parse_f64_env("API_PRIORITY_WEIGHT_DECISION_POWER", 0.25)?,
                 domain_relevance: parse_f64_env("API_PRIORITY_WEIGHT_DOMAIN_RELEVANCE", 0.20)?,
                 network_centrality: parse_f64_env("API_PRIORITY_WEIGHT_NETWORK_CENTRALITY", 0.20)?,
-                engagement_potential: parse_f64_env("API_PRIORITY_WEIGHT_ENGAGEMENT_POTENTIAL", 0.15)?,
+                engagement_potential: parse_f64_env(
+                    "API_PRIORITY_WEIGHT_ENGAGEMENT_POTENTIAL",
+                    0.15,
+                )?,
                 intelligence_value: parse_f64_env("API_PRIORITY_WEIGHT_INTELLIGENCE_VALUE", 0.20)?,
             },
             http_budgets: HttpBudgetConfig {
@@ -177,10 +183,14 @@ impl ApiRuntimeConfig {
             errors.push("ApiRuntimeConfig.priority_weights total must be > 0".to_string());
         }
         if self.http_budgets.dependency_timeout_secs == 0 {
-            errors.push("ApiRuntimeConfig.http_budgets.dependency_timeout_secs must be >= 1".to_string());
+            errors.push(
+                "ApiRuntimeConfig.http_budgets.dependency_timeout_secs must be >= 1".to_string(),
+            );
         }
         if self.http_budgets.llm_health_timeout_secs == 0 {
-            errors.push("ApiRuntimeConfig.http_budgets.llm_health_timeout_secs must be >= 1".to_string());
+            errors.push(
+                "ApiRuntimeConfig.http_budgets.llm_health_timeout_secs must be >= 1".to_string(),
+            );
         }
         if self.llm.primary_max_tokens == 0 || self.llm.lightweight_max_tokens == 0 {
             errors.push("ApiRuntimeConfig.llm max token values must be >= 1".to_string());
@@ -277,7 +287,10 @@ fn parse_f64_env(key: &str, default: f64) -> Result<f64> {
 }
 
 fn parse_llm_provider_env(key: &str) -> Result<Option<LlmProviderChoice>> {
-    let Some(value) = std::env::var(key).ok().filter(|value| !value.trim().is_empty()) else {
+    let Some(value) = std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
         return Ok(None);
     };
 
@@ -285,7 +298,11 @@ fn parse_llm_provider_env(key: &str) -> Result<Option<LlmProviderChoice>> {
         "llamacpp" | "llama_cpp" | "llama-cpp" => LlmProviderChoice::LlamaCpp,
         "openai" => LlmProviderChoice::OpenAi,
         "azure_openai" | "azure-openai" | "azure" => LlmProviderChoice::AzureOpenAi,
-        other => anyhow::bail!("{} must be one of llamacpp|openai|azure_openai, got '{}'", key, other),
+        other => anyhow::bail!(
+            "{} must be one of llamacpp|openai|azure_openai, got '{}'",
+            key,
+            other
+        ),
     };
 
     Ok(Some(provider))
@@ -310,7 +327,10 @@ mod tests {
     fn config_uses_default_host_when_env_missing() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
         let config = ApiRuntimeConfig::from_env().expect("config");
         assert_eq!(config.server.host, "0.0.0.0");
     }
@@ -329,7 +349,10 @@ mod tests {
     fn config_snapshot_matches_expected_defaults() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
         let config = ApiRuntimeConfig::from_env().expect("config");
         assert_eq!(config.export.default_window, 1_000);
         assert_eq!(config.export.max_window, 10_000);
@@ -341,7 +364,10 @@ mod tests {
     fn http_clients_use_env_timeout_override() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
         std::env::set_var("API_DEPENDENCY_TIMEOUT_SECS", "17");
         let config = ApiRuntimeConfig::from_env().expect("config");
         assert_eq!(config.http_budgets.dependency_timeout_secs, 17);
@@ -352,7 +378,10 @@ mod tests {
     fn default_timeout_values_are_applied_when_env_missing() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
         std::env::remove_var("API_DEPENDENCY_TIMEOUT_SECS");
         let config = ApiRuntimeConfig::from_env().expect("config");
         assert_eq!(config.http_budgets.dependency_timeout_secs, 5);
@@ -363,7 +392,10 @@ mod tests {
     fn llm_model_name_uses_env_or_config_override() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
         std::env::set_var("LLM_MODEL", "custom-model");
         let config = ApiRuntimeConfig::from_env().expect("config");
         assert_eq!(config.llm_model_name(), "custom-model");
@@ -374,7 +406,10 @@ mod tests {
     fn startup_rejects_unknown_model_name_when_validation_enabled() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
         std::env::set_var("LLM_BASE_URL", "http://localhost:8080");
         std::env::set_var("LLM_MODEL", "unknown-model");
         std::env::set_var("API_LLM_ALLOWED_MODELS", "approved-model,backup-model");
@@ -382,14 +417,19 @@ mod tests {
         let config = ApiRuntimeConfig::from_env().expect("config");
         let errors = config.validate();
 
-        assert!(errors.iter().any(|err| err.contains("API_LLM_ALLOWED_MODELS")));
+        assert!(errors
+            .iter()
+            .any(|err| err.contains("API_LLM_ALLOWED_MODELS")));
     }
 
     #[test]
     fn default_model_name_is_reported_from_config_not_literal_handler_code() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
 
         let config = ApiRuntimeConfig::from_env().expect("config");
 
@@ -400,7 +440,10 @@ mod tests {
     fn priority_vector_rejects_invalid_weight_configuration() {
         let _guard = ENV_LOCK.lock().expect("config env lock");
         reset_config_test_env();
-        std::env::set_var("DATABASE_URL", "postgres://postgres:postgres@localhost/apex");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://postgres:postgres@localhost/apex",
+        );
         let mut config = ApiRuntimeConfig::from_env().expect("config");
         config.priority_weights.decision_power = 0.0;
         config.priority_weights.domain_relevance = 0.0;

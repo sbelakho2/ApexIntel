@@ -310,17 +310,18 @@ mod tests {
     #[test]
     fn test_retry_after_seconds() {
         let now = chrono::Utc::now();
-        let delay = RateLimitManager::retry_after_delay("120", now).unwrap();
+        let delay = RateLimitManager::retry_after_delay("120", now)
+            .unwrap_or_else(|| panic!("numeric Retry-After should parse"));
         assert_eq!(delay.as_secs(), 120);
     }
 
     #[test]
     fn test_retry_after_http_date_future() {
         let now = chrono::DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:27:00 GMT")
-            .unwrap()
+            .unwrap_or_else(|error| panic!("test date should parse: {error}"))
             .with_timezone(&chrono::Utc);
-        let delay =
-            RateLimitManager::retry_after_delay("Wed, 21 Oct 2015 07:28:00 GMT", now).unwrap();
+        let delay = RateLimitManager::retry_after_delay("Wed, 21 Oct 2015 07:28:00 GMT", now)
+            .unwrap_or_else(|| panic!("HTTP-date Retry-After should parse"));
         assert_eq!(delay.as_secs(), 60);
     }
 }

@@ -72,6 +72,7 @@ pub struct CompanyKeyPerson {
     pub name: String,
     pub role: String,
     pub since: String,
+    pub background_snippet: String,
 }
 
 #[derive(Clone, Debug)]
@@ -701,6 +702,13 @@ pub async fn get_company(
                 .created_at
                 .map(|d| d.format("%Y-%m-%d").to_string())
                 .unwrap_or_default(),
+            background_snippet: p
+                .public_bio
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect::<String>(),
         })
         .collect();
 

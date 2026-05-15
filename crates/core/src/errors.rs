@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_result_alias() {
         let ok: Result<i32> = Ok(42);
-        assert_eq!(ok.unwrap(), 42);
+        assert!(matches!(ok, Ok(42)));
 
         let err: Result<i32> = Err(ApexError::Internal {
             message: "boom".into(),

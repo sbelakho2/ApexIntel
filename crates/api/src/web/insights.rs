@@ -163,20 +163,24 @@ fn build_insights_href(
 }
 
 fn is_internal_insight_type(insight_type: &str) -> bool {
-    insight_type.trim().to_ascii_lowercase().starts_with("llm_")
+    let normalized = insight_type.trim().to_ascii_lowercase();
+    normalized.starts_with("llm_")
+        || normalized == "bias_mitigation"
+        || normalized == "hypothesis_ach"
 }
 
 fn insight_category_label(raw: &str) -> &'static str {
     match raw {
         "demand_signal" | "demand_procurement" | "demand" => "Demand Signal",
         "supply_risk" | "supply_chain_risk" | "supply_chain" => "Supply Risk",
-        "competitive_intel" | "competitive_comparison" | "competitor_market" | "competitor" => "Competitive Intel",
+        "competitive_intel" | "competitive_comparison" | "competitor_market" | "competitor" => {
+            "Competitive Intel"
+        }
         "security_posture" | "security" => "Security Posture",
         "macro_shift" => "Macro Shift",
         "poi_movement" | "poi" => "POI Movement",
         "predictive_forward" => "Predictive",
         "hypothesis_ach" => "Hypothesis (ACH)",
-        "bias_mitigation" => "Bias Check",
         "regulatory_policy" => "Regulatory",
         "pricing_market" => "Pricing / Market",
         "geopolitical_analysis" => "Geopolitical",
@@ -187,12 +191,17 @@ fn insight_category_label(raw: &str) -> &'static str {
 
 fn insight_category_css(raw: &str) -> &'static str {
     match raw {
-        "demand_signal" | "demand_procurement" | "demand" => "bg-destructive/10 text-destructive border-destructive/30",
-        "supply_risk" | "supply_chain_risk" | "supply_chain" => "bg-primary/10 text-primary border-primary/40",
-        "competitive_intel" | "competitive_comparison" | "competitor_market" | "competitor" => "bg-secondary border-border",
+        "demand_signal" | "demand_procurement" | "demand" => {
+            "bg-destructive/10 text-destructive border-destructive/30"
+        }
+        "supply_risk" | "supply_chain_risk" | "supply_chain" => {
+            "bg-primary/10 text-primary border-primary/40"
+        }
+        "competitive_intel" | "competitive_comparison" | "competitor_market" | "competitor" => {
+            "bg-secondary border-border"
+        }
         "security_posture" | "security" => "bg-secondary/50 border-border text-muted-foreground",
         "predictive_forward" | "hypothesis_ach" => "bg-primary/10 border-primary/40 text-primary",
-        "bias_mitigation" => "bg-destructive/10 border-destructive/30 text-destructive",
         "regulatory_policy" | "geopolitical_analysis" => "bg-secondary border-border",
         "pricing_market" | "arbitrage_cost_window" => "bg-primary/10 border-primary/40",
         _ => "bg-secondary border-border",
@@ -357,6 +366,16 @@ pub struct InsightDetailPage {
     pub entities: Vec<InsightEntity>,
     pub annotations: Vec<InsightNoteItem>,
     pub ai_analysis: Option<String>,
+    pub information_gain_bits: Option<String>,
+    pub quality_score_pct: Option<i64>,
+    pub dissenting_opinions: Vec<DissentingView>,
+}
+
+pub struct DissentingView {
+    pub severity: String,
+    pub category: String,
+    pub confidence_pct: i64,
+    pub rationale: String,
 }
 
 fn parse_tags(raw: Option<&str>) -> Vec<String> {
@@ -393,11 +412,9 @@ pub async fn list_insights(
         "macro_shift",
         "regulatory_policy",
         "predictive_forward",
-        "hypothesis_ach",
         "pricing_market",
         "geopolitical_analysis",
         "arbitrage_cost_window",
-        "bias_mitigation",
         "poi_movement",
     ];
     let impact_values = ["", "high", "medium", "low"];
@@ -562,6 +579,7 @@ pub async fn list_insights(
         } else {
             None
         },
+        exclude_internal: true,
         ..Default::default()
     };
 
@@ -612,7 +630,10 @@ pub async fn list_insights(
                 summary_preview: {
                     let s = i.summary.trim();
                     if s.len() > 160 {
-                        format!("{}…", &s[..s.char_indices().nth(160).map(|(i, _)| i).unwrap_or(s.len())])
+                        format!(
+                            "{}…",
+                            &s[..s.char_indices().nth(160).map(|(i, _)| i).unwrap_or(s.len())]
+                        )
                     } else {
                         s.to_string()
                     }
@@ -622,6 +643,39 @@ pub async fn list_insights(
             }
         })
         .collect();
+
+    all_insights.sort_by(|a, b| {
+        let category_cmp = a.category == b.category;
+        if !category_cmp {
+            return std::cmp::Ordering::Equal;
+        }
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut diversified = Vec::with_capacity(all_insights.len());
+    let mut remaining = all_insights;
+    let mut last_category: Option<String> = None;
+    let mut consecutive = 0usize;
+    while !remaining.is_empty() {
+        let selected_idx = remaining
+            .iter()
+            .position(|item| match last_category.as_deref() {
+                Some(previous) if previous == item.category => consecutive < 2,
+                _ => true,
+            })
+            .unwrap_or(0);
+        let selected = remaining.remove(selected_idx);
+        if last_category.as_deref() == Some(selected.category.as_str()) {
+            consecutive += 1;
+        } else {
+            last_category = Some(selected.category.clone());
+            consecutive = 1;
+        }
+        diversified.push(selected);
+    }
+    let mut all_insights = diversified;
 
     if active_impact == "high" {
         all_insights.retain(|i| i.confidence >= 0.7);
@@ -698,10 +752,7 @@ pub async fn list_insights(
             };
             let date = event_time.format("%b %d").to_string();
             if let Some(buckets) = by_day.get_mut(&date) {
-                let kind = row
-                    .insight_type
-                    .clone()
-                    .unwrap_or_default();
+                let kind = row.insight_type.clone().unwrap_or_default();
                 match trend_bucket(&kind) {
                     "demand" => buckets[0] += 1,
                     "competitive" => buckets[1] += 1,
@@ -886,6 +937,7 @@ pub async fn get_insight(
     let raw_type = insight.insight_type.clone().unwrap_or_default();
     let conf = insight.confidence.unwrap_or(0.0);
     let (tier, tier_css) = impact_tier(conf);
+    let assessment_severity = detail_assessment_severity(&insight, conf);
     let ev_urls = insight.evidence_urls.clone().unwrap_or_default();
     let diversity = source_diversity_label(&ev_urls);
 
@@ -940,6 +992,39 @@ pub async fn get_insight(
             })
             .collect(),
         ai_analysis: None,
+        information_gain_bits: Some(format!(
+            "{:.2}",
+            detail_information_gain_bits(conf, &assessment_severity)
+        )),
+        quality_score_pct: {
+            let scores = store
+                .get_insight_feedback_scores(&[insight.id])
+                .await
+                .unwrap_or_default();
+            scores.get(&insight.id).map(|s| (s * 100.0).round() as i64)
+        },
+        dissenting_opinions: insight
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("dissenting_opinions"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let severity = item.get("severity")?.as_str()?.to_string();
+                        let category = item.get("category")?.as_str()?.to_string();
+                        let confidence = item.get("confidence")?.as_f64().unwrap_or(0.0);
+                        let rationale = item.get("rationale_summary")?.as_str()?.to_string();
+                        Some(DissentingView {
+                            severity,
+                            category,
+                            confidence_pct: (confidence * 100.0).round() as i64,
+                            rationale,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
 
     super::render_template(&tpl)
@@ -951,6 +1036,53 @@ fn confidence_to_pct(value: f64) -> i64 {
     } else {
         value.round() as i64
     }
+}
+
+fn detail_information_gain_bits(confidence: f64, severity: &str) -> f64 {
+    let prior = [0.70, 0.20, 0.10];
+    let target_state = match severity.trim().to_ascii_lowercase().as_str() {
+        "critical" | "high" => 2,
+        "warning" | "medium" => 1,
+        _ => 0,
+    };
+
+    let confidence = confidence.clamp(0.0, 1.0);
+    let mut posterior = [0.0; 3];
+    for (idx, probability) in prior.iter().enumerate() {
+        posterior[idx] = probability * (1.0 - confidence);
+    }
+    posterior[target_state] += confidence;
+
+    let total: f64 = posterior.iter().sum();
+    if total > 0.0 {
+        for probability in &mut posterior {
+            *probability /= total;
+        }
+    }
+
+    let entropy = |distribution: &[f64; 3]| {
+        distribution
+            .iter()
+            .copied()
+            .filter(|probability| *probability > 0.0)
+            .map(|probability| -probability * probability.log2())
+            .sum::<f64>()
+    };
+
+    (entropy(&prior) - entropy(&posterior)).max(0.0)
+}
+
+fn detail_assessment_severity(
+    insight: &apex_store::postgres::InsightRow,
+    confidence: f64,
+) -> String {
+    insight
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("assessment_severity"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| impact_tier(confidence).0.to_ascii_lowercase())
 }
 
 fn insight_display_time(row: &apex_store::postgres::InsightRow) -> Option<DateTime<Utc>> {
@@ -991,6 +1123,12 @@ pub async fn bookmark_insight_html(
                 .into_response();
         }
     };
+
+    if bookmarked {
+        let _ = store
+            .record_insight_feedback(uuid, &session.username, "bookmarked", None)
+            .await;
+    }
 
     let _ = store
         .create_notification(

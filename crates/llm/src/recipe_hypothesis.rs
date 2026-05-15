@@ -193,17 +193,35 @@ Respond ONLY with the JSON array."#,
             .with_context(|| "Failed to parse recipe candidates JSON")?;
 
         // Validate and clamp
-        let validated = candidates
+        let validated: Vec<RecipeCandidate> = candidates
             .into_iter()
             .map(|mut c| {
                 c.confidence_threshold = c.confidence_threshold.clamp(0.5, 0.99);
                 c.estimated_base_rate = c.estimated_base_rate.clamp(0.0, 1.0);
                 c.expected_precision = c.expected_precision.clamp(0.0, 1.0);
+                // Resolve placeholder leaks: replace unreplaced {entity}/{signal}/{region}
+                // with neutral prose so stored narratives never show raw placeholders.
+                for template in [&mut c.narrative_template, &mut c.action_template] {
+                    *template = template
+                        .replace("{{entity}}", "the entity")
+                        .replace("{{signal}}", "the detected signal")
+                        .replace("{{region}}", "the target region")
+                        .replace("{entity}", "the entity")
+                        .replace("{signal}", "the detected signal")
+                        .replace("{region}", "the target region");
+                }
                 c
             })
             .collect();
 
-        Ok(validated)
+        // Dedup by recipe code — LLM may generate duplicates
+        let mut seen_codes = std::collections::HashSet::new();
+        let deduped: Vec<RecipeCandidate> = validated
+            .into_iter()
+            .filter(|c| seen_codes.insert(c.code.to_uppercase()))
+            .collect();
+
+        Ok(deduped)
     }
 
     /// Evaluate an existing recipe against its historical performance data.

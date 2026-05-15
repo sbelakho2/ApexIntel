@@ -441,8 +441,12 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
 
     async fn start_test_server(responses: Vec<&'static str>) -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("test: bind ephemeral port");
-        let addr = listener.local_addr().expect("test: get local addr");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("test: bind ephemeral port: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("test: get local addr: {error}"));
         let queue = StdArc::new(TokioMutex::new(
             responses
                 .into_iter()
@@ -458,16 +462,26 @@ mod tests {
                         break;
                     };
 
-                    let (mut stream, _) = listener.accept().await.expect("test: accept connection");
+                    let (mut stream, _) = listener
+                        .accept()
+                        .await
+                        .unwrap_or_else(|error| panic!("test: accept connection: {error}"));
                     let mut buf = [0_u8; 2048];
-                    let _ = stream.read(&mut buf).await.expect("test: read request");
-                    stream.write_all(response.as_bytes()).await.expect("test: write response");
+                    let _ = stream
+                        .read(&mut buf)
+                        .await
+                        .unwrap_or_else(|error| panic!("test: read request: {error}"));
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .unwrap_or_else(|error| panic!("test: write response: {error}"));
                 }
             }
         });
         addr
     }
 
+    #[allow(clippy::disallowed_methods)]
     #[tokio::test]
     async fn fetch_text_retries_after_rate_limit() {
         let addr = start_test_server(vec![
@@ -480,11 +494,12 @@ mod tests {
             max_retries: 1,
             ..CrawlClientConfig::default()
         };
-        let client = CrawlClient::new(config).expect("test: build crawl client");
+        let client = CrawlClient::new(config)
+            .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
         let response = client
             .fetch_text(&CrawlRequest::new(&format!("http://{addr}/feed")).source_id("test_feed"))
             .await
-            .expect("test: fetch should succeed after retry");
+            .unwrap_or_else(|error| panic!("test: fetch should succeed after retry: {error}"));
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "ok");
@@ -492,6 +507,7 @@ mod tests {
         assert_eq!(client.metrics().get("127.0.0.1"), 2);
     }
 
+    #[allow(clippy::disallowed_methods)]
     #[tokio::test]
     async fn fetch_text_uses_cached_robots_rules() {
         let config = CrawlClientConfig::default();
@@ -499,7 +515,8 @@ mod tests {
             "example.com",
             RobotsRules::parse("User-agent: *\nDisallow: /private\n", DEFAULT_USER_AGENT),
         );
-        let client = CrawlClient::new(config).expect("test: build crawl client");
+        let client = CrawlClient::new(config)
+            .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
         let error = client
             .fetch_text(&CrawlRequest::new("http://example.com/private/report"))
             .await

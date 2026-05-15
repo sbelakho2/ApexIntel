@@ -202,6 +202,14 @@ impl CertExpiryChecker {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+        clippy::needless_borrows_for_generic_args,
+        clippy::cloned_ref_to_slice_refs
+    )]
+
     use super::*;
     use chrono::Utc;
 

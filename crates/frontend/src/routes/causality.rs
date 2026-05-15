@@ -46,11 +46,26 @@ fn sample_alerts() -> Vec<PredictiveAlert> {
 
 fn sample_survival() -> Vec<SurvivalPoint> {
     vec![
-        SurvivalPoint { day: 0, survival_probability: 1.0 },
-        SurvivalPoint { day: 7, survival_probability: 0.96 },
-        SurvivalPoint { day: 14, survival_probability: 0.91 },
-        SurvivalPoint { day: 21, survival_probability: 0.83 },
-        SurvivalPoint { day: 30, survival_probability: 0.74 },
+        SurvivalPoint {
+            day: 0,
+            survival_probability: 1.0,
+        },
+        SurvivalPoint {
+            day: 7,
+            survival_probability: 0.96,
+        },
+        SurvivalPoint {
+            day: 14,
+            survival_probability: 0.91,
+        },
+        SurvivalPoint {
+            day: 21,
+            survival_probability: 0.83,
+        },
+        SurvivalPoint {
+            day: 30,
+            survival_probability: 0.74,
+        },
     ]
 }
 

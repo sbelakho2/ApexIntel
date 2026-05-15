@@ -86,6 +86,14 @@ impl SourceReliability {
             || lower.contains("facebook.com")
             || lower.contains("reddit.com")
             || lower.contains("discord")
+            || lower.contains("mastodon")
+            || lower.contains("mstdn.")
+            || lower.contains("threads.net")
+            || lower.contains("bsky.app")
+            || lower.contains("bluesky")
+            || lower.contains("truthsocial")
+            || lower.contains("t.me/")
+            || lower.contains("telegram.me/")
         {
             Self::Social
         } else {
@@ -116,7 +124,8 @@ pub fn effective_reliability(
     observed_reliability: f64,
 ) -> f64 {
     let sample_weight = 1.0 - (-(observation_count as f64) / 20.0).exp();
-    (((1.0 - sample_weight) * tier.score()) + (sample_weight * observed_reliability)).clamp(0.0, 1.0)
+    (((1.0 - sample_weight) * tier.score()) + (sample_weight * observed_reliability))
+        .clamp(0.0, 1.0)
 }
 
 pub fn should_promote_source(
@@ -153,7 +162,8 @@ pub fn build_source_reliability_stats(
     confirmed_count: u64,
 ) -> SourceReliabilityStats {
     let observed_reliability = observed_reliability(confirmed_count, observation_count);
-    let effective_reliability = effective_reliability(tier, observation_count, observed_reliability);
+    let effective_reliability =
+        effective_reliability(tier, observation_count, observed_reliability);
     let promotion_recommended =
         should_promote_source(tier, observation_count, observed_reliability);
 
@@ -309,12 +319,12 @@ pub fn filter_quality(
 }
 
 /// SQL to update quality_score column on observations.
-/// 
+///
 /// This SQL mirrors the Rust `compute_quality` function exactly:
 /// - Source reliability: 40% weight (Official=1.0, Established=0.85, TradePress=0.70, Social=0.45, Unknown=0.25)
 /// - Extraction confidence: 35% weight (clamped to [0,1], defaults to 0.5)
 /// - Freshness: 25% weight (exponential decay with 30-day half-life)
-/// 
+///
 /// Note: This SQL uses the tier-based prior score, not the adaptive effective_reliability
 /// from SourceReliabilityStats. For adaptive scoring, use the Rust `compute_quality` function.
 pub fn update_quality_sql() -> &'static str {
@@ -377,6 +387,14 @@ mod tests {
         );
         assert_eq!(
             SourceReliability::from_url("https://twitter.com/somebody"),
+            SourceReliability::Social
+        );
+        assert_eq!(
+            SourceReliability::from_url("https://mastodon.social/@signalwatch"),
+            SourceReliability::Social
+        );
+        assert_eq!(
+            SourceReliability::from_url("https://bsky.app/profile/apexintel.example"),
             SourceReliability::Social
         );
         assert_eq!(
@@ -448,12 +466,8 @@ mod tests {
 
     #[test]
     fn source_reliability_adaptive() {
-        let stats = build_source_reliability_stats(
-            "unknown-blog.com",
-            SourceReliability::Unknown,
-            50,
-            48,
-        );
+        let stats =
+            build_source_reliability_stats("unknown-blog.com", SourceReliability::Unknown, 50, 48);
 
         assert!(stats.effective_reliability > SourceReliability::Unknown.score());
         assert!(stats.observed_reliability > 0.75);
@@ -461,12 +475,8 @@ mod tests {
 
     #[test]
     fn adaptive_source_promotion() {
-        let stats = build_source_reliability_stats(
-            "unknown-blog.com",
-            SourceReliability::Unknown,
-            50,
-            48,
-        );
+        let stats =
+            build_source_reliability_stats("unknown-blog.com", SourceReliability::Unknown, 50, 48);
 
         assert!(stats.effective_reliability > 0.45);
         assert!(stats.promotion_recommended);

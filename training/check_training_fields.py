@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Check training data field names vs eval expected_schema."""
-import json, re
+import json, os, re
+from pathlib import Path
+
+WORK = Path(__file__).resolve().parent.parent
 
 TASK_KEYWORDS = {
     "company_dossier": ["company dossier", "company_dossier", "dossier"],
@@ -16,7 +19,7 @@ EVAL_EXPECTED = {
     "entity_extraction": ["companies", "persons", "capabilities", "certifications"],
 }
 
-data_path = "/workspace/ApexIntel/training/data/sft_train.jsonl"
+data_path = os.environ.get("TRAIN_FILE", str(WORK / "training" / "data" / "sft_train.jsonl"))
 
 with open(data_path) as f:
     lines = f.readlines()

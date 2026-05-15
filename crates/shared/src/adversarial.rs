@@ -1,20 +1,15 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceReliabilityTier {
     Official,
     Established,
     TradePress,
     Social,
+    #[default]
     Unknown,
-}
-
-impl Default for SourceReliabilityTier {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl SourceReliabilityTier {

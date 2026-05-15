@@ -1,8 +1,8 @@
-/// Hazard rate estimation and survival analysis utilities.
-///
-/// All time values must be non-negative.  Functions that accept a time axis
-/// silently filter out negative-time observations (Kaplan-Meier) or treat
-/// negative interval widths as degenerate inputs (hazard rate).
+//! Hazard rate estimation and survival analysis utilities.
+//!
+//! All time values must be non-negative.  Functions that accept a time axis
+//! silently filter out negative-time observations (Kaplan-Meier) or treat
+//! negative interval widths as degenerate inputs (hazard rate).
 use crate::utils::safe_div;
 
 const COX_MAX_ITERATIONS: usize = 50;
@@ -242,8 +242,14 @@ pub fn log_rank_test(group_a: &[(f64, bool)], group_b: &[(f64, bool)]) -> Option
     let mut variance = 0.0;
 
     for &time in &event_times {
-        let n1 = a.iter().filter(|(t, _)| *t >= time - TIME_TIE_TOLERANCE).count() as f64;
-        let n2 = b.iter().filter(|(t, _)| *t >= time - TIME_TIE_TOLERANCE).count() as f64;
+        let n1 = a
+            .iter()
+            .filter(|(t, _)| *t >= time - TIME_TIE_TOLERANCE)
+            .count() as f64;
+        let n2 = b
+            .iter()
+            .filter(|(t, _)| *t >= time - TIME_TIE_TOLERANCE)
+            .count() as f64;
         let d1 = a
             .iter()
             .filter(|(t, event)| *event && (*t - time).abs() < TIME_TIE_TOLERANCE)
@@ -352,7 +358,11 @@ fn validated_cox_observations(observations: &[CoxObservation]) -> Option<Vec<Cox
         if observation.covariates.len() != covariate_count {
             return None;
         }
-        if observation.covariates.iter().any(|value| !value.is_finite()) {
+        if observation
+            .covariates
+            .iter()
+            .any(|value| !value.is_finite())
+        {
             continue;
         }
         filtered.push(observation.clone());
@@ -366,6 +376,7 @@ fn validated_cox_observations(observations: &[CoxObservation]) -> Option<Vec<Cox
     Some(filtered)
 }
 
+#[allow(clippy::needless_range_loop)]
 fn cox_score_information_loglik(
     observations: &[CoxObservation],
     coefficients: &[f64],
@@ -409,7 +420,10 @@ fn cox_score_information_loglik(
             if observation.event && (observation.time - time).abs() < TIME_TIE_TOLERANCE {
                 event_count += 1.0;
                 event_linear_predictor_sum += dot(coefficients, &observation.covariates);
-                for (sum, value) in event_covariates.iter_mut().zip(observation.covariates.iter()) {
+                for (sum, value) in event_covariates
+                    .iter_mut()
+                    .zip(observation.covariates.iter())
+                {
                     *sum += *value;
                 }
             }
@@ -420,7 +434,8 @@ fn cox_score_information_loglik(
         }
 
         for row in 0..covariate_count {
-            score[row] += event_covariates[row] - event_count * safe_div(weighted_covariates[row], risk_sum);
+            score[row] +=
+                event_covariates[row] - event_count * safe_div(weighted_covariates[row], risk_sum);
             for col in 0..covariate_count {
                 let mean_cross = safe_div(weighted_outer[row][col], risk_sum);
                 let mean_row = safe_div(weighted_covariates[row], risk_sum);
@@ -449,6 +464,7 @@ fn regularized_matrix(matrix: &[Vec<f64>]) -> Vec<Vec<f64>> {
     regularized
 }
 
+#[allow(clippy::needless_range_loop)]
 fn solve_linear_system(matrix: &[Vec<f64>], rhs: &[f64]) -> Option<Vec<f64>> {
     let n = matrix.len();
     if n == 0 || rhs.len() != n || matrix.iter().any(|row| row.len() != n) {
@@ -500,6 +516,7 @@ fn solve_linear_system(matrix: &[Vec<f64>], rhs: &[f64]) -> Option<Vec<f64>> {
     Some(augmented.iter().map(|row| row[n]).collect())
 }
 
+#[allow(clippy::needless_range_loop)]
 fn invert_matrix(matrix: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     let n = matrix.len();
     if n == 0 || matrix.iter().any(|row| row.len() != n) {
@@ -610,7 +627,7 @@ mod tests {
         let curve = vec![(1.0, 0.9), (2.0, 0.7), (3.0, 0.4), (4.0, 0.2)];
         let median = median_survival(&curve);
         assert!(median.is_some());
-        let m = median.unwrap();
+        let m = median.unwrap_or_else(|| panic!("median should exist"));
         // KM step function: median = smallest t where S(t) <= 0.5.
         // S(2.0)=0.7 > 0.5, S(3.0)=0.4 <= 0.5 → median = 3.0.
         assert!((m - 3.0).abs() < 1e-10, "expected 3.0, got {}", m);
@@ -651,7 +668,11 @@ mod tests {
             assert!(*t >= 0.0, "negative time {t} in KM output");
         }
         // At-risk count at t=1 should be 3 (not 4), so S(1) = 1 - 1/3 ≈ 0.667
-        let s1 = km.iter().find(|(t, _)| (*t - 1.0).abs() < 1e-12).unwrap().1;
+        let s1 = km
+            .iter()
+            .find(|(time, _)| (*time - 1.0).abs() < 1e-12)
+            .map(|(_, survival)| *survival)
+            .unwrap_or_else(|| panic!("KM output should contain t=1"));
         assert!(
             (s1 - 2.0 / 3.0).abs() < 1e-10,
             "S(1) should be 2/3 when negative obs dropped; got {s1}"
@@ -710,7 +731,7 @@ mod tests {
         let median = median_survival(&curve);
         assert!(median.is_some());
         assert!(
-            (median.unwrap() - 4.0).abs() < 1e-10,
+            matches!(median, Some(value) if (value - 4.0).abs() < 1e-10),
             "median should be 4.0; got {:?}",
             median
         );
@@ -727,7 +748,7 @@ mod tests {
         let median = median_survival(&curve);
         assert!(median.is_some());
         assert!(
-            (median.unwrap() - 2.0).abs() < 1e-10,
+            matches!(median, Some(value) if (value - 2.0).abs() < 1e-10),
             "median should be 2.0; got {:?}",
             median
         );
@@ -748,11 +769,30 @@ mod tests {
 
     #[test]
     fn test_log_rank_detects_group_difference() {
-        let fast_fail = vec![(1.0, true), (1.2, true), (1.4, true), (1.6, true), (1.8, true)];
-        let slow_fail = vec![(5.0, true), (6.0, true), (7.0, true), (8.0, true), (9.0, true)];
-        let result = log_rank_test(&fast_fail, &slow_fail).expect("log-rank result");
-        assert!(result.chi_square > 5.0, "expected separation, got {result:?}");
-        assert!(result.p_value < 0.05, "expected directional evidence, got {result:?}");
+        let fast_fail = vec![
+            (1.0, true),
+            (1.2, true),
+            (1.4, true),
+            (1.6, true),
+            (1.8, true),
+        ];
+        let slow_fail = vec![
+            (5.0, true),
+            (6.0, true),
+            (7.0, true),
+            (8.0, true),
+            (9.0, true),
+        ];
+        let result = log_rank_test(&fast_fail, &slow_fail)
+            .unwrap_or_else(|| panic!("log-rank result should exist"));
+        assert!(
+            result.chi_square > 5.0,
+            "expected separation, got {result:?}"
+        );
+        assert!(
+            result.p_value < 0.05,
+            "expected directional evidence, got {result:?}"
+        );
         assert!(result.observed_minus_expected > 0.0);
     }
 
@@ -760,7 +800,8 @@ mod tests {
     fn test_log_rank_identical_groups_are_not_significant() {
         let group_a = vec![(1.0, true), (3.0, false), (4.0, true), (6.0, false)];
         let group_b = group_a.clone();
-        let result = log_rank_test(&group_a, &group_b).expect("log-rank result");
+        let result = log_rank_test(&group_a, &group_b)
+            .unwrap_or_else(|| panic!("log-rank result should exist"));
         assert!(result.chi_square < 1e-6);
         assert!(result.p_value > 0.95);
     }
@@ -785,7 +826,10 @@ mod tests {
             },
         ];
         let c_index = concordance_index(&observations, &[0.8, 0.8, 0.2]);
-        assert!((c_index - (5.0 / 6.0)).abs() < 1e-10, "expected half-credit for one tie");
+        assert!(
+            (c_index - (5.0 / 6.0)).abs() < 1e-10,
+            "expected half-credit for one tie"
+        );
     }
 
     #[test]
@@ -838,10 +882,17 @@ mod tests {
             },
         ];
 
-        let model = fit_cox_ph(&observations).expect("cox fit");
-        assert!(model.coefficients[0] > 0.0, "higher risk covariate should increase hazard");
+        let model = fit_cox_ph(&observations)
+            .unwrap_or_else(|| panic!("cox fit should converge for synthetic observations"));
+        assert!(
+            model.coefficients[0] > 0.0,
+            "higher risk covariate should increase hazard"
+        );
         assert!(model.hazard_ratios[0] > 1.0);
         assert!(model.iterations > 0);
-        assert!(model.concordance_index > 0.6, "expected useful discrimination: {model:?}");
+        assert!(
+            model.concordance_index > 0.6,
+            "expected useful discrimination: {model:?}"
+        );
     }
 }

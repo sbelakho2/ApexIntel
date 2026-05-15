@@ -410,7 +410,17 @@ impl SelfImprovementLoop {
             Return JSON: { \"improved_system_prompt\": str, \"rationale\": str, \"confidence\": float }";
 
         let json = self.llm.generate_json(system, &examples_text).await?;
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+        let v: serde_json::Value = match serde_json::from_str(&json) {
+            Ok(val) => val,
+            Err(e) => {
+                warn!(
+                    "LLM prompt improvement JSON parse failed: {}. Raw response (first 200 chars): {}",
+                    e,
+                    &crate::truncate_utf8(&json, 200)
+                );
+                serde_json::Value::Object(serde_json::Map::new())
+            }
+        };
 
         let improvement = PromptImprovement {
             category: low_quality[0].category.as_str().to_string(),
@@ -540,8 +550,8 @@ mod tests {
         }];
 
         let jsonl = ImprovementCycleReport::to_jsonl(&examples);
-        let _: serde_json::Value =
-            serde_json::from_str(&jsonl).expect("JSONL line should be valid JSON");
+        let _: serde_json::Value = serde_json::from_str(&jsonl)
+            .unwrap_or_else(|error| panic!("JSONL line should be valid JSON: {error}"));
     }
 
     #[test]

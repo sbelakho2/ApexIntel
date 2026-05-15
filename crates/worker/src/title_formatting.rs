@@ -2,12 +2,12 @@
 
 //! Title and headline construction logic for insights.
 
-#[cfg(feature = "llm")]
-use super::EvidenceSignal;
 use super::is_public_sector_entity;
 #[cfg(feature = "llm")]
+use super::EvidenceSignal;
+#[cfg(feature = "llm")]
 use crate::evidence_scoring::clean_signal_title;
-use crate::fallback_generation::concrete_signal_details;
+use crate::fallback_generation::category_relevant_signal_details;
 #[cfg(feature = "llm")]
 use crate::truncate_text;
 
@@ -70,12 +70,24 @@ pub(crate) fn build_analytical_title(
         String::new()
     };
 
-    let detail = concrete_signal_details(signal_details)
-        .first()
-        .map(|signal| format!(". {}", signal))
-        .unwrap_or_default();
-
-    let title = format!("{}{}: {}{}", entity_label, region_tag, action, detail);
+    // Prefer evidence-specific detail as the lead when available,
+    // falling back to category-based action verb.
+    let relevant_details = category_relevant_signal_details(category, signal_details);
+    let title = if let Some(lead_detail) = relevant_details.first() {
+        if lead_detail.len() > 20 {
+            // Evidence is specific enough to lead the title
+            format!("{}{}: {}", entity_label, region_tag, lead_detail)
+        } else {
+            // Evidence is too short — use category verb + detail suffix
+            let detail_suffix = format!(". {}", lead_detail);
+            format!(
+                "{}{}: {}{}",
+                entity_label, region_tag, action, detail_suffix
+            )
+        }
+    } else {
+        format!("{}{}: {}", entity_label, region_tag, action)
+    };
     if title.chars().count() > 200 {
         let truncated: String = title.chars().take(197).collect();
         format!("{truncated}...")
@@ -269,5 +281,22 @@ mod tests {
 
         assert!(title.contains("AS9100 recertification required"));
         assert!(!title.contains("3 tender(s) identified"));
+    }
+
+    #[test]
+    fn analytical_title_ignores_security_hygiene_for_nonsecurity_categories() {
+        let title = build_analytical_title(
+            "Acme",
+            "Morocco",
+            "demand_procurement",
+            &[
+                "8 lookalike domain(s) detected".to_string(),
+                "Supplier portal opened for Q3 RFQ".to_string(),
+            ],
+            Some("EMS"),
+        );
+
+        assert!(title.contains("Supplier portal opened for Q3 RFQ"));
+        assert!(!title.contains("lookalike domain"));
     }
 }

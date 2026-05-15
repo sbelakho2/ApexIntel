@@ -41,6 +41,10 @@ pub struct LlmPsychProfile {
     pub risk_tolerance: f64,
     /// Confidence in this profile (0..1), based on artifact richness
     pub profile_confidence: f64,
+    /// Artifact richness score (0..1) — how much source material was available.
+    /// Distinct from profile_confidence which measures inference quality.
+    #[serde(default)]
+    pub artifact_richness: f64,
     /// Short reasoning chain explaining the profile
     pub reasoning: String,
 }
@@ -186,11 +190,46 @@ Respond ONLY with valid JSON matching this exact schema:
             .parse_json()
             .with_context(|| "Failed to parse psych profile JSON")?;
 
-        // Clamp numeric values to valid ranges
-        profile.pain_index = profile.pain_index.clamp(0.0, 1.0);
-        profile.risk_tolerance = profile.risk_tolerance.clamp(0.0, 1.0);
-        profile.profile_confidence = profile.profile_confidence.clamp(0.0, 1.0);
+        // Clamp numeric values to valid ranges, logging when values were out of bounds
+        if profile.pain_index < 0.0 || profile.pain_index > 1.0 {
+            tracing::warn!(
+                poi = %poi_name,
+                field = "pain_index",
+                raw_value = profile.pain_index,
+                "POI profiler: clamping out-of-range value to [0, 1]"
+            );
+            profile.pain_index = profile.pain_index.clamp(0.0, 1.0);
+        }
+        if profile.risk_tolerance < 0.0 || profile.risk_tolerance > 1.0 {
+            tracing::warn!(
+                poi = %poi_name,
+                field = "risk_tolerance",
+                raw_value = profile.risk_tolerance,
+                "POI profiler: clamping out-of-range value to [0, 1]"
+            );
+            profile.risk_tolerance = profile.risk_tolerance.clamp(0.0, 1.0);
+        }
+        if profile.profile_confidence < 0.0 || profile.profile_confidence > 1.0 {
+            tracing::warn!(
+                poi = %poi_name,
+                field = "profile_confidence",
+                raw_value = profile.profile_confidence,
+                "POI profiler: clamping out-of-range value to [0, 1]"
+            );
+            profile.profile_confidence = profile.profile_confidence.clamp(0.0, 1.0);
+        }
         profile.priority_vector = profile.priority_vector.validate_clamped();
+
+        // Compute artifact richness separately from profile confidence.
+        // Richness is based on the volume of source material available.
+        let artifact_count = artifacts.len();
+        profile.artifact_richness = match artifact_count {
+            0 => 0.0,
+            1..=2 => 0.2,
+            3..=5 => 0.5,
+            6..=10 => 0.75,
+            _ => 1.0,
+        };
 
         Ok(profile)
     }
@@ -319,7 +358,15 @@ Respond ONLY with valid JSON:
             .parse_json()
             .with_context(|| "Failed to parse background summary JSON")?;
 
-        summary.confidence = summary.confidence.clamp(0.0, 1.0);
+        if summary.confidence < 0.0 || summary.confidence > 1.0 {
+            tracing::warn!(
+                poi = %poi_name,
+                field = "background_confidence",
+                raw_value = summary.confidence,
+                "POI profiler: clamping out-of-range background confidence to [0, 1]"
+            );
+            summary.confidence = summary.confidence.clamp(0.0, 1.0);
+        }
         Ok(summary)
     }
 }

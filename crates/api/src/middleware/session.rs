@@ -166,7 +166,7 @@ pub async fn require_session(request: Request, next: Next) -> Response {
         return Redirect::to("/login").into_response();
     }
 
-    let session = match validate_session(request.headers(), &session_secret) {
+    let session = match validate_session(request.headers(), session_secret) {
         Some(session) => session,
         None => return Redirect::to("/login").into_response(),
     };

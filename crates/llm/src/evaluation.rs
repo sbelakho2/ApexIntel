@@ -385,16 +385,19 @@ impl EvalRunner {
         let start = std::time::Instant::now();
 
         // Generate response
-        let response =
-            if case.expected.must_be_valid_json || !case.expected.required_json_keys.is_empty() {
-                self.subject
-                    .generate_json(&case.system_prompt, &case.user_prompt)
-                    .await?
-            } else {
-                self.subject
-                    .generate_text(&case.system_prompt, &case.user_prompt)
-                    .await?
-            };
+        let response = if case.expected.must_be_valid_json
+            || !case.expected.required_json_keys.is_empty()
+        {
+            self.subject
+                .generate_json(&case.system_prompt, &case.user_prompt)
+                .await
+                .with_context(|| format!("LLM generate_json failed for eval case '{}'", case.id))?
+        } else {
+            self.subject
+                .generate_text(&case.system_prompt, &case.user_prompt)
+                .await
+                .with_context(|| format!("LLM generate_text failed for eval case '{}'", case.id))?
+        };
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -424,11 +427,11 @@ impl EvalRunner {
         };
 
         // ── Gold comparison ──
-        let gold_similarity = if let Some(ref gold) = case.expected.gold_response {
-            Some(simple_token_similarity(&response, gold))
-        } else {
-            None
-        };
+        let gold_similarity = case
+            .expected
+            .gold_response
+            .as_ref()
+            .map(|gold| simple_token_similarity(&response, gold));
 
         // ── Overall pass ──
         // Skipped checks should be neutral, not counted as failures.

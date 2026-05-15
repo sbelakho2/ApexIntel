@@ -1,17 +1,40 @@
 use apex_shared::{CalibrationCurve, CalibrationPoint};
 use leptos::*;
 
-use crate::components::{cards::{PageHeader, SurfaceCard}, charts::reliability_diagram::ReliabilityDiagram};
 use crate::api;
+use crate::components::{
+    cards::{PageHeader, SurfaceCard},
+    charts::reliability_diagram::ReliabilityDiagram,
+};
 
 fn sample_curve() -> CalibrationCurve {
     CalibrationCurve {
         points: vec![
-            CalibrationPoint { predicted_probability: 0.1, observed_frequency: 0.12, bin_count: 42 },
-            CalibrationPoint { predicted_probability: 0.3, observed_frequency: 0.28, bin_count: 76 },
-            CalibrationPoint { predicted_probability: 0.5, observed_frequency: 0.54, bin_count: 95 },
-            CalibrationPoint { predicted_probability: 0.7, observed_frequency: 0.69, bin_count: 68 },
-            CalibrationPoint { predicted_probability: 0.9, observed_frequency: 0.87, bin_count: 29 },
+            CalibrationPoint {
+                predicted_probability: 0.1,
+                observed_frequency: 0.12,
+                bin_count: 42,
+            },
+            CalibrationPoint {
+                predicted_probability: 0.3,
+                observed_frequency: 0.28,
+                bin_count: 76,
+            },
+            CalibrationPoint {
+                predicted_probability: 0.5,
+                observed_frequency: 0.54,
+                bin_count: 95,
+            },
+            CalibrationPoint {
+                predicted_probability: 0.7,
+                observed_frequency: 0.69,
+                bin_count: 68,
+            },
+            CalibrationPoint {
+                predicted_probability: 0.9,
+                observed_frequency: 0.87,
+                bin_count: 29,
+            },
         ],
         brier_score: 0.081,
         reliability: 0.94,
@@ -35,11 +58,19 @@ pub fn CalibrationPage() -> impl IntoView {
         use wasm_bindgen::{closure::Closure, JsCast};
         use web_sys::{MessageEvent, WebSocket};
 
-        let Some(window) = web_sys::window() else { return; };
-        let protocol = window.location().protocol().ok().unwrap_or_else(|| "http:".to_string());
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let protocol = window
+            .location()
+            .protocol()
+            .ok()
+            .unwrap_or_else(|| "http:".to_string());
         let host = window.location().host().ok().unwrap_or_default();
         let ws_scheme = if protocol == "https:" { "wss" } else { "ws" };
-        let Ok(socket) = WebSocket::new(&format!("{ws_scheme}://{host}/ws/calibration")) else { return; };
+        let Ok(socket) = WebSocket::new(&format!("{ws_scheme}://{host}/ws/calibration")) else {
+            return;
+        };
 
         let onmessage_curve = live_curve;
         let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {

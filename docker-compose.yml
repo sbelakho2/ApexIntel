@@ -7,11 +7,12 @@ version: "3.9"
 services:
   # ─── PostgreSQL with TimescaleDB ──────────────────────────────────────
   postgres:
-    image: timescale/timescaledb:latest-pg16
+    image: timescale/timescaledb:2.17-pg16
     environment:
       POSTGRES_DB: apexintel
       POSTGRES_USER: apexintel
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-apexintel_dev}
+      # WARNING: Override with a strong password in production via .env or export DB_PASSWORD
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env or export it}
     ports:
       - "5432:5432"
     volumes:
@@ -23,21 +24,31 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
 
   # ─── Redis (cache + rate-limit state) ─────────────────────────────────
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-redis_dev}
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_dev}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 3
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
 
   # ─── NATS JetStream (message queue) ──────────────────────────────────
   nats:
@@ -54,13 +65,18 @@ services:
       timeout: 3s
       retries: 3
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
 
   # ─── MinIO (S3-compatible object storage) ─────────────────────────────
   minio:
     image: minio/minio:latest
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-apexintel}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-apexintel_dev}
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env or export it}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env or export it}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -73,6 +89,11 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
 
   # ─── MinIO bucket init ────────────────────────────────────────────────
   minio-init:
@@ -80,14 +101,18 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-apexintel} $${MINIO_ROOT_PASSWORD:-apexintel_dev};
-        mc mb --ignore-existing local/apexintel;
-        mc mb --ignore-existing local/apexintel-raw;
-        mc mb --ignore-existing local/apexintel-exports;
-        echo 'Buckets created.';
-      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env or export it}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env or export it}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/apexintel
+        mc mb --ignore-existing local/apexintel-raw
+        mc mb --ignore-existing local/apexintel-exports
+        echo "Buckets created."
     restart: "no"
 
 volumes:

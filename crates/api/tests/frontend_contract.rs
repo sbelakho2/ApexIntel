@@ -30,7 +30,12 @@ async fn frontend_api_contract_smoke_uses_current_base_paths() {
         .expect("openapi response");
     assert_eq!(openapi.status(), 200);
 
-    let body = openapi.into_body().collect().await.expect("body").to_bytes();
+    let body = openapi
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
     let spec: Value = serde_json::from_slice(&body).expect("openapi json");
     let paths = spec["paths"].as_object().expect("paths object");
 

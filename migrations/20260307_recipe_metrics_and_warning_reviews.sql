@@ -11,7 +11,7 @@ ALTER TABLE warnings
     CHECK (review_outcome IS NULL OR review_outcome IN ('true_positive', 'false_positive'));
 
 CREATE TABLE IF NOT EXISTS recipe_weekly_metrics (
-    recipe_code TEXT NOT NULL REFERENCES recipes(code) ON DELETE CASCADE,
+    recipe_code TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
     week_start DATE NOT NULL,
     precision_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     false_positive_rate DOUBLE PRECISION NOT NULL DEFAULT 0.0,

@@ -69,11 +69,15 @@
   </div>
 
   {# ── Secondary KPI row (matches legacy 8-card layout) ── #}
-  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
     {% call m::metric_card("Active Recipes", recipes_active.to_string(), "metric-rail-green") %}
     {% call m::metric_card("Companies Tracked", companies_tracked.to_string(), "metric-rail-steel") %}
     {% call m::metric_card("Persons Tracked", persons_tracked.to_string(), "metric-rail-orange") %}
     {% call m::metric_card("Data Freshness", data_freshness, "metric-rail-red") %}
+    <div class="apex-card border-t-2 border-t-border px-4 py-3">
+      <p class="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Portfolio Health</p>
+      <p class="mt-1 text-lg font-black {{ portfolio_health_class }}">{{ portfolio_health }}</p>
+    </div>
   </div>
 
   {# ── Warning trend + crawl activity (pre-migration parity) ── #}

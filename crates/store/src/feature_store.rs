@@ -207,6 +207,8 @@ pub fn compute_topic_drift(previous: &FeatureRow, current: &mut FeatureRow) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     #[test]

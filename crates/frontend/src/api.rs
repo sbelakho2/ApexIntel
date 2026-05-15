@@ -75,6 +75,7 @@ pub struct InsightRecord {
     pub causal_flag: Option<String>,
     pub created_at: String,
     pub bookmarked: Option<bool>,
+    pub quality_score: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -148,6 +149,12 @@ pub struct PersonListItem {
     pub priority_score: f64,
     pub influence_score: i64,
     pub priority: String,
+    #[serde(default)]
+    pub pain_index: f64,
+    #[serde(default)]
+    pub change_risk: f64,
+    #[serde(default)]
+    pub role_drift_score: f64,
     pub tags: Vec<String>,
     pub updated_at: String,
 }
@@ -179,6 +186,12 @@ pub struct PersonDetail {
     pub priority_score: f64,
     pub influence_score: i64,
     pub priority: String,
+    #[serde(default)]
+    pub pain_index: f64,
+    #[serde(default)]
+    pub change_risk: f64,
+    #[serde(default)]
+    pub role_drift_score: f64,
     pub tags: Vec<String>,
     pub timeline: Vec<PersonEvent>,
     pub peers: Vec<PersonPeer>,
@@ -331,12 +344,49 @@ async fn get_api<T: DeserializeOwned>(path: &str) -> Result<T, String> {
     let envelope: ApiEnvelope<T> = serde_json::from_str(&body).map_err(|err| err.to_string())?;
 
     if status >= 400 || !envelope.success {
-        return Err(
-            envelope
-                .error
-                .map(|error| error.message)
-                .unwrap_or_else(|| format!("Request failed with status {status}")),
-        );
+        return Err(envelope
+            .error
+            .map(|error| error.message)
+            .unwrap_or_else(|| format!("Request failed with status {status}")));
+    }
+
+    envelope
+        .data
+        .ok_or_else(|| "Response body missing data payload".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn send_api<T: DeserializeOwned, B: Serialize>(
+    method: &str,
+    path: &str,
+    body: Option<&B>,
+) -> Result<T, String> {
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+
+    let request = match method {
+        "POST" => Request::post(path),
+        "DELETE" => Request::delete(path),
+        other => return Err(format!("Unsupported method {other}")),
+    }
+    .credentials(RequestCredentials::SameOrigin);
+
+    let request = if let Some(payload) = body {
+        request.json(payload).map_err(|err| err.to_string())?
+    } else {
+        request.build().map_err(|err| err.to_string())?
+    };
+
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|err| err.to_string())?;
+    let envelope: ApiEnvelope<T> = serde_json::from_str(&body).map_err(|err| err.to_string())?;
+
+    if status >= 400 || !envelope.success {
+        return Err(envelope
+            .error
+            .map(|error| error.message)
+            .unwrap_or_else(|| format!("Request failed with status {status}")));
     }
 
     envelope
@@ -349,10 +399,23 @@ async fn get_api<T: DeserializeOwned>(_path: &str) -> Result<T, String> {
     Err("WASM data fetching is only available in the browser runtime".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+async fn send_api<T: DeserializeOwned, B: Serialize>(
+    _method: &str,
+    _path: &str,
+    _body: Option<&B>,
+) -> Result<T, String> {
+    Err("WASM mutations are only available in the browser runtime".to_string())
+}
+
 fn query_string(params: &[(&str, Option<String>)]) -> String {
     let values = params
         .iter()
-        .filter_map(|(key, value)| value.as_ref().map(|value| format!("{}={}", key, urlencoding::encode(value))))
+        .filter_map(|(key, value)| {
+            value
+                .as_ref()
+                .map(|value| format!("{}={}", key, urlencoding::encode(value)))
+        })
         .collect::<Vec<_>>();
 
     if values.is_empty() {
@@ -366,7 +429,10 @@ pub async fn fetch_dashboard() -> Result<DashboardStats, String> {
     get_api("/api/dashboard").await
 }
 
-pub async fn fetch_warnings(page: u32, severity: Option<String>) -> Result<PagedResponse<WarningRecord>, String> {
+pub async fn fetch_warnings(
+    page: u32,
+    severity: Option<String>,
+) -> Result<PagedResponse<WarningRecord>, String> {
     get_api(&format!(
         "/api/warnings{}",
         query_string(&[
@@ -378,31 +444,58 @@ pub async fn fetch_warnings(page: u32, severity: Option<String>) -> Result<Paged
     .await
 }
 
-pub async fn fetch_insights(page: u32, bookmarked: bool) -> Result<PagedResponse<InsightRecord>, String> {
+pub async fn fetch_insights(
+    page: u32,
+    bookmarked: bool,
+) -> Result<PagedResponse<InsightRecord>, String> {
     get_api(&format!(
         "/api/insights{}",
         query_string(&[
             ("page", Some(page.to_string())),
             ("per_page", Some("8".to_string())),
-            (
-                "bookmarked",
-                bookmarked.then(|| "true".to_string()),
-            ),
+            ("bookmarked", bookmarked.then(|| "true".to_string()),),
         ])
     ))
     .await
 }
 
-pub async fn fetch_companies(page: u32, competitor_only: bool) -> Result<PagedResponse<CompanyListItem>, String> {
+pub async fn set_insight_bookmark(insight_id: &str, bookmarked: bool) -> Result<(), String> {
+    let path = format!("/api/insights/{insight_id}/bookmark");
+    let _: Value = if bookmarked {
+        send_api("POST", &path, Option::<&Value>::None).await?
+    } else {
+        send_api("DELETE", &path, Option::<&Value>::None).await?
+    };
+    Ok(())
+}
+
+pub async fn submit_insight_feedback(
+    insight_id: &str,
+    feedback_type: &str,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let path = format!("/api/insights/{insight_id}/feedback");
+    let mut payload = serde_json::Map::new();
+    payload.insert("feedback_type".to_string(), feedback_type.into());
+    payload.insert(
+        "notes".to_string(),
+        notes.map(Value::String).unwrap_or(Value::Null),
+    );
+    let payload = Value::Object(payload);
+    let _: Value = send_api("POST", &path, Some(&payload)).await?;
+    Ok(())
+}
+
+pub async fn fetch_companies(
+    page: u32,
+    competitor_only: bool,
+) -> Result<PagedResponse<CompanyListItem>, String> {
     get_api(&format!(
         "/api/companies{}",
         query_string(&[
             ("page", Some(page.to_string())),
             ("per_page", Some("8".to_string())),
-            (
-                "is_competitor",
-                competitor_only.then(|| "true".to_string()),
-            ),
+            ("is_competitor", competitor_only.then(|| "true".to_string()),),
         ])
     ))
     .await
@@ -412,7 +505,10 @@ pub async fn fetch_company_detail(company_id: &str) -> Result<CompanyDetail, Str
     get_api(&format!("/api/companies/{company_id}")).await
 }
 
-pub async fn fetch_persons(page: u32, priority: Option<String>) -> Result<PagedResponse<PersonListItem>, String> {
+pub async fn fetch_persons(
+    page: u32,
+    priority: Option<String>,
+) -> Result<PagedResponse<PersonListItem>, String> {
     get_api(&format!(
         "/api/persons{}",
         query_string(&[
@@ -447,7 +543,10 @@ pub async fn fetch_search(page: u32, query: &str) -> Result<SearchResponse, Stri
 pub async fn fetch_memos(page: u32) -> Result<PagedResponse<WeeklyMemo>, String> {
     get_api(&format!(
         "/api/memos{}",
-        query_string(&[("page", Some(page.to_string())), ("per_page", Some("6".to_string()))])
+        query_string(&[
+            ("page", Some(page.to_string())),
+            ("per_page", Some("6".to_string()))
+        ])
     ))
     .await
 }
@@ -467,7 +566,10 @@ pub async fn fetch_calibration_curve() -> Result<CalibrationCurve, String> {
 pub async fn fetch_competitors(page: u32) -> Result<PagedResponse<CompanyListItem>, String> {
     get_api(&format!(
         "/api/competitors{}",
-        query_string(&[("page", Some(page.to_string())), ("per_page", Some("8".to_string()))])
+        query_string(&[
+            ("page", Some(page.to_string())),
+            ("per_page", Some("8".to_string()))
+        ])
     ))
     .await
 }
@@ -475,12 +577,18 @@ pub async fn fetch_competitors(page: u32) -> Result<PagedResponse<CompanyListIte
 pub async fn fetch_competitor_changes(page: u32) -> Result<PagedResponse<Value>, String> {
     get_api(&format!(
         "/api/competitors/changes{}",
-        query_string(&[("page", Some(page.to_string())), ("per_page", Some("8".to_string()))])
+        query_string(&[
+            ("page", Some(page.to_string())),
+            ("per_page", Some("8".to_string()))
+        ])
     ))
     .await
 }
 
-pub async fn fetch_recipes(page: u32, status: Option<String>) -> Result<PagedResponse<RecipeRecord>, String> {
+pub async fn fetch_recipes(
+    page: u32,
+    status: Option<String>,
+) -> Result<PagedResponse<RecipeRecord>, String> {
     get_api(&format!(
         "/api/recipes{}",
         query_string(&[

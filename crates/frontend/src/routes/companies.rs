@@ -3,7 +3,10 @@ use leptos_router::A;
 
 use crate::{
     api,
-    components::{cards::{PageHeader, SurfaceCard}, filters::{FilterBar, FilterChip, Pagination}},
+    components::{
+        cards::{PageHeader, SurfaceCard},
+        filters::{FilterBar, FilterChip, Pagination},
+    },
 };
 
 #[component]
@@ -21,7 +24,7 @@ pub fn CompaniesPage() -> impl IntoView {
             <PageHeader
                 eyebrow="Entity Coverage"
                 title="Companies"
-                subtitle="Company list and detail routes are now driven from the live entity APIs."
+                subtitle="Tracked entities with threat scores, capabilities, and source entropy."
             />
 
             <FilterBar title="Type">
@@ -32,7 +35,7 @@ pub fn CompaniesPage() -> impl IntoView {
             <Suspense fallback=move || view! { <SurfaceCard title="Companies" subtitle="Loading companies."><p class="muted-copy">"Loading..."</p></SurfaceCard> }>
                 {move || companies.get().map(|result| match result {
                     Ok(payload) => view! {
-                        <SurfaceCard title="Tracked Companies" subtitle="Each record links to a live company detail view powered by the entity detail endpoint.">
+                        <SurfaceCard title="Tracked Companies" subtitle="Click any company to view its full dossier and intelligence timeline.">
                             <div class="timeline-list">
                                 <For each=move || payload.items.clone() key=|item| item.id.clone() let:item>
                                     <article class="timeline-item">
@@ -58,7 +61,7 @@ pub fn CompaniesPage() -> impl IntoView {
                             <Pagination page=page total=payload.total per_page=payload.per_page set_page=set_page />
                         </SurfaceCard>
                     }.into_view(),
-                    Err(message) => view! { <SurfaceCard title="Companies" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                    Err(message) => view! { <SurfaceCard title="Companies" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                 })}
             </Suspense>
         </div>

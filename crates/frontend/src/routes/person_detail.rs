@@ -1,12 +1,16 @@
 use leptos::*;
 use leptos_router::use_params_map;
 
-use crate::{api, components::cards::{PageHeader, SurfaceCard}};
+use crate::{
+    api,
+    components::cards::{PageHeader, SurfaceCard},
+};
 
 #[component]
 pub fn PersonDetailPage() -> impl IntoView {
     let params = use_params_map();
-    let person_id = move || params.with(|params| params.get("person_id").cloned().unwrap_or_default());
+    let person_id =
+        move || params.with(|params| params.get("person_id").cloned().unwrap_or_default());
 
     let detail = create_resource(person_id, |person_id| async move {
         if person_id.is_empty() {
@@ -52,7 +56,7 @@ pub fn PersonDetailPage() -> impl IntoView {
                         </div>
                     }.into_view()
                     },
-                    Err(message) => view! { <SurfaceCard title="Person" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                    Err(message) => view! { <SurfaceCard title="Person" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                 })}
             </Suspense>
         </div>

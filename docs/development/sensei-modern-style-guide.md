@@ -150,7 +150,7 @@ Use imperative labels (`Run`, `Acknowledge`, `Export`) with precise dimensions a
 
 ---
 
-## 8. Do / Don’t Summary
+## 8. Do / Don't Summary
 
 ### Do
 
@@ -159,7 +159,7 @@ Use imperative labels (`Run`, `Acknowledge`, `Export`) with precise dimensions a
 - Use icon + label for important actions
 - Preserve keyboard-visible focus with strong ring
 
-### Don’t
+### Don't
 
 - Introduce gradient branding blocks
 - use emoji or playful microcopy in core workflows
@@ -170,8 +170,21 @@ Use imperative labels (`Run`, `Acknowledge`, `Export`) with precise dimensions a
 
 ## 9. Source of Truth in ApexIntel
 
-- Theme tokens: `frontend/src/app/globals.css`
-- Tailwind primitives: `frontend/tailwind.config.ts`
-- Shared shell/components: `frontend/src/components/app-shell.tsx`, `frontend/src/components/ui.tsx`
-- Root framing: `frontend/src/app/layout.tsx`
+The Sensei-Rams design is implemented across two frontend surfaces in this repository:
+
+- **Leptos/WASM frontend** (`crates/frontend/`): The interactive single-page application. Styles are in [`crates/frontend/style.css`](../crates/frontend/style.css:1) with CSS custom properties defining the full token set. Components are in [`crates/frontend/src/components/`](../crates/frontend/src/components/mod.rs:1).
+- **Askama/HTMX server-rendered UI** (`crates/api/`): Classic page-based rendering. Tailwind utilities are configured in [`tailwind.config.js`](../tailwind.config.js:1). Global CSS variables and Rams tokens are in [`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:1).
+- **Shared design tokens**: CSS custom properties (`--rams-*`) are defined in both [`crates/frontend/style.css`](../crates/frontend/style.css:1) and [`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:5) to ensure visual consistency across both frontend surfaces.
+
+### File Reference Summary
+
+| Token / Concept | Location |
+|---|---|
+| Rams CSS variables (WASM) | [`crates/frontend/style.css`](../crates/frontend/style.css:1) |
+| Rams CSS variables (server-rendered) | [`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:39) |
+| Tailwind configuration | [`tailwind.config.js`](../tailwind.config.js:1) |
+| WASM app shell component | [`crates/frontend/src/app.rs`](../crates/frontend/src/app.rs:72) |
+| WASM shared UI components | [`crates/frontend/src/components/`](../crates/frontend/src/components/mod.rs:1) |
+| Askama base layout template | [`crates/api/templates/base.html`](../crates/api/templates/base.html:1) |
+| Askama shared macros (icons, badges, charts) | [`crates/api/templates/macros.html`](../crates/api/templates/macros.html:1) |
 

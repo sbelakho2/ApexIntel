@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS competitor_changes (
     description TEXT NOT NULL DEFAULT '',
     detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     source_url TEXT,
-    impact_score REAL NOT NULL DEFAULT 0.5,
+    impact_score DOUBLE PRECISION NOT NULL DEFAULT 0.5,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -108,13 +108,13 @@ INSERT INTO weekly_memos (
 
 -- Insert sample competitor changes (using existing competitor IDs)
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
-SELECT 
+SELECT
     c.id,
     'new_capability',
     'Added EV Battery Module Assembly',
     'Expanded manufacturing capabilities to include EV battery module assembly and testing facilities.',
     NOW() - INTERVAL '3 days',
-    'https://example.com/news/ev-expansion',
+    'https://docs.apexintel.local/placeholders/seed-data/ev-expansion',
     0.75
 FROM companies c
 WHERE c.name = 'Jabil'
@@ -122,13 +122,13 @@ WHERE c.name = 'Jabil'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
-SELECT 
+SELECT
     c.id,
     'market_entry',
     'Nordic Defense Contract Win',
     'Secured major defense electronics contract with Nordic government agency.',
     NOW() - INTERVAL '5 days',
-    'https://example.com/news/defense-contract',
+    'https://docs.apexintel.local/placeholders/seed-data/defense-contract',
     0.85
 FROM companies c
 WHERE c.name = 'NOTE AB'
@@ -136,13 +136,13 @@ WHERE c.name = 'NOTE AB'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
-SELECT 
+SELECT
     c.id,
     'acquisition',
     'Acquired German Specialty EMS Firm',
     'Completed acquisition of specialized medical device manufacturing firm in Munich.',
     NOW() - INTERVAL '7 days',
-    'https://example.com/news/acquisition',
+    'https://docs.apexintel.local/placeholders/seed-data/acquisition',
     0.9
 FROM companies c
 WHERE c.name = 'Cicor Group'
@@ -150,13 +150,13 @@ WHERE c.name = 'Cicor Group'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
-SELECT 
+SELECT
     c.id,
     'leadership_change',
     'New CEO Appointed',
     'Former VP of Operations appointed as new Chief Executive Officer effective March 2026.',
     NOW() - INTERVAL '2 days',
-    'https://example.com/news/ceo-change',
+    'https://docs.apexintel.local/placeholders/seed-data/ceo-change',
     0.65
 FROM companies c
 WHERE c.name = 'Sanmina'
@@ -164,13 +164,13 @@ WHERE c.name = 'Sanmina'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO competitor_changes (competitor_id, change_type, title, description, detected_at, source_url, impact_score)
-SELECT 
+SELECT
     c.id,
     'product_launch',
     'Smart Factory Platform Launch',
     'Launched proprietary AI-powered smart factory management platform for customers.',
     NOW() - INTERVAL '4 days',
-    'https://example.com/news/smart-factory',
+    'https://docs.apexintel.local/placeholders/seed-data/smart-factory',
     0.7
 FROM companies c
 WHERE c.name = 'Flex'

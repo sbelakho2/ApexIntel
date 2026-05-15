@@ -1,8 +1,8 @@
-/// Fisher's exact test for 2×2 contingency tables.
-///
-/// All public functions operate on non-negative integer counts.  The p-value
-/// is the exact two-sided probability computed by the hypergeometric
-/// distribution, summing all tables at least as extreme as the observed one.
+//! Fisher's exact test for 2×2 contingency tables.
+//!
+//! All public functions operate on non-negative integer counts.  The p-value
+//! is the exact two-sided probability computed by the hypergeometric
+//! distribution, summing all tables at least as extreme as the observed one.
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FisherExactResult {
@@ -98,10 +98,20 @@ pub fn woolf_odds_ratio_confidence_interval(a: u64, b: u64, c: u64, d: u64) -> O
     let odds_ratio = (af * df) / (bf * cf);
     let standard_error = (1.0 / af + 1.0 / bf + 1.0 / cf + 1.0 / df).sqrt();
     let delta = 1.96 * standard_error;
-    Some(((odds_ratio.ln() - delta).exp(), (odds_ratio.ln() + delta).exp()))
+    Some((
+        (odds_ratio.ln() - delta).exp(),
+        (odds_ratio.ln() + delta).exp(),
+    ))
 }
 
-pub fn minimum_detectable_odds_ratio(a: u64, b: u64, c: u64, d: u64, alpha: f64, power: f64) -> f64 {
+pub fn minimum_detectable_odds_ratio(
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64,
+    alpha: f64,
+    power: f64,
+) -> f64 {
     let total = (a + b + c + d) as f64;
     if total <= 0.0 {
         return f64::INFINITY;
@@ -139,27 +149,27 @@ fn log_factorial(n: u64) -> f64 {
     // Exact ln(k!) for small k avoids any Stirling error in the range that
     // matters most for P-value precision (small marginal sums).
     const LUT: &[f64] = &[
-        0.0,                // 0! = 1
-        0.0,                // 1! = 1
-        0.6931471805599453, // 2!
-        1.791759469228327,  // 3!
-        3.178053830347946,  // 4!
-        4.787491742782046,  // 5!
-        6.579251212010101,  // 6!
-        8.525161361065415,  // 7!
-        10.60460290274525,  // 8!
-        12.801827480081469, // 9!
-        15.104412573075518, // 10!
-        17.502307845873887, // 11!
-        19.987214495661885, // 12!
-        22.55216385312342,  // 13!
-        25.19122118273868,  // 14!
-        27.899271383840894, // 15!
-        30.671860106080675, // 16!
-        33.50507345013689,  // 17!
-        36.39544520803305,  // 18!
-        39.339884187199495, // 19!
-        42.335616460753485, // 20!
+        0.0,                    // 0! = 1
+        0.0,                    // 1! = 1
+        std::f64::consts::LN_2, // 2!
+        1.791759469228327,      // 3!
+        3.178053830347946,      // 4!
+        4.787491742782046,      // 5!
+        6.579251212010101,      // 6!
+        8.525161361065415,      // 7!
+        10.60460290274525,      // 8!
+        12.801827480081469,     // 9!
+        15.104412573075518,     // 10!
+        17.502307845873887,     // 11!
+        19.987214495661885,     // 12!
+        22.55216385312342,      // 13!
+        25.19122118273868,      // 14!
+        27.899271383840894,     // 15!
+        30.671860106080675,     // 16!
+        33.50507345013689,      // 17!
+        36.39544520803305,      // 18!
+        39.339884187199495,     // 19!
+        42.335616460753485,     // 20!
     ];
     if n < LUT.len() as u64 {
         return LUT[n as usize];
@@ -278,17 +288,17 @@ mod tests {
     fn fisher_analyze_reports_effect_size_and_interval() {
         let result = analyze(10, 5, 3, 12);
         assert!((result.odds_ratio - 8.0).abs() < 1e-10);
-        assert!(result.p_value >= 0.0 && result.p_value <= 1.0);
+        assert!((0.0..=1.0).contains(&result.p_value));
         assert!(result.odds_ratio_ci_low.is_some());
         assert!(result.odds_ratio_ci_high.is_some());
-        assert!(result.odds_ratio_ci_low.unwrap() < result.odds_ratio);
-        assert!(result.odds_ratio_ci_high.unwrap() > result.odds_ratio);
+        assert!(matches!(result.odds_ratio_ci_low, Some(value) if value < result.odds_ratio));
+        assert!(matches!(result.odds_ratio_ci_high, Some(value) if value > result.odds_ratio));
     }
 
     #[test]
     fn woolf_interval_handles_zero_cells_with_correction() {
         let interval = woolf_odds_ratio_confidence_interval(20, 0, 0, 20)
-            .expect("interval should exist with continuity correction");
+            .unwrap_or_else(|| panic!("interval should exist with continuity correction"));
         assert!(interval.0.is_finite());
         assert!(interval.1.is_finite());
         assert!(interval.1 > interval.0);
@@ -306,7 +316,7 @@ mod tests {
     fn test_p_value_range() {
         let p = p_value(5, 3, 2, 8);
         assert!(
-            p >= 0.0 && p <= 1.0,
+            (0.0..=1.0).contains(&p),
             "p-value should be in [0,1], got {}",
             p
         );
@@ -320,7 +330,7 @@ mod tests {
         // the two-sided p-value for the one observably possible table is 1.0
         // but the one-sided is near zero—our impl returns the standard value.
         let p = p_value(500, 0, 0, 500);
-        assert!(p >= 0.0 && p <= 1.0, "p should be in [0,1], got {p}");
+        assert!((0.0..=1.0).contains(&p), "p should be in [0,1], got {p}");
         assert!(p.is_finite(), "p must be finite for large counts");
     }
 
@@ -329,7 +339,7 @@ mod tests {
         // Balanced 250×250×250×250 table: no association → high p-value
         let p = p_value(250, 250, 250, 250);
         assert!(p > 0.5, "balanced table should have p > 0.5, got {p}");
-        assert!(p >= 0.0 && p <= 1.0);
+        assert!((0.0..=1.0).contains(&p));
     }
 
     #[test]
@@ -340,7 +350,7 @@ mod tests {
             p < 0.001,
             "strong 10:1 association should have p < 0.001, got {p}"
         );
-        assert!(p >= 0.0 && p <= 1.0);
+        assert!((0.0..=1.0).contains(&p));
     }
 
     #[test]
@@ -352,7 +362,7 @@ mod tests {
                 p.is_finite(),
                 "p must not be NaN/inf for ({a},{b},{c},{d}): got {p}"
             );
-            assert!(p >= 0.0 && p <= 1.0);
+            assert!((0.0..=1.0).contains(&p));
         }
     }
 

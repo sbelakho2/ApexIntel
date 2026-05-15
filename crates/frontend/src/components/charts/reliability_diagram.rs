@@ -69,7 +69,8 @@ pub fn ReliabilityDiagram(curve: CalibrationCurve) -> impl IntoView {
 
     let active_point_view = move || {
         let Some(point) = points.get(active_index()).cloned() else {
-            return view! { <p class="muted-copy">"No calibration bins available."</p> }.into_view();
+            return view! { <p class="muted-copy">"No calibration bins available."</p> }
+                .into_view();
         };
 
         view! {

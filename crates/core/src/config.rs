@@ -275,9 +275,7 @@ fn require_secret_env(key: &str) -> Result<SecretString> {
 }
 
 fn opt_env(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
 fn opt_secret_env(key: &str) -> Option<SecretString> {

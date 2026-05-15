@@ -61,6 +61,7 @@ pub(crate) fn insight_row_to_response(row: InsightRow) -> InsightResponse {
         created_at: row.created_at.unwrap_or_else(Utc::now),
         updated_at: row.updated_at.unwrap_or_else(Utc::now),
         bookmarked: None,
+        quality_score: None,
     }
 }
 
@@ -109,6 +110,9 @@ pub(crate) fn person_row_to_item(row: PersonListRow) -> PersonListItem {
         region: row.region,
         country: row.country,
         priority_score: score,
+        pain_index: row.pain_index,
+        change_risk: row.change_risk,
+        role_drift_score: row.role_drift_score,
         influence_score,
         priority,
         influence_tier: priority_tier(score).to_string(),
@@ -166,6 +170,7 @@ mod tests {
             evidence_urls: Some(vec![]),
             entity_ids: Some(vec![]),
             tags: Some(vec![]),
+            metadata: None,
             created_at: Some(now),
             updated_at: Some(now),
         };
@@ -187,6 +192,9 @@ mod tests {
             region: "US".to_string(),
             country: "US".to_string(),
             priority_score: 0.81,
+            pain_index: 0.0,
+            change_risk: 0.0,
+            role_drift_score: 0.0,
             engagement_status: "engaged".to_string(),
             updated_at: Utc::now(),
         };

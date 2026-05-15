@@ -1,6 +1,5 @@
 {
   "dashboard": {
-    "id": null,
     "uid": "apexintel-ops",
     "title": "ApexIntel Operations",
     "tags": ["apexintel", "operations", "monitoring"],
@@ -168,5 +167,6 @@
         "fieldConfig": { "defaults": { "unit": "s" } }
       }
     ]
-  }
+  },
+  "__description__": "ApexIntel Operations Dashboard — monitors crawl health, warning pipeline latency, recipe precision, observation ingestion, LLM performance, API request rates, database connection pool, worker job durations, and social signal volume. Datasource: Prometheus (apexintel-metrics). Provisioned via config/grafana/"
 }

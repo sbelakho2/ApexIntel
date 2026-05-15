@@ -1,7 +1,7 @@
 pub mod admin;
 pub mod adversarial;
-pub mod causality;
 pub mod calibration;
+pub mod causality;
 pub mod companies;
 pub mod company_detail;
 pub mod competitors;
@@ -10,8 +10,8 @@ pub mod insights;
 pub mod login;
 pub mod memos;
 pub mod overview;
-pub mod persons;
 pub mod person_detail;
+pub mod persons;
 pub mod recipes;
 pub mod search;
 pub mod security;

@@ -405,7 +405,7 @@ impl ProxyRotator {
         // Paid endpoint
         if let Some(ep) = self.paid_endpoints.iter_mut().find(|e| e.url == proxy) {
             ep.failures += 1;
-            let backoff = Duration::from_secs(60 * 2u64.pow(ep.failures.min(6) as u32 - 1));
+            let backoff = Duration::from_secs(60 * 2u64.pow(ep.failures.min(6) - 1));
             ep.backoff_until = Some(Instant::now() + backoff);
             return;
         }
@@ -643,9 +643,11 @@ mod tests {
 
     #[test]
     fn test_health_score_high_after_successes() {
-        let mut h = ProxyHealth::default();
-        h.success_count = 20;
-        h.last_success = Some(Instant::now());
+        let h = ProxyHealth {
+            success_count: 20,
+            last_success: Some(Instant::now()),
+            ..Default::default()
+        };
         assert!(h.score() > 0.7);
     }
 
@@ -673,8 +675,12 @@ mod tests {
             "http://a:8080".to_string(),
             "http://b:8080".to_string(),
         ]);
-        let p1 = rotator.get_for_session("s1").unwrap();
-        let p2 = rotator.get_for_session("s1").unwrap();
+        let p1 = rotator
+            .get_for_session("s1")
+            .unwrap_or_else(|| panic!("session should receive a proxy"));
+        let p2 = rotator
+            .get_for_session("s1")
+            .unwrap_or_else(|| panic!("session should keep its proxy"));
         assert_eq!(p1, p2);
         rotator.release_session("s1");
     }
@@ -686,8 +692,12 @@ mod tests {
             "http://paid1:8080".to_string(),
             "http://paid2:8080".to_string(),
         ]);
-        let p1 = rotator.get_next().unwrap();
-        let p2 = rotator.get_next().unwrap();
+        let p1 = rotator
+            .get_next()
+            .unwrap_or_else(|| panic!("first paid endpoint should be available"));
+        let p2 = rotator
+            .get_next()
+            .unwrap_or_else(|| panic!("second paid endpoint should be available"));
         assert_ne!(p1, p2);
     }
 

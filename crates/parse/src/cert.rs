@@ -28,7 +28,7 @@ static CERT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
             .size_limit(200_000)
             .dfa_size_limit(200_000)
             .build()
-            .unwrap()
+            .unwrap_or_else(|error| panic!("invalid certification pattern regex `{p}`: {error}"))
     })
     .collect()
 });
@@ -38,7 +38,7 @@ static RE_HOLDER: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid certification holder regex: {error}"))
 });
 
 static RE_CERT_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
@@ -46,7 +46,7 @@ static RE_CERT_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid certification number regex: {error}"))
 });
 
 static RE_ISSUER: LazyLock<Regex> = LazyLock::new(|| {
@@ -54,7 +54,7 @@ static RE_ISSUER: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid certification issuer regex: {error}"))
 });
 
 static RE_ISSUE_DATE: LazyLock<Regex> = LazyLock::new(|| {
@@ -62,7 +62,7 @@ static RE_ISSUE_DATE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid certification issue-date regex: {error}"))
 });
 
 static RE_EXPIRY_DATE: LazyLock<Regex> = LazyLock::new(|| {
@@ -72,7 +72,7 @@ static RE_EXPIRY_DATE: LazyLock<Regex> = LazyLock::new(|| {
     .size_limit(200_000)
     .dfa_size_limit(200_000)
     .build()
-    .unwrap()
+    .unwrap_or_else(|error| panic!("invalid certification expiry-date regex: {error}"))
 });
 
 static RE_SCOPE: LazyLock<Regex> = LazyLock::new(|| {
@@ -80,7 +80,7 @@ static RE_SCOPE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid certification scope regex: {error}"))
 });
 
 /// Known certification standards relevant to EMS.
@@ -216,7 +216,10 @@ pub fn extract_certifications(body_text: &str, url: &str) -> Vec<CertExtract> {
 
     for re in CERT_PATTERNS.iter() {
         for caps in re.captures_iter(body_text) {
-            let raw = caps.get(1).unwrap().as_str();
+            let Some(raw_match) = caps.get(1) else {
+                continue;
+            };
+            let raw = raw_match.as_str();
             let standard = CertStandard::from_text(raw);
             let name = standard.display_name().to_string();
 
@@ -225,7 +228,9 @@ pub fn extract_certifications(body_text: &str, url: &str) -> Vec<CertExtract> {
             }
             seen.insert(name.clone());
 
-            let cert_number = extract_cert_number_near(body_text, caps.get(0).unwrap().end());
+            let cert_number = caps
+                .get(0)
+                .and_then(|m| extract_cert_number_near(body_text, m.end()));
             let issuer = extract_issuer(body_text);
             let (issue_date, expiry_date) = extract_cert_dates(body_text);
             let scope = extract_scope(body_text);
@@ -251,41 +256,44 @@ pub fn extract_certifications(body_text: &str, url: &str) -> Vec<CertExtract> {
 }
 
 fn extract_holder(text: &str) -> Option<String> {
-    RE_HOLDER
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_HOLDER.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_cert_number_near(text: &str, offset: usize) -> Option<String> {
     let remaining = &text[offset..];
     RE_CERT_NUMBER
         .captures(remaining)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
 }
 
 fn extract_issuer(text: &str) -> Option<String> {
-    RE_ISSUER
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_ISSUER.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_cert_dates(text: &str) -> (Option<String>, Option<String>) {
     let issue = RE_ISSUE_DATE
         .captures(text)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
         .filter(|raw| normalizer::is_valid_date(raw));
     let expiry = RE_EXPIRY_DATE
         .captures(text)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
         .filter(|raw| normalizer::is_valid_date(raw));
 
     (issue, expiry)
 }
 
 fn extract_scope(text: &str) -> Option<String> {
-    RE_SCOPE
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_SCOPE.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn detect_cert_status(text: &str) -> CertExtractionStatus {
@@ -397,7 +405,7 @@ mod tests {
         let text = "Certified company: Foxconn Technology Group. Certificate details below.";
         let holder = extract_holder(text);
         assert!(holder.is_some());
-        assert!(holder.unwrap().contains("Foxconn"));
+        assert!(matches!(holder.as_deref(), Some(value) if value.contains("Foxconn")));
     }
 
     #[test]

@@ -232,6 +232,8 @@ pub fn needs_refresh(profile: &PoiProfile, now_utc: i64, max_stale_days: i32) ->
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::assertions_on_constants)]
+
     use super::*;
 
     fn make_profile() -> PoiProfile {
@@ -385,12 +387,12 @@ mod tests {
     fn test_influence_score_computed() {
         let mut p = make_profile();
         refresh_profile(&mut p, 1700100000);
-        // 0.3*60 + 0.4*seniority(VP) + 0.3*40
+        // 0.35*60 + 0.25*seniority(VP) + 0.40*40
         // seniority for "VP Engineering" = 85.0
-        // = 18 + 34 + 12 = 64.0
+        // = 21 + 21.25 + 16 = 58.25
         assert!(
-            (p.influence.influence_score - 64.0).abs() < 1.0,
-            "Expected ~64.0, got {}",
+            (p.influence.influence_score - 58.25).abs() < 1.0,
+            "Expected ~58.25, got {}",
             p.influence.influence_score
         );
     }

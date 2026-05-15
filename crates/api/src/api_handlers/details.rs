@@ -159,6 +159,14 @@ pub(crate) async fn get_insight_detail(
         })
         .collect();
 
+    let quality_score = state
+        .store
+        .get_insight_feedback_scores(&[insight_id])
+        .await
+        .ok()
+        .and_then(|scores| scores.get(&insight_id).copied())
+        .unwrap_or(0.5);
+
     let detail = serde_json::json!({
         "id": insight.id,
         "title": insight.title,
@@ -178,6 +186,7 @@ pub(crate) async fn get_insight_detail(
         "source_count": insight.evidence_urls.as_ref().map(|urls| urls.len()).unwrap_or(0),
         "observation_count": all_observations.len(),
         "bookmarked": state.store.is_insight_bookmarked(insight_id, &auth_ctx.user_id).await.unwrap_or(false),
+        "quality_score": quality_score,
     });
 
     let duration_ms = start.elapsed().as_millis() as u64;

@@ -1,0 +1,939 @@
+    Checking apex-store v0.1.0 (/Users/sabelakhoua/IdeaProjects/ApexIntel/crates/store)
+error: this `if` has identical blocks
+   --> crates/store/src/postgres.rs:123:60
+    |
+123 |       } else if lowered.len() > 5 && lowered.ends_with("ed") {
+    |  ____________________________________________________________^
+124 | |         lowered[..lowered.len() - 2].to_string()
+125 | |     } else if lowered.len() > 5 && lowered.ends_with("es") {
+    | |_____^
+    |
+note: same as this
+   --> crates/store/src/postgres.rs:125:60
+    |
+125 |       } else if lowered.len() > 5 && lowered.ends_with("es") {
+    |  ____________________________________________________________^
+126 | |         lowered[..lowered.len() - 2].to_string()
+127 | |     } else if lowered.len() > 4 && lowered.ends_with('s') {
+    | |_____^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#if_same_then_else
+    = note: `-D clippy::if-same-then-else` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::if_same_then_else)]`
+
+error: this function has too many arguments (9/7)
+   --> crates/store/src/postgres/analytics.rs:239:5
+    |
+239 | /     pub async fn upsert_source_reliability_stat(
+240 | |         &self,
+241 | |         source_domain: &str,
+242 | |         tier: &str,
+...   |
+248 | |         last_refreshed_at: DateTime<Utc>,
+249 | |     ) -> Result<SourceReliabilityStatRecord> {
+    | |____________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: this function has too many arguments (8/7)
+   --> crates/store/src/postgres/collaboration.rs:326:5
+    |
+326 | /     pub async fn upsert_annotation(
+327 | |         &self,
+328 | |         id: Option<Uuid>,
+329 | |         user_id: &str,
+...   |
+334 | |         visibility: &str,
+335 | |     ) -> Result<AnnotationRecord> {
+    | |_________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+   --> crates/store/src/postgres/collaboration.rs:406:5
+    |
+406 | /     pub async fn create_notification(
+407 | |         &self,
+408 | |         user_id: &str,
+409 | |         category: &str,
+...   |
+414 | |         action_url: Option<&str>,
+415 | |     ) -> Result<AnalystNotificationRecord> {
+    | |__________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+   --> crates/store/src/postgres/collaboration.rs:536:5
+    |
+536 | /     pub async fn record_notification_delivery_attempt(
+537 | |         &self,
+538 | |         delivery_key: &str,
+539 | |         channel: &str,
+...   |
+544 | |         next_retry_at: Option<DateTime<Utc>>,
+545 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/postgres/collaboration.rs:608:53
+    |
+608 |         qb.push_bind(from_date.and_hms_opt(0, 0, 0).unwrap().and_utc())
+    |                                                     ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: `-D clippy::disallowed-methods` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::disallowed_methods)]`
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/postgres/collaboration.rs:610:56
+    |
+610 | ...   .push_bind(to_date.and_hms_opt(23, 59, 59).unwrap().and_utc());
+    |                                                  ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: this function has too many arguments (8/7)
+   --> crates/store/src/postgres/collaboration.rs:641:5
+    |
+641 | /     pub async fn update_replay_job(
+642 | |         &self,
+643 | |         id: Uuid,
+644 | |         status: &str,
+...   |
+649 | |         completed_at: Option<DateTime<Utc>>,
+650 | |     ) -> Result<ReplayJobRecord> {
+    | |________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/store/src/postgres/competitors.rs:63:19
+   |
+63 | ...s: Vec<(Uuid, Uuid, String, String, String, String, DateTime<Utc>, Option<String>, f32)> = ...
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+   = note: `-D clippy::type-complexity` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/store/src/postgres/competitors.rs:120:19
+    |
+120 | ...s: Vec<(Uuid, Uuid, String, String, String, String, DateTime<Utc>, Option<String>, f32)> = ...
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/store/src/postgres/competitors.rs:177:19
+    |
+177 |           let rows: Vec<(
+    |  ___________________^
+178 | |             Uuid,
+179 | |             String,
+180 | |             Option<String>,
+...   |
+183 | |             Option<Vec<String>>,
+184 | |         )> = sqlx::query_as(
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+
+error: this function has too many arguments (10/7)
+  --> crates/store/src/postgres/history.rs:26:5
+   |
+26 | /     pub async fn insert_role_history(
+27 | |         &self,
+28 | |         person_id: Uuid,
+29 | |         org_id: Option<Uuid>,
+...  |
+36 | |         confidence: f64,
+37 | |     ) -> Result<Uuid> {
+   | |_____________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (10/7)
+   --> crates/store/src/postgres/history.rs:100:5
+    |
+100 | /     pub async fn insert_dossier_entry(
+101 | |         &self,
+102 | |         entity_type: &str,
+103 | |         entity_id: Uuid,
+...   |
+110 | |         supersedes_id: Option<Uuid>,
+111 | |     ) -> Result<Uuid> {
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+   --> crates/store/src/postgres/history.rs:200:5
+    |
+200 | /     pub async fn insert_company_change(
+201 | |         &self,
+202 | |         company_id: Uuid,
+203 | |         change_type: &str,
+...   |
+209 | |         confidence: f64,
+210 | |     ) -> Result<Uuid> {
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+   --> crates/store/src/postgres/history.rs:247:5
+    |
+247 | /     pub async fn insert_person_change(
+248 | |         &self,
+249 | |         person_id: Uuid,
+250 | |         change_type: &str,
+...   |
+256 | |         confidence: f64,
+257 | |     ) -> Result<Uuid> {
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (10/7)
+  --> crates/store/src/postgres/insights.rs:8:5
+   |
+ 8 | /     pub async fn insert_insight(
+ 9 | |         &self,
+10 | |         title: &str,
+11 | |         summary: &str,
+...  |
+18 | |         metadata: Option<serde_json::Value>,
+19 | |     ) -> Result<Uuid> {
+   | |_____________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/postgres/insights.rs:129:58
+    |
+129 | ...   q.push_bind(filters.bookmarked_by.as_deref().unwrap().to_string());
+    |                                                    ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/postgres/insights.rs:238:58
+    |
+238 | ...   q.push_bind(filters.bookmarked_by.as_deref().unwrap().to_string());
+    |                                                    ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: this function has too many arguments (8/7)
+   --> crates/store/src/postgres/insights.rs:434:5
+    |
+434 | /     pub async fn record_insight_firing(
+435 | |         &self,
+436 | |         insight_id: Uuid,
+437 | |         entity_id: Uuid,
+...   |
+442 | |         confidence: Option<f64>,
+443 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: use of a disallowed method `std::result::Result::unwrap`
+  --> crates/store/src/postgres/llm_governance.rs:48:19
+   |
+48 |           metadata: serde_json::json!({
+   |  ___________________^
+49 | |             "severity": row.severity,
+50 | |             "recipe_code": row.recipe_code,
+51 | |             "review_outcome": row.review_outcome,
+52 | |         }),
+   | |__________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+   = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has too many arguments (10/7)
+   --> crates/store/src/postgres/llm_governance.rs:96:5
+    |
+ 96 | /     pub async fn record_llm_workflow_run(
+ 97 | |         &self,
+ 98 | |         workflow: &str,
+ 99 | |         prompt_id: &str,
+...   |
+106 | |         duration_ms: i64,
+107 | |     ) -> Result<LlmWorkflowRunRecord> {
+    | |_____________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+   --> crates/store/src/postgres/llm_governance.rs:219:5
+    |
+219 | /     pub async fn record_llm_training_dataset(
+220 | |         &self,
+221 | |         dataset_name: &str,
+222 | |         dataset_version: &str,
+...   |
+227 | |         examples_jsonl: &str,
+228 | |     ) -> Result<LlmTrainingDatasetRecord> {
+    | |_________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/llm_governance.rs:329:32
+    |
+329 |           let dataset_manifest = serde_json::json!({
+    |  ________________________________^
+330 | |             "dataset_name": "quality_gate_reviewed_warning_golden_set",
+331 | |             "dataset_version": dataset_version,
+332 | |             "schema": "quality_gate_warning_jsonl_v1",
+...   |
+339 | |             "historical_labels": ["accepted", "rejected"],
+340 | |         });
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/llm_governance.rs:353:30
+    |
+353 |           let export_metrics = serde_json::json!({
+    |  ______________________________^
+354 | |             "dataset_id": dataset.id,
+355 | |             "dataset_version": dataset.dataset_version,
+356 | |             "example_count": examples.len(),
+...   |
+359 | |             "agreement_target": agreement_target,
+360 | |         });
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/llm_governance.rs:361:32
+    |
+361 |           let export_artifacts = serde_json::json!({
+    |  ________________________________^
+362 | |             "dataset_name": dataset.dataset_name,
+363 | |             "dataset_version": dataset.dataset_version,
+364 | |             "preview_ids": examples
+...   |
+368 | |                 .collect::<Vec<_>>(),
+369 | |         });
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this function has too many arguments (8/7)
+   --> crates/store/src/postgres/memos.rs:105:5
+    |
+105 | /     pub async fn upsert_weekly_memo(
+106 | |         &self,
+107 | |         title: &str,
+108 | |         week_start: chrono::NaiveDate,
+...   |
+113 | |         action_items_json: serde_json::Value,
+114 | |     ) -> Result<Uuid> {
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/feature_store.rs:232:61
+    |
+232 |         let bucket_dt = DateTime::from_timestamp(bucket, 0).unwrap();
+    |                                                             ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: `-D clippy::disallowed-methods` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::disallowed_methods)]`
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/feature_store.rs:382:48
+    |
+382 |         let json = serde_json::to_string(&row).unwrap();
+    |                                                ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/feature_store.rs:383:61
+    |
+383 |         let deser: FeatureRow = serde_json::from_str(&json).unwrap();
+    |                                                             ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: this function has too many arguments (9/7)
+   --> crates/store/src/postgres/persons.rs:534:5
+    |
+534 | /     pub async fn update_person_llm_enrichment(
+535 | |         &self,
+536 | |         id: Uuid,
+537 | |         bio: &str,
+...   |
+543 | |         trigger_topics: &[String],
+544 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+  --> crates/store/src/postgres/security.rs:9:5
+   |
+ 9 | /     pub async fn insert_dns_posture_entry(
+10 | |         &self,
+11 | |         company_id: Option<Uuid>,
+12 | |         domain: &str,
+...  |
+18 | |         posture_score: f64,
+19 | |     ) -> Result<()> {
+   | |___________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+  --> crates/store/src/postgres/security.rs:47:5
+   |
+47 | /     pub async fn insert_kev_observation(
+48 | |         &self,
+49 | |         cve_id: &str,
+50 | |         vulnerability_name: &str,
+...  |
+56 | |         relevance_score: f64,
+57 | |     ) -> Result<()> {
+   | |___________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (10/7)
+   --> crates/store/src/postgres/warnings.rs:334:5
+    |
+334 | /     pub async fn insert_warning(
+335 | |         &self,
+336 | |         warning_type: &str,
+337 | |         title: &str,
+...   |
+344 | |         confidence: Option<f64>,
+345 | |     ) -> Result<Uuid> {
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/postgres/collaboration.rs:608:53
+    |
+608 |         qb.push_bind(from_date.and_hms_opt(0, 0, 0).unwrap().and_utc())
+    |                                                     ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/postgres/memos.rs:163:49
+    |
+163 |             NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+   --> crates/store/src/postgres/memos.rs:164:49
+    |
+164 |             NaiveDate::from_ymd_opt(2026, 3, 8).unwrap(),
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/preferences.rs:229:18
+    |
+229 |                 .unwrap();
+    |                  ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/preferences.rs:228:50
+    |
+228 | ...references(Some(serde_json::json!({"theme": "dark"})), &prefs)
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/preferences.rs:235:13
+    |
+235 |             serde_json::json!(["warnings"])
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/preferences.rs:245:10
+    |
+245 |         .unwrap();
+    |          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/postgres/preferences.rs:242:18
+    |
+242 |             Some(serde_json::json!(["stale"])),
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+    = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: this `map_or` can be simplified
+  --> crates/store/src/s3.rs:42:36
+   |
+42 | ...d = err.as_service_error().map_or(false, |se| se.is_not_found());
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_map_or
+   = note: `-D clippy::unnecessary-map-or` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::unnecessary_map_or)]`
+help: use is_some_and instead
+   |
+42 -                 let is_not_found = err.as_service_error().map_or(false, |se| se.is_not_found());
+42 +                 let is_not_found = err.as_service_error().is_some_and(|se| se.is_not_found());
+   |
+
+error: this `map_or` can be simplified
+   --> crates/store/src/s3.rs:123:36
+    |
+123 | ...d = err.as_service_error().map_or(false, |se| se.is_not_found());
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unnecessary_map_or
+help: use is_some_and instead
+    |
+123 -                 let is_not_found = err.as_service_error().map_or(false, |se| se.is_not_found());
+123 +                 let is_not_found = err.as_service_error().is_some_and(|se| se.is_not_found());
+    |
+
+error: this function has too many arguments (11/7)
+   --> crates/store/src/tantivy_index.rs:142:5
+    |
+142 | /     pub fn index_document(
+143 | |         &self,
+144 | |         writer: &IndexWriter,
+145 | |         id: &str,
+...   |
+153 | |         timestamp: i64,
+154 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: could not compile `apex-store` (lib) due to 52 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: use of a disallowed method `std::result::Result::unwrap`
+    --> crates/store/src/postgres.rs:1538:47
+     |
+1538 |         let json = serde_json::to_value(&row).unwrap();
+     |                                               ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+    --> crates/store/src/postgres.rs:1551:20
+     |
+1551 | ...e: serde_json::json!({"role": "SQE", "role_family": "quality"}),
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+     = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::result::Result::unwrap`
+    --> crates/store/src/postgres.rs:1552:25
+     |
+1552 | ...ance: serde_json::json!({"url": "https://jobs.example.com"}),
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+     = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1577:28
+     |
+1577 |         assert!(row.weight.unwrap() > 0.5);
+     |                            ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+    --> crates/store/src/postgres.rs:1594:35
+     |
+1594 | ...ctor: Some(serde_json::json!({"cost":0.8,"quality":0.6})),
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+     = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1623:66
+     |
+1623 | ...   valid_from: Some(NaiveDate::from_ymd_opt(2023, 1, 1).unwrap()),
+     |                                                            ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1624:67
+     |
+1624 | ...   valid_until: Some(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()),
+     |                                                             ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1632:33
+     |
+1632 |         assert!(row.valid_until.unwrap() > row.valid_from.unwrap());
+     |                                 ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1632:59
+     |
+1632 |         assert!(row.valid_until.unwrap() > row.valid_from.unwrap());
+     |                                                           ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+    --> crates/store/src/postgres.rs:1650:25
+     |
+1650 | ...nce: serde_json::json!({"url": "https://example.com/article"}),
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+     = note: this error originates in the macro `$crate::json_internal` which comes from the expansion of the macro `serde_json::json` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1655:37
+     |
+1655 | ...   assert!(row.topics.as_ref().unwrap().contains(&"automation".into...
+     |                                   ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1680:25
+     |
+1680 |         assert!(row.lat.unwrap() > 35.0);
+     |                         ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::option::Option::unwrap`
+    --> crates/store/src/postgres.rs:1681:43
+     |
+1681 | ...   assert!(row.capabilities.as_ref().unwrap().contains(&"SMT".into(...
+     |                                         ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:368:34
+    |
+368 |         SearchIndex::in_memory().unwrap()
+    |                                  ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:380:49
+    |
+380 |         let mut writer = idx.writer(15_000_000).unwrap();
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:394:10
+    |
+394 |         .unwrap();
+    |          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:396:25
+    |
+396 |         writer.commit().unwrap();
+    |                         ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:397:22
+    |
+397 |         idx.reload().unwrap();
+    |                      ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:401:52
+    |
+401 |         let results = idx.search("automotive", 10).unwrap();
+    |                                                    ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:410:49
+    |
+410 |         let mut writer = idx.writer(15_000_000).unwrap();
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:424:10
+    |
+424 |         .unwrap();
+    |          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:438:10
+    |
+438 |         .unwrap();
+    |          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:452:10
+    |
+452 |         .unwrap();
+    |          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:454:25
+    |
+454 |         writer.commit().unwrap();
+    |                         ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:455:22
+    |
+455 |         idx.reload().unwrap();
+    |                      ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:460:45
+    |
+460 |         let results = idx.search("EMS", 10).unwrap();
+    |                                             ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:464:52
+    |
+464 |         let results = idx.search("automotive", 10).unwrap();
+    |                                                    ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:468:46
+    |
+468 |         let results = idx.search("IATF", 10).unwrap();
+    |                                              ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:476:49
+    |
+476 |         let mut writer = idx.writer(15_000_000).unwrap();
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:490:10
+    |
+490 |         .unwrap();
+    |          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:492:25
+    |
+492 |         writer.commit().unwrap();
+    |                         ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:493:22
+    |
+493 |         idx.reload().unwrap();
+    |                      ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:495:56
+    |
+495 |         let results = idx.search("cryptocurrency", 10).unwrap();
+    |                                                        ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:512:51
+    |
+512 |         let json = serde_json::to_string(&result).unwrap();
+    |                                                   ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:513:63
+    |
+513 |         let deser: SearchResult = serde_json::from_str(&json).unwrap();
+    |                                                               ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:520:39
+    |
+520 |         let tmp = tempfile::tempdir().unwrap();
+    |                                       ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:521:49
+    |
+521 |         let idx = SearchIndex::open(tmp.path()).unwrap();
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:522:49
+    |
+522 |         let mut writer = idx.writer(15_000_000).unwrap();
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:536:10
+    |
+536 |         .unwrap();
+    |          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:537:25
+    |
+537 |         writer.commit().unwrap();
+    |                         ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:538:22
+    |
+538 |         idx.reload().unwrap();
+    |                      ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:543:50
+    |
+543 |         let idx2 = SearchIndex::open(tmp.path()).unwrap();
+    |                                                  ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:545:53
+    |
+545 |         let results = idx2.search("persistent", 10).unwrap();
+    |                                                     ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:552:49
+    |
+552 |         let mut writer = idx.writer(15_000_000).unwrap();
+    |                                                 ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:570:14
+    |
+570 |             .unwrap();
+    |              ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:573:25
+    |
+573 |         writer.commit().unwrap();
+    |                         ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:574:22
+    |
+574 |         idx.reload().unwrap();
+    |                      ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:578:68
+    |
+578 | ...ectronics manufacturing", 100).unwrap();
+    |                                   ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: use of a disallowed method `std::result::Result::unwrap`
+   --> crates/store/src/tantivy_index.rs:582:52
+    |
+582 |         let results = idx.search("electronics", 5).unwrap();
+    |                                                    ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#disallowed_methods
+
+error: could not compile `apex-store` (lib test) due to 113 previous errors

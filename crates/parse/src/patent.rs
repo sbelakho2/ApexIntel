@@ -12,7 +12,7 @@ static RE_PATENT_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid patent-number regex: {error}"))
 });
 
 static RE_APPLICANT: LazyLock<Regex> = LazyLock::new(|| {
@@ -20,7 +20,7 @@ static RE_APPLICANT: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid patent applicant regex: {error}"))
 });
 
 static RE_INVENTORS: LazyLock<Regex> = LazyLock::new(|| {
@@ -28,7 +28,7 @@ static RE_INVENTORS: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid patent inventors regex: {error}"))
 });
 
 static RE_IPC_CODES: LazyLock<Regex> = LazyLock::new(|| {
@@ -36,7 +36,7 @@ static RE_IPC_CODES: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid patent IPC regex: {error}"))
 });
 
 static RE_FILING_DATE: LazyLock<Regex> = LazyLock::new(|| {
@@ -44,7 +44,7 @@ static RE_FILING_DATE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid patent filing-date regex: {error}"))
 });
 
 static RE_PUBLICATION_DATE: LazyLock<Regex> = LazyLock::new(|| {
@@ -52,7 +52,7 @@ static RE_PUBLICATION_DATE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid patent publication-date regex: {error}"))
 });
 
 static RE_ABSTRACT: LazyLock<Regex> = LazyLock::new(|| {
@@ -60,7 +60,7 @@ static RE_ABSTRACT: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(1_000_000) // larger limit needed for [\s\S] alternation
         .dfa_size_limit(1_000_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid patent abstract regex: {error}"))
 });
 
 /// Extracted patent information.
@@ -92,11 +92,11 @@ pub fn extract_patent(
     let inventors = extract_inventors(body_text);
     let filing_date = RE_FILING_DATE
         .captures(body_text)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
         .filter(|raw| normalizer::is_valid_date(raw));
     let publication_date = RE_PUBLICATION_DATE
         .captures(body_text)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
         .filter(|raw| normalizer::is_valid_date(raw));
     let ipc_codes = extract_ipc_codes(body_text);
     let abstract_text = extract_abstract(body_text);
@@ -124,24 +124,30 @@ pub fn extract_patent(
 
 fn extract_patent_number(text: &str) -> Option<String> {
     // Patterns: US12345678, EP1234567, WO2024/123456, TN2024001, MA12345
-    RE_PATENT_NUMBER
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_PATENT_NUMBER.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_applicant(text: &str) -> Option<String> {
-    RE_APPLICANT
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_APPLICANT.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_inventors(text: &str) -> Vec<String> {
     if let Some(caps) = RE_INVENTORS.captures(text) {
-        let list = caps.get(1).unwrap().as_str();
-        list.split(&[',', ';'][..])
-            .map(|s| normalizer::normalize_whitespace(s))
-            .filter(|s| !s.is_empty())
-            .collect()
+        if let Some(list) = caps.get(1) {
+            return list
+                .as_str()
+                .split(&[',', ';'][..])
+                .map(normalizer::normalize_whitespace)
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        vec![]
     } else {
         vec![]
     }
@@ -157,7 +163,10 @@ fn extract_ipc_codes(text: &str) -> Vec<String> {
 
 fn extract_abstract(text: &str) -> String {
     if let Some(caps) = RE_ABSTRACT.captures(text) {
-        normalizer::normalize_whitespace(caps.get(1).unwrap().as_str())
+        if let Some(value) = caps.get(1) {
+            return normalizer::normalize_whitespace(value.as_str());
+        }
+        normalizer::truncate(text, 300)
     } else {
         normalizer::truncate(text, 300)
     }
@@ -212,7 +221,7 @@ mod tests {
         let text = "Patent US12345678B2 filed on 2024-01-15";
         let num = extract_patent_number(text);
         assert!(num.is_some());
-        assert!(num.unwrap().starts_with("US"));
+        assert!(matches!(num.as_deref(), Some(value) if value.starts_with("US")));
     }
 
     #[test]
@@ -242,7 +251,7 @@ mod tests {
         let text = "Filing date: 2024-03-15. Publication date: 2024-09-15.";
         let date = RE_FILING_DATE
             .captures(text)
-            .map(|c| c.get(1).unwrap().as_str().to_string());
+            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
         assert_eq!(date, Some("2024-03-15".to_string()));
     }
 

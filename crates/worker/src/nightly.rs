@@ -878,6 +878,8 @@ pub fn pipeline_health(report: &NightlyReport) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+
     use super::*;
 
     fn good_crawl() -> CrawlStageResult {

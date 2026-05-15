@@ -297,7 +297,8 @@ mod tests {
 
     #[test]
     fn detect_member_growth() {
-        let scraper = DiscordScraper::new().unwrap();
+        let scraper = DiscordScraper::new()
+            .unwrap_or_else(|error| panic!("discord scraper should build: {error}"));
         let prev = make_snapshot("TestServer", 100, 5);
         let curr = make_snapshot("TestServer", 200, 5);
         let signals = scraper.detect_changes(&prev, &curr);
@@ -307,7 +308,8 @@ mod tests {
 
     #[test]
     fn detect_member_decline() {
-        let scraper = DiscordScraper::new().unwrap();
+        let scraper = DiscordScraper::new()
+            .unwrap_or_else(|error| panic!("discord scraper should build: {error}"));
         let prev = make_snapshot("TestServer", 200, 5);
         let curr = make_snapshot("TestServer", 100, 5);
         let signals = scraper.detect_changes(&prev, &curr);
@@ -317,7 +319,8 @@ mod tests {
 
     #[test]
     fn no_signal_for_small_change() {
-        let scraper = DiscordScraper::new().unwrap();
+        let scraper = DiscordScraper::new()
+            .unwrap_or_else(|error| panic!("discord scraper should build: {error}"));
         let prev = make_snapshot("TestServer", 1000, 10);
         let curr = make_snapshot("TestServer", 1005, 10);
         let signals = scraper.detect_changes(&prev, &curr);
@@ -326,7 +329,8 @@ mod tests {
 
     #[test]
     fn channel_change_signal() {
-        let scraper = DiscordScraper::new().unwrap();
+        let scraper = DiscordScraper::new()
+            .unwrap_or_else(|error| panic!("discord scraper should build: {error}"));
         let prev = make_snapshot("TestServer", 100, 5);
         let curr = make_snapshot("TestServer", 100, 10);
         let signals = scraper.detect_changes(&prev, &curr);

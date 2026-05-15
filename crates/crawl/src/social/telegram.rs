@@ -124,7 +124,7 @@ impl TelegramScraper {
         let start = block.find(marker)? + marker.len();
         let end = block[start..].find('"')?;
         let id_part = &block[start..start + end];
-        id_part.split('/').last().map(|s| s.to_string())
+        id_part.split('/').next_back().map(|s| s.to_string())
     }
 
     fn extract_message_text(&self, block: &str) -> String {
@@ -210,14 +210,16 @@ mod tests {
 
     #[test]
     fn parse_empty_html_returns_no_posts() {
-        let s = TelegramScraper::new(None).unwrap();
+        let s = TelegramScraper::new(None)
+            .unwrap_or_else(|error| panic!("telegram scraper should build: {error}"));
         let posts = s.parse_channel_html("test", "<html></html>");
         assert!(posts.is_empty());
     }
 
     #[test]
     fn extract_datetime_valid() {
-        let s = TelegramScraper::new(None).unwrap();
+        let s = TelegramScraper::new(None)
+            .unwrap_or_else(|error| panic!("telegram scraper should build: {error}"));
         let html = r#"some content datetime="2024-01-15T14:30:00+00:00" more"#;
         let dt = s.extract_datetime(html);
         assert!(dt.is_some());

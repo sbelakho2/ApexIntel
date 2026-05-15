@@ -277,7 +277,8 @@ mod tests {
 
     #[test]
     fn map_post_handles_no_body() {
-        let s = RedditScraper::new(None).unwrap();
+        let s = RedditScraper::new(None)
+            .unwrap_or_else(|error| panic!("reddit scraper should build: {error}"));
         let p = RedditPost {
             id: "abc123".to_string(),
             title: "Test title".to_string(),

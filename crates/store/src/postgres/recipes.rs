@@ -77,7 +77,6 @@ impl PgStore {
             r#"WITH recipe_warning_stats AS (
                    SELECT
                        r.code AS recipe_code,
-                       r.name,
                        COALESCE(
                            r.precision_score,
                            AVG(w.confidence) FILTER (WHERE w.confidence IS NOT NULL),
@@ -92,11 +91,10 @@ impl PgStore {
                    FROM recipes r
                    LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status = 'staging'
-                   GROUP BY r.code, r.name, r.precision_score, r.created_at
+                   GROUP BY r.code, r.precision_score, r.created_at
                )
                SELECT
                    recipe_code,
-                   name,
                    precision_observed,
                    LEAST(
                        1.0,
@@ -130,7 +128,6 @@ impl PgStore {
             r#"WITH recipe_warning_stats AS (
                    SELECT
                        r.code AS recipe_code,
-                       r.name,
                        COALESCE(COUNT(w.id) FILTER (WHERE w.created_at >= NOW() - INTERVAL '7 days'), 0)::BIGINT AS warnings_generated_last_week,
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome IN ('true_positive', 'false_positive')), 0)::BIGINT AS reviewed_warnings_total,
                        COALESCE(COUNT(*) FILTER (WHERE w.review_outcome = 'false_positive'), 0)::BIGINT AS false_positive_warnings_total,
@@ -140,7 +137,7 @@ impl PgStore {
                    FROM recipes r
                    LEFT JOIN warnings w ON w.recipe_code = r.code AND w.deleted_at IS NULL
                    WHERE r.status IN ('active', 'production')
-                   GROUP BY r.code, r.name, r.precision_score, r.created_at
+                   GROUP BY r.code, r.precision_score, r.created_at
                ), ranked_snapshots AS (
                    SELECT
                        m.recipe_code,
@@ -152,7 +149,8 @@ impl PgStore {
                ), snapshot_history AS (
                    SELECT
                        recipe_code,
-                       ARRAY_AGG(precision_score ORDER BY week_start ASC) AS precision_history,
+                       MAX(precision_score) FILTER (WHERE snapshot_rank = 1) AS latest_precision,
+                       MAX(precision_score) FILTER (WHERE snapshot_rank = 2) AS baseline_precision,
                        MAX(false_positive_rate) FILTER (WHERE snapshot_rank = 1) AS false_positive_rate,
                        MAX(false_positive_rate) FILTER (WHERE snapshot_rank = 2) AS fpr_baseline
                    FROM ranked_snapshots
@@ -161,11 +159,16 @@ impl PgStore {
                )
                SELECT
                    recipe_warning_stats.recipe_code,
-                   recipe_warning_stats.name,
                    COALESCE(
-                       snapshot_history.precision_history,
-                       ARRAY[COALESCE(recipe_warning_stats.precision_score, 0.0)::DOUBLE PRECISION]
-                   ) AS precision_history,
+                       snapshot_history.latest_precision,
+                       recipe_warning_stats.precision_score,
+                       0.0
+                   )::DOUBLE PRECISION AS precision_current,
+                   COALESCE(
+                       snapshot_history.baseline_precision,
+                       recipe_warning_stats.precision_score,
+                       0.0
+                   )::DOUBLE PRECISION AS precision_baseline,
                    COALESCE(
                        snapshot_history.false_positive_rate,
                        CASE

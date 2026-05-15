@@ -6,11 +6,11 @@
 /// clamped so that total risk can never exceed `1.0` per node.
 use std::collections::HashMap;
 
-pub use apex_core::graph_risk::{ContagionDistributionSummary, DecayModel};
 use apex_core::graph_risk::{
     propagate_weighted_risk, propagate_weighted_risk_with_decay, simulate_contagion_distribution,
     validate_monotonic_non_increasing,
 };
+pub use apex_core::graph_risk::{ContagionDistributionSummary, DecayModel};
 
 /// Propagate risk scores through a graph adjacency list.
 ///
@@ -197,15 +197,12 @@ mod tests {
 
         let result = propagate(&adj, &initial, 1, 0.5);
 
-        assert!(*result.get("A").unwrap() >= 0.9);
+        assert!(matches!(result.get("A"), Some(value) if *value >= 0.9));
         // B gets: 0.9 * 0.8 * 0.5 = 0.36
-        assert!(
-            (*result.get("B").unwrap() - 0.36).abs() < 0.01,
-            "B = {}",
-            result.get("B").unwrap()
-        );
+        let b_value = result.get("B").copied().unwrap_or_default();
+        assert!((b_value - 0.36).abs() < 0.01, "B = {}", b_value);
         // C gets: 0.9 * 0.5 * 0.5 = 0.225
-        assert!((*result.get("C").unwrap() - 0.225).abs() < 0.01);
+        assert!(matches!(result.get("C"), Some(value) if (*value - 0.225).abs() < 0.01));
     }
 
     #[test]
@@ -230,7 +227,7 @@ mod tests {
         initial.insert("Z".to_string(), 1.0);
 
         let result = propagate(&adj, &initial, 3, 1.0);
-        assert!(*result.get("Y").unwrap() <= 1.0);
+        assert!(matches!(result.get("Y"), Some(value) if *value <= 1.0));
     }
 
     #[test]
@@ -297,7 +294,7 @@ mod tests {
         let result = propagate(&adj, &initial, 1, 1.0);
         // B's risk must not go below its initial value since the negative edge
         // is clamped to 0.0 and contributes nothing.
-        let b_risk = *result.get("B").unwrap();
+        let b_risk = result.get("B").copied().unwrap_or_default();
         assert!(
             b_risk >= 0.5,
             "negative weight should not reduce B's risk; got {b_risk}"
@@ -314,9 +311,9 @@ mod tests {
 
         let result = propagate(&adj, &initial, 2, -0.5);
         // With decay=0 no risk propagates beyond the seed.
-        assert_eq!(*result.get("A").unwrap(), 0.9);
+        assert_eq!(result.get("A").copied(), Some(0.9));
         assert!(
-            result.get("B").is_none() || *result.get("B").unwrap() < 1e-12,
+            result.get("B").is_none_or(|value| *value < 1e-12),
             "negative decay must block propagation"
         );
     }
@@ -332,7 +329,13 @@ mod tests {
         initial.insert("B".to_string(), 0.5);
 
         let result = propagate(&adj, &initial, 1, 1.0);
-        assert_eq!(result.get("C").copied(), Some(1.0));
+        let c_risk = result.get("C").copied().unwrap_or(0.0);
+        // With soft saturation, overlapping contributions (0.6 + 0.5 = 1.1)
+        // approach but never reach 1.0; expect a value > 0.9.
+        assert!(
+            c_risk > 0.9 && c_risk <= 1.0,
+            "expected C risk in (0.9, 1.0], got {c_risk}"
+        );
     }
 
     #[test]
@@ -354,12 +357,8 @@ mod tests {
         let mut initial = HashMap::new();
         initial.insert("A".to_string(), 0.9);
 
-        let exponential = propagate_with_decay(
-            &adj,
-            &initial,
-            2,
-            DecayModel::Exponential { lambda: 0.8 },
-        );
+        let exponential =
+            propagate_with_decay(&adj, &initial, 2, DecayModel::Exponential { lambda: 0.8 });
         let inverse_square = propagate_with_decay(&adj, &initial, 2, DecayModel::InverseSquare);
         assert_ne!(exponential.get("D"), inverse_square.get("D"));
     }
@@ -370,15 +369,8 @@ mod tests {
         let mut initial = HashMap::new();
         initial.insert("A".to_string(), 0.9);
 
-        let summary = contagion_simulation(
-            &adj,
-            &initial,
-            2,
-            DecayModel::Linear(0.5),
-            0.25,
-            128,
-            7,
-        );
+        let summary =
+            contagion_simulation(&adj, &initial, 2, DecayModel::Linear(0.5), 0.25, 128, 7);
         let mean = summary.per_node_mean.get("B").copied().unwrap_or(0.0);
         let p05 = summary.per_node_p05.get("B").copied().unwrap_or(0.0);
         let p95 = summary.per_node_p95.get("B").copied().unwrap_or(0.0);

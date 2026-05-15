@@ -1,12 +1,12 @@
 #![allow(dead_code, clippy::disallowed_methods)]
 
+use anyhow::Result;
 use apex_api::auth::ApiRole;
 use apex_api::destructive_actions::{
     ApiAuthContext, DELETE_ALL_WARNINGS_CONFIRM_HEADER, DELETE_ALL_WARNINGS_CONFIRM_VALUE,
     DELETE_ALL_WARNINGS_REASON_HEADER,
 };
 use apex_api::phase01::{build_phase01_router, Phase01State, Phase01Store};
-use anyhow::Result;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request};
@@ -39,10 +39,7 @@ pub fn readonly_auth_context() -> ApiAuthContext {
     }
 }
 
-pub fn delete_all_warnings_headers(
-    confirmation: Option<&str>,
-    reason: Option<&str>,
-) -> HeaderMap {
+pub fn delete_all_warnings_headers(confirmation: Option<&str>, reason: Option<&str>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     if let Some(value) = confirmation {
         headers.insert(
@@ -114,6 +111,7 @@ impl FakeStore {
                 evidence_urls: Some(vec!["https://example.test/insight".to_string()]),
                 entity_ids: Some(vec![company_id]),
                 tags: Some(vec!["procurement".to_string()]),
+                metadata: None,
                 created_at: Some(now),
                 updated_at: Some(now),
             }]),
@@ -189,6 +187,11 @@ impl FakeStore {
                 risk_tolerance: None,
                 change_appetite: None,
                 communication_style: None,
+                decision_mode: None,
+                preferred_proof_type: None,
+                pain_index: None,
+                change_risk: None,
+                role_drift_score: None,
                 metadata: None,
                 created_at: Some(now),
                 updated_at: Some(now),
@@ -284,14 +287,22 @@ impl Phase01Store for FakeStore {
         *self.delete_all_calls.lock().expect("delete calls") += 1;
         let mut warnings = self.warnings.lock().expect("warnings");
         let mut deleted_count = 0u64;
-        for warning in warnings.iter_mut().filter(|warning| warning.deleted_at.is_none()) {
+        for warning in warnings
+            .iter_mut()
+            .filter(|warning| warning.deleted_at.is_none())
+        {
             warning.deleted_at = Some(Utc::now());
             deleted_count += 1;
         }
         Ok(deleted_count)
     }
 
-    async fn record_audit_event(&self, actor: &str, event_type: &str, detail: &Value) -> Result<()> {
+    async fn record_audit_event(
+        &self,
+        actor: &str,
+        event_type: &str,
+        detail: &Value,
+    ) -> Result<()> {
         self.audit_events.lock().expect("audit events").push((
             actor.to_string(),
             event_type.to_string(),

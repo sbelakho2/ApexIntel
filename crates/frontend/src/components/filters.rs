@@ -11,7 +11,11 @@ pub fn FilterBar(title: &'static str, children: Children) -> impl IntoView {
 }
 
 #[component]
-pub fn FilterChip(#[prop(into)] label: String, #[prop(into)] active: MaybeSignal<bool>, on_click: Callback<()>) -> impl IntoView {
+pub fn FilterChip(
+    #[prop(into)] label: String,
+    #[prop(into)] active: MaybeSignal<bool>,
+    on_click: Callback<()>,
+) -> impl IntoView {
     view! {
         <button
             type="button"
@@ -30,8 +34,14 @@ pub fn FilterChip(#[prop(into)] label: String, #[prop(into)] active: MaybeSignal
 }
 
 #[component]
-pub fn Pagination(page: ReadSignal<u32>, total: u64, per_page: u32, set_page: WriteSignal<u32>) -> impl IntoView {
-    let total_pages = move || ((total + per_page as u64).saturating_sub(1) / per_page as u64).max(1) as u32;
+pub fn Pagination(
+    page: ReadSignal<u32>,
+    total: u64,
+    per_page: u32,
+    set_page: WriteSignal<u32>,
+) -> impl IntoView {
+    let total_pages =
+        move || ((total + per_page as u64).saturating_sub(1) / per_page as u64).max(1) as u32;
 
     view! {
         <div class="pagination-row">

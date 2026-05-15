@@ -3,6 +3,24 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// Maximum length for entity name fields.
+const MAX_NAME_LENGTH: usize = 500;
+
+/// Truncate a string to fit within a maximum byte length, preserving UTF-8.
+fn truncate_to(input: String, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        input
+    } else {
+        let mut end = max_bytes;
+        while !input.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut truncated: String = input[..end].to_string();
+        truncated.push('…');
+        truncated
+    }
+}
+
 // ────────────────────────────────────────────
 // Company
 // ────────────────────────────────────────────
@@ -37,6 +55,7 @@ impl CompanyType {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "oem" => Self::Oem,
@@ -82,7 +101,7 @@ impl Company {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
-            name: name.into(),
+            name: truncate_to(name.into(), MAX_NAME_LENGTH),
             legal_name: None,
             domain: None,
             country_code: None,
@@ -163,7 +182,7 @@ impl Site {
         Self {
             id: Uuid::new_v4(),
             company_id,
-            name: name.into(),
+            name: truncate_to(name.into(), MAX_NAME_LENGTH),
             address: None,
             city: None,
             country_code: None,
@@ -258,6 +277,7 @@ impl RoleFamily {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "procurement" => Self::Procurement,
@@ -377,7 +397,7 @@ impl Person {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
-            name: name.into(),
+            name: truncate_to(name.into(), MAX_NAME_LENGTH),
             name_ar: None,
             name_fr: None,
             primary_org_id: None,
@@ -548,6 +568,7 @@ impl ObservationType {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "JobPost" => Some(Self::JobPost),
@@ -768,15 +789,37 @@ impl Certification {
     }
 
     pub fn is_valid(&self) -> bool {
+        let today = Utc::now().date_naive();
         match self.status {
             CertStatus::Active => {
+                // Not yet effective
+                if let Some(from) = self.valid_from {
+                    if from > today {
+                        return false;
+                    }
+                }
+                // Already expired
                 if let Some(until) = self.valid_until {
-                    until >= Utc::now().date_naive()
+                    until >= today
                 } else {
                     true
                 }
             }
             _ => false,
+        }
+    }
+
+    /// Returns true if the certification expires within the given number of days.
+    pub fn is_expiring_within_days(&self, days: i64) -> bool {
+        if !self.is_valid() {
+            return false;
+        }
+        if let Some(until) = self.valid_until {
+            let today = Utc::now().date_naive();
+            let deadline = today + chrono::Duration::days(days);
+            until <= deadline
+        } else {
+            false
         }
     }
 }
@@ -841,6 +884,22 @@ impl ProofGrade {
             Self::C => "C",
             Self::D => "D",
         }
+    }
+
+    /// Parse a proof grade from a free-text string, returning `None` for unknown values.
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.trim().to_uppercase().as_str() {
+            "A" => Some(Self::A),
+            "B" => Some(Self::B),
+            "C" => Some(Self::C),
+            "D" => Some(Self::D),
+            _ => None,
+        }
+    }
+
+    /// Parse with fallback: unknown values get the lowest grade (D).
+    pub fn from_str_or_default(s: &str) -> Self {
+        Self::from_str_opt(s).unwrap_or(Self::D)
     }
 }
 

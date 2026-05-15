@@ -39,7 +39,7 @@ impl ObjectStore {
             Ok(_) => Ok(()),
             Err(err) => {
                 // Only create if the bucket doesn't exist; propagate other errors
-                let is_not_found = err.as_service_error().map_or(false, |se| se.is_not_found());
+                let is_not_found = err.as_service_error().is_some_and(|se| se.is_not_found());
                 if is_not_found {
                     self.client
                         .create_bucket()
@@ -120,7 +120,7 @@ impl ObjectStore {
         {
             Ok(_) => Ok(true),
             Err(err) => {
-                let is_not_found = err.as_service_error().map_or(false, |se| se.is_not_found());
+                let is_not_found = err.as_service_error().is_some_and(|se| se.is_not_found());
                 if is_not_found {
                     Ok(false)
                 } else {

@@ -111,7 +111,7 @@ pub fn generate_devils_advocate(
     // Build counter-evidence interpretations
     let counter_evidence: Vec<CounterEvidence> = evidence
         .iter()
-        .filter_map(|e| generate_counter_interpretation(e))
+        .filter_map(generate_counter_interpretation)
         .collect();
 
     // Generate alternative explanations based on evidence patterns
@@ -143,7 +143,7 @@ pub fn generate_devils_advocate(
 fn generate_counter_interpretation(evidence: &EvidenceItem) -> Option<CounterEvidence> {
     // Generate plausible alternative interpretation
     let lower_desc = evidence.description.to_lowercase();
-    
+
     let counter_interpretation = if lower_desc.contains("expand") || lower_desc.contains("growth") {
         format!(
             "This {} could indicate overextension rather than healthy growth, potentially masking underlying financial stress.",
@@ -155,26 +155,21 @@ fn generate_counter_interpretation(evidence: &EvidenceItem) -> Option<CounterEvi
             evidence.description
         )
     } else if lower_desc.contains("patent") {
-        format!(
-            "Patent filing activity may be defensive rather than innovative, possibly indicating patent hoarding rather than genuine R&D progress."
-        )
+        "Patent filing activity may be defensive rather than innovative, possibly indicating patent hoarding rather than genuine R&D progress."
+            .to_string()
     } else if lower_desc.contains("certif") {
-        format!(
-            "New certification pursuit could indicate compliance pressure rather than voluntary quality improvement."
-        )
+        "New certification pursuit could indicate compliance pressure rather than voluntary quality improvement."
+            .to_string()
     } else if lower_desc.contains("partner") || lower_desc.contains("alliance") {
-        format!(
-            "This partnership could signal weakness requiring external support rather than strategic strength."
-        )
+        "This partnership could signal weakness requiring external support rather than strategic strength."
+            .to_string()
     } else if lower_desc.contains("acqui") || lower_desc.contains("merger") {
-        format!(
-            "This acquisition activity could represent desperation to find growth rather than strategic positioning."
-        )
+        "This acquisition activity could represent desperation to find growth rather than strategic positioning."
+            .to_string()
     } else {
         // Generic counter-interpretation
-        format!(
-            "This evidence could have been selectively presented or may reflect temporary conditions rather than structural changes."
-        )
+        "This evidence could have been selectively presented or may reflect temporary conditions rather than structural changes."
+            .to_string()
     };
 
     // Counter-strength is inversely related to original strength
@@ -201,14 +196,16 @@ fn generate_alternative_explanations(claim: &str, evidence: &[EvidenceItem]) -> 
     // Regulatory explanation
     if lower_claim.contains("compliance") || lower_claim.contains("certif") {
         explanations.push(
-            "Regulatory pressure may be driving behavior rather than voluntary strategic choice.".to_string()
+            "Regulatory pressure may be driving behavior rather than voluntary strategic choice."
+                .to_string(),
         );
     }
 
     // Timing explanation
     if evidence.len() >= 2 {
         explanations.push(
-            "Coincidental timing of separate events may create a false impression of causality.".to_string()
+            "Coincidental timing of separate events may create a false impression of causality."
+                .to_string(),
         );
     }
 
@@ -244,33 +241,36 @@ fn generate_investigative_questions(
     ));
 
     // Alternative interpretation question
-    questions.push(
-        "What alternative explanation accounts for all the same evidence?".to_string()
-    );
+    questions.push("What alternative explanation accounts for all the same evidence?".to_string());
 
     // Missing evidence question
     questions.push(
-        "What evidence do we NOT have that would be present if this conclusion were true?".to_string()
+        "What evidence do we NOT have that would be present if this conclusion were true?"
+            .to_string(),
     );
 
     // Source reliability question
     if evidence.iter().any(|e| e.strength < 0.5) {
         questions.push(
-            "How reliable are the sources? Are there reasons they might be biased or mistaken?".to_string()
+            "How reliable are the sources? Are there reasons they might be biased or mistaken?"
+                .to_string(),
         );
     }
 
     // Timing question
-    if lower_claim.contains("will") || lower_claim.contains("predict") || lower_conclusion.contains("likely") {
-        questions.push(
-            "What is the actual base rate for this type of event occurring?".to_string()
-        );
+    if lower_claim.contains("will")
+        || lower_claim.contains("predict")
+        || lower_conclusion.contains("likely")
+    {
+        questions
+            .push("What is the actual base rate for this type of event occurring?".to_string());
     }
 
     // Competitive intelligence question
     if lower_claim.contains("competitor") || lower_claim.contains("rival") {
         questions.push(
-            "Could this be intentional information planting by the entity or its competitors?".to_string()
+            "Could this be intentional information planting by the entity or its competitors?"
+                .to_string(),
         );
     }
 
@@ -313,11 +313,14 @@ fn calculate_confidence_reduction(counter_evidence: &[CounterEvidence]) -> f64 {
     }
 
     // Average counter-evidence strength determines reduction
-    let avg_strength: f64 = counter_evidence.iter().map(|ce| ce.counter_strength).sum::<f64>()
+    let avg_strength: f64 = counter_evidence
+        .iter()
+        .map(|ce| ce.counter_strength)
+        .sum::<f64>()
         / counter_evidence.len() as f64;
 
     // Scale to a reasonable reduction range (0.05 - 0.30)
-    (avg_strength * 0.3).min(0.30).max(0.05)
+    (avg_strength * 0.3).clamp(0.05, 0.30)
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
@@ -590,18 +593,63 @@ impl BaseRateRepository {
     /// Initialize with common event types and placeholder statistics.
     pub fn with_defaults() -> Self {
         let mut repo = Self::new();
-        
+
         // Default base rates (should be updated from production data)
-        repo.update(BaseRateStats::from_observations("certification_loss", 500, 15, 365));
-        repo.update(BaseRateStats::from_observations("contract_termination", 500, 25, 365));
-        repo.update(BaseRateStats::from_observations("executive_departure", 500, 100, 365));
-        repo.update(BaseRateStats::from_observations("facility_closure", 500, 20, 365));
+        repo.update(BaseRateStats::from_observations(
+            "certification_loss",
+            500,
+            15,
+            365,
+        ));
+        repo.update(BaseRateStats::from_observations(
+            "contract_termination",
+            500,
+            25,
+            365,
+        ));
+        repo.update(BaseRateStats::from_observations(
+            "executive_departure",
+            500,
+            100,
+            365,
+        ));
+        repo.update(BaseRateStats::from_observations(
+            "facility_closure",
+            500,
+            20,
+            365,
+        ));
         repo.update(BaseRateStats::from_observations("bankruptcy", 500, 5, 365));
-        repo.update(BaseRateStats::from_observations("security_breach", 500, 35, 365));
-        repo.update(BaseRateStats::from_observations("sanction_designation", 500, 10, 365));
-        repo.update(BaseRateStats::from_observations("quality_issue", 500, 45, 365));
-        repo.update(BaseRateStats::from_observations("supply_disruption", 500, 60, 365));
-        repo.update(BaseRateStats::from_observations("personnel_strike", 500, 8, 365));
+        repo.update(BaseRateStats::from_observations(
+            "security_breach",
+            500,
+            35,
+            365,
+        ));
+        repo.update(BaseRateStats::from_observations(
+            "sanction_designation",
+            500,
+            10,
+            365,
+        ));
+        repo.update(BaseRateStats::from_observations(
+            "quality_issue",
+            500,
+            45,
+            365,
+        ));
+        repo.update(BaseRateStats::from_observations(
+            "supply_disruption",
+            500,
+            60,
+            365,
+        ));
+        repo.update(BaseRateStats::from_observations(
+            "personnel_strike",
+            500,
+            8,
+            365,
+        ));
 
         repo
     }
@@ -658,15 +706,13 @@ impl BiasMitigationReport {
 
         if anchoring_warning.is_some() {
             bias_risk_score += 0.20;
-            recommended_actions.push(
-                "Actively seek disconfirming evidence for this entity.".to_string()
-            );
+            recommended_actions
+                .push("Actively seek disconfirming evidence for this entity.".to_string());
         }
 
         if base_rate_context.is_some() {
-            recommended_actions.push(
-                "Consider the base rate when evaluating this risk assessment.".to_string()
-            );
+            recommended_actions
+                .push("Consider the base rate when evaluating this risk assessment.".to_string());
         }
 
         // Cap bias risk score at 1.0
@@ -694,20 +740,26 @@ impl BiasMitigationReport {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+        clippy::needless_borrows_for_generic_args,
+        clippy::cloned_ref_to_slice_refs
+    )]
+
     use super::*;
 
     #[test]
     fn devils_advocate_generates_for_high_severity() {
-        let evidence = vec![
-            EvidenceItem {
-                id: Uuid::new_v4(),
-                description: "Company expanding into new markets".to_string(),
-                source: "Trade Press".to_string(),
-                timestamp: chrono::Utc::now(),
-                supports_claim: true,
-                strength: 0.7,
-            },
-        ];
+        let evidence = vec![EvidenceItem {
+            id: Uuid::new_v4(),
+            description: "Company expanding into new markets".to_string(),
+            source: "Trade Press".to_string(),
+            timestamp: chrono::Utc::now(),
+            supports_claim: true,
+            strength: 0.7,
+        }];
 
         let result = generate_devils_advocate(
             "Company is in aggressive growth mode",
@@ -738,10 +790,7 @@ mod tests {
 
     #[test]
     fn confirmation_ratio_detects_anchoring() {
-        let mut tracker = ConfirmationTracker::new(
-            Uuid::new_v4(),
-            "Test Corp".to_string(),
-        );
+        let mut tracker = ConfirmationTracker::new(Uuid::new_v4(), "Test Corp".to_string());
 
         // Add mostly supporting evidence
         for _ in 0..9 {
@@ -766,12 +815,7 @@ mod tests {
 
     #[test]
     fn base_rate_provides_context() {
-        let stats = BaseRateStats::from_observations(
-            "certification_loss",
-            500,
-            15,
-            365,
-        );
+        let stats = BaseRateStats::from_observations("certification_loss", 500, 15, 365);
 
         assert!((stats.base_rate - 0.03).abs() < 0.01);
         let context = stats.context_message("Test Corp");

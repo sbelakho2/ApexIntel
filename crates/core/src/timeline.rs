@@ -10,11 +10,7 @@ pub struct TimelineEvent {
 }
 
 impl TimelineEvent {
-    pub fn new(
-        event_type: impl Into<String>,
-        observed_at: DateTime<Utc>,
-        confidence: f64,
-    ) -> Self {
+    pub fn new(event_type: impl Into<String>, observed_at: DateTime<Utc>, confidence: f64) -> Self {
         Self {
             event_type: event_type.into(),
             observed_at,
@@ -76,7 +72,11 @@ impl EntityTimeline {
 
         for claim in claims {
             match claim {
-                TemporalClaim::EventPrecedesReference { event_type, marker, requirement } => {
+                TemporalClaim::EventPrecedesReference {
+                    event_type,
+                    marker,
+                    requirement,
+                } => {
                     match self.event_time(event_type) {
                         Some(event_time) if event_time > reference_time => {
                             violations.push(TemporalViolation {
@@ -205,7 +205,10 @@ pub enum TemporalClaim {
 
 impl TemporalClaim {
     /// Create a required event-precedes-reference claim.
-    pub fn event_before_reference(event_type: impl Into<String>, marker: impl Into<String>) -> Self {
+    pub fn event_before_reference(
+        event_type: impl Into<String>,
+        marker: impl Into<String>,
+    ) -> Self {
         Self::EventPrecedesReference {
             event_type: event_type.into(),
             marker: marker.into(),
@@ -214,7 +217,10 @@ impl TemporalClaim {
     }
 
     /// Create an optional event-precedes-reference claim.
-    pub fn optional_event_before_reference(event_type: impl Into<String>, marker: impl Into<String>) -> Self {
+    pub fn optional_event_before_reference(
+        event_type: impl Into<String>,
+        marker: impl Into<String>,
+    ) -> Self {
         Self::EventPrecedesReference {
             event_type: event_type.into(),
             marker: marker.into(),
@@ -328,7 +334,11 @@ mod tests {
             now - Duration::days(2),
             0.9,
         ));
-        timeline.add_event(TimelineEvent::new("patent_filed", now - Duration::days(5), 0.9));
+        timeline.add_event(TimelineEvent::new(
+            "patent_filed",
+            now - Duration::days(5),
+            0.9,
+        ));
 
         let report = timeline.validate_claims(
             &[TemporalClaim::OrderedEvents {

@@ -15,6 +15,7 @@ impl PgStore {
         evidence_urls: Option<Vec<String>>,
         entity_ids: Option<Vec<Uuid>>,
         tags: Option<Vec<String>>,
+        metadata: Option<serde_json::Value>,
     ) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let normalized_title = title.trim();
@@ -24,8 +25,11 @@ impl PgStore {
             ids
         });
         let normalized_summary = summary.trim();
-        let recent_story_signature =
-            recent_story_dedup_signature(normalized_summary, insight_type, normalized_entity_ids.as_deref());
+        let recent_story_signature = recent_story_dedup_signature(
+            normalized_summary,
+            insight_type,
+            normalized_entity_ids.as_deref(),
+        );
         let row: (Uuid,) = sqlx::query_as(
             r#"WITH existing AS (
                    SELECT i.id
@@ -69,8 +73,8 @@ impl PgStore {
                inserted AS (
                    INSERT INTO insights
                      (id, title, title_hash, summary, insight_type, region, confidence,
-                      evidence_urls, entity_ids, tags, created_at, updated_at)
-                   SELECT $1, $2, md5($2), $3, $4, $5, $6, $7, $8, $9, now(), now()
+                      evidence_urls, entity_ids, tags, metadata, created_at, updated_at)
+                   SELECT $1, $2, md5($2), $3, $4, $5, $6, $7, $8, $9, COALESCE($11, '{}'::jsonb), now(), now()
                    WHERE NOT EXISTS (SELECT 1 FROM updated)
                    RETURNING id
                )
@@ -89,6 +93,7 @@ impl PgStore {
         .bind(&normalized_entity_ids)
         .bind(&tags)
         .bind(&recent_story_signature)
+        .bind(&metadata)
         .fetch_one(&self.pool)
         .await?;
         Ok(row.0)
@@ -114,19 +119,21 @@ impl PgStore {
         let (limit, offset) = normalize_insight_window(limit, offset);
 
         // Query relies on indexes for created_at and region to stay performant.
-        let mut qb: QueryBuilder<Postgres> = if filters.bookmarked_by.is_some() {
+        let mut qb: QueryBuilder<Postgres> = if let Some(bookmarked_by) =
+            filters.bookmarked_by.as_deref()
+        {
             let mut q = QueryBuilder::new(
                 "SELECT i.id, i.title, i.summary, i.insight_type, i.region, i.confidence,
-                        i.evidence_urls, i.entity_ids, i.tags, i.created_at, i.updated_at
+                        i.evidence_urls, i.entity_ids, i.tags, i.metadata, i.created_at, i.updated_at
                  FROM insights i
                  INNER JOIN insight_bookmarks bk ON bk.insight_id = i.id AND bk.user_id = ",
             );
-            q.push_bind(filters.bookmarked_by.as_deref().unwrap().to_string());
+            q.push_bind(bookmarked_by.to_string());
             q
         } else {
             QueryBuilder::new(
                 "SELECT id, title, summary, insight_type, region, confidence,
-                        evidence_urls, entity_ids, tags, created_at, updated_at
+                        evidence_urls, entity_ids, tags, metadata, created_at, updated_at
                  FROM insights",
             )
         };
@@ -188,11 +195,7 @@ impl PgStore {
 
         if filters.exclude_internal {
             qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("(")
-                .push(col_prefix)
-                .push("insight_type IS NULL OR lower(")
-                .push(col_prefix)
-                .push("insight_type) NOT LIKE 'llm_%')");
+            append_internal_insight_filter_sql_clause(&mut qb, col_prefix);
             has_where = true;
         }
 
@@ -229,12 +232,14 @@ impl PgStore {
     }
 
     pub async fn count_insights(&self, filters: &InsightListFilters) -> Result<i64> {
-        let mut qb: QueryBuilder<Postgres> = if filters.bookmarked_by.is_some() {
+        let mut qb: QueryBuilder<Postgres> = if let Some(bookmarked_by) =
+            filters.bookmarked_by.as_deref()
+        {
             let mut q = QueryBuilder::new(
                 "SELECT COUNT(DISTINCT CONCAT_WS('|', LOWER(TRIM(i.title)), LOWER(COALESCE(i.insight_type, '')), LOWER(COALESCE(i.region, '')))) FROM insights i
                  INNER JOIN insight_bookmarks bk ON bk.insight_id = i.id AND bk.user_id = ",
             );
-            q.push_bind(filters.bookmarked_by.as_deref().unwrap().to_string());
+            q.push_bind(bookmarked_by.to_string());
             q
         } else {
             QueryBuilder::new(
@@ -299,11 +304,7 @@ impl PgStore {
 
         if filters.exclude_internal {
             qb.push(if has_where { " AND " } else { " WHERE " });
-            qb.push("(")
-                .push(col_prefix)
-                .push("insight_type IS NULL OR lower(")
-                .push(col_prefix)
-                .push("insight_type) NOT LIKE 'llm_%')");
+            append_internal_insight_filter_sql_clause(&mut qb, col_prefix);
             has_where = true;
         }
 
@@ -332,6 +333,191 @@ impl PgStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn record_insight_feedback(
+        &self,
+        insight_id: Uuid,
+        user_id: &str,
+        feedback_type: &str,
+        notes: Option<&str>,
+    ) -> Result<bool> {
+        let feedback_type = normalize_insight_feedback_type(feedback_type)
+            .ok_or_else(|| anyhow::anyhow!("invalid insight feedback type: {feedback_type}"))?;
+        let result = sqlx::query(
+            r#"INSERT INTO insight_feedback_events (
+                   insight_id,
+                   entity_id,
+                   recipe_code,
+                   feedback_type,
+                   user_id,
+                   notes
+               )
+               SELECT
+                   i.id,
+                   i.entity_ids[1],
+                   (
+                       SELECT tag
+                       FROM unnest(COALESCE(i.tags, ARRAY[]::text[])) AS tag
+                       WHERE tag ~ '^[A-Z][0-9]{3,}$'
+                       LIMIT 1
+                   ),
+                   $2,
+                   $3,
+                   $4
+               FROM insights i
+               WHERE i.id = $1
+               ON CONFLICT (insight_id, user_id, feedback_type)
+               DO UPDATE SET
+                   notes = COALESCE(EXCLUDED.notes, insight_feedback_events.notes),
+                   created_at = now()"#,
+        )
+        .bind(insight_id)
+        .bind(feedback_type)
+        .bind(user_id)
+        .bind(normalize_optional_text(notes))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn list_recent_insight_feedback_events(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<InsightFeedbackEventRow>> {
+        Ok(sqlx::query_as::<_, InsightFeedbackEventRow>(
+            r#"SELECT id, insight_id, entity_id, recipe_code, feedback_type, user_id, notes, created_at
+               FROM insight_feedback_events
+               WHERE created_at >= $1
+               ORDER BY created_at DESC, id DESC"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn get_insight_feedback_scores(
+        &self,
+        insight_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, f64>> {
+        if insight_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let rows = sqlx::query(
+            r#"SELECT insight_id,
+                      CASE
+                          WHEN COUNT(*) = 0 THEN 0.5
+                          ELSE SUM(
+                              CASE
+                                  WHEN feedback_type IN ('bookmarked', 'actioned', 'relevant', 'true_positive') THEN 1.0
+                                  WHEN feedback_type IN ('dismissed', 'irrelevant', 'false_positive') THEN 0.0
+                                  ELSE 0.5
+                              END
+                          ) / COUNT(*)::double precision
+                      END AS quality_score
+               FROM insight_feedback_events
+               WHERE insight_id = ANY($1)
+               GROUP BY insight_id"#,
+        )
+        .bind(insight_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let insight_id: Uuid = row.try_get("insight_id").ok()?;
+                let quality_score: f64 = row.try_get("quality_score").ok()?;
+                Some((insight_id, quality_score.clamp(0.0, 1.0)))
+            })
+            .collect())
+    }
+
+    pub async fn record_insight_firing(
+        &self,
+        insight_id: Uuid,
+        entity_id: Uuid,
+        recipe_code: &str,
+        insight_type: Option<&str>,
+        title: &str,
+        summary: &str,
+        confidence: Option<f64>,
+    ) -> Result<()> {
+        let insight_hash = dedup_signature_from_texts(&[title, summary]).unwrap_or_else(|| {
+            format!(
+                "{}|{}",
+                title.trim().to_ascii_lowercase(),
+                summary.trim().to_ascii_lowercase()
+            )
+        });
+        sqlx::query(
+            r#"INSERT INTO insight_firings (
+                   insight_id,
+                   entity_id,
+                   recipe_code,
+                   insight_type,
+                   title,
+                   summary,
+                   insight_hash,
+                   confidence
+               )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+        )
+        .bind(insight_id)
+        .bind(entity_id)
+        .bind(recipe_code.trim())
+        .bind(normalize_optional_text(insight_type))
+        .bind(title.trim())
+        .bind(summary.trim())
+        .bind(insight_hash)
+        .bind(confidence)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_recent_insight_firings(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<InsightFiringRow>> {
+        Ok(sqlx::query_as::<_, InsightFiringRow>(
+            r#"SELECT id, insight_id, entity_id, recipe_code, insight_type, title, summary, insight_hash, confidence, created_at
+               FROM insight_firings
+               WHERE created_at >= $1
+               ORDER BY created_at DESC, id DESC"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn get_recent_insights_for_entities(
+        &self,
+        entity_ids: &[Uuid],
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<InsightRow>> {
+        if entity_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let (limit, _) = normalize_insight_window(limit, 0);
+        let rows = sqlx::query_as::<_, InsightRow>(
+            r#"SELECT id, title, summary, insight_type, region, confidence,
+                      evidence_urls, entity_ids, tags, metadata, created_at, updated_at
+               FROM insights
+               WHERE entity_ids && $1
+                 AND created_at >= $2
+               ORDER BY created_at DESC, id DESC
+               LIMIT $3"#,
+        )
+        .bind(entity_ids)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(filter_visible_insights(rows))
     }
 
     /// Remove a bookmark. Returns true if a row was deleted.
@@ -365,13 +551,13 @@ impl PgStore {
     pub async fn get_insight(&self, id: Uuid) -> Result<Option<InsightRow>> {
         let row = sqlx::query_as::<_, InsightRow>(
             "SELECT id, title, summary, insight_type, region, confidence,
-                    evidence_urls, entity_ids, tags, created_at, updated_at
+                    evidence_urls, entity_ids, tags, metadata, created_at, updated_at
              FROM insights WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        Ok(row.and_then(|row| filter_visible_insights(vec![row]).into_iter().next()))
     }
 
     /// Fetch related insights for a set of entity UUIDs, excluding the current insight.
@@ -387,7 +573,7 @@ impl PgStore {
         let (limit, _) = normalize_insight_window(limit, 0);
         let rows = sqlx::query_as::<_, InsightRow>(
             "SELECT id, title, summary, insight_type, region, confidence,
-                    evidence_urls, entity_ids, tags, created_at, updated_at
+                    evidence_urls, entity_ids, tags, metadata, created_at, updated_at
              FROM insights WHERE entity_ids && $1 AND id != $2 ORDER BY created_at DESC LIMIT $3",
         )
         .bind(entity_ids)
@@ -410,7 +596,7 @@ impl PgStore {
         let (limit, _) = normalize_insight_window(limit, 0);
         let rows = sqlx::query_as::<_, InsightRow>(
             "SELECT id, title, summary, insight_type, region, confidence,
-                    evidence_urls, entity_ids, tags, created_at, updated_at
+                    evidence_urls, entity_ids, tags, metadata, created_at, updated_at
              FROM insights WHERE entity_ids && $1 ORDER BY created_at DESC LIMIT $2",
         )
         .bind(entity_ids)

@@ -20,9 +20,9 @@ use anyhow::{Context, Result};
 use apex_llm::LlmClient;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use std::sync::Arc;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pipeline configuration
@@ -336,8 +336,11 @@ impl WeeklyPipelineRunner {
     }
 }
 
-pub fn summarize_entity_information_gain(cards: &[InsightCard]) -> Vec<EntityInformationGainSummary> {
-    let mut grouped: std::collections::HashMap<Uuid, (String, f64, usize)> = std::collections::HashMap::new();
+pub fn summarize_entity_information_gain(
+    cards: &[InsightCard],
+) -> Vec<EntityInformationGainSummary> {
+    let mut grouped: std::collections::HashMap<Uuid, (String, f64, usize)> =
+        std::collections::HashMap::new();
     for card in cards {
         let entry = grouped
             .entry(card.entity_id)
@@ -348,23 +351,25 @@ pub fn summarize_entity_information_gain(cards: &[InsightCard]) -> Vec<EntityInf
 
     let mut summaries: Vec<EntityInformationGainSummary> = grouped
         .into_iter()
-        .map(|(entity_id, (entity_name, cumulative_information_gain_bits, insight_count))| {
-            let mean_information_gain_bits = if insight_count == 0 {
-                0.0
-            } else {
-                cumulative_information_gain_bits / insight_count as f64
-            };
-            let plateaued = insight_count >= 2 && mean_information_gain_bits < 0.1;
-            EntityInformationGainSummary {
-                entity_id,
-                entity_name,
-                cumulative_information_gain_bits,
-                mean_information_gain_bits,
-                insight_count,
-                plateaued,
-                crawl_priority_multiplier: if plateaued { 0.75 } else { 1.0 },
-            }
-        })
+        .map(
+            |(entity_id, (entity_name, cumulative_information_gain_bits, insight_count))| {
+                let mean_information_gain_bits = if insight_count == 0 {
+                    0.0
+                } else {
+                    cumulative_information_gain_bits / insight_count as f64
+                };
+                let plateaued = insight_count >= 2 && mean_information_gain_bits < 0.1;
+                EntityInformationGainSummary {
+                    entity_id,
+                    entity_name,
+                    cumulative_information_gain_bits,
+                    mean_information_gain_bits,
+                    insight_count,
+                    plateaued,
+                    crawl_priority_multiplier: if plateaued { 0.75 } else { 1.0 },
+                }
+            },
+        )
         .collect();
 
     summaries.sort_by(|a, b| {
@@ -382,6 +387,14 @@ pub fn summarize_entity_information_gain(cards: &[InsightCard]) -> Vec<EntityInf
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+        clippy::needless_borrows_for_generic_args,
+        clippy::cloned_ref_to_slice_refs
+    )]
+
     use super::*;
     use crate::renderer::InsightCard;
 

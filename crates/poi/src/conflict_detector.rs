@@ -52,7 +52,7 @@ pub enum ConflictType {
     OwnershipConflict,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConflictSeverity {
     Low,
     Medium,
@@ -156,7 +156,7 @@ pub fn detect_conflicts(affiliations: &[Affiliation]) -> Vec<ConflictOfInterest>
         a.person_id
             .cmp(&b.person_id)
             .then(a.primary_company.cmp(&b.primary_company))
-            .then(a.severity.partial_cmp(&b.severity).unwrap().reverse())
+            .then(a.severity.cmp(&b.severity).reverse())
     });
     conflicts.dedup_by(|a, b| {
         a.person_id == b.person_id

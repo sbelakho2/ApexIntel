@@ -30,8 +30,9 @@ use tracing::{debug, error, info};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Severity of an outgoing alert.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AlertSeverity {
+    #[default]
     Info,
     Low,
     Medium,
@@ -195,12 +196,6 @@ pub struct NotificationConfig {
     pub log_min_severity: AlertSeverity,
 }
 
-impl Default for AlertSeverity {
-    fn default() -> Self {
-        Self::Info
-    }
-}
-
 impl NotificationConfig {
     /// Create from environment variables.
     ///
@@ -210,8 +205,10 @@ impl NotificationConfig {
     /// - `ALERT_EMAIL_TO` (comma-separated list)
     /// - `ALERT_EMAIL_FROM`
     pub fn from_env() -> Self {
-        let mut cfg = NotificationConfig::default();
-        cfg.log_min_severity = AlertSeverity::Low;
+        let mut cfg = NotificationConfig {
+            log_min_severity: AlertSeverity::Low,
+            ..Default::default()
+        };
 
         if let Ok(url) = std::env::var("SLACK_WEBHOOK_URL") {
             cfg.webhooks.push(WebhookConfig::slack(url));
@@ -255,7 +252,7 @@ impl NotificationDispatcher {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .expect("failed to build reqwest client"),
+                .unwrap_or_else(|error| panic!("failed to build reqwest client: {error}")),
         }
     }
 
@@ -459,6 +456,7 @@ impl NotificationDispatcher {
 
     // ── Formatters ────────────────────────────────────────────────────────────
 
+    #[allow(clippy::disallowed_methods)]
     fn format_slack_message(&self, alert: &PendingAlert) -> String {
         let emoji = match alert.severity {
             AlertSeverity::Critical => "🚨",
@@ -738,6 +736,8 @@ impl SlaEnforcer {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+
     use super::*;
 
     fn make_alert(severity: AlertSeverity, priority: f64) -> PendingAlert {

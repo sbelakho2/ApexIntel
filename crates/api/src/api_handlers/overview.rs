@@ -451,7 +451,10 @@ pub(crate) async fn list_graph(
 
     let insights_total = match state
         .store
-        .count_insights(&InsightListFilters::default())
+        .count_insights(&InsightListFilters {
+            exclude_internal: true,
+            ..Default::default()
+        })
         .await
     {
         Ok(value) => value.max(0) as u64,

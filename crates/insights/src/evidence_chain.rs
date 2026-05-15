@@ -546,6 +546,14 @@ impl LlmChainBuilder {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+        clippy::needless_borrows_for_generic_args,
+        clippy::cloned_ref_to_slice_refs
+    )]
+
     use super::*;
     use chrono::Duration;
 
@@ -617,9 +625,11 @@ mod tests {
     #[test]
     fn freshness_weight_bands_old_evidence() {
         let now = Utc::now();
-        let recent = EvidenceNode::observation("recent", 0.9).with_observed_at(now - Duration::days(5));
+        let recent =
+            EvidenceNode::observation("recent", 0.9).with_observed_at(now - Duration::days(5));
         let mid = EvidenceNode::observation("mid", 0.9).with_observed_at(now - Duration::days(45));
-        let stale = EvidenceNode::observation("stale", 0.9).with_observed_at(now - Duration::days(90));
+        let stale =
+            EvidenceNode::observation("stale", 0.9).with_observed_at(now - Duration::days(90));
 
         let recent_weight = node_freshness_weight(&recent, now);
         let mid_weight = node_freshness_weight(&mid, now);
@@ -635,10 +645,12 @@ mod tests {
         let now = Utc::now();
         let mut chain = EvidenceChain::new();
         let recent = chain.add_node(
-            EvidenceNode::observation("Recent support", 0.9).with_observed_at(now - Duration::days(5)),
+            EvidenceNode::observation("Recent support", 0.9)
+                .with_observed_at(now - Duration::days(5)),
         );
         let stale = chain.add_node(
-            EvidenceNode::observation("Stale support", 0.9).with_observed_at(now - Duration::days(90)),
+            EvidenceNode::observation("Stale support", 0.9)
+                .with_observed_at(now - Duration::days(90)),
         );
         let conclusion = chain.add_node(EvidenceNode::conclusion("Conclusion"));
         chain.add_edge(EvidenceEdge {

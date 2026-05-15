@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Check expected_schema and scoring for all eval files."""
 import json, os, glob
+from pathlib import Path
 
-eval_dir = "/workspace/ApexIntel/training_data/evaluation/"
+WORK = Path(__file__).resolve().parent.parent
+eval_dir = os.environ.get("EVAL_DIR", str(WORK / "training_data" / "evaluation"))
 for path in sorted(glob.glob(os.path.join(eval_dir, "*.jsonl"))):
     name = os.path.basename(path)
     with open(path) as f:

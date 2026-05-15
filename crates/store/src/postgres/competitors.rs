@@ -216,6 +216,8 @@ impl PgStore {
                 region: region.unwrap_or_else(|| "Unknown".to_string()),
                 entity_type: company_type.unwrap_or_else(|| "EMS".to_string()),
                 threat_score: risk_score,
+                // Overlap fields are not yet populated from real data.
+                // Return None/0.0 to signal "unknown" rather than fabricating values.
                 capability_overlap: 0.0,
                 market_overlap: 0.0,
                 last_change_at,

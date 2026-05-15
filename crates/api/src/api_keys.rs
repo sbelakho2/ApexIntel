@@ -74,33 +74,24 @@ impl ApiKeyManager {
     pub fn reload(&self) -> Result<bool> {
         if let ApiKeySource::File { path, .. } = &self.source {
             let next_modified = file_modified_at(path)?;
-            let current_modified = *self
-                .modified_at
-                .read()
-                .unwrap_or_else(|poisoned| {
-                    tracing::error!("api key modified lock poisoned, recovering");
-                    poisoned.into_inner()
-                });
+            let current_modified = *self.modified_at.read().unwrap_or_else(|poisoned| {
+                tracing::error!("api key modified lock poisoned, recovering");
+                poisoned.into_inner()
+            });
             if next_modified == current_modified {
                 return Ok(false);
             }
         }
 
         let (keys, modified_at) = load_from_source(&self.source)?;
-        *self
-            .keys
-            .write()
-            .unwrap_or_else(|poisoned| {
-                tracing::error!("api key update lock poisoned, recovering");
-                poisoned.into_inner()
-            }) = Arc::new(keys);
-        *self
-            .modified_at
-            .write()
-            .unwrap_or_else(|poisoned| {
-                tracing::error!("api key modified update lock poisoned, recovering");
-                poisoned.into_inner()
-            }) = modified_at;
+        *self.keys.write().unwrap_or_else(|poisoned| {
+            tracing::error!("api key update lock poisoned, recovering");
+            poisoned.into_inner()
+        }) = Arc::new(keys);
+        *self.modified_at.write().unwrap_or_else(|poisoned| {
+            tracing::error!("api key modified update lock poisoned, recovering");
+            poisoned.into_inner()
+        }) = modified_at;
         Ok(true)
     }
 }
@@ -115,15 +106,21 @@ pub fn spawn_api_key_reloader(manager: Arc<ApiKeyManager>, interval: Duration) {
         loop {
             ticker.tick().await;
             match manager.reload() {
-                Ok(true) => tracing::info!(api_key_count = manager.key_count(), "API keys reloaded"),
+                Ok(true) => {
+                    tracing::info!(api_key_count = manager.key_count(), "API keys reloaded")
+                }
                 Ok(false) => {}
-                Err(err) => tracing::warn!(error = %err, "API key reload failed; keeping previous snapshot"),
+                Err(err) => {
+                    tracing::warn!(error = %err, "API key reload failed; keeping previous snapshot")
+                }
             }
         }
     });
 }
 
-fn load_from_source(source: &ApiKeySource) -> Result<(HashMap<String, ApiKey>, Option<SystemTime>)> {
+fn load_from_source(
+    source: &ApiKeySource,
+) -> Result<(HashMap<String, ApiKey>, Option<SystemTime>)> {
     match source {
         ApiKeySource::Env { slots } => Ok((load_api_keys_from_env(*slots), None)),
         ApiKeySource::File { path, slots } => {
@@ -135,7 +132,9 @@ fn load_from_source(source: &ApiKeySource) -> Result<(HashMap<String, ApiKey>, O
 }
 
 fn file_modified_at(path: &Path) -> Result<Option<SystemTime>> {
-    Ok(fs::metadata(path).ok().and_then(|metadata| metadata.modified().ok()))
+    Ok(fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok()))
 }
 
 pub fn load_api_keys_from_env(slots: usize) -> HashMap<String, ApiKey> {
@@ -145,12 +144,18 @@ pub fn load_api_keys_from_env(slots: usize) -> HashMap<String, ApiKey> {
         if let Ok(val) = std::env::var(&env_key) {
             let parts: Vec<&str> = val.splitn(3, ',').collect();
             if parts.len() < 3 {
-                tracing::warn!(env_key, "Invalid API key format; expected raw_key,name,role");
+                tracing::warn!(
+                    env_key,
+                    "Invalid API key format; expected raw_key,name,role"
+                );
                 continue;
             }
             let raw_key = parts[0].trim();
             let name = parts[1].trim();
-            let role = parts[2].trim().parse::<ApiRole>().unwrap_or(ApiRole::Viewer);
+            let role = parts[2]
+                .trim()
+                .parse::<ApiRole>()
+                .unwrap_or(ApiRole::Viewer);
             let key_id = format!("key-{}", i);
             registry.insert(
                 key_id.clone(),
@@ -186,7 +191,11 @@ pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<Stri
                 owner_user_id: format!("file-user-{}", index + 1),
                 key_hash: auth::hash_api_key(record.raw_key.trim()),
                 name: record.name.trim().to_string(),
-                role: record.role.trim().parse::<ApiRole>().unwrap_or(ApiRole::Viewer),
+                role: record
+                    .role
+                    .trim()
+                    .parse::<ApiRole>()
+                    .unwrap_or(ApiRole::Viewer),
                 created_at: Utc::now(),
                 expires_at: None,
                 enabled: true,
@@ -204,7 +213,8 @@ mod tests {
     use super::*;
 
     fn temp_file(name: &str, content: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("apex-api-{}-{}.json", name, uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("apex-api-{}-{}.json", name, uuid::Uuid::new_v4()));
         fs::write(&path, content).expect("write temp api key file");
         path
     }

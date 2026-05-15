@@ -15,7 +15,12 @@ async fn api_feature_matrix_matches_documented_llm_modes() {
         .expect("features response");
 
     assert_eq!(response.status(), 200);
-    let body = response.into_body().collect().await.expect("body").to_bytes();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
     let payload: Value = serde_json::from_slice(&body).expect("feature json");
 
     assert_eq!(payload["llm"], apex_api::API_LLM_FEATURE_ENABLED);
@@ -33,7 +38,12 @@ async fn experimental_only_capabilities_are_unavailable_without_flag() {
         .expect("features response");
 
     assert_eq!(response.status(), 200);
-    let body = response.into_body().collect().await.expect("body").to_bytes();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
     let payload: Value = serde_json::from_slice(&body).expect("feature json");
 
     assert_eq!(payload["experimental_llm_tool_calling"], false);

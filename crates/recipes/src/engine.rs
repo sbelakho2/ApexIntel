@@ -38,6 +38,20 @@ pub struct InsightCandidate {
     pub category: String,
 }
 
+impl InsightCandidate {
+    /// Returns true if the candidate contains un-substituted template placeholders
+    /// (e.g. `{{entity}}`), indicating the template was never filled in.
+    pub fn has_template_leakage(&self) -> bool {
+        let fields = [&self.narrative_template, &self.action_template];
+        fields.iter().any(|field| {
+            field.contains("{{")
+                || field.contains("{entity}")
+                || field.contains("{signal}")
+                || field.contains("{region}")
+        })
+    }
+}
+
 // ────────────────────────────────────────────
 // Feature map — represents available signal data for an entity
 // ────────────────────────────────────────────
@@ -306,12 +320,12 @@ pub fn estimate_confidence(signal_values: &[f64], recipe: &Recipe) -> f64 {
         .fire_count
         .saturating_sub(recipe.false_positive_count);
     let calibration = calibrate_confidence(
-        raw.min(1.0).max(0.05),
+        raw.clamp(0.05, 1.0),
         true_positive_count,
         recipe.false_positive_count,
         None,
     );
-    calibration.calibrated_confidence.min(1.0).max(0.05)
+    calibration.calibrated_confidence.clamp(0.05, 1.0)
 }
 
 // ────────────────────────────────────────────
@@ -378,7 +392,7 @@ pub fn evaluate_recipe(
     }
 
     // 5. Build evidence IDs from signal keys
-    let evidence_ids: Vec<String> = recipe.signals.iter().map(|s| signal_key(s)).collect();
+    let evidence_ids: Vec<String> = recipe.signals.iter().map(signal_key).collect();
 
     Some(InsightCandidate {
         recipe_id: recipe.id,
@@ -523,6 +537,8 @@ impl RecipeEngine {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     fn make_signal(
@@ -1200,5 +1216,32 @@ mod tests {
         let entity_ids: Vec<&str> = results.iter().map(|r| r.entity_id.as_str()).collect();
         assert!(entity_ids.contains(&"entity_dup"));
         assert!(entity_ids.contains(&"entity_unique"));
+    }
+
+    #[test]
+    fn template_leakage_detected() {
+        let candidate = InsightCandidate {
+            recipe_id: Uuid::nil(),
+            recipe_code: "TEST".into(),
+            entity_id: "e1".into(),
+            confidence: 0.8,
+            impact: 0.5,
+            narrative_template: "{{entity}} shows {{signal}} activity".into(),
+            action_template: "Review {entity} positioning".into(),
+            evidence_ids: vec![],
+            severity: "warning".into(),
+            category: "supply_chain".into(),
+        };
+        assert!(
+            candidate.has_template_leakage(),
+            "must detect placeholder leakage"
+        );
+
+        let clean = InsightCandidate {
+            narrative_template: "Acme Corp shows expansion activity".into(),
+            action_template: "Review Acme Corp positioning".into(),
+            ..candidate
+        };
+        assert!(!clean.has_template_leakage(), "clean text should not flag");
     }
 }

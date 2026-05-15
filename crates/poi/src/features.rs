@@ -496,6 +496,80 @@ fn bounded_keyword_hits(text: &str, keyword: &str) -> usize {
     text.matches(keyword).count().min(MAX_KEYWORD_HITS_PER_TERM)
 }
 
+/// Return a role-family-aware default priority vector when no artifacts exist.
+/// These defaults reflect what each function cares about most.
+pub fn default_priority_vector_for_role(role_family: &str) -> PriorityVector {
+    let lower = role_family.to_lowercase();
+    match lower.as_str() {
+        "procurement" | "sourcing" | "purchasing" | "supply_chain" | "supply chain" => {
+            PriorityVector {
+                cost: 0.35,
+                quality: 0.25,
+                speed: 0.15,
+                resilience: 0.15,
+                compliance: 0.05,
+                security: 0.05,
+                confidence: 0.3,
+            }
+        }
+        "engineering" | "technology" | "r&d" | "research" => PriorityVector {
+            cost: 0.10,
+            quality: 0.30,
+            speed: 0.20,
+            resilience: 0.10,
+            compliance: 0.10,
+            security: 0.20,
+            confidence: 0.3,
+        },
+        "quality" | "supplier_quality" | "supplier quality" | "compliance" => PriorityVector {
+            cost: 0.05,
+            quality: 0.40,
+            speed: 0.05,
+            resilience: 0.15,
+            compliance: 0.30,
+            security: 0.05,
+            confidence: 0.3,
+        },
+        "operations" | "manufacturing" | "logistics" => PriorityVector {
+            cost: 0.20,
+            quality: 0.20,
+            speed: 0.30,
+            resilience: 0.20,
+            compliance: 0.05,
+            security: 0.05,
+            confidence: 0.3,
+        },
+        "security" | "cyber" | "information security" => PriorityVector {
+            cost: 0.05,
+            quality: 0.10,
+            speed: 0.05,
+            resilience: 0.20,
+            compliance: 0.20,
+            security: 0.40,
+            confidence: 0.3,
+        },
+        "finance" | "accounting" => PriorityVector {
+            cost: 0.40,
+            quality: 0.10,
+            speed: 0.10,
+            resilience: 0.10,
+            compliance: 0.25,
+            security: 0.05,
+            confidence: 0.3,
+        },
+        "government" | "military" | "regulatory" => PriorityVector {
+            cost: 0.10,
+            quality: 0.15,
+            speed: 0.05,
+            resilience: 0.20,
+            compliance: 0.35,
+            security: 0.15,
+            confidence: 0.3,
+        },
+        _ => PriorityVector::zero(),
+    }
+}
+
 /// Infer decision style from priority vector.
 pub fn infer_decision_style(pv: &PriorityVector) -> DecisionStyle {
     let dominant = pv.dominant();
@@ -524,7 +598,7 @@ pub fn infer_decision_style(pv: &PriorityVector) -> DecisionStyle {
     }
 }
 
-/// Compute influence score: 0.3*centrality + 0.4*seniority + 0.3*recurrence.
+/// Compute influence score: 0.35*centrality + 0.25*seniority + 0.40*recurrence.
 /// Clamps to [0, 100] and guards against negative inputs (B112).
 pub fn compute_influence_score(
     graph_centrality: f64,
@@ -534,7 +608,7 @@ pub fn compute_influence_score(
     let gc = graph_centrality.max(0.0);
     let rs = role_seniority.max(0.0);
     let pr = public_recurrence.max(0.0);
-    let raw = 0.3 * gc + 0.4 * rs + 0.3 * pr;
+    let raw = 0.35 * gc + 0.25 * rs + 0.40 * pr;
     raw.clamp(0.0, 100.0)
 }
 
@@ -564,14 +638,55 @@ pub fn role_seniority_score(title: &str) -> f64 {
     if lower.contains("senior manager") {
         return 60.0;
     }
+    // Non-exec buyer/procurement roles with decision authority (Fix 8)
+    if lower.contains("head of procurement")
+        || lower.contains("head of sourcing")
+        || lower.contains("head of purchasing")
+        || lower.contains("head of supply chain")
+        || lower.contains("head of quality")
+        || lower.contains("head of engineering")
+        || lower.contains("head of operations")
+        || lower.contains("head of logistics")
+    {
+        return 65.0;
+    }
+    if lower.contains("category manager")
+        || lower.contains("commodity manager")
+        || lower.contains("strategic buyer")
+        || lower.contains("senior buyer")
+        || lower.contains("quality manager")
+        || lower.contains("plant manager")
+        || lower.contains("engineering manager")
+        || lower.contains("supply chain manager")
+    {
+        return 55.0;
+    }
     if lower.contains("manager") {
         return 50.0;
+    }
+    if lower.contains("buyer")
+        || lower.contains("purchaser")
+        || lower.contains("procurement specialist")
+        || lower.contains("sourcing specialist")
+        || lower.contains("quality engineer")
+        || lower.contains("process engineer")
+        || lower.contains("supplier quality")
+    {
+        return 45.0;
     }
     if lower.contains("lead") {
         return 40.0;
     }
     if lower.contains("senior") {
         return 30.0;
+    }
+    if lower.contains("engineer")
+        || lower.contains("analyst")
+        || lower.contains("specialist")
+        || lower.contains("coordinator")
+        || lower.contains("planner")
+    {
+        return 25.0;
     }
     20.0
 }
@@ -612,6 +727,63 @@ pub fn compute_pain_index(artifacts: &[PoiArtifact], now_utc: i64) -> f64 {
 
     // Normalize to 0-1 range
     (pain_score / 5.0).min(1.0)
+}
+
+/// Compute change risk: how likely this person is to change roles or orgs soon.
+/// Based on tenure patterns, recent changes, and career velocity.
+pub fn compute_change_risk(role_history: &[RoleHistoryEntry], now_utc: i64) -> f64 {
+    if role_history.is_empty() {
+        return 0.1; // low confidence default
+    }
+
+    // Average tenure in years
+    let tenures: Vec<f64> = role_history
+        .iter()
+        .map(|r| {
+            let end = r.end_ts.unwrap_or(now_utc);
+            ((end - r.start_ts) as f64 / (365.25 * 86_400.0)).max(0.0)
+        })
+        .collect();
+    let avg_tenure = tenures.iter().sum::<f64>() / tenures.len() as f64;
+
+    // Current tenure
+    let current_tenure = role_history
+        .last()
+        .map(|r| ((now_utc - r.start_ts) as f64 / (365.25 * 86_400.0)).max(0.0))
+        .unwrap_or(0.0);
+
+    // Risk increases when current tenure exceeds average (overdue for change)
+    let tenure_ratio = if avg_tenure > 0.5 {
+        (current_tenure / avg_tenure).min(2.0) / 2.0
+    } else {
+        0.3
+    };
+
+    // More moves = higher base risk
+    let move_count = role_history.len() as f64;
+    let velocity_risk = (move_count / 6.0).min(1.0);
+
+    let raw = 0.6 * tenure_ratio + 0.4 * velocity_risk;
+    raw.clamp(0.0, 1.0)
+}
+
+/// Compute role drift score: how far the person's current role diverges from
+/// their career trajectory (e.g., a procurement person moving to operations).
+pub fn compute_role_drift_score(role_history: &[RoleHistoryEntry]) -> f64 {
+    if role_history.len() < 2 {
+        return 0.0;
+    }
+
+    let families: Vec<String> = role_history
+        .iter()
+        .map(|r| r.role_family.canonical_label().to_string())
+        .collect();
+
+    // Count family changes
+    let family_changes = families.windows(2).filter(|w| w[0] != w[1]).count();
+    let drift_ratio = family_changes as f64 / (families.len() - 1) as f64;
+
+    drift_ratio.clamp(0.0, 1.0)
 }
 
 /// Infer change appetite from role history.
@@ -661,13 +833,19 @@ fn seniority_level_for_title(title: &str) -> u8 {
         9
     } else if t.contains("evp") || t.contains("svp") || t.contains("executive vice") {
         8
-    } else if t.contains("vp") || t.contains("vice president") {
+    } else if t.contains("vp")
+        || t.contains("vice president")
+        || t.contains("principal")
+        || t.contains("fellow")
+        || t.contains("partner")
+    {
         7
-    } else if t.contains("principal") || t.contains("fellow") || t.contains("partner") {
-        7
-    } else if t.contains("director") || t.contains("managing director") {
-        6
-    } else if t.contains("head of") || t.contains("gm") || t.contains("general manager") {
+    } else if t.contains("director")
+        || t.contains("managing director")
+        || t.contains("head of")
+        || t.contains("gm")
+        || t.contains("general manager")
+    {
         6
     } else if t.contains("senior manager") || t.contains("senior director") {
         5
@@ -961,6 +1139,95 @@ pub fn infer_cross_board_count(artifacts: &[PoiArtifact]) -> u32 {
     orgs.len() as u32
 }
 
+/// Classify a person into a buying-center role based on their title and role family.
+///
+/// Returns one of: "Decider", "Influencer", "Buyer", "Gatekeeper", "User", "Initiator".
+pub fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
+    let lower = title.to_lowercase();
+    let role_family_lower = role_family.to_lowercase();
+
+    // C-suite and VPs are Deciders
+    if lower.contains("ceo")
+        || lower.contains("coo")
+        || lower.contains("cfo")
+        || lower == "cto"
+        || lower.starts_with("cto ")
+        || lower.contains(" cto")
+        || lower.contains("cpo")
+        || lower.contains("chief")
+        || lower.contains("president")
+        || lower.contains("general manager")
+        || lower.contains("managing director")
+    {
+        return "Decider";
+    }
+
+    // Procurement / Purchasing are Buyers
+    if matches!(
+        role_family_lower.as_str(),
+        "supply chain" | "supply_chain" | "procurement" | "sourcing" | "purchasing"
+    ) || lower.contains("buyer")
+        || lower.contains("purchas")
+        || lower.contains("procurement")
+        || lower.contains("sourcing")
+        || lower.contains("supply chain")
+        || lower.contains("category manager")
+        || lower.contains("commodity")
+        || lower.contains("vendor management")
+        || lower.contains("approvisionnement")
+        || lower.contains("achat")
+    {
+        return "Buyer";
+    }
+
+    // Quality / Compliance / Legal / Regulatory are Gatekeepers
+    if matches!(
+        role_family_lower.as_str(),
+        "quality" | "regulatory" | "legal" | "compliance"
+    ) || lower.contains("compliance")
+        || lower.contains("quality")
+        || lower.contains("audit")
+        || lower.contains("inspector")
+        || lower.contains("certification")
+    {
+        return "Gatekeeper";
+    }
+
+    // Engineering / R&D / Operations are Users (they use the product/service)
+    if role_family == "Engineering"
+        || role_family == "Operations"
+        || lower.contains("engineer")
+        || lower.contains("manufactur")
+        || lower.contains("production")
+        || lower.contains("plant manager")
+    {
+        return "User";
+    }
+
+    // VP / Director level are Influencers
+    if lower.contains("vp")
+        || lower.contains("vice president")
+        || lower.contains("director")
+        || lower.contains("head of")
+        || lower.contains("senior manager")
+    {
+        return "Influencer";
+    }
+
+    // Strategy / Innovation roles are Initiators
+    if role_family == "Strategy"
+        || role_family == "Research"
+        || lower.contains("strategy")
+        || lower.contains("innovation")
+        || lower.contains("transformation")
+        || lower.contains("business development")
+    {
+        return "Initiator";
+    }
+
+    "Influencer"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,8 +1360,8 @@ mod tests {
     #[test]
     fn test_compute_influence_score() {
         let score = compute_influence_score(80.0, 90.0, 70.0);
-        // 0.3*80 + 0.4*90 + 0.3*70 = 24 + 36 + 21 = 81.0
-        assert!((score - 81.0).abs() < 0.01);
+        // 0.35*80 + 0.25*90 + 0.40*70 = 28 + 22.5 + 28 = 78.5
+        assert!((score - 78.5).abs() < 0.01);
     }
 
     #[test]
@@ -1143,7 +1410,11 @@ mod tests {
             now - 86400,
         )];
         let pain = compute_pain_index(&artifacts, now);
-        assert!(pain < 0.2);
+        assert!(
+            pain < 0.2,
+            "expected low pain from non-problematic artifact, got {}",
+            pain
+        );
     }
 
     #[test]
@@ -1151,6 +1422,68 @@ mod tests {
         let now = 1700100000_i64;
         let pain = compute_pain_index(&[], now);
         assert_eq!(pain, 0.0);
+    }
+
+    #[test]
+    fn test_classify_buying_center_role() {
+        assert_eq!(classify_buying_center_role("CEO", "Executive"), "Decider");
+        assert_eq!(classify_buying_center_role("CFO", "Finance"), "Decider");
+        assert_eq!(
+            classify_buying_center_role("Chief Procurement Officer", "Supply Chain"),
+            "Decider"
+        );
+        assert_eq!(
+            classify_buying_center_role("Senior Buyer", "Supply Chain"),
+            "Buyer"
+        );
+        assert_eq!(
+            classify_buying_center_role("Category Manager, Packaging", "Supply Chain"),
+            "Buyer"
+        );
+        assert_eq!(
+            classify_buying_center_role("Head of Supply Chain", "procurement"),
+            "Buyer"
+        );
+        assert_eq!(
+            classify_buying_center_role("Quality Manager", "Quality"),
+            "Gatekeeper"
+        );
+        assert_eq!(
+            classify_buying_center_role("Quality Manager", "quality"),
+            "Gatekeeper"
+        );
+        assert_eq!(
+            classify_buying_center_role("Compliance Officer", "Regulatory"),
+            "Gatekeeper"
+        );
+        assert_eq!(
+            classify_buying_center_role("Plant Engineer", "Engineering"),
+            "User"
+        );
+        assert_eq!(
+            classify_buying_center_role("Production Manager", "operations"),
+            "User"
+        );
+        assert_eq!(
+            classify_buying_center_role("Production Manager", "Operations"),
+            "User"
+        );
+        assert_eq!(
+            classify_buying_center_role("VP of Sales", "Sales"),
+            "Influencer"
+        );
+        assert_eq!(
+            classify_buying_center_role("Director of Marketing", "Marketing"),
+            "Influencer"
+        );
+        assert_eq!(
+            classify_buying_center_role("Strategy Lead", "Strategy"),
+            "Initiator"
+        );
+        assert_eq!(
+            classify_buying_center_role("Innovation Director", "Strategy"),
+            "Influencer"
+        );
     }
 
     #[test]

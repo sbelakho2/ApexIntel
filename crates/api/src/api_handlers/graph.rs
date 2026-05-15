@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use axum::extract::Query;
 
-use crate::*;
 use crate::routes::graph::{
-    parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode,
-    NeighborhoodQuery, NeighborhoodResponse, PathQuery, PathResponse, PathStep,
+    parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode, NeighborhoodQuery,
+    NeighborhoodResponse, PathQuery, PathResponse, PathStep,
 };
+use crate::*;
 
 #[derive(sqlx::FromRow)]
 struct GraphLabelRow {
@@ -72,7 +72,10 @@ pub(crate) async fn get_graph_neighborhood(
                 }
             };
 
-            for edge in edges.into_iter().filter(|edge| edge_matches_filters(edge, &allowed_edge_types, min_weight)) {
+            for edge in edges
+                .into_iter()
+                .filter(|edge| edge_matches_filters(edge, &allowed_edge_types, min_weight))
+            {
                 seen_edges.entry(edge.id).or_insert_with(|| edge.clone());
                 for node_id in [edge.source_id, edge.target_id] {
                     if seen_nodes.len() >= max_nodes || seen_nodes.contains(&node_id) {
@@ -124,14 +127,23 @@ pub(crate) async fn get_graph_neighborhood(
             }
         })
         .collect();
-    nodes.sort_by(|left, right| left.depth.cmp(&right.depth).then_with(|| left.label.cmp(&right.label)));
+    nodes.sort_by(|left, right| {
+        left.depth
+            .cmp(&right.depth)
+            .then_with(|| left.label.cmp(&right.label))
+    });
 
     let mut edges: Vec<RouteGraphEdge> = seen_edges
         .into_values()
         .filter(|edge| seen_nodes.contains(&edge.source_id) && seen_nodes.contains(&edge.target_id))
         .map(edge_row_to_route_edge)
         .collect();
-    edges.sort_by(|left, right| right.weight.partial_cmp(&left.weight).unwrap_or(std::cmp::Ordering::Equal));
+    edges.sort_by(|left, right| {
+        right
+            .weight
+            .partial_cmp(&left.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let response = NeighborhoodResponse {
         center_id: uid.to_string(),
@@ -246,7 +258,10 @@ pub(crate) async fn get_graph_path(
             }
         };
 
-        for edge in edges.into_iter().filter(|edge| edge_matches_filters(edge, &allowed_edge_types, None)) {
+        for edge in edges
+            .into_iter()
+            .filter(|edge| edge_matches_filters(edge, &allowed_edge_types, None))
+        {
             let next_id = if edge.source_id == current {
                 edge.target_id
             } else if edge.target_id == current {
@@ -320,7 +335,9 @@ pub(crate) async fn get_graph_path(
                 let edge_meta = if index == 0 {
                     None
                 } else {
-                    parents.get(node_id).map(|(_, edge_type, weight)| (edge_type.clone(), *weight))
+                    parents
+                        .get(node_id)
+                        .map(|(_, edge_type, weight)| (edge_type.clone(), *weight))
                 };
                 PathStep {
                     node_id: node_id.to_string(),

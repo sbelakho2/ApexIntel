@@ -1,3 +1,13 @@
+# AUGMENTATION ENTITIES — REFERENCE LIST
+# ========================================
+# This file is a sample/seed list only.
+# In production (use_seed_entities = false), the system discovers
+# all companies dynamically from observation data using:
+#   - CompanySignalExtractor (suffix/ticker/caps patterns)
+#   - EntityVerifier (heuristic + cross-reference checks)
+#   - DiscoveryPipeline (extract → verify → register)
+#
+# This list remains as a reference for testing and backward compatibility.
 ems_companies:
   - [Foxconn, TW, 2354.TW, Ems]
   - [Jabil Inc., US, JBL, Ems]

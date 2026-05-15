@@ -1,17 +1,21 @@
 [Unit]
 Description=ApexIntel LLM Server (llama-server + Qwen3)
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
 User=apexintel
 Group=apexintel
+Environment="LLM_CTX_SIZE=8192"
+Environment="LLM_THREADS=14"
+Environment="LLM_GPU_LAYERS=0"
 ExecStart=/usr/local/bin/llama-server \
     --model /opt/apexintel/model/Qwen3-30B-A3B-Q4_K_M.gguf \
     --host 127.0.0.1 --port 8081 \
-    --ctx-size 8192 \
-    --n-gpu-layers 0 \
-    --threads 14 \
+    --ctx-size ${LLM_CTX_SIZE} \
+    --n-gpu-layers ${LLM_GPU_LAYERS} \
+    --threads ${LLM_THREADS} \
     --batch-size 512 \
     --parallel 2 \
     --mlock \
@@ -22,7 +26,7 @@ RestartSec=30
 TimeoutStartSec=120
 TimeoutStopSec=30
 LimitNOFILE=65536
-LimitMEMLOCK=infinity
+LimitMEMLOCK=18000000000
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=apexintel-llm

@@ -702,7 +702,7 @@ pub fn validate_custom_command(
     // Allowlist check: the first whitespace-delimited token must be in the list
     if !allowlist.is_empty() {
         let first_token = cmd.split_whitespace().next().unwrap_or("");
-        if !allowlist.iter().any(|a| *a == first_token) {
+        if !allowlist.contains(&first_token) {
             return Err(format!(
                 "custom job command {:?} binary {:?} not in allowlist",
                 name, first_token
@@ -735,7 +735,7 @@ pub fn is_due_with_jitter(
             elapsed >= effective_interval as i64
         }
         Schedule::DailyAt { hour, minute } => {
-            let jitter_minutes = (jitter_offset_secs / 60) as u32;
+            let jitter_minutes = jitter_offset_secs / 60;
             let total_minutes = *minute + jitter_minutes;
             let effective_minute = total_minutes % 60;
             let effective_hour = (*hour + total_minutes / 60) % 24;
@@ -749,7 +749,7 @@ pub fn is_due_with_jitter(
             )
         }
         Schedule::WeeklyOn { day, hour, minute } => {
-            let jitter_minutes = (jitter_offset_secs / 60) as u32;
+            let jitter_minutes = jitter_offset_secs / 60;
             let total_minutes = *minute + jitter_minutes;
             let effective_minute = total_minutes % 60;
             let effective_hour = (*hour + total_minutes / 60) % 24;
@@ -1147,6 +1147,12 @@ pub fn default_scheduler() -> Scheduler {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::absurd_extreme_comparisons
+    )]
+
     use super::*;
     use chrono::TimeZone;
 
@@ -1620,7 +1626,10 @@ mod tests {
 
         assert_eq!(s.jobs.len(), expected_jobs.len());
         for expected_job in expected_jobs {
-            assert!(s.jobs.contains_key(expected_job), "missing default job {expected_job}");
+            assert!(
+                s.jobs.contains_key(expected_job),
+                "missing default job {expected_job}"
+            );
         }
     }
 

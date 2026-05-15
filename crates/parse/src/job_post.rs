@@ -10,21 +10,24 @@ use apex_core::validation::normalize_url;
 
 static RE_JOB_LOCATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:location|lieu|ville|city|based in)[:\s]+([A-Za-z\u{00c0}-\u{00ff}\s,]+)")
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid job location regex: {error}"))
 });
 
 static RE_SALARY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:salary|compensation|r\u{00e9}mun\u{00e9}ration)[:\s]*([^\n.]+)").unwrap()
+    Regex::new(r"(?i)(?:salary|compensation|r\u{00e9}mun\u{00e9}ration)[:\s]*([^\n.]+)")
+        .unwrap_or_else(|error| panic!("invalid job salary regex: {error}"))
 });
 
 /// og:site_name — both attribute orderings.
 static RE_OG_SITE_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:property=["']og:site_name["'][^>]*content=["']([^"']+)["']|content=["']([^"']+)["'][^>]*property=["']og:site_name["'])"#).unwrap()
+    Regex::new(r#"(?i)(?:property=["']og:site_name["'][^>]*content=["']([^"']+)["']|content=["']([^"']+)["'][^>]*property=["']og:site_name["'])"#)
+        .unwrap_or_else(|error| panic!("invalid og:site_name regex: {error}"))
 });
 
 /// JSON-LD "name" inside an Organization/JobPosting node.
 static RE_JSONLD_ORG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)["'](?:@type)["']\s*:\s*["'](?:Organization|JobPosting|EmployerAggregateRating)["'][^}]*?["']name["']\s*:\s*["']([^"']{2,80})["']"#).unwrap()
+    Regex::new(r#"(?i)["'](?:@type)["']\s*:\s*["'](?:Organization|JobPosting|EmployerAggregateRating)["'][^}]*?["']name["']\s*:\s*["']([^"']{2,80})["']"#)
+        .unwrap_or_else(|error| panic!("invalid JSON-LD organization regex: {error}"))
 });
 
 /// Extracted job posting data.
@@ -236,7 +239,7 @@ pub fn extract_job_posting(body_text: &str, title: &str, source_url: &str) -> Jo
     // Keyword extraction
     let ems_kws = crate::multilingual::ems_keywords("en");
     let cert_kws = crate::multilingual::certification_keywords("en");
-    let all_kws: Vec<&str> = ems_kws.into_iter().chain(cert_kws.into_iter()).collect();
+    let all_kws: Vec<&str> = ems_kws.into_iter().chain(cert_kws).collect();
     let keywords = crate::multilingual::contains_keywords(&normalized_body, &all_kws);
     let normalized_url = normalize_url(source_url).unwrap_or_else(|| source_url.to_string());
 
@@ -254,9 +257,10 @@ pub fn extract_job_posting(body_text: &str, title: &str, source_url: &str) -> Jo
 }
 
 fn extract_location(text: &str) -> Option<String> {
-    RE_JOB_LOCATION
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_JOB_LOCATION.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 /// Attempt to extract company name from HTML metadata, JSON-LD, or the URL domain.
@@ -326,9 +330,10 @@ fn extract_domain_company(url: &str) -> Option<String> {
 }
 
 fn extract_salary(text: &str) -> Option<String> {
-    RE_SALARY
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_SALARY.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 #[cfg(test)]
@@ -454,7 +459,7 @@ mod tests {
         let text = "Location: Tunis, Tunisia. Great opportunity.";
         let loc = extract_location(text);
         assert!(loc.is_some());
-        assert!(loc.unwrap().contains("Tunis"));
+        assert!(matches!(loc.as_deref(), Some(value) if value.contains("Tunis")));
     }
 
     #[test]

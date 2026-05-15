@@ -44,6 +44,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::warn;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema types
@@ -176,20 +177,43 @@ impl FunctionSpec {
     /// Returns the `{"type": "function", "function": {...}}` object that
     /// belongs in the `tools` array of an OpenAI chat-completions request.
     pub fn to_tool_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": self.parameters.iter()
-                        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(serde_json::Value::Null)))
-                        .collect::<HashMap<_, _>>(),
-                    "required": self.required,
-                }
-            }
-        })
+        let properties = self
+            .parameters
+            .iter()
+            .map(|(k, v)| {
+                let val = serde_json::to_value(v).unwrap_or_else(|e| {
+                    warn!(param=%k, error=%e, "Failed to serialize function parameter schema, using null fallback");
+                    serde_json::Value::Null
+                });
+                (k.clone(), val)
+            })
+            .collect::<serde_json::Map<_, _>>();
+
+        let mut parameters = serde_json::Map::new();
+        parameters.insert("type".to_string(), "object".into());
+        parameters.insert(
+            "properties".to_string(),
+            serde_json::Value::Object(properties),
+        );
+        parameters.insert(
+            "required".to_string(),
+            serde_json::to_value(&self.required).unwrap_or_else(|error| {
+                panic!("function required fields should serialize: {error}")
+            }),
+        );
+
+        let mut function = serde_json::Map::new();
+        function.insert("name".to_string(), self.name.clone().into());
+        function.insert("description".to_string(), self.description.clone().into());
+        function.insert(
+            "parameters".to_string(),
+            serde_json::Value::Object(parameters),
+        );
+
+        let mut tool = serde_json::Map::new();
+        tool.insert("type".to_string(), "function".into());
+        tool.insert("function".to_string(), serde_json::Value::Object(function));
+        serde_json::Value::Object(tool)
     }
 }
 
@@ -246,6 +270,11 @@ impl FunctionCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn string_args(pairs: &[(&str, &str)]) -> serde_json::Value {
+        serde_json::to_value(HashMap::<_, _>::from_iter(pairs.iter().copied()))
+            .unwrap_or_else(|error| panic!("string arguments should serialize: {error}"))
+    }
 
     fn make_spec(name: &str, params: &[(&str, ParamType)], required: &[&str]) -> FunctionSpec {
         let parameters = params
@@ -326,7 +355,7 @@ mod tests {
         assert_eq!(json["function"]["name"], "get_flag");
         let required = json["function"]["parameters"]["required"]
             .as_array()
-            .unwrap();
+            .unwrap_or_else(|| panic!("required field should be an array"));
         assert!(required.iter().any(|v| v == "flag_id"));
     }
 
@@ -336,9 +365,11 @@ mod tests {
     fn test_function_call_parse_arguments_success() {
         let call = FunctionCall {
             name: "get_entity".to_string(),
-            arguments: serde_json::json!({"entity_id": "abc-123"}),
+            arguments: string_args(&[("entity_id", "abc-123")]),
         };
-        let parsed: HashMap<String, String> = call.parse_arguments().unwrap();
+        let parsed: HashMap<String, String> = call
+            .parse_arguments()
+            .unwrap_or_else(|error| panic!("function arguments should parse: {error}"));
         assert_eq!(parsed["entity_id"], "abc-123");
     }
 
@@ -347,7 +378,7 @@ mod tests {
         let spec = make_spec("f", &[("a", ParamType::String)], &["a"]);
         let call = FunctionCall {
             name: "f".to_string(),
-            arguments: serde_json::json!({"a": "hello"}),
+            arguments: string_args(&[("a", "hello")]),
         };
         assert!(call.validate_against(&spec).is_empty());
     }
@@ -361,7 +392,7 @@ mod tests {
         );
         let call = FunctionCall {
             name: "f".to_string(),
-            arguments: serde_json::json!({"a": "hello"}), // "b" missing
+            arguments: string_args(&[("a", "hello")]), // "b" missing
         };
         let missing = call.validate_against(&spec);
         assert_eq!(missing, vec!["b".to_string()]);
@@ -372,7 +403,7 @@ mod tests {
         let spec = make_spec("f", &[("a", ParamType::String)], &["a"]);
         let call = FunctionCall {
             name: "f".to_string(),
-            arguments: serde_json::json!("not-an-object"),
+            arguments: serde_json::Value::String("not-an-object".to_string()),
         };
         let errs = call.validate_against(&spec);
         assert!(errs[0].contains("not a JSON object"));

@@ -12,8 +12,8 @@ fn list_observations_rejects_unknown_observation_type() {
 
 #[test]
 fn list_observations_accepts_known_observation_type() {
-    let observation_type = parse_observation_type_filter(Some("JobPost"))
-        .expect("known observation type should pass");
+    let observation_type =
+        parse_observation_type_filter(Some("JobPost")).expect("known observation type should pass");
     assert_eq!(observation_type.as_deref(), Some("JobPost"));
 }
 
@@ -24,5 +24,8 @@ fn list_observations_returns_api_error_shape_for_validation_failures() {
     );
     let error = payload.error.expect("error payload");
     assert_eq!(error.code, ErrorCode::ValidationError);
-    assert_eq!(error.details.expect("details").get("field"), Some(&"observation_type".to_string()));
+    assert_eq!(
+        error.details.expect("details").get("field"),
+        Some(&"observation_type".to_string())
+    );
 }

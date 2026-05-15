@@ -134,12 +134,19 @@ pub async fn generate_hypothesis(
 ///
 /// `existing_ids` is updated as new hypotheses are generated to prevent
 /// duplicate IDs within a batch.
+///
+/// # Time complexity
+///
+/// O(C · R) where C = candidates, R = max retries (currently 2).
+/// No O(n²) patterns; the function is inherently O(n) sequential.
 pub async fn generate_hypotheses_batch(
     client: &dyn LlmClient,
     candidates: &[PatternCandidate],
     initial_existing_ids: &[String],
 ) -> Vec<HypothesisResult> {
-    let mut existing_ids: Vec<String> = initial_existing_ids.to_vec();
+    let mut existing_ids: Vec<String> =
+        Vec::with_capacity(initial_existing_ids.len() + candidates.len());
+    existing_ids.extend_from_slice(initial_existing_ids);
     let mut results = Vec::with_capacity(candidates.len());
 
     for (i, candidate) in candidates.iter().enumerate() {

@@ -27,13 +27,13 @@
 //! - `stats.hazard.hazard_rate`
 //! - `stats.fdr.significant_count`
 
+#[cfg(test)]
+use crate::calibration::legacy_score_to_probability;
 use crate::{
     anomaly, bayesian,
     calibration::{probability_to_alert_level, AlertCalibrationModel},
-    changepoint, correlation, fdr, graph_risk, granger, hazard, mutual_info,
+    changepoint, correlation, fdr, granger, graph_risk, hazard, mutual_info,
 };
-#[cfg(test)]
-use crate::calibration::legacy_score_to_probability;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::warn;
@@ -266,6 +266,7 @@ fn run_changepoint_stage(input: &StatsPipelineInput, result: &mut StatsPipelineR
         penalty: input.changepoint_penalty,
         adaptive_penalty: true,
         min_segment: 2,
+        max_candidates: 200,
     };
 
     let effective_penalty = changepoint::effective_penalty(&input.primary_series, &config);
@@ -482,7 +483,8 @@ fn run_granger_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResul
                 continue;
             }
 
-            if let Some(candidate) = granger::best_granger_lag(source_series, target_series, &lags) {
+            if let Some(candidate) = granger::best_granger_lag(source_series, target_series, &lags)
+            {
                 let should_replace = best_result
                     .as_ref()
                     .map(|(_, _, current)| candidate.p_value < current.p_value)
@@ -498,8 +500,12 @@ fn run_granger_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResul
         result.insert("stats.granger.min_p_value", best.p_value);
         result.insert("stats.granger.best_lag", best.lag as f64);
         result.insert("stats.granger.best_f_stat", best.f_stat);
-        result.labels.insert("stats.granger.best_source".into(), best_source.clone());
-        result.labels.insert("stats.granger.best_target".into(), best_target.clone());
+        result
+            .labels
+            .insert("stats.granger.best_source".into(), best_source.clone());
+        result
+            .labels
+            .insert("stats.granger.best_target".into(), best_target.clone());
         let alerts = granger::predictive_alerts_for_signal(&best_source, &edges);
         if !alerts.is_empty() {
             result
@@ -551,7 +557,10 @@ fn run_bayesian_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResu
     result.insert("stats.bayesian.posterior", fusion.posterior);
     result.insert("stats.bayesian.lift", lift.clamp(0.0, 1000.0));
     result.insert("stats.bayesian.cap_trigger_rate", fusion.cap_trigger_rate);
-    result.insert("stats.bayesian.capped_updates", fusion.capped_updates as f64);
+    result.insert(
+        "stats.bayesian.capped_updates",
+        fusion.capped_updates as f64,
+    );
     result.insert(
         "stats.bayesian.is_significant",
         if fusion.posterior >= 0.5 { 1.0 } else { 0.0 },
@@ -652,11 +661,19 @@ fn run_graph_risk_stage(input: &StatsPipelineInput, result: &mut StatsPipelineRe
     );
     result.insert(
         "stats.graph_risk.simulation_p05",
-        simulation.per_node_p05.get(&input.entity_id).copied().unwrap_or(0.0),
+        simulation
+            .per_node_p05
+            .get(&input.entity_id)
+            .copied()
+            .unwrap_or(0.0),
     );
     result.insert(
         "stats.graph_risk.simulation_p95",
-        simulation.per_node_p95.get(&input.entity_id).copied().unwrap_or(0.0),
+        simulation
+            .per_node_p95
+            .get(&input.entity_id)
+            .copied()
+            .unwrap_or(0.0),
     );
 }
 
@@ -775,7 +792,10 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
     if input.survival_groups.is_empty() {
         result.insert("stats.hazard.log_rank.chi_square", 0.0);
     } else if input.survival_groups.len() != input.survival_times.len() {
-        result.warn("hazard", "survival_groups length mismatch with survival_times");
+        result.warn(
+            "hazard",
+            "survival_groups length mismatch with survival_times",
+        );
         result.insert("stats.hazard.log_rank.chi_square", 0.0);
     } else {
         let mut group_zero = Vec::new();
@@ -801,7 +821,10 @@ fn run_hazard_stage(input: &StatsPipelineInput, result: &mut StatsPipelineResult
                 log_rank.observed_minus_expected,
             );
         } else {
-            result.warn("hazard", "log-rank comparison unavailable for provided groups");
+            result.warn(
+                "hazard",
+                "log-rank comparison unavailable for provided groups",
+            );
             result.insert("stats.hazard.log_rank.chi_square", 0.0);
         }
     }
@@ -914,7 +937,9 @@ pub fn alert_score_from_features(features: &HashMap<String, f64>) -> f64 {
 
 #[cfg(test)]
 fn derive_alert_level(features: &HashMap<String, f64>) -> AlertLevel {
-    match probability_to_alert_level(legacy_score_to_probability(alert_score_from_features(features))) {
+    match probability_to_alert_level(legacy_score_to_probability(alert_score_from_features(
+        features,
+    ))) {
         "high" => AlertLevel::High,
         "medium" => AlertLevel::Medium,
         "low" => AlertLevel::Low,
@@ -990,10 +1015,16 @@ mod tests {
         assert!(result.features.contains_key("stats.bayesian.posterior"));
         assert!(result.features.contains_key("stats.fdr.significant_count"));
         assert!(result.features.contains_key("stats.hazard.hazard_rate"));
-        assert!(result.features.contains_key("stats.graph_risk.monotonic_non_increasing"));
-        assert!(result.features.contains_key("stats.graph_risk.simulation_mean"));
+        assert!(result
+            .features
+            .contains_key("stats.graph_risk.monotonic_non_increasing"));
+        assert!(result
+            .features
+            .contains_key("stats.graph_risk.simulation_mean"));
         assert!(result.features.contains_key("stats.hazard.cox.concordance"));
-        assert!(result.features.contains_key("stats.hazard.log_rank.chi_square"));
+        assert!(result
+            .features
+            .contains_key("stats.hazard.log_rank.chi_square"));
     }
 
     #[test]
@@ -1034,7 +1065,10 @@ mod tests {
         );
         assert_eq!(result.features.get("stats.mutual_info.mi"), Some(&0.0));
         assert_eq!(result.features.get("stats.hazard.hazard_rate"), Some(&0.0));
-        assert_eq!(result.features.get("stats.hazard.cox.concordance"), Some(&0.0));
+        assert_eq!(
+            result.features.get("stats.hazard.cox.concordance"),
+            Some(&0.0)
+        );
         assert_eq!(
             result.features.get("stats.hazard.log_rank.chi_square"),
             Some(&0.0)

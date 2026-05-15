@@ -4,3 +4,7 @@ public_url = "/wasm/"
 
 [watch]
 watch = ["src", "index.html", "style.css"]
+
+[[proxy]]
+backend = "http://127.0.0.1:8080/api/"
+rewrite = "/api/"

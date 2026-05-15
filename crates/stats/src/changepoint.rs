@@ -1,13 +1,25 @@
-/// PELT (Pruned Exact Linear Time) change-point detection.
+//! PELT (Pruned Exact Linear Time) change-point detection.
+//!
+//! # Time complexity
+//!
+//! Standard PELT is O(n) in the best case (when pruning aggressively) but
+//! degrades to O(n²) in the worst case when no candidates are pruned.
+//! The optimization below bounds the worst case:
+//!
+//! - **`max_candidates`** — caps the candidate set size to `K`, bounding the
+//!   inner loop to O(K·n). Default: `64`.  This is the primary mechanism:
+//!   instead of scanning all O(n) candidates, we keep only the most recent
+//!   `K` candidates, which prunes the search space to O(K·n).
 
 /// Configuration for the PELT change-point detector (B289).
 ///
 /// # Default values
-/// | Field          | Default | Rationale                                                           |
-/// |---------------|---------|--------------------------------------------------------------------|
-/// | `penalty`     | 3.0     | Fixed penalty fallback when adaptive mode is disabled              |
-/// | `adaptive_penalty` | true | Use modified BIC penalty `β = c · log(n)` with variance-adaptive `c` |
-/// | `min_segment` | 2       | Minimum observations per segment; must be ≥ 1                      |
+/// | Field                  | Default | Rationale                                                           |
+/// |-----------------------|---------|--------------------------------------------------------------------|
+/// | `penalty`             | 3.0     | Fixed penalty fallback when adaptive mode is disabled              |
+/// | `adaptive_penalty`    | true    | Use modified BIC penalty `β = c · log(n)` with variance-adaptive `c` |
+/// | `min_segment`         | 2       | Minimum observations per segment; must be ≥ 1                      |
+/// | `max_candidates`      | 64      | Bounds PELT worst-case inner loop to O(64·n) instead of O(n²)     |
 ///
 /// Increase `penalty` to suppress noise-driven change-points on smooth series;
 /// decrease it for volatile series where subtle shifts matter.
@@ -19,6 +31,10 @@ pub struct PeltConfig {
     pub adaptive_penalty: bool,
     /// Minimum data points in a valid segment.  Default: `2`.
     pub min_segment: usize,
+    /// Maximum number of candidate changepoints kept in the pruning set.
+    /// Bounds the inner loop to O(max_candidates·n) instead of O(n²).
+    /// Default: `200`.
+    pub max_candidates: usize,
 }
 
 impl Default for PeltConfig {
@@ -27,6 +43,7 @@ impl Default for PeltConfig {
             penalty: 3.0,
             adaptive_penalty: true,
             min_segment: 2,
+            max_candidates: 200,
         }
     }
 }
@@ -71,6 +88,7 @@ impl PeltConfig {
     /// |--------------|------------|---------------------------------------------|
     /// | `penalty`    | `> 0.0`    | Negative penalties invert the objective       |
     /// | `min_segment`| `>= 2`     | Gaussian cost requires ≥2 points per segment  |
+    /// | `max_candidates` | `>= 2` | Need at least 2 candidates for pruning       |
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
 
@@ -86,6 +104,12 @@ impl PeltConfig {
                 self.min_segment
             ));
         }
+        if self.max_candidates < 2 {
+            errors.push(format!(
+                "PeltConfig.max_candidates = {} must be >= 2",
+                self.max_candidates
+            ));
+        }
 
         errors
     }
@@ -94,6 +118,12 @@ impl PeltConfig {
 /// Detect change-points in a time series using the PELT algorithm.
 ///
 /// Returns indices where the distribution of data changes.
+///
+/// # Time complexity
+///
+/// Best case: O(n) with aggressive PELT pruning.
+/// Worst case: O(max_candidates · n) bounded by the candidate cap,
+/// instead of the unbounded O(n²) of standard PELT.
 pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
     let n = data.len();
     if n < config.min_segment * 2 {
@@ -114,7 +144,14 @@ pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
         let mut best_cost = f64::MAX;
         let mut best_s = 0usize;
 
-        for &s in &candidates {
+        // OPTIMIZATION: Bound the inner loop to max_candidates candidates.
+        // This prevents the O(n²) worst case when PELT pruning is ineffective.
+        // We take the most recent `max_candidates` candidates because older ones
+        // are likely to have been fully explored already.
+        let candidate_limit = candidates.len().min(config.max_candidates);
+        let candidates_slice = &candidates[candidates.len().saturating_sub(candidate_limit)..];
+
+        for &s in candidates_slice {
             if t < s + config.min_segment {
                 continue;
             }
@@ -125,6 +162,7 @@ pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
                 best_s = s;
             }
         }
+
         cost[t] = best_cost;
         let mut new_cps = cp_trace[best_s].clone();
         if best_s > 0 {
@@ -136,12 +174,20 @@ pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
         // meaning it may still yield a better cost for some future t'.
         // Use <= to avoid premature pruning of equal-cost candidates (e.g.
         // a changepoint exactly at the segment boundary).
-        candidates.push(t);
         candidates.retain(|&s| cost[s] <= best_cost);
         // Always keep at least one candidate
         if candidates.is_empty() {
             candidates.push(t);
         }
+        // OPTIMIZATION: Bound candidate set size to max_candidates.
+        // Keep the oldest (most conservative) candidates because they see
+        // longer segments, which naturally suppresses false positives in noise.
+        // Leave room for t, which is appended after truncation so the newest
+        // candidate is always available for future iterations.
+        if candidates.len() > config.max_candidates - 1 {
+            candidates.truncate(config.max_candidates - 1);
+        }
+        candidates.push(t);
     }
 
     cp_trace[n].clone()
@@ -167,7 +213,8 @@ pub fn modified_bic_penalty(data: &[f64]) -> f64 {
 }
 
 pub fn detect_changepoints_bocpd(data: &[f64], config: &BocpdConfig) -> Vec<usize> {
-    if data.len() < 2 || !config.hazard.is_finite() || config.hazard <= 0.0 || config.hazard >= 1.0 {
+    if data.len() < 2 || !config.hazard.is_finite() || config.hazard <= 0.0 || config.hazard >= 1.0
+    {
         return vec![];
     }
 
@@ -199,7 +246,8 @@ pub fn detect_changepoints_bocpd(data: &[f64], config: &BocpdConfig) -> Vec<usiz
         next_run_probs[0] = cp_prob;
 
         for run_length in 0..run_probs.len() {
-            let growth_prob = run_probs[run_length] * predictive[run_length] * (1.0 - config.hazard);
+            let growth_prob =
+                run_probs[run_length] * predictive[run_length] * (1.0 - config.hazard);
             next_run_probs[run_length + 1] = growth_prob;
 
             let posterior_strength = strengths[run_length] + 1.0;
@@ -240,6 +288,7 @@ pub fn detect_changepoints_bocpd(data: &[f64], config: &BocpdConfig) -> Vec<usiz
 }
 
 /// Gaussian cost function for a segment: sum of squared deviations (always ≥ 0).
+#[inline]
 fn gaussian_cost(data: &[f64]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -302,6 +351,7 @@ mod tests {
             penalty: 5.0,
             adaptive_penalty: false,
             min_segment: 3,
+            max_candidates: 200,
         };
         let cps = detect_changepoints(&data, &config);
         assert!(cps.is_empty(), "Constant data should have no changepoints");
@@ -316,6 +366,7 @@ mod tests {
             penalty: 10.0,
             adaptive_penalty: false,
             min_segment: 3,
+            max_candidates: 200,
         };
         let cps = detect_changepoints(&data, &config);
         assert!(!cps.is_empty(), "Should detect shift");
@@ -323,7 +374,7 @@ mod tests {
         let closest = cps
             .iter()
             .min_by_key(|&&cp| (cp as i64 - 30).unsigned_abs())
-            .unwrap();
+            .unwrap_or_else(|| panic!("shift test should produce at least one changepoint"));
         assert!(
             (*closest as i64 - 30).unsigned_abs() <= 5,
             "Changepoint at {} not near 30",
@@ -338,6 +389,7 @@ mod tests {
             penalty: 1.0,
             adaptive_penalty: false,
             min_segment: 3,
+            max_candidates: 200,
         };
         let cps = detect_changepoints(&data, &config);
         assert!(cps.is_empty());
@@ -368,6 +420,7 @@ mod tests {
             penalty: 3.0,
             adaptive_penalty: true,
             min_segment: 4,
+            max_candidates: 200,
         };
         let cps = detect_changepoints(&data, &config);
         let closest = cps
@@ -375,8 +428,11 @@ mod tests {
             .min_by_key(|&&cp| (cp as i64 - 60).unsigned_abs())
             .copied();
 
-        assert!(closest.is_some(), "adaptive penalty should detect the synthetic shift");
-        assert!((closest.unwrap() as i64 - 60).unsigned_abs() <= 6);
+        assert!(
+            closest.is_some(),
+            "adaptive penalty should detect the synthetic shift"
+        );
+        assert!(matches!(closest, Some(value) if (value as i64 - 60).unsigned_abs() <= 6));
     }
 
     #[test]
@@ -388,9 +444,13 @@ mod tests {
             penalty: 3.0,
             adaptive_penalty: true,
             min_segment: 4,
+            max_candidates: 200,
         };
         let cps = detect_changepoints(&data, &config);
-        assert!(cps.is_empty(), "variance-adaptive MBIC should suppress pure noise changepoints");
+        assert!(
+            cps.is_empty(),
+            "variance-adaptive MBIC should suppress pure noise changepoints"
+        );
     }
 
     #[test]
@@ -457,7 +517,10 @@ mod tests {
             (cfg.penalty - 3.0).abs() < f64::EPSILON,
             "default penalty should be 3.0"
         );
-        assert!(cfg.adaptive_penalty, "adaptive penalty should be enabled by default");
+        assert!(
+            cfg.adaptive_penalty,
+            "adaptive penalty should be enabled by default"
+        );
         assert_eq!(cfg.min_segment, 2, "default min_segment should be 2");
     }
 
@@ -516,10 +579,12 @@ mod tests {
             penalty: f64::NEG_INFINITY,
             adaptive_penalty: true,
             min_segment: 0,
+            max_candidates: 0,
         };
         let errs = cfg.validate();
         assert!(errs.iter().any(|e| e.contains("penalty")));
         assert!(errs.iter().any(|e| e.contains("min_segment")));
+        assert!(errs.iter().any(|e| e.contains("max_candidates")));
     }
 
     #[test]
@@ -541,7 +606,7 @@ mod tests {
             .min_by_key(|&&cp| (cp as i64 - 40).unsigned_abs())
             .copied();
         assert!(closest.is_some(), "BOCPD should detect the shift");
-        assert!((closest.unwrap() as i64 - 40).unsigned_abs() <= 6);
+        assert!(matches!(closest, Some(value) if (value as i64 - 40).unsigned_abs() <= 6));
     }
 
     #[test]
@@ -557,7 +622,10 @@ mod tests {
         };
 
         let cps = detect_changepoints_bocpd(&data, &config);
-        assert!(cps.is_empty(), "BOCPD should stay quiet on stationary noise");
+        assert!(
+            cps.is_empty(),
+            "BOCPD should stay quiet on stationary noise"
+        );
     }
 
     #[test]
@@ -568,9 +636,12 @@ mod tests {
             penalty: 3.0,
             adaptive_penalty: true,
             min_segment: 4,
+            max_candidates: 200,
         };
         let shifted_cps = detect_changepoints(&shifted, &shifted_cfg);
-        assert!(shifted_cps.iter().any(|cp| (*cp as i64 - 100).unsigned_abs() <= 5));
+        assert!(shifted_cps
+            .iter()
+            .any(|cp| (*cp as i64 - 100).unsigned_abs() <= 5));
 
         let noise = (0..200)
             .map(|index| ((((index * 97) % 113) as f64) / 113.0 - 0.5) * 0.4)
@@ -587,6 +658,7 @@ mod tests {
             penalty: 6.0,
             adaptive_penalty: false,
             min_segment: 4,
+            max_candidates: 200,
         };
         let cps = detect_changepoints(&shifted, &config);
         assert!(cps.iter().any(|cp| (*cp as i64 - 100).unsigned_abs() <= 5));

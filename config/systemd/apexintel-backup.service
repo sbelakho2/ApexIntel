@@ -10,8 +10,9 @@ Group=apexintel
 WorkingDirectory=/opt/apexintel
 EnvironmentFile=/opt/apexintel/config/.env
 ExecStart=/usr/bin/env bash /opt/apexintel/scripts/backup.sh /opt/apexintel/backups
-StandardOutput=append:/var/log/apexintel-backup.log
-StandardError=append:/var/log/apexintel-backup.log
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apexintel-backup
 
 [Install]
 WantedBy=multi-user.target

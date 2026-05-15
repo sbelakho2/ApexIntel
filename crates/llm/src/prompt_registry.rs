@@ -18,11 +18,11 @@ pub struct RegisteredPrompt {
 
 impl RegisteredPrompt {
     pub fn metadata_value(&self) -> serde_json::Value {
-        serde_json::json!({
-            "workflow": self.workflow,
-            "prompt_id": self.prompt_id,
-            "version": self.version,
-        })
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("workflow".to_string(), self.workflow.into());
+        metadata.insert("prompt_id".to_string(), self.prompt_id.into());
+        metadata.insert("version".to_string(), self.version.into());
+        serde_json::Value::Object(metadata)
     }
 }
 

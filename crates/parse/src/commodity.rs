@@ -12,7 +12,7 @@ static RE_PRICE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid commodity price regex: {error}"))
 });
 
 static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
@@ -21,7 +21,7 @@ static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid commodity date regex: {error}"))
 });
 
 static RE_TABULAR: LazyLock<Regex> = LazyLock::new(|| {
@@ -32,7 +32,7 @@ static RE_TABULAR: LazyLock<Regex> = LazyLock::new(|| {
     .size_limit(200_000)
     .dfa_size_limit(200_000)
     .build()
-    .unwrap()
+    .unwrap_or_else(|error| panic!("invalid commodity tabular regex: {error}"))
 });
 
 /// A commodity price observation.
@@ -265,8 +265,11 @@ fn extract_tabular_prices(text: &str, source: &str, url: &str) -> Vec<CommodityP
 
     // Pattern for table rows: "Name | Price | Currency | Unit"
     for caps in RE_TABULAR.captures_iter(text) {
-        let commodity = caps.get(1).unwrap().as_str().to_lowercase();
-        let price_str = caps.get(2).unwrap().as_str();
+        let (Some(commodity_match), Some(price_match)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let commodity = commodity_match.as_str().to_lowercase();
+        let price_str = price_match.as_str();
         let currency = caps
             .get(3)
             .map(|m| m.as_str().to_uppercase())
@@ -351,7 +354,7 @@ mod tests {
         assert!(prices.len() >= 2);
         let copper = prices.iter().find(|p| p.commodity == "copper");
         assert!(copper.is_some());
-        let cu = copper.unwrap();
+        let cu = copper.unwrap_or_else(|| panic!("copper price should be extracted"));
         assert!(cu.price > 0.0);
         assert_eq!(cu.currency, "USD");
     }
@@ -361,7 +364,8 @@ mod tests {
         let text = "Copper spot price: $4.25 per lb today.";
         let result = find_price_for_commodity(text, "copper");
         assert!(result.is_some());
-        let (price, currency, unit) = result.unwrap();
+        let (price, currency, unit) =
+            result.unwrap_or_else(|| panic!("copper price should be extracted"));
         assert!((price - 4.25).abs() < 0.01);
         assert_eq!(currency, "USD");
         assert_eq!(unit, "lb");
@@ -415,7 +419,8 @@ mod tests {
         let text = "copper price: €3.95 per kg";
         let result = find_price_for_commodity(text, "copper");
         assert!(result.is_some());
-        let (price, currency, _) = result.unwrap();
+        let (price, currency, _) =
+            result.unwrap_or_else(|| panic!("euro copper price should be extracted"));
         assert!((price - 3.95).abs() < 0.01);
         assert_eq!(currency, "EUR");
     }
@@ -426,7 +431,8 @@ mod tests {
         let text = "copper price: 4.25 USD per lb";
         let result = find_price_for_commodity(text, "copper");
         assert!(result.is_some());
-        let (price, currency, _) = result.unwrap();
+        let (price, currency, _) =
+            result.unwrap_or_else(|| panic!("USD copper price should be extracted"));
         assert!((price - 4.25).abs() < 0.01);
         assert_eq!(currency, "USD");
     }
@@ -437,7 +443,8 @@ mod tests {
         let text = "gold price: ¥185000 per oz";
         let result = find_price_for_commodity(text, "gold");
         assert!(result.is_some());
-        let (_, currency, _) = result.unwrap();
+        let (_, currency, _) =
+            result.unwrap_or_else(|| panic!("yen gold price should be extracted"));
         assert_eq!(currency, "CNY");
     }
 
@@ -447,7 +454,8 @@ mod tests {
         let text = "gold price: 185000 JPY per oz";
         let result = find_price_for_commodity(text, "gold");
         assert!(result.is_some());
-        let (price, currency, _) = result.unwrap();
+        let (price, currency, _) =
+            result.unwrap_or_else(|| panic!("JPY gold price should be extracted"));
         assert!((price - 185000.0).abs() < 1.0);
         assert_eq!(currency, "JPY");
     }

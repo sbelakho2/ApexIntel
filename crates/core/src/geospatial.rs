@@ -105,7 +105,11 @@ pub fn estimated_road_km_with_config(a: GeoPoint, b: GeoPoint, config: &Geospati
 
 fn normalize_longitude(lon: f64) -> f64 {
     let wrapped = (lon + 180.0).rem_euclid(360.0) - 180.0;
-    if wrapped == -180.0 { 180.0 } else { wrapped }
+    if wrapped == -180.0 {
+        180.0
+    } else {
+        wrapped
+    }
 }
 
 fn midpoint_longitude(a_lon: f64, b_lon: f64) -> f64 {
@@ -212,7 +216,7 @@ fn nearest_facility(point: GeoPoint, facilities: &[(&str, f64, f64)]) -> NamedPo
                 .partial_cmp(&b.distance_km)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .unwrap()
+        .unwrap_or_else(|| unreachable!("facilities list must not be empty"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,7 +224,7 @@ fn nearest_facility(point: GeoPoint, facilities: &[(&str, f64, f64)]) -> NamedPo
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Classify the logistics corridor between two points.
-/// 
+///
 /// Uses both midpoint and endpoint analysis to correctly handle routes
 /// crossing the antimeridian or near corridor boundaries.
 pub fn classify_corridor(a: GeoPoint, b: GeoPoint) -> &'static str {
@@ -229,9 +233,9 @@ pub fn classify_corridor(a: GeoPoint, b: GeoPoint) -> &'static str {
 
     // Check if route crosses the Pacific (antimeridian crossing)
     let crosses_pacific = (a.lon > 100.0 && b.lon < -100.0) || (a.lon < -100.0 && b.lon > 100.0);
-    
+
     // Pacific corridor - explicitly handle antimeridian crossings
-    if crosses_pacific || mid_lon > 100.0 || mid_lon < -100.0 {
+    if crosses_pacific || !(-100.0..=100.0).contains(&mid_lon) {
         return "Pacific";
     }
 
@@ -264,7 +268,11 @@ pub fn compute_proximity(a: GeoPoint, b: GeoPoint) -> ProximityResult {
 }
 
 /// Compute a full proximity analysis between two points with custom config.
-pub fn compute_proximity_with_config(a: GeoPoint, b: GeoPoint, config: &GeospatialConfig) -> ProximityResult {
+pub fn compute_proximity_with_config(
+    a: GeoPoint,
+    b: GeoPoint,
+    config: &GeospatialConfig,
+) -> ProximityResult {
     let straight = haversine_km(a, b);
     let road = straight * config.road_factor;
     let mid = GeoPoint {
@@ -372,7 +380,7 @@ mod tests {
 
         let mid_lon = midpoint_longitude(tokyo.lon, san_francisco.lon);
 
-        assert!(mid_lon > 100.0 || mid_lon < -100.0, "mid_lon={mid_lon}");
+        assert!(!(-100.0..=100.0).contains(&mid_lon), "mid_lon={mid_lon}");
         assert_eq!(classify_corridor(tokyo, san_francisco), "Pacific");
     }
 

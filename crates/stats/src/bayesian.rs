@@ -1,4 +1,4 @@
-/// Bayesian evidence fusion.
+//! Bayesian evidence fusion.
 
 const LOG_BAYES_FACTOR_CAP: f64 = 30.0;
 
@@ -232,7 +232,10 @@ mod tests {
     #[test]
     fn bayesian_strong_evidence_posterior() {
         let posterior = fuse_signals(0.5, &[(1.0, 1e-20); 5]);
-        assert!(posterior > 0.9999, "expected posterior > 0.9999, got {posterior}");
+        assert!(
+            posterior > 0.9999,
+            "expected posterior > 0.9999, got {posterior}"
+        );
     }
 
     #[test]

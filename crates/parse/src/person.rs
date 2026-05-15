@@ -14,12 +14,14 @@ static PERSON_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"([\p{Lu}\p{Lo}][\p{L}\p{M}'’\-·]{0,40}(?:[\s-]+[\p{L}\p{M}'’\-·]{1,40}){0,4})\s*[-\u{2013}]\s*((?:CEO|CTO|COO|CFO|VP|Director|Manager|Head|President|Chairman|Engineer|Founder|Partner)[\w\s/&-]*?)(?:\s*,\s*(.+?))?(?:\.|$|\n)",
     ]
     .iter()
-    .map(|p| Regex::new(p).unwrap())
+    .map(|p| Regex::new(p).unwrap_or_else(|error| panic!("invalid person regex `{p}`: {error}")))
     .collect()
 });
 
-static RE_LINKEDIN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([\w-]+)").unwrap());
+static RE_LINKEDIN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://(?:www\.)?linkedin\.com/in/([\w-]+)")
+        .unwrap_or_else(|error| panic!("invalid LinkedIn URL regex: {error}"))
+});
 
 /// Extracted person of interest from a web page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +73,10 @@ fn extract_structured_persons(text: &str, url: &str) -> Vec<PersonExtract> {
     // Pattern: "Name, Title at Company" or "Name - Title, Company"
     for re in PERSON_PATTERNS.iter() {
         for caps in re.captures_iter(text) {
-            let name = normalizer::normalize_whitespace(caps.get(1).unwrap().as_str());
+            let Some(name_match) = caps.get(1) else {
+                continue;
+            };
+            let name = normalizer::normalize_whitespace(name_match.as_str());
             if !looks_like_person_name(&name) {
                 continue;
             }
@@ -158,8 +163,11 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
 
     // Extract LinkedIn URLs
     for caps in RE_LINKEDIN.captures_iter(text) {
-        let slug = caps.get(1).unwrap().as_str();
-        let raw_url = caps.get(0).unwrap().as_str().to_string();
+        let (Some(slug_match), Some(raw_url_match)) = (caps.get(1), caps.get(0)) else {
+            continue;
+        };
+        let slug = slug_match.as_str();
+        let raw_url = raw_url_match.as_str().to_string();
         let linkedin_url = normalize_url(&raw_url).unwrap_or(raw_url);
         let parts: Vec<String> = slug
             .split('-')
@@ -311,6 +319,8 @@ fn detect_role_domain(title: &str) -> &'static str {
         || lower.contains("r&d")
         || lower.contains("developer")
         || lower.contains("architect")
+        || lower.contains("ingénieur")
+        || lower.contains("مهندس")
     {
         "Engineering"
     } else if lower.contains("sales")
@@ -318,6 +328,8 @@ fn detect_role_domain(title: &str) -> &'static str {
         || lower.contains("business dev")
         || lower.contains("account")
         || lower.contains("customer success")
+        || lower.contains("directeur commercial")
+        || lower.contains("مبيعات")
     {
         "Sales"
     } else if lower.contains("supply")
@@ -325,6 +337,21 @@ fn detect_role_domain(title: &str) -> &'static str {
         || lower.contains("sourcing")
         || lower.contains("purchasing")
         || lower.contains("buyer")
+        || lower.contains("achat")
+        || lower.contains("approvisionnement")
+        || lower.contains("مشتريات")
+        || lower.contains("logistics")
+        || lower.contains("logistique")
+        || lower.contains("لوجستي")
+        || lower.contains("warehouse")
+        || lower.contains("freight")
+        || lower.contains("distribution")
+        || lower.contains("supply planning")
+        || lower.contains("inventory")
+        || lower.contains("supplier diversity")
+        || lower.contains("commodity")
+        || lower.contains("vendor management")
+        || lower.contains("category manager")
     {
         "Supply Chain"
     } else if lower.contains("quality")
@@ -332,6 +359,10 @@ fn detect_role_domain(title: &str) -> &'static str {
         || lower.contains("qc ")
         || lower.contains("test")
         || lower.contains("assurance")
+        || lower.contains("qualité")
+        || lower.contains("جودة")
+        || lower.contains("inspection")
+        || lower.contains("certification")
     {
         "Quality"
     } else if lower.contains("finance")
@@ -340,6 +371,9 @@ fn detect_role_domain(title: &str) -> &'static str {
         || lower.contains("treasurer")
         || lower.contains("accounting")
         || lower.contains("investor")
+        || lower.contains("directeur financier")
+        || lower.contains("مالي")
+        || lower.contains("comptab")
     {
         "Finance"
     } else if lower.contains("manufactur")
@@ -348,6 +382,10 @@ fn detect_role_domain(title: &str) -> &'static str {
         || lower.contains("plant")
         || lower.contains("factory")
         || lower.contains("site")
+        || lower.contains("usine")
+        || lower.contains("directeur de production")
+        || lower.contains("مصنع")
+        || lower.contains("تشغيل")
     {
         "Operations"
     } else if lower.contains("human resource")
@@ -403,7 +441,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
     if lower.contains("minister of ") {
         if let Some(idx) = lower.find("minister of ") {
             let rest = title.get(idx + 12..)?;
-            if let Some(end) = rest.find(|c: char| c == ',' || c == '.' || c == '\n') {
+            if let Some(end) = rest.find([',', '.', '\n']) {
                 return Some(format!(
                     "Ministry of {}",
                     rest.get(..end).unwrap_or(rest).trim()
@@ -419,7 +457,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
         if let Some(idx) = lower.find("ministry of ") {
             let rest = title.get(idx..)?;
             if let Some(body) = rest.get(12..) {
-                if let Some(end) = body.find(|c: char| c == ',' || c == '.' || c == '\n') {
+                if let Some(end) = body.find([',', '.', '\n']) {
                     return Some(rest.get(..12 + end).unwrap_or(rest).trim().to_string());
                 }
             } else {
@@ -437,7 +475,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
             .or_else(|| lower.find("gouverneur de ").map(|idx| (idx, 14)))
         {
             let rest = title.get(idx + offset..)?;
-            if let Some(end) = rest.find(|c: char| c == ',' || c == '.' || c == '\n') {
+            if let Some(end) = rest.find([',', '.', '\n']) {
                 return Some(format!(
                     "Regional Government of {}",
                     rest.get(..end).unwrap_or(rest).trim()
@@ -467,7 +505,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
         if let Some(idx) = lower.find("department of ") {
             let rest = title.get(idx..)?;
             if let Some(body) = rest.get(14..) {
-                if let Some(end) = body.find(|c: char| c == ',' || c == '.' || c == '\n') {
+                if let Some(end) = body.find([',', '.', '\n']) {
                     return Some(rest.get(..14 + end).unwrap_or(rest).trim().to_string());
                 }
             } else {
@@ -490,8 +528,8 @@ mod tests {
         let persons = extract_structured_persons(text, "https://example.com");
         assert_eq!(persons.len(), 1);
         assert_eq!(persons[0].name, "John Smith");
-        assert!(persons[0].title.as_deref().unwrap().contains("CEO"));
-        assert!(persons[0].company.as_deref().unwrap().contains("Starz"));
+        assert!(matches!(persons[0].title.as_deref(), Some(value) if value.contains("CEO")));
+        assert!(matches!(persons[0].company.as_deref(), Some(value) if value.contains("Starz")));
     }
 
     #[test]
@@ -499,7 +537,7 @@ mod tests {
         let text = "Marie Dupont - Director of Engineering, Foxconn Technology.";
         let persons = extract_structured_persons(text, "https://example.com");
         assert_eq!(persons.len(), 1);
-        assert!(persons[0].title.as_deref().unwrap().contains("Director"));
+        assert!(matches!(persons[0].title.as_deref(), Some(value) if value.contains("Director")));
     }
 
     #[test]
@@ -571,6 +609,38 @@ mod tests {
             detect_role_domain("Director of Manufacturing"),
             "Operations"
         );
+        // Multilingual keywords
+        assert_eq!(detect_role_domain("Directeur des Achats"), "Supply Chain");
+        assert_eq!(detect_role_domain("Responsable Qualité"), "Quality");
+        assert_eq!(detect_role_domain("Ingénieur Principal"), "Engineering");
+        assert_eq!(detect_role_domain("Directeur Financier"), "Finance");
+        assert_eq!(detect_role_domain("Directeur de Production"), "Operations");
+        // Logistics / SC keywords
+        assert_eq!(detect_role_domain("VP Logistics"), "Supply Chain");
+        assert_eq!(detect_role_domain("Warehouse Manager"), "Supply Chain");
+        assert_eq!(
+            detect_role_domain("Freight Operations Lead"),
+            "Supply Chain"
+        );
+        assert_eq!(
+            detect_role_domain("Distribution Center Director"),
+            "Supply Chain"
+        );
+        assert_eq!(
+            detect_role_domain("Inventory Planning Manager"),
+            "Supply Chain"
+        );
+        // Supplier-diversity / commodity
+        assert_eq!(
+            detect_role_domain("Supplier Diversity Director"),
+            "Supply Chain"
+        );
+        assert_eq!(detect_role_domain("Commodity Manager"), "Supply Chain");
+        assert_eq!(
+            detect_role_domain("Category Manager, Packaging"),
+            "Supply Chain"
+        );
+        assert_eq!(detect_role_domain("Vendor Management Lead"), "Supply Chain");
     }
 
     #[test]

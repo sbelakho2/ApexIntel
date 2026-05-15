@@ -55,6 +55,33 @@ pub(crate) fn count_concrete_signal_details(signal_details: &[String]) -> usize 
     concrete_signal_details(signal_details).len()
 }
 
+fn is_security_signal_detail(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("lookalike domain")
+        || lower.contains("dns posture")
+        || lower.contains("known exploited vulnerability")
+        || lower.contains("kev-linked vulnerability")
+        || lower.contains("cve-")
+        || lower.contains("spoof")
+}
+
+pub(crate) fn category_relevant_signal_details(
+    category: &str,
+    signal_details: &[String],
+) -> Vec<String> {
+    let concrete = concrete_signal_details(signal_details);
+    let security_category = matches!(category, "security_compliance" | "cybersecurity_threat");
+
+    if security_category {
+        return concrete;
+    }
+
+    concrete
+        .into_iter()
+        .filter(|detail| !is_security_signal_detail(detail))
+        .collect()
+}
+
 /// Extract concrete action fragments from a rendered action hint.
 pub(super) fn concrete_action_fragments(action_hint: &str) -> Vec<String> {
     action_hint
@@ -95,12 +122,40 @@ pub(super) fn is_generic_action_hint(fragment: &str) -> bool {
     let normalized = lower.replace('-', " ");
     let first_token = normalized.split_whitespace().next().unwrap_or_default();
     let generic_starters = [
-        "monitor", "identify", "assess", "track", "review", "evaluate", "analy",
-        "watch", "map", "brief", "gather", "update", "compare", "convene",
-        "coordinate", "prepare", "scenario", "escalate", "align", "document",
-        "priorit", "initiat", "alert", "verify", "adjust", "reprioritize",
+        "monitor",
+        "identify",
+        "assess",
+        "track",
+        "review",
+        "evaluate",
+        "analy",
+        "watch",
+        "map",
+        "brief",
+        "gather",
+        "update",
+        "compare",
+        "convene",
+        "coordinate",
+        "prepare",
+        "scenario",
+        "escalate",
+        "align",
+        "document",
+        "priorit",
+        "initiat",
+        "alert",
+        "verify",
+        "adjust",
+        "reprioritize",
         "continu",
-        "investigat", "explor", "consider", "examin", "look", "maintain", "stay",
+        "investigat",
+        "explor",
+        "consider",
+        "examin",
+        "look",
+        "maintain",
+        "stay",
     ];
     let starts_generic = stemmed_starts_with(first_token, &generic_starters);
     if !starts_generic {
@@ -120,7 +175,10 @@ pub(super) fn is_generic_action_hint(fragment: &str) -> bool {
                 .rsplit('.')
                 .next()
                 .map(|suffix| {
-                    suffix.len() >= 2 && suffix.chars().all(|character| character.is_ascii_alphabetic())
+                    suffix.len() >= 2
+                        && suffix
+                            .chars()
+                            .all(|character| character.is_ascii_alphabetic())
                 })
                 .unwrap_or(false)
     });
@@ -180,12 +238,13 @@ pub(super) fn is_generic_action_hint(fragment: &str) -> bool {
 
 /// Determine if a fallback insight should be emitted.
 pub(super) fn should_emit_fallback_insight(
+    category: &str,
     signal_details: &[String],
     rendered_action: &str,
     confidence: f64,
     evidence_count: usize,
 ) -> bool {
-    let concrete_signals = count_concrete_signal_details(signal_details);
+    let concrete_signals = category_relevant_signal_details(category, signal_details).len();
     let concrete_actions = concrete_action_fragments(rendered_action);
 
     // Aggregate counters alone do not justify a user-facing fallback insight.
@@ -203,11 +262,15 @@ pub(super) fn should_emit_fallback_insight(
 /// Extract fallback signal details from a summary string.
 pub(crate) fn extract_fallback_signal_details(summary: &str) -> Vec<String> {
     let lower_summary = summary.to_ascii_lowercase();
-    let Some(start) = lower_summary.find("our monitoring detected:") else {
+    let (start, marker_len) = if let Some(start) = lower_summary.find("our monitoring detected:") {
+        (start, "our monitoring detected:".len())
+    } else if let Some(start) = lower_summary.find("observed signals include:") {
+        (start, "observed signals include:".len())
+    } else {
         return Vec::new();
     };
 
-    let detected = &summary[start + "Our monitoring detected:".len()..];
+    let detected = &summary[start + marker_len..];
     let first_sentence = detected.split('\n').next().unwrap_or(detected);
     let first_sentence = first_sentence.split(". ").next().unwrap_or(first_sentence);
 
@@ -491,6 +554,10 @@ pub(super) fn build_goal_oriented_suggestions(
         }
     }
 
+    for suggestion in &mut suggestions {
+        *suggestion = normalize_goal_oriented_suggestion(suggestion);
+    }
+
     suggestions.truncate(5);
 
     suggestions
@@ -501,6 +568,41 @@ fn push_unique_suggestion(suggestions: &mut Vec<String>, suggestion: String) {
     if !suggestions.iter().any(|s| s == &suggestion) {
         suggestions.push(suggestion);
     }
+}
+
+fn capitalize_first_fragment(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn normalize_goal_oriented_suggestion(suggestion: &str) -> String {
+    let trimmed = suggestion.trim();
+
+    for prefix in ["If the goal is ", "If the priority is "] {
+        let Some(remainder) = trimmed.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some((objective, action)) = remainder.split_once(',') else {
+            continue;
+        };
+
+        let objective = objective.trim().trim_end_matches('.');
+        let action = action.trim().trim_end_matches('.');
+        if objective.is_empty() || action.is_empty() {
+            continue;
+        }
+
+        return format!(
+            "{} to support {}.",
+            capitalize_first_fragment(action),
+            objective
+        );
+    }
+
+    trimmed.to_string()
 }
 
 /// Flags detected in signal details for strategy suggestions.
@@ -618,12 +720,15 @@ pub(super) fn build_fallback_summary(
     _evidence_count: usize,
 ) -> String {
     let mut summary_parts: Vec<String> = Vec::new();
-    let concrete_details = concrete_signal_details(signal_details);
+    let concrete_details = category_relevant_signal_details(category, signal_details);
     let concrete_signals = concrete_details.len();
+    let lower_narrative = analytical_narrative.to_ascii_lowercase();
+    let narrative_already_carries_evidence = lower_narrative.contains("observed signals include:")
+        || lower_narrative.contains("most specific current evidence:");
 
     summary_parts.push(analytical_narrative.to_string());
 
-    if !concrete_details.is_empty() {
+    if !concrete_details.is_empty() && !narrative_already_carries_evidence {
         summary_parts.push(format!(
             "Key evidence: {}.",
             concrete_details
@@ -641,11 +746,17 @@ pub(super) fn build_fallback_summary(
             entity_region,
             entity_type,
             category,
-            signal_details,
+            &concrete_details,
             Some(rendered_action).filter(|s| !s.trim().is_empty()),
         );
         if !suggestion_sentences.is_empty() {
-            summary_parts.push(suggestion_sentences.join(" "));
+            summary_parts.push(
+                suggestion_sentences
+                    .into_iter()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
         }
     }
 
@@ -676,9 +787,13 @@ mod tests {
 
     #[test]
     fn aggregate_metric_detected() {
-        assert!(is_aggregate_metric_signal_detail("5 job posting(s) observed"));
+        assert!(is_aggregate_metric_signal_detail(
+            "5 job posting(s) observed"
+        ));
         assert!(is_aggregate_metric_signal_detail("3 patent(s) filed"));
-        assert!(!is_aggregate_metric_signal_detail("AS9100 certification expiring"));
+        assert!(!is_aggregate_metric_signal_detail(
+            "AS9100 certification expiring"
+        ));
     }
 
     #[test]
@@ -697,16 +812,30 @@ mod tests {
     fn generic_action_hints_detected() {
         assert!(is_generic_action_hint("continue to monitor"));
         assert!(is_generic_action_hint("stay informed"));
-        assert!(!is_generic_action_hint("Contact procurement lead at Company X about Q2 RFQ"));
+        assert!(!is_generic_action_hint(
+            "Contact procurement lead at Company X about Q2 RFQ"
+        ));
     }
 
     #[test]
     fn should_emit_requires_concrete_signals() {
         let aggregate_only = vec!["5 job posting(s) observed".to_string()];
-        assert!(!should_emit_fallback_insight(&aggregate_only, "", 0.5, 1));
+        assert!(!should_emit_fallback_insight(
+            "demand_procurement",
+            &aggregate_only,
+            "",
+            0.5,
+            1,
+        ));
 
         let concrete = vec!["AS9100 certification expiring".to_string()];
-        assert!(should_emit_fallback_insight(&concrete, "Contact vendor", 0.7, 2));
+        assert!(should_emit_fallback_insight(
+            "demand_procurement",
+            &concrete,
+            "Contact vendor",
+            0.7,
+            2,
+        ));
     }
 
     #[test]
@@ -715,5 +844,51 @@ mod tests {
         let details = extract_fallback_signal_details(summary);
         assert_eq!(details.len(), 3);
         assert!(details[0].contains("certification"));
+    }
+
+    #[test]
+    fn nonsecurity_categories_ignore_security_hygiene_as_concrete_signal() {
+        let details = vec![
+            "8 lookalike domain(s) detected".to_string(),
+            "DNS posture degradation detected".to_string(),
+            "Named RFQ issued for avionics subassembly".to_string(),
+        ];
+
+        let filtered = category_relevant_signal_details("demand_procurement", &details);
+        assert_eq!(
+            filtered,
+            vec!["Named RFQ issued for avionics subassembly".to_string()]
+        );
+    }
+
+    #[test]
+    fn nonsecurity_fallback_requires_category_relevant_concrete_signal() {
+        let security_only = vec![
+            "8 lookalike domain(s) detected".to_string(),
+            "DNS posture degradation detected".to_string(),
+        ];
+
+        assert!(!should_emit_fallback_insight(
+            "demand_procurement",
+            &security_only,
+            "",
+            0.88,
+            4,
+        ));
+        assert!(should_emit_fallback_insight(
+            "cybersecurity_threat",
+            &security_only,
+            "",
+            0.88,
+            4,
+        ));
+    }
+
+    #[test]
+    fn extract_fallback_details_parses_new_observed_signals_prefix() {
+        let summary = "Observed signals include: certification update; facility expansion; leadership change. Sources pending.";
+        let details = extract_fallback_signal_details(summary);
+        assert_eq!(details.len(), 3);
+        assert!(details[1].contains("facility expansion"));
     }
 }

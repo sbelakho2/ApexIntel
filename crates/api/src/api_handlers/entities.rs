@@ -425,12 +425,7 @@ pub(crate) async fn get_person_detail(
         }
     };
 
-    let mut detail = person_row_to_detail(
-        row,
-        org_name,
-        artifacts,
-        &state.config.priority_weights,
-    );
+    let mut detail = person_row_to_detail(row, org_name, artifacts, &state.config.priority_weights);
     detail.role_history = role_history_rows
         .into_iter()
         .map(|entry| routes::persons::RoleHistoryEntry {

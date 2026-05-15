@@ -434,6 +434,8 @@ impl Default for RecipeRegistry {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
     use crate::gates::{GateConfig, GateEvidence};
 

@@ -11,7 +11,10 @@ use apex_core::validation::normalize_url;
 /// Escape ILIKE wildcard characters (`%` and `_`) in user input,
 /// then wrap with `%…%` for a contains-match pattern.
 fn ilike_pattern(raw: &str) -> String {
-    let escaped = raw.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let escaped = raw
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
     format!("%{}%", escaped)
 }
 
@@ -22,9 +25,7 @@ fn clamp_limit(limit: i64) -> i64 {
 }
 
 fn normalize_url_vec(urls: &[String]) -> Vec<String> {
-    urls.iter()
-        .filter_map(|u| normalize_url(u))
-        .collect()
+    urls.iter().filter_map(|u| normalize_url(u)).collect()
 }
 
 fn validate_tags(tags: &[String]) -> Result<()> {
@@ -40,6 +41,15 @@ fn normalize_optional_text(value: Option<&str>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+fn normalize_insight_feedback_type(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "bookmarked" | "actioned" | "dismissed" | "false_positive" | "false_negative"
+        | "true_positive" | "relevant" | "irrelevant" | "viewed" => Some(normalized),
+        _ => None,
+    }
 }
 
 fn normalize_dedup_token(token: &str) -> Option<String> {
@@ -110,9 +120,7 @@ fn normalize_dedup_token(token: &str) -> Option<String> {
         format!("{}y", &lowered[..lowered.len() - 3])
     } else if lowered.len() > 6 && lowered.ends_with("ing") {
         lowered[..lowered.len() - 3].to_string()
-    } else if lowered.len() > 5 && lowered.ends_with("ed") {
-        lowered[..lowered.len() - 2].to_string()
-    } else if lowered.len() > 5 && lowered.ends_with("es") {
+    } else if lowered.len() > 5 && (lowered.ends_with("ed") || lowered.ends_with("es")) {
         lowered[..lowered.len() - 2].to_string()
     } else if lowered.len() > 4 && lowered.ends_with('s') {
         lowered[..lowered.len() - 1].to_string()
@@ -153,9 +161,32 @@ fn normalize_warning_title_for_dedup(title: &str) -> String {
     trimmed.to_string()
 }
 
+fn is_internal_insight_type(insight_type: Option<&str>) -> bool {
+    matches!(
+        insight_type.map(|value| value.trim().to_ascii_lowercase()),
+        Some(kind)
+            if kind.starts_with("llm_")
+                || kind == "bias_mitigation"
+                || kind == "hypothesis_ach"
+    )
+}
+
+fn append_internal_insight_filter_sql_clause(qb: &mut QueryBuilder<Postgres>, col_prefix: &str) {
+    qb.push("(")
+        .push(col_prefix)
+        .push("insight_type IS NULL OR (lower(")
+        .push(col_prefix)
+        .push("insight_type) NOT LIKE 'llm_%' AND lower(")
+        .push(col_prefix)
+        .push("insight_type) <> 'bias_mitigation' AND lower(")
+        .push(col_prefix)
+        .push("insight_type) <> 'hypothesis_ach'))");
+}
+
 fn filter_visible_insights(rows: Vec<InsightRow>) -> Vec<InsightRow> {
     rows.into_iter()
         .filter(|row| !row.title.trim().is_empty())
+        .filter(|row| !is_internal_insight_type(row.insight_type.as_deref()))
         .collect()
 }
 
@@ -172,11 +203,7 @@ fn recent_warning_dedup_signature(title: &str, description: Option<&str>) -> Opt
     dedup_signature_from_texts(&[normalized_title.as_str(), description.unwrap_or_default()])
 }
 
-fn insight_dedup_key(
-    title: &str,
-    insight_type: Option<&str>,
-    region: Option<&str>,
-) -> String {
+fn insight_dedup_key(title: &str, insight_type: Option<&str>, region: Option<&str>) -> String {
     format!(
         "{}|{}|{}",
         title.trim().to_lowercase(),
@@ -185,10 +212,7 @@ fn insight_dedup_key(
     )
 }
 
-fn append_legacy_malformed_veracity_sql_clause(
-    qb: &mut QueryBuilder<Postgres>,
-    col_prefix: &str,
-) {
+fn append_legacy_malformed_veracity_sql_clause(qb: &mut QueryBuilder<Postgres>, col_prefix: &str) {
     qb.push("(")
         .push(col_prefix)
         .push("insight_type IS NULL OR lower(")
@@ -343,17 +367,39 @@ pub struct UserSettingsPrefs {
     pub email_digest_last_sent_at: Option<DateTime<Utc>>,
 }
 
-fn default_api_key_display() -> String { "(not configured)".into() }
-fn default_backend_url_display() -> String { "direct Axum service".into() }
-fn default_session_timeout() -> i64 { 24 }
-fn default_region_val() -> String { "Global".into() }
-fn default_crawl_window() -> String { "00:00-06:00 UTC".into() }
-fn default_min_severity() -> String { "high".into() }
-fn default_export_format() -> String { "JSON".into() }
-fn default_retention_period() -> String { "90 days".into() }
-fn default_notification_frequency() -> String { "Daily".into() }
-fn default_digest_time() -> String { "08:00".into() }
-fn default_digest_weekday() -> String { "Mon".into() }
+fn default_api_key_display() -> String {
+    "(not configured)".into()
+}
+fn default_backend_url_display() -> String {
+    "direct Axum service".into()
+}
+fn default_session_timeout() -> i64 {
+    24
+}
+fn default_region_val() -> String {
+    "Global".into()
+}
+fn default_crawl_window() -> String {
+    "00:00-06:00 UTC".into()
+}
+fn default_min_severity() -> String {
+    "high".into()
+}
+fn default_export_format() -> String {
+    "JSON".into()
+}
+fn default_retention_period() -> String {
+    "90 days".into()
+}
+fn default_notification_frequency() -> String {
+    "Daily".into()
+}
+fn default_digest_time() -> String {
+    "08:00".into()
+}
+fn default_digest_weekday() -> String {
+    "Mon".into()
+}
 
 impl Default for UserSettingsPrefs {
     fn default() -> Self {
@@ -363,7 +409,7 @@ impl Default for UserSettingsPrefs {
             session_timeout_hours: default_session_timeout(),
             default_region: default_region_val(),
             auto_include_neighbors: false,
-            daily_crawl_enabled: false,
+            daily_crawl_enabled: true,
             crawl_window: default_crawl_window(),
             slack_enabled: false,
             minimum_severity: default_min_severity(),
@@ -589,7 +635,6 @@ impl PgStore {
     }
 }
 
-
 // ─── Row Types (sqlx::FromRow) ──────────────────────────────────────────────
 
 // ─── Worker Pipeline Stats Types ─────────────────────────────────────────────
@@ -649,7 +694,6 @@ pub struct DriftStats {
 /// Row type for staged recipe queries.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct StagedRecipeRow {
-    pub id: Uuid,
     pub recipe_code: String,
     pub precision_observed: f64,
     pub recall_observed: f64,
@@ -662,7 +706,6 @@ pub struct StagedRecipeRow {
 /// Row type for production recipe queries.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct ProductionRecipeRow {
-    pub id: Uuid,
     pub recipe_code: String,
     pub precision_current: f64,
     pub precision_baseline: f64,
@@ -828,6 +871,11 @@ pub struct PersonRow {
     pub risk_tolerance: Option<String>,
     pub change_appetite: Option<String>,
     pub communication_style: Option<String>,
+    pub decision_mode: Option<String>,
+    pub preferred_proof_type: Option<String>,
+    pub pain_index: Option<f64>,
+    pub change_risk: Option<f64>,
+    pub role_drift_score: Option<f64>,
     pub metadata: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
@@ -843,6 +891,9 @@ pub struct PersonListRow {
     pub organization: String,
     pub region: String,
     pub priority_score: f64,
+    pub pain_index: f64,
+    pub change_risk: f64,
+    pub role_drift_score: f64,
     pub engagement_status: String,
     pub updated_at: DateTime<Utc>,
 }
@@ -881,8 +932,35 @@ pub struct InsightRow {
     pub evidence_urls: Option<Vec<String>>,
     pub entity_ids: Option<Vec<Uuid>>,
     pub tags: Option<Vec<String>>,
+    pub metadata: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct InsightFeedbackEventRow {
+    pub id: Uuid,
+    pub insight_id: Uuid,
+    pub entity_id: Option<Uuid>,
+    pub recipe_code: Option<String>,
+    pub feedback_type: String,
+    pub user_id: String,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct InsightFiringRow {
+    pub id: Uuid,
+    pub insight_id: Option<Uuid>,
+    pub entity_id: Uuid,
+    pub recipe_code: String,
+    pub insight_type: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub insight_hash: String,
+    pub confidence: Option<f64>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -1216,7 +1294,6 @@ pub struct PersonEngagement {
     pub recent_observations: Vec<ObservationRow>,
 }
 
-
 // --- Collaboration Record Types ---
 
 /// Analyst user record - maps to `analyst_users` table.
@@ -1425,6 +1502,8 @@ pub struct ExpansionSeedRow {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     /// These tests verify query construction and row type structure.
@@ -1519,6 +1598,11 @@ mod tests {
             risk_tolerance: Some("moderate".into()),
             change_appetite: Some("high".into()),
             communication_style: Some("formal".into()),
+            decision_mode: Some("data-driven".into()),
+            preferred_proof_type: Some("ROI metrics".into()),
+            pain_index: Some(0.3),
+            change_risk: Some(0.4),
+            role_drift_score: Some(0.1),
             metadata: Some(serde_json::json!({})),
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),
@@ -1595,5 +1679,72 @@ mod tests {
         assert_eq!(row.name, "Sousse Plant");
         assert!(row.lat.unwrap() > 35.0);
         assert!(row.capabilities.as_ref().unwrap().contains(&"SMT".into()));
+    }
+
+    #[test]
+    fn test_filter_visible_insights_hides_hypothesis_rows() {
+        let rows = vec![
+            InsightRow {
+                id: Uuid::new_v4(),
+                title: "Hypothesis check: Flex Ltd leans pivoting".into(),
+                summary: "Internal ACH summary".into(),
+                insight_type: Some("hypothesis_ach".into()),
+                region: Some("EU".into()),
+                confidence: Some(0.78),
+                evidence_urls: None,
+                entity_ids: None,
+                tags: None,
+                metadata: None,
+                created_at: Some(Utc::now()),
+                updated_at: Some(Utc::now()),
+            },
+            InsightRow {
+                id: Uuid::new_v4(),
+                title: "Bias check for Digi-Key expansion thesis".into(),
+                summary: "Internal devil's-advocate challenge reduced confidence".into(),
+                insight_type: Some("bias_mitigation".into()),
+                region: Some("EU".into()),
+                confidence: Some(0.41),
+                evidence_urls: None,
+                entity_ids: None,
+                tags: Some(vec!["bias:challenged".into()]),
+                metadata: None,
+                created_at: Some(Utc::now()),
+                updated_at: Some(Utc::now()),
+            },
+            InsightRow {
+                id: Uuid::new_v4(),
+                title: "Procurement signal for Acme".into(),
+                summary: "Buyer-side qualification activity surfaced in recent evidence.".into(),
+                insight_type: Some("demand_procurement".into()),
+                region: Some("EU".into()),
+                confidence: Some(0.81),
+                evidence_urls: None,
+                entity_ids: None,
+                tags: None,
+                metadata: None,
+                created_at: Some(Utc::now()),
+                updated_at: Some(Utc::now()),
+            },
+        ];
+
+        let visible = filter_visible_insights(rows);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(
+            visible[0].insight_type.as_deref(),
+            Some("demand_procurement")
+        );
+    }
+
+    #[test]
+    fn test_append_internal_insight_filter_sql_clause_matches_expected() {
+        let mut qb = QueryBuilder::<Postgres>::new("SELECT 1 WHERE ");
+
+        append_internal_insight_filter_sql_clause(&mut qb, "");
+
+        assert_eq!(
+            qb.sql(),
+            "SELECT 1 WHERE (insight_type IS NULL OR (lower(insight_type) NOT LIKE 'llm_%' AND lower(insight_type) <> 'bias_mitigation' AND lower(insight_type) <> 'hypothesis_ach'))"
+        );
     }
 }

@@ -1,10 +1,13 @@
 import json, os, re, torch, gc
+from pathlib import Path
+
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-model_dir = "/workspace/ApexIntel/training/outputs/merged_phase1"
-adapter = "/workspace/ApexIntel/training/outputs/phase2_sft/best_adapter_v3"
+WORK = Path(__file__).resolve().parent.parent
+model_dir = os.environ.get("MODEL_DIR", str(WORK / "training" / "outputs" / "merged_phase1"))
+adapter = os.environ.get("ADAPTER_PATH", str(WORK / "training" / "outputs" / "phase2_sft" / "best_adapter_v3"))
 
 print("Loading model...", flush=True)
 tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
@@ -42,7 +45,7 @@ def extract_json(text):
 print("\n" + "="*60)
 print("COMPANY_DOSSIER DIAGNOSIS")
 print("="*60)
-with open("/workspace/ApexIntel/training_data/evaluation/company_dossier_eval.jsonl") as f:
+with open(str(WORK / "training_data" / "evaluation" / "company_dossier_eval.jsonl")) as f:
     item = json.loads(f.readline())
 expected_fields = item.get("expected_output", {}).get("required_fields", [])
 print(f"Expected fields: {expected_fields}")
@@ -65,7 +68,7 @@ else:
 print("\n" + "="*60)
 print("ENTITY_EXTRACTION DIAGNOSIS")
 print("="*60)
-with open("/workspace/ApexIntel/training_data/evaluation/entity_extraction_eval.jsonl") as f:
+with open(str(WORK / "training_data" / "evaluation" / "entity_extraction_eval.jsonl")) as f:
     item2 = json.loads(f.readline())
 gt = item2.get("expected_output", {}).get("ground_truth", {})
 print(f"Ground truth keys: {sorted(gt.keys())}")
@@ -91,7 +94,7 @@ else:
 print("\n" + "="*60)
 print("WARNING_GENERATION DIAGNOSIS")
 print("="*60)
-with open("/workspace/ApexIntel/training_data/evaluation/warning_generation_eval.jsonl") as f:
+with open(str(WORK / "training_data" / "evaluation" / "warning_generation_eval.jsonl")) as f:
     lines = [json.loads(l) for l in f.readlines()]
 for idx, item3 in enumerate(lines[:5]):
     sev_enum = item3.get("expected_output", {}).get("severity_enum", [])
@@ -124,7 +127,7 @@ for idx, item3 in enumerate(lines[:5]):
 print("\n" + "="*60)
 print("MEMO_QUALITY DIAGNOSIS")
 print("="*60)
-with open("/workspace/ApexIntel/training_data/evaluation/memo_quality_eval.jsonl") as f:
+with open(str(WORK / "training_data" / "evaluation" / "memo_quality_eval.jsonl")) as f:
     item4 = json.loads(f.readline())
 expected = item4.get("expected_output", {})
 print(f"Expected output keys: {sorted(expected.keys())}")
@@ -144,7 +147,7 @@ else:
 print("\n" + "="*60)
 print("MULTILINGUAL_GOLDEN DIAGNOSIS")
 print("="*60)
-with open("/workspace/ApexIntel/training_data/evaluation/multilingual_golden.jsonl") as f:
+with open(str(WORK / "training_data" / "evaluation" / "multilingual_golden.jsonl")) as f:
     item5 = json.loads(f.readline())
 gt5 = item5.get("expected_output", {}).get("ground_truth", {})
 print(f"Ground truth keys: {sorted(gt5.keys())}")
@@ -168,7 +171,7 @@ else:
 print("\n" + "="*60)
 print("ADVERSARIAL DIAGNOSIS")
 print("="*60)
-with open("/workspace/ApexIntel/training_data/evaluation/adversarial_tests.jsonl") as f:
+with open(str(WORK / "training_data" / "evaluation" / "adversarial_tests.jsonl")) as f:
     adv_lines = [json.loads(l) for l in f.readlines()]
 for idx, item6 in enumerate(adv_lines[:5]):
     must_not = item6.get("expected_output", {}).get("must_not_contain", [])

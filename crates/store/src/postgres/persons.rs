@@ -9,8 +9,47 @@ fn normalize_person_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
 
+const GET_PERSON_PEERS_QUERY: &str = "SELECT p.id,
+                                        p.name,
+                                        COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
+                                        COALESCE(c.name, 'Independent') AS organization,
+                                        COALESCE(p.region, '') AS region,
+                                        COALESCE(p.country_code, '') AS country,
+                                        COALESCE(p.role_family, 'Unknown') AS role_family,
+                                        COALESCE(p.influence_score, 0) AS priority_score,
+                                        COALESCE(p.pain_index, 0) AS pain_index,
+                                        COALESCE(p.change_risk, 0) AS change_risk,
+                                        COALESCE(p.role_drift_score, 0) AS role_drift_score,
+                                        COALESCE(p.metadata->>'engagement_status', 'untracked') AS engagement_status,
+                                        COALESCE(p.updated_at, p.created_at, now()) AS updated_at
+                         FROM persons p
+                         LEFT JOIN companies c ON p.primary_org_id = c.id
+                         WHERE p.id != $1
+                             AND (p.role_family = $2 OR COALESCE(p.region, '') = $3)
+                         ORDER BY p.influence_score DESC NULLS LAST
+                         LIMIT $4";
+
 fn normalize_person_seed_limit(limit: i64) -> i64 {
     clamp_limit(limit)
+}
+
+fn normalize_person_identity_name(name: &str) -> String {
+    name.split_whitespace()
+        .map(|segment| segment.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn person_identity_dedup_key(name: &str, primary_org_id: Option<Uuid>) -> Option<String> {
+    let normalized_name = normalize_person_identity_name(name);
+    if normalized_name.is_empty() {
+        return None;
+    }
+
+    Some(match primary_org_id {
+        Some(org_id) => format!("{normalized_name}|{org_id}"),
+        None => format!("{normalized_name}|no-org"),
+    })
 }
 
 fn person_engagement_status(person: &PersonRow) -> String {
@@ -256,27 +295,45 @@ fn append_person_filters(qb: &mut QueryBuilder<Postgres>, filters: &PersonListFi
 impl PgStore {
     pub async fn insert_person(&self, p: &Person) -> Result<()> {
         let pv_json = serde_json::to_value(&p.priority_vector)?;
+        let normalized_name = normalize_person_identity_name(&p.name);
+        let dedup_key = person_identity_dedup_key(&p.name, p.primary_org_id)
+            .ok_or_else(|| anyhow::anyhow!("person name must not be empty"))?;
         sqlx::query(
-            r#"INSERT INTO persons
+            r#"WITH identity_lock AS (
+                   SELECT pg_advisory_xact_lock(hashtext($16), 0)
+               ),
+               existing AS (
+                   SELECT persons.id
+                   FROM persons, identity_lock
+                   WHERE lower(regexp_replace(trim(persons.name), '\s+', ' ', 'g')) = $2
+                     AND persons.primary_org_id IS NOT DISTINCT FROM $6
+                   ORDER BY persons.created_at ASC NULLS LAST, persons.id ASC
+                   LIMIT 1
+               )
+               INSERT INTO persons
                (id, name, name_ar, name_fr, primary_org_id, "current_role",
                 role_family, region, country_code, priority_vector,
                 influence_score, metadata, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+               VALUES (
+                   COALESCE((SELECT id FROM existing), $1),
+                   $3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+               )
                ON CONFLICT (id) DO UPDATE SET
-                 name = EXCLUDED.name,
-                 name_ar = EXCLUDED.name_ar,
-                 name_fr = EXCLUDED.name_fr,
-                 primary_org_id = EXCLUDED.primary_org_id,
-                 "current_role" = EXCLUDED."current_role",
-                 role_family = EXCLUDED.role_family,
-                 region = EXCLUDED.region,
-                 country_code = EXCLUDED.country_code,
-                 priority_vector = EXCLUDED.priority_vector,
-                 influence_score = EXCLUDED.influence_score,
-                 metadata = EXCLUDED.metadata,
+                 name = COALESCE(NULLIF(EXCLUDED.name, ''), persons.name),
+                 name_ar = COALESCE(EXCLUDED.name_ar, persons.name_ar),
+                 name_fr = COALESCE(EXCLUDED.name_fr, persons.name_fr),
+                 primary_org_id = COALESCE(EXCLUDED.primary_org_id, persons.primary_org_id),
+                 "current_role" = COALESCE(EXCLUDED."current_role", persons."current_role"),
+                 role_family = COALESCE(EXCLUDED.role_family, persons.role_family),
+                 region = COALESCE(EXCLUDED.region, persons.region),
+                 country_code = COALESCE(EXCLUDED.country_code, persons.country_code),
+                 priority_vector = COALESCE(EXCLUDED.priority_vector, persons.priority_vector),
+                 influence_score = GREATEST(COALESCE(persons.influence_score, 0), COALESCE(EXCLUDED.influence_score, 0)),
+                 metadata = COALESCE(persons.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
                  updated_at = now()"#,
         )
         .bind(p.id)
+        .bind(&normalized_name)
         .bind(&p.name)
         .bind(&p.name_ar)
         .bind(&p.name_fr)
@@ -290,6 +347,7 @@ impl PgStore {
         .bind(&p.metadata)
         .bind(p.created_at)
         .bind(p.updated_at)
+        .bind(&dedup_key)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -448,6 +506,31 @@ impl PgStore {
         Ok(())
     }
 
+    /// Update computed scores: pain_index, change_risk, and role_drift_score.
+    pub async fn update_person_computed_scores(
+        &self,
+        id: Uuid,
+        pain_index: f64,
+        change_risk: f64,
+        role_drift_score: f64,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE persons
+               SET pain_index = $2,
+                   change_risk = $3,
+                   role_drift_score = $4,
+                   updated_at = now()
+               WHERE id = $1"#,
+        )
+        .bind(id)
+        .bind(pain_index.clamp(0.0, 1.0))
+        .bind(change_risk.clamp(0.0, 1.0))
+        .bind(role_drift_score.clamp(0.0, 1.0))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn update_person_llm_enrichment(
         &self,
         id: Uuid,
@@ -462,16 +545,16 @@ impl PgStore {
         sqlx::query(
             r#"UPDATE persons SET
                 public_bio = CASE
-                    WHEN public_bio IS NULL OR length(public_bio) < 100 THEN $2
+                    WHEN $2 IS NOT NULL AND length($2) > 0 THEN $2
                     ELSE public_bio
                 END,
-                decision_style = COALESCE(decision_style, $3),
-                communication_style = COALESCE(communication_style, $4),
-                risk_tolerance = COALESCE(risk_tolerance, $5),
-                change_appetite = COALESCE(change_appetite, $6),
-                preferred_proof_type = COALESCE(preferred_proof_type, $7),
+                decision_style = COALESCE($3, decision_style),
+                communication_style = COALESCE($4, communication_style),
+                risk_tolerance = COALESCE($5, risk_tolerance),
+                change_appetite = COALESCE($6, change_appetite),
+                preferred_proof_type = COALESCE($7, preferred_proof_type),
                 trigger_topics = CASE
-                    WHEN trigger_topics IS NULL OR array_length(trigger_topics, 1) IS NULL THEN $8
+                    WHEN $8::TEXT[] IS NOT NULL AND array_length($8, 1) IS NOT NULL THEN $8
                     ELSE trigger_topics
                 END,
                 updated_at = now()
@@ -518,6 +601,9 @@ impl PgStore {
                     COALESCE(p.country_code, '') AS country,
                     COALESCE(p.role_family, 'Unknown') AS role_family,
                     COALESCE(p.influence_score, 0) AS priority_score,
+                    COALESCE(p.pain_index, 0) AS pain_index,
+                    COALESCE(p.change_risk, 0) AS change_risk,
+                    COALESCE(p.role_drift_score, 0) AS role_drift_score,
                     COALESCE(p.metadata->>'engagement_status', 'untracked') AS engagement_status,
                     COALESCE(p.updated_at, p.created_at, now()) AS updated_at
              FROM persons p
@@ -631,30 +717,13 @@ impl PgStore {
         limit: i64,
     ) -> Result<Vec<PersonListRow>> {
         let (limit, _) = normalize_person_window(limit, 0);
-        let rows = sqlx::query_as::<_, PersonListRow>(
-            "SELECT p.id,
-                    p.name,
-                    COALESCE(p.\"current_role\", p.role_family, 'Unknown') AS role,
-                    COALESCE(c.name, 'Independent') AS organization,
-                    COALESCE(p.region, '') AS region,
-                    COALESCE(p.country_code, '') AS country,
-                    COALESCE(p.role_family, 'Unknown') AS role_family,
-                    COALESCE(p.influence_score, 0) AS priority_score,
-                    COALESCE(p.metadata->>'engagement_status', 'untracked') AS engagement_status,
-                    COALESCE(p.updated_at, p.created_at, now()) AS updated_at
-             FROM persons p
-             LEFT JOIN companies c ON p.primary_org_id = c.id
-             WHERE p.id != $1
-               AND (p.role_family = $2 OR COALESCE(p.region, '') = $3)
-             ORDER BY p.influence_score DESC NULLS LAST
-             LIMIT $4",
-        )
-        .bind(person_id)
-        .bind(role_family)
-        .bind(region)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query_as::<_, PersonListRow>(GET_PERSON_PEERS_QUERY)
+            .bind(person_id)
+            .bind(role_family)
+            .bind(region)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows)
     }
 }
@@ -678,6 +747,34 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_person_identity_name_collapses_whitespace_and_case() {
+        assert_eq!(
+            normalize_person_identity_name("  Jane   SMITH  "),
+            "jane smith"
+        );
+    }
+
+    #[test]
+    fn test_get_person_peers_query_selects_computed_score_columns() {
+        assert!(GET_PERSON_PEERS_QUERY.contains("AS pain_index"));
+        assert!(GET_PERSON_PEERS_QUERY.contains("AS change_risk"));
+        assert!(GET_PERSON_PEERS_QUERY.contains("AS role_drift_score"));
+    }
+
+    #[test]
+    fn test_person_identity_dedup_key_includes_org_scope() {
+        let org_id = Uuid::nil();
+        assert_eq!(
+            person_identity_dedup_key("Jane Smith", Some(org_id)).as_deref(),
+            Some("jane smith|00000000-0000-0000-0000-000000000000")
+        );
+        assert_eq!(
+            person_identity_dedup_key("Jane Smith", None).as_deref(),
+            Some("jane smith|no-org")
+        );
+    }
+
+    #[test]
     fn test_person_engagement_status_defaults_to_untracked() {
         let row = PersonRow {
             id: Uuid::new_v4(),
@@ -698,6 +795,11 @@ mod tests {
             risk_tolerance: None,
             change_appetite: None,
             communication_style: None,
+            decision_mode: None,
+            preferred_proof_type: None,
+            pain_index: None,
+            change_risk: None,
+            role_drift_score: None,
             metadata: Some(json!({})),
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),

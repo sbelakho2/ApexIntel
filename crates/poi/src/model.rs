@@ -59,8 +59,10 @@ pub const MAX_NETWORK_SIZE: usize = 10_000;
 /// Maximum artifacts retained per POI to avoid unbounded profile growth.
 pub const MAX_PROFILE_ARTIFACTS: usize = 2_000;
 
-static PUBLIC_EMAIL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$").unwrap());
+static PUBLIC_EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+        .unwrap_or_else(|error| panic!("valid public email regex: {error}"))
+});
 
 impl PriorityVector {
     pub fn zero() -> Self {
@@ -332,6 +334,8 @@ impl PoiProfile {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::assertions_on_constants)]
+
     use super::*;
 
     fn sample_profile() -> PoiProfile {

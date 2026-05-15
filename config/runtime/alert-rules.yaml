@@ -14,9 +14,35 @@ rules:
       - pager_webhook
       - email
 
+  - name: api-5xx-rate-high
+    source: http_requests_total
+    condition: rate({status=~"5.."}[5m]) / rate({status=~".*"}[5m]) > 0.01
+    severity: critical
+    for: 5m
+    notify:
+      - pager_webhook
+      - email
+
   - name: worker-job-failures
     source: worker_job_state
     condition: consecutive_failures >= 3 or circuit_open == true
+    severity: critical
+    for: 5m
+    notify:
+      - pager_webhook
+      - email
+
+  - name: worker-crawl-success-low
+    source: crawl_success_total
+    condition: sum(rate(crawl_success_total[1h])) / sum(rate(crawl_attempts_total[1h])) < 0.20
+    severity: warning
+    for: 15m
+    notify:
+      - pager_webhook
+
+  - name: llm-server-down
+    source: llm_request_duration_seconds_count
+    condition: absent(llm_request_duration_seconds_count) == 1
     severity: critical
     for: 5m
     notify:
@@ -38,4 +64,20 @@ rules:
     for: 0m
     notify:
       - pager_webhook
+      - email
+
+  - name: disk-usage-high
+    source: node_filesystem_avail_bytes
+    condition: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.85
+    severity: warning
+    for: 10m
+    notify:
+      - email
+
+  - name: memory-usage-high
+    source: node_memory_MemTotal_bytes
+    condition: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.90
+    severity: warning
+    for: 10m
+    notify:
       - email

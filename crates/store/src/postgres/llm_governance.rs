@@ -1,5 +1,10 @@
 use super::*;
 
+fn json_value<T: serde::Serialize>(value: T) -> serde_json::Value {
+    serde_json::to_value(value)
+        .unwrap_or_else(|error| panic!("value should serialize to JSON: {error}"))
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct ReviewedWarningGoldenSetRow {
     id: Uuid,
@@ -45,11 +50,13 @@ fn map_reviewed_warning_golden_example(
         confidence: row.confidence,
         source_urls: row.source_urls.unwrap_or_default(),
         reviewed_at: row.reviewed_at.unwrap_or(row.ts_utc),
-        metadata: serde_json::json!({
-            "severity": row.severity,
-            "recipe_code": row.recipe_code,
-            "review_outcome": row.review_outcome,
-        }),
+        metadata: {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("severity".to_string(), row.severity.into());
+            metadata.insert("recipe_code".to_string(), json_value(row.recipe_code));
+            metadata.insert("review_outcome".to_string(), json_value(row.review_outcome));
+            serde_json::Value::Object(metadata)
+        },
     }
 }
 
@@ -326,18 +333,29 @@ impl PgStore {
         );
         let agreement_target = 0.95;
         let examples_jsonl = serialize_quality_gate_examples_jsonl(&examples)?;
-        let dataset_manifest = serde_json::json!({
-            "dataset_name": "quality_gate_reviewed_warning_golden_set",
-            "dataset_version": dataset_version,
-            "schema": "quality_gate_warning_jsonl_v1",
-            "accepted_target": accepted_limit,
-            "rejected_target": rejected_limit,
-            "accepted_count": accepted_count,
-            "rejected_count": rejected_count,
-            "agreement_target": agreement_target,
-            "source_kind": "reviewed_warnings",
-            "historical_labels": ["accepted", "rejected"],
-        });
+        let dataset_manifest = {
+            let mut manifest = serde_json::Map::new();
+            manifest.insert(
+                "dataset_name".to_string(),
+                "quality_gate_reviewed_warning_golden_set".into(),
+            );
+            manifest.insert(
+                "dataset_version".to_string(),
+                dataset_version.clone().into(),
+            );
+            manifest.insert("schema".to_string(), "quality_gate_warning_jsonl_v1".into());
+            manifest.insert("accepted_target".to_string(), json_value(accepted_limit));
+            manifest.insert("rejected_target".to_string(), json_value(rejected_limit));
+            manifest.insert("accepted_count".to_string(), json_value(accepted_count));
+            manifest.insert("rejected_count".to_string(), json_value(rejected_count));
+            manifest.insert("agreement_target".to_string(), json_value(agreement_target));
+            manifest.insert("source_kind".to_string(), "reviewed_warnings".into());
+            manifest.insert(
+                "historical_labels".to_string(),
+                json_value(["accepted", "rejected"]),
+            );
+            serde_json::Value::Object(manifest)
+        };
         let dataset = self
             .record_llm_training_dataset(
                 "quality_gate_reviewed_warning_golden_set",
@@ -350,23 +368,37 @@ impl PgStore {
             )
             .await?;
 
-        let export_metrics = serde_json::json!({
-            "dataset_id": dataset.id,
-            "dataset_version": dataset.dataset_version,
-            "example_count": examples.len(),
-            "accepted_count": accepted_count,
-            "rejected_count": rejected_count,
-            "agreement_target": agreement_target,
-        });
-        let export_artifacts = serde_json::json!({
-            "dataset_name": dataset.dataset_name,
-            "dataset_version": dataset.dataset_version,
-            "preview_ids": examples
+        let export_metrics = {
+            let mut metrics = serde_json::Map::new();
+            metrics.insert("dataset_id".to_string(), json_value(dataset.id));
+            metrics.insert(
+                "dataset_version".to_string(),
+                dataset.dataset_version.clone().into(),
+            );
+            metrics.insert("example_count".to_string(), json_value(examples.len()));
+            metrics.insert("accepted_count".to_string(), json_value(accepted_count));
+            metrics.insert("rejected_count".to_string(), json_value(rejected_count));
+            metrics.insert("agreement_target".to_string(), json_value(agreement_target));
+            serde_json::Value::Object(metrics)
+        };
+        let export_artifacts = {
+            let preview_ids = examples
                 .iter()
                 .take(10)
                 .map(|example| example.source_id.to_string())
-                .collect::<Vec<_>>(),
-        });
+                .collect::<Vec<_>>();
+            let mut artifacts = serde_json::Map::new();
+            artifacts.insert(
+                "dataset_name".to_string(),
+                dataset.dataset_name.clone().into(),
+            );
+            artifacts.insert(
+                "dataset_version".to_string(),
+                dataset.dataset_version.clone().into(),
+            );
+            artifacts.insert("preview_ids".to_string(), json_value(preview_ids));
+            serde_json::Value::Object(artifacts)
+        };
         self.record_llm_improvement_run(
             "quality_gate_golden_set_export",
             &dataset.dataset_version,

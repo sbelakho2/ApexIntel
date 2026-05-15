@@ -1,9 +1,9 @@
-/// Lagged cross-correlation analysis.
-///
-/// All correlation functions return values in `[−1, 1]`.  `NaN` and `±∞`
-/// input values are filtered before Pearson computation.  When too few pairs
-/// remain (< 2 for Pearson/Spearman, < 3 per-lag for lagged xcorr), the
-/// function returns `0.0` rather than panicking.
+//! Lagged cross-correlation analysis.
+//!
+//! All correlation functions return values in `[−1, 1]`. `NaN` and `±∞`
+//! input values are filtered before Pearson computation. When too few pairs
+//! remain (< 2 for Pearson/Spearman, < 3 per-lag for lagged xcorr), the
+//! function returns `0.0` rather than panicking.
 
 /// Compute lagged cross-correlation between two time series.
 ///
@@ -203,7 +203,10 @@ mod tests {
         let x: Vec<f64> = (0..20).map(|i| (i as f64 * 0.5).sin()).collect();
         let results = lagged_xcorr(&x, &x, 5);
         // At lag 0, autocorrelation should be ~1.0
-        let lag_0 = results.iter().find(|(lag, _)| *lag == 0).unwrap();
+        let lag_0 = results
+            .iter()
+            .find(|(lag, _)| *lag == 0)
+            .unwrap_or_else(|| panic!("lag 0 should be present"));
         assert!(
             (lag_0.1 - 1.0).abs() < 0.01,
             "Self-correlation at lag 0 should be ~1.0, got {}",
@@ -273,7 +276,11 @@ mod tests {
         let results = lagged_xcorr(&x, &y, 5);
         assert_eq!(results.len(), 11);
         // Lag 0 should still show high autocorrelation
-        let lag0 = results.iter().find(|(l, _)| *l == 0).unwrap().1;
+        let lag0 = results
+            .iter()
+            .find(|(lag, _)| *lag == 0)
+            .map(|(_, value)| *value)
+            .unwrap_or_else(|| panic!("lag 0 should be present"));
         assert!(
             (lag0 - 1.0).abs() < 1e-10,
             "lag-0 autocorr should be 1.0; got {lag0}"
@@ -313,7 +320,10 @@ mod tests {
         let y = vec![1.0, 2.0, 2.0, 3.0, 3.0];
         let r = spearman(&x, &y);
         assert!(r.is_finite(), "Spearman with ties must be finite; got {r}");
-        assert!(r >= -1.0 && r <= 1.0, "Spearman must be in [-1,1]; got {r}");
+        assert!(
+            (-1.0..=1.0).contains(&r),
+            "Spearman must be in [-1,1]; got {r}"
+        );
     }
 
     #[test]

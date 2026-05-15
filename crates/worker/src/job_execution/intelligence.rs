@@ -85,13 +85,13 @@ pub(super) async fn run_cross_domain_mining(kind: &JobKind, store: &Arc<PgStore>
     {
         let since = Utc::now() - chrono::Duration::days(30);
         let obs_types = [
-            "web_change",
-            "job_post",
-            "tender_posted",
-            "person_mention",
-            "role_change",
-            "vuln_notice",
-            "procurement_signal",
+            "WebChange",
+            "JobPost",
+            "SocialPost",
+            "CompetitorEvent",
+            "lookalike_domain",
+            "dns_posture",
+            "kev_match",
         ];
         let mut all_events: Vec<TypedEvent> = Vec::new();
         for obs_type in &obs_types {

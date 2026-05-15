@@ -10,15 +10,40 @@ pub(super) async fn run_breach_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let intelx_key = std::env::var("INTELX_API_KEY").ok();
     let pastebin_key = std::env::var("PASTEBIN_API_DEV_KEY").ok();
 
+    // Load domains from env var first, fall back to DB companies
     let domains_raw = std::env::var("MONITORED_DOMAINS").unwrap_or_default();
-    let domains: Vec<String> = domains_raw
+    let mut domains: Vec<String> = domains_raw
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
 
     if domains.is_empty() {
-        run.skip("breach_scan: no MONITORED_DOMAINS configured");
+        let companies = store
+            .list_companies(
+                &apex_store::postgres::CompanyListFilters {
+                    regions: vec![],
+                    search: None,
+                    is_competitor: None,
+                },
+                Some(apex_store::postgres::CompanyOrderBy::Name),
+                false,
+                500,
+                0,
+            )
+            .await
+            .unwrap_or_default();
+        domains = companies
+            .iter()
+            .filter_map(|c| c.domain.clone())
+            .filter(|d| !d.is_empty())
+            .collect();
+    }
+
+    if domains.is_empty() {
+        run.skip(
+            "breach_scan: no domains found (neither in MONITORED_DOMAINS nor in companies table)",
+        );
         return run;
     }
 
@@ -85,15 +110,52 @@ pub(super) async fn run_sanctions_screen(kind: &JobKind, store: &Arc<PgStore>) -
     let mut run = JobRun::new(kind.clone());
     run.start();
 
+    // Load entity names from env var first, fall back to DB companies + persons
     let entities_raw = std::env::var("MONITORED_ENTITIES").unwrap_or_default();
-    let entity_names: Vec<String> = entities_raw
+    let mut entity_names: Vec<String> = entities_raw
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
 
     if entity_names.is_empty() {
-        run.skip("sanctions_screen: no MONITORED_ENTITIES configured");
+        let companies = store
+            .list_companies(
+                &apex_store::postgres::CompanyListFilters {
+                    regions: vec![],
+                    search: None,
+                    is_competitor: None,
+                },
+                Some(apex_store::postgres::CompanyOrderBy::Name),
+                false,
+                500,
+                0,
+            )
+            .await
+            .unwrap_or_default();
+        entity_names.extend(companies.iter().map(|c| c.name.clone()));
+
+        let persons = store
+            .list_persons(
+                &apex_store::postgres::PersonListFilters {
+                    regions: vec![],
+                    roles: vec![],
+                    search: None,
+                    min_priority: None,
+                    max_priority: None,
+                },
+                Some(apex_store::postgres::PersonOrderBy::Name),
+                false,
+                500,
+                0,
+            )
+            .await
+            .unwrap_or_default();
+        entity_names.extend(persons.iter().map(|p| p.name.clone()));
+    }
+
+    if entity_names.is_empty() {
+        run.skip("sanctions_screen: no entities found (neither in MONITORED_ENTITIES nor in DB)");
         return run;
     }
 
@@ -180,6 +242,7 @@ pub(super) async fn run_sanctions_screen(kind: &JobKind, store: &Arc<PgStore>) -
     run
 }
 
+#[allow(clippy::disallowed_methods)]
 pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
@@ -374,39 +437,73 @@ pub(super) async fn run_kev_catalog_fetch(kind: &JobKind) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     let url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build();
-    match client {
-        Ok(client) => match client.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(catalog) => {
-                        let count = catalog["vulnerabilities"]
-                            .as_array()
-                            .map(|v| v.len())
-                            .unwrap_or(0);
-                        tracing::info!(
-                            cve_count = count,
-                            "kev_catalog_fetch: catalog downloaded successfully"
-                        );
-                        run.succeed(
-                            count as u64,
-                            &format!("kev_catalog_fetch: downloaded {} CVEs from CISA KEV", count),
-                        );
-                    }
-                    Err(e) => run.fail(&format!("kev_catalog_fetch: failed to parse JSON: {e}")),
-                }
+
+    // CISA blocks Hetzner IPs and the proxy provider blocks HTTP CONNECT to .gov,
+    // so we shell out to curl with --socks5 which reliably tunnels through the proxy.
+    let body = if let Some(proxy_url) = crate::build_paid_proxy_url_from_env() {
+        let socks_url = proxy_url.replacen("http://", "", 1);
+        tracing::info!("kev_catalog_fetch: fetching via SOCKS5 proxy");
+        let output = tokio::process::Command::new("curl")
+            .args([
+                "-s",
+                "--socks5",
+                &socks_url,
+                "-A",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "--connect-timeout",
+                "30",
+                "-m",
+                "90",
+                url,
+            ])
+            .output()
+            .await;
+        match output {
+            Ok(out) if out.status.success() => Ok(out.stdout),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Err(format!("curl exit {}: {}", out.status, stderr.trim()))
             }
-            Ok(resp) => run.fail(&format!(
-                "kev_catalog_fetch: HTTP {} from CISA",
-                resp.status()
-            )),
-            Err(e) => run.fail(&format!("kev_catalog_fetch: request failed: {e}")),
+            Err(e) => Err(format!("failed to spawn curl: {e}")),
+        }
+    } else {
+        tracing::info!("kev_catalog_fetch: fetching directly (no proxy configured)");
+        match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(90))
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+            .build()
+        {
+            Ok(client) => match client.get(url).send().await {
+                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                    Ok(b) => Ok(b.to_vec()),
+                    Err(e) => Err(format!("failed to read response body: {e}")),
+                },
+                Ok(resp) => Err(format!("HTTP {} from CISA", resp.status())),
+                Err(e) => Err(format!("request failed: {e}")),
+            },
+            Err(e) => Err(format!("failed to build HTTP client: {e}")),
+        }
+    };
+
+    match body {
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(catalog) => {
+                let count = catalog["vulnerabilities"]
+                    .as_array()
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                tracing::info!(
+                    cve_count = count,
+                    "kev_catalog_fetch: catalog downloaded successfully"
+                );
+                run.succeed(
+                    count as u64,
+                    &format!("kev_catalog_fetch: downloaded {} CVEs from CISA KEV", count),
+                );
+            }
+            Err(e) => run.fail(&format!("kev_catalog_fetch: failed to parse JSON: {e}")),
         },
-        Err(e) => run.fail(&format!(
-            "kev_catalog_fetch: failed to build HTTP client: {e}"
-        )),
+        Err(e) => run.fail(&format!("kev_catalog_fetch: {e}")),
     }
     run
 }

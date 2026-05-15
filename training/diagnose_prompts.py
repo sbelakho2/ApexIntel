@@ -3,9 +3,11 @@
 import json
 import os
 import sys
+from pathlib import Path
 
-eval_dir = "/workspace/ApexIntel/training_data/evaluation"
-train_file = "/workspace/ApexIntel/training/data/sft_train.jsonl"
+WORK = Path(__file__).resolve().parent.parent
+eval_dir = os.environ.get("EVAL_DIR", str(WORK / "training_data" / "evaluation"))
+train_file = os.environ.get("TRAIN_FILE", str(WORK / "training" / "data" / "sft_train.jsonl"))
 
 tasks = ["company_dossier", "warning_generation", "memo_quality",
          "poi_synthesis", "competitive_analysis", "recipe_quality"]
@@ -97,7 +99,7 @@ print("\n\n" + "=" * 80)
 print("EVAL REPORT - SAMPLE FAILURES")
 print("=" * 80)
 try:
-    with open("/workspace/ApexIntel/training/outputs/eval_report.json") as f:
+    with open(str(WORK / "training" / "outputs" / "eval_report.json")) as f:
         report = json.load(f)
     for result in report.get("results", []):
         if not result.get("passed") and result.get("task") in tasks:

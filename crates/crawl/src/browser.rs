@@ -93,6 +93,9 @@ impl BoundedBrowserRunner {
     }
 
     async fn fetch_with_chrome(&self, binary: &PathBuf, url: &str) -> Result<BrowserFetchResult> {
+        // Validate URL to prevent command injection via malicious URLs
+        let sanitized_url = Self::validate_browser_url(url)?;
+
         let mut command = Command::new(binary);
         command
             .arg("--headless=new")
@@ -100,7 +103,7 @@ impl BoundedBrowserRunner {
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
             .arg("--dump-dom")
-            .arg(url);
+            .arg(&sanitized_url);
 
         let output = tokio::time::timeout(self.timeout, command.output())
             .await
@@ -141,12 +144,45 @@ impl BoundedBrowserRunner {
             },
         }
     }
+
+    /// Validate that a URL is safe to pass as a command-line argument to a headless browser.
+    /// Returns the URL if valid, or an error if it contains potentially dangerous characters.
+    fn validate_browser_url(url: &str) -> Result<String> {
+        // Reject URLs containing shell metacharacters that could enable argument injection
+        let dangerous_chars = [
+            '|', ';', '&', '$', '`', '\n', '\r', '>', '<', '\\', '\'', '"',
+        ];
+        if let Some(bad) = url.chars().find(|c| dangerous_chars.contains(c)) {
+            return Err(anyhow!(
+                "URL contains dangerous character {:?} which may enable command injection: {url:.50}",
+                bad
+            ));
+        }
+
+        // Ensure URL is reasonably sized and starts with a valid scheme
+        if url.len() > 8192 {
+            return Err(anyhow!(
+                "URL exceeds maximum allowed length (8192): {url:.50}"
+            ));
+        }
+        if !url.starts_with("http://")
+            && !url.starts_with("https://")
+            && !url.starts_with("file://")
+        {
+            return Err(anyhow!(
+                "URL must start with http://, https://, or file:// scheme: {url:.50}"
+            ));
+        }
+
+        Ok(url.to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[allow(clippy::disallowed_methods)]
     #[tokio::test]
     async fn recorded_browser_fixture_returns_rendered_html() {
         let runner = BoundedBrowserRunner::from_recorded_pages(HashMap::from([(
@@ -157,7 +193,7 @@ mod tests {
         let page = runner
             .fetch("https://www.linkedin.com/company/apexintel/")
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!("recorded browser fixture should fetch: {error}"));
 
         assert!(page.rendered);
         assert!(page.html.contains("rendered"));

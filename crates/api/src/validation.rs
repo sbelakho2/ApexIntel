@@ -91,29 +91,32 @@ mod tests {
         let payload = error_response::<()>(err);
         let error = payload.error.expect("error payload");
         assert_eq!(error.code, ErrorCode::ValidationError);
-        assert_eq!(error.details.expect("details").get("field"), Some(&"observation_type".to_string()));
+        assert_eq!(
+            error.details.expect("details").get("field"),
+            Some(&"observation_type".to_string())
+        );
     }
 
     #[test]
     fn list_logistics_nodes_rejects_invalid_country_code_length() {
-        let err = parse_country_code_filter(Some("USA"))
-            .expect_err("3-letter country code should fail");
+        let err =
+            parse_country_code_filter(Some("USA")).expect_err("3-letter country code should fail");
         assert_eq!(err.http_status(), 422);
         assert!(err.message.contains("2-letter uppercase code"));
     }
 
     #[test]
     fn list_logistics_nodes_rejects_non_alpha_country_code() {
-        let err = parse_country_code_filter(Some("U1"))
-            .expect_err("non-alpha country code should fail");
+        let err =
+            parse_country_code_filter(Some("U1")).expect_err("non-alpha country code should fail");
         assert_eq!(err.http_status(), 422);
         assert!(err.message.contains("uppercase A-Z"));
     }
 
     #[test]
     fn list_logistics_nodes_accepts_valid_country_code() {
-        let country_code = parse_country_code_filter(Some("US"))
-            .expect("valid country code should succeed");
+        let country_code =
+            parse_country_code_filter(Some("US")).expect("valid country code should succeed");
         assert_eq!(country_code.as_deref(), Some("US"));
     }
 

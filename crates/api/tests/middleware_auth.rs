@@ -51,7 +51,10 @@ fn auth_middleware_preserves_current_status_codes() {
     assert_eq!(missing.http_status(), 401);
 
     let mut viewer_headers = HeaderMap::new();
-    viewer_headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer viewer-secret"));
+    viewer_headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer viewer-secret"),
+    );
     let forbidden = authenticate_api_request(&viewer_headers, &Method::POST, &keys, Utc::now())
         .expect_err("viewer write should fail");
     assert_eq!(forbidden.http_status(), 403);
@@ -61,8 +64,14 @@ fn auth_middleware_preserves_current_status_codes() {
 fn principal_extraction_is_available_to_handlers_after_extraction() {
     let keys = api_keys();
     let mut headers = HeaderMap::new();
-    headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer admin-secret"));
-    headers.insert(header::ORIGIN, HeaderValue::from_static("https://allowed.test"));
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer admin-secret"),
+    );
+    headers.insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://allowed.test"),
+    );
 
     let authenticated = authenticate_api_request(&headers, &Method::GET, &keys, Utc::now())
         .expect("admin auth should pass");

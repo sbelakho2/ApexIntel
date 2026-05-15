@@ -21,17 +21,19 @@ impl CrawlGovernor {
 
     /// Create with custom per-domain and global RPS limits.
     pub fn with_limits(domain_rps: u32, global_rps: u32) -> Self {
-        let domain_rps = domain_rps.max(1);
+        let domain_rps_value = domain_rps.max(1);
         let global_rps = global_rps.max(1);
-        // Safety: max(1) guarantees values are ≥1, so NonZeroU32::new always returns Some.
-        let domain_quota = Quota::per_second(NonZeroU32::new(domain_rps).expect("guaranteed ≥1 by max(1)"))
-            .allow_burst(NonZeroU32::new(1).expect("literal 1"));
-        let global_quota = Quota::per_second(NonZeroU32::new(global_rps).expect("guaranteed ≥1 by max(1)"));
+        let domain_rps = NonZeroU32::new(domain_rps_value)
+            .unwrap_or_else(|| unreachable!("max(1) guarantees non-zero domain_rps"));
+        let global_rps_nonzero = NonZeroU32::new(global_rps)
+            .unwrap_or_else(|| unreachable!("max(1) guarantees non-zero global_rps"));
+        let domain_quota = Quota::per_second(domain_rps).allow_burst(NonZeroU32::MIN);
+        let global_quota = Quota::per_second(global_rps_nonzero);
 
         Self {
             domain_limiter: Arc::new(RateLimiter::keyed(domain_quota)),
             global_limiter: Arc::new(RateLimiter::direct(global_quota)),
-            domain_rps: domain_rps as f64,
+            domain_rps: domain_rps_value as f64,
             global_rps,
         }
     }
@@ -118,6 +120,7 @@ mod tests {
         assert!(gov.try_acquire("domain2.com"));
     }
 
+    #[allow(clippy::disallowed_methods)]
     #[tokio::test]
     async fn test_wait_for_slot() {
         let gov = CrawlGovernor::with_limits(10, 100);

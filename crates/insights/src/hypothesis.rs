@@ -73,7 +73,8 @@ impl EvidenceType {
             EvidenceType::JobPosting
         } else if lower.contains("patent") {
             EvidenceType::PatentFiling
-        } else if lower.contains("capacity") || lower.contains("facility") && lower.contains("new") {
+        } else if lower.contains("capacity") || lower.contains("facility") && lower.contains("new")
+        {
             EvidenceType::CapacityAnnouncement
         } else if lower.contains("layoff") || lower.contains("reduction") {
             EvidenceType::Layoff
@@ -81,7 +82,11 @@ impl EvidenceType {
             EvidenceType::FacilityClosure
         } else if lower.contains("certif") {
             EvidenceType::NewCertification
-        } else if lower.contains("leader") || lower.contains("executive") || lower.contains("ceo") || lower.contains("cto") {
+        } else if lower.contains("leader")
+            || lower.contains("executive")
+            || lower.contains("ceo")
+            || lower.contains("cto")
+        {
             EvidenceType::LeadershipChange
         } else if lower.contains("merger") || lower.contains("acquisition") {
             EvidenceType::MergerAcquisition
@@ -213,7 +218,10 @@ impl EntityHypothesisTracker {
     /// evidence type supports the hypothesis.
     pub fn update_with_evidence(&mut self, evidence_type: EvidenceType) {
         // Track evidence count
-        *self.evidence_counts.entry(evidence_type.clone()).or_insert(0) += 1;
+        *self
+            .evidence_counts
+            .entry(evidence_type.clone())
+            .or_insert(0) += 1;
         self.total_evidence += 1;
 
         // Update likelihoods based on evidence support
@@ -247,15 +255,21 @@ impl EntityHypothesisTracker {
 
     /// Get the hypothesis with highest posterior probability.
     pub fn leading_hypothesis(&self) -> Option<&Hypothesis> {
-        self.hypotheses
-            .iter()
-            .max_by(|a, b| a.posterior.partial_cmp(&b.posterior).unwrap_or(std::cmp::Ordering::Equal))
+        self.hypotheses.iter().max_by(|a, b| {
+            a.posterior
+                .partial_cmp(&b.posterior)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     /// Get all hypotheses sorted by posterior probability (descending).
     pub fn ranked_hypotheses(&self) -> Vec<&Hypothesis> {
         let mut sorted: Vec<&Hypothesis> = self.hypotheses.iter().collect();
-        sorted.sort_by(|a, b| b.posterior.partial_cmp(&a.posterior).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.posterior
+                .partial_cmp(&a.posterior)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         sorted
     }
 
@@ -285,8 +299,16 @@ impl EntityHypothesisTracker {
                 all_evidence_types.dedup();
 
                 for evidence_type in &all_evidence_types {
-                    let p_i: f64 = if h_i.supporting_evidence.contains(evidence_type) { 0.8 } else { 0.2 };
-                    let p_j: f64 = if h_j.supporting_evidence.contains(evidence_type) { 0.8 } else { 0.2 };
+                    let p_i: f64 = if h_i.supporting_evidence.contains(evidence_type) {
+                        0.8
+                    } else {
+                        0.2
+                    };
+                    let p_j: f64 = if h_j.supporting_evidence.contains(evidence_type) {
+                        0.8
+                    } else {
+                        0.2
+                    };
 
                     let diagnostic_value = (p_i.ln() - p_j.ln()).abs();
 
@@ -317,7 +339,9 @@ impl EntityHypothesisTracker {
 
         // Sort by diagnostic value descending
         diagnostics.sort_by(|a, b| {
-            b.diagnostic_value.partial_cmp(&a.diagnostic_value).unwrap_or(std::cmp::Ordering::Equal)
+            b.diagnostic_value
+                .partial_cmp(&a.diagnostic_value)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         diagnostics
@@ -334,7 +358,10 @@ impl EntityHypothesisTracker {
             entity_name: self.entity_name.clone(),
             leading_hypothesis: leading.map(|h| h.label.clone()),
             leading_posterior: leading.map(|h| h.posterior),
-            all_posteriors: ranked.iter().map(|h| (h.label.clone(), h.posterior)).collect(),
+            all_posteriors: ranked
+                .iter()
+                .map(|h| (h.label.clone(), h.posterior))
+                .collect(),
             total_evidence: self.total_evidence,
             top_diagnostic: diagnostics.first().map(|d| d.recommendation.clone()),
             updated_at: self.updated_at,
@@ -396,10 +423,7 @@ mod tests {
 
     #[test]
     fn bayesian_update_increases_posterior() {
-        let mut tracker = EntityHypothesisTracker::new(
-            Uuid::new_v4(),
-            "Test Corp".to_string(),
-        );
+        let mut tracker = EntityHypothesisTracker::new(Uuid::new_v4(), "Test Corp".to_string());
 
         // Initial posteriors should be equal
         assert!((tracker.hypotheses[0].posterior - 1.0 / 3.0).abs() < 0.01);
@@ -417,10 +441,7 @@ mod tests {
 
     #[test]
     fn diagnostic_evidence_identifies_distinguishing_signals() {
-        let tracker = EntityHypothesisTracker::new(
-            Uuid::new_v4(),
-            "Test Corp".to_string(),
-        );
+        let tracker = EntityHypothesisTracker::new(Uuid::new_v4(), "Test Corp".to_string());
 
         let diagnostics = tracker.identify_diagnostic_evidence();
         assert!(!diagnostics.is_empty());
@@ -429,10 +450,7 @@ mod tests {
 
     #[test]
     fn anchoring_detection_works() {
-        let mut tracker = EntityHypothesisTracker::new(
-            Uuid::new_v4(),
-            "Test Corp".to_string(),
-        );
+        let mut tracker = EntityHypothesisTracker::new(Uuid::new_v4(), "Test Corp".to_string());
 
         // Add many signals for one hypothesis
         for _ in 0..20 {

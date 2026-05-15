@@ -54,9 +54,13 @@ fn warnings_ws_accepts_supported_auth_transport() {
     assert_eq!(token, "query-token");
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer admin-secret"));
-    let auth_header_token = extract_websocket_token(&headers, None, WebSocketAuthOptions::default())
-        .expect("authorization header should pass");
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer admin-secret"),
+    );
+    let auth_header_token =
+        extract_websocket_token(&headers, None, WebSocketAuthOptions::default())
+            .expect("authorization header should pass");
     let auth_context = validate_websocket_token(&auth_header_token, &api_keys(), Utc::now())
         .expect("known token should validate");
     assert_eq!(auth_context.key_id, "admin-key");
@@ -65,7 +69,10 @@ fn warnings_ws_accepts_supported_auth_transport() {
 #[test]
 fn warnings_ws_rejects_invalid_subprotocol_token_when_compat_disabled() {
     let mut headers = HeaderMap::new();
-    headers.insert("sec-websocket-protocol", HeaderValue::from_static("legacy-token"));
+    headers.insert(
+        "sec-websocket-protocol",
+        HeaderValue::from_static("legacy-token"),
+    );
     let err = extract_websocket_token(
         &headers,
         None,

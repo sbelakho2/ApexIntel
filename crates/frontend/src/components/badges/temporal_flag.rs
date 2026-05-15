@@ -4,10 +4,12 @@ use leptos::*;
 #[component]
 pub fn TemporalFlag(consistency: TemporalConsistency) -> impl IntoView {
     if consistency.valid {
-        return view! { <></> }.into_view();
+        return ().into_view();
     }
 
-    let message = consistency.reason.unwrap_or_else(|| "Temporal consistency check failed".to_string());
+    let message = consistency
+        .reason
+        .unwrap_or_else(|| "Temporal consistency check failed".to_string());
 
     view! {
         <div class="temporal-warning">

@@ -881,6 +881,8 @@ pub fn run_weekly_pipeline_with_optional_policies(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+
     use super::*;
     use chrono::TimeZone;
 

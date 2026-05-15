@@ -24,7 +24,6 @@
 //! All pure logic (routing, config validation, response parsing) is testable
 //! without external services.  Async HTTP is hidden behind the `LlmClient`
 //! trait — provide a mock impl in tests.
-
 pub mod evaluation;
 pub mod inference;
 pub mod insight_gen;
@@ -54,8 +53,8 @@ pub mod function_calling;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use tracing;
 
 pub const EXPERIMENTAL_FEATURES_ENABLED: bool = cfg!(feature = "experimental");
 
@@ -90,6 +89,47 @@ pub(crate) fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
 /// | function calling | limited          | full support   | full support     |
 ///
 /// Use [`ModelConfig::llamacpp_default`] for the typical local deployment.
+/// Newtype wrapper around `SecretString` that provides safe Serialize/Deserialize.
+///
+/// - **Serialize**: always outputs the literal string `"***REDACTED***"`, preventing
+///   accidental leakage of the API key through serialization (e.g. logging configs).
+/// - **Deserialize**: reads a plain string from the input and wraps it in `SecretString`,
+///   which zeroes memory on drop.
+#[derive(Debug, Clone)]
+pub struct ApiKeySecret(SecretString);
+
+impl ApiKeySecret {
+    /// Access the underlying secret string.
+    pub fn expose_secret(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+
+impl From<String> for ApiKeySecret {
+    fn from(s: String) -> Self {
+        Self(SecretString::from(s))
+    }
+}
+
+impl From<&str> for ApiKeySecret {
+    fn from(s: &str) -> Self {
+        Self(SecretString::from(s.to_string()))
+    }
+}
+
+impl Serialize for ApiKeySecret {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str("***REDACTED***")
+    }
+}
+
+impl<'de> Deserialize<'de> for ApiKeySecret {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self(SecretString::from(s)))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LlmProvider {
     LlamaCpp,
@@ -133,7 +173,10 @@ pub struct ModelConfig {
     pub model_name: String,
     pub provider: LlmProvider,
     pub base_url: String,
-    pub api_key: Option<String>,
+    /// API key stored as `ApiKeySecret` (backed by `SecretString`) which zeroes
+    /// memory on drop.  Serializes as `"***REDACTED***"` to prevent leakage.
+    /// Use `redacted_api_key()` for safe logging.
+    pub api_key: Option<ApiKeySecret>,
     pub max_tokens: u32,
     pub temperature: f64,
     pub timeout_seconds: u32,
@@ -216,8 +259,14 @@ impl ModelConfig {
     pub fn redacted_api_key(&self) -> String {
         match &self.api_key {
             None => "(none)".to_string(),
-            Some(k) if k.len() <= 8 => "***".to_string(),
-            Some(k) => format!("{}...{}", &k[..4], &k[k.len() - 4..]),
+            Some(k) => {
+                let k = k.expose_secret();
+                if k.len() <= 8 {
+                    "***".to_string()
+                } else {
+                    format!("{}...{}", &k[..4], &k[k.len() - 4..])
+                }
+            }
         }
     }
 }
@@ -425,18 +474,26 @@ pub fn build_request_body(
     max_tokens: u32,
     json_mode: bool,
 ) -> serde_json::Value {
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    });
+    let mut body = serde_json::Map::new();
+    body.insert("model".to_string(), model.into());
+    body.insert(
+        "messages".to_string(),
+        serde_json::to_value(messages)
+            .unwrap_or_else(|error| panic!("chat messages should serialize: {error}")),
+    );
+    body.insert("temperature".to_string(), temperature.into());
+    body.insert("max_tokens".to_string(), max_tokens.into());
 
     if json_mode {
-        body["response_format"] = serde_json::json!({"type": "json_object"});
+        let mut response_format = serde_json::Map::new();
+        response_format.insert("type".to_string(), "json_object".into());
+        body.insert(
+            "response_format".to_string(),
+            serde_json::Value::Object(response_format),
+        );
     }
 
-    body
+    serde_json::Value::Object(body)
 }
 
 /// Extract the content string from an OpenAI-compatible chat response.
@@ -577,7 +634,7 @@ impl OpenAiCompatibleClient {
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .build()
-            .expect("failed to build HTTP client");
+            .unwrap_or_else(|error| panic!("failed to build HTTP client: {error}"));
         Self { config, http }
     }
 
@@ -614,7 +671,7 @@ impl OpenAiCompatibleClient {
 
             let mut req = self.http.post(&endpoint).json(&body);
             if let Some(ref key) = self.config.api_key {
-                req = req.header("Authorization", format!("Bearer {}", key));
+                req = req.header("Authorization", format!("Bearer {}", key.expose_secret()));
             }
 
             let resp = match req.send().await {
@@ -679,6 +736,8 @@ impl LlmClient for OpenAiCompatibleClient {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     #[test]
@@ -768,16 +827,20 @@ mod tests {
 
     #[test]
     fn test_routing_config_validate_rejects_zero_max_api_concurrent() {
-        let mut cfg = RoutingConfig::default();
-        cfg.max_api_concurrent = 0;
+        let cfg = RoutingConfig {
+            max_api_concurrent: 0,
+            ..Default::default()
+        };
         let issues = cfg.validate();
         assert!(issues.iter().any(|m| m.contains("max_api_concurrent")));
     }
 
     #[test]
     fn test_routing_config_validate_rejects_negative_budget() {
-        let mut cfg = RoutingConfig::default();
-        cfg.monthly_api_budget_usd = -1.0;
+        let cfg = RoutingConfig {
+            monthly_api_budget_usd: -1.0,
+            ..Default::default()
+        };
         let issues = cfg.validate();
         assert!(issues.iter().any(|m| m.contains("monthly_api_budget_usd")));
     }
@@ -842,13 +905,14 @@ mod tests {
         let cfg = LlmConfig::default();
         assert_eq!(cfg.primary.provider, LlmProvider::LlamaCpp);
         assert!(cfg.fallback.is_some());
-        assert_eq!(cfg.fallback.as_ref().unwrap().provider, LlmProvider::OpenAi);
-        assert!(cfg.lightweight.is_some());
-        assert_eq!(
-            cfg.lightweight.as_ref().unwrap().provider,
-            LlmProvider::LlamaCpp
+        assert!(
+            matches!(cfg.fallback.as_ref(), Some(config) if config.provider == LlmProvider::OpenAi)
         );
-        assert_eq!(cfg.lightweight.as_ref().unwrap().max_tokens, 1024);
+        assert!(cfg.lightweight.is_some());
+        assert!(
+            matches!(cfg.lightweight.as_ref(), Some(config) if config.provider == LlmProvider::LlamaCpp)
+        );
+        assert!(matches!(cfg.lightweight.as_ref(), Some(config) if config.max_tokens == 1024));
     }
 
     #[test]
@@ -930,7 +994,7 @@ mod tests {
                 "total_tokens": 150
             }
         });
-        let usage = extract_usage(&resp).unwrap();
+        let usage = extract_usage(&resp).unwrap_or_else(|| panic!("usage should be present"));
         assert_eq!(usage.prompt_tokens, 100);
         assert_eq!(usage.completion_tokens, 50);
         assert_eq!(usage.total_tokens, 150);
@@ -995,15 +1059,18 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let cfg = LlmConfig::default();
-        let json = serde_json::to_string(&cfg).unwrap();
-        let parsed: LlmConfig = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&cfg)
+            .unwrap_or_else(|error| panic!("LLM config should serialize: {error}"));
+        let parsed: LlmConfig = serde_json::from_str(&json)
+            .unwrap_or_else(|error| panic!("LLM config should deserialize: {error}"));
         assert_eq!(parsed.primary.model_name, cfg.primary.model_name);
         assert_eq!(parsed.primary.provider, cfg.primary.provider);
     }
 
     #[test]
     fn test_model_config_rejects_unknown_fields() {
-        let mut value = serde_json::to_value(ModelConfig::openai_default()).unwrap();
+        let mut value = serde_json::to_value(ModelConfig::openai_default())
+            .unwrap_or_else(|error| panic!("model config should serialize: {error}"));
         value["unused_field"] = serde_json::Value::Bool(true);
         let err = serde_json::from_value::<ModelConfig>(value)
             .unwrap_err()
@@ -1014,7 +1081,8 @@ mod tests {
 
     #[test]
     fn test_routing_config_rejects_unknown_fields() {
-        let mut value = serde_json::to_value(RoutingConfig::default()).unwrap();
+        let mut value = serde_json::to_value(RoutingConfig::default())
+            .unwrap_or_else(|error| panic!("routing config should serialize: {error}"));
         value["unexpected"] = serde_json::Value::String("x".to_string());
         let err = serde_json::from_value::<RoutingConfig>(value)
             .unwrap_err()
@@ -1025,7 +1093,8 @@ mod tests {
 
     #[test]
     fn test_llm_config_rejects_unknown_fields() {
-        let mut value = serde_json::to_value(LlmConfig::default()).unwrap();
+        let mut value = serde_json::to_value(LlmConfig::default())
+            .unwrap_or_else(|error| panic!("LLM config should serialize: {error}"));
         value["mystery"] = serde_json::Value::Bool(true);
         let err = serde_json::from_value::<LlmConfig>(value)
             .unwrap_err()
@@ -1182,14 +1251,14 @@ mod tests {
     #[test]
     fn test_redacted_api_key_short() {
         let mut cfg = ModelConfig::openai_default();
-        cfg.api_key = Some("abc".to_string());
+        cfg.api_key = Some(ApiKeySecret::from("abc"));
         assert_eq!(cfg.redacted_api_key(), "***");
     }
 
     #[test]
     fn test_redacted_api_key_long() {
         let mut cfg = ModelConfig::openai_default();
-        cfg.api_key = Some("sk-1234567890abcdef".to_string());
+        cfg.api_key = Some(ApiKeySecret::from("sk-1234567890abcdef"));
         let redacted = cfg.redacted_api_key();
         assert!(redacted.starts_with("sk-1"));
         assert!(redacted.ends_with("cdef"));
@@ -1199,7 +1268,6 @@ mod tests {
     // ── B206: MAX_RESPONSE_SIZE constant ─────────────────────────
     #[test]
     fn test_max_response_size_constant() {
-        assert!(MAX_RESPONSE_SIZE > 0);
         assert_eq!(MAX_RESPONSE_SIZE, 512_000);
     }
 
@@ -1212,8 +1280,10 @@ mod tests {
 
     #[test]
     fn test_routing_config_allowed_providers_restricted() {
-        let mut cfg = RoutingConfig::default();
-        cfg.allowed_providers = vec![LlmProvider::LlamaCpp];
+        let cfg = RoutingConfig {
+            allowed_providers: vec![LlmProvider::LlamaCpp],
+            ..Default::default()
+        };
         assert_eq!(cfg.allowed_providers.len(), 1);
         assert!(cfg.allowed_providers.contains(&LlmProvider::LlamaCpp));
         assert!(!cfg.allowed_providers.contains(&LlmProvider::OpenAi));

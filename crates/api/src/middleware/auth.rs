@@ -59,14 +59,14 @@ pub fn authenticate_api_request(
             .map(|key| auth::check_origin(key, origin))
             .unwrap_or(false);
         if !origin_ok {
-            return Err(ApiError::forbidden(
-                "Origin not allowed for this API key",
-            ));
+            return Err(ApiError::forbidden("Origin not allowed for this API key"));
         }
     }
 
-    let permission = if matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE)
-    {
+    let permission = if matches!(
+        *method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    ) {
         PermissionLevel::Write
     } else {
         PermissionLevel::Read
@@ -148,7 +148,12 @@ pub fn validate_websocket_token(
 pub fn websocket_subprotocol_compat_enabled() -> bool {
     std::env::var("APEX_WS_SUBPROTOCOL_AUTH_COMPAT")
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -207,7 +212,10 @@ mod tests {
         assert_eq!(missing.http_status(), 401);
 
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer viewer-secret"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer viewer-secret"),
+        );
         let forbidden = authenticate_api_request(&headers, &Method::POST, &keys, Utc::now())
             .expect_err("viewer write should fail");
         assert_eq!(forbidden.http_status(), 403);
@@ -217,8 +225,14 @@ mod tests {
     fn principal_extraction_is_available_to_handlers_after_extraction() {
         let keys = api_keys();
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer admin-secret"));
-        headers.insert(header::ORIGIN, HeaderValue::from_static("https://allowed.test"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer admin-secret"),
+        );
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://allowed.test"),
+        );
 
         let authenticated = authenticate_api_request(&headers, &Method::GET, &keys, Utc::now())
             .expect("admin auth should succeed");
@@ -243,7 +257,10 @@ mod tests {
     #[test]
     fn warnings_ws_accepts_supported_auth_transport() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer admin-secret"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer admin-secret"),
+        );
         let token = extract_websocket_token(&headers, None, WebSocketAuthOptions::default())
             .expect("authorization header should succeed");
         assert_eq!(token, "admin-secret");

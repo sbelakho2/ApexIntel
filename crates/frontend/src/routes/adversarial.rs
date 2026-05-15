@@ -1,11 +1,14 @@
+use apex_shared::{
+    PlacementAlert, QuarantineItem, SourceReliabilityHistory, SourceReliabilityPoint,
+    SourceReliabilityTier,
+};
 use chrono::{Duration, Utc};
-use apex_shared::{PlacementAlert, QuarantineItem, SourceReliabilityHistory, SourceReliabilityPoint, SourceReliabilityTier};
 use leptos::*;
 
 use crate::components::{
     badges::source_reliability_badge::SourceReliabilityBadge,
-    charts::source_entropy_gauge::SourceEntropyGauge,
     cards::{PageHeader, SurfaceCard},
+    charts::source_entropy_gauge::SourceEntropyGauge,
     panels::QuarantineList,
 };
 
@@ -15,7 +18,11 @@ fn sample_placements() -> Vec<PlacementAlert> {
         source_count: 4,
         time_window_hours: 12,
         token_jaccard: 0.83,
-        signal_ids: vec!["sig-112".to_string(), "sig-118".to_string(), "sig-129".to_string()],
+        signal_ids: vec![
+            "sig-112".to_string(),
+            "sig-118".to_string(),
+            "sig-129".to_string(),
+        ],
         created_at: Utc::now(),
     }]
 }
@@ -35,9 +42,21 @@ fn sample_history() -> SourceReliabilityHistory {
         tier: SourceReliabilityTier::TradePress,
         promotion_candidate: true,
         history: vec![
-            SourceReliabilityPoint { observed_reliability: 0.61, effective_reliability: 0.43, recorded_at: Utc::now() - Duration::days(14) },
-            SourceReliabilityPoint { observed_reliability: 0.69, effective_reliability: 0.51, recorded_at: Utc::now() - Duration::days(7) },
-            SourceReliabilityPoint { observed_reliability: 0.78, effective_reliability: 0.63, recorded_at: Utc::now() },
+            SourceReliabilityPoint {
+                observed_reliability: 0.61,
+                effective_reliability: 0.43,
+                recorded_at: Utc::now() - Duration::days(14),
+            },
+            SourceReliabilityPoint {
+                observed_reliability: 0.69,
+                effective_reliability: 0.51,
+                recorded_at: Utc::now() - Duration::days(7),
+            },
+            SourceReliabilityPoint {
+                observed_reliability: 0.78,
+                effective_reliability: 0.63,
+                recorded_at: Utc::now(),
+            },
         ],
     }
 }

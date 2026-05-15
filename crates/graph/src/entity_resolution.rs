@@ -1,7 +1,7 @@
 use apex_core::company_names::normalize_company_name;
 use apex_core::similarity::{jaccard_similarity, trigram_similarity};
-use std::collections::HashMap;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use tracing::debug;
 
@@ -400,7 +400,9 @@ pub fn cluster_entities(names: &[String], threshold: f64) -> Vec<Vec<usize>> {
     let mut start = 0usize;
     while start < canonical_entities.len() {
         let mut end = start + 1;
-        while end < canonical_entities.len() && canonical_entities[end].1 == canonical_entities[start].1 {
+        while end < canonical_entities.len()
+            && canonical_entities[end].1 == canonical_entities[start].1
+        {
             end += 1;
         }
         if end - start > 1 {
@@ -439,12 +441,9 @@ pub fn cluster_entities(names: &[String], threshold: f64) -> Vec<Vec<usize>> {
     }
 
     let mut clusters: HashMap<usize, Vec<usize>> = HashMap::new();
-    for i in 0..n {
+    for (i, canonical_entity) in canonical_entities.iter().enumerate() {
         let root = find(&mut parent, i);
-        clusters
-            .entry(root)
-            .or_default()
-            .push(canonical_entities[i].0);
+        clusters.entry(root).or_default().push(canonical_entity.0);
     }
 
     // Collect into a stable, deterministic order using canonicalized member identities.
@@ -609,7 +608,8 @@ mod tests {
             "Jabil Inc.".to_string(),
             "Starz Electronics SARL".to_string(),
         ];
-        let (match_name, score) = find_best_match("Starz Electronics", &candidates, 0.5).unwrap();
+        let (match_name, score) = find_best_match("Starz Electronics", &candidates, 0.5)
+            .unwrap_or_else(|| panic!("Starz should match the candidate list"));
         assert_eq!(match_name, "Starz Electronics SARL");
         assert!((score - 1.0).abs() < f64::EPSILON);
     }
@@ -622,7 +622,7 @@ mod tests {
         ];
         let result = find_best_match("Foxconn Tech", &candidates, 0.3);
         assert!(result.is_some());
-        assert!(result.unwrap().0.contains("Foxconn"));
+        assert!(matches!(result.as_ref(), Some((value, _)) if value.contains("Foxconn")));
     }
 
     #[test]
@@ -721,7 +721,10 @@ mod tests {
         assert!(clusters.len() >= 2);
 
         // Find the Starz cluster
-        let starz_cluster = clusters.iter().find(|c| c.contains(&0)).unwrap();
+        let starz_cluster = clusters
+            .iter()
+            .find(|cluster| cluster.contains(&0))
+            .unwrap_or_else(|| panic!("Starz cluster should exist"));
         assert!(starz_cluster.contains(&1));
     }
 
@@ -876,7 +879,7 @@ mod tests {
             result.is_some(),
             "Should match despite punctuation differences"
         );
-        assert!((result.unwrap().1 - 1.0).abs() < f64::EPSILON);
+        assert!(matches!(result, Some((_, score)) if (score - 1.0).abs() < f64::EPSILON));
     }
 
     // ── B287: empty input tests ──

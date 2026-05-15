@@ -100,7 +100,7 @@ pub fn compute_centrality_scores(graph: &AdjacencyGraph) -> HashMap<String, f64>
     // Find max pagerank to normalize to 0-100
     let max_pr = pr.values().cloned().fold(0.0_f64, f64::max);
     if max_pr < 1e-12 {
-        return pr.into_iter().map(|(k, _)| (k, 0.0)).collect();
+        return pr.into_keys().map(|k| (k, 0.0)).collect();
     }
 
     pr.into_iter()
@@ -251,7 +251,8 @@ mod tests {
         features.insert("a".to_string(), vec![10.0, 20.0]);
         features.insert("b".to_string(), vec![30.0, 40.0]);
 
-        let result = aggregate_neighbor_features(&g, &features, "center").unwrap();
+        let result = aggregate_neighbor_features(&g, &features, "center")
+            .unwrap_or_else(|| panic!("center should aggregate two neighbors"));
         // Weighted average: (10*0.5 + 30*0.5)/1.0 = 20.0, (20*0.5 + 40*0.5)/1.0 = 30.0
         assert!((result[0] - 20.0).abs() < 0.01);
         assert!((result[1] - 30.0).abs() < 0.01);
@@ -287,7 +288,8 @@ mod tests {
         features.insert("a".to_string(), vec![100.0, 100.0]);
         features.insert("b".to_string(), vec![30.0, 40.0]);
 
-        let result = aggregate_neighbor_features(&g, &features, "center").unwrap();
+        let result = aggregate_neighbor_features(&g, &features, "center")
+            .unwrap_or_else(|| panic!("positive neighbor should aggregate"));
         assert!((result[0] - 30.0).abs() < 0.01);
         assert!((result[1] - 40.0).abs() < 0.01);
     }
@@ -302,7 +304,8 @@ mod tests {
         features.insert("a".to_string(), vec![10.0, 20.0]);
         features.insert("b".to_string(), vec![30.0, 40.0, 50.0, 60.0]);
 
-        let result = aggregate_neighbor_features(&g, &features, "center").unwrap();
+        let result = aggregate_neighbor_features(&g, &features, "center")
+            .unwrap_or_else(|| panic!("uneven vectors should aggregate"));
         assert_eq!(result.len(), 4);
         assert!((result[0] - 20.0).abs() < 0.01);
         assert!((result[1] - 30.0).abs() < 0.01);
@@ -449,7 +452,7 @@ mod tests {
         g.add_bidi_edge("a", "b", 1.0);
         g.add_bidi_edge("b", "c", 1.0);
         let scores = compute_centrality_scores(&g);
-        for (_node, score) in &scores {
+        for score in scores.values() {
             // After rounding to 2 decimals, score * 100 should be close to integer
             let scaled = score * 100.0;
             assert!((scaled - scaled.round()).abs() < 0.01);

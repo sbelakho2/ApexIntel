@@ -12,7 +12,7 @@ static RE_BUYER: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid tender buyer regex: {error}"))
 });
 
 static RE_REFERENCE: LazyLock<Regex> = LazyLock::new(|| {
@@ -20,7 +20,7 @@ static RE_REFERENCE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid tender reference regex: {error}"))
 });
 
 static RE_VALUE: LazyLock<Regex> = LazyLock::new(|| {
@@ -28,7 +28,7 @@ static RE_VALUE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid tender value regex: {error}"))
 });
 
 static RE_DEADLINE: LazyLock<Regex> = LazyLock::new(|| {
@@ -36,7 +36,7 @@ static RE_DEADLINE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid tender deadline regex: {error}"))
 });
 
 /// Extracted tender/procurement posting.
@@ -67,7 +67,7 @@ pub fn extract_tender(body_text: &str, title: &str, url: &str, portal: &str) -> 
 
     let proc_kws = crate::multilingual::procurement_keywords("en");
     let ems_kws = crate::multilingual::ems_keywords("en");
-    let all_kws: Vec<&str> = proc_kws.into_iter().chain(ems_kws.into_iter()).collect();
+    let all_kws: Vec<&str> = proc_kws.into_iter().chain(ems_kws).collect();
     let keywords = crate::multilingual::contains_keywords(&normalized_body, &all_kws);
     let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
 
@@ -88,15 +88,16 @@ pub fn extract_tender(body_text: &str, title: &str, url: &str, portal: &str) -> 
 }
 
 fn extract_buyer(text: &str) -> Option<String> {
-    RE_BUYER
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_BUYER.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_reference(text: &str) -> Option<String> {
     RE_REFERENCE
         .captures(text)
-        .map(|c| c.get(1).unwrap().as_str().to_string())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
 }
 
 fn extract_value(text: &str) -> (Option<f64>, Option<String>) {
@@ -123,7 +124,10 @@ fn extract_value(text: &str) -> (Option<f64>, Option<String>) {
 fn extract_deadline_text(text: &str) -> Option<String> {
     RE_DEADLINE
         .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+        .and_then(|c| {
+            c.get(1)
+                .map(|m| normalizer::normalize_whitespace(m.as_str()))
+        })
         .and_then(|raw| {
             if normalizer::is_valid_date_range(&raw) {
                 Some(raw)
@@ -191,7 +195,7 @@ mod tests {
         let text = "Buyer: Starz Electronics SARL. Details below.";
         let buyer = extract_buyer(text);
         assert!(buyer.is_some());
-        assert!(buyer.unwrap().contains("Starz"));
+        assert!(matches!(buyer.as_deref(), Some(value) if value.contains("Starz")));
     }
 
     #[test]

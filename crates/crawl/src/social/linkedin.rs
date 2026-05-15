@@ -550,7 +550,7 @@ impl LinkedInScraper {
         // Find the last number before "followers"
         let words: Vec<&str> = before.split_whitespace().collect();
         for word in words.iter().rev().take(5) {
-            let clean = word.replace(',', "").replace('.', "");
+            let clean = word.replace([',', '.'], "");
             if let Ok(n) = clean.parse::<u64>() {
                 return Some(n);
             }
@@ -600,7 +600,8 @@ mod tests {
 
     #[test]
     fn parse_company_empty_html() {
-        let s = LinkedInScraper::new(None).unwrap();
+        let s = LinkedInScraper::new(None)
+            .unwrap_or_else(|error| panic!("linkedin scraper should build: {error}"));
         let profile = s.parse_company_page("test-co", "<html></html>");
         assert_eq!(profile.slug, "test-co");
         assert!(profile.recent_posts.is_empty());
@@ -608,13 +609,15 @@ mod tests {
 
     #[test]
     fn extract_jobs_from_mock_html() {
-        let s = LinkedInScraper::new(None).unwrap();
+        let s = LinkedInScraper::new(None)
+            .unwrap_or_else(|error| panic!("linkedin scraper should build: {error}"));
         let html = r#"<span class="job-posting-title">Senior Defence Analyst</span>"#;
         let jobs = s.extract_job_titles(html);
         // May or may not find due to HTML structure differences, but should not panic
         let _ = jobs;
     }
 
+    #[allow(clippy::disallowed_methods)]
     #[tokio::test]
     async fn recorded_browser_fixture_parses_dynamic_company_page() {
         let url = "https://www.linkedin.com/company/apexintel/";
@@ -622,9 +625,13 @@ mod tests {
             url.to_string(),
             include_str!("fixtures/linkedin_company_dynamic.html").to_string(),
         )]));
-        let scraper = LinkedInScraper::with_browser_runner(None, Some(runner.clone())).unwrap();
+        let scraper = LinkedInScraper::with_browser_runner(None, Some(runner.clone()))
+            .unwrap_or_else(|error| panic!("linkedin scraper should build: {error}"));
 
-        let page = runner.fetch(url).await.unwrap();
+        let page = runner
+            .fetch(url)
+            .await
+            .unwrap_or_else(|error| panic!("recorded fixture should fetch: {error}"));
         assert_eq!(page.url, url);
         let profile = scraper.parse_company_page("apexintel", &page.html);
 

@@ -6,9 +6,9 @@
 
 ## 1. Project Configuration
 
-### 1.1 Tailwind Requirements
+### 1.1 Tailwind Requirements (Server-Rendered UI)
 
-`frontend/tailwind.config.ts` must include:
+[`tailwind.config.js`](../tailwind.config.js:1) must include:
 
 - `rams` color family (`chassis`, `module`, `panel`, `line`, `muted`, `orange`, `green`, `red`, `steel`)
 - micro radii (`rams-sm`, `rams-md`, `rams-lg`)
@@ -17,9 +17,9 @@
 - fast transition durations (`rams-instant..rams-slow`)
 - plugins: `@tailwindcss/forms`, `@tailwindcss/typography`, `tailwindcss-animate`
 
-### 1.2 Global CSS Requirements
+### 1.2 Global CSS Requirements (Server-Rendered UI)
 
-`frontend/src/app/globals.css` must define:
+[`crates/api/static/css/globals.css`](../crates/api/static/css/globals.css:1) must define:
 
 - core Rams variables for light and dark themes
 - anti-blur text rendering settings
@@ -27,41 +27,74 @@
 - density modes (`density-compact`, `density-comfortable`, `density-expanded`)
 - reduced motion fallback
 
+### 1.3 WASM Frontend Style Requirements
+
+[`crates/frontend/style.css`](../crates/frontend/style.css:1) defines Rams-compatible CSS custom properties for the Leptos/WASM app. These include:
+
+- All `--rams-*` tokens matching the design system
+- Chart visualization variables (`--chart-series-*`)
+- Bayesian evidence badge colors
+- Component-specific styles (surface-card, stat-card, filter-bar, etc.)
+
 ---
 
 ## 2. Layout Infrastructure
 
-### 2.1 Root Layout
+The ApexIntel frontend has two rendering surfaces with different layout approaches:
 
-`frontend/src/app/layout.tsx` provides:
+### 2.1 Leptos/WASM App Shell (Interactive SPA)
 
-- Industrial bezel frame (`fixed` border)
-- App shell wrapper
-- Bottom system metadata strip (desktop)
+The WASM frontend at [`crates/frontend/`](../crates/frontend/) uses a client-side router with a single app shell defined in [`app.rs`](../crates/frontend/src/app.rs:72):
 
-### 2.2 Shell Expectations
+- Desktop: CSS Grid layout with 260px sidebar + flexible main area
+- Mobile: Single-column layout with sticky topbar and slide-in navigation
+- Navigation: 16 nav items rendered from a `NAV_ITEMS` constant
+- Routes: All defined via `<Routes>` in [`app.rs`](../crates/frontend/src/app.rs:154) with `<Route>` components
 
-`frontend/src/components/app-shell.tsx` should maintain:
+### 2.2 Askama Template Shell (Server-Rendered)
 
-- rack-like left navigation
-- active state rail/indicator
-- compact uppercase operational metadata in top strip
-- bottom padding to prevent collision with metadata bar
+The server-rendered UI at [`crates/api/`](../crates/api/) uses:
+
+- [`templates/base.html`](../crates/api/templates/base.html:1) — Base layout with sidebar, header bar, and content slot
+- Sidebar navigation with active-state highlighting via Askama template blocks
+- HTMX `hx-boost="true"` for partial-page navigation
+- `{% block breadcrumbs %}` and `{% block content %}` for page-level customization
 
 ---
 
 ## 3. Shared UI Component Rules
 
-`frontend/src/components/ui.tsx` is the baseline style layer.
+### WASM Components ([`crates/frontend/src/components/`](../crates/frontend/src/components/mod.rs:1))
 
-### Required Characteristics
+The WASM frontend uses Leptos components organized into modules:
+
+- [`cards.rs`](../crates/frontend/src/components/cards.rs:1) — SurfaceCard, StatCard components
+- [`filters.rs`](../crates/frontend/src/components/filters.rs:1) — FilterBar, FilterChip components
+- [`panels.rs`](../crates/frontend/src/components/panels.rs:1) — Side panels, toolbars
+- [`badges/`](../crates/frontend/src/components/badges/mod.rs:1) — BayesianBadge, SourceReliabilityBadge, TemporalFlag
+- [`charts/`](../crates/frontend/src/components/charts/mod.rs:1) — SVG chart components (probability gauge, reliability diagram, community graph, sparkline, etc.)
+
+### Server-Rendered Components ([`crates/api/templates/macros.html`](../crates/api/templates/macros.html:1))
+
+Shared Askama macros providing:
+
+- `icon(name, size)` — inline SVG icons
+- `page_header(title, icon, subtitle, badge)` — page heading block
+- `severity_badge(level)` / `status_badge(status)` / `region_badge(region)`
+- `score_ring(score, size)` — SVG circular score gauge
+- `progress_bar(value, max, color, label)` — horizontal progress bar
+- `confidence_meter(pct)` — stepped confidence display
+- `empty_state(message, icon)` — placeholder for empty lists
+- SVG chart helpers (`donut_chart`, `country_flag`, `tier_color_class`)
+
+### Required Characteristics (Both Surfaces)
 
 - Visual hierarchy via borders and section dividers
 - Icon + text pairing for primary headers and empty states
 - Compact uppercase labels for metrics/metadata
 - Structured empty-state format (not plain sentence only)
 
-### Stateless Components
+### Stateless Component Patterns
 
 Shared primitives should remain stateless and reusable:
 
@@ -75,6 +108,8 @@ Shared primitives should remain stateless and reusable:
 
 ## 4. Rams Class Contract
 
+### For the Server-Rendered UI (Tailwind)
+
 Use these classes as stable design primitives:
 
 - `bg-rams-chassis`, `bg-rams-module`, `bg-rams-panel`
@@ -85,6 +120,21 @@ Use these classes as stable design primitives:
 - `shadow-rams-inset|rams-pressed|rams-focus`
 
 If a new component needs Rams styling, compose from this contract before inventing ad-hoc tokens.
+
+### For the WASM Frontend (CSS Custom Properties)
+
+Use the CSS variables defined in [`crates/frontend/style.css`](../crates/frontend/style.css:1):
+
+| Token | CSS Variable |
+|---|---|
+| Background | `var(--background)` |
+| Foreground | `var(--foreground)` |
+| Card surface | `var(--card)` |
+| Border | `var(--border)` |
+| Muted text | `var(--muted)` |
+| Primary accent | `var(--primary)` |
+| Success | `var(--success)` |
+| Destructive | `var(--destructive)` |
 
 ---
 
@@ -125,15 +175,36 @@ Status indicators must not rely on color alone.
 
 ## 7. Testing Workflow
 
-Run in `frontend/`:
+### WASM Frontend Tests (Playwright)
+
+Run E2E tests for the Leptos/WASM frontend:
 
 ```bash
-npm run type-check
-npm run test:ui:update
-npm run test:ui
+# Start trunk dev server first (or use the webServer config in playwright.config.cjs)
+cd crates/frontend && trunk serve --port 8080
+
+# In another terminal, run tests
+npx playwright test -c playwright.config.cjs
+
+# Run specific test file
+npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js
+
+# Update snapshots
+npx playwright test -c playwright.config.cjs e2e/html-ui.spec.js --update-snapshots
 ```
 
-Use Playwright snapshots under `frontend/e2e/ui-sense-rams.spec.ts-snapshots` as the baseline artifact.
+### Server-Rendered UI Verification
+
+```bash
+# Compile-time template validation
+cargo check -p apex-api
+
+# Build the WASM frontend
+cd crates/frontend && trunk build
+
+# Compile Tailwind
+npx tailwindcss -i crates/api/static/css/input.css -o crates/api/static/css/tailwind.css --minify
+```
 
 ---
 
@@ -146,4 +217,3 @@ When converting existing pages:
 3. Replace plain text-only empty states with structured icon + heading + context
 4. Tighten spacing to 4px grid increments
 5. Re-run screenshot tests and compare
-

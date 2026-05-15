@@ -147,7 +147,14 @@ def export_gguf(
             "--outtype", "f16",
         ]
         print(f"  Running: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            print(f"  ✗ GGUF conversion failed (exit code {e.returncode})")
+            print(f"  stderr: {e.stderr[:500]}")
+            print(f"  FALLBACK: attempting library-based export instead")
+            _export_gguf_via_library(merged_dir, gguf_file, quant_type)
+            return gguf_file
 
         if quant_type == "F16":
             gguf_file = f16_file
@@ -157,10 +164,17 @@ def export_gguf(
             if quantize_bin:
                 cmd = [quantize_bin, f16_file, gguf_file, quant_type]
                 print(f"  Running: {' '.join(cmd)}")
-                subprocess.run(cmd, check=True)
-                # Clean up F16 intermediate
-                if os.path.isfile(gguf_file) and gguf_file != f16_file:
-                    os.remove(f16_file)
+                try:
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e:
+                    print(f"  ✗ Quantization failed (exit code {e.returncode})")
+                    print(f"  stderr: {e.stderr[:500]}")
+                    print(f"  Keeping F16 GGUF at: {f16_file}")
+                    gguf_file = f16_file
+                else:
+                    # Clean up F16 intermediate
+                    if os.path.isfile(gguf_file) and gguf_file != f16_file:
+                        os.remove(f16_file)
             else:
                 print(f"  ⚠ llama-quantize not found — keeping F16 GGUF")
                 gguf_file = f16_file
@@ -194,35 +208,59 @@ def push_to_hub(
     repo_id: str,
     private: bool = True,
     gguf_file: str | None = None,
+    token: str | None = None,
 ):
-    """Push merged model (and optionally GGUF) to HuggingFace Hub."""
-    from huggingface_hub import HfApi, upload_folder, upload_file
+    """Push merged model (and optionally GGUF) to HuggingFace Hub.
 
-    api = HfApi()
+    Uses HuggingFace token from:
+    1. Explicit `token` parameter
+    2. HF_TOKEN environment variable
+    3. HuggingFace CLI cached token (huggingface-cli login)
+    """
+    try:
+        from huggingface_hub import HfApi, upload_folder, upload_file
+    except ImportError:
+        print("ERROR: huggingface_hub not installed. Install with: pip install huggingface_hub")
+        sys.exit(1)
+
+    # Resolve token: explicit arg > env var > cached login
+    hf_token = token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if not hf_token:
+        print("WARNING: No HF_TOKEN set. Push may fail if not logged in via huggingface-cli.")
+
+    api = HfApi(token=hf_token)
     print(f"Pushing to HuggingFace Hub: {repo_id}")
 
-    # Create repo if needed
-    api.create_repo(repo_id, private=private, exist_ok=True)
+    try:
+        # Create repo if needed
+        api.create_repo(repo_id, private=private, exist_ok=True)
 
-    # Upload merged model
-    print(f"  Uploading merged model from {model_dir} …")
-    upload_folder(
-        folder_path=model_dir,
-        repo_id=repo_id,
-        commit_message="Upload merged ApexIntel model",
-    )
-    print(f"  ✓ Model uploaded")
+        # Upload merged model
+        print(f"  Uploading merged model from {model_dir} …")
+        upload_folder(
+            folder_path=model_dir,
+            repo_id=repo_id,
+            commit_message="Upload merged ApexIntel model",
+        )
+        print(f"  ✓ Model uploaded")
+    except Exception as e:
+        print(f"ERROR: Failed to push model to Hub: {e}")
+        print("  Check your HF_TOKEN or huggingface-cli login status")
+        sys.exit(1)
 
     # Upload GGUF if present
     if gguf_file and os.path.isfile(gguf_file):
-        print(f"  Uploading GGUF: {gguf_file} …")
-        upload_file(
-            path_or_fileobj=gguf_file,
-            path_in_repo=os.path.basename(gguf_file),
-            repo_id=repo_id,
-            commit_message=f"Upload GGUF: {os.path.basename(gguf_file)}",
-        )
-        print(f"  ✓ GGUF uploaded")
+        try:
+            print(f"  Uploading GGUF: {gguf_file} …")
+            upload_file(
+                path_or_fileobj=gguf_file,
+                path_in_repo=os.path.basename(gguf_file),
+                repo_id=repo_id,
+                commit_message=f"Upload GGUF: {os.path.basename(gguf_file)}",
+            )
+            print(f"  ✓ GGUF uploaded")
+        except Exception as e:
+            print(f"ERROR: Failed to upload GGUF: {e}")
 
     print(f"  ✓ All pushed to https://huggingface.co/{repo_id}")
 
@@ -250,13 +288,49 @@ def main():
                         default=str(WORK / "training" / "outputs" / "gguf"),
                         help="Output directory for GGUF files")
     parser.add_argument("--push", action="store_true",
-                        help="Push to HuggingFace Hub")
+                        help="Push to HuggingFace Hub (opt-in; requires --repo)")
     parser.add_argument("--repo", type=str, default=None,
                         help="HuggingFace repo ID (required with --push)")
     parser.add_argument("--private", action="store_true", default=True,
                         help="Make HF repo private")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Validate arguments and paths without performing actions")
+    parser.add_argument("--hf-token", type=str, default=None,
+                        help="HuggingFace API token (default: HF_TOKEN env var)")
 
     args = parser.parse_args()
+
+    if args.dry_run:
+        print("═" * 60)
+        print("  DRY RUN — Validating configuration")
+        print("═" * 60)
+        print(f"  Base model:    {args.base_model}")
+        print(f"  Phase 1:       {args.phase1_adapter}")
+        print(f"  Phase 2:       {args.phase2_adapter}")
+        print(f"  Merged dir:    {args.merged_dir}")
+        print(f"  GGUF:          {args.gguf or '(not set)'}")
+        print(f"  Push to Hub:   {'yes' if args.push else 'no'}")
+        if args.push:
+            print(f"  HF repo:       {args.repo or '(not set — ERROR)'}")
+            hf_token = args.hf_token or os.environ.get("HF_TOKEN") or ""
+            print(f"  HF token set:  {'yes' if hf_token else 'no (will fail)'}")
+        print()
+        # Validate paths exist
+        issues = []
+        if not os.path.isdir(args.base_model):
+            issues.append(f"Base model directory not found: {args.base_model}")
+        if args.merge:
+            if args.phase1_adapter and not os.path.isdir(args.phase1_adapter):
+                issues.append(f"Phase 1 adapter not found: {args.phase1_adapter}")
+        if args.push and not args.repo:
+            issues.append("--push requires --repo")
+        if issues:
+            for i in issues:
+                print(f"  ⚠ {i}")
+            sys.exit(1)
+        else:
+            print("  ✓ All paths validated — dry run PASSED")
+            sys.exit(0)
 
     if not args.merge and not args.gguf and not args.push:
         parser.print_help()
@@ -294,7 +368,7 @@ def main():
         if not args.repo:
             print("ERROR: --repo is required with --push")
             sys.exit(1)
-        push_to_hub(args.merged_dir, args.repo, args.private, gguf_file)
+        push_to_hub(args.merged_dir, args.repo, args.private, gguf_file, token=args.hf_token)
 
     print("\n" + "═" * 60)
     print("  Export complete!")

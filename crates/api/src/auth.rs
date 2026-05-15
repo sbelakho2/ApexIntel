@@ -126,8 +126,14 @@ fn throttle_status_from_state(state: &AuthAttemptState, now: DateTime<Utc>) -> A
 
     AuthThrottleStatus {
         allowed: !state.admin_locked
-            && state.temp_lock_until.map(|until| now >= until).unwrap_or(true)
-            && state.backoff_until.map(|until| now >= until).unwrap_or(true),
+            && state
+                .temp_lock_until
+                .map(|until| now >= until)
+                .unwrap_or(true)
+            && state
+                .backoff_until
+                .map(|until| now >= until)
+                .unwrap_or(true),
         retry_after_secs,
         failure_count_10m: state.failures_10m.len(),
         failure_count_1h: state.failures_1h.len(),
@@ -507,7 +513,11 @@ mod tests {
         assert!(!last.allowed);
         assert!(last.admin_unlock_required);
         assert!(tracker.clear_lock("key-hash"));
-        assert!(tracker.evaluate("key-hash", now + chrono::Duration::hours(2)).allowed);
+        assert!(
+            tracker
+                .evaluate("key-hash", now + chrono::Duration::hours(2))
+                .allowed
+        );
     }
 
     #[test]

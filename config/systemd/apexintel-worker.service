@@ -1,7 +1,8 @@
 [Unit]
 Description=ApexIntel Worker (Crawler, Miner, Scheduler)
-After=network.target postgresql.service redis-server.service nats.service
-Requires=postgresql.service redis-server.service
+After=network.target postgresql.service redis-server.service nats.service apexintel-api.service
+Requires=postgresql.service redis-server.service nats.service
+Wants=apexintel-api.service
 
 [Service]
 Type=simple
@@ -19,6 +20,7 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=apexintel-worker
 
+# Hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

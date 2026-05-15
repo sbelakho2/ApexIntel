@@ -9,11 +9,11 @@
 //! - Retry guidance generation
 
 #[cfg(feature = "llm")]
+use super::*;
+#[cfg(feature = "llm")]
 use chrono::{DateTime, Utc};
 #[cfg(feature = "llm")]
 use std::collections::HashMap;
-#[cfg(feature = "llm")]
-use super::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Quality Gate Types
@@ -99,10 +99,8 @@ pub(super) fn emit_quality_gate_decisions(
 ) {
     let timestamp = Utc::now().to_rfc3339();
     for decision in decisions {
-        crate::observability::WORKER_METRICS.record_gate_evaluation(
-            decision.gate_name,
-            !decision.failed,
-        );
+        crate::observability::WORKER_METRICS
+            .record_gate_evaluation(decision.gate_name, !decision.failed);
         tracing::info!(
             entity = %entity_name,
             category,
@@ -513,6 +511,17 @@ pub(super) const MALFORMED_FRAGMENTS: &[&str] = &[
     "undefined",
     "{{",
     "}}",
+    "narrative_template",
+    "action_template",
+    "{entity}",
+    "{signal}",
+    "{region}",
+    "\\n\\n",
+    "```json",
+    "```",
+    "as an ai",
+    "i cannot",
+    "as a language model",
 ];
 
 /// Placeholder patterns that indicate incomplete generation.
@@ -535,9 +544,17 @@ pub(super) const PLACEHOLDER_PATTERNS: &[&str] = &[
 #[cfg(feature = "llm")]
 pub(super) fn has_causal_language(text: &str) -> bool {
     let lower = text.to_lowercase();
-    ["because", "therefore", "as a result", "which means", "implies", "drives", "leads to"]
-        .iter()
-        .any(|p| lower.contains(p))
+    [
+        "because",
+        "therefore",
+        "as a result",
+        "which means",
+        "implies",
+        "drives",
+        "leads to",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
 }
 
 /// Check if text contains counterfactual reasoning.
@@ -557,6 +574,12 @@ pub(super) fn determine_failure_reasons(
     is_generic: bool,
     malformed: bool,
     unnamed_customer_targeting: bool,
+    unsupported_named_target_provenance: bool,
+    unsupported_public_sector_commercialization: bool,
+    low_usefulness_public_sector_analysis: bool,
+    unsupported_certification_commercialization: bool,
+    topic_alignment_violation: bool,
+    role_guidance_violation: bool,
     unsupported_certification_escalation: bool,
     unsupported_security_escalation: bool,
 ) -> Vec<&'static str> {
@@ -573,6 +596,24 @@ pub(super) fn determine_failure_reasons(
     }
     if unnamed_customer_targeting {
         reasons.push("unnamed_customer_targeting");
+    }
+    if unsupported_named_target_provenance {
+        reasons.push("named_target_provenance");
+    }
+    if unsupported_public_sector_commercialization {
+        reasons.push("public_sector_commercialization");
+    }
+    if low_usefulness_public_sector_analysis {
+        reasons.push("public_sector_low_usefulness");
+    }
+    if unsupported_certification_commercialization {
+        reasons.push("certification_commercialization");
+    }
+    if topic_alignment_violation {
+        reasons.push("topic_alignment");
+    }
+    if role_guidance_violation {
+        reasons.push("role_guidance");
     }
     if unsupported_certification_escalation {
         reasons.push("certification_escalation");
@@ -613,11 +654,29 @@ pub(super) fn build_llm_retry_guidance(
             "unnamed_customer_targeting" => guidance.push(
                 "Do not target unnamed customer cohorts like 'their medical customers'. Either recommend direct action on the analyzed entity or name only companies, roles, facilities, or programs explicitly present in the evidence or entity profile.".to_string(),
             ),
+            "named_target_provenance" => guidance.push(
+                "Do not invent downstream companies, customers, or partner names. Any named company must already appear in the evidence signals, the analyzed entity profile, or the competitive profile. If no external company is explicitly named, keep the action on the analyzed entity, a named role, a named facility, or a named program instead.".to_string(),
+            ),
+            "public_sector_commercialization" => guidance.push(
+                "This is a public-sector or institutional case. Remove any EMS, nearshore manufacturing, supplier-fit, or direct sales pitch unless the evidence explicitly names a procurement, hardware/equipment need, supplier qualification event, or manufacturing requirement.".to_string(),
+            ),
+            "public_sector_low_usefulness" => guidance.push(
+                "Make the brief institution-specific and concrete: name the policy artifact, approval path, stakeholder process, or account dependency that changed, and recommend verification, mapping, qualification planning, or stakeholder follow-up rather than generic opportunity language.".to_string(),
+            ),
+            "certification_commercialization" => guidance.push(
+                "Do not turn certification renewals, compliance notices, or generic accreditation updates into nearshore EMS opportunities or direct manufacturing pitches. Only commercialize certification evidence when it explicitly shows a failed audit, revoked/suspended certificate, supplier removal, or named program impact.".to_string(),
+            ),
+            "role_guidance" => guidance.push(
+                "You framed the entity like a generic EMS prospect when its role does not support that. Do not pitch manufacturing services, compliance support, qualification packages, facility advantages, or direct proposals to defense primes, semiconductor companies, distributors, PCB suppliers, test-equipment vendors, or trade associations. Reframe around program qualification, BOM impact, procurement risk, supplier strategy, alternate-part planning, or policy influence as appropriate to the entity's role.".to_string(),
+            ),
+            "topic_alignment" => guidance.push(
+                "Remove industry narratives that are not supported by the entity context or evidence. Stay anchored to the sectors, products, programs, and facilities explicitly present in the evidence.".to_string(),
+            ),
             "certification_escalation" => guidance.push(
-                "Do not turn generic certification notices or stale dates into contract-loss, qualification-failure, or customer-switch claims unless the evidence explicitly says that happened.".to_string(),
+                "Do not turn generic certification notices, future expiry dates, or renewal timelines into contract-loss, BOM disruption, delivery-risk, alternate-part qualification, or customer-switch claims unless the evidence explicitly says that happened.".to_string(),
             ),
             "security_escalation" => guidance.push(
-                "Do not turn DNS posture, missing SPF/DKIM/DMARC, or lookalike-domain findings into breach, customer-loss, or program-exclusion claims unless the evidence explicitly links them.".to_string(),
+                "Do not turn DNS posture, missing SPF/DKIM/DMARC, or lookalike-domain findings into breach, customer-loss, supplier-portal registration, procurement qualification, PPAP/IMDS prep, or program-exclusion claims unless the evidence explicitly links them.".to_string(),
             ),
             "readability" => guidance.push(
                 "Write plain business prose with no template phrasing, no labels, and no repetitive restatements. Every sentence should add a new fact, implication, or action.".to_string(),
@@ -712,14 +771,18 @@ mod tests {
 
     #[test]
     fn test_has_causal_language() {
-        assert!(has_causal_language("Revenue dropped because of supply issues"));
+        assert!(has_causal_language(
+            "Revenue dropped because of supply issues"
+        ));
         assert!(has_causal_language("Therefore, we recommend action"));
         assert!(!has_causal_language("The company is growing"));
     }
 
     #[test]
     fn test_has_counterfactual() {
-        assert!(has_counterfactual("If they lose the contract, they would face layoffs"));
+        assert!(has_counterfactual(
+            "If they lose the contract, they would face layoffs"
+        ));
         assert!(has_counterfactual("If supply disrupts, margins could drop"));
         assert!(!has_counterfactual("The contract is at risk"));
     }
@@ -774,6 +837,100 @@ mod tests {
         let guidance = build_llm_retry_guidance(&ctx, "test", &["timing"]).unwrap();
         assert!(guidance.contains("timing"));
         assert!(guidance.contains("this quarter"));
+    }
+
+    #[test]
+    fn test_retry_guidance_with_role_guidance() {
+        let ctx = EntityContext {
+            name: "BAE Systems".to_string(),
+            region: "UK".to_string(),
+            is_competitor: false,
+            entity_type: Some("company".to_string()),
+            industry_tags: vec![],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: None,
+        };
+
+        let guidance =
+            build_llm_retry_guidance(&ctx, "brand_sentiment", &["role_guidance"]).unwrap();
+        assert!(guidance.contains("Do not pitch manufacturing services"));
+    }
+
+    #[test]
+    fn test_retry_guidance_with_public_sector_commercialization() {
+        let ctx = EntityContext {
+            name: "European Commission".to_string(),
+            region: "EU".to_string(),
+            is_competitor: false,
+            entity_type: Some("Government".to_string()),
+            industry_tags: vec![],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: None,
+        };
+
+        let guidance = build_llm_retry_guidance(
+            &ctx,
+            "geopolitical_analysis",
+            &[
+                "public_sector_commercialization",
+                "public_sector_low_usefulness",
+            ],
+        )
+        .unwrap();
+        assert!(guidance.contains("public-sector or institutional case"));
+        assert!(guidance.contains("policy artifact"));
+    }
+
+    #[test]
+    fn test_retry_guidance_with_named_target_provenance() {
+        let ctx = EntityContext {
+            name: "GPV Group".to_string(),
+            region: "EU".to_string(),
+            is_competitor: false,
+            entity_type: Some("company".to_string()),
+            industry_tags: vec![],
+            certifications: vec![],
+            capabilities: vec![],
+            key_persons: vec![],
+            recent_changes: vec![],
+            threat_score: None,
+            overlap_score: None,
+            strategic_relevance: None,
+            revenue_estimate_usd: None,
+            employee_estimate: None,
+            competitor_names: vec![],
+            sites_summary: vec![],
+            competitor_events: vec![],
+            domain: None,
+        };
+
+        let guidance =
+            build_llm_retry_guidance(&ctx, "brand_sentiment", &["named_target_provenance"])
+                .unwrap();
+        assert!(guidance.contains("Do not invent downstream companies"));
+        assert!(guidance.contains("must already appear in the evidence signals"));
     }
 
     #[test]

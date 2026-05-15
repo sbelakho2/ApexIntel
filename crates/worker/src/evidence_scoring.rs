@@ -1,12 +1,12 @@
 #![cfg_attr(test, allow(dead_code))]
 
 #[cfg(feature = "llm")]
-use super::EvidenceSignal;
-#[cfg(feature = "llm")]
 use super::quality_gates::{
     marker_matches_normalized, normalize_gate_text, weighted_phrase_score,
     weighted_phrase_score_in_normalized,
 };
+#[cfg(feature = "llm")]
+use super::EvidenceSignal;
 
 #[cfg(feature = "llm")]
 pub(super) fn noisy_or(scores: &[f32]) -> f32 {
@@ -34,19 +34,35 @@ pub(super) fn signal_type_relevance_score(signal_type: &str, category: &str) -> 
         "facility" if category.contains("supply_chain") || category.contains("procurement") => 0.60,
         "facility" if category.contains("competitor") => 0.50,
         // Tender / procurement signals
-        "TenderNotice" | "TenderPosted" if category.contains("demand") || category.contains("procurement") => 0.85,
+        "TenderNotice" | "TenderPosted"
+            if category.contains("demand") || category.contains("procurement") =>
+        {
+            0.85
+        }
         "TenderNotice" | "TenderPosted" => 0.55,
         // Patent / IP signals
-        "PatentPublication" | "PatentPublished" if category.contains("technology") || category.contains("competitor") => 0.80,
+        "PatentPublication" | "PatentPublished"
+            if category.contains("technology") || category.contains("competitor") =>
+        {
+            0.80
+        }
         "PatentPublication" | "PatentPublished" => 0.50,
         // Regulatory / compliance signals
-        "RegulatoryFiling" if category.contains("regulatory") || category.contains("compliance") => 0.80,
+        "RegulatoryFiling"
+            if category.contains("regulatory") || category.contains("compliance") =>
+        {
+            0.80
+        }
         "RegulatoryFiling" => 0.45,
         // Financial signals
-        "FinancialDisclosure" if category.contains("competitor") || category.contains("ma_") => 0.75,
+        "FinancialDisclosure" if category.contains("competitor") || category.contains("ma_") => {
+            0.75
+        }
         "FinancialDisclosure" => 0.45,
         // Personnel movement signals
-        "PersonMove" | "RoleChange" if category.contains("poi") || category.contains("talent") => 0.85,
+        "PersonMove" | "RoleChange" if category.contains("poi") || category.contains("talent") => {
+            0.85
+        }
         "PersonMove" | "RoleChange" if category.contains("competitor") => 0.65,
         "PersonMove" | "RoleChange" => 0.50,
         // Person mention / visibility
@@ -67,11 +83,17 @@ pub(super) fn signal_type_relevance_score(signal_type: &str, category: &str) -> 
         "JobPost" if category.contains("poi") || category.contains("talent") => 0.65,
         "JobPost" => 0.40,
         // Certification observation signals
-        "CertificationUpdate" if category.contains("compliance") || category.contains("security") => 0.70,
+        "CertificationUpdate"
+            if category.contains("compliance") || category.contains("security") =>
+        {
+            0.70
+        }
         "CertificationUpdate" if category.contains("competitor") => 0.60,
         "CertificationUpdate" => 0.40,
         // Commodity/FX signals
-        "CommodityPrice" if category.contains("commodity") || category.contains("supply_chain") => 0.80,
+        "CommodityPrice" if category.contains("commodity") || category.contains("supply_chain") => {
+            0.80
+        }
         "CommodityPrice" if category.contains("arbitrage") => 0.85,
         "CommodityPrice" => 0.40,
         "FxRate" if category.contains("arbitrage") || category.contains("commodity") => 0.80,
@@ -87,18 +109,36 @@ pub(super) fn signal_type_relevance_score(signal_type: &str, category: &str) -> 
         "VulnNotice" if category.contains("compliance") => 0.70,
         "VulnNotice" => 0.40,
         // Procurement language drift
-        "ProcurementSignal" if category.contains("demand") || category.contains("procurement") => 0.80,
+        "ProcurementSignal" if category.contains("demand") || category.contains("procurement") => {
+            0.80
+        }
         "ProcurementSignal" => 0.45,
         // Graph relationship signals
         s if s.starts_with("graph_") => {
             let edge = &s[6..];
             match edge {
-                "CompanyCompany" if category.contains("competitor") || category.contains("supplier") => 0.65,
+                "CompanyCompany"
+                    if category.contains("competitor") || category.contains("supplier") =>
+                {
+                    0.65
+                }
                 "CompanyPerson" if category.contains("poi") || category.contains("talent") => 0.60,
-                "SiteLogistics" if category.contains("logistics") || category.contains("supply_chain") => 0.70,
+                "SiteLogistics"
+                    if category.contains("logistics") || category.contains("supply_chain") =>
+                {
+                    0.70
+                }
                 "VulnProduct" if category.contains("security") => 0.75,
-                "CompanyRegulation" if category.contains("regulatory") || category.contains("compliance") => 0.70,
-                "PersonPatent" if category.contains("technology") || category.contains("innovation") => 0.65,
+                "CompanyRegulation"
+                    if category.contains("regulatory") || category.contains("compliance") =>
+                {
+                    0.70
+                }
+                "PersonPatent"
+                    if category.contains("technology") || category.contains("innovation") =>
+                {
+                    0.65
+                }
                 _ => 0.35,
             }
         }
@@ -111,7 +151,9 @@ pub(super) fn signal_type_relevance_score(signal_type: &str, category: &str) -> 
 #[cfg(feature = "llm")]
 fn lexical_specificity_score(text: &str) -> f32 {
     let normalized = normalize_gate_text(text);
-    let has_digits = normalized.chars().any(|character| character.is_ascii_digit());
+    let has_digits = normalized
+        .chars()
+        .any(|character| character.is_ascii_digit());
     let cert_signal = weighted_phrase_score_in_normalized(
         &normalized,
         &[
@@ -144,7 +186,12 @@ pub(super) fn signal_diversity_multiplier(distinct_signal_types: usize) -> f32 {
 }
 
 #[cfg(feature = "llm")]
-pub(super) fn calculate_relevance(title: &str, description: &str, signal_type: &str, category: &str) -> f32 {
+pub(super) fn calculate_relevance(
+    title: &str,
+    description: &str,
+    signal_type: &str,
+    category: &str,
+) -> f32 {
     let text = normalize_gate_text(&format!("{} {} {}", title, description, signal_type));
 
     let keywords: &[(&str, f32)] = match category {
@@ -367,7 +414,10 @@ mod tests {
     fn diminishing_returns_noisy_or() {
         let weak = noisy_or(&[0.15; 5]);
         let strong = noisy_or(&[0.7]);
-        assert!(weak < strong, "expected weak aggregate {weak} < strong {strong}");
+        assert!(
+            weak < strong,
+            "expected weak aggregate {weak} < strong {strong}"
+        );
     }
 
     #[test]

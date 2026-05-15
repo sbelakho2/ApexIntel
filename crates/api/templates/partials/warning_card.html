@@ -19,4 +19,17 @@
     <span>{{ company_name }} · {{ warning_type }}</span>
     <span class="tabular-nums">{{ created_at }}</span>
   </div>
+  <div class="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+    <span class="tabular-nums">{{ confidence_pct }}% confidence</span>
+    {% if confidence >= 0.8 %}
+    <span class="font-bold apex-text-danger">High likelihood</span>
+    {% else if confidence >= 0.5 %}
+    <span class="font-bold text-foreground">Moderate likelihood</span>
+    {% else %}
+    <span class="font-bold text-muted-foreground">Low likelihood</span>
+    {% endif %}
+    {% if evidence_count > 0 %}
+    <span class="ml-auto tabular-nums">{{ evidence_count }} source{% if evidence_count != 1 %}s{% endif %}</span>
+    {% endif %}
+  </div>
 </div>

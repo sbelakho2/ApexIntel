@@ -45,6 +45,8 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+
     #[tokio::test]
     async fn custom_job_without_env_is_skipped() {
         let name = "missing_dispatch_env";

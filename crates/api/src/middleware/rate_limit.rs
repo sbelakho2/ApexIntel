@@ -264,7 +264,9 @@ mod tests {
         );
         let headers = response.headers();
         assert_eq!(
-            headers.get("retry-after").and_then(|value| value.to_str().ok()),
+            headers
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
             Some("7")
         );
         assert_eq!(

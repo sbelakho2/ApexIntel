@@ -7,8 +7,8 @@
 set -euo pipefail
 
 HF_TOKEN="${1:-${HF_TOKEN:-}}"
-WORK=/workspace/ApexIntel
-MODEL_ID="Qwen/Qwen3-30B-A3B"
+WORK="${WORK_DIR:-/workspace/ApexIntel}"
+MODEL_ID="${MODEL_ID:-Qwen/Qwen3-30B-A3B}"
 
 echo "═══════════════════════════════════════════════"
 echo "  ApexIntel Training Setup — 2×B200 (366 GB)"
@@ -68,6 +68,7 @@ fi
 # ── 5. Verify GPU topology ─────────────────────────────────────────
 echo "[5/8] GPU topology …"
 python3 -c "
+import os
 import torch
 n = torch.cuda.device_count()
 print(f'  GPUs detected: {n}')
@@ -78,8 +79,12 @@ for i in range(n):
     total_vram += mem
     print(f'    GPU {i}: {name}  ({mem:.0f} GB)')
 print(f'  Total VRAM: {total_vram:.0f} GB')
-assert n >= 8, f'Need 8 GPUs, found {n}'
-print('  ✓ 8 GPUs available')
+# NOTE: This instance is 2×B200 (366 GB). The GPU count assertion below
+# is set to match the actual hardware. If deploying on a different instance
+# type, update the expected GPU count or pass via env var.
+expected_gpus = int(os.environ.get("EXPECTED_GPUS", "2"))
+assert n >= expected_gpus, f'Need {expected_gpus} GPUs, found {n}'
+print(f'  ✓ {expected_gpus} GPUs available')
 "
 
 # ── 6. NCCL topology check ─────────────────────────────────────────

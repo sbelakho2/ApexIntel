@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Diagnose all v5 eval failures by comparing model output to expected data."""
 import json
+import os
 from pathlib import Path
 
-EVAL_DIR = Path("/workspace/ApexIntel/training_data/evaluation")
-REPORT = Path("/workspace/ApexIntel/training/outputs/eval_report.json")
+WORK = Path(__file__).resolve().parent.parent
+EVAL_DIR = Path(os.environ.get("EVAL_DIR", str(WORK / "training_data" / "evaluation")))
+REPORT = Path(os.environ.get("EVAL_REPORT", str(WORK / "training" / "outputs" / "eval_report.json")))
 
 # Load failure report
 report = json.load(open(REPORT))

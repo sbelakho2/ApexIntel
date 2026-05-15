@@ -7,9 +7,21 @@
 //! - Structured gate decision logging
 //! - Helpers for eventual Prometheus metrics export
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 use std::time::Instant;
 use uuid::Uuid;
+
+fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Quality score breakdown record for logging and analysis.
 #[derive(Debug, Clone)]
@@ -108,7 +120,13 @@ impl GateTimer {
         self.start.elapsed()
     }
 
-    pub fn finish(self, score: f64, threshold: f64, passed: bool, veto: bool) -> GateDecisionRecord {
+    pub fn finish(
+        self,
+        score: f64,
+        threshold: f64,
+        passed: bool,
+        veto: bool,
+    ) -> GateDecisionRecord {
         let latency = self.start.elapsed();
         GateDecisionRecord {
             gate_name: self.gate_name,
@@ -175,7 +193,7 @@ impl WorkerMetrics {
     pub fn record_gate_evaluation(&self, gate_name: &str, passed: bool) {
         // Increment evaluation count
         {
-            let mut evals = self.gate_evaluations.write().unwrap();
+            let mut evals = write_lock(&self.gate_evaluations);
             evals
                 .entry(gate_name.to_string())
                 .or_insert_with(|| AtomicU64::new(0))
@@ -184,7 +202,7 @@ impl WorkerMetrics {
 
         // Increment failure count if failed
         if !passed {
-            let mut fails = self.gate_failures.write().unwrap();
+            let mut fails = write_lock(&self.gate_failures);
             fails
                 .entry(gate_name.to_string())
                 .or_insert_with(|| AtomicU64::new(0))
@@ -218,11 +236,14 @@ impl WorkerMetrics {
 
     /// Get gate fire rate (failures / evaluations) for a specific gate.
     pub fn gate_fire_rate(&self, gate_name: &str) -> Option<f64> {
-        let evals = self.gate_evaluations.read().unwrap();
-        let fails = self.gate_failures.read().unwrap();
+        let evals = read_lock(&self.gate_evaluations);
+        let fails = read_lock(&self.gate_failures);
 
         let eval_count = evals.get(gate_name).map(|a| a.load(Ordering::Relaxed))?;
-        let fail_count = fails.get(gate_name).map(|a| a.load(Ordering::Relaxed)).unwrap_or(0);
+        let fail_count = fails
+            .get(gate_name)
+            .map(|a| a.load(Ordering::Relaxed))
+            .unwrap_or(0);
 
         if eval_count == 0 {
             return None;
@@ -233,8 +254,8 @@ impl WorkerMetrics {
 
     /// Get LLM retry rate.
     pub fn llm_retry_rate(&self) -> f64 {
-        let total = self.llm_successes.load(Ordering::Relaxed)
-            + self.llm_failures.load(Ordering::Relaxed);
+        let total =
+            self.llm_successes.load(Ordering::Relaxed) + self.llm_failures.load(Ordering::Relaxed);
         if total == 0 {
             return 0.0;
         }
@@ -265,7 +286,9 @@ impl WorkerMetrics {
             self.llm_retries.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP apexintel_worker_llm_successes_total Total LLM successful completions\n");
+        output.push_str(
+            "# HELP apexintel_worker_llm_successes_total Total LLM successful completions\n",
+        );
         output.push_str("# TYPE apexintel_worker_llm_successes_total counter\n");
         output.push_str(&format!(
             "apexintel_worker_llm_successes_total {}\n",
@@ -280,21 +303,25 @@ impl WorkerMetrics {
         ));
 
         // Insight metrics
-        output.push_str("# HELP apexintel_worker_insights_accepted_total Total insights accepted\n");
+        output
+            .push_str("# HELP apexintel_worker_insights_accepted_total Total insights accepted\n");
         output.push_str("# TYPE apexintel_worker_insights_accepted_total counter\n");
         output.push_str(&format!(
             "apexintel_worker_insights_accepted_total {}\n",
             self.insights_accepted.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP apexintel_worker_insights_rejected_total Total insights rejected\n");
+        output
+            .push_str("# HELP apexintel_worker_insights_rejected_total Total insights rejected\n");
         output.push_str("# TYPE apexintel_worker_insights_rejected_total counter\n");
         output.push_str(&format!(
             "apexintel_worker_insights_rejected_total {}\n",
             self.insights_rejected.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP apexintel_worker_insights_fallback_total Total insights using fallback\n");
+        output.push_str(
+            "# HELP apexintel_worker_insights_fallback_total Total insights using fallback\n",
+        );
         output.push_str("# TYPE apexintel_worker_insights_fallback_total counter\n");
         output.push_str(&format!(
             "apexintel_worker_insights_fallback_total {}\n",
@@ -302,10 +329,12 @@ impl WorkerMetrics {
         ));
 
         // Gate metrics
-        output.push_str("# HELP apexintel_worker_gate_evaluations_total Gate evaluations by gate name\n");
+        output.push_str(
+            "# HELP apexintel_worker_gate_evaluations_total Gate evaluations by gate name\n",
+        );
         output.push_str("# TYPE apexintel_worker_gate_evaluations_total counter\n");
         {
-            let evals = self.gate_evaluations.read().unwrap();
+            let evals = read_lock(&self.gate_evaluations);
             for (gate_name, count) in evals.iter() {
                 output.push_str(&format!(
                     "apexintel_worker_gate_evaluations_total{{gate=\"{}\"}} {}\n",
@@ -318,7 +347,7 @@ impl WorkerMetrics {
         output.push_str("# HELP apexintel_worker_gate_failures_total Gate failures by gate name\n");
         output.push_str("# TYPE apexintel_worker_gate_failures_total counter\n");
         {
-            let fails = self.gate_failures.read().unwrap();
+            let fails = read_lock(&self.gate_failures);
             for (gate_name, count) in fails.iter() {
                 output.push_str(&format!(
                     "apexintel_worker_gate_failures_total{{gate=\"{}\"}} {}\n",
@@ -339,6 +368,8 @@ pub static WORKER_METRICS: std::sync::LazyLock<WorkerMetrics> =
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+
     use super::*;
 
     #[test]
@@ -378,7 +409,7 @@ mod tests {
         let metrics = WorkerMetrics::new();
         metrics.record_insight_accepted();
         metrics.record_insight_rejected();
-        
+
         let output = metrics.to_prometheus_text();
         assert!(output.contains("apexintel_worker_insights_accepted_total 1"));
         assert!(output.contains("apexintel_worker_insights_rejected_total 1"));

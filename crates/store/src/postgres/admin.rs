@@ -102,6 +102,26 @@ impl PgStore {
 
     /// Enqueue a manual job trigger from the API.
     pub async fn queue_job_trigger(&self, job_kind: &str) -> Result<String> {
+        let existing: Option<(Uuid,)> = sqlx::query_as(
+            r#"SELECT id
+               FROM worker_trigger_queue
+               WHERE job_kind = $1
+                 AND completed_at IS NULL
+                 AND (
+                     claimed_at IS NOT NULL
+                     OR recovered_at IS NULL
+                 )
+               ORDER BY claimed_at DESC NULLS LAST, requested_at ASC
+               LIMIT 1"#,
+        )
+        .bind(job_kind)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((id,)) = existing {
+            return Ok(id.to_string());
+        }
+
         let (id,): (Uuid,) =
             sqlx::query_as("INSERT INTO worker_trigger_queue (job_kind) VALUES ($1) RETURNING id")
                 .bind(job_kind)
@@ -114,15 +134,28 @@ impl PgStore {
     /// Returns `(trigger_id, job_kind)` or `None` if the queue is empty.
     pub async fn pop_job_trigger(&self) -> Result<Option<(String, String)>> {
         let row: Option<(Uuid, String)> = sqlx::query_as(
-            r#"UPDATE worker_trigger_queue
-               SET claimed_at = now()
-               WHERE id = (
-                   SELECT id FROM worker_trigger_queue
-                   WHERE claimed_at IS NULL
-                   ORDER BY requested_at
+            r#"WITH candidate AS (
+                   SELECT queue.id
+                   FROM worker_trigger_queue AS queue
+                   WHERE queue.claimed_at IS NULL
+                     AND queue.completed_at IS NULL
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM worker_trigger_queue AS active
+                         WHERE active.job_kind = queue.job_kind
+                           AND active.claimed_at IS NOT NULL
+                           AND active.completed_at IS NULL
+                     )
+                     AND pg_try_advisory_xact_lock(hashtext(queue.job_kind), 0)
+                   ORDER BY queue.recovered_at NULLS FIRST, queue.requested_at
+                   FOR UPDATE SKIP LOCKED
                    LIMIT 1
                )
-               RETURNING id, job_kind"#,
+               UPDATE worker_trigger_queue AS queue
+               SET claimed_at = now()
+               FROM candidate
+               WHERE queue.id = candidate.id
+               RETURNING queue.id, queue.job_kind"#,
         )
         .fetch_optional(&self.pool)
         .await?;

@@ -32,7 +32,7 @@ pub fn propagate_weighted_risk(
 }
 
 /// Propagates risk through the graph with decay, tracking saturation accurately.
-/// 
+///
 /// The propagation maintains accurate risk accumulation by:
 /// 1. Clamping individual propagated values before accumulation
 /// 2. Using C1-continuous soft saturation (piecewise exponential with knee at 0.8) instead of hard clamping to preserve relative differences
@@ -243,7 +243,11 @@ impl DecayModel {
             Self::Exponential { lambda } => (-(lambda.max(0.0)) * hop as f64).exp().clamp(0.0, 1.0),
             Self::InverseSquare => 1.0 / (1.0 + hop as f64).powi(2),
             Self::Step { max_hops } => {
-                if hop <= max_hops { 1.0 } else { 0.0 }
+                if hop <= max_hops {
+                    1.0
+                } else {
+                    0.0
+                }
             }
         }
     }
@@ -268,7 +272,10 @@ mod tests {
         // With soft saturation the raw sum 1.1 maps to ~0.95 instead of
         // hard-clamping to 1.0, preserving relative risk ordering.
         let c_risk = result.get("C").copied().unwrap_or(0.0);
-        assert!(c_risk > 0.9, "expected high risk from two overlapping sources, got {c_risk}");
+        assert!(
+            c_risk > 0.9,
+            "expected high risk from two overlapping sources, got {c_risk}"
+        );
         assert!(c_risk <= 1.0, "risk must not exceed 1.0, got {c_risk}");
     }
 

@@ -127,7 +127,7 @@ impl DnsChecker {
             .timeout(Duration::from_secs(10))
             .user_agent("ApexIntel-DnsChecker/1.0")
             .build()
-            .expect("Failed to build HTTP client");
+            .unwrap_or_else(|error| panic!("failed to build DNS checker HTTP client: {error}"));
 
         Self {
             client,
@@ -404,7 +404,9 @@ impl DnsChecker {
             return (false, None, None);
         }
 
-        let spf = spf_record.as_ref().unwrap();
+        let Some(spf) = spf_record.as_ref() else {
+            return (false, None, None);
+        };
         let all_policy = if spf.contains("-all") {
             Some("-all".to_string())
         } else if spf.contains("~all") {
@@ -462,7 +464,9 @@ impl DnsChecker {
             return (false, None, None, None);
         }
 
-        let dmarc = dmarc_record.as_ref().unwrap();
+        let Some(dmarc) = dmarc_record.as_ref() else {
+            return (false, None, None, None);
+        };
 
         // Parse policy
         let policy = if dmarc.contains("p=reject") {
@@ -487,8 +491,8 @@ impl DnsChecker {
         // Parse pct
         let pct = dmarc.split(';').find_map(|part| {
             let part = part.trim();
-            if part.starts_with("pct=") {
-                part[4..].parse().ok()
+            if let Some(value) = part.strip_prefix("pct=") {
+                value.parse().ok()
             } else {
                 None
             }

@@ -115,7 +115,7 @@ impl CtMonitor {
             .timeout(StdDuration::from_secs(30))
             .user_agent("ApexIntel-CtMonitor/1.0")
             .build()
-            .expect("Failed to build HTTP client");
+            .unwrap_or_else(|error| panic!("failed to build CT monitor HTTP client: {error}"));
 
         Self {
             client,
@@ -478,11 +478,11 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 
     let mut matrix = vec![vec![0usize; b_len + 1]; a_len + 1];
 
-    for i in 0..=a_len {
-        matrix[i][0] = i;
+    for (index, row) in matrix.iter_mut().enumerate().take(a_len + 1) {
+        row[0] = index;
     }
-    for j in 0..=b_len {
-        matrix[0][j] = j;
+    for (index, cell) in matrix[0].iter_mut().enumerate().take(b_len + 1) {
+        *cell = index;
     }
 
     for i in 1..=a_len {

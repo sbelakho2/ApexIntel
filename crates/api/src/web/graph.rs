@@ -135,7 +135,10 @@ pub async fn graph_page(
         .await
         .unwrap_or(0);
     let _insights_total = store
-        .count_insights(&InsightListFilters::default())
+        .count_insights(&InsightListFilters {
+            exclude_internal: true,
+            ..Default::default()
+        })
         .await
         .unwrap_or(0);
 

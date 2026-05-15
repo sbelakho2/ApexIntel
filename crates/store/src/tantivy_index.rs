@@ -361,6 +361,8 @@ impl SearchIndex {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
     use uuid::Uuid;
 

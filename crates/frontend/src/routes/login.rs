@@ -1,57 +1,46 @@
 use leptos::*;
-use leptos::ev::SubmitEvent;
 
-use crate::{api, components::cards::{PageHeader, SurfaceCard}};
+use crate::components::cards::{PageHeader, SurfaceCard};
 
+/// Login page component.
+///
+/// SECURITY: This component does NOT handle credentials in WASM to avoid
+/// exposing passwords in the compiled WASM bundle. Instead, it redirects
+/// to the server-rendered login endpoint which handles authentication
+/// securely via the Askama template system.
+///
+/// Previously, this component accepted username/password directly and
+/// called `api::submit_login()`, which embedded credential handling in
+/// the WASM binary — making it reverse-engineerable from the bundle.
 #[component]
 pub fn LoginPage() -> impl IntoView {
-    let (username, set_username) = create_signal(String::new());
-    let (password, set_password) = create_signal(String::new());
-    let (error, set_error) = create_signal(String::new());
-    let (submitting, set_submitting) = create_signal(false);
-
-    let submit = move |ev: SubmitEvent| {
-        ev.prevent_default();
-        set_error.set(String::new());
-        set_submitting.set(true);
-
-        let username_value = username.get_untracked();
-        let password_value = password.get_untracked();
-
-        spawn_local(async move {
-            match api::submit_login(&username_value, &password_value).await {
-                Ok(_destination) => {
-                    #[cfg(target_arch = "wasm32")]
-                    if let Some(window) = web_sys::window() {
-                        let _ = window.location().set_href(&_destination);
-                    }
-                }
-                Err(message) => set_error.set(message),
-            }
-            set_submitting.set(false);
-        });
-    };
+    // Redirect to server-side login page on mount
+    #[cfg(target_arch = "wasm32")]
+    {
+        let current_path = web_sys::window()
+            .map(|window| window.location().pathname().unwrap_or_default())
+            .unwrap_or_default();
+        // Only redirect if we're actually on the /login page (not SSR)
+        if current_path == "/login" || current_path.ends_with("/login") {
+            // Use server-side login via normal GET navigation.
+            let _ = web_sys::window().map(|window| window.location().set_href("/login"));
+        }
+    }
 
     view! {
         <div class="page">
-            <PageHeader eyebrow="Authentication" title="Login" subtitle="The WASM login route submits directly to the existing `/login` handler and surfaces backend credential errors inline." />
-            <SurfaceCard title="Sign In" subtitle="Use the same credentials as the Askama login form.">
-                <form class="login-form" on:submit=submit>
-                    <label class="form-field">
-                        <span class="filter-bar-title">"Username"</span>
-                        <input class="search-input" type="text" prop:value=username on:input=move |ev| set_username.set(event_target_value(&ev)) />
-                    </label>
-                    <label class="form-field">
-                        <span class="filter-bar-title">"Password"</span>
-                        <input class="search-input" type="password" prop:value=password on:input=move |ev| set_password.set(event_target_value(&ev)) />
-                    </label>
-                    <Show when=move || !error.get().is_empty()>
-                        <p class="error-copy">{error}</p>
-                    </Show>
-                    <button type="submit" class="pagination-button" disabled=submitting>
-                        {move || if submitting.get() { "Signing In..." } else { "Sign In" }}
-                    </button>
-                </form>
+            <PageHeader
+                eyebrow="Authentication"
+                title="Login"
+                subtitle="Redirecting to secure server-side login..."
+            />
+            <SurfaceCard title="Sign In" subtitle="You are being redirected to the secure login page.">
+                <div class="login-redirect">
+                    <p class="muted-copy">
+                        "For security, login is handled server-side. "
+                        <a href="/login" class="inline-link">"Click here if not redirected."</a>
+                    </p>
+                </div>
             </SurfaceCard>
         </div>
     }

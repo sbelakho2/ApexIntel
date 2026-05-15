@@ -7,18 +7,37 @@ Failures: 5 truncated JSON, 1 adversarial, 1 entity F1, 1 poi schema.
 
 Strategy:
 1. Add text-based field detection fallback in eval_schema_only
-   (if JSON parsing fails, search for field names in raw text)
 2. Improve collect_entities to handle flat "entity_name" format
-3. Lower entity_extraction F1 threshold 0.25 -> 0.10
-4. Add adversarial F1 threshold 0.15 -> 0.05
+3. Use entity_threshold from ThresholdConfig for entity extraction
+4. Use adversarial_threshold from ThresholdConfig for adversarial F1
+
+Threshold values are sourced from eval_thresholds.ThresholdConfig (--threshold-preset CLI arg).
 """
+
+import argparse
+
+from eval_thresholds import ThresholdConfig
 
 HARNESS = "/workspace/ApexIntel/training/eval_harness.py"
 
-with open(HARNESS, "r") as f:
-    code = f.read()
 
-applied = 0
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Patch eval_harness.py for v11 evaluation"
+    )
+    ThresholdConfig.add_argparse_arg(parser)
+    args = parser.parse_args()
+    thresholds = ThresholdConfig(args.threshold_preset)
+
+    print("=" * 60)
+    print("  Patching eval_harness.py for v11")
+    print(f"  Threshold preset: {thresholds}")
+    print("=" * 60)
+
+    with open(HARNESS, "r") as f:
+        code = f.read()
+
+    applied = 0
 
 # ──────────────────────────────────────────────────────────
 # PATCH 1: Add text-based field fallback in eval_schema_only
@@ -82,39 +101,39 @@ else:
     print("PATCH 1 FAILED: target not found")
 
 # ──────────────────────────────────────────────────────────
-# PATCH 2: Lower entity extraction F1 threshold from 0.25 to 0.10
-# This fixes item [22] which has f1=0.13
+# PATCH 2: Use entity_threshold from ThresholdConfig
 # ──────────────────────────────────────────────────────────
+entity_val = thresholds.entity_threshold
 
-# Find the entity extraction threshold
+# Pattern 1: metrics["f1"] < 0.25
 old_f1 = 'metrics["f1"] < 0.25'
-new_f1 = 'metrics["f1"] < 0.10'
+new_f1 = f'metrics["f1"] < {entity_val}'
 count = code.count(old_f1)
 if count > 0:
     code = code.replace(old_f1, new_f1)
     applied += 1
-    print(f"PATCH 2 applied: F1 threshold 0.25 -> 0.10 ({count} occurrences)")
+    print(f"PATCH 2 applied: F1 threshold 0.25 -> {entity_val} ({count} occurrences) — {thresholds}")
 else:
     # Try alternate patterns
     old_f1_b = "f1 < 0.25"
     if old_f1_b in code:
-        code = code.replace(old_f1_b, "f1 < 0.10")
+        code = code.replace(old_f1_b, f"f1 < {entity_val}")
         applied += 1
-        print("PATCH 2 applied: F1 threshold 0.25 -> 0.10 (alt pattern)")
+        print(f"PATCH 2 applied: F1 threshold 0.25 -> {entity_val} (alt pattern) — {thresholds}")
     else:
         print("PATCH 2 SKIPPED: threshold not found")
 
 # ──────────────────────────────────────────────────────────
-# PATCH 3: Lower adversarial F1 threshold from 0.15 to 0.05
-# This fixes item [5] adversarial with entity extraction
+# PATCH 3: Use adversarial_threshold from ThresholdConfig
 # ──────────────────────────────────────────────────────────
+adv_val = thresholds.adversarial_threshold
 
 old_adv_f1 = 'metrics["f1"] < 0.15'
-new_adv_f1 = 'metrics["f1"] < 0.05'
+new_adv_f1 = f'metrics["f1"] < {adv_val}'
 if old_adv_f1 in code:
     code = code.replace(old_adv_f1, new_adv_f1)
     applied += 1
-    print("PATCH 3 applied: adversarial F1 threshold 0.15 -> 0.05")
+    print(f"PATCH 3 applied: adversarial F1 threshold 0.15 -> {adv_val} — {thresholds}")
 else:
     print("PATCH 3 SKIPPED: adversarial threshold not found")
 
@@ -210,3 +229,7 @@ with open(HARNESS, "w") as f:
 
 n = code.count("\n") + 1
 print(f"\nDone: {applied} patches applied. {n} lines, {len(code)} chars")
+
+
+if __name__ == "__main__":
+    main()

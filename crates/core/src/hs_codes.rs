@@ -166,69 +166,56 @@ fn hs(code: &str, desc: &str, chapter: u8) -> HsCodeEntry {
 /// Look up tariff rates for a given HS4 code across major trade corridors.
 pub fn lookup_tariff(hs4: &str) -> Vec<TariffRate> {
     // Pre-built tariff database for EMS-relevant corridors
-    let mut rates = Vec::new();
-
-    // EU → Tunisia (AA agreement)
-    rates.push(TariffRate {
-        corridor: "EU→TN".into(),
-        hs4: hs4.into(),
-        mfn_rate_pct: tariff_mfn_eu(hs4),
-        preferential_rate_pct: Some(0.0),
-        agreement: Some("EU-Tunisia Association Agreement".into()),
-        notes: "Industrial products duty-free under AA since 2008".into(),
-    });
-
-    // EU → Morocco (AA agreement)
-    rates.push(TariffRate {
-        corridor: "EU→MA".into(),
-        hs4: hs4.into(),
-        mfn_rate_pct: tariff_mfn_eu(hs4),
-        preferential_rate_pct: Some(0.0),
-        agreement: Some("EU-Morocco Association Agreement".into()),
-        notes: "Industrial products duty-free under AA".into(),
-    });
-
-    // US → Israel (FTA)
-    rates.push(TariffRate {
-        corridor: "US→IL".into(),
-        hs4: hs4.into(),
-        mfn_rate_pct: tariff_mfn_us(hs4),
-        preferential_rate_pct: Some(0.0),
-        agreement: Some("US-Israel FTA".into()),
-        notes: "All industrial products duty-free".into(),
-    });
-
-    // CN → EU
-    rates.push(TariffRate {
-        corridor: "CN→EU".into(),
-        hs4: hs4.into(),
-        mfn_rate_pct: tariff_mfn_eu(hs4),
-        preferential_rate_pct: None,
-        agreement: None,
-        notes: "No preferential agreement — MFN rates apply".into(),
-    });
-
-    // CN → US (Section 301 tariffs)
-    rates.push(TariffRate {
-        corridor: "CN→US".into(),
-        hs4: hs4.into(),
-        mfn_rate_pct: tariff_mfn_us(hs4),
-        preferential_rate_pct: None,
-        agreement: None,
-        notes: "Section 301 tariffs may apply (25% on List 1-3)".into(),
-    });
-
-    // TN → EU (reverse)
-    rates.push(TariffRate {
-        corridor: "TN→EU".into(),
-        hs4: hs4.into(),
-        mfn_rate_pct: tariff_mfn_eu(hs4),
-        preferential_rate_pct: Some(0.0),
-        agreement: Some("EU-Tunisia AA (EUR.1 certificate)".into()),
-        notes: "Duty-free with proof of origin".into(),
-    });
-
-    rates
+    vec![
+        TariffRate {
+            corridor: "EU→TN".into(),
+            hs4: hs4.into(),
+            mfn_rate_pct: tariff_mfn_eu(hs4),
+            preferential_rate_pct: Some(0.0),
+            agreement: Some("EU-Tunisia Association Agreement".into()),
+            notes: "Industrial products duty-free under AA since 2008".into(),
+        },
+        TariffRate {
+            corridor: "EU→MA".into(),
+            hs4: hs4.into(),
+            mfn_rate_pct: tariff_mfn_eu(hs4),
+            preferential_rate_pct: Some(0.0),
+            agreement: Some("EU-Morocco Association Agreement".into()),
+            notes: "Industrial products duty-free under AA".into(),
+        },
+        TariffRate {
+            corridor: "US→IL".into(),
+            hs4: hs4.into(),
+            mfn_rate_pct: tariff_mfn_us(hs4),
+            preferential_rate_pct: Some(0.0),
+            agreement: Some("US-Israel FTA".into()),
+            notes: "All industrial products duty-free".into(),
+        },
+        TariffRate {
+            corridor: "CN→EU".into(),
+            hs4: hs4.into(),
+            mfn_rate_pct: tariff_mfn_eu(hs4),
+            preferential_rate_pct: None,
+            agreement: None,
+            notes: "No preferential agreement — MFN rates apply".into(),
+        },
+        TariffRate {
+            corridor: "CN→US".into(),
+            hs4: hs4.into(),
+            mfn_rate_pct: tariff_mfn_us(hs4),
+            preferential_rate_pct: None,
+            agreement: None,
+            notes: "Section 301 tariffs may apply (25% on List 1-3)".into(),
+        },
+        TariffRate {
+            corridor: "TN→EU".into(),
+            hs4: hs4.into(),
+            mfn_rate_pct: tariff_mfn_eu(hs4),
+            preferential_rate_pct: Some(0.0),
+            agreement: Some("EU-Tunisia AA (EUR.1 certificate)".into()),
+            notes: "Duty-free with proof of origin".into(),
+        },
+    ]
 }
 
 fn tariff_mfn_eu(hs4: &str) -> f64 {

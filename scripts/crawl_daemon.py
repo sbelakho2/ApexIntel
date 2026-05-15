@@ -37,17 +37,20 @@ except ImportError:
 
 # ─── Configuration ──────────────────────────────────────────────────────────────
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://apexintel:ApexIntel2026Secure@127.0.0.1:5432/apexintel")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    os.getenv(
+        "APEX_DATABASE_URL",
+        "postgresql://apexintel@127.0.0.1:5432/apexintel?sslmode=require",
+    ),
+)
 
-# Source IP addresses — IPv6 is primary, IPv4 is fallback
-IPV6_ADDRESSES = [
-    "2a01:4f9:c012:a8e::1",         # IPv6 #1
-    "2a01:4f9:c01f:e074::1",        # IPv6 #2 (floating)
-]
-IPV4_ADDRESSES = [
-    "77.42.65.89",                  # Primary IPv4
-    "95.216.182.162",               # Secondary IPv4 (floating)
-]
+# Source IP addresses — read from environment variables for dynamic configuration
+# Format: comma-separated list of IPs (IPv6, IPv4, or mixed)
+_IPV6_RAW = os.getenv("APEX_IPV6_ADDRESSES", "")
+_IPV4_RAW = os.getenv("APEX_IPV4_ADDRESSES", "")
+IPV6_ADDRESSES = [ip.strip() for ip in _IPV6_RAW.split(",") if ip.strip()] if _IPV6_RAW else []
+IPV4_ADDRESSES = [ip.strip() for ip in _IPV4_RAW.split(",") if ip.strip()] if _IPV4_RAW else []
 ALL_ADDRESSES = IPV6_ADDRESSES + IPV4_ADDRESSES
 
 # Crawl settings
@@ -145,16 +148,20 @@ def get_random_headers() -> dict:
 _ipv6_idx = 0
 _ipv4_idx = 0
 
-def _next_ipv6_address() -> str:
+def _next_ipv6_address() -> Optional[str]:
     """Return the next IPv6 source in round-robin order."""
     global _ipv6_idx
+    if not IPV6_ADDRESSES:
+        return None
     addr = IPV6_ADDRESSES[_ipv6_idx % len(IPV6_ADDRESSES)]
     _ipv6_idx += 1
     return addr
 
-def _next_ipv4_address() -> str:
+def _next_ipv4_address() -> Optional[str]:
     """Return the next IPv4 source in round-robin order."""
     global _ipv4_idx
+    if not IPV4_ADDRESSES:
+        return None
     addr = IPV4_ADDRESSES[_ipv4_idx % len(IPV4_ADDRESSES)]
     _ipv4_idx += 1
     return addr

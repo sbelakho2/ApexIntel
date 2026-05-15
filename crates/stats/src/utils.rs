@@ -1,4 +1,4 @@
-/// Shared numeric safety helpers for statistical computations.
+//! Shared numeric safety helpers for statistical computations.
 
 const SAFE_DIV_EPS: f64 = 1e-12;
 
@@ -6,6 +6,7 @@ const SAFE_DIV_EPS: f64 = 1e-12;
 ///
 /// Returns `0.0` when either operand is non-finite or the denominator is too
 /// close to zero to avoid unstable spikes and infinities.
+#[inline]
 pub fn safe_div(numerator: f64, denominator: f64) -> f64 {
     if !numerator.is_finite() || !denominator.is_finite() || denominator.abs() < SAFE_DIV_EPS {
         return 0.0;

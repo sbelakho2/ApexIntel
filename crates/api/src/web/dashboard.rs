@@ -168,6 +168,8 @@ pub struct DashboardPage {
     pub persons_tracked: i64,
     pub recipes_active: i64,
     pub data_freshness: String,
+    pub portfolio_health: String,
+    pub portfolio_health_class: String,
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -207,7 +209,10 @@ pub async fn dashboard(
         .collect();
 
     // Fetch top insights (last 5)
-    let insight_filters = InsightListFilters::default();
+    let insight_filters = InsightListFilters {
+        exclude_internal: true,
+        ..Default::default()
+    };
     let top_insight_rows = store
         .list_insights(&insight_filters, 5, 0)
         .await
@@ -408,8 +413,8 @@ pub async fn dashboard(
            ORDER BY h.hour ASC
            LIMIT 24"#,
     )
-        .bind(crawl_window_start)
-        .bind(reference_now)
+    .bind(crawl_window_start)
+    .bind(reference_now)
     .fetch_all(&store.pool)
     .await
     .unwrap_or_default();
@@ -421,14 +426,14 @@ pub async fn dashboard(
         .max(1);
     let crawl_activity: Vec<CrawlActivityHour> = crawl_activity_rows
         .into_iter()
-    .map(|row| CrawlActivityHour {
-        hour_label: row.hour_label,
-        success: row.success,
-        errors: row.errors,
-        success_h: row.success * 100 / crawl_max,
-        errors_h: row.errors * 100 / crawl_max,
-    })
-    .collect();
+        .map(|row| CrawlActivityHour {
+            hour_label: row.hour_label,
+            success: row.success,
+            errors: row.errors,
+            success_h: row.success * 100 / crawl_max,
+            errors_h: row.errors * 100 / crawl_max,
+        })
+        .collect();
 
     // Compute donut chart segments (size=120, stroke=14 → radius=53)
     let donut_segments = compute_donut_segments(&severity_breakdown, 53.0);
@@ -543,6 +548,42 @@ pub async fn dashboard(
         persons_tracked: stats_data.total_persons as i64,
         recipes_active: stats_data.active_recipes as i64,
         data_freshness: "Live".into(),
+        portfolio_health: {
+            let total_entities =
+                (stats_data.total_companies + stats_data.total_persons).max(1) as f64;
+            let critical_high = stats_data
+                .threat_distribution
+                .iter()
+                .filter(|sc| sc.severity == "critical" || sc.severity == "high")
+                .map(|sc| sc.count)
+                .sum::<i64>() as f64;
+            let ratio = critical_high / total_entities;
+            if ratio < 0.1 {
+                "Healthy".into()
+            } else if ratio < 0.3 {
+                "Elevated".into()
+            } else {
+                "At Risk".into()
+            }
+        },
+        portfolio_health_class: {
+            let total_entities =
+                (stats_data.total_companies + stats_data.total_persons).max(1) as f64;
+            let critical_high = stats_data
+                .threat_distribution
+                .iter()
+                .filter(|sc| sc.severity == "critical" || sc.severity == "high")
+                .map(|sc| sc.count)
+                .sum::<i64>() as f64;
+            let ratio = critical_high / total_entities;
+            if ratio < 0.1 {
+                "text-green-500".into()
+            } else if ratio < 0.3 {
+                "text-amber-500".into()
+            } else {
+                "text-red-500".into()
+            }
+        },
     };
 
     super::render_template(&page)

@@ -222,16 +222,16 @@ fn residual_sum_squares(design: &[Vec<f64>], targets: &[f64], beta: &[f64]) -> f
         .sum::<f64>()
 }
 
+#[allow(clippy::needless_range_loop)]
 fn solve_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for pivot in 0..n {
-        let best_row = (pivot..n)
-            .max_by(|left, right| {
-                a[*left][pivot]
-                    .abs()
-                    .partial_cmp(&a[*right][pivot].abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })?;
+        let best_row = (pivot..n).max_by(|left, right| {
+            a[*left][pivot]
+                .abs()
+                .partial_cmp(&a[*right][pivot].abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
         if a[best_row][pivot].abs() < 1e-12 {
             return None;
         }
@@ -276,10 +276,8 @@ fn regularized_incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
         return 1.0;
     }
 
-    let bt = (log_gamma(a + b) - log_gamma(a) - log_gamma(b)
-        + a * x.ln()
-        + b * (1.0 - x).ln())
-        .exp();
+    let bt =
+        (log_gamma(a + b) - log_gamma(a) - log_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
 
     if x < (a + 1.0) / (a + b + 2.0) {
         bt * beta_continued_fraction(a, b, x) / a
@@ -391,7 +389,8 @@ mod tests {
     #[test]
     fn granger_causality_known_lag() {
         let (source, target) = synthetic_granger_pair();
-        let best = best_granger_lag(&source, &target, &[1, 7, 14, 30]).unwrap();
+        let best = best_granger_lag(&source, &target, &[1, 7, 14, 30])
+            .unwrap_or_else(|| panic!("synthetic Granger pair should yield a best lag"));
 
         assert_eq!(best.lag, 7);
         assert!(best.p_value < 0.05, "p={}", best.p_value);

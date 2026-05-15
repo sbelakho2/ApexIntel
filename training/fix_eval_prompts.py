@@ -7,9 +7,11 @@ import json
 import os
 import sys
 from collections import defaultdict
+from pathlib import Path
 
-eval_dir = "/workspace/ApexIntel/training_data/evaluation"
-train_file = "/workspace/ApexIntel/training/data/sft_train.jsonl"
+WORK = Path(__file__).resolve().parent.parent
+eval_dir = os.environ.get("EVAL_DIR", str(WORK / "training_data" / "evaluation"))
+train_file = os.environ.get("TRAIN_FILE", str(WORK / "training" / "data" / "sft_train.jsonl"))
 
 # Step 1: Extract the FULL system prompts from training data for each task type
 # We match by looking at assistant response keys to identify task type

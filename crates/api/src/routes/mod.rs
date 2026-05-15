@@ -50,6 +50,7 @@ pub mod paths {
     pub const INSIGHT_DETAIL: &str = "/api/insights/:id";
     pub const INSIGHT_ANALYZE: &str = "/api/insights/:id/analyze";
     pub const INSIGHT_BOOKMARK: &str = "/api/insights/:id/bookmark";
+    pub const INSIGHT_FEEDBACK: &str = "/api/insights/:id/feedback";
     pub const INSIGHTS_EXPORT: &str = "/api/insights/export";
     pub const MEMOS: &str = "/api/memos";
     pub const WEEKLY_MEMO: &str = "/api/insights/weekly-memo";
@@ -271,6 +272,13 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             method: HttpMethod::Post,
             path: paths::INSIGHT_BOOKMARK,
             description: "Bookmark or unbookmark an insight",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::INSIGHT_FEEDBACK,
+            description: "Record feedback for an insight",
             auth_required: true,
             min_role: "analyst",
         },
@@ -960,7 +968,8 @@ mod tests {
         assert!(schemas["ApiError"].is_object());
         assert!(schemas["ApiErrorResponse"].is_object());
         assert_eq!(
-            spec["paths"][paths::WARNINGS]["get"]["responses"]["400"]["content"]["application/json"]["schema"]["$ref"],
+            spec["paths"][paths::WARNINGS]["get"]["responses"]["400"]["content"]
+                ["application/json"]["schema"]["$ref"],
             "#/components/schemas/ApiErrorResponse"
         );
     }
@@ -971,8 +980,16 @@ mod tests {
         let paths_obj = spec["paths"].as_object().expect("paths object");
 
         for endpoint in all_endpoints() {
-            assert!(paths_obj.contains_key(endpoint.path), "missing current path {}", endpoint.path);
-            assert!(paths_obj.contains_key(&versioned_path(endpoint.path)), "missing versioned path {}", endpoint.path);
+            assert!(
+                paths_obj.contains_key(endpoint.path),
+                "missing current path {}",
+                endpoint.path
+            );
+            assert!(
+                paths_obj.contains_key(&versioned_path(endpoint.path)),
+                "missing versioned path {}",
+                endpoint.path
+            );
         }
     }
 }

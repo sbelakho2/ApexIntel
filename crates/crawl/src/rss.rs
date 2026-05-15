@@ -276,7 +276,8 @@ mod tests {
 
     #[test]
     fn parse_rss_feed() {
-        let items = parse_feed(SAMPLE_RSS).unwrap();
+        let items = parse_feed(SAMPLE_RSS)
+            .unwrap_or_else(|error| panic!("sample RSS should parse: {error}"));
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].title, "First Article");
         assert_eq!(items[0].guid, "article-001");
@@ -287,7 +288,8 @@ mod tests {
 
     #[test]
     fn parse_atom_feed() {
-        let items = parse_feed(SAMPLE_ATOM).unwrap();
+        let items = parse_feed(SAMPLE_ATOM)
+            .unwrap_or_else(|error| panic!("sample Atom should parse: {error}"));
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "Atom Entry");
         assert_eq!(items[0].link, "https://example.com/atom/1");

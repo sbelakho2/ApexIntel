@@ -2,12 +2,31 @@
 
 use crate::*;
 
+fn normalize_feedback_type(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "bookmarked" | "actioned" | "dismissed" | "false_positive" | "false_negative"
+        | "true_positive" | "relevant" | "irrelevant" | "viewed" => Some(normalized),
+        _ => None,
+    }
+}
+
 fn resolve_bookmarked_by(bookmarked: Option<&str>, user_id: &str) -> Option<String> {
     if bookmarked == Some("true") {
         Some(user_id.to_string())
     } else {
         None
     }
+}
+
+fn should_diversify_feed(filters: &InsightListFilters) -> bool {
+    filters.exclude_internal
+        && filters.bookmarked_by.is_none()
+        && filters.insight_types.is_empty()
+        && filters.search.is_none()
+        && filters.regions.is_empty()
+        && filters.date_from.is_none()
+        && filters.date_to.is_none()
 }
 
 pub(crate) async fn list_insights(
@@ -112,11 +131,25 @@ pub(crate) async fn list_insights(
     let clamped_page = clamp_page(page, per_page, total);
     let clamped_offset = ((clamped_page - 1) as i64).saturating_mul(per_page as i64);
 
+    let diversify_feed = should_diversify_feed(&filters);
+    let (candidate_limit, candidate_offset, diversified_start) = if diversify_feed {
+        let window = (per_page as i64).saturating_mul(5).max(per_page as i64);
+        let lookbehind = (per_page as i64).saturating_mul(2);
+        let candidate_offset = clamped_offset.saturating_sub(lookbehind);
+        (
+            window,
+            candidate_offset,
+            (clamped_offset - candidate_offset) as usize,
+        )
+    } else {
+        (per_page as i64, clamped_offset, 0)
+    };
+
     let rows = match tracing::info_span!("db.list_insights", request_id = %request_id)
         .in_scope(|| {
             state
                 .store
-                .list_insights(&filters, per_page as i64, clamped_offset)
+                .list_insights(&filters, candidate_limit, candidate_offset)
         })
         .await
     {
@@ -149,6 +182,28 @@ pub(crate) async fn list_insights(
                 item.bookmarked = Some(bookmarked.contains(&item.id));
             }
         }
+        if let Ok(quality_scores) = state
+            .store
+            .get_insight_feedback_scores(&insight_uuids)
+            .await
+        {
+            for item in &mut items {
+                if let Ok(insight_id) = Uuid::parse_str(&item.id) {
+                    item.quality_score = Some(*quality_scores.get(&insight_id).unwrap_or(&0.5));
+                }
+            }
+            crate::routes::insights::rank_insights(&mut items);
+        }
+    }
+
+    if diversify_feed {
+        let start = diversified_start;
+        let end = (start + per_page as usize).min(items.len());
+        items = if start < items.len() {
+            items[start..end].to_vec()
+        } else {
+            Vec::new()
+        };
     }
 
     let payload = PagedResponse {
@@ -206,6 +261,10 @@ pub(crate) async fn bookmark_insight(
         Ok(created) => {
             let _ = state
                 .store
+                .record_insight_feedback(uid, &auth_ctx.user_id, "bookmarked", None)
+                .await;
+            let _ = state
+                .store
                 .record_audit_event(
                     &auth_ctx.user_id,
                     "insight_bookmarked",
@@ -232,6 +291,108 @@ pub(crate) async fn bookmark_insight(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(error_response(ApiError::internal(
                     "Failed to bookmark insight",
+                ))),
+            )
+        }
+    }
+}
+
+pub(crate) async fn record_insight_feedback(
+    State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+    Json(payload): Json<crate::routes::insights::InsightFeedbackRequest>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let uid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid UUID"))),
+            )
+        }
+    };
+    let feedback_type = match normalize_feedback_type(&payload.feedback_type) {
+        Some(value) => value,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::validation(
+                    "feedback_type",
+                    "Unsupported insight feedback type",
+                ))),
+            )
+        }
+    };
+
+    match state.store.get_insight(uid).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found("Insight", &id))),
+            )
+        }
+        Err(err) => {
+            tracing::error!("feedback lookup failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to check insight",
+                ))),
+            );
+        }
+    }
+
+    match state
+        .store
+        .record_insight_feedback(
+            uid,
+            &auth_ctx.user_id,
+            &feedback_type,
+            payload.notes.as_deref(),
+        )
+        .await
+    {
+        Ok(_) => {
+            let _ = state
+                .store
+                .record_audit_event(
+                    &auth_ctx.user_id,
+                    "insight_feedback_recorded",
+                    &serde_json::json!({
+                        "insight_id": uid,
+                        "feedback_type": feedback_type,
+                        "notes": payload.notes,
+                    }),
+                )
+                .await;
+            let quality_score = state
+                .store
+                .get_insight_feedback_scores(&[uid])
+                .await
+                .ok()
+                .and_then(|scores| scores.get(&uid).copied())
+                .unwrap_or(0.5);
+            (
+                StatusCode::OK,
+                Json(success_with_meta(
+                    serde_json::json!({
+                        "status": "recorded",
+                        "insight_id": id,
+                        "feedback_type": feedback_type,
+                        "quality_score": quality_score,
+                    }),
+                    ResponseMeta::now(),
+                )),
+            )
+        }
+        Err(err) => {
+            tracing::error!("record_insight_feedback failed: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to record insight feedback",
                 ))),
             )
         }

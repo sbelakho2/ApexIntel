@@ -26,14 +26,18 @@ use urlencoding::encode as urlencode;
 // ─────────────────────────────────────────────────────────────────────────────
 
 static RE_EMAIL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap());
-static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\+?[\d\s\-\(\)]{8,20}").unwrap());
+    LazyLock::new(|| compile_regex(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"));
+static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| compile_regex(r"\+?[\d\s\-\(\)]{8,20}"));
+
+fn compile_regex(pattern: &'static str) -> Regex {
+    Regex::new(pattern).unwrap_or_else(|error| panic!("invalid regex {pattern:?}: {error}"))
+}
 
 /// PwnDB HTML row parser.
 static RE_PWNDB_ROW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"<li>luser:\s*(.+?)\s*</li>\s*<li>domain:\s*(.+?)\s*</li>(?:\s*<li>password:\s*(.+?)\s*</li>)?"
-    ).unwrap()
+    ).unwrap_or_else(|error| panic!("invalid PwnDB row regex: {error}"))
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -328,14 +332,26 @@ impl DarkWebPersonIntel {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn build_tor_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    // Check for explicit opt-in to disable TLS verification (dangerous, for debugging only)
+    let disable_tls = std::env::var("APEX_TOR_DANGEROUS_INSECURE_TLS")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+
+    let mut builder = reqwest::Client::builder()
         .proxy(reqwest::Proxy::all("socks5h://127.0.0.1:9050")?)
         .timeout(Duration::from_secs(90))
         .connect_timeout(Duration::from_secs(30))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0")
-        .danger_accept_invalid_certs(true) // many .onion sites have self-signed certs
-        .build()
-        .context("build tor reqwest client")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0");
+
+    // Only disable TLS verification if explicitly opted in via env var.
+    // Onion sites may use self-signed certs, but disabling verification globally
+    // opens the door to MITM attacks. Use APEX_TOR_DANGEROUS_INSECURE_TLS=1 sparingly.
+    if disable_tls {
+        tracing::warn!("Tor client TLS verification DISABLED via APEX_TOR_DANGEROUS_INSECURE_TLS");
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+
+    builder.build().context("build tor reqwest client")
 }
 
 /// Parse the PwnDB HTML response and extract `BreachRecord` entries.

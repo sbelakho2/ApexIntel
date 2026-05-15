@@ -2,6 +2,10 @@
 -- Materialized Views for Dashboard Performance
 -- Pre-computed aggregations refreshed by nightly worker job.
 -- Run: psql $DATABASE_URL < migrations/20260301_materialized_views.sql
+--
+-- NOTE: These views reference the core schema (`migrations/` lineage).
+-- They use scalar `entity_id` joins (not `entity_ids` arrays) and
+-- only columns available when this migration runs on a fresh database.
 -- ════════════════════════════════════════════════════════════════════════════
 
 BEGIN;
@@ -26,6 +30,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_warn_summary
     ON mv_warning_summary (day, region, severity, warning_type);
 
 -- Company risk leaderboard
+-- Uses scalar entity_id join (core schema), not entity_ids array (store schema)
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_company_risk_leaderboard AS
 SELECT
     c.id,
@@ -40,8 +45,8 @@ SELECT
     COUNT(DISTINCT i.id)        AS recent_insights,
     MAX(w.created_at)           AS last_warning_at
 FROM companies c
-LEFT JOIN warnings w ON c.id = ANY(w.entity_ids) AND NOT w.acknowledged
-LEFT JOIN insights i ON c.id = ANY(i.entity_ids) AND i.created_at > now() - interval '30 days'
+LEFT JOIN warnings w ON c.id = w.entity_id AND NOT w.acknowledged
+LEFT JOIN insights i ON c.id = i.entity_id AND i.created_at > now() - interval '30 days'
 GROUP BY c.id, c.name, c.domain, c.region, c.company_type,
          c.threat_score, c.overlap_score, c.risk_score;
 
@@ -67,14 +72,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_poi_coverage
 -- Recipe performance summary
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_recipe_performance AS
 SELECT
-    r.code              AS recipe_code,
+    r.id AS recipe_code,
     r.name,
     r.status,
-    r.precision_score,
+    COALESCE(r.precision, 0.0) AS precision_score,
     COUNT(DISTINCT w.id) AS warnings_generated_30d
 FROM recipes r
-LEFT JOIN warnings w ON w.recipe_code = r.code AND w.created_at > now() - interval '30 days'
-GROUP BY r.code, r.name, r.status, r.precision_score;
+LEFT JOIN warnings w ON w.recipe_id = r.id
+    AND w.created_at > now() - interval '30 days'
+GROUP BY r.id, r.name, r.status, r.precision;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_recipe_perf
     ON mv_recipe_performance (recipe_code);
@@ -115,17 +121,10 @@ WHERE cert.status = 'active'
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_cert_expiry
     ON mv_cert_expiry_tracker (cert_id);
 
--- Audit log table (used by refresh function and entity_merge)
-CREATE TABLE IF NOT EXISTS audit_log (
-    id          BIGSERIAL PRIMARY KEY,
-    action      TEXT,
-    event_type  TEXT,
-    entity_type TEXT,
-    entity_id   TEXT,
-    detail      JSONB DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log (created_at DESC);
+-- NOTE: audit_log is NOT re-created here to avoid conflicting definitions.
+-- It is defined once in migrations/00000000_core_schema.sql.
+-- This materialized views migration uses audit_log via INSERT statements
+-- in the refresh function, relying on the core schema definition.
 
 -- Refresh all materialized views (call from worker nightly job)
 CREATE OR REPLACE FUNCTION refresh_all_materialized_views()
@@ -137,8 +136,8 @@ BEGIN
     REFRESH MATERIALIZED VIEW CONCURRENTLY mv_recipe_performance;
     REFRESH MATERIALIZED VIEW CONCURRENTLY mv_observation_volume;
     REFRESH MATERIALIZED VIEW CONCURRENTLY mv_cert_expiry_tracker;
-    INSERT INTO audit_log (event_type, detail)
-    VALUES ('matview_refresh', jsonb_build_object(
+    INSERT INTO audit_log (event_type, entity_type, detail)
+    VALUES ('matview_refresh', 'system', jsonb_build_object(
         'views_refreshed', 6,
         'executed_at', now()
     ));

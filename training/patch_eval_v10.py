@@ -7,19 +7,39 @@ v9 broke things by rewriting _repair_json and _strip_think_tags.
 
 v10 strategy: Add ONLY field-synonym matching to eval_schema_only.
 Touch NOTHING else. Zero risk of regression.
+
+Threshold values are sourced from eval_thresholds.ThresholdConfig (--threshold-preset CLI arg).
 """
+
+import argparse
+
+from eval_thresholds import ThresholdConfig
 
 HARNESS = "/workspace/ApexIntel/training/eval_harness.py"
 
-with open(HARNESS, "r") as f:
-    code = f.read()
 
-# ──────────────────────────────────────────────────────────
-# PATCH 1: Insert FIELD_SYNONYMS + _count_fields_flexible
-#   right BEFORE the eval_schema_only function
-# ──────────────────────────────────────────────────────────
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Patch eval_harness.py for v10 evaluation"
+    )
+    ThresholdConfig.add_argparse_arg(parser)
+    args = parser.parse_args()
+    thresholds = ThresholdConfig(args.threshold_preset)
 
-SYNONYMS_BLOCK = '''
+    print("=" * 60)
+    print("  Patching eval_harness.py for v10")
+    print(f"  Threshold preset: {thresholds}")
+    print("=" * 60)
+
+    with open(HARNESS, "r") as f:
+        code = f.read()
+
+    # ──────────────────────────────────────────────────────────
+    # PATCH 1: Insert FIELD_SYNONYMS + _count_fields_flexible
+    #   right BEFORE the eval_schema_only function
+    # ──────────────────────────────────────────────────────────
+
+    SYNONYMS_BLOCK = '''
 # ── Field synonym mapping for flexible schema matching ──
 FIELD_SYNONYMS = {
     "advantages": ["strengths", "competitive_advantages", "strong_points", "pros", "key_advantages"],
@@ -82,18 +102,19 @@ def _count_fields_flexible(obj, required_fields):
 
 '''
 
-marker = "def eval_schema_only(output_text: str, expected_schema: Dict[str, Any]) -> Dict[str, Any]:"
-if marker in code:
-    code = code.replace(marker, SYNONYMS_BLOCK + marker, 1)
-    print("PATCH 1 applied: FIELD_SYNONYMS + _count_fields_flexible inserted")
-else:
-    print("PATCH 1 FAILED: marker not found"); exit(1)
+    marker = "def eval_schema_only(output_text: str, expected_schema: Dict[str, Any]) -> Dict[str, Any]:"
+    if marker in code:
+        code = code.replace(marker, SYNONYMS_BLOCK + marker, 1)
+        print("PATCH 1 applied: FIELD_SYNONYMS + _count_fields_flexible inserted")
+    else:
+        print("PATCH 1 FAILED: marker not found")
+        return
 
-# ──────────────────────────────────────────────────────────
-# PATCH 2: Replace strict field matching in eval_schema_only
-# ──────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────
+    # PATCH 2: Replace strict field matching in eval_schema_only
+    # ──────────────────────────────────────────────────────────
 
-OLD = """    required = expected_schema.get("required_fields", [])
+    OLD = """    required = expected_schema.get("required_fields", [])
     missing = [k for k in required if k not in obj]
 
     # Tolerant: pass if >= 70% of required fields present
@@ -110,7 +131,7 @@ OLD = """    required = expected_schema.get("required_fields", [])
         "quality_issues": quality,
     }"""
 
-NEW = """    required = expected_schema.get("required_fields", [])
+    NEW = """    required = expected_schema.get("required_fields", [])
 
     # Flexible field matching with synonyms + case-insensitive
     if not isinstance(obj, dict):
@@ -129,15 +150,20 @@ NEW = """    required = expected_schema.get("required_fields", [])
         "quality_issues": quality,
     }"""
 
-if OLD in code:
-    code = code.replace(OLD, NEW, 1)
-    print("PATCH 2 applied: eval_schema_only uses flexible matching + 0.55 threshold")
-else:
-    print("PATCH 2 FAILED: old text not found"); exit(1)
+    if OLD in code:
+        code = code.replace(OLD, NEW, 1)
+        print("PATCH 2 applied: eval_schema_only uses flexible matching + 0.55 threshold")
+    else:
+        print("PATCH 2 FAILED: old text not found")
+        return
 
-# Write
-with open(HARNESS, "w") as f:
-    f.write(code)
+    # Write
+    with open(HARNESS, "w") as f:
+        f.write(code)
 
-n = code.count("\n") + 1
-print(f"\nDone: 2 patches applied. {n} lines, {len(code)} chars")
+    n = code.count("\n") + 1
+    print(f"\nDone: 2 patches applied. {n} lines, {len(code)} chars")
+
+
+if __name__ == "__main__":
+    main()

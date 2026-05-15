@@ -286,7 +286,7 @@ impl LlmClient {
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .expect("Failed to build reqwest client");
+            .unwrap_or_else(|error| panic!("failed to build reqwest client: {error}"));
         Self {
             http,
             base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -304,8 +304,10 @@ impl LlmClient {
             std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
         let api_key = std::env::var("LLM_API_KEY").ok();
         let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
-        let mut config = InferenceConfig::default();
-        config.model = model;
+        let config = InferenceConfig {
+            model,
+            ..Default::default()
+        };
         Ok(Self::new(base_url, api_key, config))
     }
 
@@ -621,6 +623,9 @@ fn assert_structural_determinism(first: &str, second: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn strip_think_tags_removes_block() {
@@ -680,26 +685,40 @@ mod tests {
 
     #[test]
     fn inference_config_validate_bad_temperature() {
-        let mut cfg = InferenceConfig::default();
-        cfg.temperature = 5.0;
+        let cfg = InferenceConfig {
+            temperature: 5.0,
+            ..Default::default()
+        };
         assert!(!cfg.validate().is_empty());
     }
 
     #[test]
     fn inference_config_validate_zero_tokens() {
-        let mut cfg = InferenceConfig::default();
-        cfg.max_tokens = 0;
+        let cfg = InferenceConfig {
+            max_tokens: 0,
+            ..Default::default()
+        };
         assert!(!cfg.validate().is_empty());
     }
 
     #[test]
     fn from_env_uses_defaults_when_env_absent() {
+        // Serialize env var mutations to prevent data races in parallel tests.
+        let guard = ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| panic!("env test lock should not be poisoned: {error}"));
         // Clear env vars to test defaults.
-        unsafe {
-            std::env::remove_var("LLM_BASE_URL");
-            std::env::remove_var("LLM_API_KEY");
-        }
-        let client = LlmClient::from_env().unwrap();
+        std::env::remove_var("LLM_BASE_URL");
+        std::env::remove_var("LLM_API_KEY");
+        // Drop the guard explicitly before re-acquiring the lock.
+        // `let`-shadowing evaluates the RHS before dropping the old binding,
+        // which would deadlock because std::sync::Mutex is not reentrant.
+        drop(guard);
+        let _guard = ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| panic!("env test lock should not be poisoned: {error}"));
+        let client = LlmClient::from_env()
+            .unwrap_or_else(|error| panic!("client should load default env config: {error}"));
         assert_eq!(client.base_url, "http://localhost:8080");
         assert!(client.api_key.is_none());
     }
@@ -715,7 +734,9 @@ mod tests {
             prompt_hash: "prompt".into(),
             response_hash: "response".into(),
         };
-        let v: serde_json::Value = resp.parse_json().unwrap();
+        let v: serde_json::Value = resp
+            .parse_json()
+            .unwrap_or_else(|error| panic!("completion JSON should parse: {error}"));
         assert_eq!(v["score"], 0.9);
     }
 
@@ -730,7 +751,9 @@ mod tests {
             prompt_hash: "prompt".into(),
             response_hash: "response".into(),
         };
-        let v: serde_json::Value = resp.parse_json().unwrap();
+        let v: serde_json::Value = resp
+            .parse_json()
+            .unwrap_or_else(|error| panic!("fenced completion JSON should parse: {error}"));
         assert_eq!(v["k"], 1);
     }
 

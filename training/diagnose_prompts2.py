@@ -2,9 +2,11 @@
 """Find what system prompts training data uses for examples with correct output schemas."""
 import json
 import os
+from pathlib import Path
 
-eval_dir = "/workspace/ApexIntel/training_data/evaluation"
-train_file = "/workspace/ApexIntel/training/data/sft_train.jsonl"
+WORK = Path(__file__).resolve().parent.parent
+eval_dir = os.environ.get("EVAL_DIR", str(WORK / "training_data" / "evaluation"))
+train_file = os.environ.get("TRAIN_FILE", str(WORK / "training" / "data" / "sft_train.jsonl"))
 
 # Required fields per task from eval
 task_fields = {

@@ -37,17 +37,15 @@ const BLOCKED_TERMS: &[&str] = &[
     "manufacturing",
     "electronics",
     // Non-English company suffixes (≥4 chars, safe for substring match)
-    "gmbh",           // German
-    "sarl",           // French
-    "spzoo",          // Polish (sp. z o.o.)
+    "gmbh",  // German
+    "sarl",  // French
+    "spzoo", // Polish (sp. z o.o.)
 ];
 
 /// Short company suffixes that must match as whole words only.
 const BLOCKED_WORD_TERMS: &[&str] = &[
-    "ag", "sa", "sas", "bv", "nv", "spa", "srl", "sl",
-    "oo", "za", "ao", "kft", "rt", "as", "ab", "oy",
-    "pty", "cc", "co", "plc", "llp", "lp", "llc", "jsc",
-    "kda", "ykk", "kk",
+    "ag", "sa", "sas", "bv", "nv", "spa", "srl", "sl", "oo", "za", "ao", "kft", "rt", "as", "ab",
+    "oy", "pty", "cc", "co", "plc", "llp", "lp", "llc", "jsc", "kda", "ykk", "kk",
 ];
 
 const BLOCKED_PHRASES: &[&str] = &[

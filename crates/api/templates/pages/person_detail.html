@@ -49,6 +49,7 @@
       <span class="text-[11px] text-muted-foreground">{{ title }}</span>
       {% call m::region_badge(region) %}
       <span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ priority_tier }}</span>
+      <span class="inline-flex items-center rounded-sm border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase text-primary">{{ buying_center_role }}</span>
       {% if !briefing_mode %}
       <a href="/persons/{{ id }}?briefing=true" class="no-print rounded-sm border border-border bg-secondary px-3 py-1 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing</a>
       {% endif %}
@@ -180,7 +181,7 @@
     <div class="divide-y divide-border">
       {% for e in recent_events %}
       <div class="px-4 py-3">
-        <p class="text-sm font-semibold">{{ e.kind }}</p>
+        <p class="text-sm font-semibold">{% if e.kind == "role_change" %}Role Change{% else if e.kind == "org_change" %}Organization Change{% else if e.kind == "job_change" %}Job Change{% else if e.kind == "seniority_change" %}Seniority Change{% else if e.kind == "metric_update" %}Metric Update{% else if e.kind == "profile_tracking" %}Profile Tracking{% else %}{{ e.kind }}{% endif %}</p>
         <p class="mt-1 text-xs text-muted-foreground">{{ e.description }}</p>
         <p class="mt-1 text-[10px] text-muted-foreground">{{ e.date }} · {{ e.source }}</p>
       </div>

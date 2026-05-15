@@ -12,7 +12,7 @@ static RE_SOURCE: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid press source regex: {error}"))
 });
 
 static RE_AUTHOR: LazyLock<Regex> = LazyLock::new(|| {
@@ -24,7 +24,7 @@ static RE_AUTHOR: LazyLock<Regex> = LazyLock::new(|| {
     .size_limit(200_000)
     .dfa_size_limit(200_000)
     .build()
-    .unwrap()
+    .unwrap_or_else(|error| panic!("invalid press author regex: {error}"))
 });
 
 /// Pre-compiled company mention regex — avoids O(n) recompilation per article parse.
@@ -56,7 +56,7 @@ static RE_COMPANY_MENTION: LazyLock<Regex> = LazyLock::new(|| {
         .size_limit(200_000)
         .dfa_size_limit(200_000)
         .build()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("invalid company-mention regex: {error}"))
 });
 
 static DATE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -71,7 +71,7 @@ static DATE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
             .size_limit(100_000)
             .dfa_size_limit(100_000)
             .build()
-            .unwrap()
+            .unwrap_or_else(|error| panic!("invalid press date regex `{p}`: {error}"))
     })
     .collect()
 });
@@ -138,15 +138,17 @@ pub fn extract_press(body_text: &str, title: &str, url: &str) -> PressExtract {
 }
 
 fn extract_source(text: &str) -> Option<String> {
-    RE_SOURCE
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_SOURCE.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_author(text: &str) -> Option<String> {
-    RE_AUTHOR
-        .captures(text)
-        .map(|c| normalizer::normalize_whitespace(c.get(1).unwrap().as_str()))
+    RE_AUTHOR.captures(text).and_then(|c| {
+        c.get(1)
+            .map(|m| normalizer::normalize_whitespace(m.as_str()))
+    })
 }
 
 fn extract_article_date(text: &str) -> Option<String> {
@@ -189,7 +191,10 @@ pub fn extract_company_mentions(text: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
 
     for caps in RE_COMPANY_MENTION.captures_iter(text) {
-        let full_match = caps.get(0).unwrap().as_str();
+        let Some(full_match) = caps.get(0) else {
+            continue;
+        };
+        let full_match = full_match.as_str();
         let name = normalizer::normalize_whitespace(full_match);
         if !seen.contains(&name) {
             seen.insert(name.clone());
@@ -386,7 +391,7 @@ mod tests {
         let text = "By Ahmed Ben Ali. Published on Jan 15.";
         let author = extract_author(text);
         assert!(author.is_some());
-        assert!(author.unwrap().contains("Ahmed"));
+        assert!(matches!(author.as_deref(), Some(value) if value.contains("Ahmed")));
     }
 
     #[test]

@@ -16,7 +16,10 @@ fn gauge_color(probability: f64, threshold_high: f64, threshold_medium: f64) -> 
 
 fn polar_to_cartesian(angle_deg: f64, radius: f64) -> (f64, f64) {
     let radians = angle_deg.to_radians();
-    (100.0 + radius * radians.cos(), 100.0 - radius * radians.sin())
+    (
+        100.0 + radius * radians.cos(),
+        100.0 - radius * radians.sin(),
+    )
 }
 
 fn arc_path(probability: f64) -> String {

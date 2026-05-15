@@ -1,12 +1,19 @@
 use leptos::*;
 use leptos_router::use_params_map;
 
-use crate::{api, components::{cards::{PageHeader, SurfaceCard}, charts::source_entropy_gauge::SourceEntropyGauge}};
+use crate::{
+    api,
+    components::{
+        cards::{PageHeader, SurfaceCard},
+        charts::source_entropy_gauge::SourceEntropyGauge,
+    },
+};
 
 #[component]
 pub fn CompanyDetailPage() -> impl IntoView {
     let params = use_params_map();
-    let company_id = move || params.with(|params| params.get("company_id").cloned().unwrap_or_default());
+    let company_id =
+        move || params.with(|params| params.get("company_id").cloned().unwrap_or_default());
 
     let detail = create_resource(company_id, |company_id| async move {
         if company_id.is_empty() {
@@ -26,7 +33,7 @@ pub fn CompanyDetailPage() -> impl IntoView {
                         let source_entropy = company.source_entropy;
                         let source_quality_label = company.source_quality_label.clone();
                         let community_signals_view = if community_badges.is_empty() {
-                            view! { <></> }.into_view()
+                            ().into_view()
                         } else {
                             view! {
                                 <div class="timeline-item">
@@ -46,7 +53,7 @@ pub fn CompanyDetailPage() -> impl IntoView {
                             }
                             .into_view()
                         } else {
-                            view! { <></> }.into_view()
+                            ().into_view()
                         };
                         let source_quality_view = if let Some(source_quality_label) = source_quality_label {
                             view! {
@@ -54,7 +61,7 @@ pub fn CompanyDetailPage() -> impl IntoView {
                             }
                             .into_view()
                         } else {
-                            view! { <></> }.into_view()
+                            ().into_view()
                         };
                         view! {
                         <div class="two-up">
@@ -83,7 +90,7 @@ pub fn CompanyDetailPage() -> impl IntoView {
                         </div>
                     }.into_view()
                     },
-                    Err(message) => view! { <SurfaceCard title="Company" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                    Err(message) => view! { <SurfaceCard title="Company" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                 })}
             </Suspense>
         </div>

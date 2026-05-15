@@ -136,10 +136,7 @@ pub fn replay_observations_sql(request: &ReplayRequest) -> (String, usize) {
         }
     }
 
-    sql.push_str(&format!(
-        " ORDER BY observed_at ASC LIMIT ${}",
-        param_idx
-    ));
+    sql.push_str(&format!(" ORDER BY observed_at ASC LIMIT ${}", param_idx));
     let total_params = param_idx;
 
     (sql, total_params)

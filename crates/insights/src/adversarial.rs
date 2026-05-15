@@ -59,7 +59,10 @@ pub fn detect_coordinated_placement(
     let mut grouped = HashMap::<String, Vec<&AdversarialSignal>>::new();
 
     for signal in signals {
-        grouped.entry(signal.entity_id.clone()).or_default().push(signal);
+        grouped
+            .entry(signal.entity_id.clone())
+            .or_default()
+            .push(signal);
     }
 
     for (entity_id, mut entity_signals) in grouped {
@@ -100,7 +103,9 @@ pub fn detect_coordinated_placement(
     alerts
 }
 
-pub fn assess_information_origin(signals: &[AdversarialSignal]) -> Option<InformationOriginAssessment> {
+pub fn assess_information_origin(
+    signals: &[AdversarialSignal],
+) -> Option<InformationOriginAssessment> {
     let mut ordered = signals.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|signal| signal.observed_at);
     let first = ordered.first()?;
@@ -109,7 +114,9 @@ pub fn assess_information_origin(signals: &[AdversarialSignal]) -> Option<Inform
         .find(|signal| signal.source_type.eq_ignore_ascii_case("official"))
         .map(|signal| signal.observed_at);
     let requires_corroboration = first.source_type.eq_ignore_ascii_case("social")
-        && first_official_seen_at.map(|official| official > first.observed_at).unwrap_or(true);
+        && first_official_seen_at
+            .map(|official| official > first.observed_at)
+            .unwrap_or(true);
 
     Some(InformationOriginAssessment {
         origin: first.source_type.to_ascii_lowercase(),
@@ -161,8 +168,8 @@ pub fn consensus_required_for_escalation(
         .map(|source_id| source_id.as_str())
         .collect::<HashSet<_>>()
         .len();
-    let requires_consensus = prior_level.eq_ignore_ascii_case("low")
-        && proposed_level.eq_ignore_ascii_case("high");
+    let requires_consensus =
+        prior_level.eq_ignore_ascii_case("low") && proposed_level.eq_ignore_ascii_case("high");
     let allowed = !requires_consensus || corroborating_source_count >= 2;
 
     EscalationConsensusDecision {
@@ -198,6 +205,14 @@ fn tokenize(text: &str) -> HashSet<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+        clippy::needless_borrows_for_generic_args,
+        clippy::cloned_ref_to_slice_refs
+    )]
+
     use super::*;
 
     fn signal(
@@ -221,10 +236,34 @@ mod tests {
     fn coordinated_placement_detection() {
         let now = Utc::now();
         let signals = vec![
-            signal("s1", "source-a", "news", now, "Factory outage disrupts output and supplier allocations"),
-            signal("s2", "source-b", "news", now + Duration::minutes(40), "Factory outage disrupts output and supplier allocation plans"),
-            signal("s3", "source-c", "news", now + Duration::minutes(80), "Factory outage disrupts output and supplier allocation planning"),
-            signal("s4", "source-d", "news", now + Duration::minutes(110), "Factory outage disrupts output and supplier allocation routes"),
+            signal(
+                "s1",
+                "source-a",
+                "news",
+                now,
+                "Factory outage disrupts output and supplier allocations",
+            ),
+            signal(
+                "s2",
+                "source-b",
+                "news",
+                now + Duration::minutes(40),
+                "Factory outage disrupts output and supplier allocation plans",
+            ),
+            signal(
+                "s3",
+                "source-c",
+                "news",
+                now + Duration::minutes(80),
+                "Factory outage disrupts output and supplier allocation planning",
+            ),
+            signal(
+                "s4",
+                "source-d",
+                "news",
+                now + Duration::minutes(110),
+                "Factory outage disrupts output and supplier allocation routes",
+            ),
         ];
 
         let alerts = detect_coordinated_placement(&signals, 6, 4, 0.6);
@@ -237,7 +276,13 @@ mod tests {
         let now = Utc::now();
         let signals = vec![
             signal("s1", "social-a", "social", now, "Rumor of a contract award"),
-            signal("s2", "official-a", "official", now + Duration::hours(8), "Official contract notice"),
+            signal(
+                "s2",
+                "official-a",
+                "official",
+                now + Duration::hours(8),
+                "Official contract notice",
+            ),
         ];
         let assessment = assess_information_origin(&signals).unwrap();
         assert_eq!(assessment.origin, "social");
@@ -247,7 +292,13 @@ mod tests {
     #[test]
     fn counterfactual_check_flags_contradictions() {
         let now = Utc::now();
-        let support = vec![signal("s1", "social-a", "social", now, "Rumor of a contract award")];
+        let support = vec![signal(
+            "s1",
+            "social-a",
+            "social",
+            now,
+            "Rumor of a contract award",
+        )];
         let contradictions = vec![signal(
             "s2",
             "official-a",
@@ -272,11 +323,7 @@ mod tests {
 
     #[test]
     fn low_to_high_escalation_requires_two_sources() {
-        let blocked = consensus_required_for_escalation(
-            "low",
-            "high",
-            &["source-a".to_string()],
-        );
+        let blocked = consensus_required_for_escalation("low", "high", &["source-a".to_string()]);
         assert!(blocked.requires_consensus);
         assert!(!blocked.allowed);
 

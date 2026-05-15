@@ -18,6 +18,63 @@ fn normalize_percent(value: f64) -> f64 {
     normalized.clamp(0.0, 100.0).round()
 }
 
+fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
+    let lower = title.to_lowercase();
+    let role_family_lower = role_family.to_lowercase();
+    if lower.contains("ceo")
+        || lower.contains("coo")
+        || lower.contains("cfo")
+        || lower == "cto"
+        || lower.starts_with("cto ")
+        || lower.contains(" cto")
+        || lower.contains("cpo")
+        || lower.contains("chief")
+        || lower.contains("president")
+        || lower.contains("general manager")
+        || lower.contains("managing director")
+    {
+        return "Decider";
+    }
+    if matches!(
+        role_family_lower.as_str(),
+        "supply chain" | "supply_chain" | "procurement" | "sourcing" | "purchasing"
+    ) || lower.contains("buyer")
+        || lower.contains("purchas")
+        || lower.contains("procurement")
+        || lower.contains("sourcing")
+        || lower.contains("supply chain")
+        || lower.contains("category manager")
+        || lower.contains("commodity")
+        || lower.contains("vendor management")
+        || lower.contains("approvisionnement")
+        || lower.contains("achat")
+    {
+        return "Buyer";
+    }
+    if matches!(
+        role_family_lower.as_str(),
+        "quality" | "regulatory" | "legal" | "compliance"
+    ) || lower.contains("compliance")
+        || lower.contains("quality")
+    {
+        return "Gatekeeper";
+    }
+    if matches!(role_family_lower.as_str(), "engineering" | "operations") {
+        return "User";
+    }
+    if lower.contains("vp")
+        || lower.contains("vice president")
+        || lower.contains("director")
+        || lower.contains("head of")
+    {
+        return "Influencer";
+    }
+    if role_family == "Strategy" || role_family == "Research" {
+        return "Initiator";
+    }
+    "Influencer"
+}
+
 fn normalize_ratio(value: f64) -> f64 {
     let normalized = if value <= 1.0 { value } else { value / 100.0 };
     normalized.clamp(0.0, 1.0)
@@ -93,12 +150,22 @@ fn derive_profile_priority_vector(
     let live_connectivity = 0.45 * (peer_count as f64 / 8.0).min(1.0)
         + 0.20 * (affiliation_count as f64 / 4.0).min(1.0)
         + 0.15 * (role_history_count as f64 / 6.0).min(1.0)
-        + 0.10 * if person.primary_org_id.is_some() { 1.0 } else { 0.0 }
-        + 0.10 * if person.public_email.as_ref().is_some_and(|value| !value.trim().is_empty()) {
-            1.0
-        } else {
-            0.0
-        };
+        + 0.10
+            * if person.primary_org_id.is_some() {
+                1.0
+            } else {
+                0.0
+            }
+        + 0.10
+            * if person
+                .public_email
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                1.0
+            } else {
+                0.0
+            };
     let connectivity_ratio = priority_metric(&person.priority_vector, "connectivity")
         .or(average_priority_metrics(
             &person.priority_vector,
@@ -127,7 +194,10 @@ fn derive_profile_priority_vector(
             }
         };
     let activity_ratio = priority_metric(&person.priority_vector, "activity")
-        .or(priority_metric(&person.priority_vector, "engagement_potential"))
+        .or(priority_metric(
+            &person.priority_vector,
+            "engagement_potential",
+        ))
         .unwrap_or(live_activity);
 
     let metadata_change_risk = person
@@ -157,9 +227,18 @@ fn derive_profile_priority_vector(
     )
     .unwrap_or(0.0);
     let baseline_risk = 0.45 * influence_ratio
-        + 0.35 * role_exposure_risk(person.role_family.as_deref(), person.current_role.as_deref())
+        + 0.35
+            * role_exposure_risk(
+                person.role_family.as_deref(),
+                person.current_role.as_deref(),
+            )
         + 0.10 * if artifact_count > 0 { 1.0 } else { 0.0 }
-        + 0.10 * if person.primary_org_id.is_some() { 1.0 } else { 0.0 };
+        + 0.10
+            * if person.primary_org_id.is_some() {
+                1.0
+            } else {
+                0.0
+            };
     let live_risk = 0.40 * (warning_count as f64 / 6.0).min(1.0)
         + 0.20 * (recent_change_count as f64 / 8.0).min(1.0)
         + 0.15 * metadata_change_risk
@@ -169,7 +248,10 @@ fn derive_profile_priority_vector(
         .unwrap_or((stored_risk * 0.25 + live_risk * 0.35 + baseline_risk * 0.40).clamp(0.0, 1.0));
 
     let overall_ratio = priority_metric(&person.priority_vector, "overall").unwrap_or(
-        (0.35 * influence_ratio + 0.20 * connectivity_ratio + 0.20 * activity_ratio + 0.25 * risk_ratio)
+        (0.35 * influence_ratio
+            + 0.20 * connectivity_ratio
+            + 0.20 * activity_ratio
+            + 0.25 * risk_ratio)
             .clamp(0.0, 1.0),
     );
 
@@ -286,6 +368,7 @@ pub struct PersonDetailPage {
     pub bio: String,
     pub region: String,
     pub priority_tier: String,
+    pub buying_center_role: String,
     pub priority_vector: PriorityVector,
     pub affiliations: Vec<PersonAffiliation>,
     pub role_history: Vec<PersonRoleHistory>,
@@ -752,10 +835,7 @@ pub async fn get_person(
         .map(|rows| rows.len())
         .unwrap_or(0);
 
-    let person_changes = store
-        .get_person_changes(uuid, 10)
-        .await
-        .unwrap_or_default();
+    let person_changes = store.get_person_changes(uuid, 10).await.unwrap_or_default();
     let recent_change_count = person_changes.len();
 
     let pv = derive_profile_priority_vector(
@@ -856,6 +936,11 @@ pub async fn get_person(
         bio,
         region: person.region.clone().unwrap_or_default(),
         priority_tier: tier.to_string(),
+        buying_center_role: classify_buying_center_role(
+            &person.current_role.clone().unwrap_or_default(),
+            &person.role_family.clone().unwrap_or_default(),
+        )
+        .to_string(),
         priority_vector: pv,
         affiliations,
         role_history,

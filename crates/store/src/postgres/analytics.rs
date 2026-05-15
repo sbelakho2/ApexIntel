@@ -94,10 +94,7 @@ impl PgStore {
         .await?)
     }
 
-    pub async fn resolve_stats_alert_calibration_events(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<u64> {
+    pub async fn resolve_stats_alert_calibration_events(&self, now: DateTime<Utc>) -> Result<u64> {
         let result = sqlx::query(
             r#"WITH outcome_match AS (
                    SELECT e.id,
@@ -146,8 +143,9 @@ impl PgStore {
     ) -> Result<Vec<ResolvedStatsAlertCalibrationSampleRecord>> {
         let limit = clamp_limit(limit);
         match since {
-            Some(since) => Ok(sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
-                r#"SELECT id, entity_id, feature_vector, alert_level,
+            Some(since) => Ok(
+                sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
+                    r#"SELECT id, entity_id, feature_vector, alert_level,
                           actual_outcome_within_30d, resolved_at, metadata
                    FROM stats_alert_calibration_events
                    WHERE actual_outcome_within_30d IS NOT NULL
@@ -155,23 +153,26 @@ impl PgStore {
                      AND resolved_at >= $1
                    ORDER BY resolved_at DESC, id DESC
                    LIMIT $2"#,
-            )
-            .bind(since)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?),
-            None => Ok(sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
-                r#"SELECT id, entity_id, feature_vector, alert_level,
+                )
+                .bind(since)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?,
+            ),
+            None => Ok(
+                sqlx::query_as::<_, ResolvedStatsAlertCalibrationSampleRecord>(
+                    r#"SELECT id, entity_id, feature_vector, alert_level,
                           actual_outcome_within_30d, resolved_at, metadata
                    FROM stats_alert_calibration_events
                    WHERE actual_outcome_within_30d IS NOT NULL
                      AND resolved_at IS NOT NULL
                    ORDER BY resolved_at DESC, id DESC
                    LIMIT $1"#,
-            )
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?),
+                )
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?,
+            ),
         }
     }
 
@@ -912,12 +913,13 @@ impl PgStore {
             .await
             .unwrap_or(0);
 
-        let warnings_generated: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND created_at >= $1")
-                .bind(since)
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or(0);
+        let warnings_generated: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND created_at >= $1",
+        )
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
 
         let insights_produced: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM insights WHERE created_at >= $1")
@@ -988,13 +990,15 @@ impl PgStore {
         let total_persons: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM persons")
             .fetch_one(&self.pool)
             .await?;
-        let total_warnings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL")
-            .fetch_one(&self.pool)
-            .await?;
-        let unacknowledged_warnings: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND acknowledged = false")
+        let total_warnings: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL")
                 .fetch_one(&self.pool)
                 .await?;
+        let unacknowledged_warnings: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM warnings WHERE deleted_at IS NULL AND acknowledged = false",
+        )
+        .fetch_one(&self.pool)
+        .await?;
         let total_insights: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM insights")
             .fetch_one(&self.pool)
             .await?;
@@ -1083,6 +1087,74 @@ impl PgStore {
             threat_distribution,
             recent_activity,
         })
+    }
+
+    /// Materialize pattern candidates from recent observations.
+    ///
+    /// Finds entity+observation_type pairs that appear 3+ times in the window,
+    /// inserts them as candidates, and marks high-confidence ones as passed.
+    pub async fn materialize_pattern_candidates(&self, since: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            r#"INSERT INTO pattern_candidates (recipe_code, entity_type, pattern_label, passed_gates, confidence, created_at)
+               SELECT
+                   'auto_' || o.observation_type,
+                   o.observation_type,
+                   o.observation_type || ':' || COALESCE(o.entity_id::text, 'global'),
+                   CASE WHEN COUNT(*) >= 5 THEN true ELSE false END,
+                   LEAST(1.0, COUNT(*)::double precision / 10.0),
+                   now()
+               FROM observations o
+               WHERE o.ts_utc >= $1
+               GROUP BY o.observation_type, o.entity_id
+               HAVING COUNT(*) >= 3
+               ON CONFLICT DO NOTHING"#,
+        )
+        .bind(since)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Materialize feature rows from entity observation signals.
+    ///
+    /// Computes signal counts and drift scores per entity for drift detection.
+    pub async fn materialize_feature_rows(&self) -> Result<u64> {
+        let now_bucket = Utc::now().timestamp() / 86400;
+        let result = sqlx::query(
+            r#"INSERT INTO feature_rows (entity_id, entity_type, time_bucket, bucket_size_days, data, created_at)
+               SELECT
+                   COALESCE(o.entity_id::text, 'global'),
+                   o.observation_type,
+                   $1::bigint,
+                   1,
+                   jsonb_build_object(
+                       'signal_count', COUNT(*),
+                       'drift_score', CASE
+                           WHEN prev.prev_count IS NULL OR prev.prev_count = 0 THEN 0.0
+                           ELSE ABS(COUNT(*)::double precision - prev.prev_count) / GREATEST(prev.prev_count, 1.0)
+                       END
+                   ),
+                   now()
+               FROM observations o
+               LEFT JOIN LATERAL (
+                   SELECT COUNT(*)::double precision AS prev_count
+                   FROM observations o2
+                   WHERE o2.entity_id = o.entity_id
+                     AND o2.observation_type = o.observation_type
+                     AND o2.ts_utc >= now() - INTERVAL '48 hours'
+                     AND o2.ts_utc < now() - INTERVAL '24 hours'
+               ) prev ON true
+               WHERE o.ts_utc >= now() - INTERVAL '24 hours'
+               GROUP BY o.entity_id, o.observation_type, prev.prev_count
+               ON CONFLICT (entity_id, entity_type, time_bucket, bucket_size_days)
+               DO UPDATE SET
+                   data = EXCLUDED.data,
+                   created_at = EXCLUDED.created_at"#,
+        )
+        .bind(now_bucket)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 

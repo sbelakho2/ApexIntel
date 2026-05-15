@@ -156,9 +156,8 @@ fn time_range(outcomes: &[EventRecord], signals: &[EventRecord]) -> Option<(i64,
     if all_ts.is_empty() {
         return None;
     }
-    // Safety: `all_ts` is guaranteed non-empty by the check above.
-    let min = *all_ts.iter().min().expect("checked non-empty above");
-    let max = *all_ts.iter().max().expect("checked non-empty above");
+    let min = all_ts.iter().copied().min()?;
+    let max = all_ts.iter().copied().max()?;
     if max <= min {
         return None;
     }
@@ -451,6 +450,8 @@ pub fn single_fold_evaluate(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     /// Helper: build events where entity at day_offset * 86400.

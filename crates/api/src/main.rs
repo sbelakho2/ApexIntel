@@ -23,8 +23,8 @@ use apex_api::responses::{
 };
 use apex_api::routes;
 use apex_api::routes::companies::{
-    validate_company_id, CompanyDetail, CompanyKeyPerson, CompanyListItem,
-    CompanySite, CompanySortField, ListCompaniesQuery,
+    validate_company_id, CompanyDetail, CompanyKeyPerson, CompanyListItem, CompanySite,
+    CompanySortField, ListCompaniesQuery,
 };
 use apex_api::routes::graph::{EdgeTypeCount, GraphEdge, GraphNodeLabel, GraphOverviewWithEdges};
 use apex_api::routes::insights::{InsightResponse, ListInsightsQuery};
@@ -46,8 +46,7 @@ use apex_api::routes::search::{
     SearchHit, SearchQuery, SearchResponse,
 };
 use apex_api::routes::security::{
-    dns_score, DnsPostureItem, DnsPostureOverview, KevItem, LookalikeDomainItem,
-    SecuritySummary,
+    dns_score, DnsPostureItem, DnsPostureOverview, KevItem, LookalikeDomainItem, SecuritySummary,
 };
 use apex_api::routes::warnings::{
     validate_acknowledge, validate_warning_id, AcknowledgeRequest, ListWarningsQuery,
@@ -60,8 +59,8 @@ use apex_store::postgres::{
     CertificationRow, CompanyChangeRow, CompanyListFilters, CompanyRow, DashboardStats,
     DossierEntryRow, EdgeRow, InsightListFilters, InsightRow, LogisticsNodeRow, ObservationRow,
     PersonChangeRow, PersonListFilters, PersonListRow, PersonOrderBy, PersonRow, PgStore,
-    ProductFamilyRow, RecipeStatRow, RegulationRow, RoleHistoryRow, SiteRow,
-    WarningListFilters, WarningOrderBy, WarningRow, WeeklyMemo,
+    ProductFamilyRow, RecipeStatRow, RegulationRow, RoleHistoryRow, SiteRow, WarningListFilters,
+    WarningOrderBy, WarningRow, WeeklyMemo,
 };
 use apex_store::tantivy_index::SearchIndex;
 use axum::{
@@ -120,11 +119,11 @@ mod security_handlers;
 #[path = "api_handlers/warnings.rs"]
 mod warnings_handlers;
 
-pub(crate) use mappings::*;
-pub(crate) use chrono::TimeZone;
 pub(crate) use apex_store::postgres::{
     CompanyDossier, CompetitorChange, PersonDossier, PersonEngagement,
 };
+pub(crate) use chrono::TimeZone;
+pub(crate) use mappings::*;
 
 static STARTED_AT: OnceLock<DateTime<Utc>> = OnceLock::new();
 const MAX_JSON_DEPTH: usize = 32;
@@ -256,7 +255,7 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
     let mut registry = HashMap::new();
     let mut skipped_count = 0;
     let mut loaded_count = 0;
-    
+
     for index in 1..=50 {
         let env_key = format!("API_KEY_{}", index);
         let Ok(value) = std::env::var(&env_key) else {
@@ -265,7 +264,7 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
         let parts: Vec<&str> = value.splitn(4, ',').collect();
         if parts.len() < 3 {
             tracing::warn!(
-                env_key = %env_key, 
+                env_key = %env_key,
                 parts_count = parts.len(),
                 expected_format = "raw_key,name,role[,owner_user_id]",
                 "invalid api key format - skipping this key"
@@ -278,7 +277,7 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
         let role_str = parts[2].trim();
         let role = role_str.parse::<ApiRole>().unwrap_or_else(|_| {
             tracing::warn!(
-                env_key = %env_key, 
+                env_key = %env_key,
                 invalid_role = %role_str,
                 "unknown role, defaulting to 'viewer'"
             );
@@ -291,7 +290,7 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string())
             .unwrap_or_else(|| format!("usr-{}", key_id));
-        
+
         tracing::debug!(
             env_key = %env_key,
             key_id = %key_id,
@@ -299,7 +298,7 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
             role = %role.as_str(),
             "loaded api key"
         );
-        
+
         registry.insert(
             key_id.clone(),
             ApiKey {
@@ -317,18 +316,18 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
         );
         loaded_count += 1;
     }
-    
+
     tracing::info!(
         loaded = loaded_count,
         skipped = skipped_count,
         total_configured = loaded_count + skipped_count,
         "api key loading complete"
     );
-    
+
     if loaded_count == 0 {
         tracing::warn!("no api keys were loaded - server will reject all authenticated requests");
     }
-    
+
     registry
 }
 
@@ -364,7 +363,10 @@ fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
     };
 
     let provider = infer_llm_provider(config, base_url);
-    let api_key = config.app.llm_api_key_value().map(|value| value.to_string());
+    let api_key = config
+        .app
+        .llm_api_key_value()
+        .map(apex_llm::ApiKeySecret::from);
 
     let primary = ModelConfig {
         model_name: config.llm_model_name().to_string(),
@@ -386,7 +388,10 @@ fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
         timeout_seconds: config.llm.lightweight_timeout_secs,
     };
 
-    Ok(Some(LlmRuntime { primary, lightweight }))
+    Ok(Some(LlmRuntime {
+        primary,
+        lightweight,
+    }))
 }
 
 async fn require_auth(
@@ -397,15 +402,11 @@ async fn require_auth(
     let now = Utc::now();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    let authenticated = match authenticate_api_request(
-        request.headers(),
-        &method,
-        state.api_keys.as_ref(),
-        now,
-    ) {
-        Ok(authenticated) => authenticated,
-        Err(error) => return auth_error_response(error),
-    };
+    let authenticated =
+        match authenticate_api_request(request.headers(), &method, state.api_keys.as_ref(), now) {
+            Ok(authenticated) => authenticated,
+            Err(error) => return auth_error_response(error),
+        };
 
     match enforce_rate_limit(
         state.redis.clone(),
@@ -466,7 +467,10 @@ async fn health() -> Json<HealthResponse> {
         ComponentHealth {
             name: "routes".to_string(),
             status: HealthStatus::Healthy,
-            message: Some(format!("{} endpoints registered", routes::all_endpoints().len())),
+            message: Some(format!(
+                "{} endpoints registered",
+                routes::all_endpoints().len()
+            )),
         },
     ];
 
@@ -525,10 +529,7 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
     let redis_check = match &state.redis {
         Some(manager) => {
             let mut conn = manager.clone();
-            match redis::cmd("PING")
-                .query_async::<String>(&mut conn)
-                .await
-            {
+            match redis::cmd("PING").query_async::<String>(&mut conn).await {
                 Ok(_) => ComponentHealth {
                     name: "redis".to_string(),
                     status: HealthStatus::Healthy,
@@ -663,7 +664,9 @@ async fn get_admin_crawl_status(
             tracing::error!(request_id = %request_id, "admin crawl status failed: {err:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to load crawl status"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to load crawl status",
+                ))),
             )
         }
     }
@@ -723,7 +726,9 @@ async fn get_admin_poi_coverage(
             tracing::error!(request_id = %request_id, "admin poi coverage failed: {err:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to load POI coverage"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to load POI coverage",
+                ))),
             )
         }
     }
@@ -748,8 +753,10 @@ async fn post_trigger_scan(
     let request_id = Uuid::new_v4().to_string();
     let valid_kinds = [
         "crawl_cycle",
+        "recipe_fire",
         "pattern_mining",
         "hypothesis_generation",
+        "poi_discovery",
         "poi_refresh",
         "promotion_board",
         "recipe_deprecation",
@@ -767,7 +774,8 @@ async fn post_trigger_scan(
         "self_improvement_cycle",
     ];
     if !valid_kinds.contains(&body.job_kind.as_str()) {
-        let api_err = ApiError::validation("job_kind", format!("Unknown job kind: {}", body.job_kind));
+        let api_err =
+            ApiError::validation("job_kind", format!("Unknown job kind: {}", body.job_kind));
         return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
     }
 
@@ -793,7 +801,9 @@ async fn post_trigger_scan(
             tracing::error!(request_id = %request_id, "queue_job_trigger failed: {err:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to queue job trigger"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to queue job trigger",
+                ))),
             )
         }
     }
@@ -809,6 +819,7 @@ struct WarningsWsAuthQuery {
 mod ws_auth_responses {
     pub const MISSING_AUTH: &str = "Missing authentication";
     pub const INVALID_TOKEN: &str = "Invalid or expired token";
+    pub const UPGRADE_REQUIRED: &str = "WebSocket upgrade required";
     pub const INTERNAL_ERROR: &str = "Internal server error";
 }
 
@@ -823,12 +834,64 @@ fn ws_unauthorized_response(body: &'static str) -> axum::response::Response {
         })
 }
 
+fn ws_upgrade_required_response() -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(StatusCode::UPGRADE_REQUIRED)
+        .header(header::UPGRADE, "websocket")
+        .body(axum::body::Body::from(ws_auth_responses::UPGRADE_REQUIRED))
+        .unwrap_or_else(|_| {
+            axum::response::Response::new(axum::body::Body::from(ws_auth_responses::INTERNAL_ERROR))
+        })
+}
+
+/// Validate the Origin header against the configured CORS origin to prevent
+/// cross-origin WebSocket hijacking (CSWSH) attacks.
+fn validate_ws_origin(
+    headers: &axum::http::HeaderMap,
+    allowed_origin: &str,
+) -> Result<(), axum::http::StatusCode> {
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        // No Origin header present - allow for non-browser clients (e.g., curl, native apps)
+        // that may not send Origin. Browser-initiated WebSocket upgrades always send Origin.
+        return Ok(());
+    };
+
+    if origin == allowed_origin
+        || origin == "http://localhost:3000"
+        || origin == "http://localhost:8080"
+    {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        origin = %origin,
+        allowed = %allowed_origin,
+        "WebSocket connection rejected due to invalid Origin header"
+    );
+    Err(axum::http::StatusCode::FORBIDDEN)
+}
+
 async fn warnings_ws(
-    ws: axum::extract::ws::WebSocketUpgrade,
+    ws: Option<axum::extract::ws::WebSocketUpgrade>,
     State(state): State<AppState>,
     Query(query): Query<WarningsWsAuthQuery>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let Some(ws) = ws else {
+        return ws_upgrade_required_response();
+    };
+
+    // Validate Origin header to prevent cross-origin WebSocket hijacking
+    let allowed_origin = &state.config.server.cors_origin;
+    if let Err(status) = validate_ws_origin(&headers, allowed_origin) {
+        return axum::response::Response::builder()
+            .status(status)
+            .body(axum::body::Body::from("WebSocket origin not allowed"))
+            .unwrap_or_else(|_| {
+                axum::response::Response::new(axum::body::Body::from("Forbidden"))
+            });
+    }
+
     let token = match extract_websocket_token(
         &headers,
         query.access_token.as_deref(),
@@ -836,14 +899,14 @@ async fn warnings_ws(
     ) {
         Ok(token) => token,
         Err(error) => {
-            tracing::warn!(error = ?error, "WebSocket auth: missing or invalid token");
-            return ws_unauthorized_response(&ws_auth_responses::MISSING_AUTH);
+            tracing::debug!(error = ?error, "WebSocket auth: missing or invalid token");
+            return ws_unauthorized_response(ws_auth_responses::MISSING_AUTH);
         }
     };
 
     if let Err(error) = validate_websocket_token(&token, state.api_keys.as_ref(), Utc::now()) {
-        tracing::warn!(error = ?error, "WebSocket auth: token validation failed");
-        return ws_unauthorized_response(&ws_auth_responses::INVALID_TOKEN);
+        tracing::debug!(error = ?error, "WebSocket auth: token validation failed");
+        return ws_unauthorized_response(ws_auth_responses::INVALID_TOKEN);
     }
 
     ws.on_upgrade(move |socket| warnings_ws_stream(socket, state))
@@ -936,15 +999,16 @@ fn validate_pagination(
         return Err(ApiError::validation("page", "page must be >= 1"));
     }
     if per_page == 0 || per_page > 500 {
-        return Err(ApiError::validation("per_page", "per_page must be in 1..=500"));
+        return Err(ApiError::validation(
+            "per_page",
+            "per_page must be in 1..=500",
+        ));
     }
     Ok(pagination(Some(page), Some(per_page)))
 }
 
 fn clamp_page(page: u32, per_page: u32, total: u64) -> u32 {
-    let total_pages = total
-        .saturating_add(per_page as u64 - 1)
-        / per_page.max(1) as u64;
+    let total_pages = total.saturating_add(per_page as u64 - 1) / per_page.max(1) as u64;
     let total_pages = total_pages.max(1).min(u32::MAX as u64) as u32;
     page.clamp(1, total_pages)
 }
@@ -982,7 +1046,10 @@ fn parse_csv_strict(
             continue;
         }
         if trimmed.chars().count() > max_len {
-            return Err(ApiError::validation(field, format!("{} token too long", field)));
+            return Err(ApiError::validation(
+                field,
+                format!("{} token too long", field),
+            ));
         }
         if !trimmed
             .chars()
@@ -1151,16 +1218,21 @@ fn person_row_to_detail(
         .map(|topics| clamp_ratio(topics.len() as f64 / 5.0))
         .unwrap_or(0.0);
     let artifact_density = clamp_ratio(artifacts.len() as f64 / 8.0);
-    let decision_power = if role_family.eq_ignore_ascii_case("executive") {
-        0.9
-    } else if role_family.eq_ignore_ascii_case("technology")
-        || role_family.eq_ignore_ascii_case("operations")
-    {
-        0.7
-    } else {
-        0.5
+    let decision_power = match role_family.to_lowercase().as_str() {
+        "executive" => 0.9,
+        "technology" | "operations" | "engineering" => 0.7,
+        "procurement" | "sourcing" | "purchasing" | "supply chain" => 0.75,
+        "quality" | "compliance" => 0.65,
+        "finance" => 0.7,
+        "government" | "military" | "security" => 0.8,
+        "legal" | "regulatory" => 0.65,
+        _ => 0.5,
     };
-    let engagement_potential = if row.public_email.is_some() { 0.85 } else { 0.45 };
+    let engagement_potential = if row.public_email.is_some() {
+        0.85
+    } else {
+        0.45
+    };
     let priority_vector = PriorityVector {
         decision_power,
         domain_relevance: topic_density.max(artifact_density),
@@ -1216,8 +1288,11 @@ fn person_row_to_detail(
     };
 
     let engagement_readiness = clamp_ratio(
-        (if row.public_email.is_some() { 0.4 } else { 0.15 })
-            + (if !timeline.is_empty() { 0.25 } else { 0.0 })
+        (if row.public_email.is_some() {
+            0.4
+        } else {
+            0.15
+        }) + (if !timeline.is_empty() { 0.25 } else { 0.0 })
             + (priority_score * 0.35),
     );
 
@@ -1240,7 +1315,7 @@ fn person_row_to_detail(
     let linkedin = row
         .metadata
         .as_ref()
-        .and_then(|value| value.get("linkedin"))
+        .and_then(|value| value.get("linkedin_url").or_else(|| value.get("linkedin")))
         .and_then(|value| value.as_str())
         .map(|value| value.to_string());
     let engagement_status = row
@@ -1258,6 +1333,8 @@ fn person_row_to_detail(
     if let Some(value) = row.name_fr.clone().filter(|value| !value.is_empty()) {
         name_alt.push(value);
     }
+
+    let buying_center_role = classify_buying_center_role(&role, &role_family).to_string();
 
     PersonDetail {
         id: row.id.to_string(),
@@ -1287,11 +1364,12 @@ fn person_row_to_detail(
         risk_tolerance: row.risk_tolerance,
         change_appetite: row.change_appetite,
         communication_style: row.communication_style,
-        decision_mode: None,
-        preferred_proof_type: None,
-        pain_index: None,
-        change_risk: None,
-        role_drift_score: None,
+        decision_mode: row.decision_mode.clone(),
+        preferred_proof_type: row.preferred_proof_type.clone(),
+        pain_index: row.pain_index,
+        change_risk: row.change_risk,
+        role_drift_score: row.role_drift_score,
+        buying_center_role,
         affiliations,
         timeline,
         role_history: Vec::new(),
@@ -1301,6 +1379,64 @@ fn person_row_to_detail(
         created_at: row.created_at.unwrap_or_else(Utc::now),
         updated_at: row.updated_at.unwrap_or_else(Utc::now),
     }
+}
+
+/// Classify a person into a buying-center role based on title and role family.
+fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
+    let lower = title.to_lowercase();
+    let role_family_lower = role_family.to_lowercase();
+    if lower.contains("ceo")
+        || lower.contains("coo")
+        || lower.contains("cfo")
+        || lower == "cto"
+        || lower.starts_with("cto ")
+        || lower.contains(" cto")
+        || lower.contains("cpo")
+        || lower.contains("chief")
+        || lower.contains("president")
+        || lower.contains("general manager")
+        || lower.contains("managing director")
+    {
+        return "Decider";
+    }
+    if matches!(
+        role_family_lower.as_str(),
+        "supply chain" | "supply_chain" | "procurement" | "sourcing" | "purchasing"
+    ) || lower.contains("buyer")
+        || lower.contains("purchas")
+        || lower.contains("procurement")
+        || lower.contains("sourcing")
+        || lower.contains("supply chain")
+        || lower.contains("category manager")
+        || lower.contains("commodity")
+        || lower.contains("vendor management")
+        || lower.contains("approvisionnement")
+        || lower.contains("achat")
+    {
+        return "Buyer";
+    }
+    if matches!(
+        role_family_lower.as_str(),
+        "quality" | "regulatory" | "legal" | "compliance"
+    ) || lower.contains("compliance")
+        || lower.contains("quality")
+    {
+        return "Gatekeeper";
+    }
+    if matches!(role_family_lower.as_str(), "engineering" | "operations") {
+        return "User";
+    }
+    if lower.contains("vp")
+        || lower.contains("vice president")
+        || lower.contains("director")
+        || lower.contains("head of")
+    {
+        return "Influencer";
+    }
+    if role_family == "Strategy" || role_family == "Research" {
+        return "Initiator";
+    }
+    "Influencer"
 }
 
 fn edge_row_to_graph_edge(row: &EdgeRow) -> GraphEdge {
@@ -1384,7 +1520,10 @@ mod tests {
 
         assert_eq!(active_recipe.status, RecipeStatus::Production);
         assert_eq!(deprecated_recipe.status, RecipeStatus::Deprecated);
-        assert_eq!(parse_recipe_status("active"), Some(RecipeStatus::Production));
+        assert_eq!(
+            parse_recipe_status("active"),
+            Some(RecipeStatus::Production)
+        );
     }
 
     #[test]
@@ -1471,7 +1610,11 @@ fn parse_query_date(
     value: &Option<String>,
     end_of_day: bool,
 ) -> Result<Option<DateTime<Utc>>, String> {
-    let Some(raw) = value.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) else {
+    let Some(raw) = value
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(None);
     };
 

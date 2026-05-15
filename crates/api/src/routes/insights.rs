@@ -23,6 +23,13 @@ pub struct ListInsightsQuery {
     pub bookmarked: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InsightFeedbackRequest {
+    pub feedback_type: String,
+    pub notes: Option<String>,
+}
+
 // ────────────────────────────────────────────
 // Response types
 // ────────────────────────────────────────────
@@ -53,6 +60,8 @@ pub struct InsightResponse {
     pub updated_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bookmarked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_score: Option<f64>,
 }
 
 /// Weekly strategy memo response.
@@ -97,13 +106,51 @@ pub fn rank_insights(insights: &mut [InsightResponse]) {
             .partial_cmp(&score_a)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    diversify_ranked_insights(insights);
 }
 
 fn insight_score(insight: &InsightResponse, now: &DateTime<Utc>) -> f64 {
     let age_hours = (*now - insight.created_at).num_hours().max(1) as f64;
-    // Linear decay: insights <24h old get varying recency instead of all scoring 1.0
     let recency = 1.0 / (1.0 + age_hours / 24.0);
-    clamp_ratio(insight.confidence * recency)
+    let quality = insight.quality_score.unwrap_or(0.5);
+    clamp_ratio((0.60 * insight.confidence + 0.40 * quality) * (0.75 + 0.25 * recency))
+}
+
+fn diversify_ranked_insights(insights: &mut [InsightResponse]) {
+    if insights.len() < 3 {
+        return;
+    }
+
+    let mut diversified = Vec::with_capacity(insights.len());
+    let mut remaining: Vec<InsightResponse> = insights.to_vec();
+    let mut last_type: Option<String> = None;
+    let mut consecutive = 0usize;
+
+    while !remaining.is_empty() {
+        let selected_idx = remaining
+            .iter()
+            .position(|candidate| {
+                let candidate_type = candidate.insight_type.to_ascii_lowercase();
+                match last_type.as_deref() {
+                    Some(previous) if previous == candidate_type => consecutive < 2,
+                    _ => true,
+                }
+            })
+            .unwrap_or(0);
+
+        let selected = remaining.remove(selected_idx);
+        let selected_type = selected.insight_type.to_ascii_lowercase();
+        if last_type.as_deref() == Some(selected_type.as_str()) {
+            consecutive += 1;
+        } else {
+            last_type = Some(selected_type);
+            consecutive = 1;
+        }
+        diversified.push(selected);
+    }
+
+    insights.clone_from_slice(&diversified);
 }
 
 /// Group insights by region.
@@ -175,6 +222,7 @@ mod tests {
             created_at: ts,
             updated_at: ts,
             bookmarked: None,
+            quality_score: Some(0.5),
         }
     }
 
@@ -188,6 +236,99 @@ mod tests {
         rank_insights(&mut insights);
         // best score first (high confidence + recent)
         assert_eq!(insights[0].region, "MA");
+    }
+
+    #[test]
+    fn test_rank_insights_diversifies_after_two_of_same_type() {
+        let ts = Utc::now() - chrono::Duration::hours(1);
+        let mut insights = vec![
+            InsightResponse {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "A1".to_string(),
+                summary: "Test".to_string(),
+                insight_type: "arbitrage_cost_window".to_string(),
+                region: "CN".to_string(),
+                confidence: 0.99,
+                evidence_urls: vec![],
+                entity_ids: vec![],
+                tags: vec![],
+                information_gain_bits: None,
+                information_gain_sparkline: vec![],
+                diversity_score: None,
+                diversity_label: None,
+                causal_flag: None,
+                created_at: ts,
+                updated_at: ts,
+                bookmarked: None,
+                quality_score: Some(0.5),
+            },
+            InsightResponse {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "A2".to_string(),
+                summary: "Test".to_string(),
+                insight_type: "arbitrage_cost_window".to_string(),
+                region: "MA".to_string(),
+                confidence: 0.98,
+                evidence_urls: vec![],
+                entity_ids: vec![],
+                tags: vec![],
+                information_gain_bits: None,
+                information_gain_sparkline: vec![],
+                diversity_score: None,
+                diversity_label: None,
+                causal_flag: None,
+                created_at: ts,
+                updated_at: ts,
+                bookmarked: None,
+                quality_score: Some(0.5),
+            },
+            InsightResponse {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "A3".to_string(),
+                summary: "Test".to_string(),
+                insight_type: "arbitrage_cost_window".to_string(),
+                region: "TN".to_string(),
+                confidence: 0.97,
+                evidence_urls: vec![],
+                entity_ids: vec![],
+                tags: vec![],
+                information_gain_bits: None,
+                information_gain_sparkline: vec![],
+                diversity_score: None,
+                diversity_label: None,
+                causal_flag: None,
+                created_at: ts,
+                updated_at: ts,
+                bookmarked: None,
+                quality_score: Some(0.5),
+            },
+            InsightResponse {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "H1".to_string(),
+                summary: "Test".to_string(),
+                insight_type: "hypothesis_ach".to_string(),
+                region: "EU".to_string(),
+                confidence: 0.70,
+                evidence_urls: vec![],
+                entity_ids: vec![],
+                tags: vec![],
+                information_gain_bits: None,
+                information_gain_sparkline: vec![],
+                diversity_score: None,
+                diversity_label: None,
+                causal_flag: None,
+                created_at: ts,
+                updated_at: ts,
+                bookmarked: None,
+                quality_score: Some(0.5),
+            },
+        ];
+
+        rank_insights(&mut insights);
+
+        assert_eq!(insights[0].insight_type, "arbitrage_cost_window");
+        assert_eq!(insights[1].insight_type, "arbitrage_cost_window");
+        assert_eq!(insights[2].insight_type, "hypothesis_ach");
     }
 
     #[test]

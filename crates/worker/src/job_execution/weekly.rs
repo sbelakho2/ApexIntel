@@ -6,6 +6,7 @@ use crate::*;
 const WEEKLY_STAGE_TIMEOUT: Duration = Duration::from_secs(45);
 const WEEKLY_STAGE_ATTEMPTS: usize = 3;
 
+#[allow(clippy::disallowed_methods)]
 pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();

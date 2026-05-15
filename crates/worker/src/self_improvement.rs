@@ -196,6 +196,12 @@ impl SelfImprovementReport {
     }
 }
 
+impl Default for SelfImprovementReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ────────────────────────────────────────────
 // Stage processors
 // ────────────────────────────────────────────

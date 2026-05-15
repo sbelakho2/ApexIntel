@@ -269,17 +269,19 @@ async fn fetch_warning_page(
     per_page: u32,
     page: u32,
     request_id: &str,
-) -> Result<Vec<WarningRow>, (StatusCode, Json<ApiResponse<PagedResponse<WarningResponse>>>)> {
+) -> Result<
+    Vec<WarningRow>,
+    (
+        StatusCode,
+        Json<ApiResponse<PagedResponse<WarningResponse>>>,
+    ),
+> {
     let offset = ((page - 1) as i64).saturating_mul(per_page as i64);
     match tracing::info_span!("db.list_warnings", request_id = %request_id, page = page)
         .in_scope(|| {
-            state.store.list_warnings(
-                filters,
-                Some(order_by),
-                desc,
-                per_page as i64,
-                offset,
-            )
+            state
+                .store
+                .list_warnings(filters, Some(order_by), desc, per_page as i64, offset)
         })
         .await
     {

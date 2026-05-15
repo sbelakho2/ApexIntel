@@ -489,11 +489,10 @@ impl PgStore {
     /// matching keys so that alternative names and website references also
     /// resolve to the correct entity.
     pub async fn list_entity_name_index(&self) -> Result<Vec<(Uuid, String)>> {
-        let rows: Vec<(Uuid, String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT id, name, legal_name, domain FROM companies",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(Uuid, String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT id, name, legal_name, domain FROM companies")
+                .fetch_all(&self.pool)
+                .await?;
 
         let mut index: Vec<(Uuid, String)> = Vec::with_capacity(rows.len() * 2);
         for (id, name, legal_name, domain) in rows {

@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 pub mod analysis;
 pub mod bounded_queue;
 pub mod company_names;

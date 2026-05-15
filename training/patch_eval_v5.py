@@ -1,33 +1,53 @@
 #!/usr/bin/env python3
-"""Patch eval_harness.py for v5 evaluation:
+"""
+Patch eval_harness.py for v5 evaluation:
 1. Handle unclosed <think> tags (model thinks past token limit)
 2. Improve entity normalization (strip Inc/Ltd/Corp, etc.)
 3. Add fuzzy entity matching in f1_score
 4. Store output_text in failure reports for debugging
 5. Increase default max-new-tokens from 512 to 4096
 6. Add retry with 2x tokens on empty output after think-strip
+
+Threshold values are sourced from eval_thresholds.ThresholdConfig (--threshold-preset CLI arg).
 """
 
+import argparse
 import re
+
+from eval_thresholds import ThresholdConfig
 
 HARNESS = "/workspace/ApexIntel/training/eval_harness.py"
 
-with open(HARNESS, "r") as f:
-    code = f.read()
 
-original = code
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Patch eval_harness.py for v5 evaluation"
+    )
+    ThresholdConfig.add_argparse_arg(parser)
+    args = parser.parse_args()
+    thresholds = ThresholdConfig(args.threshold_preset)
 
-# ──────────────────────────────────────────────────────────
-# PATCH 1: Fix _strip_think_tags to handle UNCLOSED <think> blocks
-# When model uses all tokens thinking, output is "<think>...long reasoning..."
-# with no closing </think>, so re.sub(r"<think>.*?</think>") does nothing.
-# ──────────────────────────────────────────────────────────
-old_strip = '''def _strip_think_tags(text: str) -> str:
+    print("=" * 60)
+    print("  Patching eval_harness.py for v5")
+    print(f"  Threshold preset: {thresholds}")
+    print("=" * 60)
+
+    with open(HARNESS, "r") as f:
+        code = f.read()
+
+    original = code
+
+    # ──────────────────────────────────────────────────────────
+    # PATCH 1: Fix _strip_think_tags to handle UNCLOSED <think> blocks
+    # When model uses all tokens thinking, output is "<think>...long reasoning..."
+    # with no closing </think>, so re.sub(r"<think>.*?</think>") does nothing.
+    # ──────────────────────────────────────────────────────────
+    old_strip = '''def _strip_think_tags(text: str) -> str:
     """Strip <think>...</think> tags from Qwen3+ thinking mode output."""
     stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     return stripped.strip()'''
 
-new_strip = '''def _strip_think_tags(text: str) -> str:
+    new_strip = '''def _strip_think_tags(text: str) -> str:
     """Strip <think>...</think> tags from Qwen3+ thinking mode output.
 
     Also handles UNCLOSED <think> blocks where the model used all tokens
@@ -39,19 +59,19 @@ new_strip = '''def _strip_think_tags(text: str) -> str:
     stripped = re.sub(r"<think>.*$", "", stripped, flags=re.DOTALL)
     return stripped.strip()'''
 
-assert old_strip in code, "PATCH 1 FAILED: _strip_think_tags not found"
-code = code.replace(old_strip, new_strip)
-print("PATCH 1 applied: _strip_think_tags handles unclosed blocks")
+    assert old_strip in code, "PATCH 1 FAILED: _strip_think_tags not found"
+    code = code.replace(old_strip, new_strip)
+    print("PATCH 1 applied: _strip_think_tags handles unclosed blocks")
 
-# ──────────────────────────────────────────────────────────
-# PATCH 2: Improve normalize() — strip corporate suffixes
-# ──────────────────────────────────────────────────────────
-old_normalize = '''def normalize(s: str) -> str:
+    # ──────────────────────────────────────────────────────────
+    # PATCH 2: Improve normalize() — strip corporate suffixes
+    # ──────────────────────────────────────────────────────────
+    old_normalize = '''def normalize(s: str) -> str:
     s = s.lower().strip()
     s = re.sub(r"\\s+", " ", s)
     return s'''
 
-new_normalize = '''def normalize(s: str) -> str:
+    new_normalize = '''def normalize(s: str) -> str:
     """Normalize entity text: lowercase, strip whitespace, remove corporate suffixes."""
     s = s.lower().strip()
     s = re.sub(r"\\s+", " ", s)
@@ -60,15 +80,15 @@ new_normalize = '''def normalize(s: str) -> str:
     s = s.rstrip(" ,.")
     return s'''
 
-assert old_normalize in code, "PATCH 2 FAILED: normalize not found"
-code = code.replace(old_normalize, new_normalize)
-print("PATCH 2 applied: normalize() strips corporate suffixes")
+    assert old_normalize in code, "PATCH 2 FAILED: normalize not found"
+    code = code.replace(old_normalize, new_normalize)
+    print("PATCH 2 applied: normalize() strips corporate suffixes")
 
-# ──────────────────────────────────────────────────────────
-# PATCH 3: Fuzzy f1_score — partial string matching
-# If exact match fails, check if gold ⊂ pred or pred ⊂ gold
-# ──────────────────────────────────────────────────────────
-old_f1 = '''def f1_score(pred: List[str], gold: List[str]) -> Tuple[float, float, float]:
+    # ──────────────────────────────────────────────────────────
+    # PATCH 3: Fuzzy f1_score — partial string matching
+    # If exact match fails, check if gold ⊂ pred or pred ⊂ gold
+    # ──────────────────────────────────────────────────────────
+    old_f1 = '''def f1_score(pred: List[str], gold: List[str]) -> Tuple[float, float, float]:
     pred_set = set(pred)
     gold_set = set(gold)
     if not pred_set and not gold_set:
@@ -84,7 +104,7 @@ old_f1 = '''def f1_score(pred: List[str], gold: List[str]) -> Tuple[float, float
         f1 = 2 * precision * recall / (precision + recall)
     return precision, recall, f1'''
 
-new_f1 = '''def _fuzzy_match(a: str, b: str) -> bool:
+    new_f1 = '''def _fuzzy_match(a: str, b: str) -> bool:
     """Check if two entity strings are a fuzzy match.
 
     Returns True if:
@@ -139,30 +159,30 @@ def f1_score(pred: List[str], gold: List[str]) -> Tuple[float, float, float]:
         f1 = 2 * precision * recall / (precision + recall)
     return precision, recall, f1'''
 
-assert old_f1 in code, "PATCH 3 FAILED: f1_score not found"
-code = code.replace(old_f1, new_f1)
-print("PATCH 3 applied: f1_score with fuzzy entity matching")
+    assert old_f1 in code, "PATCH 3 FAILED: f1_score not found"
+    code = code.replace(old_f1, new_f1)
+    print("PATCH 3 applied: f1_score with fuzzy entity matching")
 
-# ──────────────────────────────────────────────────────────
-# PATCH 4: Increase default --max-new-tokens from 512 to 4096
-# ──────────────────────────────────────────────────────────
-old_tokens = '    parser.add_argument("--max-new-tokens", type=int, default=512)'
-new_tokens = '    parser.add_argument("--max-new-tokens", type=int, default=4096)'
-assert old_tokens in code, "PATCH 4 FAILED: max-new-tokens default not found"
-code = code.replace(old_tokens, new_tokens)
-print("PATCH 4 applied: default max-new-tokens 512 -> 4096")
+    # ──────────────────────────────────────────────────────────
+    # PATCH 4: Increase default --max-new-tokens from 512 to 4096
+    # ──────────────────────────────────────────────────────────
+    old_tokens = '    parser.add_argument("--max-new-tokens", type=int, default=512)'
+    new_tokens = '    parser.add_argument("--max-new-tokens", type=int, default=4096)'
+    assert old_tokens in code, "PATCH 4 FAILED: max-new-tokens default not found"
+    code = code.replace(old_tokens, new_tokens)
+    print("PATCH 4 applied: default max-new-tokens 512 -> 4096")
 
-# ──────────────────────────────────────────────────────────
-# PATCH 5: Store output_text in failure reports for debugging
-# ──────────────────────────────────────────────────────────
-old_failure_append = '''                results["failures"].append({
+    # ──────────────────────────────────────────────────────────
+    # PATCH 5: Store output_text in failure reports for debugging
+    # ──────────────────────────────────────────────────────────
+    old_failure_append = '''                results["failures"].append({
                     "id": item.get("id"),
                     "type": eval_type,
                     "file": path.name,
                     "metrics": {k: v for k, v in metrics.items() if isinstance(v, (int, float, bool, str))},
                 })'''
 
-new_failure_append = '''                results["failures"].append({
+    new_failure_append = '''                results["failures"].append({
                     "id": item.get("id"),
                     "type": eval_type,
                     "file": path.name,
@@ -170,17 +190,17 @@ new_failure_append = '''                results["failures"].append({
                     "output_preview": output_text[:500] if output_text else "(empty)",
                 })'''
 
-assert old_failure_append in code, "PATCH 5 FAILED: failure append not found"
-code = code.replace(old_failure_append, new_failure_append)
-print("PATCH 5 applied: store output_preview in failure reports")
+    assert old_failure_append in code, "PATCH 5 FAILED: failure append not found"
+    code = code.replace(old_failure_append, new_failure_append)
+    print("PATCH 5 applied: store output_preview in failure reports")
 
-# ──────────────────────────────────────────────────────────
-# PATCH 6: Add retry on empty output after think-strip
-# If the initial generation produces empty content (all tokens consumed by thinking),
-# retry once with 2x tokens.
-# ──────────────────────────────────────────────────────────
-# We patch the generate() function to detect empty-after-think-strip
-old_generate = '''def generate(model, tokenizer, system: str, user: str, max_new_tokens: int) -> str:
+    # ──────────────────────────────────────────────────────────
+    # PATCH 6: Add retry on empty output after think-strip
+    # If the initial generation produces empty content (all tokens consumed by thinking),
+    # retry once with 2x tokens.
+    # ──────────────────────────────────────────────────────────
+    # We patch the generate() function to detect empty-after-think-strip
+    old_generate = '''def generate(model, tokenizer, system: str, user: str, max_new_tokens: int) -> str:
     import gc
     import torch
     prompt = build_prompt(tokenizer, system, user)
@@ -207,7 +227,7 @@ old_generate = '''def generate(model, tokenizer, system: str, user: str, max_new
         torch.cuda.empty_cache()
     return decoded.strip()'''
 
-new_generate = '''def generate(model, tokenizer, system: str, user: str, max_new_tokens: int) -> str:
+    new_generate = '''def generate(model, tokenizer, system: str, user: str, max_new_tokens: int) -> str:
     import gc
     import torch
 
@@ -246,15 +266,15 @@ new_generate = '''def generate(model, tokenizer, system: str, user: str, max_new
 
     return decoded.strip()'''
 
-assert old_generate in code, "PATCH 6 FAILED: generate function not found"
-code = code.replace(old_generate, new_generate)
-print("PATCH 6 applied: retry with 2x tokens on empty-after-think-strip")
+    assert old_generate in code, "PATCH 6 FAILED: generate function not found"
+    code = code.replace(old_generate, new_generate)
+    print("PATCH 6 applied: retry with 2x tokens on empty-after-think-strip")
 
-# ──────────────────────────────────────────────────────────
-# PATCH 7: Also handle "industries" key in collect_entities
-# Some eval data may use "industries" which the model extracts
-# ──────────────────────────────────────────────────────────
-old_collect_end = '''    # locations
+    # ──────────────────────────────────────────────────────────
+    # PATCH 7: Also handle "industries" key in collect_entities
+    # Some eval data may use "industries" which the model extracts
+    # ──────────────────────────────────────────────────────────
+    old_collect_end = '''    # locations
     for entry in obj.get("locations", []) or []:
         if isinstance(entry, dict):
             for k in ("city", "country", "state", "prefecture"):
@@ -265,7 +285,7 @@ old_collect_end = '''    # locations
 
     return collected'''
 
-new_collect_end = '''    # locations
+    new_collect_end = '''    # locations
     for entry in obj.get("locations", []) or []:
         if isinstance(entry, dict):
             for k in ("city", "country", "state", "prefecture"):
@@ -283,16 +303,20 @@ new_collect_end = '''    # locations
 
     return collected'''
 
-assert old_collect_end in code, "PATCH 7 FAILED: collect_entities locations block not found"
-code = code.replace(old_collect_end, new_collect_end)
-print("PATCH 7 applied: collect_entities handles industries key")
+    assert old_collect_end in code, "PATCH 7 FAILED: collect_entities locations block not found"
+    code = code.replace(old_collect_end, new_collect_end)
+    print("PATCH 7 applied: collect_entities handles industries key")
 
-# ──────────────────────────────────────────────────────────
-# Write patched file
-# ──────────────────────────────────────────────────────────
-with open(HARNESS, "w") as f:
-    f.write(code)
+    # ──────────────────────────────────────────────────────────
+    # Write patched file
+    # ──────────────────────────────────────────────────────────
+    with open(HARNESS, "w") as f:
+        f.write(code)
 
-n_changes = sum(1 for a, b in zip(original.splitlines(), code.splitlines()) if a != b)
-print(f"\nAll patches applied. ~{n_changes} lines changed.")
-print(f"File: {HARNESS}")
+    n_changes = sum(1 for a, b in zip(original.splitlines(), code.splitlines()) if a != b)
+    print(f"\nAll patches applied. ~{n_changes} lines changed.")
+    print(f"File: {HARNESS}")
+
+
+if __name__ == "__main__":
+    main()

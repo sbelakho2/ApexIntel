@@ -7,10 +7,17 @@ using available data: company name, region, type, recipe code, signal counts, co
 
 import re
 import sys
+import os
 import psycopg2
 import psycopg2.extras
 
-DB_DSN = "host=127.0.0.1 port=5432 dbname=apexintel user=apexintel password=ApexIntel2026Secure"
+DB_DSN = os.getenv(
+    "DATABASE_URL",
+    os.getenv(
+        "APEX_DATABASE_URL",
+        "host=127.0.0.1 port=5432 dbname=apexintel user=apexintel",
+    ),
+)
 
 # ── Recipe-code to human-readable scenario description ─────────────────────
 RECIPE_DESCRIPTIONS = {

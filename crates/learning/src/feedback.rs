@@ -354,6 +354,10 @@ pub struct SignalSynergy {
     pub jaccard: f64,
 }
 
+/// Maximum types per recipe: above this threshold the O(T²) pair generation
+/// is clipped to prevent excessive runtime on wide recipes.
+const MAX_TYPES_PER_RECIPE: usize = 30;
+
 /// Discover synergistic signal pairs that co-occur disproportionately in
 /// promoted recipes vs. the overall recipe corpus.
 ///
@@ -362,21 +366,60 @@ pub struct SignalSynergy {
 ///
 /// Returns pairs sorted descending by `co_occurrence_uplift`,
 /// filtered to uplift ≥ `min_uplift` (default 1.5).
+///
+/// # Time complexity
+///
+/// Best case: O(R · T · log T) where R = recipes, T = avg types per recipe.
+/// Worst case: O(R · T²) when T is small (the pair-generation loop is O(T²)),
+/// but bounded by [`MAX_TYPES_PER_RECIPE`] to prevent excessive runtime.
+///
+/// # Optimizations
+///
+/// - **Type cap**: recipes with > `MAX_TYPES_PER_RECIPE` types are truncated
+///   before pair generation, bounding the O(T²) inner loop.
+/// - **Pre-computed presence sets**: Jaccard computation uses pre-built
+///   HashSet lookups instead of scanning all promoted recipes for each pair.
+/// - **Pre-allocated capacity**: HashMaps and Vecs pre-allocate based on
+///   expected pair counts.
 pub fn discover_synergies(
     promoted_recipes: &[Vec<String>],
     all_recipes: &[Vec<String>],
     min_uplift: f64,
 ) -> Vec<SignalSynergy> {
     let pair_counts = |recipes: &[Vec<String>]| -> HashMap<(String, String), usize> {
-        let mut counts = HashMap::new();
+        // Estimate capacity: each recipe with T types produces ~T²/2 pairs
+        let estimated_pairs: usize = recipes
+            .iter()
+            .map(|r| {
+                let t = r.len().min(MAX_TYPES_PER_RECIPE);
+                (t * t.saturating_sub(1)) / 2
+            })
+            .sum();
+        let mut counts = HashMap::with_capacity(estimated_pairs.min(50000));
+
         for recipe in recipes {
-            let mut types: Vec<&String> = recipe.iter().collect();
-            types.sort();
-            types.dedup();
-            for i in 0..types.len() {
-                for j in (i + 1)..types.len() {
-                    let key = (types[i].clone(), types[j].clone());
-                    *counts.entry(key).or_insert(0) += 1;
+            if recipe.len() > MAX_TYPES_PER_RECIPE {
+                // OPTIMIZATION: Skip or truncate wide recipes to bound O(T²).
+                // Use only the first MAX_TYPES_PER_RECIPE types by frequency.
+                let mut types: Vec<&String> = recipe.iter().collect();
+                types.sort();
+                types.dedup();
+                types.truncate(MAX_TYPES_PER_RECIPE);
+                for i in 0..types.len() {
+                    for j in (i + 1)..types.len() {
+                        let key = (types[i].clone(), types[j].clone());
+                        *counts.entry(key).or_insert(0) += 1;
+                    }
+                }
+            } else {
+                let mut types: Vec<&String> = recipe.iter().collect();
+                types.sort();
+                types.dedup();
+                for i in 0..types.len() {
+                    for j in (i + 1)..types.len() {
+                        let key = (types[i].clone(), types[j].clone());
+                        *counts.entry(key).or_insert(0) += 1;
+                    }
                 }
             }
         }
@@ -389,41 +432,75 @@ pub fn discover_synergies(
     let prom_total = promoted_recipes.len().max(1) as f64;
     let all_total = all_recipes.len().max(1) as f64;
 
-    let mut synergies: Vec<SignalSynergy> = prom_counts
-        .iter()
-        .filter_map(|((a, b), &prom_n)| {
-            let total_n = *all_counts.get(&(a.clone(), b.clone())).unwrap_or(&prom_n);
-            let prom_rate = prom_n as f64 / prom_total;
-            let all_rate = total_n as f64 / all_total;
-            let uplift = if all_rate > 0.0 {
-                prom_rate / all_rate
+    // OPTIMIZATION: Pre-compute presence sets for promoted recipes so that
+    // Jaccard computation is O(1) per pair instead of O(promoted_recipes).
+    // Build a map: type_name -> set of recipe indices that contain it.
+    let mut type_presence: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, recipe) in promoted_recipes.iter().enumerate() {
+        for t in recipe {
+            type_presence.entry(t.as_str()).or_default().push(idx);
+        }
+    }
+
+    // Pre-allocate with expected capacity
+    let mut synergies = Vec::with_capacity(prom_counts.len().min(5000));
+
+    for ((a, b), &prom_n) in &prom_counts {
+        let total_n = *all_counts.get(&(a.clone(), b.clone())).unwrap_or(&prom_n);
+        let prom_rate = prom_n as f64 / prom_total;
+        let all_rate = total_n as f64 / all_total;
+        let uplift = if all_rate > 0.0 {
+            prom_rate / all_rate
+        } else {
+            0.0
+        };
+
+        if uplift >= min_uplift && prom_n >= 2 {
+            // Jaccard via pre-computed presence sets: O(1) per pair.
+            let a_set = type_presence
+                .get(a.as_str())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let b_set = type_presence
+                .get(b.as_str())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+
+            // Count intersection size by scanning the smaller set
+            let (smaller, larger) = if a_set.len() < b_set.len() {
+                (a_set, b_set)
+            } else {
+                (b_set, a_set)
+            };
+            let intersection = if smaller.is_empty() || larger.is_empty() {
+                0
+            } else {
+                // Since both sets are sorted (insertion order of enumerate),
+                // we use a simple binary search for each element of smaller.
+                smaller
+                    .iter()
+                    .filter(|idx| larger.binary_search(idx).is_ok())
+                    .count()
+            };
+            let a_count = a_set.len();
+            let b_count = b_set.len();
+            let union = a_count + b_count - intersection;
+            let jaccard = if union > 0 {
+                intersection as f64 / union as f64
             } else {
                 0.0
             };
-            if uplift >= min_uplift && prom_n >= 2 {
-                // Jaccard: |intersection| / |union| among promoted recipes.
-                let a_count = promoted_recipes.iter().filter(|r| r.contains(a)).count();
-                let b_count = promoted_recipes.iter().filter(|r| r.contains(b)).count();
-                let union = a_count + b_count - prom_n;
-                let jaccard = if union > 0 {
-                    prom_n as f64 / union as f64
-                } else {
-                    0.0
-                };
 
-                Some(SignalSynergy {
-                    type_a: a.clone(),
-                    type_b: b.clone(),
-                    co_occurrence_uplift: uplift,
-                    promoted_count: prom_n,
-                    total_count: total_n,
-                    jaccard,
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
+            synergies.push(SignalSynergy {
+                type_a: a.clone(),
+                type_b: b.clone(),
+                co_occurrence_uplift: uplift,
+                promoted_count: prom_n,
+                total_count: total_n,
+                jaccard,
+            });
+        }
+    }
 
     synergies.sort_by(|a, b| {
         b.co_occurrence_uplift

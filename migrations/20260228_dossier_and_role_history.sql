@@ -11,7 +11,7 @@
 CREATE TABLE IF NOT EXISTS role_history (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     person_id   UUID NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
-    org_id      UUID REFERENCES companies(id),
+    org_id      UUID REFERENCES companies(id) ON DELETE SET NULL,
     org_name    TEXT NOT NULL,
     title       TEXT NOT NULL,
     role_family TEXT,
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS dossier_entries (
     source_urls   TEXT[],               -- evidence links
     confidence    FLOAT DEFAULT 0.7,
     verified      BOOLEAN DEFAULT FALSE,
-    supersedes_id UUID REFERENCES dossier_entries(id), -- previous version of this entry
+    supersedes_id UUID REFERENCES dossier_entries(id) ON DELETE SET NULL, -- previous version of this entry
     valid_from    TIMESTAMPTZ DEFAULT now(),
     valid_until   TIMESTAMPTZ,          -- NULL = still current
     author        TEXT DEFAULT 'system', -- 'system', 'crawl', 'llm', 'analyst'

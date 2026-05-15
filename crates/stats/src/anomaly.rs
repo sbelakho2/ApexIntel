@@ -1,9 +1,9 @@
-/// Anomaly detection using MAD z-score, EWMA control charts, and IQR fences.
-///
-/// All functions filter out `NaN` and `±∞` inputs before computing statistics,
-/// so callers need not pre-clean their data.  When too few finite observations
-/// remain (typically < 3–10 depending on the algorithm), an empty `Vec` is
-/// returned instead of panicking.
+//! Anomaly detection using MAD z-score, EWMA control charts, and IQR fences.
+//!
+//! All functions filter out `NaN` and `±∞` inputs before computing statistics,
+//! so callers need not pre-clean their data. When too few finite observations
+//! remain (typically < 3–10 depending on the algorithm), an empty `Vec` is
+//! returned instead of panicking.
 
 /// Detect anomalies using Median Absolute Deviation (MAD) z-scores.
 ///
@@ -65,10 +65,10 @@ pub fn mad_zscore(data: &[f64], threshold: f64) -> Vec<(usize, f64)> {
 /// Returns `Vec<(index, deviation_in_sigmas)>` for out-of-control points.
 pub fn ewma_control(data: &[f64], alpha: f64, sigma_mult: f64) -> Vec<(usize, f64)> {
     // B251: validate parameter ranges before any computation.
-    if !(alpha > 0.0 && alpha <= 1.0) {
+    if !alpha.is_finite() || alpha <= 0.0 || alpha > 1.0 {
         return vec![];
     }
-    if !(sigma_mult > 0.0) {
+    if !sigma_mult.is_finite() || sigma_mult <= 0.0 {
         return vec![];
     }
     let clean: Vec<(usize, f64)> = data
@@ -160,7 +160,7 @@ fn median_of_sorted(sorted: &[f64]) -> f64 {
     if n == 0 {
         return 0.0;
     }
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     } else {
         sorted[n / 2]

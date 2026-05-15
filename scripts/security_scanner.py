@@ -30,7 +30,10 @@ import asyncpg
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://apexintel:ApexIntel2026Secure@127.0.0.1:5432/apexintel",
+    os.getenv(
+        "APEX_DATABASE_URL",
+        "postgresql://apexintel@127.0.0.1:5432/apexintel?sslmode=require",
+    ),
 )
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

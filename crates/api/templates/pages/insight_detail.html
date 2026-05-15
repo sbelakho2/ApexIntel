@@ -58,8 +58,16 @@
       <div><span class="font-black uppercase text-muted-foreground">Created</span><br>{{ created_at }}{% if !age_label.is_empty() %} <span class="text-muted-foreground">({{ age_label }})</span>{% endif %}</div>
       <div><span class="font-black uppercase text-muted-foreground">Evidence</span><br>{{ evidence_count }} source{% if evidence_count != 1 %}s{% endif %}{% if !source_diversity.is_empty() && source_diversity != "None" %} · {{ source_diversity }} diversity{% endif %}</div>
       <div><span class="font-black uppercase text-muted-foreground">Updated</span><br>{% if !updated_at.is_empty() %}{{ updated_at }}{% else %}—{% endif %}</div>
+    </div>    {% if information_gain_bits.is_some() || quality_score_pct.is_some() %}
+    <div class="mt-3 flex flex-wrap gap-3 text-[10px]">
+      {% if let Some(ig) = information_gain_bits %}
+      <span class="rounded-sm border border-border bg-secondary/30 px-2 py-0.5 font-bold tabular-nums" title="Information gain measures how much this insight narrows your uncertainty">IG {{ ig }} bits</span>
+      {% endif %}
+      {% if let Some(qs) = quality_score_pct %}
+      <span class="rounded-sm border border-border bg-secondary/30 px-2 py-0.5 font-bold tabular-nums" title="Quality score based on analyst feedback (actioned/dismissed ratio)">Quality {{ qs }}%</span>
+      {% endif %}
     </div>
-    {% if !tags.is_empty() %}
+    {% endif %}    {% if !tags.is_empty() %}
     <div class="mt-3 flex flex-wrap gap-1">
       {% for tag in tags %}{% call m::tag_pill(tag) %}{% endfor %}
     </div>
@@ -120,6 +128,26 @@
         <p class="text-sm font-semibold"><a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="hover:underline">{{ e.snippet }} · {{ e.source }}</a></p>
         <p class="mt-1 break-words text-[10px] text-muted-foreground">{{ e.url }}</p>
         <p class="mt-1 text-[10px] text-muted-foreground">Relevance: {{ e.relevance }}%</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if !dissenting_opinions.is_empty() %}
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Dissenting Views</h2>
+    </div>
+    <div class="divide-y divide-border">
+      {% for d in dissenting_opinions %}
+      <div class="px-4 py-3">
+        <div class="flex items-center gap-2 text-[10px]">
+          <span class="rounded-sm bg-amber-500/10 px-1.5 py-0.5 font-bold uppercase text-amber-600">{{ d.severity }}</span>
+          <span class="text-muted-foreground">{{ d.category }}</span>
+          <span class="ml-auto tabular-nums text-muted-foreground">{{ d.confidence_pct }}% conf</span>
+        </div>
+        <p class="mt-1 text-sm leading-relaxed">{{ d.rationale }}</p>
       </div>
       {% endfor %}
     </div>

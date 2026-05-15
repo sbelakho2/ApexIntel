@@ -10,7 +10,7 @@ WORKDIR /build
 # Cache dependency compilation
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-RUN cargo build --release --bin apex-api 2>&1
+RUN cargo build --release --bin apex-api
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && \

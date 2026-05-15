@@ -9,7 +9,7 @@
 //! ```
 //! use apex_crawl::search_rotation::SearchPool;
 //! let pool = SearchPool::default();
-//! let engine = pool.next().unwrap();               // round-robin selection
+//! let Some(engine) = pool.next() else { return; }; // round-robin selection
 //! let url = engine.build_url("CBRN export controls Israel");
 //! println!("Fetching: {url}");
 //! ```
@@ -515,13 +515,10 @@ impl SearchPool {
     }
 
     fn engine_is_within_rpm(&self, engine: &SearchEngine) -> bool {
-        let mut windows = self
-            .rpm_windows
-            .lock()
-            .unwrap_or_else(|poisoned| {
-                tracing::error!("search pool rpm-window lock poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let mut windows = self.rpm_windows.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("search pool rpm-window lock poisoned, recovering");
+            poisoned.into_inner()
+        });
         let window = windows.entry(engine.id.clone()).or_default();
         let now = Instant::now();
         while window
@@ -535,13 +532,10 @@ impl SearchPool {
     }
 
     fn record_engine_selection(&self, engine: &SearchEngine) {
-        let mut windows = self
-            .rpm_windows
-            .lock()
-            .unwrap_or_else(|poisoned| {
-                tracing::error!("search pool rpm-window lock poisoned, recovering");
-                poisoned.into_inner()
-            });
+        let mut windows = self.rpm_windows.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("search pool rpm-window lock poisoned, recovering");
+            poisoned.into_inner()
+        });
         windows
             .entry(engine.id.clone())
             .or_default()
@@ -560,6 +554,7 @@ impl Default for SearchPool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -620,11 +615,20 @@ mod tests {
             Arc::new(CrawlGovernor::with_limits(100, 100)),
         );
         assert!(pool.enabled_len() > 0);
-        let e1 = pool.next().unwrap().id.clone();
+        let e1 = pool
+            .next()
+            .unwrap_or_else(|| panic!("fresh pool should yield an engine"))
+            .id
+            .clone();
         // After going through the full cycle, we should see diversity
         let mut seen = std::collections::HashSet::from([e1.clone()]);
         for _ in 1..pool.enabled_len() {
-            seen.insert(pool.next().unwrap().id.clone());
+            seen.insert(
+                pool.next()
+                    .unwrap_or_else(|| panic!("pool should yield an engine during a full cycle"))
+                    .id
+                    .clone(),
+            );
         }
         assert!(seen.len() > 1);
         let _ = e1;
@@ -671,7 +675,9 @@ mod tests {
         ];
         let rate_limits = Arc::new(Mutex::new(RateLimitManager::new()));
         {
-            let mut state = rate_limits.lock().unwrap();
+            let mut state = rate_limits
+                .lock()
+                .unwrap_or_else(|error| panic!("rate limit manager mutex poisoned: {error}"));
             for _ in 0..4 {
                 state.record_failure("blocked", false);
             }
@@ -683,7 +689,12 @@ mod tests {
             Arc::new(CrawlGovernor::with_limits(100, 100)),
         );
 
-        assert_eq!(pool.next_web().unwrap().id, "healthy");
+        assert_eq!(
+            pool.next_web()
+                .unwrap_or_else(|| panic!("healthy engine should be available"))
+                .id,
+            "healthy"
+        );
     }
 
     #[test]
@@ -700,7 +711,12 @@ mod tests {
             Arc::new(CrawlGovernor::with_limits(100, 100)),
         );
 
-        assert_eq!(pool.next_web().unwrap().id, "limited");
+        assert_eq!(
+            pool.next_web()
+                .unwrap_or_else(|| panic!("limited engine should be available once"))
+                .id,
+            "limited"
+        );
         assert!(pool.next_web().is_none());
     }
 
@@ -724,7 +740,7 @@ mod tests {
     #[test]
     fn search_pool_default_creation_does_not_panic() {
         let pool = SearchPool::default();
-        assert!(pool.len() > 0);
+        assert!(!pool.is_empty());
     }
 
     #[test]
@@ -732,7 +748,10 @@ mod tests {
         let pool = SearchPool::default();
         // First call should succeed for a fresh pool.
         let first = pool.next();
-        assert!(first.is_some(), "fresh pool should yield at least one engine");
+        assert!(
+            first.is_some(),
+            "fresh pool should yield at least one engine"
+        );
     }
 }
 

@@ -115,7 +115,7 @@ impl SharedDomainByteMetrics {
     pub fn record_bytes(&self, domain: &str, bytes: u64) {
         self.inner
             .lock()
-            .expect("DomainByteMetrics mutex poisoned")
+            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
             .record_bytes(domain, bytes);
     }
 
@@ -123,7 +123,7 @@ impl SharedDomainByteMetrics {
     pub fn get(&self, domain: &str) -> u64 {
         self.inner
             .lock()
-            .expect("DomainByteMetrics mutex poisoned")
+            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
             .get(domain)
     }
 
@@ -131,7 +131,7 @@ impl SharedDomainByteMetrics {
     pub fn top_domains(&self, limit: usize) -> Vec<(String, u64)> {
         self.inner
             .lock()
-            .expect("DomainByteMetrics mutex poisoned")
+            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
             .top_domains(limit)
     }
 
@@ -139,7 +139,7 @@ impl SharedDomainByteMetrics {
     pub fn total_bytes(&self) -> u64 {
         self.inner
             .lock()
-            .expect("DomainByteMetrics mutex poisoned")
+            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
             .total_bytes()
     }
 
@@ -147,7 +147,7 @@ impl SharedDomainByteMetrics {
     pub fn domain_count(&self) -> usize {
         self.inner
             .lock()
-            .expect("DomainByteMetrics mutex poisoned")
+            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
             .domain_count()
     }
 
@@ -158,7 +158,7 @@ impl SharedDomainByteMetrics {
     pub fn snapshot(&self) -> DomainByteMetrics {
         self.inner
             .lock()
-            .expect("DomainByteMetrics mutex poisoned")
+            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
             .clone()
     }
 }

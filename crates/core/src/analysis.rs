@@ -274,12 +274,14 @@ pub fn brier_score_per_category_week(
 
     grouped
         .into_iter()
-        .map(|((category, week_start), (sum, count))| CategoryWeekBrierScore {
-            category,
-            week_start,
-            sample_count: count,
-            brier_score: if count > 0 { sum / count as f64 } else { 0.0 },
-        })
+        .map(
+            |((category, week_start), (sum, count))| CategoryWeekBrierScore {
+                category,
+                week_start,
+                sample_count: count,
+                brier_score: if count > 0 { sum / count as f64 } else { 0.0 },
+            },
+        )
         .collect()
 }
 
@@ -298,16 +300,15 @@ pub fn calibrate_confidence(
     let evidence_quality = evidence_quality.unwrap_or(0.5).clamp(0.0, 1.0);
 
     let historical_component = 0.67 * posterior_precision + 0.33 * evidence_quality;
-    let calibrated_confidence =
-        ((1.0 - sample_weight) * base_confidence + sample_weight * historical_component)
-            .clamp(0.0, 1.0);
+    let calibrated_confidence = ((1.0 - sample_weight) * base_confidence
+        + sample_weight * historical_component)
+        .clamp(0.0, 1.0);
     let calibration_delta = calibrated_confidence - base_confidence;
     let confidence_interval_half_width = if sample_size == 0 {
         0.5
     } else {
         (1.96
-            * ((calibrated_confidence * (1.0 - calibrated_confidence)) / sample_size as f64)
-                .sqrt())
+            * ((calibrated_confidence * (1.0 - calibrated_confidence)) / sample_size as f64).sqrt())
         .clamp(0.0, 0.5)
     };
     let confidence_interval_low =

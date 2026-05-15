@@ -58,6 +58,9 @@
       <a href="/persons/{{ p.person_id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
         <span class="text-sm font-semibold">{{ p.name }}</span>
         <span class="ml-2 text-[11px] text-muted-foreground">{{ p.role }} since {{ p.since }}</span>
+        {% if !p.background_snippet.is_empty() %}
+        <p class="mt-0.5 text-[10px] text-muted-foreground line-clamp-1">{{ p.background_snippet }}</p>
+        {% endif %}
       </a>
       {% endfor %}
     </div>

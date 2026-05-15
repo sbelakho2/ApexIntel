@@ -15,6 +15,9 @@ Usage:
 
     # Compare base model vs Phase 1 vs Phase 2 (evaluates all three)
     python training/eval_harness.py --compare
+
+    # Choose threshold preset
+    python training/eval_harness.py --threshold-preset strict
 """
 import argparse
 import json
@@ -25,6 +28,9 @@ import time
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+# Shared threshold configuration
+from eval_thresholds import ThresholdConfig
 
 WORK = Path(__file__).resolve().parent.parent
 
@@ -313,7 +319,9 @@ def compute_bleu_like_score(prediction: str, reference: str) -> float:
     return brevity_penalty * math.exp(sum(math.log(max(p, 1e-9)) for p in precisions) / 4.0)
 
 
-def primary_metric(eval_type: str, metrics: Dict[str, Any], item: Dict[str, Any], output_text: str) -> Tuple[str | None, float | None]:
+def primary_metric(eval_type: str, metrics: Dict[str, Any], item: Dict[str, Any], output_text: str, *, thresholds: ThresholdConfig | None = None) -> Tuple[str | None, float | None]:
+    if thresholds is None:
+        thresholds = ThresholdConfig()
     if eval_type == "entity_extraction":
         return "f1", float(metrics.get("f1", 0.0))
     if eval_type == "memo_quality":
@@ -321,7 +329,7 @@ def primary_metric(eval_type: str, metrics: Dict[str, Any], item: Dict[str, Any]
     if eval_type in {"recipe_quality", "poi_synthesis", "competitive_analysis", "company_dossier", "warning_generation", "supply_chain_risk", "compliance"}:
         return "accuracy", 1.0 if metrics.get("json_valid") and metrics.get("schema_ok") else 0.0
     if eval_type in {"adversarial_tests", "adversarial", "regression_tests", "multilingual_golden", "recipe_hypothesis"}:
-        return "accuracy", 1.0 if metrics.get("passed", False) or metrics.get("f1", 0.0) >= 0.5 else 0.0
+        return "accuracy", 1.0 if metrics.get("passed", False) or metrics.get("f1", 0.0) >= thresholds.entity_threshold else 0.0
     if item.get("reference_text"):
         return "bleu", compute_bleu_like_score(output_text, str(item["reference_text"]))
     return None, None
@@ -533,7 +541,9 @@ def eval_schema_only(output_text: str, expected_schema: Dict[str, Any]) -> Dict[
     }
 
 
-def eval_adversarial(output_text: str, test: Dict[str, Any]) -> Dict[str, Any]:
+def eval_adversarial(output_text: str, test: Dict[str, Any], *, thresholds: ThresholdConfig | None = None) -> Dict[str, Any]:
+    if thresholds is None:
+        thresholds = ThresholdConfig()
     res = {"passed": True, "notes": []}
     lower = output_text.lower()
     for bad in test.get("must_not_contain", []) or []:
@@ -548,7 +558,7 @@ def eval_adversarial(output_text: str, test: Dict[str, Any]) -> Dict[str, Any]:
             res["notes"].append("not valid json")
     if test.get("expected_entities"):
         metrics = eval_entity_extraction(output_text, test["expected_entities"])
-        if metrics["f1"] < 0.5:
+        if metrics["f1"] < thresholds.adversarial_threshold:
             res["passed"] = False
             res["notes"].append(f"f1={metrics['f1']:.2f}")
     return res
@@ -571,8 +581,10 @@ def main() -> None:
     parser.add_argument("--adapter", default=str(WORK / "training" / "outputs" / "phase2_sft" / "best_adapter"))
     parser.add_argument("--eval-dir", default=str(WORK / "training_data" / "evaluation"))
     parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--max-examples", type=int, default=5,
-                        help="Limit examples per file (0 = all). Default 5 for fast eval.")
+    parser.add_argument("--max-examples", type=int, default=0,
+                        help="Limit examples per file (0 = all). Default 0 runs full evaluation.")
+    parser.add_argument("--smoke", action="store_true",
+                        help="Quick smoke test: limit to 5 examples per file (overrides --max-examples)")
     parser.add_argument("--out-report", default=str(WORK / "training" / "outputs" / "eval_report.json"))
     parser.add_argument("--dry-run", action="store_true",
                         help="Validate eval data without loading model or running inference")
@@ -581,7 +593,17 @@ def main() -> None:
     parser.add_argument("--phase1-adapter",
                         default=str(WORK / "training" / "outputs" / "phase1_dapt" / "best_adapter"),
                         help="Path to Phase 1 DAPT adapter (used in --compare mode)")
+    ThresholdConfig.add_argparse_arg(parser)
     args = parser.parse_args()
+
+    # Create threshold configuration from the chosen preset
+    thresholds = ThresholdConfig(args.threshold_preset)
+    print(f"  Threshold preset: {thresholds}")
+
+    # If --smoke is set, override max_examples to 5 for quick testing
+    if args.smoke:
+        args.max_examples = 5
+        print("  SMOKE MODE: limiting to 5 examples per file")
 
     eval_dir = Path(args.eval_dir)
     out_report = Path(args.out_report)
@@ -673,7 +695,7 @@ def main() -> None:
                 passed = metrics["json_valid"] and metrics["schema_ok"]
             elif eval_type == "entity_extraction":
                 metrics = eval_entity_extraction(output_text, item.get("ground_truth", item.get("expected_entities", {})))
-                passed = metrics["f1"] >= 0.5  # Relaxed from 0.7 — production uses tolerant parsing
+                passed = metrics["f1"] >= thresholds.entity_threshold
             elif eval_type in ("poi_synthesis", "competitive_analysis", "company_dossier"):
                 metrics = eval_schema_only(output_text, item.get("expected_schema", {}))
                 passed = metrics["json_valid"] and metrics["schema_ok"]
@@ -720,16 +742,16 @@ def main() -> None:
                 metrics["risk_level_ok"] = risk_ok
                 passed = metrics["json_valid"] and metrics["schema_ok"]
             elif eval_type in ("adversarial_tests", "adversarial"):
-                metrics = eval_adversarial(output_text, item)
+                metrics = eval_adversarial(output_text, item, thresholds=thresholds)
                 passed = metrics["passed"]
             elif eval_type in ("regression_tests", "multilingual_golden", "recipe_hypothesis"):
                 metrics = eval_entity_extraction(output_text, item.get("expected_entities", item.get("expected", {})))
-                passed = metrics["f1"] >= 0.5  # Relaxed from 0.7 — production uses tolerant parsing
+                passed = metrics["f1"] >= thresholds.entity_threshold
             else:
                 metrics = {"note": "no evaluator"}
                 passed = False  # Unknown eval types must not silently pass
 
-            metric_name, metric_score = primary_metric(eval_type, metrics, item, output_text)
+            metric_name, metric_score = primary_metric(eval_type, metrics, item, output_text, thresholds=thresholds)
             if metric_name is not None and metric_score is not None:
                 scored_examples.append({
                     "category": eval_type,

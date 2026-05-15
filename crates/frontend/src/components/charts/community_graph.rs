@@ -4,16 +4,28 @@ use apex_shared::{BridgeNode, CommunityCluster, GraphNodeLayout, TypedEdge};
 use leptos::*;
 
 const COMMUNITY_PALETTE: [&str; 10] = [
-    "var(--community-1)", "var(--community-2)", "var(--community-3)", "var(--community-4)",
-    "var(--community-5)", "var(--community-6)", "var(--community-7)", "var(--community-8)",
-    "var(--community-9)", "var(--community-10)",
+    "var(--community-1)",
+    "var(--community-2)",
+    "var(--community-3)",
+    "var(--community-4)",
+    "var(--community-5)",
+    "var(--community-6)",
+    "var(--community-7)",
+    "var(--community-8)",
+    "var(--community-9)",
+    "var(--community-10)",
 ];
 
 fn palette_map(communities: &[CommunityCluster]) -> HashMap<String, &'static str> {
     communities
         .iter()
         .enumerate()
-        .map(|(index, community)| (community.id.clone(), COMMUNITY_PALETTE[index % COMMUNITY_PALETTE.len()]))
+        .map(|(index, community)| {
+            (
+                community.id.clone(),
+                COMMUNITY_PALETTE[index % COMMUNITY_PALETTE.len()],
+            )
+        })
         .collect()
 }
 
@@ -64,12 +76,21 @@ pub fn CommunityGraph(
     bridges: Vec<BridgeNode>,
 ) -> impl IntoView {
     let colors = palette_map(&communities);
-    let index = nodes.iter().map(|node| (node.id.clone(), node.clone())).collect::<HashMap<_, _>>();
-    let adjacency = edges.iter().fold(HashMap::<String, Vec<String>>::new(), |mut map, edge| {
-        map.entry(edge.source.clone()).or_default().push(edge.target.clone());
-        map.entry(edge.target.clone()).or_default().push(edge.source.clone());
-        map
-    });
+    let index = nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.clone()))
+        .collect::<HashMap<_, _>>();
+    let adjacency = edges
+        .iter()
+        .fold(HashMap::<String, Vec<String>>::new(), |mut map, edge| {
+            map.entry(edge.source.clone())
+                .or_default()
+                .push(edge.target.clone());
+            map.entry(edge.target.clone())
+                .or_default()
+                .push(edge.source.clone());
+            map
+        });
     let community_index = communities
         .iter()
         .map(|community| (community.id.clone(), community.clone()))
@@ -83,7 +104,12 @@ pub fn CommunityGraph(
     let dragging = create_rw_signal(false);
     let drag_origin = create_rw_signal((0.0_f64, 0.0_f64));
     let pan_origin = create_rw_signal((0.0_f64, 0.0_f64));
-    let selected_node_id = create_rw_signal(nodes.first().map(|node| node.id.clone()).unwrap_or_default());
+    let selected_node_id = create_rw_signal(
+        nodes
+            .first()
+            .map(|node| node.id.clone())
+            .unwrap_or_default(),
+    );
     let hovered_node_id = create_rw_signal(None::<String>);
 
     let active_node_id = move || {
@@ -101,9 +127,7 @@ pub fn CommunityGraph(
         let state = viewport.get();
         format!(
             "translate({:.2} {:.2}) scale({:.3})",
-            state.offset_x,
-            state.offset_y,
-            state.scale
+            state.offset_x, state.offset_y, state.scale
         )
     };
 
@@ -239,15 +263,17 @@ pub fn CommunityGraph(
             return view! { <p class="muted-copy">"Select a node to inspect its neighborhood."</p> }.into_view();
         };
 
-        let community = community_index
-            .get(&node.community_id)
-            .cloned();
+        let community = community_index.get(&node.community_id).cloned();
         let neighbors = adjacency
             .get(&node.id)
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|neighbor_id| index.get(&neighbor_id).map(|neighbor| neighbor.label.clone()))
+            .filter_map(|neighbor_id| {
+                index
+                    .get(&neighbor_id)
+                    .map(|neighbor| neighbor.label.clone())
+            })
             .take(8)
             .collect::<Vec<_>>();
         let bridge = bridge_index.get(&node.id).cloned();
@@ -266,7 +292,7 @@ pub fn CommunityGraph(
             }
             .into_view()
         } else {
-            view! { <></> }.into_view()
+            ().into_view()
         };
         let community_view = if let Some(community_entry) = community.clone() {
             view! {
@@ -285,7 +311,7 @@ pub fn CommunityGraph(
             }
             .into_view()
         } else {
-            view! { <></> }.into_view()
+            ().into_view()
         };
 
         view! {

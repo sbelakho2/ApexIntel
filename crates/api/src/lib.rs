@@ -5,8 +5,8 @@
 //! auth token verification, and API response enveloping live here.
 //! Actual Axum wiring (`Router::new().route(...)`) is done at the binary level.
 
-pub mod auth;
 pub mod api_keys;
+pub mod auth;
 pub mod config;
 pub mod destructive_actions;
 pub mod filters;

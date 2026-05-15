@@ -10,13 +10,13 @@ use crate::fallback_generation::{count_concrete_signal_details, extract_fallback
 
 /// Stopwords to filter out during tokenization.
 const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "that", "this", "from", "into", "over", "under", "into",
-    "onto", "after", "before", "about", "their", "there", "they", "them", "were", "have",
-    "has", "been", "being", "will", "would", "could", "should", "a", "an", "of", "to", "in",
-    "on", "by", "at", "as", "is", "are", "or",
+    "the", "and", "for", "with", "that", "this", "from", "into", "over", "under", "into", "onto",
+    "after", "before", "about", "their", "there", "they", "them", "were", "have", "has", "been",
+    "being", "will", "would", "could", "should", "a", "an", "of", "to", "in", "on", "by", "at",
+    "as", "is", "are", "or",
 ];
 
-use crate::config::{DEDUP_TITLE_THRESHOLD, DEDUP_SUMMARY_THRESHOLD};
+use crate::config::{DEDUP_SUMMARY_THRESHOLD, DEDUP_TITLE_THRESHOLD};
 
 /// Generate a canonical key from raw text for deduplication.
 pub(super) fn canonical_digest_key(raw: &str, max_words: usize) -> String {
@@ -283,7 +283,10 @@ pub(super) fn is_internal_insight_type(insight_type: Option<&str>) -> bool {
         .map(|insight_type| {
             let normalized = insight_type.trim().to_ascii_lowercase();
             normalized.starts_with("llm_")
-                || matches!(normalized.as_str(), "llm_eval_report" | "llm_self_improvement")
+                || matches!(
+                    normalized.as_str(),
+                    "llm_eval_report" | "llm_self_improvement"
+                )
         })
         .unwrap_or(false)
 }
@@ -452,9 +455,9 @@ pub(super) fn dedup_insights_for_digest<T: Clone>(
         let summary_tokens = digest_tokens(summary, 80);
 
         // Check for near-duplicate by title
-        let title_duplicate = seen_titles.iter().any(|seen| {
-            token_jaccard_similarity(&title_tokens, seen) >= *DEDUP_TITLE_THRESHOLD
-        });
+        let title_duplicate = seen_titles
+            .iter()
+            .any(|seen| token_jaccard_similarity(&title_tokens, seen) >= *DEDUP_TITLE_THRESHOLD);
 
         // Check for near-duplicate by summary
         let summary_duplicate = seen_summaries.iter().any(|seen| {
@@ -555,7 +558,9 @@ mod tests {
 
     #[test]
     fn promoted_types_identified() {
-        assert!(is_promoted_business_insight_type(Some("demand_procurement")));
+        assert!(is_promoted_business_insight_type(Some(
+            "demand_procurement"
+        )));
         assert!(is_promoted_business_insight_type(Some("supply_chain_risk")));
         assert!(!is_promoted_business_insight_type(Some("random_type")));
         assert!(!is_promoted_business_insight_type(None));

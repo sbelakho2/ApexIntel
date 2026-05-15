@@ -66,6 +66,9 @@ pub struct PersonListItem {
     pub region: String,
     pub country: String,
     pub priority_score: f64,
+    pub pain_index: f64,
+    pub change_risk: f64,
+    pub role_drift_score: f64,
     /// Legacy 0-100 influence score expected by pre-migration cards/charts.
     pub influence_score: i64,
     /// Legacy priority band used by pre-migration filters.
@@ -112,6 +115,7 @@ pub struct PersonDetail {
     pub pain_index: Option<f64>,
     pub change_risk: Option<f64>,
     pub role_drift_score: Option<f64>,
+    pub buying_center_role: String,
     pub affiliations: Vec<Affiliation>,
     pub timeline: Vec<PersonEvent>,
     pub role_history: Vec<RoleHistoryEntry>,
@@ -164,7 +168,11 @@ impl PriorityVector {
                 weight_values[4] / total_weight,
             ]
         };
-        let score: f64 = normalized.iter().zip(values.iter()).map(|(w, v)| w * v).sum();
+        let score: f64 = normalized
+            .iter()
+            .zip(values.iter())
+            .map(|(w, v)| w * v)
+            .sum();
         clamp_ratio(score)
     }
 }
@@ -319,6 +327,9 @@ mod tests {
             region: region.to_string(),
             country: "US".to_string(),
             priority_score: priority,
+            pain_index: 0.0,
+            change_risk: 0.0,
+            role_drift_score: 0.0,
             influence_score: (priority.clamp(0.0, 1.0) * 100.0).round() as i64,
             priority: if priority >= 0.8 {
                 "A".to_string()

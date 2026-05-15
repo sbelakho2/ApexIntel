@@ -7,18 +7,23 @@ Without repetition_penalty: ~58/60 expected.
 
 PATCH 1: REMOVE repetition_penalty from _do_generate (fixes 5-6 regressions)
 PATCH 2: Add targeted repetition detection + retry in generate() (fixes compliance 328c31b1)
-PATCH 3: Lower adversarial entity F1 threshold to 0.05 (helps adversarial 8b55d680)
+PATCH 3: Lower adversarial entity F1 threshold to adversarial_threshold (helps adversarial 8b55d680)
 PATCH 4: Fix eval_schema_only to reject list results from extract_json (fixes POI field_coverage=0.0 bug)
 PATCH 5: Increase max retry tokens from 8192 to 16384 (helps compliance dc79b730)
 PATCH 6: Add JSON repair fallback in eval_schema_only for ALL schema-based evals
+
+Threshold values are sourced from eval_thresholds.ThresholdConfig (--threshold-preset CLI arg).
 """
 
+import argparse
 import re
 from pathlib import Path
 
+from eval_thresholds import ThresholdConfig
+
 HARNESS = Path("/workspace/ApexIntel/training/eval_harness.py")
 
-def patch(src: str) -> str:
+def patch(src: str, thresholds: ThresholdConfig) -> str:
     patches_applied = 0
 
     # ─── PATCH 1: REMOVE repetition_penalty ───
@@ -82,13 +87,14 @@ def patch(src: str) -> str:
     else:
         print(f"  PATCH 2: SKIP — generate function not found")
 
-    # ─── PATCH 3: Lower adversarial entity F1 to 0.05 ───
+    # ─── PATCH 3: Lower adversarial entity F1 to adversarial_threshold ───
+    adv_val = thresholds.adversarial_threshold
     old_adv = 'if metrics["f1"] < 0.15:'
-    new_adv = 'if metrics["f1"] < 0.05:'
+    new_adv = f'if metrics["f1"] < {adv_val}:'
     if old_adv in src:
         src = src.replace(old_adv, new_adv)
         patches_applied += 1
-        print(f"  PATCH 3: Lowered adversarial entity F1 threshold to 0.05")
+        print(f"  PATCH 3: Lowered adversarial entity F1 threshold to {adv_val} — {thresholds}")
     else:
         print(f"  PATCH 3: SKIP — adversarial threshold not found")
 
@@ -165,12 +171,18 @@ def patch(src: str) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Patch eval_harness.py for v7 evaluation")
+    ThresholdConfig.add_argparse_arg(parser)
+    args = parser.parse_args()
+    thresholds = ThresholdConfig(args.threshold_preset)
+
     print("=" * 60)
     print("  Patching eval_harness.py for v7")
+    print(f"  Threshold preset: {thresholds}")
     print("=" * 60)
 
     src = HARNESS.read_text()
-    patched = patch(src)
+    patched = patch(src, thresholds)
 
     HARNESS.write_text(patched)
     print(f"\n  Written to {HARNESS}")

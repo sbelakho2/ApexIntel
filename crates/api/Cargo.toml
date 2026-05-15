@@ -38,7 +38,7 @@ regex = { workspace = true }
 subtle = "2"
 dotenvy = { workspace = true }
 url = { workspace = true }
-prometheus = "0.13"
+prometheus = "0.14"
 lazy_static = "1.4"
 redis = { workspace = true }
 reqwest = { workspace = true }

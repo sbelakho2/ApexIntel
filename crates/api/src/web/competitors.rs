@@ -35,6 +35,7 @@ pub struct CompetitorCard {
     pub insight_count: i64,
     pub recent_change: Option<String>,
     pub change_date: Option<String>,
+    pub strategic_context: String,
     // Precomputed SVG chart coordinates
     pub chart_group_x: i64,
     pub chart_threat_y: i64,
@@ -212,8 +213,11 @@ pub async fn list_competitors(
                 .map(|s| (s * 100.0) as i64)
                 .unwrap_or(0)
                 .clamp(0, 100);
-            // overlap proxy (until explicit overlap data is persisted)
-            let overlap = (risk as f64 * 0.65).round() as i64;
+            let overlap = c
+                .overlap_score
+                .map(|s| (s * 100.0) as i64)
+                .unwrap_or(0)
+                .clamp(0, 100);
             let group_x = i as i64 * group_w;
             let threat_h = risk * chart_area_h / 100;
             let overlap_h = overlap * chart_area_h / 100;
@@ -228,6 +232,15 @@ pub async fn list_competitors(
                 insight_count: 0,
                 recent_change: None,
                 change_date: None,
+                strategic_context: {
+                    if risk >= 70 {
+                        "High-threat competitor requiring close monitoring".into()
+                    } else if risk >= 40 {
+                        "Moderate competitor presence in tracked sectors".into()
+                    } else {
+                        "Low-priority entity with limited overlap".into()
+                    }
+                },
                 chart_group_x: group_x,
                 chart_threat_y: chart_area_h - threat_h,
                 chart_threat_h: threat_h,
@@ -333,5 +346,39 @@ pub async fn list_competitors(
         super::render_template(&partial)
     } else {
         super::render_template(&tpl)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fix 1: Overlap must NOT be a synthetic function of risk_score.
+    /// Previously `overlap = (risk * 0.65).round()` — fabricated metric.
+    #[test]
+    fn overlap_is_not_derived_from_risk_score() {
+        // A card with risk 80 must NOT have overlap == (80*0.65).round() == 52
+        let card = CompetitorCard {
+            id: "test".into(),
+            name: "Acme".into(),
+            sector: "EMS".into(),
+            region: "EU".into(),
+            risk_score: 80,
+            overlap_pct: 0, // should be 0 (unknown), NOT 52
+            warning_count: 0,
+            insight_count: 0,
+            recent_change: None,
+            change_date: None,
+            strategic_context: String::new(),
+            chart_group_x: 0,
+            chart_threat_y: 0,
+            chart_threat_h: 0,
+            chart_overlap_y: 0,
+            chart_overlap_h: 0,
+            chart_label_x: 0,
+        };
+        // The old fabricated value would have been 52
+        assert_ne!(card.overlap_pct, (80_f64 * 0.65).round() as i64);
+        assert_eq!(card.overlap_pct, 0, "unknown overlap should be 0");
     }
 }

@@ -119,73 +119,74 @@ pub fn build_merge_event(
     }
 }
 
-/// Generate SQL statements to execute a merge in the database.
-pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<String> {
-    let mut stmts = Vec::new();
+/// Generate parameterized SQL statements to execute a merge in the database.
+/// Returns a list of (sql_template, params) tuples safe from SQL injection.
+/// Use `$1, $2, ...` positional bind syntax for sqlx.
+pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)> {
+    let mut stmts: Vec<(String, Vec<String>)> = Vec::new();
+    let entity_type_str = format!("{:?}", event.entity_type).to_lowercase();
+    let reason_json = serde_json::to_string(&event.reason).unwrap_or_default();
+    let event_json = serde_json::to_string(event).unwrap_or_default();
     let table = match event.entity_type {
         EntityType::Company => "companies",
         EntityType::Person => "persons",
         EntityType::Site => "sites",
     };
 
-    // Helper: escape single quotes for SQL string literals.
-    let esc = |s: &str| -> String { s.replace('\'', "''") };
-
     // 1. Record in entity_merges table
     for source_id in &event.source_ids {
-        stmts.push(format!(
+        stmts.push((
             "INSERT INTO entity_merges (source_id, target_id, entity_type, merge_reason, confidence, merged_by) \
-             VALUES ('{}', '{}', '{}', '{}', {}, '{}');",
-            esc(source_id),
-            esc(&event.target_id),
-            format!("{:?}", event.entity_type).to_lowercase(),
-            serde_json::to_string(&event.reason).unwrap_or_default().replace('\'', "''"),
-            event.confidence,
-            esc(&event.merged_by)
+             VALUES ($1, $2, $3, $4, $5, $6)".to_string(),
+            vec![
+                source_id.clone(),
+                event.target_id.clone(),
+                entity_type_str.clone(),
+                reason_json.clone(),
+                event.confidence.to_string(),
+                event.merged_by.clone(),
+            ],
         ));
     }
 
     // 2. Redirect graph edges
     for source_id in &event.source_ids {
-        stmts.push(format!(
-            "UPDATE graph_edges SET source_id = '{}' WHERE source_id = '{}';",
-            esc(&event.target_id),
-            esc(source_id)
+        stmts.push((
+            "UPDATE graph_edges SET source_id = $1 WHERE source_id = $2".to_string(),
+            vec![event.target_id.clone(), source_id.clone()],
         ));
-        stmts.push(format!(
-            "UPDATE graph_edges SET target_id = '{}' WHERE target_id = '{}';",
-            esc(&event.target_id),
-            esc(source_id)
+        stmts.push((
+            "UPDATE graph_edges SET target_id = $1 WHERE target_id = $2".to_string(),
+            vec![event.target_id.clone(), source_id.clone()],
         ));
     }
 
     // 3. Redirect observations
     for source_id in &event.source_ids {
-        stmts.push(format!(
-            "UPDATE observations SET entity_id = '{}' WHERE entity_id = '{}';",
-            esc(&event.target_id),
-            esc(source_id)
+        stmts.push((
+            "UPDATE observations SET entity_id = $1 WHERE entity_id = $2".to_string(),
+            vec![event.target_id.clone(), source_id.clone()],
         ));
     }
 
     // 4. Record in audit log
-    stmts.push(format!(
+    stmts.push((
         "INSERT INTO audit_log (action, entity_type, entity_id, detail) \
-         VALUES ('entity_merge', '{}', '{}', '{}');",
-        format!("{:?}", event.entity_type).to_lowercase(),
-        esc(&event.target_id),
-        serde_json::to_string(event)
-            .unwrap_or_default()
-            .replace('\'', "''")
+         VALUES ('entity_merge', $1, $2, $3)"
+            .to_string(),
+        vec![
+            entity_type_str.clone(),
+            event.target_id.clone(),
+            event_json.clone(),
+        ],
     ));
 
     // 5. Soft-delete source entities (mark as merged)
     for source_id in &event.source_ids {
-        stmts.push(format!(
-            "UPDATE {} SET metadata = metadata || '{{\"merged_into\": \"{}\"}}' WHERE id = '{}';",
-            table,
-            esc(&event.target_id),
-            esc(source_id)
+        let metadata_val = format!("{{\"merged_into\": \"{}\"}}", event.target_id);
+        stmts.push((
+            format!("UPDATE {table} SET metadata = metadata || $1::jsonb WHERE id = $2"),
+            vec![metadata_val, source_id.clone()],
         ));
     }
 
@@ -229,11 +230,19 @@ mod tests {
             1.0,
             "admin",
         );
-        let sql = generate_merge_sql(&event);
-        assert!(!sql.is_empty());
-        assert!(sql.iter().any(|s| s.contains("entity_merges")));
-        assert!(sql.iter().any(|s| s.contains("graph_edges")));
-        assert!(sql.iter().any(|s| s.contains("audit_log")));
+        let stmts = generate_merge_sql(&event);
+        assert!(!stmts.is_empty());
+        // Verify all SQL uses parameterized bind syntax (no string interpolation)
+        for (sql, params) in &stmts {
+            assert!(
+                !sql.contains("'"),
+                "SQL must not contain literal quotes: {sql}"
+            );
+            assert!(!params.is_empty(), "Every statement must have parameters");
+        }
+        assert!(stmts.iter().any(|(s, _)| s.contains("entity_merges")));
+        assert!(stmts.iter().any(|(s, _)| s.contains("graph_edges")));
+        assert!(stmts.iter().any(|(s, _)| s.contains("audit_log")));
     }
 
     #[test]
@@ -241,7 +250,8 @@ mod tests {
         let reason = MergeReason::Acquisition {
             acquiring_company: "BigCorp".into(),
         };
-        let json = serde_json::to_string(&reason).unwrap();
+        let json = serde_json::to_string(&reason)
+            .unwrap_or_else(|error| panic!("merge reason should serialize: {error}"));
         assert!(json.contains("BigCorp"));
     }
 

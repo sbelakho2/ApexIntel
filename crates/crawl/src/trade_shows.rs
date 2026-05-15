@@ -202,6 +202,12 @@ pub fn get_trade_show_calendar(year: i32) -> Vec<TradeShowEvent> {
     ]
 }
 
+fn valid_date(year: i32, month: u32, day: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(year, month, day)
+        .unwrap_or_else(|| panic!("invalid static trade-show date {year:04}-{month:02}-{day:02}"))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn event(
     name: &str,
     location: &str,
@@ -219,8 +225,8 @@ fn event(
         name: name.into(),
         location: location.into(),
         country: country.into(),
-        start_date: NaiveDate::from_ymd_opt(sy, sm, sd).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(ey, em, ed).unwrap(),
+        start_date: valid_date(sy, sm, sd),
+        end_date: valid_date(ey, em, ed),
         url: url.into(),
         industry_tags: tags.iter().map(|t| t.to_string()).collect(),
         exhibitor_list_url: None,
@@ -271,11 +277,11 @@ pub fn parse_ics(ics_content: &str) -> Vec<TradeShowEvent> {
                 location = v.to_string();
             } else if let Some(v) = line.strip_prefix("DTSTART") {
                 // Handle DTSTART;VALUE=DATE:20260301 or DTSTART:20260301T090000Z
-                if let Some(date_part) = v.split(':').last() {
+                if let Some(date_part) = v.split(':').next_back() {
                     start = date_part.to_string();
                 }
             } else if let Some(v) = line.strip_prefix("DTEND") {
-                if let Some(date_part) = v.split(':').last() {
+                if let Some(date_part) = v.split(':').next_back() {
                     end = date_part.to_string();
                 }
             } else if let Some(v) = line.strip_prefix("URL:") {
@@ -386,7 +392,8 @@ END:VCALENDAR";
         assert_eq!(events[0].name, "Test Show");
         assert_eq!(
             events[0].start_date,
-            NaiveDate::from_ymd_opt(2026, 3, 15).unwrap()
+            NaiveDate::from_ymd_opt(2026, 3, 15)
+                .unwrap_or_else(|| panic!("test fixture date should be valid"))
         );
     }
 

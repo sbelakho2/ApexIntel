@@ -145,6 +145,7 @@ struct SanctionEntry {
 }
 
 impl SanctionEntry {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         id: impl Into<String>,
         primary_name: impl Into<String>,
@@ -863,7 +864,7 @@ mod tests {
         // Exact match
         let hits = screener.screen_entity("Viktor Bout", &[]);
         assert!(!hits.is_empty());
-        assert_eq!(hits[0].is_exact, true);
+        assert!(hits[0].is_exact);
         assert!((hits[0].similarity - 1.0).abs() < 1e-6);
     }
 

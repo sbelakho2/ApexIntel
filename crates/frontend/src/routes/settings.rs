@@ -1,6 +1,9 @@
 use leptos::*;
 
-use crate::{api, components::cards::{PageHeader, SurfaceCard}};
+use crate::{
+    api,
+    components::cards::{PageHeader, SurfaceCard},
+};
 
 #[component]
 pub fn SettingsPage() -> impl IntoView {
@@ -25,7 +28,7 @@ pub fn SettingsPage() -> impl IntoView {
                             </SurfaceCard>
                         }.into_view()
                     }
-                    Err(message) => view! { <SurfaceCard title="Preferences" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                    Err(message) => view! { <SurfaceCard title="Preferences" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                 })}
             </Suspense>
         </div>

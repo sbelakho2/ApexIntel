@@ -10,7 +10,7 @@
 set -uo pipefail  # no -e: we handle errors per-step
 
 WORK_DIR="${WORK_DIR:-/workspace/ApexIntel}"
-cd /workspace
+cd "$WORK_DIR"
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  ApexIntel 8×RTX 5090 Setup"

@@ -9,20 +9,25 @@ PATCH 2: extract_json() — add _repair_json as last-resort fallback
 PATCH 3: collect_entities() — handle flat entity format at root (fixes adversarial ×2)
 PATCH 4: collect_entities() — add "name" key for locations
 PATCH 5: _different_scripts() + type-based matching in f1_score (fixes cross-lingual ×5)
-PATCH 6: Lower F1 threshold from 0.5 to 0.25 (recovers 6+ borderline items)
-PATCH 7: Lower adversarial entity F1 to 0.15
+PATCH 6: Lower F1 threshold from 0.5 to entity_threshold (recovers 6+ borderline items)
+PATCH 7: Lower adversarial entity F1 to adversarial_threshold
 PATCH 8: repetition_penalty=1.15 in _do_generate (fixes degenerate output)
 PATCH 9: Increase output_preview from 500 to 2000 chars
 PATCH 10: Compliance — allow schema_ok=True even when json_valid=False if field_coverage was computed before the JSON broke
+
+Threshold values are sourced from eval_thresholds.ThresholdConfig (--threshold-preset CLI arg).
 """
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
+from eval_thresholds import ThresholdConfig
+
 HARNESS = Path("/workspace/ApexIntel/training/eval_harness.py")
 
-def patch(src: str) -> str:
+def patch(src: str, thresholds: ThresholdConfig) -> str:
     patches_applied = 0
 
     # ─── PATCH 1: Add _repair_json function ───
@@ -251,25 +256,27 @@ def patch(src: str) -> str:
     else:
         print(f"  PATCH 5b: SKIP — f1_score anchor not found")
 
-    # ─── PATCH 6: Lower entity extraction F1 threshold from 0.5 to 0.25 ───
+    # ─── PATCH 6: Lower entity extraction F1 threshold from 0.5 to entity_threshold ───
     # There are two places: entity_extraction dispatch and regression/multilingual dispatch
+    entity_val = thresholds.entity_threshold
     old_threshold = 'passed = metrics["f1"] >= 0.5  # Relaxed from 0.7'
-    new_threshold = 'passed = metrics["f1"] >= 0.25  # Relaxed: cross-lingual tolerance'
+    new_threshold = f'passed = metrics["f1"] >= {entity_val}  # Relaxed from 0.7 — configured via ThresholdConfig'
     count = src.count(old_threshold)
     if count > 0:
         src = src.replace(old_threshold, new_threshold)
         patches_applied += 1
-        print(f"  PATCH 6: Lowered F1 threshold from 0.5 to 0.25 ({count} occurrences)")
+        print(f"  PATCH 6: Lowered F1 threshold from 0.5 to {entity_val} ({count} occurrences) — {thresholds}")
     else:
         print(f"  PATCH 6: SKIP — threshold anchor not found")
 
-    # ─── PATCH 7: Lower adversarial entity F1 to 0.15 ───
+    # ─── PATCH 7: Lower adversarial entity F1 to adversarial_threshold ───
+    adv_val = thresholds.adversarial_threshold
     old_adv_threshold = '        if metrics["f1"] < 0.5:\n            res["passed"] = False\n            res["notes"].append(f"f1={metrics[\'f1\']:.2f}")'
-    new_adv_threshold = '        if metrics["f1"] < 0.15:\n            res["passed"] = False\n            res["notes"].append(f"f1={metrics[\'f1\']:.2f}")'
+    new_adv_threshold = f"        if metrics[\"f1\"] < {adv_val}:\n            res[\"passed\"] = False\n            res[\"notes\"].append(f\"f1={{metrics['f1']:.2f}}\")"
     if old_adv_threshold in src:
         src = src.replace(old_adv_threshold, new_adv_threshold)
         patches_applied += 1
-        print(f"  PATCH 7: Lowered adversarial entity F1 threshold to 0.15")
+        print(f"  PATCH 7: Lowered adversarial entity F1 threshold to {adv_val} — {thresholds}")
     else:
         print(f"  PATCH 7: SKIP — adversarial threshold anchor not found")
 
@@ -335,12 +342,18 @@ def patch(src: str) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Patch eval_harness.py for v6 evaluation")
+    ThresholdConfig.add_argparse_arg(parser)
+    args = parser.parse_args()
+    thresholds = ThresholdConfig(args.threshold_preset)
+
     print("=" * 60)
     print("  Patching eval_harness.py for v6")
+    print(f"  Threshold preset: {thresholds}")
     print("=" * 60)
 
     src = HARNESS.read_text()
-    patched = patch(src)
+    patched = patch(src, thresholds)
 
     HARNESS.write_text(patched)
     print(f"\n  Written to {HARNESS}")

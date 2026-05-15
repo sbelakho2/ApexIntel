@@ -8,8 +8,10 @@ updates eval JSONL files to include explicit field requirements.
 import json
 import os
 import shutil
+from pathlib import Path
 
-EVAL_DIR = "/workspace/ApexIntel/training_data/evaluation"
+WORK = Path(__file__).resolve().parent.parent
+EVAL_DIR = os.environ.get("EVAL_DIR", str(WORK / "training_data" / "evaluation"))
 
 # Enhanced system prompts with explicit schema requirements
 ENHANCED_PROMPTS = {

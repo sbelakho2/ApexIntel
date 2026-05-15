@@ -11,15 +11,35 @@ Fixes:
   PATCH 8: Use flexible matching in eval_recipe_quality
   PATCH 9: Flush fix
   PATCH 10: CUDA OOM catch in main loop
+
+Threshold values are sourced from eval_thresholds.ThresholdConfig (--threshold-preset CLI arg).
 """
+import argparse
 import sys
 
-fp = "/workspace/ApexIntel/training/eval_harness.py"
-with open(fp) as f:
-    src = f.read()
+from eval_thresholds import ThresholdConfig
 
-original = src
-patches_applied = 0
+fp = "/workspace/ApexIntel/training/eval_harness.py"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Apply v8 patches to eval_harness.py"
+    )
+    ThresholdConfig.add_argparse_arg(parser)
+    args = parser.parse_args()
+    thresholds = ThresholdConfig(args.threshold_preset)
+
+    print("=" * 60)
+    print("  Patching eval_harness.py for v8")
+    print(f"  Threshold preset: {thresholds}")
+    print("=" * 60)
+
+    with open(fp) as f:
+        src = f.read()
+
+    original = src
+    patches_applied = 0
 
 # --------------- PATCH 1: Reduce retry token limit to 8192 ---------------
 old = "if not stripped and decoded and max_new_tokens < 16384:\n        retry_tokens = min(max_new_tokens * 2, 16384)"
@@ -255,9 +275,13 @@ if "FATAL generation error" in src:
 else:
     print(f"  PATCH 10 SKIPPED: target not found")
 
-# Write result
-with open(fp, "w") as f:
-    f.write(src)
+    # Write result
+    with open(fp, "w") as f:
+        f.write(src)
 
-lines = src.count("\n") + 1
-print(f"\n  Done: {patches_applied} patches applied ({lines} lines, {len(src)} chars)")
+    lines = src.count("\n") + 1
+    print(f"\n  Done: {patches_applied} patches applied ({lines} lines, {len(src)} chars)")
+
+
+if __name__ == "__main__":
+    main()

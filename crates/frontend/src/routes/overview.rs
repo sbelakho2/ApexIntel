@@ -10,7 +10,7 @@ fn render_warning_preview(items: Vec<api::WarningRecord>) -> View {
     let preview_items = items.into_iter().take(3).collect::<Vec<_>>();
 
     view! {
-        <SurfaceCard title="Recent Warnings" subtitle="The landing route now incorporates the live warning feed.">
+        <SurfaceCard title="Recent Warnings" subtitle="Most recent operational warnings requiring attention.">
             <div class="warning-list">
                 <For each=move || preview_items.clone() key=|item| item.id.clone() let:item>
                     <article class="warning-item">
@@ -42,7 +42,7 @@ pub fn OverviewPage() -> impl IntoView {
             <PageHeader
                 eyebrow="Operational Overview"
                 title="Analytical Overview"
-                subtitle="Overview statistics and recent warnings now load from live dashboard and warning endpoints instead of static demo data."
+                subtitle="Key metrics, recent warnings, and system health at a glance."
             />
 
             <Suspense fallback=move || view! { <SurfaceCard title="Overview" subtitle="Loading dashboard summary."><p class="muted-copy">"Loading..."</p></SurfaceCard> }>

@@ -71,6 +71,7 @@ pub struct WarningListItem {
     pub confidence_pct: i64,
     pub created_at: String,
     pub acknowledged: bool,
+    pub evidence_count: i64,
 }
 
 /// Evidence item shown on warning detail.
@@ -574,6 +575,7 @@ pub async fn list_warnings(
                 confidence_pct: confidence_to_pct(w.confidence.unwrap_or(0.0)),
                 created_at: w.ts_utc.format("%Y-%m-%d %H:%M").to_string(),
                 acknowledged: w.acknowledged,
+                evidence_count: w.source_urls.as_ref().map_or(0, |v| v.len() as i64),
             }
         })
         .collect();
@@ -610,14 +612,34 @@ pub async fn list_warnings(
     let type_filters = type_filter_values
         .iter()
         .map(|value| WarningFilterChip {
-            label: if value.is_empty() { "All".to_string() } else { value.replace('_', " ") },
+            label: if value.is_empty() {
+                "All".to_string()
+            } else {
+                value.replace('_', " ")
+            },
             href: build_warnings_href(
                 Some(active_scope.as_str()),
-                if active_severity.is_empty() { None } else { Some(active_severity.as_str()) },
-                if active_status.is_empty() { None } else { Some(active_status.as_str()) },
+                if active_severity.is_empty() {
+                    None
+                } else {
+                    Some(active_severity.as_str())
+                },
+                if active_status.is_empty() {
+                    None
+                } else {
+                    Some(active_status.as_str())
+                },
                 if value.is_empty() { None } else { Some(*value) },
-                if active_region.is_empty() { None } else { Some(active_region.as_str()) },
-                if search_query.is_empty() { None } else { Some(search_query.as_str()) },
+                if active_region.is_empty() {
+                    None
+                } else {
+                    Some(active_region.as_str())
+                },
+                if search_query.is_empty() {
+                    None
+                } else {
+                    Some(search_query.as_str())
+                },
                 Some(sort_field.as_str()),
                 Some(sort_dir_str.as_str()),
             ),
@@ -642,14 +664,34 @@ pub async fn list_warnings(
     let region_filters = region_filter_values
         .iter()
         .map(|value| WarningFilterChip {
-            label: if value.is_empty() { "All".to_string() } else { value.to_string() },
+            label: if value.is_empty() {
+                "All".to_string()
+            } else {
+                value.to_string()
+            },
             href: build_warnings_href(
                 Some(active_scope.as_str()),
-                if active_severity.is_empty() { None } else { Some(active_severity.as_str()) },
-                if active_status.is_empty() { None } else { Some(active_status.as_str()) },
-                if active_type.is_empty() { None } else { Some(active_type.as_str()) },
+                if active_severity.is_empty() {
+                    None
+                } else {
+                    Some(active_severity.as_str())
+                },
+                if active_status.is_empty() {
+                    None
+                } else {
+                    Some(active_status.as_str())
+                },
+                if active_type.is_empty() {
+                    None
+                } else {
+                    Some(active_type.as_str())
+                },
                 if value.is_empty() { None } else { Some(*value) },
-                if search_query.is_empty() { None } else { Some(search_query.as_str()) },
+                if search_query.is_empty() {
+                    None
+                } else {
+                    Some(search_query.as_str())
+                },
                 Some(sort_field.as_str()),
                 Some(sort_dir_str.as_str()),
             ),
@@ -885,8 +927,14 @@ pub async fn get_warning(
             .await
             .unwrap_or_default()
     };
-    let primary_company_name = company_rows.first().map(|(_, n, _, _)| n.clone()).unwrap_or_default();
-    let primary_company_id = company_rows.first().map(|(id, _, _, _)| id.to_string()).unwrap_or_default();
+    let primary_company_name = company_rows
+        .first()
+        .map(|(_, n, _, _)| n.clone())
+        .unwrap_or_default();
+    let primary_company_id = company_rows
+        .first()
+        .map(|(id, _, _, _)| id.to_string())
+        .unwrap_or_default();
     let related_entities: Vec<RelatedEntity> = company_rows
         .iter()
         .map(|(cid, name, _, _)| RelatedEntity {

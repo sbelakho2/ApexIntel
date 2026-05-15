@@ -52,7 +52,8 @@ pub trait Phase01Store: Send + Sync + 'static {
         offset: i64,
     ) -> Result<Vec<WarningRow>>;
     async fn delete_all_warnings(&self) -> Result<u64>;
-    async fn record_audit_event(&self, actor: &str, event_type: &str, detail: &Value) -> Result<()>;
+    async fn record_audit_event(&self, actor: &str, event_type: &str, detail: &Value)
+        -> Result<()>;
     async fn count_insights(&self, filters: &InsightListFilters) -> Result<i64>;
     async fn list_insights(
         &self,
@@ -85,14 +86,20 @@ impl Phase01Store for apex_store::postgres::PgStore {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<WarningRow>> {
-        self.list_warnings(filters, order_by, desc, limit, offset).await
+        self.list_warnings(filters, order_by, desc, limit, offset)
+            .await
     }
 
     async fn delete_all_warnings(&self) -> Result<u64> {
         self.delete_all_warnings().await
     }
 
-    async fn record_audit_event(&self, actor: &str, event_type: &str, detail: &Value) -> Result<()> {
+    async fn record_audit_event(
+        &self,
+        actor: &str,
+        event_type: &str,
+        detail: &Value,
+    ) -> Result<()> {
         self.record_audit_event(actor, event_type, detail).await
     }
 
@@ -128,7 +135,10 @@ impl Phase01Store for apex_store::postgres::PgStore {
 
 pub fn build_phase01_router(state: Phase01State) -> Router {
     let protected = Router::<Phase01State>::new()
-        .route("/api/warnings", axum::routing::get(list_warnings).delete(delete_all_warnings))
+        .route(
+            "/api/warnings",
+            axum::routing::get(list_warnings).delete(delete_all_warnings),
+        )
         .route("/api/insights", axum::routing::get(list_insights))
         .route("/api/companies/:id", axum::routing::get(get_company_detail))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -164,7 +174,11 @@ async fn api_features() -> Json<Value> {
             versioned_api_alias: crate::API_VERSIONED_ALIAS_ENABLED,
             openapi: crate::API_OPENAPI_ENABLED,
         })
-        .unwrap_or_else(|_| serde_json::json!({"error": "serialization failed"})),
+        .unwrap_or_else(|_| {
+            let mut error = serde_json::Map::new();
+            error.insert("error".to_string(), "serialization failed".into());
+            serde_json::Value::Object(error)
+        }),
     )
 }
 
@@ -178,11 +192,7 @@ async fn api_docs() -> Html<String> {
     ))
 }
 
-async fn require_auth(
-    State(state): State<Phase01State>,
-    request: Request,
-    next: Next,
-) -> Response {
+async fn require_auth(State(state): State<Phase01State>, request: Request, next: Next) -> Response {
     let token = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -245,7 +255,10 @@ async fn health(State(state): State<Phase01State>) -> Json<HealthResponse> {
         ComponentHealth {
             name: "routes".to_string(),
             status: HealthStatus::Healthy,
-            message: Some(format!("{} endpoints registered", routes::all_endpoints().len())),
+            message: Some(format!(
+                "{} endpoints registered",
+                routes::all_endpoints().len()
+            )),
         },
     ];
 
@@ -261,9 +274,7 @@ async fn health_live() -> StatusCode {
     StatusCode::OK
 }
 
-async fn health_ready(
-    State(state): State<Phase01State>,
-) -> (StatusCode, Json<HealthResponse>) {
+async fn health_ready(State(state): State<Phase01State>) -> (StatusCode, Json<HealthResponse>) {
     let uptime_secs = Utc::now()
         .signed_duration_since(state.started_at)
         .num_seconds()
@@ -331,7 +342,10 @@ async fn list_warnings(
     State(state): State<Phase01State>,
     Extension(auth_ctx): Extension<ApiAuthContext>,
     Query(params): Query<ListWarningsQuery>,
-) -> (StatusCode, Json<ApiResponse<PagedResponse<WarningResponse>>>) {
+) -> (
+    StatusCode,
+    Json<ApiResponse<PagedResponse<WarningResponse>>>,
+) {
     if params.include_deleted == Some(true) && !auth_ctx.role.can_admin() {
         let api_err = ApiError::forbidden("Admin role required to include deleted warnings");
         return (StatusCode::FORBIDDEN, Json(error_response(api_err)));
@@ -356,11 +370,17 @@ async fn list_warnings(
         Ok(value) => value.max(0) as u64,
         Err(err) => {
             let api_err = ApiError::internal(format!("Failed to count warnings: {err}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(api_err)),
+            );
         }
     };
 
-    let order_by = params.sort_by.map(map_warning_sort).or(Some(WarningOrderBy::CreatedAt));
+    let order_by = params
+        .sort_by
+        .map(map_warning_sort)
+        .or(Some(WarningOrderBy::CreatedAt));
     let desc = params.sort_dir.unwrap_or_default() == SortDirection::Desc;
     let mut resolved_page = page;
     let mut rows = match state
@@ -371,7 +391,10 @@ async fn list_warnings(
         Ok(value) => value,
         Err(err) => {
             let api_err = ApiError::internal(format!("Failed to list warnings: {err}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(api_err)),
+            );
         }
     };
 
@@ -380,7 +403,10 @@ async fn list_warnings(
             Ok(value) => value.max(0) as u64,
             Err(err) => {
                 let api_err = ApiError::internal(format!("Failed to count warnings: {err}"));
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(api_err)),
+                );
             }
         };
         resolved_page = (total.div_ceil(per_page as u64).max(1) as u32).min(page);
@@ -395,7 +421,10 @@ async fn list_warnings(
                 Ok(value) => value,
                 Err(err) => {
                     let api_err = ApiError::internal(format!("Failed to list warnings: {err}"));
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(error_response(api_err)),
+                    );
                 }
             };
             if !rows.is_empty() || resolved_page == 1 {
@@ -422,7 +451,10 @@ async fn list_warnings(
 async fn list_insights(
     State(state): State<Phase01State>,
     Query(params): Query<ListInsightsQuery>,
-) -> (StatusCode, Json<ApiResponse<PagedResponse<InsightResponse>>>) {
+) -> (
+    StatusCode,
+    Json<ApiResponse<PagedResponse<InsightResponse>>>,
+) {
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(25).clamp(1, 100);
     let offset = ((page - 1) as i64) * per_page as i64;
@@ -437,22 +469,32 @@ async fn list_insights(
             .map(|value| vec![value])
             .unwrap_or_default(),
         bookmarked_by: None,
-        exclude_internal: false,
+        exclude_internal: true,
     };
 
     let total = match state.store.count_insights(&filters).await {
         Ok(value) => value.max(0) as u64,
         Err(err) => {
             let api_err = ApiError::internal(format!("Failed to count insights: {err}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(api_err)),
+            );
         }
     };
 
-    let rows = match state.store.list_insights(&filters, per_page as i64, offset).await {
+    let rows = match state
+        .store
+        .list_insights(&filters, per_page as i64, offset)
+        .await
+    {
         Ok(value) => value,
         Err(err) => {
             let api_err = ApiError::internal(format!("Failed to list insights: {err}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(api_err)),
+            );
         }
     };
 
@@ -490,17 +532,28 @@ async fn get_company_detail(
         }
         Err(err) => {
             let api_err = ApiError::internal(format!("Failed to load company: {err}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(api_err)),
+            );
         }
     };
 
-    let sites = state.store.get_sites_for_company(company_id).await.unwrap_or_default();
+    let sites = state
+        .store
+        .get_sites_for_company(company_id)
+        .await
+        .unwrap_or_default();
     let certifications = state
         .store
         .get_certifications_for_company(company_id)
         .await
         .unwrap_or_default();
-    let persons = state.store.list_persons_by_org(company_id).await.unwrap_or_default();
+    let persons = state
+        .store
+        .list_persons_by_org(company_id)
+        .await
+        .unwrap_or_default();
 
     (
         StatusCode::OK,
@@ -530,7 +583,10 @@ async fn delete_all_warnings(
         Ok(value) => value,
         Err(err) => {
             let api_err = ApiError::internal(format!("Failed to delete all warnings: {err}"));
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(api_err)),
+            );
         }
     };
 
@@ -541,7 +597,10 @@ async fn delete_all_warnings(
         .await
     {
         let api_err = ApiError::internal(format!("Failed to persist audit event: {err}"));
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(api_err)));
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(api_err)),
+        );
     }
 
     (
@@ -656,6 +715,7 @@ fn insight_row_to_response(row: InsightRow) -> InsightResponse {
         created_at: row.created_at.unwrap_or(now),
         updated_at: row.updated_at.unwrap_or(now),
         bookmarked: None,
+        quality_score: None,
     }
 }
 
@@ -698,7 +758,10 @@ fn company_row_to_detail(
         threat_score: row.threat_score,
         overlap_score: row.overlap_score,
         capabilities: capabilities.into_iter().collect(),
-        certifications: certifications.into_iter().map(|value| value.standard).collect(),
+        certifications: certifications
+            .into_iter()
+            .map(|value| value.standard)
+            .collect(),
         sites: sites
             .into_iter()
             .map(|site| CompanySite {

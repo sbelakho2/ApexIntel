@@ -410,8 +410,7 @@ fn domain_negative_keywords(lang: &str) -> &'static [&'static str] {
 
 fn negation_terms() -> &'static [&'static str] {
     &[
-        "not", "no", "never", "n't", "without", "lack", "lack of", "sans", "без",
-        "لا", "لم", "לא",
+        "not", "no", "never", "n't", "without", "lack", "lack of", "sans", "без", "لا", "لم", "לא",
     ]
 }
 
@@ -428,14 +427,20 @@ fn hedge_terms() -> &'static [&'static str] {
 
 fn keyword_aspect(term: &str) -> &'static str {
     match term {
-        "profit" | "revenue" | "growth" | "loss" | "bankruptcy" | "default"
-        | "investment" => "financial",
+        "profit" | "revenue" | "growth" | "loss" | "bankruptcy" | "default" | "investment" => {
+            "financial"
+        }
         "expansion" | "delay" | "shortage" | "expanded capacity" | "production ramp"
         | "supply disruption" | "lot rejection" | "passed audit" => "operational",
-        "penalty" | "violation" | "sanction" | "approved" | "certification"
-        | "debarred" | "investigation" | "dpas rated shortage" | "dpas-rated shortage" => {
-            "regulatory"
-        }
+        "penalty"
+        | "violation"
+        | "sanction"
+        | "approved"
+        | "certification"
+        | "debarred"
+        | "investigation"
+        | "dpas rated shortage"
+        | "dpas-rated shortage" => "regulatory",
         _ => "reputational",
     }
 }
@@ -444,8 +449,14 @@ fn keyword_idf_weight(term: &str) -> f64 {
     match term {
         "growth" | "success" | "risk" | "warning" | "contract" => 0.65,
         "award" | "partnership" | "delay" | "shortage" => 0.8,
-        "awarded contract" | "passed audit" | "production ramp" | "force majeure"
-        | "supply disruption" | "debarred" | "dpas rated shortage" | "lot rejection" => 1.25,
+        "awarded contract"
+        | "passed audit"
+        | "production ramp"
+        | "force majeure"
+        | "supply disruption"
+        | "debarred"
+        | "dpas rated shortage"
+        | "lot rejection" => 1.25,
         _ => 1.0,
     }
 }
@@ -467,22 +478,24 @@ fn keyword_catalog(language: &str) -> Vec<KeywordDescriptor> {
             aspect: keyword_aspect(term),
             idf_weight: keyword_idf_weight(term),
         });
-    let domain_positives = domain_positive_keywords(language)
-        .iter()
-        .map(|term| KeywordDescriptor {
-            term,
-            polarity: 1.0,
-            aspect: keyword_aspect(term),
-            idf_weight: keyword_idf_weight(term),
-        });
-    let domain_negatives = domain_negative_keywords(language)
-        .iter()
-        .map(|term| KeywordDescriptor {
-            term,
-            polarity: -1.0,
-            aspect: keyword_aspect(term),
-            idf_weight: keyword_idf_weight(term),
-        });
+    let domain_positives =
+        domain_positive_keywords(language)
+            .iter()
+            .map(|term| KeywordDescriptor {
+                term,
+                polarity: 1.0,
+                aspect: keyword_aspect(term),
+                idf_weight: keyword_idf_weight(term),
+            });
+    let domain_negatives =
+        domain_negative_keywords(language)
+            .iter()
+            .map(|term| KeywordDescriptor {
+                term,
+                polarity: -1.0,
+                aspect: keyword_aspect(term),
+                idf_weight: keyword_idf_weight(term),
+            });
 
     positives
         .chain(negatives)
@@ -493,7 +506,7 @@ fn keyword_catalog(language: &str) -> Vec<KeywordDescriptor> {
 
 fn tokenize_lower(text: &str) -> Vec<String> {
     text.to_lowercase()
-        .split(|ch: char| !(ch.is_alphanumeric() || ch == '\'') )
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '\''))
         .filter(|token| !token.is_empty())
         .map(|token| token.to_string())
         .collect()

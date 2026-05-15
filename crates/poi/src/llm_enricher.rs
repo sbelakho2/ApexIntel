@@ -44,6 +44,9 @@ pub struct EnrichedPoiProfile {
     pub llm_enriched: bool,
 }
 
+/// Compact batch input tuple for POI enrichment.
+pub type BatchPoiInput<'a> = (&'a str, &'a str, &'a str, &'a str, Vec<&'a str>, &'a str);
+
 impl EnrichedPoiProfile {
     /// Construct a bare (unenriched) profile.
     pub fn bare(poi_id: impl Into<String>, name: impl Into<String>) -> Self {
@@ -217,10 +220,7 @@ impl PoiLlmEnricher {
     ///
     /// Each element is `(poi_id, name, title, company, bio_snippets, product_or_service)`.
     /// `bio_snippets` are plain-text strings tagged as `"bio"` source type internally.
-    pub async fn enrich_batch(
-        &self,
-        pois: &[(&str, &str, &str, &str, Vec<&str>, &str)],
-    ) -> Vec<EnrichedPoiProfile> {
+    pub async fn enrich_batch(&self, pois: &[BatchPoiInput<'_>]) -> Vec<EnrichedPoiProfile> {
         let mut results = Vec::with_capacity(pois.len());
         for (id, name, title, company, bio, product) in pois {
             // Convert &str bio snippets to (source_type, content) pairs
@@ -243,6 +243,8 @@ impl PoiLlmEnricher {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, clippy::assertions_on_constants)]
+
     use super::*;
 
     #[test]

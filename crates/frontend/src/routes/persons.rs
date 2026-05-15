@@ -3,7 +3,10 @@ use leptos_router::A;
 
 use crate::{
     api,
-    components::{cards::{PageHeader, SurfaceCard}, filters::{FilterBar, FilterChip, Pagination}},
+    components::{
+        cards::{PageHeader, SurfaceCard},
+        filters::{FilterBar, FilterChip, Pagination},
+    },
 };
 
 #[component]
@@ -14,7 +17,15 @@ pub fn PersonsPage() -> impl IntoView {
     let persons = create_resource(
         move || (page.get(), priority.get()),
         |(page, priority)| async move {
-            api::fetch_persons(page, if priority.is_empty() { None } else { Some(priority) }).await
+            api::fetch_persons(
+                page,
+                if priority.is_empty() {
+                    None
+                } else {
+                    Some(priority)
+                },
+            )
+            .await
         },
     );
 
@@ -48,7 +59,7 @@ pub fn PersonsPage() -> impl IntoView {
                             <Pagination page=page total=payload.total per_page=payload.per_page set_page=set_page />
                         </SurfaceCard>
                     }.into_view(),
-                    Err(message) => view! { <SurfaceCard title="Persons" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                    Err(message) => view! { <SurfaceCard title="Persons" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                 })}
             </Suspense>
         </div>

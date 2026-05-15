@@ -605,9 +605,17 @@ impl PgStore {
         let mut qb = QueryBuilder::<Postgres>::new(
             "SELECT COUNT(*)::bigint FROM observations WHERE ts_utc >= ",
         );
-        qb.push_bind(from_date.and_hms_opt(0, 0, 0).unwrap().and_utc())
+        let from_ts = from_date
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_else(|| panic!("midnight should be a valid time"))
+            .and_utc();
+        let to_ts = to_date
+            .and_hms_opt(23, 59, 59)
+            .unwrap_or_else(|| panic!("end-of-day should be a valid time"))
+            .and_utc();
+        qb.push_bind(from_ts)
             .push(" AND ts_utc <= ")
-            .push_bind(to_date.and_hms_opt(23, 59, 59).unwrap().and_utc());
+            .push_bind(to_ts);
         if let Some(observation_types) = observation_types.filter(|values| !values.is_empty()) {
             qb.push(" AND observation_type = ANY(")
                 .push_bind(observation_types)

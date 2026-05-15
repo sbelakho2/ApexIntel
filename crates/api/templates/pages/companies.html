@@ -125,7 +125,7 @@
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
   {% if companies.is_empty() %}
-    <div class="col-span-full">{% call m::empty_state("No companies found", "Try broadening your filter.") %}</div>
+    <div class="col-span-full">{% call m::empty_state("No companies found", "Try broadening your filter or adjusting the region/sector selection. Companies are added automatically via monitoring recipes and manual seeding.") %}</div>
   {% else %}
     <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</div>
     {% for c in companies %}

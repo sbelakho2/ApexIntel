@@ -8,6 +8,11 @@ echo "======================================"
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C
 
+# Use env vars with sensible defaults for portability
+WORK_DIR="${WORK_DIR:-/workspace/ApexIntel}"
+MODEL_DIR="${MODEL_DIR:-${WORK_DIR}/models/base}"
+EXPECTED_GPUS="${EXPECTED_GPUS:-4}"
+
 # ── 1. System packages ──────────────────────────
 echo "[1/6] Installing system packages..."
 apt-get update -qq
@@ -29,19 +34,20 @@ echo "  ✓ Python packages installed"
 # ── 3. Verify GPU access ────────────────────────
 echo "[3/6] Verifying GPU access..."
 python3 -c "
-import torch
+import torch, os
 n = torch.cuda.device_count()
+expected = int(os.environ.get('EXPECTED_GPUS', '${EXPECTED_GPUS}'))
 print(f'  ✓ PyTorch {torch.__version__}, CUDA {torch.version.cuda}')
 for i in range(n):
     name = torch.cuda.get_device_name(i)
     mem = torch.cuda.get_device_properties(i).total_mem / 1e9
     print(f'  GPU {i}: {name} ({mem:.0f} GB)')
+assert n >= expected, f'Need at least {expected} GPUs, found {n}'
 print(f'  ✓ {n} GPUs available')
 "
 
 # ── 4. Download base model ──────────────────────
 echo "[4/6] Downloading Qwen3-30B-A3B base model..."
-MODEL_DIR="/workspace/models/base"
 if [ -f "$MODEL_DIR/config.json" ]; then
     echo "  ✓ Model already exists at $MODEL_DIR"
 else
@@ -49,9 +55,10 @@ else
 from huggingface_hub import snapshot_download
 import os
 token = os.environ.get('HF_TOKEN', '')
-print('  Downloading Qwen/Qwen3-30B-A3B ...')
+model_id = os.environ.get('MODEL_ID', 'Qwen/Qwen3-30B-A3B')
+print(f'  Downloading {model_id} ...')
 snapshot_download(
-    'Qwen/Qwen3-30B-A3B',
+    model_id,
     local_dir='$MODEL_DIR',
     token=token if token else None,
     ignore_patterns=['*.gguf', '*.ggml'],
@@ -62,7 +69,7 @@ fi
 
 # ── 5. Verify data files ────────────────────────
 echo "[5/6] Verifying data files..."
-for f in /workspace/training/data/sft_train.jsonl /workspace/training/data/sft_eval.jsonl; do
+for f in "${WORK_DIR}/training/data/sft_train.jsonl" "${WORK_DIR}/training/data/sft_eval.jsonl"; do
     if [ -f "$f" ]; then
         count=$(wc -l < "$f")
         size=$(du -sh "$f" | cut -f1)
@@ -73,13 +80,13 @@ for f in /workspace/training/data/sft_train.jsonl /workspace/training/data/sft_e
     fi
 done
 echo "  Eval files:"
-ls -1 /workspace/training_data/evaluation/*.jsonl | while read f; do
+ls -1 "${WORK_DIR}/training_data/evaluation/"*.jsonl 2>/dev/null | while read f; do
     echo "    $(basename $f): $(wc -l < "$f") examples"
 done
 
 # ── 6. Verify configs ───────────────────────────
 echo "[6/6] Verifying configs..."
-for f in /workspace/training/configs/phase2_sft.yaml /workspace/training/configs/accelerate_fsdp_4gpu.yaml; do
+for f in "${WORK_DIR}/training/configs/phase2_sft.yaml" "${WORK_DIR}/training/configs/accelerate_fsdp_${EXPECTED_GPUS}gpu.yaml"; do
     if [ -f "$f" ]; then
         echo "  ✓ $(basename $f)"
     else

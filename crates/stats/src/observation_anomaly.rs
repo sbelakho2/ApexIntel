@@ -77,7 +77,9 @@ pub fn detect_volume_anomalies(
         }
 
         // Most recent count is "current", preceding `window` entries form the average
-        let current = type_counts.last().unwrap();
+        let Some(current) = type_counts.last() else {
+            continue;
+        };
         let history = &type_counts[type_counts.len() - 1 - window..type_counts.len() - 1];
 
         let avg: f64 = history.iter().map(|c| c.count as f64).sum::<f64>() / history.len() as f64;
@@ -140,7 +142,7 @@ pub fn detect_volume_anomalies(
         }
     }
 
-    anomalies.sort_by(|a, b| b.drop_pct.partial_cmp(&a.drop_pct).unwrap());
+    anomalies.sort_by(|a, b| b.drop_pct.total_cmp(&a.drop_pct));
     anomalies
 }
 

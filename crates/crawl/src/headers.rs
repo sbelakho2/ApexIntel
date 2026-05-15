@@ -148,8 +148,15 @@ pub fn random_headers(region: Option<&str>) -> HeaderMap {
 pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut R) -> HeaderMap {
     let mut headers = HeaderMap::new();
 
-    let ua = USER_AGENTS.choose(rng).expect("USER_AGENTS is non-empty");
-    headers.insert("User-Agent", HeaderValue::from_str(ua).expect("static UA is valid ASCII"));
+    let ua = match USER_AGENTS.choose(rng) {
+        Some(user_agent) => *user_agent,
+        None => unreachable!("USER_AGENTS is non-empty"),
+    };
+    headers.insert(
+        "User-Agent",
+        HeaderValue::from_str(ua)
+            .unwrap_or_else(|error| panic!("static user-agent is invalid: {error}")),
+    );
 
     let is_mobile = ua.contains("Mobile")
         || ua.contains("iPhone")
@@ -170,8 +177,15 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
         .find(|(k, _)| *k == lang_key)
         .map(|(_, v)| *v)
         .unwrap_or(ACCEPT_LANGUAGES[0].1);
-    let lang = langs.choose(rng).expect("langs slice is non-empty");
-    headers.insert("Accept-Language", HeaderValue::from_str(lang).expect("static lang is valid ASCII"));
+    let lang = match langs.choose(rng) {
+        Some(language) => *language,
+        None => unreachable!("language slice is non-empty"),
+    };
+    headers.insert(
+        "Accept-Language",
+        HeaderValue::from_str(lang)
+            .unwrap_or_else(|error| panic!("static accept-language is invalid: {error}")),
+    );
 
     headers.insert(
         "Accept-Encoding",
@@ -222,15 +236,21 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
             )
         } else {
             // Standard Chrome brand hint — rotate the "Not A Brand" string spelling
-            let not_brand = ["Not-A.Brand", "Not_A Brand", "Not(A:Brand", "Not;A=Brand"]
-                .choose(rng)
-                .expect("not_brand array is non-empty");
+            let not_brand =
+                match ["Not-A.Brand", "Not_A Brand", "Not(A:Brand", "Not;A=Brand"].choose(rng) {
+                    Some(brand) => *brand,
+                    None => unreachable!("not_brand array is non-empty"),
+                };
             format!(
                 "\"Google Chrome\";v=\"{version}\", \"Chromium\";v=\"{version}\", \"{not_brand}\";v=\"99\""
             )
         };
 
-        headers.insert("Sec-CH-UA", HeaderValue::from_str(&ch_ua).expect("formatted ch_ua is valid ASCII"));
+        headers.insert(
+            "Sec-CH-UA",
+            HeaderValue::from_str(&ch_ua)
+                .unwrap_or_else(|error| panic!("formatted Sec-CH-UA is invalid: {error}")),
+        );
         headers.insert(
             "Sec-CH-UA-Mobile",
             HeaderValue::from_static(if is_mobile { "?1" } else { "?0" }),
@@ -250,7 +270,8 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
         };
         headers.insert(
             "Sec-CH-UA-Platform",
-            HeaderValue::from_str(platform).expect("static platform string is valid ASCII"),
+            HeaderValue::from_str(platform)
+                .unwrap_or_else(|error| panic!("static platform string is invalid: {error}")),
         );
     }
 
@@ -264,9 +285,13 @@ pub fn random_headers_with_rng<R: Rng + ?Sized>(region: Option<&str>, rng: &mut 
     } else {
         REFERERS.to_vec()
     };
-    let referer = referer_pool.choose(rng).unwrap_or(&&"");
+    let referer = referer_pool.choose(rng).copied().unwrap_or("");
     if !referer.is_empty() {
-        headers.insert("Referer", HeaderValue::from_str(referer).expect("static referer is valid ASCII"));
+        headers.insert(
+            "Referer",
+            HeaderValue::from_str(referer)
+                .unwrap_or_else(|error| panic!("static referer is invalid: {error}")),
+        );
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("cross-site"));
     } else {
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("none"));
@@ -296,8 +321,10 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(1);
         let headers = random_headers_with_rng(None, &mut rng);
         assert!(headers.contains_key("User-Agent"));
-        let ua = headers.get("User-Agent").unwrap().to_str().unwrap();
-        assert!(ua.contains("Mozilla"));
+        let user_agent = headers
+            .get("User-Agent")
+            .and_then(|value| value.to_str().ok());
+        assert!(matches!(user_agent, Some(value) if value.contains("Mozilla")));
     }
 
     #[test]
@@ -313,25 +340,32 @@ mod tests {
     fn test_random_headers_region_ar() {
         let mut rng = StdRng::seed_from_u64(3);
         let headers = random_headers_with_rng(Some("AR"), &mut rng);
-        let lang = headers.get("Accept-Language").unwrap().to_str().unwrap();
-        assert!(lang.contains("ar"));
+        let language = headers
+            .get("Accept-Language")
+            .and_then(|value| value.to_str().ok());
+        assert!(matches!(language, Some(value) if value.contains("ar")));
     }
 
     #[test]
     fn test_random_headers_region_tn() {
         let mut rng = StdRng::seed_from_u64(4);
         let headers = random_headers_with_rng(Some("TN"), &mut rng);
-        let lang = headers.get("Accept-Language").unwrap().to_str().unwrap();
+        let language = headers
+            .get("Accept-Language")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
         // Should contain Arabic or French variant for Tunisia
-        assert!(lang.contains("ar") || lang.contains("fr"));
+        assert!(language.contains("ar") || language.contains("fr"));
     }
 
     #[test]
     fn test_random_headers_region_cn() {
         let mut rng = StdRng::seed_from_u64(5);
         let headers = random_headers_with_rng(Some("CN"), &mut rng);
-        let lang = headers.get("Accept-Language").unwrap().to_str().unwrap();
-        assert!(lang.contains("zh"));
+        let language = headers
+            .get("Accept-Language")
+            .and_then(|value| value.to_str().ok());
+        assert!(matches!(language, Some(value) if value.contains("zh")));
     }
 
     #[test]
@@ -349,8 +383,7 @@ mod tests {
 
     #[test]
     fn test_get_user_agent() {
-        let ua = get_user_agent(0).unwrap();
-        assert!(ua.contains("Mozilla"));
+        assert!(matches!(get_user_agent(0), Some(value) if value.contains("Mozilla")));
         assert!(get_user_agent(999).is_none());
     }
 
@@ -363,9 +396,8 @@ mod tests {
             let headers = random_headers_with_rng(None, &mut rng);
             let ua = headers
                 .get("User-Agent")
-                .unwrap()
-                .to_str()
-                .unwrap()
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
                 .to_string();
             user_agents.insert(ua);
         }

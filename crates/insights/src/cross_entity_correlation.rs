@@ -11,7 +11,7 @@
 //! 4. Competitive analysis - finding competitive dynamics
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Types of relationships between entities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -151,55 +151,119 @@ impl RelationshipTracker {
         let known_patterns = vec![
             // Supplier-Customer patterns
             RelationshipPattern {
-                keywords_a: vec!["supplier".to_string(), "provides".to_string(), "delivers".to_string()],
-                keywords_b: vec!["customer".to_string(), "client".to_string(), "orders".to_string()],
+                keywords_a: vec![
+                    "supplier".to_string(),
+                    "provides".to_string(),
+                    "delivers".to_string(),
+                ],
+                keywords_b: vec![
+                    "customer".to_string(),
+                    "client".to_string(),
+                    "orders".to_string(),
+                ],
                 relationship_type: RelationshipType::Supplier,
                 weight: 0.8,
             },
             RelationshipPattern {
-                keywords_a: vec!["orders from".to_string(), "procures".to_string(), "sources from".to_string()],
-                keywords_b: vec!["supplier".to_string(), "vendor".to_string(), "provides".to_string()],
+                keywords_a: vec![
+                    "orders from".to_string(),
+                    "procures".to_string(),
+                    "sources from".to_string(),
+                ],
+                keywords_b: vec![
+                    "supplier".to_string(),
+                    "vendor".to_string(),
+                    "provides".to_string(),
+                ],
                 relationship_type: RelationshipType::Customer,
                 weight: 0.8,
             },
             // Partner patterns
             RelationshipPattern {
-                keywords_a: vec!["partners with".to_string(), "collaborates".to_string(), "joint venture".to_string()],
-                keywords_b: vec!["partner".to_string(), "collaborator".to_string(), "JV".to_string()],
+                keywords_a: vec![
+                    "partners with".to_string(),
+                    "collaborates".to_string(),
+                    "joint venture".to_string(),
+                ],
+                keywords_b: vec![
+                    "partner".to_string(),
+                    "collaborator".to_string(),
+                    "JV".to_string(),
+                ],
                 relationship_type: RelationshipType::Partner,
                 weight: 0.7,
             },
             // Competitor patterns
             RelationshipPattern {
-                keywords_a: vec!["competes with".to_string(), "rival".to_string(), "competitor".to_string()],
-                keywords_b: vec!["competes".to_string(), "rival".to_string(), "market share".to_string()],
+                keywords_a: vec![
+                    "competes with".to_string(),
+                    "rival".to_string(),
+                    "competitor".to_string(),
+                ],
+                keywords_b: vec![
+                    "competes".to_string(),
+                    "rival".to_string(),
+                    "market share".to_string(),
+                ],
                 relationship_type: RelationshipType::Competitor,
                 weight: 0.9,
             },
             // Investment patterns
             RelationshipPattern {
-                keywords_a: vec!["invests in".to_string(), "funds".to_string(), "backed by".to_string()],
-                keywords_b: vec!["investment".to_string(), "funding".to_string(), "round".to_string()],
+                keywords_a: vec![
+                    "invests in".to_string(),
+                    "funds".to_string(),
+                    "backed by".to_string(),
+                ],
+                keywords_b: vec![
+                    "investment".to_string(),
+                    "funding".to_string(),
+                    "round".to_string(),
+                ],
                 relationship_type: RelationshipType::Investor,
                 weight: 0.8,
             },
             RelationshipPattern {
-                keywords_a: vec!["acquires".to_string(), "purchases".to_string(), "acquisition".to_string()],
-                keywords_b: vec!["acquired".to_string(), "acquisition".to_string(), "acqui-hire".to_string()],
+                keywords_a: vec![
+                    "acquires".to_string(),
+                    "purchases".to_string(),
+                    "acquisition".to_string(),
+                ],
+                keywords_b: vec![
+                    "acquired".to_string(),
+                    "acquisition".to_string(),
+                    "acqui-hire".to_string(),
+                ],
                 relationship_type: RelationshipType::Acquirer,
                 weight: 0.9,
             },
             // Geographic patterns
             RelationshipPattern {
-                keywords_a: vec!["based in".to_string(), "headquartered".to_string(), "located in".to_string()],
-                keywords_b: vec!["based in".to_string(), "headquartered".to_string(), "operates in".to_string()],
+                keywords_a: vec![
+                    "based in".to_string(),
+                    "headquartered".to_string(),
+                    "located in".to_string(),
+                ],
+                keywords_b: vec![
+                    "based in".to_string(),
+                    "headquartered".to_string(),
+                    "operates in".to_string(),
+                ],
                 relationship_type: RelationshipType::CoLocated,
                 weight: 0.6,
             },
             // Technology patterns
             RelationshipPattern {
-                keywords_a: vec!["uses".to_string(), "powered by".to_string(), "integrates".to_string()],
-                keywords_b: vec!["technology".to_string(), "platform".to_string(), "framework".to_string()],
+                keywords_a: vec![
+                    "uses".to_string(),
+                    "powered by".to_string(),
+                    "integrates".to_string(),
+                ],
+                keywords_b: vec![
+                    "technology".to_string(),
+                    "platform".to_string(),
+                    "framework".to_string(),
+                ],
                 relationship_type: RelationshipType::SharedTechnology,
                 weight: 0.5,
             },
@@ -218,7 +282,7 @@ impl RelationshipTracker {
         let normalized = entity.to_lowercase();
         self.entity_mentions
             .entry(normalized)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(EntityMention {
                 context: context.to_string(),
                 source: source.to_string(),
@@ -233,21 +297,32 @@ impl RelationshipTracker {
     }
 
     /// Infer relationships from text content
-    pub fn infer_relationships(&mut self, content: &str, source: &str, timestamp: i64) -> Vec<EntityRelationship> {
+    pub fn infer_relationships(
+        &mut self,
+        content: &str,
+        source: &str,
+        timestamp: i64,
+    ) -> Vec<EntityRelationship> {
         let mut inferred = Vec::new();
         let content_lower = content.to_lowercase();
 
         // Check each pattern
         for pattern in &self.known_patterns {
             // Check if keywords from both sides appear in content
-            let has_a = pattern.keywords_a.iter().any(|kw| content_lower.contains(kw));
-            let has_b = pattern.keywords_b.iter().any(|kw| content_lower.contains(kw));
+            let has_a = pattern
+                .keywords_a
+                .iter()
+                .any(|kw| content_lower.contains(kw));
+            let has_b = pattern
+                .keywords_b
+                .iter()
+                .any(|kw| content_lower.contains(kw));
 
             if has_a && has_b {
                 // Extract potential entity names
                 // This is simplified - in production, would use NER
                 let entities = self.extract_potential_entities(content);
-                
+
                 // Create relationship for each pair
                 for i in 0..entities.len() {
                     for j in (i + 1)..entities.len() {
@@ -276,46 +351,59 @@ impl RelationshipTracker {
         inferred
     }
 
-    /// Extract potential entity names from text (simplified)
+    /// Extract potential entity names from text using the tracker's
+    /// dynamically known entities (from relationships, co-occurrences,
+    /// and entity mentions) rather than a hardcoded list.
     fn extract_potential_entities(&self, text: &str) -> Vec<String> {
         let mut entities = Vec::new();
-        
-        // Known tech entities to look for
-        let known = vec![
-            "NVIDIA", "TSMC", "Foxconn", "Samsung", "Intel", "AMD", "Qualcomm",
-            "Apple", "Google", "Microsoft", "Amazon", "Tesla", "Meta", "OpenAI",
-            "IBM", "Oracle", "Cisco", "Broadcom", "Micron", "SK Hynix",
-            "台积电", "华为", "中兴", "小米", "OPPO", "vivo",
-        ];
-
         let text_lower = text.to_lowercase();
-        
+
+        // Collect known entities from the tracker's existing data
+        // (relationships, co-occurrences, mentions) — all populated
+        // dynamically from observations.
+        let known: HashSet<&str> = self
+            .relationships
+            .keys()
+            .flat_map(|(a, b)| vec![a.as_str(), b.as_str()])
+            .chain(
+                self.cooccurrence_counts
+                    .keys()
+                    .flat_map(|(a, b)| vec![a.as_str(), b.as_str()]),
+            )
+            .chain(self.entity_mentions.keys().map(|s| s.as_str()))
+            .collect();
+
         for entity in known {
-            if text_lower.contains(&entity.to_lowercase()) {
-                if !entities.contains(&entity.to_string()) {
-                    entities.push(entity.to_string());
-                }
+            if text_lower.contains(entity) && !entities.iter().any(|e: &String| e == entity) {
+                entities.push(entity.to_string());
             }
         }
 
         // Also extract company names with suffixes
-        let suffixes = ["Corp", "Inc", "LLC", "Ltd", "Co", "Group", "Technologies", "Systems"];
+        let suffixes = [
+            "Corp",
+            "Inc",
+            "LLC",
+            "Ltd",
+            "Co",
+            "Group",
+            "Technologies",
+            "Systems",
+        ];
         for suffix in suffixes {
             let suffix_lower = suffix.to_lowercase();
             if let Some(pos) = text_lower.find(&suffix_lower) {
                 // Ensure byte offsets are valid char boundaries before slicing
                 let end = pos + suffix.len();
-                if end <= text.len()
-                    && text.is_char_boundary(pos)
-                    && text.is_char_boundary(end)
-                {
+                if end <= text.len() && text.is_char_boundary(pos) && text.is_char_boundary(end) {
                     let raw_start = pos.saturating_sub(50);
                     let mut start = raw_start;
                     while start < pos && !text.is_char_boundary(start) {
                         start += 1;
                     }
                     let candidate = &text[start..end];
-                    let cleaned = candidate.replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '.' , "");
+                    let cleaned = candidate
+                        .replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '.', "");
                     if cleaned.len() > 3 && !entities.iter().any(|e| e.contains(&cleaned)) {
                         entities.push(cleaned.trim().to_string());
                     }
@@ -339,7 +427,8 @@ impl RelationshipTracker {
     /// Get co-occurring entities
     pub fn get_cooccurring(&self, entity: &str, min_count: u32) -> Vec<(&str, u32)> {
         let normalized = entity.to_lowercase();
-        let mut results: Vec<(&str, u32)> = self.cooccurrence_counts
+        let mut results: Vec<(&str, u32)> = self
+            .cooccurrence_counts
             .iter()
             .filter(|((a, b), count)| {
                 (*a == normalized || *b == normalized) && **count >= min_count
@@ -352,7 +441,7 @@ impl RelationshipTracker {
                 }
             })
             .collect();
-        
+
         results.sort_by(|a, b| b.1.cmp(&a.1));
         results
     }
@@ -360,14 +449,14 @@ impl RelationshipTracker {
     /// Generate cross-entity insights
     pub fn generate_cross_entity_insights(&self, entity: &str) -> Vec<CrossEntityInsight> {
         let mut insights = Vec::new();
-        
+
         // Get relationships
         let relationships = self.get_relationships(entity);
-        
+
         if relationships.is_empty() {
             // Try co-occurrence based insights
             let cooccurring = self.get_cooccurring(entity, 3);
-            
+
             if !cooccurring.is_empty() {
                 let related: Vec<RelatedEntity> = cooccurring
                     .iter()
@@ -394,7 +483,7 @@ impl RelationshipTracker {
                     ],
                 });
             }
-            
+
             return insights;
         }
 
@@ -419,26 +508,35 @@ impl RelationshipTracker {
         // Generate supply chain insight
         if !suppliers.is_empty() || !customers.is_empty() {
             let mut related: Vec<RelatedEntity> = Vec::new();
-            
+
             for rel in &suppliers {
                 related.push(RelatedEntity {
-                    name: if rel.entity_a == entity { rel.entity_b.clone() } else { rel.entity_a.clone() },
+                    name: if rel.entity_a == entity {
+                        rel.entity_b.clone()
+                    } else {
+                        rel.entity_a.clone()
+                    },
                     relationship: RelationshipType::Supplier,
                     confidence: rel.confidence,
                     context: "Supplies components/materials".to_string(),
                 });
             }
-            
+
             for rel in &customers {
                 related.push(RelatedEntity {
-                    name: if rel.entity_a == entity { rel.entity_b.clone() } else { rel.entity_a.clone() },
+                    name: if rel.entity_a == entity {
+                        rel.entity_b.clone()
+                    } else {
+                        rel.entity_a.clone()
+                    },
                     relationship: RelationshipType::Customer,
                     confidence: rel.confidence,
                     context: "Purchases from this entity".to_string(),
                 });
             }
 
-            let avg_confidence: f64 = relationships.iter().map(|r| r.confidence).sum::<f64>() / relationships.len() as f64;
+            let avg_confidence: f64 = relationships.iter().map(|r| r.confidence).sum::<f64>()
+                / relationships.len() as f64;
 
             insights.push(CrossEntityInsight {
                 primary_entity: entity.to_string(),
@@ -465,14 +563,19 @@ impl RelationshipTracker {
             let related: Vec<RelatedEntity> = competitors
                 .iter()
                 .map(|rel| RelatedEntity {
-                    name: if rel.entity_a == entity { rel.entity_b.clone() } else { rel.entity_a.clone() },
+                    name: if rel.entity_a == entity {
+                        rel.entity_b.clone()
+                    } else {
+                        rel.entity_a.clone()
+                    },
                     relationship: RelationshipType::Competitor,
                     confidence: rel.confidence,
                     context: "Competitor in same markets".to_string(),
                 })
                 .collect();
 
-            let avg_confidence: f64 = competitors.iter().map(|r| r.confidence).sum::<f64>() / competitors.len() as f64;
+            let avg_confidence: f64 =
+                competitors.iter().map(|r| r.confidence).sum::<f64>() / competitors.len() as f64;
 
             insights.push(CrossEntityInsight {
                 primary_entity: entity.to_string(),
@@ -498,14 +601,19 @@ impl RelationshipTracker {
             let related: Vec<RelatedEntity> = investors
                 .iter()
                 .map(|rel| RelatedEntity {
-                    name: if rel.entity_a == entity { rel.entity_b.clone() } else { rel.entity_a.clone() },
+                    name: if rel.entity_a == entity {
+                        rel.entity_b.clone()
+                    } else {
+                        rel.entity_a.clone()
+                    },
                     relationship: RelationshipType::Investor,
                     confidence: rel.confidence,
                     context: "Investor/portfolio company".to_string(),
                 })
                 .collect();
 
-            let avg_confidence: f64 = investors.iter().map(|r| r.confidence).sum::<f64>() / investors.len() as f64;
+            let avg_confidence: f64 =
+                investors.iter().map(|r| r.confidence).sum::<f64>() / investors.len() as f64;
 
             insights.push(CrossEntityInsight {
                 primary_entity: entity.to_string(),
@@ -557,7 +665,13 @@ impl SupplyChainMapper {
     }
 
     /// Add a supply chain relationship
-    pub fn add_relationship(&mut self, supplier: &str, customer: &str, component: &str, confidence: f64) {
+    pub fn add_relationship(
+        &mut self,
+        supplier: &str,
+        customer: &str,
+        component: &str,
+        confidence: f64,
+    ) {
         let link = SupplyChainLink {
             supplier: supplier.to_string(),
             customer: customer.to_string(),
@@ -567,7 +681,7 @@ impl SupplyChainMapper {
 
         self.supply_chain
             .entry(customer.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(link);
     }
 
@@ -582,7 +696,7 @@ impl SupplyChainMapper {
     /// Get customers for an entity
     pub fn get_customers(&self, supplier: &str) -> Vec<String> {
         let mut customers = Vec::new();
-        
+
         for (customer, links) in &self.supply_chain {
             for link in links {
                 if link.supplier.to_lowercase() == supplier.to_lowercase() {
@@ -590,7 +704,7 @@ impl SupplyChainMapper {
                 }
             }
         }
-        
+
         customers
     }
 
@@ -635,64 +749,74 @@ mod tests {
     #[test]
     fn test_relationship_inference() {
         let mut tracker = RelationshipTracker::new();
-        
+
+        // Pre-populate with known entities (as would happen in production
+        // where entities are dynamically discovered from observations).
+        tracker.record_mention("NVIDIA", "tech company", "test", 1234567890);
+        tracker.record_mention("Microsoft", "tech company", "test", 1234567890);
+        tracker.record_mention("AMD", "tech company", "test", 1234567890);
+        tracker.record_mention("TSMC", "semiconductor", "test", 1234567890);
+
         let content = "NVIDIA partners with Microsoft to develop AI solutions. \
             AMD competes with NVIDIA in the GPU market. TSMC supplies chips to NVIDIA.";
-        
+
         let relationships = tracker.infer_relationships(content, "test_source", 1234567890);
-        
+
         // Should find partner relationship
-        let has_partner = relationships.iter().any(|r| 
-            matches!(r.relationship_type, RelationshipType::Partner)
-        );
-        
-        // Should find competitor relationship  
-        let has_competitor = relationships.iter().any(|r|
-            matches!(r.relationship_type, RelationshipType::Competitor)
-        );
-        
+        let has_partner = relationships
+            .iter()
+            .any(|r| matches!(r.relationship_type, RelationshipType::Partner));
+
+        // Should find competitor relationship
+        let has_competitor = relationships
+            .iter()
+            .any(|r| matches!(r.relationship_type, RelationshipType::Competitor));
+
         // Should find supplier relationship
-        let has_supplier = relationships.iter().any(|r|
-            matches!(r.relationship_type, RelationshipType::Supplier)
+        let has_supplier = relationships
+            .iter()
+            .any(|r| matches!(r.relationship_type, RelationshipType::Supplier));
+
+        assert!(
+            has_partner || has_competitor || has_supplier,
+            "Should find at least one relationship type"
         );
-        
-        assert!(has_partner || has_competitor || has_supplier, 
-            "Should find at least one relationship type");
     }
 
     #[test]
     fn test_cooccurrence_tracking() {
         let mut tracker = RelationshipTracker::new();
-        
+
         tracker.record_cooccurrence("NVIDIA", "AMD");
         tracker.record_cooccurrence("NVIDIA", "AMD");
         tracker.record_cooccurrence("NVIDIA", "TSMC");
-        
+
         let cooccurring = tracker.get_cooccurring("NVIDIA", 1);
-        
+
         assert!(cooccurring.len() >= 2);
-        
-        let amd_count = cooccurring.iter()
+
+        let amd_count = cooccurring
+            .iter()
             .find(|(name, _)| *name == "amd")
             .map(|(_, count)| *count)
             .unwrap_or(0);
-        
+
         assert_eq!(amd_count, 2);
     }
 
     #[test]
     fn test_supply_chain_mapping() {
         let mut mapper = SupplyChainMapper::new();
-        
+
         mapper.add_relationship("TSMC", "NVIDIA", "GPU chips", 0.95);
         mapper.add_relationship("Foxconn", "Apple", "iPhone assembly", 0.90);
-        
+
         let nvidia_supply = mapper.get_suppliers("NVIDIA");
         assert!(!nvidia_supply.is_empty());
-        
+
         let apple_customers = mapper.get_customers("Foxconn");
         assert!(apple_customers.contains(&"Apple".to_string()));
-        
+
         let chain = mapper.map_supply_chain("NVIDIA");
         assert!(!chain.direct_suppliers.is_empty());
     }
@@ -700,11 +824,10 @@ mod tests {
     #[test]
     fn test_cross_entity_insight_generation() {
         let tracker = RelationshipTracker::new();
-        
+
         let insights = tracker.generate_cross_entity_insights("NVIDIA");
-        
+
         // Should generate some insights (even if empty relationships)
         assert!(insights.is_empty() || insights.iter().all(|i| !i.narrative.is_empty()));
     }
 }
-

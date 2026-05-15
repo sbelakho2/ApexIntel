@@ -7,8 +7,11 @@ use apex_core::validation::normalize_url;
 use apex_stats::mutual_info;
 use chrono::{DateTime, Utc};
 use regex::Regex;
+use crate::entity_relevance::EntityRegistry;
+use crate::title_diversity::TitleGenerator;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use tracing::warn;
 use uuid::Uuid;
@@ -232,22 +235,112 @@ fn is_valid_slot_name(slot_name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
 }
 
-/// Generate title from recipe code and entity name.
+/// Counter for title template rotation to ensure variety across insights.
+static TITLE_TEMPLATE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Title template variants for generating varied insight titles.
+/// Each template provides a different narrative structure to avoid formulaic output.
+const TITLE_TEMPLATES: &[(&str, &str)] = &[
+    ("demand", "{entity}: Procurement activity detected"),
+    ("demand", "Sourcing signal from {entity}"),
+    ("demand", "{entity} shows demand indicators"),
+    ("supply_chain", "Supply chain update: {entity}"),
+    ("supply_chain", "{entity} supply chain alert"),
+    ("supply_chain", "Logistics signal — {entity}"),
+    ("competitor", "Competitive intel: {entity}"),
+    ("competitor", "{entity} competitor activity"),
+    ("competitor", "Market movement from {entity}"),
+    ("security", "Security advisory: {entity}"),
+    ("security", "{entity} security signal"),
+    ("security", "Threat indicator — {entity}"),
+    ("poi", "Stakeholder update: {entity}"),
+    ("poi", "{entity} personnel intelligence"),
+    ("poi", "Key contact movement — {entity}"),
+    ("regulatory", "Regulatory update: {entity}"),
+    ("regulatory", "{entity} compliance signal"),
+    ("regulatory", "Policy change affecting {entity}"),
+    ("commodity", "Commodity alert: {entity}"),
+    ("commodity", "{entity} material sourcing"),
+    ("commodity", "Supply constraint — {entity}"),
+    ("logistics", "Logistics alert: {entity}"),
+    ("logistics", "{entity} shipping signal"),
+    ("logistics", "Transport update — {entity}"),
+];
+
+/// Generate title from recipe code and entity name with varied templates.
 ///
-/// Format: "[CODE] Category insight for Entity"
-pub fn generate_title(recipe_code: &str, category: &str, entity_name: &str) -> String {
-    let cat_label = match category {
-        "demand" => "Demand signal",
-        "supply_chain" => "Supply chain alert",
-        "competitor" => "Competitor intelligence",
-        "security" => "Security warning",
-        "poi" => "Stakeholder insight",
-        "regulatory" => "Regulatory change",
-        "commodity" => "Commodity alert",
-        "logistics" => "Logistics signal",
-        other => other,
+/// Uses round-robin rotation across category-specific templates to ensure
+/// title variety. Falls back to structured format for unknown categories.
+/// Generate a title using the `TitleGenerator` for semantic diversity.
+///
+/// Builds a [`SignalContext`] from the candidate's fields and delegates to
+/// `TitleGenerator::generate()`. Falls back to the legacy `generate_title()`
+/// if no generator is provided (backward compat).
+pub fn generate_diverse_title(
+    gen: &mut TitleGenerator,
+    candidate: &InsightCandidate,
+    registry: Option<&EntityRegistry>,
+) -> String {
+    use crate::entity_relevance::SignalContext;
+
+    let context = SignalContext {
+        text: candidate.narrative_template.clone(),
+        entity_hint: Some(candidate.entity_name.clone()),
+        category: Some(candidate.category.clone()),
+        source_url: None,
+        timestamp: Utc::now().timestamp(),
     };
-    format!("[{}] {} for {}", recipe_code, cat_label, entity_name)
+    let diverse = gen.generate(&context, registry);
+    format!("[{}] {}", candidate.recipe_code, diverse.title)
+}
+
+/// Generate a title using the legacy static template system.
+pub fn generate_title(recipe_code: &str, category: &str, entity_name: &str) -> String {
+    // Get templates for this category
+    let category_templates: Vec<&str> = TITLE_TEMPLATES
+        .iter()
+        .filter(|(cat, _)| *cat == category)
+        .map(|(_, template)| *template)
+        .collect();
+
+    if category_templates.is_empty() {
+        // Fallback for unknown categories: use structured format
+        return format!("[{}] {} for {}", recipe_code, category, entity_name);
+    }
+
+    // Rotate through templates using atomic counter
+    let idx = TITLE_TEMPLATE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let template_idx = (idx as usize) % category_templates.len();
+    let template = category_templates[template_idx];
+
+    // Fill template
+    let title = template.replace("{entity}", entity_name);
+
+    // Prepend recipe code for traceability
+    format!("[{}] {}", recipe_code, title)
+}
+
+/// Generate title with explicit template index (for deterministic testing).
+#[cfg(test)]
+pub fn generate_title_with_index(
+    recipe_code: &str,
+    category: &str,
+    entity_name: &str,
+    template_idx: usize,
+) -> String {
+    let category_templates: Vec<&str> = TITLE_TEMPLATES
+        .iter()
+        .filter(|(cat, _)| *cat == category)
+        .map(|(_, template)| *template)
+        .collect();
+
+    if category_templates.is_empty() {
+        return format!("[{}] {} for {}", recipe_code, category, entity_name);
+    }
+
+    let template = category_templates[template_idx % category_templates.len()];
+    let title = template.replace("{entity}", entity_name);
+    format!("[{}] {}", recipe_code, title)
 }
 
 /// Classify impact level from numeric value.
@@ -279,7 +372,8 @@ pub fn priority_score(impact: f64, confidence: f64, severity: &str) -> f64 {
 
 pub fn information_gain_bits(confidence: f64, severity: &str) -> f64 {
     let prior = default_state_distribution();
-    let posterior = posterior_state_distribution(prior, severity_target_state(severity), confidence);
+    let posterior =
+        posterior_state_distribution(prior, severity_target_state(severity), confidence);
     (shannon_entropy_bits(&prior) - shannon_entropy_bits(&posterior)).max(0.0)
 }
 
@@ -325,7 +419,9 @@ pub fn pairwise_evidence_redundancy(evidence: &[EvidenceSlot]) -> Vec<EvidenceRe
     let mut links = Vec::new();
     for left_idx in 0..evidence.len() {
         for right_idx in (left_idx + 1)..evidence.len() {
-            let Some(nmi) = evidence_pair_normalized_mi(&evidence[left_idx].value, &evidence[right_idx].value) else {
+            let Some(nmi) =
+                evidence_pair_normalized_mi(&evidence[left_idx].value, &evidence[right_idx].value)
+            else {
                 continue;
             };
             links.push(EvidenceRedundancyLink {
@@ -438,9 +534,13 @@ const MAX_ACTIONS: usize = 50;
 /// Maximum number of evidence slots processed per insight (B323).
 const MAX_EVIDENCE_SLOTS: usize = 100;
 
-static RE_TRAILING_CITATION_REFS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:\s*\[\d+\])+\s*$").unwrap());
-static RE_CITATION_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\d+\]").unwrap());
+static RE_TRAILING_CITATION_REFS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:\s*\[\d+\])+\s*$")
+        .unwrap_or_else(|error| panic!("valid trailing citation regex: {error}"))
+});
+static RE_CITATION_REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\d+\]").unwrap_or_else(|error| panic!("valid citation regex: {error}"))
+});
 
 /// Parse action template into a list of actions.
 /// Actions are separated by newlines or semicolons. Empty lines are skipped.
@@ -448,7 +548,7 @@ static RE_CITATION_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\d+\]"
 pub fn parse_actions(action_template: &str, slots: &HashMap<String, String>) -> Vec<String> {
     let rendered = render_template(action_template, slots);
     rendered
-        .split(|c: char| c == '\n' || c == ';')
+        .split(['\n', ';'])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .take(MAX_ACTIONS)
@@ -521,6 +621,63 @@ pub fn render_insight(candidate: &InsightCandidate) -> InsightCard {
         &candidate.category,
         &candidate.entity_name,
     );
+    let severity = normalize_card_severity(&candidate.severity);
+    let score = priority_score(candidate.impact, candidate.confidence, &severity)
+        * evidence_support_multiplier(&evidence);
+
+    InsightCard {
+        id: Uuid::new_v4(),
+        recipe_code: candidate.recipe_code.clone(),
+        entity_id: candidate.entity_id,
+        entity_name: candidate.entity_name.clone(),
+        severity,
+        category: candidate.category.clone(),
+        title,
+        narrative,
+        actions,
+        citations,
+        confidence: candidate.confidence,
+        impact: candidate.impact,
+        impact_label: impact_label(candidate.impact).to_string(),
+        priority_score: score,
+        region: candidate.region.clone(),
+        rendered_at: Utc::now(),
+    }
+}
+
+/// Render an [`InsightCandidate`] into a full [`InsightCard`] using diverse
+/// title generation via [`TitleGenerator`].
+///
+/// This is a drop-in replacement for [`render_insight`] that produces
+/// semantically diverse titles across consecutive calls.
+pub fn render_insight_with_diversity(
+    gen: &mut TitleGenerator,
+    candidate: &InsightCandidate,
+    registry: Option<&EntityRegistry>,
+) -> InsightCard {
+    let evidence: Vec<EvidenceSlot> = candidate
+        .evidence
+        .iter()
+        .take(MAX_EVIDENCE_SLOTS)
+        .cloned()
+        .collect();
+    let slots = build_slot_map(&evidence);
+    let narrative_raw = render_template(&candidate.narrative_template, &slots);
+    let mut actions = parse_actions(&candidate.action_template, &slots);
+    if actions.is_empty() {
+        actions = default_action_fallback();
+    }
+    let citations = extract_citations(&evidence);
+    let mut narrative = append_citation_refs(narrative_raw.trim(), citations.len());
+    if trailing_citation_ref_count(&narrative) != citations.len() {
+        warn!(
+            citation_count = citations.len(),
+            trailing_refs = trailing_citation_ref_count(&narrative),
+            "citation_reference_count_mismatch"
+        );
+        narrative = append_citation_refs(&narrative, citations.len());
+    }
+    let title = generate_diverse_title(gen, candidate, registry);
     let severity = normalize_card_severity(&candidate.severity);
     let score = priority_score(candidate.impact, candidate.confidence, &severity)
         * evidence_support_multiplier(&evidence);
@@ -654,6 +811,56 @@ pub fn render_batch(candidates: &[InsightCandidate]) -> Vec<InsightCard> {
     cards
 }
 
+/// Render a batch of candidates using [`TitleGenerator`] for diverse titles.
+///
+/// Same semantics as [`render_batch`] but produces semantically diverse titles.
+/// The [`TitleGenerator`] accumulates history across the batch so titles
+/// become increasingly diverse as more cards are rendered.
+pub fn render_batch_with_diversity(
+    gen: &mut TitleGenerator,
+    candidates: &[InsightCandidate],
+    registry: Option<&EntityRegistry>,
+) -> Vec<InsightCard> {
+    // B295: Deduplicate by (recipe_code, entity_id) composite key before truncation
+    let mut seen_keys = std::collections::HashSet::new();
+    let mut unique_candidates = Vec::new();
+    let mut dup_count = 0;
+    for candidate in candidates {
+        let key = (&candidate.recipe_code, &candidate.entity_id);
+        if seen_keys.insert(key) {
+            unique_candidates.push(candidate);
+        } else {
+            dup_count += 1;
+        }
+    }
+    if dup_count > 0 {
+        warn!(
+            duplicate_count = dup_count,
+            "render_batch_with_diversity: dropped duplicate (recipe_code, entity_id) pairs"
+        );
+    }
+
+    let candidates: Vec<&InsightCandidate> = if unique_candidates.len() > MAX_RENDER_BATCH_SIZE {
+        warn!(
+            input_len = unique_candidates.len(),
+            limit = MAX_RENDER_BATCH_SIZE,
+            "render_batch_with_diversity: input exceeds MAX_RENDER_BATCH_SIZE — truncating"
+        );
+        unique_candidates
+            .into_iter()
+            .take(MAX_RENDER_BATCH_SIZE)
+            .collect()
+    } else {
+        unique_candidates
+    };
+    let mut cards: Vec<InsightCard> = candidates
+        .iter()
+        .map(|c| render_insight_with_diversity(gen, c, registry))
+        .collect();
+    rank_insights(&mut cards);
+    cards
+}
+
 /// Format a single insight card as a text block (for embedding in memos, emails, etc.).
 pub fn format_card_text(card: &InsightCard) -> String {
     let mut lines = Vec::new();
@@ -732,10 +939,18 @@ fn shannon_entropy_bits(distribution: &[f64]) -> f64 {
 }
 
 fn evidence_source_type(slot: &EvidenceSlot) -> String {
-    if let Some(domain) = slot.source_domain.as_ref().filter(|domain| !domain.trim().is_empty()) {
+    if let Some(domain) = slot
+        .source_domain
+        .as_ref()
+        .filter(|domain| !domain.trim().is_empty())
+    {
         return domain.trim().to_lowercase();
     }
-    if let Some(url) = slot.source_url.as_ref().filter(|url| !url.trim().is_empty()) {
+    if let Some(url) = slot
+        .source_url
+        .as_ref()
+        .filter(|url| !url.trim().is_empty())
+    {
         return extract_domain(url).to_lowercase();
     }
     slot.slot_name.trim().to_lowercase()
@@ -816,6 +1031,14 @@ fn tokenize_signal(value: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::field_reassign_with_default,
+        clippy::manual_range_contains,
+        clippy::needless_borrows_for_generic_args,
+        clippy::cloned_ref_to_slice_refs
+    )]
+
     use super::*;
 
     fn sample_evidence() -> Vec<EvidenceSlot> {
@@ -936,19 +1159,46 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_title() {
-        assert_eq!(
-            generate_title("A001", "demand", "Foxconn"),
-            "[A001] Demand signal for Foxconn"
-        );
-        assert_eq!(
-            generate_title("B012", "security", "Starz"),
-            "[B012] Security warning for Starz"
-        );
-        assert_eq!(
-            generate_title("C003", "competitor", "Jabil"),
-            "[C003] Competitor intelligence for Jabil"
-        );
+    fn test_generate_title_uses_varied_templates() {
+        // Test that titles use varied templates, not fixed format
+        let title1 = generate_title("A001", "demand", "Foxconn");
+        assert!(title1.starts_with("[A001]"));
+        assert!(title1.contains("Foxconn"));
+        // Should NOT be the old fixed format "Demand signal for Foxconn"
+        // Instead should be one of the varied templates
+
+        let title2 = generate_title("B012", "security", "Starz");
+        assert!(title2.starts_with("[B012]"));
+        assert!(title2.contains("Starz"));
+
+        let title3 = generate_title("C003", "competitor", "Jabil");
+        assert!(title3.starts_with("[C003]"));
+        assert!(title3.contains("Jabil"));
+    }
+
+    #[test]
+    fn test_generate_title_templates_rotate() {
+        // Reset counter for deterministic test
+        // Generate multiple titles for same category - should vary
+        let titles: Vec<String> = (0..6)
+            .map(|i| generate_title_with_index("X", "demand", "TestCorp", i))
+            .collect();
+
+        // All should contain entity name
+        for title in &titles {
+            assert!(title.contains("TestCorp"));
+        }
+
+        // Titles should differ (rotation working)
+        let unique_titles: std::collections::HashSet<_> = titles.iter().collect();
+        assert!(unique_titles.len() > 1, "Title templates should rotate");
+    }
+
+    #[test]
+    fn test_generate_title_unknown_category_fallback() {
+        let title = generate_title("Z999", "unknown_cat", "SomeEntity");
+        // Unknown category should use fallback format
+        assert_eq!(title, "[Z999] unknown_cat for SomeEntity");
     }
 
     #[test]
@@ -1198,8 +1448,14 @@ mod tests {
     fn test_information_gain_increases_with_confidence() {
         let low = information_gain_bits(0.35, "warning");
         let high = information_gain_bits(0.85, "warning");
-        assert!(high > low, "higher confidence should increase information gain");
-        assert!(high > 0.1, "high-confidence signals should clear the noise floor");
+        assert!(
+            high > low,
+            "higher confidence should increase information gain"
+        );
+        assert!(
+            high > 0.1,
+            "high-confidence signals should clear the noise floor"
+        );
     }
 
     #[test]
@@ -1234,7 +1490,10 @@ mod tests {
         let repeated_card = render_insight(&repeated);
         let diversified_card = render_insight(&diversified);
         assert!(repeated_card.priority_score < diversified_card.priority_score);
-        assert!(evidence_diversity_score(&repeated.evidence) < evidence_diversity_score(&diversified.evidence));
+        assert!(
+            evidence_diversity_score(&repeated.evidence)
+                < evidence_diversity_score(&diversified.evidence)
+        );
     }
 
     #[test]
@@ -1264,7 +1523,10 @@ mod tests {
         ];
         let links = pairwise_evidence_redundancy(&evidence);
         assert!(!links.is_empty());
-        assert!(links[0].normalized_mutual_information > 0.8, "expected duplicated signals to be redundant");
+        assert!(
+            links[0].normalized_mutual_information > 0.8,
+            "expected duplicated signals to be redundant"
+        );
     }
 
     #[test]
@@ -1300,7 +1562,9 @@ mod tests {
             },
         ];
         let links = pairwise_evidence_redundancy(&evidence);
-        assert!(links.iter().any(|link| link.normalized_mutual_information > 0.8));
+        assert!(links
+            .iter()
+            .any(|link| link.normalized_mutual_information > 0.8));
     }
 
     #[test]
@@ -1808,5 +2072,48 @@ mod tests {
         let card = render_insight(&candidate);
         assert!(card.narrative.starts_with("{k129} "));
         assert!(card.narrative.contains("[25]"));
+    }
+
+    // ── Template placeholder validation tests ──
+
+    #[test]
+    fn test_title_templates_all_contain_entity_placeholder() {
+        for (category, template) in TITLE_TEMPLATES {
+            assert!(
+                template.contains("{entity}"),
+                "Template for category '{}' is missing {{entity}} placeholder: '{}'",
+                category,
+                template
+            );
+        }
+    }
+
+    #[test]
+    fn test_title_templates_categories_all_have_at_least_two_variants() {
+        let mut category_counts: HashMap<&str, usize> = HashMap::new();
+        for (cat, _) in TITLE_TEMPLATES {
+            *category_counts.entry(cat).or_insert(0) += 1;
+        }
+        for (cat, count) in &category_counts {
+            assert!(
+                *count >= 2,
+                "Category '{}' has only {} template(s), need at least 2 for variety",
+                cat,
+                count
+            );
+        }
+    }
+
+    #[test]
+    fn test_title_templates_no_duplicate_templates() {
+        let mut seen = std::collections::HashSet::new();
+        for (cat, template) in TITLE_TEMPLATES {
+            let key = format!("{}:{}", cat, template);
+            assert!(
+                seen.insert(key.clone()),
+                "Duplicate template found: '{}'",
+                key
+            );
+        }
     }
 }

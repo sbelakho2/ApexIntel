@@ -1,6 +1,9 @@
 use leptos::*;
 
-use crate::{api, components::cards::{PageHeader, SurfaceCard}};
+use crate::{
+    api,
+    components::cards::{PageHeader, SurfaceCard},
+};
 
 fn number_field(value: &serde_json::Value, key: &str) -> String {
     value
@@ -17,9 +20,18 @@ fn number_field(value: &serde_json::Value, key: &str) -> String {
 
 #[component]
 pub fn AdminPage() -> impl IntoView {
-    let crawl = create_resource(|| (), |_| async { api::fetch_admin_value("/api/admin/crawl-status").await });
-    let recipes = create_resource(|| (), |_| async { api::fetch_admin_value("/api/admin/recipe-performance").await });
-    let coverage = create_resource(|| (), |_| async { api::fetch_admin_value("/api/admin/poi-coverage").await });
+    let crawl = create_resource(
+        || (),
+        |_| async { api::fetch_admin_value("/api/admin/crawl-status").await },
+    );
+    let recipes = create_resource(
+        || (),
+        |_| async { api::fetch_admin_value("/api/admin/recipe-performance").await },
+    );
+    let coverage = create_resource(
+        || (),
+        |_| async { api::fetch_admin_value("/api/admin/poi-coverage").await },
+    );
 
     view! {
         <div class="page">
@@ -35,7 +47,7 @@ pub fn AdminPage() -> impl IntoView {
                                 </div>
                             </SurfaceCard>
                         }.into_view(),
-                        Err(message) => view! { <SurfaceCard title="Crawl Status" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                        Err(message) => view! { <SurfaceCard title="Crawl Status" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                     })}
                 </Suspense>
                 <Suspense fallback=move || view! { <SurfaceCard title="Recipe Performance" subtitle="Loading recipe metrics."><p class="muted-copy">"Loading..."</p></SurfaceCard> }>
@@ -49,7 +61,7 @@ pub fn AdminPage() -> impl IntoView {
                                 </div>
                             </SurfaceCard>
                         }.into_view(),
-                        Err(message) => view! { <SurfaceCard title="Recipe Performance" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                        Err(message) => view! { <SurfaceCard title="Recipe Performance" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                     })}
                 </Suspense>
                 <Suspense fallback=move || view! { <SurfaceCard title="POI Coverage" subtitle="Loading coverage metrics."><p class="muted-copy">"Loading..."</p></SurfaceCard> }>
@@ -62,7 +74,7 @@ pub fn AdminPage() -> impl IntoView {
                                 </div>
                             </SurfaceCard>
                         }.into_view(),
-                        Err(message) => view! { <SurfaceCard title="POI Coverage" subtitle="The API request failed."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
+                        Err(message) => view! { <SurfaceCard title="POI Coverage" subtitle="The API request failed. Try refreshing the page."><p class="error-copy">{message}</p></SurfaceCard> }.into_view(),
                     })}
                 </Suspense>
             </div>

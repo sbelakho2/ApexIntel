@@ -17,7 +17,9 @@ pub use apex_stats::calibration::{
     AlertCalibrationModel, CalibrationSample, ReliabilityBin,
 };
 pub use apex_stats::pipeline::alert_score_from_features;
-use apex_stats::pipeline::{run_pipeline, run_pipeline_with_calibration, StatsPipelineInput, StatsPipelineResult};
+use apex_stats::pipeline::{
+    run_pipeline, run_pipeline_with_calibration, StatsPipelineInput, StatsPipelineResult,
+};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -118,9 +120,11 @@ pub fn analyze_with_calibration(
     }
 
     // Build the unified pipeline input.
-    let mut pipeline_input = StatsPipelineInput::default();
-    pipeline_input.entity_id = input.entity_id.clone();
-    pipeline_input.primary_series = input.primary_series.clone();
+    let mut pipeline_input = StatsPipelineInput {
+        entity_id: input.entity_id.clone(),
+        primary_series: input.primary_series.clone(),
+        ..Default::default()
+    };
 
     if let Some(ref sec) = input.secondary_series {
         pipeline_input.secondary_series = Some(sec.clone());
@@ -201,6 +205,8 @@ pub fn from_observation_counts(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     #[test]

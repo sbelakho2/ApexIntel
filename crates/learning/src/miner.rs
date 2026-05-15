@@ -12,6 +12,13 @@ pub const DEFAULT_WINDOW_DAYS: i32 = 30;
 /// Maximum sweep lag to prevent extremely long runtimes (B222).
 pub const MAX_SWEEP_LAG_DAYS: i32 = 365;
 
+type LagSweepBest = (
+    i32,
+    apex_stats::fisher::FisherExactResult,
+    f64,
+    (u64, u64, u64, u64),
+);
+
 // ────────────────────────────────────────────
 // Config & types
 // ────────────────────────────────────────────
@@ -160,6 +167,13 @@ pub struct PatternCandidate {
 /// - b = signal present AND outcome absent
 /// - c = signal absent AND outcome present
 /// - d = signal absent AND outcome absent
+///
+/// # Time complexity
+///
+/// O(E · (log S + log O)) per call, where E = unique entities,
+/// S = avg signal timestamps per entity, O = avg outcome timestamps
+/// per entity.  Uses sorted timestamps + binary search instead of
+/// O(S · O) nested iteration.
 pub fn build_contingency(
     outcomes: &[EventRecord],
     signals: &[EventRecord],
@@ -174,10 +188,17 @@ pub fn build_contingency(
     for (eid, ts) in outcomes {
         outcome_map.entry(eid.as_str()).or_default().push(*ts);
     }
+    // Sort timestamps for binary-search-based window checks
+    for v in outcome_map.values_mut() {
+        v.sort_unstable();
+    }
 
     let mut signal_map: HashMap<&str, Vec<i64>> = HashMap::new();
     for (eid, ts) in signals {
         signal_map.entry(eid.as_str()).or_default().push(*ts);
+    }
+    for v in signal_map.values_mut() {
+        v.sort_unstable();
     }
 
     let all_entities: HashSet<&str> = outcome_map
@@ -197,23 +218,33 @@ pub fn build_contingency(
     let (mut a, mut b, mut c, mut d) = (0u64, 0u64, 0u64, 0u64);
 
     for entity in &all_entities {
-        let has_signal = signal_map
+        let signal_timestamps = signal_map
             .get(*entity)
-            .map_or(false, |ts_list| !ts_list.is_empty());
+            .filter(|ts_list| !ts_list.is_empty());
+        let has_signal = signal_timestamps.is_some();
 
         let has_outcome_in_window = if has_signal {
-            let s_ts = signal_map.get(*entity).unwrap();
-            outcome_map.get(*entity).map_or(false, |o_ts| {
+            let Some(s_ts) = signal_timestamps else {
+                continue;
+            };
+            outcome_map.get(*entity).is_some_and(|o_ts| {
+                // OPTIMIZATION: Binary search over sorted signal timestamps
+                // instead of O(S · O) nested iteration.
+                // For each outcome timestamp, check if any signal timestamp
+                // falls within [ot - lag_secs - window_secs, ot - lag_secs].
                 o_ts.iter().any(|ot| {
-                    s_ts.iter()
-                        .any(|st| *ot >= st + lag_secs && *ot <= st + lag_secs + window_secs)
+                    let window_start = *ot - lag_secs - window_secs;
+                    let window_end = *ot - lag_secs;
+                    // Binary search: find first signal timestamp >= window_start
+                    let idx = s_ts.partition_point(|st| *st < window_start);
+                    idx < s_ts.len() && s_ts[idx] <= window_end
                 })
             })
         } else {
             // No signal: require outcome within the study observation period
-            outcome_map.get(*entity).map_or(false, |o_ts| {
-                o_ts.iter().any(|ot| *ot >= study_start && *ot <= study_end)
-            })
+            outcome_map
+                .get(*entity)
+                .is_some_and(|o_ts| o_ts.iter().any(|ot| *ot >= study_start && *ot <= study_end))
         };
 
         match (has_signal, has_outcome_in_window) {
@@ -240,6 +271,7 @@ pub fn build_contingency(
 }
 
 /// Compute odds ratio from a 2×2 contingency table.
+#[inline]
 pub fn odds_ratio(a: u64, b: u64, c: u64, d: u64) -> f64 {
     let num = (a as f64) * (d as f64);
     let den = (b as f64) * (c as f64);
@@ -250,6 +282,7 @@ pub fn odds_ratio(a: u64, b: u64, c: u64, d: u64) -> f64 {
 }
 
 /// Compute Fisher's exact test p-value using our stats crate.
+#[inline]
 pub fn fisher_p_value(a: u64, b: u64, c: u64, d: u64) -> f64 {
     apex_stats::fisher::p_value(a, b, c, d)
 }
@@ -366,21 +399,38 @@ pub fn entity_coverage(signals: &[EventRecord], all_entity_count: usize) -> f64 
 
 /// Sweep lags to find the best one for a signal-outcome pair.
 /// `max_lag_days` is clamped to `MAX_SWEEP_LAG_DAYS` to prevent excessive runtimes (B222).
+///
+/// # Time complexity
+///
+/// O(L · E · (log S + log O)) where L = number of lags, E = unique entities,
+/// S = signal timestamps per entity, O = outcome timestamps per entity.
+///
+/// # Optimizations
+///
+/// - **Early exit on consecutive non-significant lags**: if `EARLY_EXIT_STREAK`
+///   consecutive lags on both the negative and positive sides show no significant
+///   effect, the sweep stops scanning further away.  The best lag for causal
+///   signals is typically close to zero; very distant lags are rarely meaningful.
+/// - `max_lag_days` clamping via [`MAX_SWEEP_LAG_DAYS`] (B222).
 pub fn sweep_lags(
     outcomes: &[EventRecord],
     signals: &[EventRecord],
     config: &MinerConfig,
     window_days: i32,
 ) -> Option<PatternCandidate> {
-    let effective_max = config.max_lag_days.min(MAX_SWEEP_LAG_DAYS); // B222
-    let mut best: Option<(
-        i32,
-        apex_stats::fisher::FisherExactResult,
-        f64,
-        (u64, u64, u64, u64),
-    )> = None;
+    /// Number of consecutive non-significant lags before early exit.
+    const EARLY_EXIT_STREAK: i32 = 30;
 
-    for lag in -effective_max..=effective_max {
+    let effective_max = config.max_lag_days.min(MAX_SWEEP_LAG_DAYS); // B222
+    let mut best: Option<LagSweepBest> = None;
+
+    // OPTIMIZATION: Sweep negative and positive sides separately with
+    // independent early-exit streaks.  This avoids the bug where breaking
+    // out of a unified loop on the negative side would skip all positive lags.
+    let mut streak = 0i32;
+
+    // Phase 1: negative lags (most distant → close to zero)
+    for lag in (-effective_max..0).rev() {
         let (a, b, c, d) = build_contingency(outcomes, signals, lag, window_days, 0);
         let total = a + b + c + d;
         if total < 20 {
@@ -389,27 +439,63 @@ pub fn sweep_lags(
 
         let fisher = fisher_result(a, b, c, d);
         let effect = odds_ratio(a, b, c, d);
-        let minimum_detectable_effect =
-            apex_stats::fisher::minimum_detectable_odds_ratio(a, b, c, d, config.max_p, 0.80);
+        let mde = apex_stats::fisher::minimum_detectable_odds_ratio(a, b, c, d, config.max_p, 0.80);
 
-        if effect >= config.min_effect && fisher.p_value <= config.max_p {
+        let is_sig = effect >= config.min_effect && fisher.p_value <= config.max_p;
+        if is_sig {
+            streak = 0;
             if best
                 .as_ref()
-                .map_or(true, |(_, best_fisher, _, _)| effect > best_fisher.odds_ratio.min(100.0))
+                .is_none_or(|(_, bf, _, _)| effect > bf.odds_ratio.min(100.0))
             {
-                best = Some((lag, fisher, minimum_detectable_effect, (a, b, c, d)));
+                best = Some((lag, fisher, mde, (a, b, c, d)));
+            }
+        } else {
+            streak += 1;
+            if streak >= EARLY_EXIT_STREAK {
+                break; // remaining negative lags closer to zero unlikely to be significant
             }
         }
     }
 
-    best.map(|(lag, fisher, minimum_detectable_effect, contingency)| PatternCandidate {
+    // Phase 2: zero and positive lags (0 → +max)
+    streak = 0;
+    for lag in 0..=effective_max {
+        let (a, b, c, d) = build_contingency(outcomes, signals, lag, window_days, 0);
+        let total = a + b + c + d;
+        if total < 20 {
+            continue;
+        }
+
+        let fisher = fisher_result(a, b, c, d);
+        let effect = odds_ratio(a, b, c, d);
+        let mde = apex_stats::fisher::minimum_detectable_odds_ratio(a, b, c, d, config.max_p, 0.80);
+
+        let is_sig = effect >= config.min_effect && fisher.p_value <= config.max_p;
+        if is_sig {
+            streak = 0;
+            if best
+                .as_ref()
+                .is_none_or(|(_, bf, _, _)| effect > bf.odds_ratio.min(100.0))
+            {
+                best = Some((lag, fisher, mde, (a, b, c, d)));
+            }
+        } else {
+            streak += 1;
+            if streak >= EARLY_EXIT_STREAK {
+                break; // remaining positive lags too far from zero
+            }
+        }
+    }
+
+    best.map(|(lag, fisher, mde, contingency)| PatternCandidate {
         outcome: "unknown_outcome".to_string(),
         signals: vec!["unknown_signal".to_string()],
         best_lag_days: lag,
         effect_size: odds_ratio(contingency.0, contingency.1, contingency.2, contingency.3),
         odds_ratio_ci_low: fisher.odds_ratio_ci_low,
         odds_ratio_ci_high: fisher.odds_ratio_ci_high,
-        minimum_detectable_effect,
+        minimum_detectable_effect: mde,
         p_value: fisher.p_value,
         q_value: 0.0,
         stability: 0.0,
@@ -511,6 +597,8 @@ pub fn deduplicate_candidates(candidates: &mut Vec<PatternCandidate>) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use super::*;
 
     #[allow(dead_code)]
@@ -795,9 +883,11 @@ mod tests {
             .map(|i| (format!("S{}", i), i as i64 * 86400))
             .collect();
 
-        let mut cfg = MinerConfig::default();
-        cfg.min_effect = 50.0;
-        cfg.max_p = 1e-10;
+        let cfg = MinerConfig {
+            min_effect: 50.0,
+            max_p: 1e-10,
+            ..Default::default()
+        };
 
         let result = sweep_lags(&outcomes, &signals, &cfg, 30);
         assert!(result.is_none());
@@ -908,7 +998,7 @@ mod tests {
             .collect();
         let stability = compute_stability(&outcomes, &signals, 0, 1);
         // With 1 split, stability is 0.0 or 1.0
-        assert!(stability >= 0.0 && stability <= 1.0);
+        assert!((0.0..=1.0).contains(&stability));
     }
 
     #[test]
@@ -920,7 +1010,7 @@ mod tests {
             .map(|i| (format!("E{}", i), i as i64 * 86400 * 5))
             .collect();
         let stability = compute_stability(&outcomes, &signals, 0, 2);
-        assert!(stability >= 0.0 && stability <= 1.0);
+        assert!((0.0..=1.0).contains(&stability));
     }
 
     // ── B220: DEFAULT_WINDOW_DAYS constant ──────────
@@ -943,9 +1033,11 @@ mod tests {
     // ── B222: sweep_lags large max_lag_days clamped ──────────
     #[test]
     fn test_sweep_lags_large_max_lag_clamped() {
-        let mut cfg = MinerConfig::default();
-        cfg.max_lag_days = 10_000; // exceeds MAX_SWEEP_LAG_DAYS
-                                   // Should not panic or take forever — clamped to MAX_SWEEP_LAG_DAYS
+        let cfg = MinerConfig {
+            max_lag_days: 10_000, // exceeds MAX_SWEEP_LAG_DAYS
+            ..Default::default()
+        };
+        // Should not panic or take forever — clamped to MAX_SWEEP_LAG_DAYS
         let result = sweep_lags(&[], &[], &cfg, 30);
         assert!(result.is_none());
     }

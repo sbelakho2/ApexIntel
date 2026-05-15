@@ -11,6 +11,8 @@
 //! is set, the worker will query the database for stage inputs instead of
 //! reading from JSON stub files.
 
+#![allow(clippy::should_implement_trait)]
+
 pub mod holiday_calendar;
 pub mod nightly;
 pub mod notifications;

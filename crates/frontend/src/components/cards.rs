@@ -1,7 +1,11 @@
 use leptos::*;
 
 #[component]
-pub fn PageHeader(title: &'static str, subtitle: &'static str, eyebrow: &'static str) -> impl IntoView {
+pub fn PageHeader(
+    title: &'static str,
+    subtitle: &'static str,
+    eyebrow: &'static str,
+) -> impl IntoView {
     view! {
         <header class="page-header">
             <div>
@@ -31,7 +35,12 @@ pub fn SurfaceCard(
 }
 
 #[component]
-pub fn StatCard(label: &'static str, value: String, delta: String, children: Children) -> impl IntoView {
+pub fn StatCard(
+    label: &'static str,
+    value: String,
+    delta: String,
+    children: Children,
+) -> impl IntoView {
     view! {
         <div class="surface-card stat-card">
             <div class="surface-card-body">

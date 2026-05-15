@@ -124,7 +124,11 @@ impl AdjacencyGraph {
             .get(node)
             .into_iter()
             .flat_map(|edges| edges.iter())
-            .filter(|edge| edge_type.map(|kind| &edge.edge_type == kind).unwrap_or(true))
+            .filter(|edge| {
+                edge_type
+                    .map(|kind| &edge.edge_type == kind)
+                    .unwrap_or(true)
+            })
             .cloned()
             .collect()
     }
@@ -202,8 +206,10 @@ impl AdjacencyGraph {
         }
 
         let init_score = 1.0 / n as f64;
-        let mut scores: HashMap<String, f64> =
-            nodes.iter().map(|node| (node.clone(), init_score)).collect();
+        let mut scores: HashMap<String, f64> = nodes
+            .iter()
+            .map(|node| (node.clone(), init_score))
+            .collect();
         let mut last_delta = None;
 
         for iteration in 0..max_iterations.max(minimum_iterations) {
@@ -388,8 +394,10 @@ impl AdjacencyGraph {
         let weights = self.undirected_weight_map();
         let mut nodes: Vec<String> = weights.keys().cloned().collect();
         nodes.sort();
-        let mut community_of: HashMap<String, String> =
-            nodes.iter().map(|node| (node.clone(), node.clone())).collect();
+        let mut community_of: HashMap<String, String> = nodes
+            .iter()
+            .map(|node| (node.clone(), node.clone()))
+            .collect();
         let degrees: HashMap<String, f64> = nodes
             .iter()
             .map(|node| {
@@ -409,7 +417,10 @@ impl AdjacencyGraph {
             passes += 1;
             for node in &nodes {
                 let node_degree = degrees.get(node).copied().unwrap_or(0.0);
-                let current = community_of.get(node).cloned().unwrap_or_else(|| node.clone());
+                let current = community_of
+                    .get(node)
+                    .cloned()
+                    .unwrap_or_else(|| node.clone());
                 let mut candidate_communities: HashSet<String> = HashSet::from([current.clone()]);
                 if let Some(neighbors) = weights.get(node) {
                     for neighbor in neighbors.keys() {
@@ -474,8 +485,10 @@ impl AdjacencyGraph {
 
         for source in &nodes {
             let mut stack = Vec::new();
-            let mut predecessors: HashMap<String, Vec<String>> =
-                nodes.iter().map(|node| (node.clone(), Vec::new())).collect();
+            let mut predecessors: HashMap<String, Vec<String>> = nodes
+                .iter()
+                .map(|node| (node.clone(), Vec::new()))
+                .collect();
             let mut sigma: HashMap<String, f64> =
                 nodes.iter().map(|node| (node.clone(), 0.0)).collect();
             let mut distance: HashMap<String, i64> =
@@ -488,7 +501,11 @@ impl AdjacencyGraph {
             while let Some(node) = queue.pop_front() {
                 stack.push(node.clone());
                 let node_distance = *distance.get(&node).unwrap_or(&-1);
-                for neighbor in adjacency.get(&node).into_iter().flat_map(|list| list.iter()) {
+                for neighbor in adjacency
+                    .get(&node)
+                    .into_iter()
+                    .flat_map(|list| list.iter())
+                {
                     if *distance.get(neighbor).unwrap_or(&-1) < 0 {
                         queue.push_back(neighbor.clone());
                         distance.insert(neighbor.clone(), node_distance + 1);
@@ -508,11 +525,16 @@ impl AdjacencyGraph {
             let mut dependency: HashMap<String, f64> =
                 nodes.iter().map(|node| (node.clone(), 0.0)).collect();
             while let Some(node) = stack.pop() {
-                for predecessor in predecessors.get(&node).into_iter().flat_map(|list| list.iter()) {
+                for predecessor in predecessors
+                    .get(&node)
+                    .into_iter()
+                    .flat_map(|list| list.iter())
+                {
                     let sigma_predecessor = sigma.get(predecessor).copied().unwrap_or(0.0);
                     let sigma_node = sigma.get(&node).copied().unwrap_or(1.0);
                     let contribution = if sigma_node > 0.0 {
-                        sigma_predecessor / sigma_node * (1.0 + dependency.get(&node).copied().unwrap_or(0.0))
+                        sigma_predecessor / sigma_node
+                            * (1.0 + dependency.get(&node).copied().unwrap_or(0.0))
                     } else {
                         0.0
                     };
@@ -536,16 +558,27 @@ impl AdjacencyGraph {
             week_start,
             edges: self.typed_edges.clone(),
         });
-        self.snapshots.sort_by(|left, right| left.week_start.cmp(&right.week_start));
+        self.snapshots
+            .sort_by(|left, right| left.week_start.cmp(&right.week_start));
     }
 
     pub fn weekly_snapshots(&self) -> &[GraphSnapshot] {
         self.snapshots.as_slice()
     }
 
-    pub fn snapshot_delta(&self, from_week: NaiveDate, to_week: NaiveDate) -> Option<SnapshotDelta> {
-        let old_snapshot = self.snapshots.iter().find(|snapshot| snapshot.week_start == from_week)?;
-        let new_snapshot = self.snapshots.iter().find(|snapshot| snapshot.week_start == to_week)?;
+    pub fn snapshot_delta(
+        &self,
+        from_week: NaiveDate,
+        to_week: NaiveDate,
+    ) -> Option<SnapshotDelta> {
+        let old_snapshot = self
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.week_start == from_week)?;
+        let new_snapshot = self
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.week_start == to_week)?;
         Some(snapshot_delta_between(old_snapshot, new_snapshot))
     }
 
@@ -553,8 +586,14 @@ impl AdjacencyGraph {
         let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
         for (node, neighbors) in &self.edges {
             for (neighbor, _) in neighbors {
-                adjacency.entry(node.clone()).or_default().insert(neighbor.clone());
-                adjacency.entry(neighbor.clone()).or_default().insert(node.clone());
+                adjacency
+                    .entry(node.clone())
+                    .or_default()
+                    .insert(neighbor.clone());
+                adjacency
+                    .entry(neighbor.clone())
+                    .or_default()
+                    .insert(node.clone());
             }
         }
         adjacency
@@ -586,6 +625,7 @@ impl AdjacencyGraph {
         weights
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn modularity_gain(
         &self,
         node: &str,
@@ -610,20 +650,27 @@ impl AdjacencyGraph {
             .sum();
         let sigma_tot: f64 = community_of
             .iter()
-            .filter(|(member, community)| *community == candidate_community && member.as_str() != node)
+            .filter(|(member, community)| {
+                *community == candidate_community && member.as_str() != node
+            })
             .map(|(member, _)| degrees.get(member).copied().unwrap_or(0.0))
             .sum();
         k_i_in - sigma_tot * node_degree / total_weight_twice
     }
 }
 
-pub fn snapshot_delta_between(old_snapshot: &GraphSnapshot, new_snapshot: &GraphSnapshot) -> SnapshotDelta {
+pub fn snapshot_delta_between(
+    old_snapshot: &GraphSnapshot,
+    new_snapshot: &GraphSnapshot,
+) -> SnapshotDelta {
     let old_edges = snapshot_edge_set(old_snapshot);
     let new_edges = snapshot_edge_set(new_snapshot);
-    let mut new_edge_list: Vec<(String, String, EdgeType)> = new_edges.difference(&old_edges).cloned().collect();
-    let mut removed_edge_list: Vec<(String, String, EdgeType)> = old_edges.difference(&new_edges).cloned().collect();
-    new_edge_list.sort_by(|left, right| left.cmp(right));
-    removed_edge_list.sort_by(|left, right| left.cmp(right));
+    let mut new_edge_list: Vec<(String, String, EdgeType)> =
+        new_edges.difference(&old_edges).cloned().collect();
+    let mut removed_edge_list: Vec<(String, String, EdgeType)> =
+        old_edges.difference(&new_edges).cloned().collect();
+    new_edge_list.sort();
+    removed_edge_list.sort();
 
     let old_membership = snapshot_community_membership(old_snapshot);
     let new_membership = snapshot_community_membership(new_snapshot);
@@ -654,7 +701,11 @@ fn snapshot_edge_set(snapshot: &GraphSnapshot) -> HashSet<(String, String, EdgeT
         .iter()
         .flat_map(|(from, edges)| {
             edges.iter().map(move |edge| {
-                (from.clone(), edge.neighbor_id.clone(), edge.edge_type.clone())
+                (
+                    from.clone(),
+                    edge.neighbor_id.clone(),
+                    edge.edge_type.clone(),
+                )
             })
         })
         .collect()
@@ -665,7 +716,8 @@ fn snapshot_community_membership(snapshot: &GraphSnapshot) -> HashMap<String, St
     graph.typed_edges = snapshot.edges.clone();
     for (from, edges) in &snapshot.edges {
         for edge in edges {
-            graph.edges
+            graph
+                .edges
                 .entry(from.clone())
                 .or_default()
                 .push((edge.neighbor_id.clone(), edge.weight));
@@ -738,7 +790,7 @@ mod tests {
         let result = g.propagate_risk(&initial, 1, 0.5);
 
         // starz keeps its risk
-        assert!(*result.get("starz").unwrap() >= 0.8);
+        assert!(matches!(result.get("starz"), Some(value) if *value >= 0.8));
         // foxconn and jabil should get some risk
         assert!(*result.get("foxconn").unwrap_or(&0.0) > 0.0);
         assert!(*result.get("jabil").unwrap_or(&0.0) > 0.0);
@@ -799,7 +851,7 @@ mod tests {
         initial.insert("d".to_string(), 1.0);
 
         let result = g.propagate_risk(&initial, 3, 0.9);
-        assert!(*result.get("b").unwrap() <= 1.0);
+        assert!(matches!(result.get("b"), Some(value) if *value <= 1.0));
     }
 
     #[test]
@@ -828,7 +880,7 @@ mod tests {
         let scores = g.pagerank(20, 0.85);
 
         // All scores should be positive
-        for (_, score) in &scores {
+        for score in scores.values() {
             assert!(*score > 0.0);
         }
 
@@ -840,7 +892,9 @@ mod tests {
     #[test]
     fn pagerank_convergence_assertion() {
         let g = sample_graph();
-        let convergence_delta = g.pagerank_convergence_l1_delta(30, 0.85).unwrap();
+        let convergence_delta = g
+            .pagerank_convergence_l1_delta(30, 0.85)
+            .unwrap_or_else(|| panic!("sample graph should produce a convergence delta"));
         assert!(
             convergence_delta < 1e-6,
             "PageRank should converge by 30 iterations; L1 delta was {}",
@@ -865,14 +919,18 @@ mod tests {
     #[test]
     fn test_shortest_path_direct() {
         let g = sample_graph();
-        let path = g.shortest_path("starz", "foxconn").unwrap();
+        let path = g
+            .shortest_path("starz", "foxconn")
+            .unwrap_or_else(|| panic!("direct path should exist"));
         assert_eq!(path, vec!["starz", "foxconn"]);
     }
 
     #[test]
     fn test_shortest_path_two_hops() {
         let g = sample_graph();
-        let path = g.shortest_path("starz", "apple").unwrap();
+        let path = g
+            .shortest_path("starz", "apple")
+            .unwrap_or_else(|| panic!("two-hop path should exist"));
         assert_eq!(path, vec!["starz", "foxconn", "apple"]);
     }
 
@@ -947,14 +1005,16 @@ mod tests {
         initial.insert("a".to_string(), 0.5);
         let result = g.propagate_risk(&initial, 3, 0.9);
         // Risk should never exceed 1.0
-        assert!(*result.get("a").unwrap() <= 1.0);
+        assert!(matches!(result.get("a"), Some(value) if *value <= 1.0));
     }
 
     #[test]
     fn test_self_loop_shortest_path() {
         let mut g = AdjacencyGraph::new();
         g.add_edge("a", "a", 1.0);
-        let path = g.shortest_path("a", "a").unwrap();
+        let path = g
+            .shortest_path("a", "a")
+            .unwrap_or_else(|| panic!("self-loop path should exist"));
         assert_eq!(path, vec!["a"]);
     }
 
@@ -970,7 +1030,7 @@ mod tests {
         let scores = g.pagerank(30, 0.85);
         // All nodes including the disconnected one should have positive score
         assert!(scores.len() >= 3);
-        for (_node, score) in &scores {
+        for score in scores.values() {
             assert!(*score > 0.0, "All nodes should have positive pagerank");
         }
     }
@@ -1051,14 +1111,18 @@ mod tests {
         g.add_edge("c", "a", 1.0);
         g.add_edge("c", "d", 1.0);
 
-        let path = g.shortest_path("a", "d").unwrap();
+        let path = g
+            .shortest_path("a", "d")
+            .unwrap_or_else(|| panic!("cycle graph should have a path to d"));
         assert_eq!(path, vec!["a", "b", "c", "d"]);
     }
 
     #[test]
     fn test_shortest_path_same_node() {
         let g = sample_graph();
-        let path = g.shortest_path("starz", "starz").unwrap();
+        let path = g
+            .shortest_path("starz", "starz")
+            .unwrap_or_else(|| panic!("same-node path should exist"));
         assert_eq!(path, vec!["starz"]);
     }
 
@@ -1188,9 +1252,19 @@ mod tests {
         g.add_bidi_edge("a3", "b1", 0.05);
 
         let communities = g.louvain_communities();
-        assert_eq!(communities.len(), 2, "expected two dense clusters: {communities:?}");
-        assert!(communities.iter().any(|community| community == &vec!["a1".to_string(), "a2".to_string(), "a3".to_string()]));
-        assert!(communities.iter().any(|community| community == &vec!["b1".to_string(), "b2".to_string(), "b3".to_string()]));
+        assert_eq!(
+            communities.len(),
+            2,
+            "expected two dense clusters: {communities:?}"
+        );
+        assert!(communities
+            .iter()
+            .any(|community| community
+                == &vec!["a1".to_string(), "a2".to_string(), "a3".to_string()]));
+        assert!(communities
+            .iter()
+            .any(|community| community
+                == &vec!["b1".to_string(), "b2".to_string(), "b3".to_string()]));
     }
 
     #[test]
@@ -1209,7 +1283,8 @@ mod tests {
 
     #[test]
     fn test_snapshot_delta_tracks_new_removed_edges_and_migrations() {
-        let week1 = NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        let week1 = NaiveDate::from_ymd_opt(2026, 3, 2)
+            .unwrap_or_else(|| panic!("fixed test date should be valid"));
         let week2 = week1 + chrono::Days::new(7);
 
         let mut graph_week1 = AdjacencyGraph::new();
@@ -1235,12 +1310,17 @@ mod tests {
         assert!(delta
             .new_edges
             .iter()
-            .any(|(from, to, kind)| from == "supplier" && to == "oem" && *kind == EdgeType::SupplierOf));
+            .any(|(from, to, kind)| from == "supplier"
+                && to == "oem"
+                && *kind == EdgeType::SupplierOf));
         assert!(delta
             .removed_edges
             .iter()
             .any(|(from, to, kind)| from == "a2" && to == "x" && *kind == EdgeType::CompetesWith));
-        assert!(delta.community_migrations.iter().any(|migration| migration.node_id == "x"));
+        assert!(delta
+            .community_migrations
+            .iter()
+            .any(|migration| migration.node_id == "x"));
     }
 
     #[test]

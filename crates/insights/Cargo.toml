@@ -14,5 +14,10 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }
+serde_yaml = { workspace = true }
 apex-llm = { path = "../llm" }
 tokio = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+lru = "0.12"

@@ -2466,26 +2466,29 @@ mod tests {
 
     #[test]
     fn load_sources_from_path_overrides_defaults() {
-        let file = NamedTempFile::new().expect("test: create temp file");
+        let file =
+            NamedTempFile::new().unwrap_or_else(|error| panic!("test: create temp file: {error}"));
         fs::write(
             file.path(),
             "sources:\n  - slug: test_feed\n    name: Test Feed\n    url: https://example.com/feed\n    search_param: null\n    region: Global\n    category: News\n    tier: 1\n    needs_proxy: false\n    rss_url: https://example.com/rss\n    enabled: true\n    min_interval_minutes: 15\n    notes: runtime override\n",
         )
-        .expect("test: write source yaml");
+        .unwrap_or_else(|error| panic!("test: write source yaml: {error}"));
 
-        let sources = load_sources_from_path(file.path()).expect("test: load sources");
+        let sources = load_sources_from_path(file.path())
+            .unwrap_or_else(|error| panic!("test: load sources: {error}"));
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].slug, "test_feed");
     }
 
     #[test]
     fn load_sources_from_path_rejects_duplicate_slugs() {
-        let file = NamedTempFile::new().expect("test: create temp file");
+        let file =
+            NamedTempFile::new().unwrap_or_else(|error| panic!("test: create temp file: {error}"));
         fs::write(
             file.path(),
             "sources:\n  - slug: dup\n    name: One\n    url: https://example.com/one\n    search_param: null\n    region: Global\n    category: News\n    tier: 1\n    needs_proxy: false\n    rss_url: null\n    enabled: true\n    min_interval_minutes: 15\n    notes: null\n  - slug: dup\n    name: Two\n    url: https://example.com/two\n    search_param: null\n    region: Global\n    category: News\n    tier: 2\n    needs_proxy: false\n    rss_url: null\n    enabled: true\n    min_interval_minutes: 30\n    notes: null\n",
         )
-        .expect("test: write duplicate source yaml");
+        .unwrap_or_else(|error| panic!("test: write duplicate source yaml: {error}"));
 
         let error = load_sources_from_path(file.path()).unwrap_err();
         assert!(error.to_string().contains("duplicate source slug dup"));
