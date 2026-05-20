@@ -1,36 +1,33 @@
 [package]
 name = "apex-llm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Feature flags (B290)
-#
-# `experimental` — enables the `function_calling` module which exposes the
-#   OpenAI tool-calling schema (FunctionSpec / FunctionCall).  The feature is
-#   opt-in because:
-#   (a) llama.cpp function-calling support is limited and provider-dependent,
-#   (b) the API is expected to evolve as the standard matures.
-#
-# Usage:
-#   cargo build -p apex-llm --features experimental
-#   cargo test  -p apex-llm --features experimental
-# ─────────────────────────────────────────────────────────────────────────────
-[features]
-default = []
-experimental = []
+authors = ["ApexIntel Team"]
+description = "LLM integration for ApexIntel OSINT platform"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sabelakhoua/ApexIntel"
 
 [dependencies]
-apex-core = { path = "../core" }
-serde = { workspace = true, features = ["derive"] }
+# Core
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+secrecy = { version = "0.8", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-async-trait = { workspace = true }
-reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true, features = ["full"] }
-sha2 = { workspace = true }
-secrecy = { version = "0.10", features = ["serde"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+sha2 = "0.10"
+
+# Workspace internal crates
+apex-core = { path = "../core" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+experimental = []

@@ -432,8 +432,8 @@ ReadWritePaths=/opt/apexintel/data /opt/apexintel/logs
 ReadOnlyPaths=/opt/apexintel/static
 
 # Logging
-StandardOutput=append:/opt/apexintel/logs/api.log
-StandardError=append:/opt/apexintel/logs/api.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -459,8 +459,8 @@ Restart=on-failure
 RestartSec=10
 LimitNOFILE=65536
 
-StandardOutput=append:/opt/apexintel/logs/worker.log
-StandardError=append:/opt/apexintel/logs/worker.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -491,8 +491,8 @@ Restart=on-failure
 RestartSec=10
 LimitNOFILE=65536
 
-StandardOutput=append:/opt/apexintel/logs/llm.log
-StandardError=append:/opt/apexintel/logs/llm.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -574,8 +574,8 @@ server {
         proxy_send_timeout 60s;
         client_max_body_size 64k;
 
-        # CORS
-        add_header Access-Control-Allow-Origin $http_origin always;
+        # CORS — hardcoded to known origin, never reflect $http_origin (CORS reflection vulnerability)
+        add_header Access-Control-Allow-Origin "https://starzerp.fi" always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Api-Key" always;
         add_header Access-Control-Allow-Credentials "true" always;
@@ -597,8 +597,8 @@ server {
         proxy_read_timeout 30s;
     }
 
-    # Deny access to dotfiles
-    location ~ /\. {
+    # Deny access to dotfiles (except .well-known for Let's Encrypt)
+    location ~ /\.(?!well-known) {
         deny all;
     }
 
@@ -696,7 +696,7 @@ ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "chown -R apexintel:apexintel /opt
 
 # 6. Configure nginx + SSL (section 6)
 # 7. Start services
-systemctl start nats minio apexintel-api apexintel-worker
+systemctl start nats minio apexintel-api apexintel-worker apexintel-llm
 ```
 
 ### Routine Update (code changes)

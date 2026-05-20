@@ -1,23 +1,48 @@
 [package]
 name = "apex-insights"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+authors = ["ApexIntel Team"]
+description = "Intelligence insights generation for ApexIntel OSINT platform"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sabelakhoua/ApexIntel"
 
 [dependencies]
-apex-core = { path = "../core" }
-apex-stats = { path = "../stats" }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-chrono = { workspace = true, features = ["serde"] }
-uuid = { workspace = true, features = ["v4", "serde"] }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-regex = { workspace = true }
-serde_yaml = { workspace = true }
-apex-llm = { path = "../llm" }
-tokio = { workspace = true }
-rand = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-lru = "0.12"
+# Core
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Cross-crate dependencies (using workspace versions)
+apex-core = { path = "../core", optional = true }
+apex-llm = { path = "../llm", optional = true }
+apex-stats = { path = "../stats", optional = true }
+
+# Additional dependencies for LLM feature modules
+regex = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+lru = { version = "0.12", optional = true }
+rand = { version = "0.8", optional = true }
+serde_yaml = { version = "0.9", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+llm = [
+    "dep:apex-llm",
+    "dep:apex-core",
+    "dep:apex-stats",
+    "dep:regex",
+    "dep:sha2",
+    "dep:hex",
+    "dep:lru",
+    "dep:rand",
+    "dep:serde_yaml",
+]

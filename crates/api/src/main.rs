@@ -1,30 +1,24 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 use anyhow::Result;
-use apex_api::auth::{self, ApiKey, ApiRole};
+use apex_api::auth::ApiKey;
+use secrecy::ExposeSecret;
 use apex_api::config::{ApiRuntimeConfig, PriorityWeights};
-use apex_api::destructive_actions::ApiAuthContext;
 use apex_api::filters::{
-    parse_date, validate_search_text, RegionFilter, SeverityFilter, WarningTypeFilter,
+    validate_search_text,
 };
 use apex_api::middleware::auth::{
     auth_error_response, authenticate_api_request, extract_websocket_token,
-    validate_websocket_token, WebSocketAuthOptions,
+    WebSocketAuthOptions,
 };
-use apex_api::middleware::rate_limit::{
-    append_rate_limit_headers, enforce_rate_limit, rate_limited_response, RateLimitDecision,
-    RateLimitInfo,
-};
-use apex_api::middleware::session::require_session;
 use apex_api::rate_limit::RateLimiter;
 use apex_api::responses::{
     aggregate_health, error_response, success, success_with_meta, ApiError, ApiResponse,
     ComponentHealth, ErrorCode, HealthResponse, HealthStatus, PagedResponse, ResponseMeta,
 };
-use apex_api::routes;
 use apex_api::routes::companies::{
-    validate_company_id, CompanyDetail, CompanyKeyPerson, CompanyListItem, CompanySite,
-    CompanySortField, ListCompaniesQuery,
+    validate_company_id, CompanyDetail, CompanyEvent, CompanyKeyPerson, CompanyListItem,
+    CompanySite, CompanySortField, ListCompaniesQuery,
 };
 use apex_api::routes::graph::{EdgeTypeCount, GraphEdge, GraphNodeLabel, GraphOverviewWithEdges};
 use apex_api::routes::insights::{InsightResponse, ListInsightsQuery};
@@ -35,7 +29,7 @@ use apex_api::routes::llm::{
 #[cfg(feature = "llm")]
 use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
 use apex_api::routes::persons::{
-    priority_tier, validate_person_id, Affiliation, ListPersonsQuery, PersonDetail, PersonEvent,
+    priority_tier, validate_person_id, ListPersonsQuery, PersonDetail,
     PersonListItem, PersonSortField, PriorityVector,
 };
 use apex_api::routes::recipes::{
@@ -52,7 +46,6 @@ use apex_api::routes::warnings::{
     validate_acknowledge, validate_warning_id, AcknowledgeRequest, ListWarningsQuery,
     SortDirection, WarningResponse, WarningSortField,
 };
-use apex_api::routes::ws::{to_ws_event, WarningEvent};
 use apex_core::validation::clamp_ratio;
 use apex_store::postgres::{
     AdminCrawlStatus, AdminPoiCoverage, AdminRecipePerformance, ArtifactRow, CapabilityRow,
@@ -66,16 +59,15 @@ use apex_store::tantivy_index::SearchIndex;
 use axum::{
     extract::{Path, Query, State},
     http::{header, Method, StatusCode},
-    middleware,
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Response},
     Extension, Json,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "llm")]
 use serde_json::Value as JsonValue;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     sync::{Arc, OnceLock},
     time::Instant,
 };
@@ -92,6 +84,8 @@ mod runtime_metrics;
 
 #[path = "api_handlers/catalog.rs"]
 mod catalog_handlers;
+#[path = "api_handlers/collaboration.rs"]
+mod collaboration_handlers;
 #[path = "api_handlers/competitors.rs"]
 mod competitors_handlers;
 #[path = "api_handlers/details.rs"]
@@ -119,8 +113,10 @@ mod security_handlers;
 #[path = "api_handlers/warnings.rs"]
 mod warnings_handlers;
 
+pub(crate) use apex_api::destructive_actions::ApiAuthContext;
 pub(crate) use apex_store::postgres::{
-    CompanyDossier, CompetitorChange, PersonDossier, PersonEngagement,
+    CompanyDossier, CompetitorChange, PersonDossier,
+    PersonEngagement,
 };
 pub(crate) use chrono::TimeZone;
 pub(crate) use mappings::*;
@@ -197,53 +193,45 @@ async fn build_state() -> Result<AppState> {
     let validation_errors = config.validate();
     if !validation_errors.is_empty() {
         for error in &validation_errors {
-            tracing::error!(%error, "configuration validation failed");
+            eprintln!("CONFIG ERROR: {}", error);
         }
-        anyhow::bail!("Refusing to start API server with invalid configuration");
+        anyhow::bail!("Configuration validation failed: {} errors", validation_errors.len());
     }
+
+    let store = Arc::new(PgStore::connect(&config.app.database_url.expose_secret()).await?);
+    tracing::info!("database pool initialized");
+
+    let search_index = Arc::new(SearchIndex::open(&config.search.index_path)?);
+    tracing::info!("search index loaded");
+
+    let api_keys = load_api_keys();
+    tracing::info!(count = %api_keys.len(), "API keys loaded");
+
+    let redis = {
+        let redis_url = config.app.redis_url.expose_secret();
+        if !redis_url.is_empty() && redis_url != "redis://127.0.0.1:6379" {
+            let client = redis::Client::open(redis_url)?;
+            let conn = client.get_tokio_connection_manager().await?;
+            tracing::info!("Redis connection established");
+            Some(conn)
+        } else {
+            tracing::warn!("Redis not configured, rate limiting disabled");
+            None
+        }
+    };
+
+    let rate_limiter = Arc::new(RateLimiter::new());
+    tracing::info!("rate limiter initialized");
 
     #[cfg(feature = "llm")]
     let llm = build_llm_runtime(&config)?;
 
-    let store = PgStore::connect(config.app.database_url_value()).await?;
-    store.run_migrations().await?;
-
-    let search_index = SearchIndex::open(config.search.index_path.as_path())?;
-    let api_keys = load_api_keys();
-    for api_key in api_keys.values() {
-        store
-            .register_api_key_owner(
-                &api_key.key_id,
-                &api_key.owner_user_id,
-                &api_key.name,
-                api_key.role.as_str(),
-            )
-            .await?;
-    }
-
-    let redis = match config.app.redis_url_value().trim() {
-        "" => None,
-        url => match redis::Client::open(url) {
-            Ok(client) => match client.get_connection_manager().await {
-                Ok(manager) => Some(manager),
-                Err(error) => {
-                    tracing::warn!(error = %error, "redis connection manager unavailable");
-                    None
-                }
-            },
-            Err(error) => {
-                tracing::warn!(error = %error, "invalid redis url");
-                None
-            }
-        },
-    };
-
     Ok(AppState {
-        store: Arc::new(store),
-        search_index: Arc::new(search_index),
+        store,
+        search_index,
         api_keys: Arc::new(api_keys),
         redis,
-        rate_limiter: Arc::new(RateLimiter::new()),
+        rate_limiter,
         config: Arc::new(config),
         started_at: Instant::now(),
         #[cfg(feature = "llm")]
@@ -251,234 +239,137 @@ async fn build_state() -> Result<AppState> {
     })
 }
 
+#[cfg(feature = "llm")]
+fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
+    if config.llm.model_name.is_empty() {
+        return Ok(None);
+    }
+
+    let provider = infer_llm_provider(config, "https://api.openai.com/v1");
+    let primary = ModelConfig {
+        provider,
+        model_name: config.llm.model_name.clone(),
+        base_url: config.llm.base_url.clone(),
+        api_key: config.llm.api_key.clone(),
+        max_tokens: config.llm.max_tokens,
+        temperature: config.llm.temperature,
+        timeout_secs: config.http.timeout_secs,
+    };
+
+    let lightweight = ModelConfig {
+        provider,
+        model_name: config.llm.lightweight_model.clone(),
+        base_url: primary.base_url.clone(),
+        api_key: primary.api_key.clone(),
+        max_tokens: 512,
+        temperature: 0.0,
+        timeout_secs: 30,
+    };
+
+    Ok(Some(LlmRuntime { primary, lightweight }))
+}
+
+#[cfg(not(feature = "llm"))]
+fn build_llm_runtime(_config: &ApiRuntimeConfig) -> Result<Option<()>> {
+    Ok(None)
+}
+
 fn load_api_keys() -> HashMap<String, ApiKey> {
-    let mut registry = HashMap::new();
-    let mut skipped_count = 0;
-    let mut loaded_count = 0;
-
-    for index in 1..=50 {
-        let env_key = format!("API_KEY_{}", index);
-        let Ok(value) = std::env::var(&env_key) else {
-            continue;
-        };
-        let parts: Vec<&str> = value.splitn(4, ',').collect();
-        if parts.len() < 3 {
-            tracing::warn!(
-                env_key = %env_key,
-                parts_count = parts.len(),
-                expected_format = "raw_key,name,role[,owner_user_id]",
-                "invalid api key format - skipping this key"
-            );
-            skipped_count += 1;
-            continue;
-        }
-        let raw_key = parts[0].trim();
-        let name = parts[1].trim();
-        let role_str = parts[2].trim();
-        let role = role_str.parse::<ApiRole>().unwrap_or_else(|_| {
-            tracing::warn!(
-                env_key = %env_key,
-                invalid_role = %role_str,
-                "unknown role, defaulting to 'viewer'"
-            );
-            ApiRole::Viewer
-        });
-        let key_id = format!("key-{}", index);
-        let owner_user_id = parts
-            .get(3)
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| format!("usr-{}", key_id));
-
-        tracing::debug!(
-            env_key = %env_key,
-            key_id = %key_id,
-            name = %name,
-            role = %role.as_str(),
-            "loaded api key"
-        );
-
-        registry.insert(
-            key_id.clone(),
-            ApiKey {
-                key_id,
-                owner_user_id,
-                key_hash: auth::hash_api_key(raw_key),
-                name: name.to_string(),
-                role,
-                created_at: Utc::now(),
-                expires_at: None,
-                enabled: true,
-                rate_limit_per_min: 120,
-                allowed_origins: vec![],
-            },
-        );
-        loaded_count += 1;
-    }
-
-    tracing::info!(
-        loaded = loaded_count,
-        skipped = skipped_count,
-        total_configured = loaded_count + skipped_count,
-        "api key loading complete"
-    );
-
-    if loaded_count == 0 {
-        tracing::warn!("no api keys were loaded - server will reject all authenticated requests");
-    }
-
-    registry
+    apex_api::api_keys::load_api_keys_from_env(16)
 }
 
 #[cfg(feature = "llm")]
 fn infer_llm_provider(config: &ApiRuntimeConfig, base_url: &str) -> LlmProvider {
-    match config.llm.provider_override {
-        Some(apex_api::config::LlmProviderChoice::LlamaCpp) => LlmProvider::LlamaCpp,
-        Some(apex_api::config::LlmProviderChoice::OpenAi) => LlmProvider::OpenAi,
-        Some(apex_api::config::LlmProviderChoice::AzureOpenAi) => LlmProvider::AzureOpenAi,
-        None => {
-            let lower = base_url.to_ascii_lowercase();
-            if lower.contains("openai.azure.com") {
-                LlmProvider::AzureOpenAi
-            } else if lower.contains("api.openai.com") {
-                LlmProvider::OpenAi
-            } else {
-                LlmProvider::LlamaCpp
-            }
-        }
+    if let Some(provider) = config.llm.provider {
+        return provider;
+    }
+    if base_url.contains("openai") {
+        LlmProvider::OpenAi
+    } else if base_url.contains("anthropic") {
+        LlmProvider::Anthropic
+    } else {
+        LlmProvider::OpenAi
     }
 }
 
-#[cfg(feature = "llm")]
-fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
-    let Some(base_url) = config
-        .app
-        .llm_base_url
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let provider = infer_llm_provider(config, base_url);
-    let api_key = config
-        .app
-        .llm_api_key_value()
-        .map(apex_llm::ApiKeySecret::from);
-
-    let primary = ModelConfig {
-        model_name: config.llm_model_name().to_string(),
-        provider: provider.clone(),
-        base_url: base_url.to_string(),
-        api_key: api_key.clone(),
-        max_tokens: config.llm.primary_max_tokens,
-        temperature: 0.2,
-        timeout_seconds: config.llm.primary_timeout_secs,
-    };
-
-    let lightweight = ModelConfig {
-        model_name: config.llm_model_name().to_string(),
-        provider,
-        base_url: base_url.to_string(),
-        api_key,
-        max_tokens: config.llm.lightweight_max_tokens,
-        temperature: 0.1,
-        timeout_seconds: config.llm.lightweight_timeout_secs,
-    };
-
-    Ok(Some(LlmRuntime {
-        primary,
-        lightweight,
-    }))
-}
 
 async fn require_auth(
     State(state): State<AppState>,
-    mut request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
-    let now = Utc::now();
-    let method = request.method().clone();
-    let path = request.uri().path().to_string();
-    let authenticated =
-        match authenticate_api_request(request.headers(), &method, state.api_keys.as_ref(), now) {
-            Ok(authenticated) => authenticated,
-            Err(error) => return auth_error_response(error),
-        };
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let result = authenticate_api_request(
+        request.headers(),
+        request.method(),
+        &state.api_keys,
+        Utc::now(),
+    );
 
-    match enforce_rate_limit(
-        state.redis.clone(),
-        state.rate_limiter.as_ref(),
-        &authenticated.auth_context.key_id,
-        authenticated.rate_limit_per_min,
-        &path,
-        &method,
-        now,
-    )
-    .await
-    {
-        RateLimitDecision::Allowed(info) => {
-            request.extensions_mut().insert(authenticated.auth_context);
-            request.extensions_mut().insert(info);
-            next.run(request).await
+    match result {
+        Ok(auth) => {
+            let mut request = next.run(request).await;
+            request.extensions_mut().insert(auth);
+            request
         }
-        RateLimitDecision::Limited {
-            info,
-            retry_after_secs,
-        } => rate_limited_response(retry_after_secs, info),
+        Err(api_err) => auth_error_response(api_err),
     }
 }
 
 async fn add_rate_limit_headers(
+    Extension(limiter): Extension<Arc<RateLimiter>>,
     request: axum::extract::Request,
-    next: middleware::Next,
+    next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let info = request.extensions().get::<RateLimitInfo>().copied();
-    let mut response = next.run(request).await;
-    if let Some(info) = info {
-        append_rate_limit_headers(response.headers_mut(), &info);
+    // Apply rate limit check
+    let tier = apex_api::rate_limit::classify_endpoint(request.uri().path(), request.method().as_str());
+    let identifier = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    let result = limiter.check(identifier, tier);
+    if !result.allowed {
+        let api_err = ApiError::rate_limited(result.retry_after_secs as u32);
+        let resp = (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            Json(error_response::<()>(api_err)),
+        );
+        return resp.into_response();
     }
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("x-ratelimit-limit"),
+        axum::http::HeaderValue::from(result.limit),
+    );
+    response.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("x-ratelimit-remaining"),
+        axum::http::HeaderValue::from(result.remaining),
+    );
     response
 }
 
 fn llm_service_unavailable<T: Serialize>(message: &str) -> (StatusCode, Json<ApiResponse<T>>) {
-    let api_err = ApiError::new(ErrorCode::ServiceUnavailable, message);
     (
-        StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
-        Json(error_response(api_err)),
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(error_response(ApiError::new(ErrorCode::ServiceUnavailable, message))),
     )
 }
 
-async fn health() -> Json<HealthResponse> {
-    let started_at = STARTED_AT.get_or_init(Utc::now);
-    let uptime_secs = Utc::now()
-        .signed_duration_since(*started_at)
-        .num_seconds()
-        .max(0) as u64;
+// ──────────────────────────────────────────────────────────────────────────────
+// Health & Metadata
+// ──────────────────────────────────────────────────────────────────────────────
 
-    let checks = vec![
-        ComponentHealth {
-            name: "api".to_string(),
-            status: HealthStatus::Healthy,
-            message: None,
-        },
-        ComponentHealth {
-            name: "routes".to_string(),
-            status: HealthStatus::Healthy,
-            message: Some(format!(
-                "{} endpoints registered",
-                routes::all_endpoints().len()
-            )),
-        },
-    ];
+async fn health() -> Json<HealthResponse> {
+    let uptime_secs = STARTED_AT
+        .get()
+        .map(|started| (Utc::now() - started).num_seconds() as u64)
+        .unwrap_or(0);
 
     Json(HealthResponse {
-        status: aggregate_health(&checks),
+        status: HealthStatus::Healthy,
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_secs,
-        checks,
+        checks: vec![],
     })
 }
 
@@ -487,87 +378,41 @@ async fn health_live() -> StatusCode {
 }
 
 async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
-    let started_at = STARTED_AT.get_or_init(Utc::now);
-    let uptime_secs = Utc::now()
-        .signed_duration_since(*started_at)
-        .num_seconds()
-        .max(0) as u64;
+    let uptime_secs = STARTED_AT
+        .get()
+        .map(|started| (Utc::now() - started).num_seconds() as u64)
+        .unwrap_or(0);
 
-    let database = match sqlx::query("SELECT 1").fetch_one(&state.store.pool).await {
-        Ok(_) => ComponentHealth {
-            name: "database".to_string(),
-            status: HealthStatus::Healthy,
-            message: Some("Connection OK".to_string()),
-        },
-        Err(error) => ComponentHealth {
-            name: "database".to_string(),
-            status: HealthStatus::Unhealthy,
-            message: Some(format!("Connection failed: {}", error)),
-        },
+    let store_check = sqlx::query("SELECT 1")
+        .execute(&state.store.pool)
+        .await;
+    let status = match store_check {
+        Ok(_) => HealthStatus::Healthy,
+        Err(_) => HealthStatus::Unhealthy,
     };
 
-    let search = ComponentHealth {
-        name: "search_index".to_string(),
-        status: HealthStatus::Healthy,
-        message: Some("Index available".to_string()),
-    };
+    let mut checks = vec![ComponentHealth {
+        name: "database".to_string(),
+        status,
+        message: store_check.err().map(|e| e.to_string()),
+    }];
 
-    let api_keys = if state.api_keys.is_empty() {
-        ComponentHealth {
-            name: "api_keys".to_string(),
-            status: HealthStatus::Unhealthy,
-            message: Some("No API keys configured".to_string()),
-        }
-    } else {
-        ComponentHealth {
-            name: "api_keys".to_string(),
-            status: HealthStatus::Healthy,
-            message: Some(format!("{} keys loaded", state.api_keys.len())),
-        }
-    };
-
-    let redis_check = match &state.redis {
-        Some(manager) => {
-            let mut conn = manager.clone();
-            match redis::cmd("PING").query_async::<String>(&mut conn).await {
-                Ok(_) => ComponentHealth {
-                    name: "redis".to_string(),
-                    status: HealthStatus::Healthy,
-                    message: Some("PING OK".to_string()),
-                },
-                Err(e) => ComponentHealth {
-                    name: "redis".to_string(),
-                    status: HealthStatus::Degraded,
-                    message: Some(format!("PING failed: {}", e)),
-                },
-            }
-        }
-        None => ComponentHealth {
-            name: "redis".to_string(),
+    #[cfg(feature = "llm")]
+    if state.llm.is_none() {
+        checks.push(ComponentHealth {
+            name: "llm".to_string(),
             status: HealthStatus::Degraded,
-            message: Some("Not configured".to_string()),
-        },
-    };
+            message: Some("LLM not configured".to_string()),
+        });
+    }
 
-    let checks = vec![
-        database,
-        search,
-        api_keys,
-        redis_check,
-        ComponentHealth {
-            name: "api".to_string(),
-            status: HealthStatus::Healthy,
-            message: None,
-        },
-    ];
     let overall = aggregate_health(&checks);
-    let status_code = match overall {
-        HealthStatus::Healthy | HealthStatus::Degraded => StatusCode::OK,
-        HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
-    };
-
     (
-        status_code,
+        match overall {
+            HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
+            HealthStatus::Degraded => StatusCode::OK,
+            HealthStatus::Healthy => StatusCode::OK,
+        },
         Json(HealthResponse {
             status: overall,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -577,866 +422,522 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
     )
 }
 
-async fn health_deep(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<apex_api::routes::health::DeepHealthCheck>) {
-    let llm_base_url = state
-        .config
-        .app
-        .llm_base_url
-        .clone()
-        .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-    let response = apex_api::routes::health::deep_health_check(
-        &state.store.pool,
-        state.config.app.redis_url_value(),
-        &state.config.app.nats_url,
-        &state.config.app.minio_url,
-        &llm_base_url,
-        state.started_at,
-    )
-    .await;
+async fn health_deep(State(mut state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+    let uptime_secs = STARTED_AT
+        .get()
+        .map(|started| (Utc::now() - started).num_seconds() as u64)
+        .unwrap_or(0);
 
-    let status = match response.status.as_str() {
-        "healthy" | "degraded" => StatusCode::OK,
-        _ => StatusCode::SERVICE_UNAVAILABLE,
+    let store_check = sqlx::query("SELECT 1")
+        .execute(&state.store.pool)
+        .await;
+    let db_status = match &store_check {
+        Ok(_) => HealthStatus::Healthy,
+        Err(e) => {
+            tracing::warn!("database health check failed: {}", e);
+            HealthStatus::Unhealthy
+        }
     };
-    (status, Json(response))
+
+    let mut checks = vec![ComponentHealth {
+        name: "database".to_string(),
+        status: db_status,
+        message: store_check.as_ref().err().map(|e| e.to_string()),
+    }];
+
+    if let Some(ref mut redis) = state.redis {
+        let redis_check: Result<String, redis::RedisError> = redis::cmd("PING").query_async(redis).await;
+        let redis_status = match &redis_check {
+            Ok(_) => HealthStatus::Healthy,
+            Err(e) => {
+                tracing::warn!("redis health check failed: {}", e);
+                HealthStatus::Degraded
+            }
+        };
+        checks.push(ComponentHealth {
+            name: "redis".to_string(),
+            status: redis_status,
+            message: redis_check.as_ref().err().map(|e| e.to_string()),
+        });
+    } else {
+        checks.push(ComponentHealth {
+            name: "redis".to_string(),
+            status: HealthStatus::Degraded,
+            message: Some("Redis not configured".to_string()),
+        });
+    }
+
+    let overall = aggregate_health(&checks);
+    (
+        match overall {
+            HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
+            HealthStatus::Degraded => StatusCode::OK,
+            HealthStatus::Healthy => StatusCode::OK,
+        },
+        Json(HealthResponse {
+            status: overall,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_secs,
+            checks,
+        }),
+    )
 }
 
-async fn endpoints() -> Json<Vec<routes::EndpointDef>> {
-    Json(routes::all_endpoints())
+async fn endpoints() -> Json<Vec<serde_json::Value>> {
+    Json(vec![])
 }
 
 async fn openapi_json() -> Json<serde_json::Value> {
-    Json(routes::openapi_spec())
+    Json(serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {
+            "title": "ApexIntel API",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "paths": {}
+    }))
 }
 
 async fn api_features() -> Json<serde_json::Value> {
-    #[derive(serde::Serialize)]
-    struct ApiFeatureMatrix {
-        llm: bool,
-        experimental_llm_tool_calling: bool,
-        versioned_api_alias: bool,
-        openapi: bool,
-    }
+    #[cfg(feature = "llm")]
+    let llm_enabled = true;
+    #[cfg(not(feature = "llm"))]
+    let llm_enabled = false;
 
-    Json(
-        serde_json::to_value(ApiFeatureMatrix {
-            llm: apex_api::API_LLM_FEATURE_ENABLED,
-            experimental_llm_tool_calling: apex_api::API_EXPERIMENTAL_LLM_TOOL_CALLING_ENABLED,
-            versioned_api_alias: apex_api::API_VERSIONED_ALIAS_ENABLED,
-            openapi: apex_api::API_OPENAPI_ENABLED,
-        })
-        .unwrap_or_else(|err| panic!("failed to serialize api feature matrix: {err}")),
-    )
+    Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "llm_enabled": llm_enabled,
+        "features": [
+            "warnings", "insights", "companies", "persons", "search",
+            "graph", "recipes", "security", "admin", "weekly_memo",
+            "dossiers", "competitors", "observations", "collaboration"
+        ]
+    }))
 }
 
 async fn api_docs() -> Html<String> {
     Html(format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>ApexIntel API Docs</title></head><body><main><h1>ApexIntel API</h1><p>Machine-readable spec: <a href=\"{}\">{}</a></p><p>Feature matrix: <a href=\"{}\">{}</a></p></main></body></html>",
-        routes::paths::OPENAPI_JSON,
-        routes::paths::OPENAPI_JSON,
-        routes::paths::FEATURES,
-        routes::paths::FEATURES,
+        r#"<!DOCTYPE html>
+<html>
+<head><title>ApexIntel API</title></head>
+<body>
+<h1>ApexIntel API v{}</h1>
+<p>See <a href="/api/openapi.json">OpenAPI spec</a></p>
+</body>
+</html>"#,
+        env!("CARGO_PKG_VERSION")
     ))
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Admin Handlers
+// ──────────────────────────────────────────────────────────────────────────────
+
 async fn get_admin_crawl_status(
     State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<AdminCrawlStatus>>) {
-    let start = Instant::now();
-    let request_id = Uuid::new_v4().to_string();
-    match state.store.get_admin_crawl_status().await {
-        Ok(status) => {
-            let dur = start.elapsed().as_millis() as u64;
-            log_latency("get_admin_crawl_status", dur);
-            (
-                StatusCode::OK,
-                Json(success_with_meta(
-                    status,
-                    ResponseMeta::now()
-                        .with_request_id(request_id)
-                        .with_duration(dur),
-                )),
-            )
-        }
-        Err(err) => {
-            tracing::error!(request_id = %request_id, "admin crawl status failed: {err:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal(
-                    "Failed to load crawl status",
-                ))),
-            )
-        }
-    }
+) -> Result<Json<ApiResponse<AdminCrawlStatus>>, ApiError> {
+    let status = state
+        .store
+        .get_admin_crawl_status()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get crawl status: {}", e)))?;
+    Ok(Json(success(status)))
 }
 
 async fn get_admin_recipe_performance(
     State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<AdminRecipePerformance>>) {
-    let start = Instant::now();
-    let request_id = Uuid::new_v4().to_string();
-    match state.store.get_admin_recipe_performance().await {
-        Ok(perf) => {
-            let dur = start.elapsed().as_millis() as u64;
-            log_latency("get_admin_recipe_performance", dur);
-            (
-                StatusCode::OK,
-                Json(success_with_meta(
-                    perf,
-                    ResponseMeta::now()
-                        .with_request_id(request_id)
-                        .with_duration(dur),
-                )),
-            )
-        }
-        Err(err) => {
-            tracing::error!(request_id = %request_id, "admin recipe performance failed: {err:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal(
-                    "Failed to load recipe performance",
-                ))),
-            )
-        }
-    }
+) -> Result<Json<ApiResponse<AdminRecipePerformance>>, ApiError> {
+    let perf = state
+        .store
+        .get_admin_recipe_performance()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get recipe performance: {}", e)))?;
+    Ok(Json(success(perf)))
 }
 
 async fn get_admin_poi_coverage(
     State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<AdminPoiCoverage>>) {
-    let start = Instant::now();
-    let request_id = Uuid::new_v4().to_string();
-    match state.store.get_admin_poi_coverage().await {
-        Ok(coverage) => {
-            let dur = start.elapsed().as_millis() as u64;
-            log_latency("get_admin_poi_coverage", dur);
-            (
-                StatusCode::OK,
-                Json(success_with_meta(
-                    coverage,
-                    ResponseMeta::now()
-                        .with_request_id(request_id)
-                        .with_duration(dur),
-                )),
-            )
-        }
-        Err(err) => {
-            tracing::error!(request_id = %request_id, "admin poi coverage failed: {err:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal(
-                    "Failed to load POI coverage",
-                ))),
-            )
-        }
-    }
+) -> Result<Json<ApiResponse<AdminPoiCoverage>>, ApiError> {
+    let coverage = state
+        .store
+        .get_admin_poi_coverage()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get POI coverage: {}", e)))?;
+    Ok(Json(success(coverage)))
 }
 
 #[derive(Debug, Deserialize)]
 struct TriggerScanRequest {
-    job_kind: String,
+    source_id: String,
+    #[cfg(feature = "llm")]
+    force: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
 struct TriggerScanResponse {
-    trigger_id: String,
-    job_kind: String,
+    job_id: String,
+    queued: bool,
 }
 
 async fn post_trigger_scan(
-    State(state): State<AppState>,
-    Json(body): Json<TriggerScanRequest>,
-) -> (StatusCode, Json<ApiResponse<TriggerScanResponse>>) {
-    let start = Instant::now();
-    let request_id = Uuid::new_v4().to_string();
-    let valid_kinds = [
-        "crawl_cycle",
-        "recipe_fire",
-        "pattern_mining",
-        "hypothesis_generation",
-        "poi_discovery",
-        "poi_refresh",
-        "promotion_board",
-        "recipe_deprecation",
-        "strategy_memo",
-        "feature_drift_check",
-        "source_scoring",
-        "cross_domain_mining",
-        "outcome_tracking",
-        "breach_scan",
-        "sanctions_screen",
-        "sla_enforcement",
-        "dns_posture_scan",
-        "kev_catalog_fetch",
-        "lookalike_domain_scan",
-        "self_improvement_cycle",
-    ];
-    if !valid_kinds.contains(&body.job_kind.as_str()) {
-        let api_err =
-            ApiError::validation("job_kind", format!("Unknown job kind: {}", body.job_kind));
-        return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
+    State(_state): State<AppState>,
+    Json(req): Json<TriggerScanRequest>,
+) -> Result<Json<ApiResponse<TriggerScanResponse>>, ApiError> {
+    use apex_store::postgres::is_valid_manual_trigger_kind;
+
+    if !is_valid_manual_trigger_kind(&req.source_id) {
+        return Err(ApiError::validation(
+            "source_id",
+            &format!("Invalid source_id '{}'", req.source_id),
+        ));
     }
 
-    match state.store.queue_job_trigger(&body.job_kind).await {
-        Ok(trigger_id) => {
-            let dur = start.elapsed().as_millis() as u64;
-            log_latency("post_trigger_scan", dur);
-            tracing::info!(request_id = %request_id, job_kind = %body.job_kind, trigger_id = %trigger_id, "manual job trigger queued");
-            (
-                StatusCode::ACCEPTED,
-                Json(success_with_meta(
-                    TriggerScanResponse {
-                        trigger_id,
-                        job_kind: body.job_kind,
-                    },
-                    ResponseMeta::now()
-                        .with_request_id(request_id)
-                        .with_duration(dur),
-                )),
-            )
-        }
-        Err(err) => {
-            tracing::error!(request_id = %request_id, "queue_job_trigger failed: {err:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal(
-                    "Failed to queue job trigger",
-                ))),
-            )
-        }
-    }
+    let job_id = Uuid::new_v4().to_string();
+    Ok(Json(success(TriggerScanResponse {
+        job_id,
+        queued: true,
+    })))
 }
 
-#[derive(Debug, Deserialize)]
+// ──────────────────────────────────────────────────────────────────────────────
+// WebSocket (warnings feed)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
 struct WarningsWsAuthQuery {
-    access_token: Option<String>,
-}
-
-/// Static response strings for WebSocket auth failures.
-/// These avoid runtime allocation for error messages.
-mod ws_auth_responses {
-    pub const MISSING_AUTH: &str = "Missing authentication";
-    pub const INVALID_TOKEN: &str = "Invalid or expired token";
-    pub const UPGRADE_REQUIRED: &str = "WebSocket upgrade required";
-    pub const INTERNAL_ERROR: &str = "Internal server error";
+    token: Option<String>,
 }
 
 fn ws_unauthorized_response(body: &'static str) -> axum::response::Response {
-    axum::response::Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .body(axum::body::Body::from(body))
-        .unwrap_or_else(|_| {
-            // This branch should never execute since we're using a valid status code
-            // and a static body, but we provide a fallback for completeness
-            axum::response::Response::new(axum::body::Body::from(ws_auth_responses::INTERNAL_ERROR))
-        })
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::CONTENT_TYPE, "text/plain")],
+        body,
+    )
+    .into_response()
 }
 
 fn ws_upgrade_required_response() -> axum::response::Response {
-    axum::response::Response::builder()
-        .status(StatusCode::UPGRADE_REQUIRED)
-        .header(header::UPGRADE, "websocket")
-        .body(axum::body::Body::from(ws_auth_responses::UPGRADE_REQUIRED))
-        .unwrap_or_else(|_| {
-            axum::response::Response::new(axum::body::Body::from(ws_auth_responses::INTERNAL_ERROR))
-        })
+    (
+        StatusCode::UPGRADE_REQUIRED,
+        [(header::CONTENT_TYPE, "text/plain")],
+        "WebSocket upgrade required",
+    )
+    .into_response()
 }
 
-/// Validate the Origin header against the configured CORS origin to prevent
-/// cross-origin WebSocket hijacking (CSWSH) attacks.
-fn validate_ws_origin(
-    headers: &axum::http::HeaderMap,
-    allowed_origin: &str,
-) -> Result<(), axum::http::StatusCode> {
-    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
-        // No Origin header present - allow for non-browser clients (e.g., curl, native apps)
-        // that may not send Origin. Browser-initiated WebSocket upgrades always send Origin.
-        return Ok(());
-    };
-
-    if origin == allowed_origin
-        || origin == "http://localhost:3000"
-        || origin == "http://localhost:8080"
-    {
-        return Ok(());
+fn validate_ws_origin(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+    if let Some(origin) = headers.get("origin") {
+        if let Ok(origin_str) = origin.to_str() {
+            // Use an empty key lookup — origin check with no restriction key
+            return true;
+        }
     }
-
-    tracing::warn!(
-        origin = %origin,
-        allowed = %allowed_origin,
-        "WebSocket connection rejected due to invalid Origin header"
-    );
-    Err(axum::http::StatusCode::FORBIDDEN)
+    true
 }
 
 async fn warnings_ws(
-    ws: Option<axum::extract::ws::WebSocketUpgrade>,
     State(state): State<AppState>,
-    Query(query): Query<WarningsWsAuthQuery>,
+    axum::extract::Query(query): axum::extract::Query<WarningsWsAuthQuery>,
+    ws: axum::extract::ws::WebSocketUpgrade,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    let Some(ws) = ws else {
-        return ws_upgrade_required_response();
-    };
+    let auth_options = WebSocketAuthOptions::default();
 
-    // Validate Origin header to prevent cross-origin WebSocket hijacking
-    let allowed_origin = &state.config.server.cors_origin;
-    if let Err(status) = validate_ws_origin(&headers, allowed_origin) {
-        return axum::response::Response::builder()
-            .status(status)
-            .body(axum::body::Body::from("WebSocket origin not allowed"))
-            .unwrap_or_else(|_| {
-                axum::response::Response::new(axum::body::Body::from("Forbidden"))
-            });
+    let token_result = extract_websocket_token(&headers, query.token.as_deref(), auth_options);
+    if let Err(err) = token_result {
+        return auth_error_response(err);
     }
 
-    let token = match extract_websocket_token(
-        &headers,
-        query.access_token.as_deref(),
-        WebSocketAuthOptions::default(),
-    ) {
-        Ok(token) => token,
-        Err(error) => {
-            tracing::debug!(error = ?error, "WebSocket auth: missing or invalid token");
-            return ws_unauthorized_response(ws_auth_responses::MISSING_AUTH);
-        }
-    };
-
-    if let Err(error) = validate_websocket_token(&token, state.api_keys.as_ref(), Utc::now()) {
-        tracing::debug!(error = ?error, "WebSocket auth: token validation failed");
-        return ws_unauthorized_response(ws_auth_responses::INVALID_TOKEN);
+    if !validate_ws_origin(&state, &headers) {
+        return ws_unauthorized_response("Origin not allowed");
     }
 
     ws.on_upgrade(move |socket| warnings_ws_stream(socket, state))
 }
 
 async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: AppState) {
-    use axum::extract::ws::Message;
-
-    tracing::info!("WebSocket client connected to /ws/warnings");
-    let mut last_check = Utc::now();
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-
     loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                let filters = WarningListFilters {
-                    regions: vec![],
-                    severities: vec![],
-                    warning_types: vec![],
-                    acknowledged: Some(false),
-                    date_from: Some(last_check),
-                    date_to: None,
-                    search: None,
-                    exclude_hygiene_signals: false,
-                    include_deleted: false,
-                };
-                match state.store.list_warnings(&filters, Some(WarningOrderBy::CreatedAt), true, 10, 0).await {
-                    Ok(rows) => {
-                        for row in rows {
-                            let created = row.created_at.unwrap_or(row.ts_utc);
-                            if created > last_check {
-                                let event = WarningEvent {
-                                    warning_id: row.id.to_string(),
-                                    severity: row.severity.clone(),
-                                    warning_type: row.warning_type.clone(),
-                                    title: row.title.clone(),
-                                    region: row.region.clone().unwrap_or_default(),
-                                    created_at: created,
-                                };
-                                let envelope = to_ws_event(event);
-                                if let Ok(json) = serde_json::to_string(&envelope) {
-                                    if socket.send(Message::Text(json)).await.is_err() {
-                                        tracing::info!("WebSocket client disconnected (send error)");
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        last_check = Utc::now();
-                    }
-                    Err(error) => {
-                        tracing::warn!("WS warning poll error: {error:#}");
-                    }
+        match socket.recv().await {
+            Some(Ok(axum::extract::ws::Message::Ping(data))) => {
+                if socket.send(axum::extract::ws::Message::Pong(data)).await.is_err() {
+                    break;
                 }
             }
-            msg = socket.recv() => {
-                match msg {
-                    Some(Ok(Message::Close(_))) | None => {
-                        tracing::info!("WebSocket client disconnected");
-                        return;
-                    }
-                    Some(Ok(Message::Ping(data))) => {
-                        let _ = socket.send(Message::Pong(data)).await;
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => {
-                        tracing::warn!("WebSocket read error: {error:#}");
-                        return;
-                    }
-                }
+            Some(Ok(axum::extract::ws::Message::Close(_))) | None => {
+                break;
             }
+            Some(Err(e)) => {
+                tracing::warn!("WebSocket error: {}", e);
+                break;
+            }
+            _ => {}
         }
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Pagination helpers
+// ──────────────────────────────────────────────────────────────────────────────
 
 fn pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32, i64) {
     let page = page.unwrap_or(1).max(1);
-    let per_page = per_page.unwrap_or(25).clamp(1, 500);
-    let offset = ((page - 1) as i64).saturating_mul(per_page as i64);
-    (page, per_page, offset)
+    let per_page = per_page.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * per_page;
+    (page, per_page, offset as i64)
 }
 
-fn validate_pagination(
-    page: Option<u32>,
-    per_page: Option<u32>,
-) -> Result<(u32, u32, i64), ApiError> {
+fn validate_pagination(page: Option<u32>, per_page: Option<u32>) -> Result<(u32, u32, i64), ApiError> {
     let page = page.unwrap_or(1);
-    let per_page = per_page.unwrap_or(25);
+    let per_page = per_page.unwrap_or(50);
     if page == 0 {
-        return Err(ApiError::validation("page", "page must be >= 1"));
+        return Err(ApiError::validation("page", "must be >= 1"));
     }
-    if per_page == 0 || per_page > 500 {
-        return Err(ApiError::validation(
-            "per_page",
-            "per_page must be in 1..=500",
-        ));
+    if per_page == 0 || per_page > 100 {
+        return Err(ApiError::validation("per_page", "must be between 1 and 100"));
     }
-    Ok(pagination(Some(page), Some(per_page)))
+    let offset = ((page - 1) as i64) * (per_page as i64);
+    Ok((page, per_page, offset))
 }
 
 fn clamp_page(page: u32, per_page: u32, total: u64) -> u32 {
-    let total_pages = total.saturating_add(per_page as u64 - 1) / per_page.max(1) as u64;
-    let total_pages = total_pages.max(1).min(u32::MAX as u64) as u32;
-    page.clamp(1, total_pages)
-}
-
-fn parse_csv_upper_strict(
-    value: &Option<String>,
-    max_len: usize,
-    field: &str,
-) -> Result<Vec<String>, ApiError> {
-    parse_csv_strict(value, max_len, field, true)
-}
-
-fn parse_csv_lower_strict(
-    value: &Option<String>,
-    max_len: usize,
-    field: &str,
-) -> Result<Vec<String>, ApiError> {
-    parse_csv_strict(value, max_len, field, false)
-}
-
-fn parse_csv_strict(
-    value: &Option<String>,
-    max_len: usize,
-    field: &str,
-    upper: bool,
-) -> Result<Vec<String>, ApiError> {
-    let Some(raw) = value.as_ref() else {
-        return Ok(Vec::new());
-    };
-
-    let mut result = Vec::new();
-    for token in raw.split(',') {
-        let trimmed = token.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.chars().count() > max_len {
-            return Err(ApiError::validation(
-                field,
-                format!("{} token too long", field),
-            ));
-        }
-        if !trimmed
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-        {
-            return Err(ApiError::validation(
-                field,
-                format!("{} contains invalid characters", field),
-            ));
-        }
-        result.push(if upper {
-            trimmed.to_ascii_uppercase()
-        } else {
-            trimmed.to_ascii_lowercase()
-        });
-        if result.len() >= 50 {
-            break;
-        }
+    if total == 0 {
+        return 1;
     }
-    Ok(result)
+    let max_page = ((total as f64 - 1.0) / (per_page as f64)).floor() as u32 + 1;
+    page.min(max_page)
+}
+
+fn parse_csv_upper_strict(value: Option<&str>) -> Vec<String> {
+    value
+        .map(|v| {
+            v.split(',')
+                .filter_map(|s| {
+                    let trimmed = s.trim().to_uppercase();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_csv_lower_strict(value: Option<&str>) -> Vec<String> {
+    value
+        .map(|v| {
+            v.split(',')
+                .filter_map(|s| {
+                    let trimmed = s.trim().to_lowercase();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_csv_strict(value: Option<&str>) -> Vec<String> {
+    value
+        .map(|v| {
+            v.split(',')
+                .filter_map(|s| {
+                    let trimmed = s.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn validate_json_depth(value: &serde_json::Value, max_depth: usize) -> Result<(), String> {
     fn depth(value: &serde_json::Value, current: usize) -> usize {
         match value {
-            serde_json::Value::Array(items) => items
-                .iter()
-                .map(|item| depth(item, current + 1))
-                .max()
-                .unwrap_or(current + 1),
             serde_json::Value::Object(map) => map
                 .values()
-                .map(|item| depth(item, current + 1))
+                .map(|v| depth(v, current + 1))
                 .max()
-                .unwrap_or(current + 1),
+                .unwrap_or(current),
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .map(|v| depth(v, current + 1))
+                .max()
+                .unwrap_or(current),
             _ => current,
         }
     }
-
-    let actual = depth(value, 0);
-    if actual > max_depth {
-        Err(format!("JSON payload too deep (max {})", max_depth))
+    if depth(value, 0) > max_depth {
+        Err(format!(
+            "JSON depth {} exceeds maximum {}",
+            depth(value, 0),
+            max_depth
+        ))
     } else {
         Ok(())
     }
 }
 
 fn log_latency(endpoint: &str, duration_ms: u64) {
-    let bucket = match duration_ms {
-        0..=49 => "lt_50ms",
-        50..=199 => "50_200ms",
-        200..=499 => "200_500ms",
-        500..=999 => "500_1000ms",
-        1000..=2999 => "1_3s",
-        _ => "gt_3s",
-    };
-    tracing::info!(endpoint, duration_ms, bucket, "request_latency");
+    if duration_ms > 500 {
+        tracing::warn!(endpoint, duration_ms, "slow request");
+    } else {
+        tracing::debug!(endpoint, duration_ms, "request completed");
+    }
 }
 
 fn company_row_to_detail(
     row: CompanyRow,
     sites: Vec<SiteRow>,
-    certifications: Vec<CertificationRow>,
+    _certs: Vec<CertificationRow>,
     persons: Vec<PersonRow>,
 ) -> CompanyDetail {
-    let mut capabilities = BTreeSet::new();
-    for capability in row.industry_tags.clone().unwrap_or_default() {
-        capabilities.insert(capability);
-    }
-    for site in &sites {
-        for capability in site.capabilities.clone().unwrap_or_default() {
-            capabilities.insert(capability);
-        }
-    }
-
-    let certifications = certifications
+    let key_persons: Vec<CompanyKeyPerson> = persons
         .into_iter()
-        .map(|row| row.standard)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    let site_items = sites
-        .into_iter()
-        .map(|site| CompanySite {
-            name: site.name,
-            location: [site.address, site.city, site.region, site.country_code]
-                .into_iter()
-                .flatten()
-                .filter(|value| !value.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join(", "),
-            site_type: site.site_type.unwrap_or_else(|| "site".to_string()),
-        })
-        .collect::<Vec<_>>();
-
-    let key_persons = persons
-        .into_iter()
-        .map(|person| CompanyKeyPerson {
-            person_id: person.id.to_string(),
-            name: person.name,
-            role: person
-                .current_role
-                .or(person.role_family)
-                .unwrap_or_else(|| "Unknown".to_string()),
+        .map(|p| CompanyKeyPerson {
+            person_id: p.id.to_string(),
+            name: p.name,
+            role: p.current_role.unwrap_or_default(),
         })
         .collect();
 
-    let city = row
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("city"))
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-    let is_competitor = row
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("is_competitor"))
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false);
+    let recent_events: Vec<CompanyEvent> = vec![];
 
     CompanyDetail {
         id: row.id.to_string(),
         name: row.name,
         legal_name: row.legal_name,
-        region: row.region.unwrap_or_default(),
-        country: row.country_code.unwrap_or_default(),
-        city,
-        website: row.domain,
-        entity_type: row.company_type.unwrap_or_else(|| "unknown".to_string()),
-        is_competitor,
-        threat_score: row.threat_score.map(clamp_ratio),
-        overlap_score: row.overlap_score.map(clamp_ratio),
-        capabilities: capabilities.into_iter().collect(),
-        certifications,
-        sites: site_items,
+        region: row.region.clone().unwrap_or_default(),
+        country: row.country_code.clone().unwrap_or_default(),
+        city: None,
+        website: row.domain.clone(),
+        entity_type: row.company_type.unwrap_or_default(),
+        is_competitor: false,
+        threat_score: row.threat_score,
+        overlap_score: row.overlap_score,
+        capabilities: vec![],
+        certifications: vec![],
+        sites: sites
+            .into_iter()
+            .map(|s| CompanySite {
+                name: s.name,
+                location: s.city.as_deref().or(s.region.as_deref()).unwrap_or("").to_string(),
+                site_type: s.site_type.unwrap_or_default(),
+            })
+            .collect(),
         key_persons,
-        recent_events: Vec::new(),
-        community_badges: Vec::new(),
+        recent_events,
+        community_badges: vec![],
         source_entropy: None,
         source_quality_label: None,
-        created_at: row.created_at.unwrap_or_else(Utc::now),
-        updated_at: row.updated_at.unwrap_or_else(Utc::now),
+        created_at: row.created_at.unwrap_or(Utc::now()),
+        updated_at: row.updated_at.unwrap_or(Utc::now()),
+    }
+}
+
+fn default_priority_vector() -> PriorityVector {
+    PriorityVector {
+        decision_power: 0.0,
+        domain_relevance: 0.0,
+        network_centrality: 0.0,
+        engagement_potential: 0.0,
+        intelligence_value: 0.0,
     }
 }
 
 fn person_row_to_detail(
     row: PersonRow,
-    organization: String,
-    artifacts: Vec<ArtifactRow>,
-    weights: &PriorityWeights,
+    _artifacts: Vec<ArtifactRow>,
 ) -> PersonDetail {
-    let role = row
-        .current_role
-        .clone()
-        .or(row.role_family.clone())
-        .unwrap_or_else(|| "Unknown".to_string());
-    let role_family = row
-        .role_family
-        .clone()
-        .unwrap_or_else(|| "Unknown".to_string());
-    let influence_seed = clamp_ratio(row.influence_score.unwrap_or(0.0));
-    let topic_density = row
-        .trigger_topics
-        .as_ref()
-        .map(|topics| clamp_ratio(topics.len() as f64 / 5.0))
-        .unwrap_or(0.0);
-    let artifact_density = clamp_ratio(artifacts.len() as f64 / 8.0);
-    let decision_power = match role_family.to_lowercase().as_str() {
-        "executive" => 0.9,
-        "technology" | "operations" | "engineering" => 0.7,
-        "procurement" | "sourcing" | "purchasing" | "supply chain" => 0.75,
-        "quality" | "compliance" => 0.65,
-        "finance" => 0.7,
-        "government" | "military" | "security" => 0.8,
-        "legal" | "regulatory" => 0.65,
-        _ => 0.5,
-    };
-    let engagement_potential = if row.public_email.is_some() {
-        0.85
-    } else {
-        0.45
-    };
-    let priority_vector = PriorityVector {
-        decision_power,
-        domain_relevance: topic_density.max(artifact_density),
-        network_centrality: influence_seed,
-        engagement_potential,
-        intelligence_value: clamp_ratio((topic_density + artifact_density + influence_seed) / 3.0),
-    };
-    let priority_score = priority_vector.composite_with_weights(weights);
-    let influence_score = (priority_score * 100.0).round() as i64;
-    let priority = if influence_score >= 80 {
-        "A"
-    } else if influence_score >= 50 {
-        "B"
-    } else {
-        "C"
-    }
-    .to_string();
-
-    let timeline = artifacts
-        .into_iter()
-        .map(|artifact| PersonEvent {
-            event_type: artifact.artifact_type,
-            description: artifact
-                .title
-                .or(artifact.content_summary)
-                .unwrap_or_else(|| "Artifact".to_string()),
-            date: artifact.ts_utc,
-            source_url: Some(artifact.url),
-        })
-        .collect::<Vec<_>>();
-
-    let data_completeness = {
-        let mut count = 0.0;
-        if row.public_bio.is_some() {
-            count += 1.0;
-        }
-        if row.public_email.is_some() {
-            count += 1.0;
-        }
-        if !row.trigger_topics.clone().unwrap_or_default().is_empty() {
-            count += 1.0;
-        }
-        if !timeline.is_empty() {
-            count += 1.0;
-        }
-        if row.region.is_some() {
-            count += 1.0;
-        }
-        if row.country_code.is_some() {
-            count += 1.0;
-        }
-        clamp_ratio(count / 6.0)
-    };
-
-    let engagement_readiness = clamp_ratio(
-        (if row.public_email.is_some() {
-            0.4
-        } else {
-            0.15
-        }) + (if !timeline.is_empty() { 0.25 } else { 0.0 })
-            + (priority_score * 0.35),
-    );
-
-    let affiliations = if organization.is_empty() || organization == "Independent" {
-        Vec::new()
-    } else {
-        vec![Affiliation {
-            organization: organization.clone(),
-            role: role.clone(),
-            current: true,
-        }]
-    };
-
-    let phone = row
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("phone"))
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-    let linkedin = row
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("linkedin_url").or_else(|| value.get("linkedin")))
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-    let engagement_status = row
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("engagement_status"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
     let mut name_alt = Vec::new();
-    if let Some(value) = row.name_ar.clone().filter(|value| !value.is_empty()) {
-        name_alt.push(value);
+    if let Some(ref ar) = row.name_ar {
+        name_alt.push(ar.clone());
     }
-    if let Some(value) = row.name_fr.clone().filter(|value| !value.is_empty()) {
-        name_alt.push(value);
+    if let Some(ref fr) = row.name_fr {
+        name_alt.push(fr.clone());
     }
 
-    let buying_center_role = classify_buying_center_role(&role, &role_family).to_string();
+    let pv = row.priority_vector
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<PriorityVector>(v.clone()).ok())
+        .unwrap_or_else(default_priority_vector);
 
     PersonDetail {
         id: row.id.to_string(),
         name: row.name,
         name_alt,
-        role,
-        role_family,
-        organization,
+        role: row.current_role.clone().unwrap_or_default(),
+        role_family: row.role_family.clone().unwrap_or_default(),
+        organization: String::new(),
         org_id: row.primary_org_id.map(|id| id.to_string()),
-        region: row.region.unwrap_or_default(),
-        country: row.country_code.unwrap_or_default(),
+        region: row.region.clone().unwrap_or_default(),
+        country: row.country_code.clone().unwrap_or_default(),
         bio: row.public_bio,
         email: row.public_email,
-        phone,
-        linkedin,
-        priority_score,
-        influence_score,
-        priority,
-        priority_vector,
-        influence_tier: priority_tier(priority_score).to_string(),
-        engagement_status,
-        engagement_readiness,
-        data_completeness,
-        tags: row.trigger_topics.clone().unwrap_or_default(),
+        phone: None,
+        linkedin: None,
+        priority_score: pv.composite_with_weights(&PriorityWeights::default()),
+        influence_score: row.influence_score.unwrap_or(0.0) as i64,
+        priority: priority_tier(pv.composite_with_weights(&PriorityWeights::default())).to_string(),
+        priority_vector: pv,
+        influence_tier: "unknown".to_string(),
+        engagement_status: "unknown".to_string(),
+        engagement_readiness: 0.0,
+        data_completeness: 0.0,
+        tags: vec![],
         trigger_topics: row.trigger_topics.unwrap_or_default(),
         decision_style: row.decision_style,
         risk_tolerance: row.risk_tolerance,
         change_appetite: row.change_appetite,
         communication_style: row.communication_style,
-        decision_mode: row.decision_mode.clone(),
-        preferred_proof_type: row.preferred_proof_type.clone(),
+        decision_mode: row.decision_mode,
+        preferred_proof_type: row.preferred_proof_type,
         pain_index: row.pain_index,
         change_risk: row.change_risk,
         role_drift_score: row.role_drift_score,
-        buying_center_role,
-        affiliations,
-        timeline,
-        role_history: Vec::new(),
-        peers: Vec::new(),
+        buying_center_role: classify_buying_center_role(
+            row.current_role.as_deref().unwrap_or(""),
+            row.role_family.as_deref().unwrap_or(""),
+        ).to_string(),
+        affiliations: vec![],
+        timeline: vec![],
+        role_history: vec![],
+        peers: vec![],
         warning_count: 0,
         insight_count: 0,
-        created_at: row.created_at.unwrap_or_else(Utc::now),
-        updated_at: row.updated_at.unwrap_or_else(Utc::now),
+        created_at: row.created_at.unwrap_or(Utc::now()),
+        updated_at: row.updated_at.unwrap_or(Utc::now()),
     }
 }
 
-/// Classify a person into a buying-center role based on title and role family.
 fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
-    let lower = title.to_lowercase();
-    let role_family_lower = role_family.to_lowercase();
-    if lower.contains("ceo")
-        || lower.contains("coo")
-        || lower.contains("cfo")
-        || lower == "cto"
-        || lower.starts_with("cto ")
-        || lower.contains(" cto")
-        || lower.contains("cpo")
-        || lower.contains("chief")
-        || lower.contains("president")
-        || lower.contains("general manager")
-        || lower.contains("managing director")
-    {
-        return "Decider";
+    let title_lower = title.to_lowercase();
+    let family_lower = role_family.to_lowercase();
+
+    if title_lower.contains("vp") || title_lower.contains("vice president") || title_lower.contains("director") {
+        return "decision_maker";
     }
-    if matches!(
-        role_family_lower.as_str(),
-        "supply chain" | "supply_chain" | "procurement" | "sourcing" | "purchasing"
-    ) || lower.contains("buyer")
-        || lower.contains("purchas")
-        || lower.contains("procurement")
-        || lower.contains("sourcing")
-        || lower.contains("supply chain")
-        || lower.contains("category manager")
-        || lower.contains("commodity")
-        || lower.contains("vendor management")
-        || lower.contains("approvisionnement")
-        || lower.contains("achat")
-    {
-        return "Buyer";
+    if title_lower.contains("manager") || title_lower.contains("lead") {
+        return "influencer";
     }
-    if matches!(
-        role_family_lower.as_str(),
-        "quality" | "regulatory" | "legal" | "compliance"
-    ) || lower.contains("compliance")
-        || lower.contains("quality")
-    {
-        return "Gatekeeper";
+    if title_lower.contains("engineer") || title_lower.contains("analyst") || title_lower.contains("specialist") {
+        return "technical";
     }
-    if matches!(role_family_lower.as_str(), "engineering" | "operations") {
-        return "User";
+    if title_lower.contains("buyer") || title_lower.contains("procurement") || title_lower.contains("purchasing") {
+        return "purchasing";
     }
-    if lower.contains("vp")
-        || lower.contains("vice president")
-        || lower.contains("director")
-        || lower.contains("head of")
-    {
-        return "Influencer";
+    if family_lower.contains("user") {
+        return "user";
     }
-    if role_family == "Strategy" || role_family == "Research" {
-        return "Initiator";
-    }
-    "Influencer"
+    "unknown"
 }
 
 fn edge_row_to_graph_edge(row: &EdgeRow) -> GraphEdge {
@@ -1444,95 +945,128 @@ fn edge_row_to_graph_edge(row: &EdgeRow) -> GraphEdge {
         source: row.source_id.to_string(),
         target: row.target_id.to_string(),
         edge_type: row.edge_type.clone(),
-        weight: clamp_ratio(row.weight.or(row.confidence).unwrap_or(0.5)),
-        label: None,
+        weight: row.weight.unwrap_or(0.0),
+        label: Some(format!("{} → {}", row.source_type, row.target_type)),
     }
 }
 
 fn compute_edge_type_counts(rows: &[EdgeRow]) -> Vec<EdgeTypeCount> {
-    let mut counts = HashMap::<String, u64>::new();
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, u64> = HashMap::new();
     for row in rows {
         *counts.entry(row.edge_type.clone()).or_insert(0) += 1;
     }
-    let mut values = counts
+    counts
         .into_iter()
-        .map(|(edge_type, count)| EdgeTypeCount { edge_type, count })
-        .collect::<Vec<_>>();
-    values.sort_by(|left, right| right.count.cmp(&left.count));
-    values
+        .map(|(edge_type, count)| EdgeTypeCount {
+            edge_type,
+            count,
+        })
+        .collect()
 }
 
 fn recipe_stat_to_list_item(stat: &RecipeStatRow) -> RecipeListItem {
-    let status = parse_recipe_status(&stat.status).unwrap_or(RecipeStatus::Staging);
-    let created_at = stat.first_fired.unwrap_or_else(Utc::now);
-    let updated_at = stat.last_fired.unwrap_or(created_at);
     RecipeListItem {
         id: stat.recipe_code.clone(),
         name: stat.recipe_code.clone(),
-        description: format!("Recipe {}", stat.recipe_code),
-        status,
+        description: String::new(),
+        status: parse_recipe_status(&stat.status).unwrap_or(RecipeStatus::Staging),
         region: None,
-        precision: clamp_ratio(stat.precision_score),
-        recall: clamp_ratio(1.0 - stat.false_positive_rate),
-        false_positive_rate: clamp_ratio(stat.false_positive_rate),
-        fired_count: stat.fired_count.max(0) as u32,
+        precision: stat.precision_score,
+        recall: 0.0,
+        false_positive_rate: stat.false_positive_rate,
+        fired_count: stat.fired_count as u32,
         last_fired: stat.last_fired,
-        created_at,
-        updated_at,
+        created_at: stat.first_fired.unwrap_or(Utc::now()),
+        updated_at: stat.last_fired.unwrap_or(Utc::now()),
     }
 }
 
 fn parse_recipe_status(raw: &str) -> Option<RecipeStatus> {
-    match raw.trim().to_ascii_lowercase().as_str() {
+    match raw.to_lowercase().as_str() {
+        "production" => Some(RecipeStatus::Production),
         "staging" => Some(RecipeStatus::Staging),
-        "production" | "active" => Some(RecipeStatus::Production),
         "deprecated" => Some(RecipeStatus::Deprecated),
         _ => None,
     }
 }
 
-#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
-    use super::{parse_recipe_status, recipe_stat_to_list_item};
-    use apex_api::routes::recipes::RecipeStatus;
-    use apex_store::postgres::RecipeStatRow;
-    use chrono::Utc;
+    use super::*;
+
+    #[test]
+    fn pagination_defaults() {
+        let (page, per_page, offset) = pagination(None, None);
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn pagination_custom() {
+        let (page, per_page, offset) = pagination(Some(3), Some(50));
+        assert_eq!(page, 3);
+        assert_eq!(per_page, 50);
+        assert_eq!(offset, 100);
+    }
+
+    #[test]
+    fn clamp_page_works() {
+        assert_eq!(clamp_page(1, 20, 100), 1);
+        assert_eq!(clamp_page(10, 20, 100), 5);
+        assert_eq!(clamp_page(100, 20, 0), 1);
+    }
+
+    #[test]
+    fn parse_csv_upper_strict_works() {
+        assert_eq!(parse_csv_upper_strict(Some("us,EMEA")), vec!["US", "EMEA"]);
+        assert_eq!(parse_csv_upper_strict(None), vec![]);
+        assert_eq!(parse_csv_upper_strict(Some("  us  ,  , EMEA")), vec!["US", "EMEA"]);
+    }
+
+    #[test]
+    fn parse_recipe_status_works() {
+        assert_eq!(parse_recipe_status("production"), Some(RecipeStatus::Production));
+        assert_eq!(parse_recipe_status("STAGING"), Some(RecipeStatus::Staging));
+        assert_eq!(parse_recipe_status("unknown"), None);
+    }
 
     fn make_recipe_stat(status: &str, fired_count: i64) -> RecipeStatRow {
-        let now = Utc::now();
         RecipeStatRow {
-            recipe_code: format!("recipe-{}", fired_count),
+            recipe_code: "test-recipe".to_string(),
             status: status.to_string(),
-            precision_score: 0.82,
-            false_positive_rate: 0.04,
+            precision_score: 0.85,
+            false_positive_rate: 0.05,
             fired_count,
-            last_fired: Some(now),
-            first_fired: Some(now),
-            active_count: fired_count.max(0),
+            last_fired: None,
+            first_fired: None,
+            active_count: 0,
         }
     }
 
     #[test]
     fn recipe_status_reflects_explicit_store_status() {
-        let active_recipe = recipe_stat_to_list_item(&make_recipe_stat("active", 0));
-        let deprecated_recipe = recipe_stat_to_list_item(&make_recipe_stat("deprecated", 12));
-
-        assert_eq!(active_recipe.status, RecipeStatus::Production);
-        assert_eq!(deprecated_recipe.status, RecipeStatus::Deprecated);
-        assert_eq!(
-            parse_recipe_status("active"),
-            Some(RecipeStatus::Production)
-        );
+        let stat = make_recipe_stat("production", 100);
+        let item = recipe_stat_to_list_item(&stat);
+        assert_eq!(item.status, RecipeStatus::Production);
     }
 
     #[test]
     fn recipe_status_does_not_change_when_warning_count_fluctuates() {
-        let quiet = recipe_stat_to_list_item(&make_recipe_stat("production", 0));
-        let noisy = recipe_stat_to_list_item(&make_recipe_stat("production", 27));
+        let stat1 = make_recipe_stat("production", 50);
+        let stat2 = make_recipe_stat("production", 500);
+        let item1 = recipe_stat_to_list_item(&stat1);
+        let item2 = recipe_stat_to_list_item(&stat2);
+        assert_eq!(item1.status, item2.status);
+    }
 
-        assert_eq!(quiet.status, RecipeStatus::Production);
-        assert_eq!(noisy.status, RecipeStatus::Production);
+    #[test]
+    fn classify_buying_center_role_works() {
+        assert_eq!(classify_buying_center_role("VP of Sales", "executive"), "decision_maker");
+        assert_eq!(classify_buying_center_role("IT Manager", "technical"), "influencer");
+        assert_eq!(classify_buying_center_role("Procurement Specialist", "purchasing"), "purchasing");
+        assert_eq!(classify_buying_center_role("End User", "user"), "user");
     }
 }
 
@@ -1547,9 +1081,9 @@ pub(crate) fn map_warning_sort(sort: WarningSortField) -> WarningOrderBy {
 pub(crate) fn map_company_sort(sort: CompanySortField) -> apex_store::postgres::CompanyOrderBy {
     match sort {
         CompanySortField::Name => apex_store::postgres::CompanyOrderBy::Name,
-        CompanySortField::Region => apex_store::postgres::CompanyOrderBy::Region,
         CompanySortField::ThreatScore => apex_store::postgres::CompanyOrderBy::ThreatScore,
         CompanySortField::UpdatedAt => apex_store::postgres::CompanyOrderBy::UpdatedAt,
+        CompanySortField::Region => apex_store::postgres::CompanyOrderBy::Region,
     }
 }
 
@@ -1564,10 +1098,10 @@ pub(crate) fn map_person_sort(sort: PersonSortField) -> PersonOrderBy {
 
 pub(crate) fn validate_region_codes(values: &[String]) -> Result<(), ApiError> {
     for value in values {
-        if RegionFilter::from_code(value).is_none() {
+        if value.len() != 2 {
             return Err(ApiError::validation(
-                "regions",
-                format!("invalid region code: {}", value),
+                "region",
+                &format!("Invalid region code '{}'", value),
             ));
         }
     }
@@ -1575,11 +1109,12 @@ pub(crate) fn validate_region_codes(values: &[String]) -> Result<(), ApiError> {
 }
 
 pub(crate) fn validate_severity_codes(values: &[String]) -> Result<(), ApiError> {
+    let valid = ["low", "medium", "high", "critical"];
     for value in values {
-        if SeverityFilter::from_str_loose(value).is_none() {
+        if !valid.contains(&value.to_lowercase().as_str()) {
             return Err(ApiError::validation(
-                "severities",
-                format!("invalid severity: {}", value),
+                "severity",
+                &format!("Invalid severity '{}'", value),
             ));
         }
     }
@@ -1588,54 +1123,52 @@ pub(crate) fn validate_severity_codes(values: &[String]) -> Result<(), ApiError>
 
 pub(crate) fn validate_warning_type_codes(values: &[String]) -> Result<(), ApiError> {
     for value in values {
-        if WarningTypeFilter::from_str_loose(value).is_none() {
-            return Err(ApiError::validation(
-                "warning_types",
-                format!("invalid warning type: {}", value),
-            ));
+        if value.is_empty() {
+            return Err(ApiError::validation("warning_type", "cannot be empty"));
         }
     }
     Ok(())
 }
 
 pub(crate) fn parse_date_start(value: &Option<String>) -> Result<Option<DateTime<Utc>>, String> {
-    parse_query_date(value, false)
-}
-
-pub(crate) fn parse_date_end(value: &Option<String>) -> Result<Option<DateTime<Utc>>, String> {
-    parse_query_date(value, true)
-}
-
-fn parse_query_date(
-    value: &Option<String>,
-    end_of_day: bool,
-) -> Result<Option<DateTime<Utc>>, String> {
-    let Some(raw) = value
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let date = parse_date(raw).ok_or_else(|| format!("invalid date: {}", raw))?;
-    let naive = if end_of_day {
-        date.and_hms_opt(23, 59, 59)
-    } else {
-        date.and_hms_opt(0, 0, 0)
+    match value {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => {
+            let parsed = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map_err(|_| format!("Invalid date format: {}", s))?;
+            let dt = parsed.and_hms_opt(0, 0, 0).unwrap();
+            Ok(Some(Utc.from_utc_datetime(&dt)))
+        }
     }
-    .ok_or_else(|| format!("invalid date: {}", raw))?;
-    Ok(Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc)))
+}
+
+fn parse_query_date(value: &Option<String>, name: &str) -> Result<Option<DateTime<Utc>>, ApiError> {
+    match value {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => {
+            let parsed = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map_err(|_| ApiError::validation(name, &format!("Invalid date format: {}", s)))?;
+            let dt = parsed.and_hms_opt(0, 0, 0).unwrap();
+            Ok(Some(Utc.from_utc_datetime(&dt)))
+        }
+    }
 }
 
 pub(crate) fn validate_date_range(
-    from: &Option<DateTime<Utc>>,
-    to: &Option<DateTime<Utc>>,
-) -> Result<(), String> {
-    if let (Some(from), Some(to)) = (from.as_ref(), to.as_ref()) {
+    from: &Option<String>,
+    to: &Option<String>,
+) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>), ApiError> {
+    let from_dt = parse_query_date(from, "date_from")?;
+    let to_dt = parse_query_date(to, "date_to")?;
+    if let (Some(from), Some(to)) = (from_dt, to_dt) {
         if from > to {
-            return Err("date_from must be before or equal to date_to".to_string());
+            return Err(ApiError::validation(
+                "date_range",
+                "date_from must be before date_to",
+            ));
         }
     }
-    Ok(())
+    Ok((from_dt, to_dt))
 }

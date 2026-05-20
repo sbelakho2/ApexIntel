@@ -30,6 +30,17 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
+# ── Monkey-patch PEFT WeightConverter for transformers 5.8.1 compatibility ──
+import peft.utils.transformers_weight_conversion as _twc
+
+_orig_init = _twc.WeightConverter.__init__
+def _patched_init(self, *args, **kwargs):
+    kwargs.pop("distributed_operation", None)
+    kwargs.pop("quantization_operation", None)
+    return _orig_init(self, *args, **kwargs)
+_twc.WeightConverter.__init__ = _patched_init
+# ── End of monkey-patch ─────────────────────────────────────────────────────
+
 WORK = Path(__file__).resolve().parent.parent
 
 GGUF_QUANT_TYPES = ["Q4_K_M", "Q5_K_M", "Q8_0", "F16"]

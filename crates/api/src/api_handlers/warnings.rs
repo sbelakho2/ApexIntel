@@ -74,57 +74,28 @@ pub(crate) async fn list_warnings(
             return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
         }
     };
-    let date_to = match parse_date_end(&params.date_to) {
+    let date_to = match parse_query_date(&params.date_to, "date_to") {
         Ok(value) => value,
-        Err(msg) => {
-            let api_err = ApiError::bad_request(msg);
+        Err(api_err) => {
             return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
         }
     };
-    if let Err(msg) = validate_date_range(&date_from, &date_to) {
-        let api_err = ApiError::bad_request(msg);
-        return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
-    }
 
-    let regions = match parse_csv_upper_strict(&params.regions, 32, "regions") {
-        Ok(value) => value,
-        Err(api_err) => {
-            return (
-                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                Json(error_response(api_err)),
-            );
-        }
-    };
+    let regions = parse_csv_upper_strict(params.regions.as_deref());
     if let Err(api_err) = validate_region_codes(&regions) {
         return (
             StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
             Json(error_response(api_err)),
         );
     }
-    let severities = match parse_csv_lower_strict(&params.severities, 32, "severities") {
-        Ok(value) => value,
-        Err(api_err) => {
-            return (
-                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                Json(error_response(api_err)),
-            );
-        }
-    };
+    let severities = parse_csv_lower_strict(params.severities.as_deref());
     if let Err(api_err) = validate_severity_codes(&severities) {
         return (
             StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
             Json(error_response(api_err)),
         );
     }
-    let warning_types = match parse_csv_lower_strict(&params.warning_types, 32, "warning_types") {
-        Ok(value) => value,
-        Err(api_err) => {
-            return (
-                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                Json(error_response(api_err)),
-            );
-        }
-    };
+    let warning_types = parse_csv_lower_strict(params.warning_types.as_deref());
     if let Err(api_err) = validate_warning_type_codes(&warning_types) {
         return (
             StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
@@ -305,7 +276,7 @@ pub(crate) async fn acknowledge_warning(
     body: axum::body::Bytes,
 ) -> (
     StatusCode,
-    Json<ApiResponse<routes::warnings::AcknowledgeResponse>>,
+    Json<ApiResponse<apex_api::routes::warnings::AcknowledgeResponse>>,
 ) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
@@ -384,7 +355,7 @@ pub(crate) async fn acknowledge_warning(
                 )
                 .await;
             let now = Utc::now();
-            let resp = routes::warnings::AcknowledgeResponse {
+            let resp = apex_api::routes::warnings::AcknowledgeResponse {
                 warning_id: id_parsed.to_string(),
                 acknowledged: true,
                 acknowledged_by: body.user_id.clone(),

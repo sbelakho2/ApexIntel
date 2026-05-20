@@ -501,11 +501,17 @@ pub(super) fn build_goal_oriented_suggestions(
         }
         (false, _) => {
             push_unique_suggestion(&mut suggestions, format!(
-                "If the goal is commercial upside, decide whether this signal around {} is best used for pipeline capture, relationship expansion, or competitive displacement and tailor the outreach accordingly.",
-                entity
+                "Map this {} signal around {} to an active decision: is the priority pipeline capture, relationship defense, competitive displacement, or early qualification? Choose one and build the outreach around it.",
+                category, entity
             ));
-            push_unique_suggestion(&mut suggestions, "If the goal is resilience, translate the current evidence into specific sourcing, routing, or qualification choices instead of treating it as background monitoring.".to_string());
-            push_unique_suggestion(&mut suggestions, "If the goal is executive planning, brief stakeholders on which accounts, programs, or regions deserve action first and what concrete decision each team needs to make next.".to_string());
+            push_unique_suggestion(&mut suggestions, format!(
+                "Translate the current {} evidence into concrete sourcing or qualification choices for {} rather than treating it as a general market signal.",
+                category, entity
+            ));
+            push_unique_suggestion(&mut suggestions, format!(
+                "Brief stakeholders on which accounts or programs tied to {} the {} signal affects most and what specific decision each team needs to make next.",
+                entity, category
+            ));
         }
     }
 

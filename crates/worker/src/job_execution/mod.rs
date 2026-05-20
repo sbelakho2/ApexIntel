@@ -5,6 +5,7 @@ mod poi;
 mod recipes;
 mod resilience;
 mod security;
+mod template_variation;
 mod weekly;
 
 use std::sync::Arc;

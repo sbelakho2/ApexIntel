@@ -496,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_verify_ticker_known() {
         let verifier = EntityVerifier::new();
         let result = verifier.verify_ticker("NASDAQ", "NVDA");

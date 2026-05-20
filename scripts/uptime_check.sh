@@ -15,7 +15,7 @@ payload=$(curl -fsS --max-time 15 "${HEALTHCHECK_URL}") || {
   exit 1
 }
 
-echo "${payload}" | grep -qi '"status"' || {
+echo "${payload}" | jq -e '.status' >/dev/null 2>&1 || echo "${payload}" | grep -qi '"status"[[:space:]]*:' || {
   if [[ -n "${PAGE_WEBHOOK_URL}" ]]; then
     curl -fsS -X POST -H 'Content-Type: application/json' \
       -d "{\"text\":\"ApexIntel health payload missing status: ${HEALTHCHECK_URL}\"}" \

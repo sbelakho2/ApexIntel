@@ -18,7 +18,7 @@ edition = "2021"
 #   cargo test  -p apex-worker --features llm
 # ─────────────────────────────────────────────────────────────────────────────
 [features]
-default = []
+default = ["llm"]
 # `parse` — enables apex-parse for HTML/content extraction without the full LLM stack.
 #   Use when you want crawl-cycle content parsing but don't have an LLM configured.
 parse = ["apex-parse"]
@@ -38,7 +38,7 @@ apex-crawl = { path = "../crawl" }
 apex-recipes = { path = "../recipes" }
 apex-llm = { path = "../llm", optional = true }
 apex-learning = { path = "../learning", optional = true }
-apex-insights = { path = "../insights", optional = true }
+apex-insights = { path = "../insights", optional = true, features = ["llm"] }
 apex-parse = { path = "../parse", optional = true }
 apex-poi = { path = "../poi", optional = true }
 serde = { workspace = true, features = ["derive"] }

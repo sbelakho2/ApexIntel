@@ -542,6 +542,34 @@ static RE_CITATION_REF: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\[\d+\]").unwrap_or_else(|error| panic!("valid citation regex: {error}"))
 });
 
+/// Regex patterns for confidence/source boilerplate that indicates
+/// template-generated text rather than natural LLM output.
+/// These patterns strip robotic boilerplate from the narrative when
+/// the template path is used (LLM unavailable).
+static RE_CONFIDENCE_BOILERPLATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        concat!(
+            r"(?is)",  // case-insensitive, dot-matches-newline
+            r"(?:",
+            // "The current read is likely at roughly 52% confidence because..."
+            r"The current read is likely at roughly \d+% confidence because[^.]+\.\s*",
+            r"|",
+            // "Reported by N independent sources; Includes N non-social reporting sources"
+            r"Reported by \d+ independent sources;? Includes? \d+ non-social reporting sources\.?\s*",
+            r"|",
+            // "Coverage from ... is being compared for corroboration"
+            r"Coverage from .+? is being compared for corroboration\.?\s*",
+            r"|",
+            // "The recurring reported themes involve ..."
+            r"The recurring reported themes involve[^.]+\.\s*",
+            r"|",
+            // "The current read is likely at roughly X% confidence"
+            r"The current read is likely at roughly \d+% confidence\.?\s*",
+            r")",
+        )
+    ).unwrap_or_else(|error| panic!("valid confidence boilerplate regex: {error}"))
+});
+
 /// Parse action template into a list of actions.
 /// Actions are separated by newlines or semicolons. Empty lines are skipped.
 /// B186: capped at MAX_ACTIONS to prevent huge lists.
@@ -588,6 +616,23 @@ fn trailing_citation_ref_count(narrative: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Strip confidence/source boilerplate patterns from template-generated narrative text.
+/// This removes sentences like "The current read is likely at roughly 52% confidence because..."
+/// that indicate template leakage rather than natural LLM generation.
+///
+/// Returns the cleaned narrative with boilerplate sentences removed.
+/// If the entire narrative is boilerplate, returns an empty string (caller should handle).
+pub fn strip_confidence_boilerplate(narrative: &str) -> String {
+    let result = RE_CONFIDENCE_BOILERPLATE.replace_all(narrative, "");
+    let trimmed = result.trim().to_string();
+    // If after removal we have a trailing citation ref, clean that too
+    if trimmed.ends_with('[') || trimmed.ends_with("[]") {
+        trim_trailing_citation_refs(&trimmed)
+    } else {
+        trimmed
+    }
+}
+
 // ────────────────────────────────────────────
 // Main render function
 // ────────────────────────────────────────────
@@ -607,7 +652,8 @@ pub fn render_insight(candidate: &InsightCandidate) -> InsightCard {
         actions = default_action_fallback();
     }
     let citations = extract_citations(&evidence);
-    let mut narrative = append_citation_refs(narrative_raw.trim(), citations.len());
+    let narrative_trimmed = narrative_raw.trim();
+    let mut narrative = append_citation_refs(narrative_trimmed, citations.len());
     if trailing_citation_ref_count(&narrative) != citations.len() {
         warn!(
             citation_count = citations.len(),
@@ -615,6 +661,14 @@ pub fn render_insight(candidate: &InsightCandidate) -> InsightCard {
             "citation_reference_count_mismatch"
         );
         narrative = append_citation_refs(&narrative, citations.len());
+    }
+    // Clean template-generated boilerplate from narrative text.
+    // This removes confidence/source enumeration sentences like
+    // "The current read is likely at roughly 52% confidence because..."
+    // that indicate template leakage rather than natural prose.
+    let stripped = strip_confidence_boilerplate(&narrative);
+    if !stripped.is_empty() {
+        narrative = stripped;
     }
     let title = generate_title(
         &candidate.recipe_code,

@@ -46,4 +46,4 @@ if [[ -d "${BACKUP_DIR}/config" ]]; then
 fi
 
 echo "[$(date)] Restore complete."
-echo "[$(date)] Restart services: systemctl restart apexintel-api apexintel-worker apexintel-frontend"
+echo "[$(date)] Restart services: systemctl restart apexintel-api apexintel-worker"

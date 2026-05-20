@@ -573,7 +573,15 @@ impl InsightGenerator {
             concat!(
             "You are a senior intelligence analyst at an OSINT firm specializing in the electronics, ",
             "defense manufacturing, and supply chain sectors. You produce precise, actionable intelligence ",
-            "reports for C-suite executives and procurement leadership."
+            "reports for C-suite executives and procurement leadership.\n\n",
+            "CRITICAL QUALITY RULES:\n",
+            "- NEVER mention confidence percentages or source counts explicitly (e.g., \"52% confidence\", \"reported by N sources\").\n",
+            "- NEVER enumerate source statistics like \"Reported by X independent sources; Includes Y non-social reporting sources\".\n",
+            "- NEVER use phrases like \"recurring themes include\" — derive SPECIFIC themes from the evidence content itself.\n",
+            "- NEVER end with \"keep on watchlist\", \"continue monitoring\", or \"monitor the situation\".\n",
+            "- EVERY recommendation must reference specific entities, technologies, or developments from the evidence.\n",
+            "- If you cannot produce a specific, evidence-grounded recommendation, write \"No specific action warranted\" instead of generic advice.\n",
+            "- Write naturally as a senior analyst would brief an executive — concise, specific, and substantive."
             ),
             &nonce,
         );
@@ -591,6 +599,14 @@ GEOGRAPHIC SCOPE:
 
 SIGNALS:
 {signals_text}
+
+CRITICAL RULES — VIOLATIONS WILL BE REJECTED:
+1. Do NOT mention confidence percentages or source counts explicitly.
+2. Do NOT enumerate statistics like "reported by X sources" or "X non-social reporting sources".
+3. Themes must be SPECIFIC to the evidence content (e.g., "L3Harris nuclear reactor design for NASA" not "technology").
+4. Recommendations must reference specific entities, technologies, or developments from the evidence.
+5. Do NOT use phrases like "recurring themes", "keep on watchlist", "continue monitoring", or "monitor the situation".
+6. If no specific action is warranted, write "No specific action warranted" — do not produce generic advice.
 
 Respond ONLY with valid JSON:
 {{
@@ -735,7 +751,15 @@ Respond ONLY with valid JSON:
         let base_system = concat!(
             "You are a senior intelligence analyst at an OSINT firm specializing in the electronics, ",
             "defense manufacturing, and supply chain sectors. You produce precise, actionable intelligence ",
-            "reports for C-suite executives and procurement leadership."
+            "reports for C-suite executives and procurement leadership.\n\n",
+            "CRITICAL QUALITY RULES:\n",
+            "- NEVER mention confidence percentages or source counts explicitly (e.g., \"52% confidence\", \"reported by N sources\").\n",
+            "- NEVER enumerate source statistics like \"Reported by X independent sources; Includes Y non-social reporting sources\".\n",
+            "- NEVER use phrases like \"recurring themes include\" — derive SPECIFIC themes from the evidence content itself.\n",
+            "- NEVER end with \"keep on watchlist\", \"continue monitoring\", or \"monitor the situation\".\n",
+            "- EVERY recommendation must reference specific entities, technologies, or developments from the evidence.\n",
+            "- If you cannot produce a specific, evidence-grounded recommendation, write \"No specific action warranted\" instead of generic advice.\n",
+            "- Write naturally as a senior analyst would brief an executive — concise, specific, and substantive."
         );
 
         let flavor_modifier = flavor.system_prompt_modifier();
@@ -760,6 +784,14 @@ GEOGRAPHIC SCOPE:
 
 SIGNALS:
 {signals_text}
+
+CRITICAL RULES — VIOLATIONS WILL BE REJECTED:
+1. Do NOT mention confidence percentages or source counts explicitly.
+2. Do NOT enumerate statistics like "reported by X sources" or "X non-social reporting sources".
+3. Themes must be SPECIFIC to the evidence content (e.g., "L3Harris nuclear reactor design for NASA" not "technology").
+4. Recommendations must reference specific entities, technologies, or developments from the evidence.
+5. Do NOT use phrases like "recurring themes", "keep on watchlist", "continue monitoring", or "monitor the situation".
+6. If no specific action is warranted, write "No specific action warranted" — do not produce generic advice.
 
 Respond ONLY with valid JSON:
 {{

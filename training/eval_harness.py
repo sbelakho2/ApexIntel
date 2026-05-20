@@ -450,6 +450,20 @@ def load_model(model_dir: str, adapter_path: str | None = None):
     """Load model + optional adapter. Returns (model, tokenizer)."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    # ── Workaround: PEFT 0.19.1 WeightConverter doesn't accept
+    #    `distributed_operation` or `quantization_operation` kwargs
+    #    passed by transformers 5.8.1. Patch them out before
+    #    importing PeftModel. ────────────────────────────────────
+    import peft.utils.transformers_weight_conversion as _twc
+    _orig_init = _twc.WeightConverter.__init__
+    def _patched_init(self, *args, **kwargs):
+        kwargs.pop("distributed_operation", None)
+        kwargs.pop("quantization_operation", None)
+        return _orig_init(self, *args, **kwargs)
+    _twc.WeightConverter.__init__ = _patched_init
+    # ─────────────────────────────────────────────────────────────
+
     from peft import PeftModel
 
     print(f"Loading model from {model_dir}")

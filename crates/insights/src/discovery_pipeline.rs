@@ -373,6 +373,7 @@ mod tests {
         };
         let mut pipeline = DiscoveryPipeline::new(config);
 
+        #[allow(clippy::disallowed_methods)]
         let observations = vec![serde_json::json!({
             "text": "NVIDIA Corporation announced new H100 GPUs today. NASDAQ:NVDA."
         })];
@@ -407,6 +408,7 @@ mod tests {
             0.9,
         );
 
+        #[allow(clippy::disallowed_methods)]
         let observations = vec![serde_json::json!({
             "text": "NVIDIA Corporation is doing great."
         })];
@@ -482,6 +484,7 @@ mod tests {
         };
         let mut pipeline = DiscoveryPipeline::new(config);
 
+        #[allow(clippy::disallowed_methods)]
         let observations = vec![serde_json::json!({
             "text": "SomeUnknownStartupXYZ Inc announced funding."
         })];

@@ -86,7 +86,14 @@ fn should_emit_llm_warning(
 
     let normalized_severity = warning_severity.trim().to_ascii_lowercase();
     if normalized_severity != "critical" && !insight_inserted {
-        return false;
+        // Even without LLM insight, allow warnings through if the evidence
+        // contains strong concrete signals (tender notices, regulatory filings,
+        // security incidents, POI moves, social mentions with high engagement).
+        // This prevents quality gates from suppressing all warnings when the
+        // LLM insight was rejected but the underlying evidence is solid.
+        if !has_concrete_evidence(evidence_signals) {
+            return false;
+        }
     }
 
     if low_signal_certification_warning_case(evidence_signals) && normalized_severity != "critical"
@@ -99,6 +106,62 @@ fn should_emit_llm_warning(
     }
 
     grounding_count >= 2 && evidence_quality >= 0.55
+}
+
+/// Checks whether the evidence signals contain concrete, verifiable business
+/// activity that should produce a warning even when the LLM insight was
+/// rejected by quality gates.
+///
+/// Concrete evidence types include: tender/contract awards, regulatory filings,
+/// security incidents, POI movements, social mentions, news articles, business
+/// deals, investments, government policy changes, and trade actions.
+///
+/// The function requires either:
+/// - At least 2 concrete signals with relevance_score >= 0.6, or
+/// - At least 1 concrete signal with relevance_score >= 0.8
+#[cfg(feature = "llm")]
+fn has_concrete_evidence(signals: &[EvidenceSignal]) -> bool {
+    // Normalized signal type patterns that represent concrete, verifiable events.
+    // Each entry is the signal_type lowered and with underscores/special chars removed,
+    // so both "tender_notice" and "TenderNotice" match "tendernotice".
+    fn normalized_type(signal_type: &str) -> String {
+        signal_type
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect()
+    }
+
+    let concrete_normalized: [&str; 28] = [
+        "tendernotice", "tender",
+        "regulatoryfiling", "regulatory",
+        "contractaward", "contract",
+        "securityincident", "security", "breach",
+        "personmove", "person", "leadershipchange", "hire",
+        "socialmention", "social", "socialpost",
+        "newsarticle", "news",
+        "deal", "partnership", "investment",
+        "governmentpolicy", "government", "policy",
+        "tradeaction", "trade", "sanction",
+        "certification",
+    ];
+
+    let concrete_count = signals
+        .iter()
+        .filter(|s| {
+            let norm = normalized_type(&s.signal_type);
+            concrete_normalized.contains(&norm.as_str())
+        })
+        .filter(|s| s.relevance_score >= 0.6)
+        .count();
+
+    // Require at least 2 concrete evidence signals or 1 very strong one
+    concrete_count >= 2
+        || signals.iter().any(|s| {
+            let norm = normalized_type(&s.signal_type);
+            concrete_normalized.contains(&norm.as_str()) && s.relevance_score >= 0.8
+        })
 }
 
 #[allow(dead_code)]
@@ -3339,7 +3402,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         }
 
         #[cfg(feature = "llm")]
-        let llm_output = {
+        let evidence_signals: Vec<EvidenceSignal> = {
             let mut evidence_signals: Vec<EvidenceSignal> = entity_evidence
                 .get(&c.entity_id)
                 .cloned()
@@ -3367,7 +3430,11 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             evidence_signals.truncate(*crate::config::LLM_MAX_EVIDENCE_SIGNALS);
+            evidence_signals
+        };
 
+        #[cfg(feature = "llm")]
+        let llm_output = {
             let entity_ctx = entity_contexts
                 .get(&c.entity_id)
                 .cloned()
@@ -3423,7 +3490,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                         recommendation,
                         llm_confidence,
                         source_urls,
-                        evidence_signals,
+                        evidence_signals.clone(),
                         insight_metadata,
                     ))
                 }
@@ -3476,7 +3543,60 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     insight_metadata,
                 )
             }
-            None => continue,
+            None => {
+                if !has_concrete_evidence(&evidence_signals) {
+                    continue;
+                }
+                // LLM generation failed but concrete evidence exists —
+                // emit a fallback warning derived from evidence signals directly.
+                let fallback_evidence_quality =
+                    evidence_quality_from_signals(&evidence_signals, &source_reliability_scores);
+                let fallback_confidence = (0.75 * effective_candidate_confidence
+                    + 0.10 * fallback_evidence_quality)
+                    .clamp(0.0, 1.0);
+                let fallback_title = build_analytical_title(
+                    &entity_label,
+                    &entity_region,
+                    &c.category,
+                    &signal_details,
+                    entity_type.as_deref(),
+                );
+                let fallback_urls = ranked_source_urls(&evidence_signals, 6);
+                let evidence_items: Vec<&str> = evidence_signals
+                    .iter()
+                    .take(3)
+                    .map(|s| s.title.as_str())
+                    .collect();
+                let fallback_summary = if evidence_items.is_empty() {
+                    format!(
+                        "Concrete evidence detected for {} — review signals for details.",
+                        entity_label
+                    )
+                } else {
+                    format!(
+                        "Evidence signals detected for {}: {}.",
+                        entity_label,
+                        evidence_items.join("; ")
+                    )
+                };
+                crate::observability::WORKER_METRICS.record_insight_fallback();
+                tracing::info!(
+                    entity = %entity_label,
+                    category = %c.category,
+                    evidence_count = evidence_signals.len(),
+                    "recipe_fire: LLM generation failed; emitting evidence-based fallback warning"
+                );
+                (
+                    fallback_title,
+                    fallback_summary,
+                    String::new(),
+                    fallback_confidence,
+                    fallback_urls,
+                    fallback_evidence_quality,
+                    evidence_signals.clone(),
+                    serde_json::Value::Null,
+                )
+            }
         };
 
         #[cfg(feature = "llm")]
@@ -3723,7 +3843,17 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 );
                 continue;
             }
-            let warn_title = format!("[{}] {}", c.recipe_code, title);
+            let diversified_title = super::template_variation::diversify_title(
+                &title,
+                &c.recipe_code,
+                &c.entity_id,
+            );
+            let diversified_action = super::template_variation::diversify_action(
+                &warning_action,
+                &c.recipe_code,
+                &c.entity_id,
+            );
+            let warn_title = format!("[{}] {}", c.recipe_code, diversified_title);
             let warn_region = if entity_region.is_empty() {
                 None
             } else {
@@ -3734,7 +3864,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .insert_warning(
                     &c.category,
                     &warn_title,
-                    Some(&warning_action),
+                    Some(&diversified_action),
                     warning_severity,
                     warn_region,
                     Some(&c.recipe_code),
@@ -3754,7 +3884,17 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             effective_candidate_confidence,
             c.impact,
         ) {
-            let warn_title = format!("[{}] {}", c.recipe_code, title);
+            let diversified_title = super::template_variation::diversify_title(
+                &title,
+                &c.recipe_code,
+                &c.entity_id,
+            );
+            let diversified_action = super::template_variation::diversify_action(
+                &warning_action,
+                &c.recipe_code,
+                &c.entity_id,
+            );
+            let warn_title = format!("[{}] {}", c.recipe_code, diversified_title);
             let warn_region = if entity_region.is_empty() {
                 None
             } else {
@@ -3765,7 +3905,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .insert_warning(
                     &c.category,
                     &warn_title,
-                    Some(&warning_action),
+                    Some(&diversified_action),
                     warning_severity,
                     warn_region,
                     Some(&c.recipe_code),

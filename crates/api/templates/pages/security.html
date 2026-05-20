@@ -97,7 +97,7 @@
       <p class="text-xs text-muted-foreground">No DNS posture checks available.</p>
       {% else %}
         {% for d in dns_posture %}
-        {% if loop.index <= 6 %}
+        {% if loop.index <= 50 %}
         <div class="rounded-sm border border-border bg-secondary/30 px-3 py-2">
           <div class="flex items-center justify-between">
             <span class="text-xs font-bold">{{ d.domain }}</span>
@@ -130,13 +130,13 @@
   </div>
 </div>
 
-<div class="apex-card p-4">
+<div class="apex-card p-4 mb-4">
   {% if findings.is_empty() %}
   {% call m::empty_state("No security warnings yet", "Security warnings will appear here when checks identify issues.") %}
   {% else %}
   <div class="space-y-3">
     {% for f in findings %}
-    {% if loop.index <= 8 %}
+    {% if loop.index <= 200 %}
     <div class="apex-card p-4 hover:bg-muted/30 transition-colors">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
@@ -165,5 +165,38 @@
     {% endfor %}
   </div>
   {% endif %}
+</div>
+
+{# ── DNS Posture Full Table Section ─────────────────────────────────────────── #}
+<div class="apex-card p-4 mb-4">
+  <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">
+    DNS Posture Details
+    {% if !dns_posture.is_empty() %}
+    <span class="ml-1 text-[10px] font-normal text-muted-foreground">({{ dns_posture.len() }} domains)</span>
+    {% endif %}
+  </h2>
+  {% include "partials/security_dns_tab.html" %}
+</div>
+
+{# ── KEV Relevance Section ──────────────────────────────────────────────────── #}
+<div class="apex-card p-4 mb-4">
+  <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">
+    Known Exploited Vulnerabilities (KEV)
+    {% if !kev_items.is_empty() %}
+    <span class="ml-1 text-[10px] font-normal text-muted-foreground">({{ kev_items.len() }} relevant CVEs)</span>
+    {% endif %}
+  </h2>
+  {% include "partials/security_kev_tab.html" %}
+</div>
+
+{# ── Dedicated Lookalike Domains Section ─────────────────────────────────────── #}
+<div class="apex-card p-4">
+  <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">
+    Lookalike Domains
+    {% if !lookalike_domains.is_empty() %}
+    <span class="ml-1 text-[10px] font-normal text-muted-foreground">({{ lookalike_domains.len() }} detected)</span>
+    {% endif %}
+  </h2>
+  {% include "partials/security_lookalike_tab.html" %}
 </div>
 {% endblock %}

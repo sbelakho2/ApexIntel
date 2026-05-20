@@ -81,3 +81,39 @@ rules:
     for: 10m
     notify:
       - email
+
+  - name: redis-down
+    source: redis_up
+    condition: redis_up == 0
+    severity: critical
+    for: 1m
+    notify:
+      - pager_webhook
+      - email
+
+  - name: nats-down
+    source: nats_up
+    condition: nats_up == 0
+    severity: critical
+    for: 1m
+    notify:
+      - pager_webhook
+      - email
+
+  - name: minio-down
+    source: minio_up
+    condition: minio_up == 0
+    severity: critical
+    for: 1m
+    notify:
+      - pager_webhook
+      - email
+
+  - name: postgres-connection-pool-exhaustion
+    source: pg_pool_connections
+    condition: pg_pool_connections_used / pg_pool_connections_total > 0.90
+    severity: critical
+    for: 2m
+    notify:
+      - pager_webhook
+      - email

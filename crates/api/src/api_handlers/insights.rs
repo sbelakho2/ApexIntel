@@ -56,27 +56,14 @@ pub(crate) async fn list_insights(
             return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
         }
     };
-    let date_to = match parse_date_end(&params.date_to) {
+    let date_to = match parse_query_date(&params.date_to, "date_to") {
         Ok(value) => value,
-        Err(msg) => {
-            let api_err = ApiError::bad_request(msg);
+        Err(api_err) => {
             return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
         }
     };
-    if let Err(msg) = validate_date_range(&date_from, &date_to) {
-        let api_err = ApiError::bad_request(msg);
-        return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
-    }
 
-    let regions = match parse_csv_upper_strict(&params.regions, 32, "regions") {
-        Ok(value) => value,
-        Err(api_err) => {
-            return (
-                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                Json(error_response(api_err)),
-            );
-        }
-    };
+    let regions = parse_csv_upper_strict(params.regions.as_deref());
     if let Err(api_err) = validate_region_codes(&regions) {
         return (
             StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
@@ -192,7 +179,7 @@ pub(crate) async fn list_insights(
                     item.quality_score = Some(*quality_scores.get(&insight_id).unwrap_or(&0.5));
                 }
             }
-            crate::routes::insights::rank_insights(&mut items);
+            apex_api::routes::insights::rank_insights(&mut items);
         }
     }
 
@@ -301,7 +288,7 @@ pub(crate) async fn record_insight_feedback(
     State(state): State<AppState>,
     Extension(auth_ctx): Extension<ApiAuthContext>,
     Path(id): Path<String>,
-    Json(payload): Json<crate::routes::insights::InsightFeedbackRequest>,
+    Json(payload): Json<apex_api::routes::insights::InsightFeedbackRequest>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let uid = match Uuid::parse_str(&id) {
         Ok(u) => u,

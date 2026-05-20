@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use axum::extract::Query;
 
-use crate::routes::graph::{
+use apex_api::routes::graph::{
     parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode, NeighborhoodQuery,
     NeighborhoodResponse, PathQuery, PathResponse, PathStep,
 };

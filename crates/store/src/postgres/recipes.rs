@@ -271,6 +271,123 @@ impl PgStore {
         Ok(result.rows_affected())
     }
 
+    /// Auto-calibrate recipe `precision_score` thresholds based on persistent
+    /// false-positive rates tracked in `recipe_weekly_metrics`.
+    ///
+    /// ## How it works
+    ///
+    /// 1. Query `recipe_weekly_metrics` for the last 4 weeks.
+    /// 2. Compute per-recipe average false-positive rate over that window.
+    /// 3. If the average exceeds **30 %** (`> 0.30`), reduce the recipe's
+    ///    `precision_score` proportionally:
+    ///
+    ///    ```text
+    ///    new_precision = current_precision × (1.0 − 0.5 × avg_fp_rate)
+    ///    ```
+    ///
+    ///    clamped to `[0.0, current_precision]`.
+    /// 4. Recipes already at `precision_score ≤ 0.001` are skipped (already
+    ///    effectively silenced).
+    /// 5. Every adjustment is recorded in the `audit_log` table for full
+    ///    observability.
+    ///
+    /// ## Edge cases
+    ///
+    /// * **No recipes exceed threshold** → returns empty `Vec`, no-op.
+    /// * **FP rate = 1.0 (100 %)** → precision becomes 0.0, recipe silenced.
+    /// * **NULL precision_score** → skipped (`IS NOT NULL` guard).
+    /// * **Idempotent** – running multiple times applies compounding reductions
+    ///   (each week the FP rate is re-evaluated).
+    ///
+    /// ## Returns
+    ///
+    /// A `Vec<CalibrationAdjustment>` describing each adjustment made, suitable
+    /// for logging, dashboard metrics, or alerting.
+    pub async fn auto_calibrate_recipe_thresholds(&self) -> Result<Vec<CalibrationAdjustment>> {
+        #[derive(Debug, Clone, sqlx::FromRow)]
+        struct CalibrationRow {
+            recipe_code: String,
+            current_precision: f64,
+            new_precision: f64,
+            avg_fp_rate_4w: f64,
+        }
+
+        let adjustments: Vec<CalibrationRow> = sqlx::query_as::<_, CalibrationRow>(
+            r#"WITH high_fp_recipes AS (
+                   SELECT
+                       m.recipe_code,
+                       COALESCE(AVG(m.false_positive_rate), 0.0) AS avg_fp_rate_4w
+                   FROM recipe_weekly_metrics m
+                   WHERE m.week_start >= DATE_TRUNC('week', NOW() - INTERVAL '4 weeks')
+                   GROUP BY m.recipe_code
+                   HAVING COALESCE(AVG(m.false_positive_rate), 0.0) > 0.30
+               ),
+               calibrated AS (
+                   SELECT
+                       h.recipe_code,
+                       r.precision_score AS current_precision,
+                       GREATEST(
+                           0.0,
+                           r.precision_score * (1.0 - 0.5 * h.avg_fp_rate_4w)
+                       ) AS new_precision,
+                       h.avg_fp_rate_4w
+                   FROM high_fp_recipes h
+                   JOIN recipes r ON r.code = h.recipe_code
+                   WHERE r.precision_score IS NOT NULL
+                     AND r.precision_score > 0.001
+                     AND r.status IN ('active', 'production')
+               )
+               UPDATE recipes r
+               SET
+                   precision_score = c.new_precision,
+                   updated_at = NOW()
+               FROM calibrated c
+               WHERE r.code = c.recipe_code
+               RETURNING
+                   r.code                       AS recipe_code,
+                   c.current_precision,
+                   c.new_precision,
+                   c.avg_fp_rate_4w"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Persist every adjustment to the audit trail
+        for adj in &adjustments {
+            #[allow(clippy::disallowed_methods)]
+            let detail = serde_json::json!({
+                "recipe_code": adj.recipe_code,
+                "current_precision": adj.current_precision,
+                "new_precision": adj.new_precision,
+                "avg_fp_rate_4w": adj.avg_fp_rate_4w,
+                "calibration_reason": format!(
+                    "Average FP rate {:.2} exceeded 0.30 threshold over last 4 weeks",
+                    adj.avg_fp_rate_4w
+                ),
+            });
+            sqlx::query(
+                "INSERT INTO audit_log (event_type, actor, detail) VALUES ($1, $2, $3)",
+            )
+            .bind("recipe_threshold_auto_calibrated")
+            .bind("system")
+            .bind(&detail)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        let result: Vec<CalibrationAdjustment> = adjustments
+            .into_iter()
+            .map(|r| CalibrationAdjustment {
+                recipe_code: r.recipe_code,
+                current_precision: r.current_precision,
+                new_precision: r.new_precision,
+                avg_fp_rate_4w: r.avg_fp_rate_4w,
+            })
+            .collect();
+
+        Ok(result)
+    }
+
     pub async fn list_staging_recipes(
         &self,
         limit: i64,

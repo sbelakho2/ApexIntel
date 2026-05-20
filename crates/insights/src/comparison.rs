@@ -866,6 +866,7 @@ mod tests {
     // ── select_reference_entity tests ───────────────────────────────────
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_select_reference_entity_same_category() {
         // Foxconn → should select Pegatron or similar EMS, not Starz
         let registry = EntityRegistry::from_yaml_config();
@@ -929,6 +930,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_select_reference_entity_supply_chain() {
         // For supply chain comparison, should pick from a different category
         let registry = EntityRegistry::from_yaml_config();
@@ -953,6 +955,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_select_reference_entity_cross_category() {
         let registry = EntityRegistry::from_yaml_config();
 
@@ -1206,6 +1209,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_select_reference_entity_no_starz_default() {
         // Verify that select_reference_entity returns a valid same-category
         // competitor for Foxconn (EMS) rather than hardcoding a specific fallback.
@@ -1311,6 +1315,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_select_reference_entity_with_specific_target() {
         let registry = EntityRegistry::from_yaml_config();
 

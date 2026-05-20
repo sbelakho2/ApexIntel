@@ -123,7 +123,77 @@ impl PgStore {
         .bind(normalize_security_limit(limit))
         .fetch_all(&self.pool)
         .await?;
+
+        // If observations table has few or no results, fall back to
+        // the dedicated dns_posture_entries table which may have more data.
+        if rows.len() < 20 {
+            let fallback = self.get_dns_posture_entries_from_table(limit).await?;
+            if fallback.len() > rows.len() {
+                return Ok(fallback);
+            }
+        }
+
         Ok(rows)
+    }
+
+    /// Query DNS posture entries directly from the dedicated `dns_posture_entries` table,
+    /// converting each row into an ObservationRow-compatible format.
+    async fn get_dns_posture_entries_from_table(&self, limit: i64) -> Result<Vec<ObservationRow>> {
+        #[derive(Debug, Clone, sqlx::FromRow)]
+        struct DnsPostureTableRow {
+            id: Uuid,
+            company_id: Option<Uuid>,
+            domain: String,
+            has_spf: bool,
+            has_dkim: bool,
+            has_dmarc: bool,
+            dmarc_policy: Option<String>,
+            posture_score: f64,
+            checked_at: DateTime<Utc>,
+        }
+
+        let rows = sqlx::query_as::<_, DnsPostureTableRow>(
+            "SELECT id, company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy, posture_score, checked_at
+             FROM dns_posture_entries
+             ORDER BY checked_at DESC
+             LIMIT $1",
+        )
+        .bind(normalize_security_limit(limit))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let obs_rows: Vec<ObservationRow> = rows
+            .into_iter()
+            .map(|r| {
+                #[allow(clippy::disallowed_methods)]
+                let value = serde_json::json!({
+                    "domain": r.domain,
+                    "has_spf": r.has_spf,
+                    "has_dkim": r.has_dkim,
+                    "has_dmarc": r.has_dmarc,
+                    "dmarc_policy": r.dmarc_policy,
+                    "posture_score": r.posture_score,
+                });
+                #[allow(clippy::disallowed_methods)]
+                let provenance = serde_json::json!({
+                    "source": "dns_posture_entries_table",
+                    "content_hash": format!("dns_{}", r.domain),
+                });
+                ObservationRow {
+                    id: r.id,
+                    observation_type: "dns_posture".to_string(),
+                    entity_id: r.company_id,
+                    entity_type: Some("company".to_string()),
+                    ts_utc: r.checked_at,
+                    value,
+                    provenance,
+                    confidence: Some(0.95),
+                    created_at: Some(r.checked_at),
+                }
+            })
+            .collect();
+
+        Ok(obs_rows)
     }
 
     pub async fn get_lookalike_domains(&self, limit: i64) -> Result<Vec<ObservationRow>> {
@@ -137,7 +207,76 @@ impl PgStore {
         .bind(normalize_security_limit(limit))
         .fetch_all(&self.pool)
         .await?;
+
+        // If observations table has few or no results, fall back to
+        // the dedicated lookalike_domains table which may have more data.
+        if rows.len() < 20 {
+            let fallback = self.get_lookalike_domains_from_table(limit).await?;
+            if fallback.len() > rows.len() {
+                return Ok(fallback);
+            }
+        }
+
         Ok(rows)
+    }
+
+    /// Query lookalike domains directly from the dedicated `lookalike_domains` table,
+    /// converting each row into an ObservationRow-compatible format.
+    /// This ensures we always have results even if observations are pruned by retention.
+    pub async fn get_lookalike_domains_from_table(&self, limit: i64) -> Result<Vec<ObservationRow>> {
+        #[derive(Debug, Clone, sqlx::FromRow)]
+        struct LookalikeDomainRow {
+            id: Uuid,
+            company_id: Option<Uuid>,
+            original_domain: String,
+            lookalike_domain: String,
+            threat_type: String,
+            distance: i32,
+            active: bool,
+            detected_at: DateTime<Utc>,
+        }
+
+        let rows = sqlx::query_as::<_, LookalikeDomainRow>(
+            "SELECT id, company_id, original_domain, lookalike_domain, threat_type, distance, active, detected_at
+             FROM lookalike_domains
+             ORDER BY detected_at DESC
+             LIMIT $1",
+        )
+        .bind(normalize_security_limit(limit))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let obs_rows: Vec<ObservationRow> = rows
+            .into_iter()
+            .map(|r| {
+                #[allow(clippy::disallowed_methods)]
+                let value = serde_json::json!({
+                    "original_domain": r.original_domain,
+                    "domain": r.lookalike_domain,
+                    "distance": r.distance,
+                    "threat_type": r.threat_type,
+                    "active": r.active,
+                });
+                #[allow(clippy::disallowed_methods)]
+                let provenance = serde_json::json!({
+                    "source": "lookalike_domains_table",
+                    "content_hash": format!("la_{}_{}", r.original_domain, r.lookalike_domain),
+                });
+                ObservationRow {
+                    id: r.id,
+                    observation_type: "lookalike_domain".to_string(),
+                    entity_id: r.company_id,
+                    entity_type: Some("company".to_string()),
+                    ts_utc: r.detected_at,
+                    value,
+                    provenance,
+                    confidence: Some(0.80),
+                    created_at: Some(r.detected_at),
+                }
+            })
+            .collect();
+
+        Ok(obs_rows)
     }
 
     pub async fn get_kev_relevance(&self, limit: i64) -> Result<Vec<ObservationRow>> {
@@ -151,7 +290,83 @@ impl PgStore {
         .bind(normalize_security_limit(limit))
         .fetch_all(&self.pool)
         .await?;
+
+        // If observations table has few or no results, fall back to
+        // the dedicated kev_observations table which may have more data.
+        if rows.len() < 10 {
+            let fallback = self.get_kev_relevance_from_table(limit).await?;
+            if fallback.len() > rows.len() {
+                return Ok(fallback);
+            }
+        }
+
         Ok(rows)
+    }
+
+    /// Query KEV entries directly from the dedicated `kev_observations` table,
+    /// converting each row into an ObservationRow-compatible format.
+    async fn get_kev_relevance_from_table(&self, limit: i64) -> Result<Vec<ObservationRow>> {
+        #[derive(Debug, Clone, sqlx::FromRow)]
+        struct KevTableRow {
+            id: Uuid,
+            cve_id: String,
+            vulnerability_name: String,
+            vendor: Option<String>,
+            product: Option<String>,
+            date_added: Option<NaiveDate>,
+            due_date: Option<NaiveDate>,
+            notes: Option<String>,
+            relevance_score: f64,
+            catalog_fetched_at: DateTime<Utc>,
+        }
+
+        let rows = sqlx::query_as::<_, KevTableRow>(
+            "SELECT id, cve_id, vulnerability_name, vendor, product, date_added, due_date, notes, relevance_score, catalog_fetched_at
+             FROM kev_observations
+             ORDER BY relevance_score DESC
+             LIMIT $1",
+        )
+        .bind(normalize_security_limit(limit))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let obs_rows: Vec<ObservationRow> = rows
+            .into_iter()
+            .map(|r| {
+                let date_added_str = r.date_added.map(|d| d.to_string()).unwrap_or_default();
+                let due_date_str = r.due_date.map(|d| d.to_string()).unwrap_or_default();
+                #[allow(clippy::disallowed_methods)]
+                let value = serde_json::json!({
+                    "cve_id": r.cve_id,
+                    "vulnerability_name": r.vulnerability_name,
+                    "name": r.vulnerability_name,
+                    "vendor": r.vendor,
+                    "product": r.product,
+                    "date_added": date_added_str,
+                    "due_date": due_date_str,
+                    "relevance_score": r.relevance_score,
+                    "notes": r.notes,
+                });
+                #[allow(clippy::disallowed_methods)]
+                let provenance = serde_json::json!({
+                    "source": "kev_observations_table",
+                    "content_hash": format!("kev_{}", r.cve_id),
+                });
+                ObservationRow {
+                    id: r.id,
+                    observation_type: "kev_match".to_string(),
+                    entity_id: None,
+                    entity_type: None,
+                    ts_utc: r.catalog_fetched_at,
+                    value,
+                    provenance,
+                    confidence: Some(r.relevance_score),
+                    created_at: Some(r.catalog_fetched_at),
+                }
+            })
+            .collect();
+
+        Ok(obs_rows)
     }
 }
 

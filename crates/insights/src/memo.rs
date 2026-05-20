@@ -6,6 +6,11 @@
 //! - Regional breakdown (TN, MA, IL, CN, EA, EU, US)
 //! - Security posture summary
 //! - Recommended actions
+//!
+//! # Diversity Features
+//!
+//! The memo applies **deterministic (week-seeded) diversity** to section headings
+//! and groups repeated warning patterns to reduce formulaic repetition.
 
 use apex_core::analysis::{
     assess_evidence_quality, compare_temporal_windows, fuse_weak_signals,
@@ -19,6 +24,213 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::renderer::{format_card_text, group_by_category, group_by_region, InsightCard};
+
+// ─── Deterministic (week-seeded) memo diversity ──────────────────────────
+
+/// Seeded PRNG for deterministic memo variation (xorshift64*).
+struct MemoRng(u64);
+
+impl MemoRng {
+    /// Create a new RNG seeded from week number (stable per week).
+    fn from_week(week: u32, year: i32) -> Self {
+        Self((year as u64).wrapping_mul(1000).wrapping_add(week as u64))
+    }
+
+    /// Return an index in `0..len`.
+    fn pick(&mut self, len: usize) -> usize {
+        if len <= 1 {
+            return 0;
+        }
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        ((self.0 as usize).wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) % len
+    }
+}
+
+/// Alternative section headings, keyed by the canonical heading.  At call time
+/// the `MemoRng` picks a non-canonical variant deterministically per week.
+static SECTION_HEADING_VARIANTS: &[(&str, &[&str])] = &[
+    (
+        "## Executive Summary",
+        &[
+            "## Strategic Overview",
+            "## Executive Brief",
+            "## Key Highlights",
+            "## Top-Line Summary",
+        ],
+    ),
+    (
+        "## Priority Actions",
+        &[
+            "## Recommended Actions",
+            "## Key Action Items",
+            "## Action Plan",
+            "## Top Priorities",
+        ],
+    ),
+    (
+        "## Regional Breakdown",
+        &[
+            "## Regional Analysis",
+            "## Geographic Insights",
+            "## Regional View",
+            "## Area Highlights",
+        ],
+    ),
+    (
+        "## Security Posture",
+        &[
+            "## Security Overview",
+            "## Threat Landscape",
+            "## Security Assessment",
+            "## Security Summary",
+        ],
+    ),
+    (
+        "## Momentum and Deltas",
+        &[
+            "## Trends & Changes",
+            "## Momentum Shift",
+            "## Weekly Change Log",
+            "## Delta Summary",
+        ],
+    ),
+    (
+        "## Weak-Signal Fusion",
+        &[
+            "## Signal Fusion",
+            "## Emerging Patterns",
+            "## Weak-Signal Analysis",
+            "## Cross-Signal Clusters",
+        ],
+    ),
+    (
+        "## Competing Hypotheses",
+        &[
+            "## Alternative Explanations",
+            "## Hypothesis Analysis",
+            "## Scenario Assessment",
+            "## Rival Interpretations",
+        ],
+    ),
+    (
+        "## Detailed Insights",
+        &[
+            "## Insight Deep Dive",
+            "## Card Details",
+            "## Warning Details",
+            "## Full Breakdown",
+        ],
+    ),
+];
+
+/// Apply deterministic heading variation to a line of markdown text.
+fn vary_heading(line: &str, rng: &mut MemoRng) -> String {
+    for &(canonical, variants) in SECTION_HEADING_VARIANTS {
+        if line == canonical {
+            let idx = rng.pick(variants.len());
+            return variants[idx].to_string();
+        }
+    }
+    line.to_string()
+}
+
+/// Group repeated narrative patterns in a list of insight cards.
+///
+/// Cards that share identical `narrative` text are collapsed into a single
+/// grouped entry showing the count and entity names, avoiding repetitive
+/// listing of identical warning text for multiple entities.
+fn dedup_repeated_narratives(cards: &[InsightCard]) -> Vec<CardDisplayItem> {
+    let mut groups: HashMap<&str, Vec<&InsightCard>> = HashMap::new();
+    for card in cards {
+        groups.entry(card.narrative.as_str()).or_default().push(card);
+    }
+
+    let mut items: Vec<CardDisplayItem> = Vec::with_capacity(groups.len());
+    for (_narrative, group) in groups {
+        if group.len() == 1 {
+            items.push(CardDisplayItem::Single(group[0].clone()));
+        } else {
+            let entity_names: Vec<String> =
+                group.iter().map(|c| c.entity_name.clone()).collect();
+            items.push(CardDisplayItem::Grouped {
+                count: group.len(),
+                entity_names,
+                recipe_code: group[0].recipe_code.clone(),
+                title: group[0].title.clone(),
+                narrative: group[0].narrative.clone(),
+                severity: group[0].severity.clone(),
+            });
+        }
+    }
+
+    // Sort so grouped items appear first (more impactful), then singles
+    // by priority-score descending.
+    items.sort_by(|a, b| {
+        let a_is_group = matches!(a, CardDisplayItem::Grouped { .. });
+        let b_is_group = matches!(b, CardDisplayItem::Grouped { .. });
+        b_is_group
+            .cmp(&a_is_group)
+            .then_with(|| {
+                let a_score = a.priority_score();
+                let b_score = b.priority_score();
+                b_score.partial_cmp(&a_score).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    items
+}
+
+/// How an insight card is displayed in the memo — either individually or
+/// grouped with other cards sharing the same narrative.
+#[derive(Debug, Clone)]
+enum CardDisplayItem {
+    Single(InsightCard),
+    Grouped {
+        count: usize,
+        entity_names: Vec<String>,
+        recipe_code: String,
+        title: String,
+        narrative: String,
+        severity: String,
+    },
+}
+
+impl CardDisplayItem {
+    fn priority_score(&self) -> f64 {
+        match self {
+            CardDisplayItem::Single(c) => c.priority_score,
+            CardDisplayItem::Grouped { .. } => f64::MAX, // grouped items float to top
+        }
+    }
+}
+
+/// Render a `CardDisplayItem` as text, with grouping info when applicable.
+fn format_display_item(item: &CardDisplayItem) -> String {
+    match item {
+        CardDisplayItem::Single(card) => format_card_text(card),
+        CardDisplayItem::Grouped {
+            count,
+            entity_names,
+            recipe_code,
+            title,
+            narrative,
+            severity,
+        } => {
+            let entity_list = if entity_names.len() <= 5 {
+                entity_names.join(", ")
+            } else {
+                let shown: Vec<&str> = entity_names.iter().take(5).map(|s| s.as_str()).collect();
+                format!("{}, ... +{} more", shown.join(", "), entity_names.len() - 5)
+            };
+            format!(
+                "### {}\n**Recipe:** {} | **Severity:** {} | **Affected entities ({}):** {}\n\n{}\n\n_This pattern was observed across {} entities._",
+                title, recipe_code, severity, count, entity_list, narrative, count
+            )
+        }
+    }
+}
 
 // ────────────────────────────────────────────
 // Memo structures
@@ -597,6 +809,9 @@ pub fn generate_executive_summary(
 // ────────────────────────────────────────────
 
 /// Generate the full text of the weekly memo in Markdown format.
+///
+/// Applies deterministic heading variation (week-seeded) and deduplicates
+/// repeated narrative patterns across entities.
 pub fn render_memo_text(
     week: u32,
     year: i32,
@@ -609,6 +824,8 @@ pub fn render_memo_text(
     fused_signal_clusters: &[FusedSignalCluster],
     competing_hypotheses: &[HypothesisScorecard],
 ) -> String {
+    let mut rng = MemoRng::from_week(week, year);
+
     // Pre-allocate: 8 structural lines + 1 per action + 3 per section insight
     // + 4 per detailed card + 6 fixed security lines.  Better than Vec::new()
     // which triggers multiple doubling re-allocations on large memos (B280).
@@ -619,7 +836,7 @@ pub fn render_memo_text(
             .map(|s| 2 + s.top_insights.len())
             .sum::<usize>()
         + security.top_threats.len()
-        + cards.len().min(20) * 4
+        + cards.len().min(20) * 6  // slightly more per grouped card
         + 6;
     let mut lines = Vec::with_capacity(estimated_lines);
 
@@ -627,13 +844,13 @@ pub fn render_memo_text(
     lines.push(String::new());
 
     // Executive summary
-    lines.push("## Executive Summary".to_string());
+    lines.push(vary_heading("## Executive Summary", &mut rng));
     lines.push(exec_summary.to_string());
     lines.push(String::new());
 
     // Top actions
     if !actions.is_empty() {
-        lines.push("## Priority Actions".to_string());
+        lines.push(vary_heading("## Priority Actions", &mut rng));
         for action in actions {
             lines.push(format!(
                 "{}. **[{}]** {} — {} (Impact: {}, Confidence: {:.0}%)",
@@ -649,7 +866,7 @@ pub fn render_memo_text(
     }
 
     // Regional breakdown
-    lines.push("## Regional Breakdown".to_string());
+    lines.push(vary_heading("## Regional Breakdown", &mut rng));
     for section in sections {
         lines.push(format!(
             "### {} ({} insights)",
@@ -669,7 +886,7 @@ pub fn render_memo_text(
     }
 
     // Security summary
-    lines.push("## Security Posture".to_string());
+    lines.push(vary_heading("## Security Posture", &mut rng));
     lines.push(format!("**Assessment:** {}", security.posture_assessment));
     lines.push(format!(
         "Security insights: {} total, {} critical",
@@ -685,7 +902,7 @@ pub fn render_memo_text(
     }
     lines.push(String::new());
 
-    lines.push("## Momentum and Deltas".to_string());
+    lines.push(vary_heading("## Momentum and Deltas", &mut rng));
     lines.push(temporal_summary.narrative.clone());
     lines.push(format!(
         "Early period: {} | Late period: {} | Direction: {}",
@@ -696,7 +913,7 @@ pub fn render_memo_text(
     lines.push(String::new());
 
     if !fused_signal_clusters.is_empty() {
-        lines.push("## Weak-Signal Fusion".to_string());
+        lines.push(vary_heading("## Weak-Signal Fusion", &mut rng));
         for cluster in fused_signal_clusters.iter().take(5) {
             lines.push(format!(
                 "- {} [{}] — {} signals across {} independent sources (score {:.2}); entities: {}",
@@ -712,7 +929,7 @@ pub fn render_memo_text(
     }
 
     if !competing_hypotheses.is_empty() {
-        lines.push("## Competing Hypotheses".to_string());
+        lines.push(vary_heading("## Competing Hypotheses", &mut rng));
         for hypothesis in competing_hypotheses.iter().take(3) {
             lines.push(format!(
                 "- {} — {} (posterior {:.0}%, support {:.2}, contradiction {:.2})",
@@ -726,15 +943,23 @@ pub fn render_memo_text(
         lines.push(String::new());
     }
 
-    // Detailed insights
+    // Detailed insights — with narrative dedup grouping
     if !cards.is_empty() {
-        lines.push("## Detailed Insights".to_string());
-        for card in cards.iter().take(20) {
-            lines.push(format_card_text(card));
-            lines.push(format!(
-                "Score breakdown: impact={:.2}, confidence={:.2}, priority={:.2}",
-                card.impact, card.confidence, card.priority_score
-            ));
+        lines.push(vary_heading("## Detailed Insights", &mut rng));
+        let deduped = dedup_repeated_narratives(cards);
+        for item in deduped.iter().take(20) {
+            lines.push(format_display_item(item));
+            match item {
+                CardDisplayItem::Single(card) => {
+                    lines.push(format!(
+                        "Score breakdown: impact={:.2}, confidence={:.2}, priority={:.2}",
+                        card.impact, card.confidence, card.priority_score
+                    ));
+                }
+                CardDisplayItem::Grouped { .. } => {
+                    // grouped items already include narrative text — no separate score line
+                }
+            }
             lines.push(String::new());
             lines.push("---".to_string());
             lines.push(String::new());
@@ -1043,14 +1268,13 @@ mod tests {
         assert!(!memo.competing_hypotheses.is_empty());
         assert!(!memo.full_text.is_empty());
 
-        // Full text should contain key sections
+        // Full text should contain key content (headings may vary deterministically per week)
         assert!(memo.full_text.contains("# Weekly Strategy Memo"));
-        assert!(memo.full_text.contains("## Executive Summary"));
-        assert!(memo.full_text.contains("## Priority Actions"));
-        assert!(memo.full_text.contains("## Regional Breakdown"));
-        assert!(memo.full_text.contains("## Security Posture"));
-        assert!(memo.full_text.contains("## Momentum and Deltas"));
-        assert!(memo.full_text.contains("## Competing Hypotheses"));
+        assert!(memo.full_text.contains("##")); // at least some level-2 headings
+        assert!(memo.full_text.contains("Foxconn"), "should mention Foxconn");
+        assert!(memo.full_text.contains("Celestica"), "should mention Celestica");
+        assert!(memo.full_text.contains("insight"), "should contain insight text");
+        assert!(memo.full_text.contains("Action A"), "should contain actions");
     }
 
     #[test]

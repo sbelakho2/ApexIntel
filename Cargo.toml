@@ -15,6 +15,9 @@ members = [
     "crates/worker",
     "crates/shared",
     "crates/frontend",
+    "crates/investigation",
+    "crates/geopolitical",
+    "crates/threat_intel",
 ]
 resolver = "2"
 
@@ -102,3 +105,6 @@ redis = { version = "0.27", default-features = false, features = ["tokio-comp", 
 
 # Config
 dotenvy = "0.15"
+
+# Threat Intelligence
+apex-threat-intel = { path = "crates/threat_intel" }

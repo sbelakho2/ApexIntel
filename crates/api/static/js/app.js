@@ -108,6 +108,23 @@
     updateWarningBadges(currentCount + 1);
   }
 
+  function decrementWarningBadges() {
+    var firstBadge = document.querySelector('[data-warning-badge]');
+    var currentCount = firstBadge ? parseInt(firstBadge.textContent || '0', 10) || 0 : 0;
+    if (currentCount > 0) {
+      updateWarningBadges(currentCount - 1);
+    }
+  }
+
+  function refreshWarningBadgeFromServer() {
+    fetch('/api/warnings/unread-count')
+      .then(function (res) { return res.text(); })
+      .then(function (count) {
+        updateWarningBadges(parseInt(count, 10) || 0);
+      })
+      .catch(function () { /* ignore server errors */ });
+  }
+
   function connectWarningsWs() {
     if (!document.querySelector('[data-ws-warnings]')) {
       return;
@@ -143,10 +160,16 @@
     openSocket();
   }
 
+  document.addEventListener('warning-acknowledged', function () {
+    decrementWarningBadges();
+    refreshWarningBadgeFromServer();
+  });
+
   document.addEventListener('DOMContentLoaded', function () {
     applyCsrfToForms(document);
     updateOnlineStatus();
     connectWarningsWs();
+    window.setInterval(refreshWarningBadgeFromServer, 60000);
   });
 
   document.addEventListener('submit', function (event) {

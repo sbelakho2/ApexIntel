@@ -551,8 +551,8 @@ pub async fn list_insights(
             Some(search_query.as_str())
         },
         Some(show_bookmarked),
-        Some(sort_field.as_str()),
-        Some(sort_dir.as_str()),
+        None, // sort is appended by templates — avoid duplicate params
+        None, // dir  is appended by templates — avoid duplicate params
     );
     let page_base_href = if current_filters_href.contains('?') {
         format!("{}&", current_filters_href)
@@ -683,6 +683,33 @@ pub async fn list_insights(
         all_insights.retain(|i| i.confidence >= 0.4 && i.confidence < 0.7);
     } else if active_impact == "low" {
         all_insights.retain(|i| i.confidence < 0.4);
+    }
+
+    // Apply user's explicit sort preference (overrides diversification order).
+    match sort_field.as_str() {
+        "created_at" => {
+            if sort_dir == "asc" {
+                all_insights.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            } else {
+                all_insights.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            }
+        }
+        "confidence" => {
+            if sort_dir == "asc" {
+                all_insights.sort_by(|a, b| {
+                    a.confidence
+                        .partial_cmp(&b.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            } else {
+                all_insights.sort_by(|a, b| {
+                    b.confidence
+                        .partial_cmp(&a.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+        _ => {} // keep diversification order for unknown sort fields
     }
 
     let total = all_insights.len() as i64;

@@ -96,29 +96,13 @@ pub(crate) async fn search(
 
     let mut full_query = build_enhanced_search_query(&query);
     if params.entity_types.is_some() {
-        let types = match parse_csv_lower_strict(&params.entity_types, 32, "entity_types") {
-            Ok(values) => values,
-            Err(api_err) => {
-                return (
-                    StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                    Json(error_response(api_err)),
-                );
-            }
-        };
+        let types = parse_csv_lower_strict(params.entity_types.as_deref());
         if !types.is_empty() {
             full_query = append_or_filter(&full_query, "entity_type", &types);
         }
     }
     if params.regions.is_some() {
-        let regions = match parse_csv_upper_strict(&params.regions, 32, "regions") {
-            Ok(values) => values,
-            Err(api_err) => {
-                return (
-                    StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                    Json(error_response(api_err)),
-                );
-            }
-        };
+        let regions = parse_csv_upper_strict(params.regions.as_deref());
         if let Err(api_err) = validate_region_codes(&regions) {
             return (
                 StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
@@ -138,17 +122,12 @@ pub(crate) async fn search(
                 return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
             }
         };
-        let to_dt = match parse_date_end(&params.date_to) {
+        let to_dt = match parse_query_date(&params.date_to, "date_to") {
             Ok(value) => value,
-            Err(msg) => {
-                let api_err = ApiError::bad_request(msg);
+            Err(api_err) => {
                 return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
             }
         };
-        if let Err(msg) = validate_date_range(&from_dt, &to_dt) {
-            let api_err = ApiError::bad_request(msg);
-            return (StatusCode::BAD_REQUEST, Json(error_response(api_err)));
-        }
         let from = from_dt.map(|dt| dt.timestamp()).unwrap_or(i64::MIN / 2);
         let to = to_dt.map(|dt| dt.timestamp()).unwrap_or(i64::MAX / 2);
         full_query = append_timestamp_range(&full_query, from, to);

@@ -3,20 +3,24 @@ use leptos_meta::*;
 use leptos_router::*;
 
 use crate::routes::{
-    admin::AdminPage, adversarial::AdversarialPage, calibration::CalibrationPage,
-    causality::CausalityPage, companies::CompaniesPage, company_detail::CompanyDetailPage,
-    competitors::CompetitorsPage, graph::GraphPage, insights::InsightsPage, login::LoginPage,
-    memos::MemosPage, overview::OverviewPage, person_detail::PersonDetailPage,
+    admin::AdminPage, adversarial::AdversarialPage, analyst::AnalystPage,
+    calibration::CalibrationPage, causality::CausalityPage, companies::CompaniesPage,
+    company_detail::CompanyDetailPage, competitors::CompetitorsPage, executive::ExecutivePage,
+    graph::GraphPage, insights::InsightsPage, login::LoginPage, memos::MemosPage,
+    operational::OperationalPage, overview::OverviewPage, person_detail::PersonDetailPage,
     persons::PersonsPage, recipes::RecipesPage, search::SearchPage, security::SecurityPage,
     settings::SettingsPage, timeline::TimelinePage, warnings::WarningsPage,
 };
 
-const NAV_ITEMS: [(&str, &str); 16] = [
+const NAV_ITEMS: [(&str, &str); 19] = [
     ("Overview", "/wasm/"),
     ("Warnings", "/wasm/warnings"),
     ("Insights", "/wasm/insights"),
     ("Companies", "/wasm/companies"),
     ("Persons", "/wasm/persons"),
+    ("Executive", "/wasm/executive"),
+    ("Analyst", "/wasm/analyst"),
+    ("Operational", "/wasm/operational"),
     ("Search", "/wasm/search"),
     ("Memos", "/wasm/memos"),
     ("Calibration", "/wasm/calibration"),
@@ -170,6 +174,9 @@ fn AppShell() -> impl IntoView {
                         <Route path="/wasm/companies/:company_id" view=CompanyDetailPage />
                         <Route path="/wasm/persons" view=PersonsPage />
                         <Route path="/wasm/persons/:person_id" view=PersonDetailPage />
+                        <Route path="/wasm/executive" view=ExecutivePage />
+                        <Route path="/wasm/analyst" view=AnalystPage />
+                        <Route path="/wasm/operational" view=OperationalPage />
                         <Route path="/wasm/search" view=SearchPage />
                         <Route path="/wasm/memos" view=MemosPage />
                         <Route path="/wasm/calibration" view=CalibrationPage />

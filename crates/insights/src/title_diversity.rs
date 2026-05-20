@@ -904,7 +904,7 @@ mod tests {
     fn test_diversity_boost_unknown_entity_returns_neutral() {
         let boost = diversity_boost(None);
         assert!(
-            boost >= 0.5 && boost <= 2.0,
+            (0.5..=2.0).contains(&boost),
             "Diversity boost should be in [0.5, 2.0], got {}",
             boost
         );

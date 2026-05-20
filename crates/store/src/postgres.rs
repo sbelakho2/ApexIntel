@@ -223,6 +223,7 @@ fn append_legacy_malformed_veracity_sql_clause(qb: &mut QueryBuilder<Postgres>, 
 }
 
 mod admin;
+pub use admin::is_valid_manual_trigger_kind;
 mod analytics;
 mod artifacts;
 mod collaboration;
@@ -1002,6 +1003,16 @@ pub struct RecipeStatRow {
     pub last_fired: Option<DateTime<Utc>>,
     pub first_fired: Option<DateTime<Utc>>,
     pub active_count: i64,
+}
+
+/// Result of a single recipe threshold auto-calibration adjustment.
+/// Returned by [`PgStore::auto_calibrate_recipe_thresholds`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CalibrationAdjustment {
+    pub recipe_code: String,
+    pub current_precision: f64,
+    pub new_precision: f64,
+    pub avg_fp_rate_4w: f64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]

@@ -49,15 +49,7 @@ pub(crate) async fn list_companies(
         }
     };
 
-    let regions = match parse_csv_upper_strict(&params.regions, 32, "regions") {
-        Ok(v) => v,
-        Err(api_err) => {
-            return (
-                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                Json(error_response(api_err)),
-            );
-        }
-    };
+    let regions = parse_csv_upper_strict(params.regions.as_deref());
     if let Err(api_err) = validate_region_codes(&regions) {
         return (
             StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
@@ -168,25 +160,9 @@ pub(crate) async fn list_persons(
         }
     };
 
-    let regions = match parse_csv_upper_strict(&params.regions, 32, "regions") {
-        Ok(v) => v,
-        Err(api_err) => {
-            return (
-                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                Json(error_response(api_err)),
-            );
-        }
-    };
+    let regions = parse_csv_upper_strict(params.regions.as_deref());
 
-    let roles = match parse_csv_lower_strict(&params.roles, 32, "roles") {
-        Ok(v) => v,
-        Err(api_err) => {
-            return (
-                StatusCode::from_u16(api_err.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                Json(error_response(api_err)),
-            );
-        }
-    };
+    let roles = parse_csv_lower_strict(params.roles.as_deref());
 
     let (min_priority, max_priority) = resolve_person_priority_bounds(&params);
 
@@ -425,10 +401,10 @@ pub(crate) async fn get_person_detail(
         }
     };
 
-    let mut detail = person_row_to_detail(row, org_name, artifacts, &state.config.priority_weights);
+    let mut detail = person_row_to_detail(row, artifacts);
     detail.role_history = role_history_rows
         .into_iter()
-        .map(|entry| routes::persons::RoleHistoryEntry {
+        .map(|entry| apex_api::routes::persons::RoleHistoryEntry {
             organization: entry.org_name,
             role: entry.title,
             role_family: entry.role_family,
@@ -442,7 +418,7 @@ pub(crate) async fn get_person_detail(
         .into_iter()
         .map(|peer| {
             let item = person_row_to_item(peer);
-            routes::persons::PeerSummary {
+            apex_api::routes::persons::PeerSummary {
                 id: item.id,
                 name: item.name,
                 role: item.role,

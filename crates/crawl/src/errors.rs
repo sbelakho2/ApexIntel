@@ -65,6 +65,15 @@ pub enum CrawlError {
     BodyRead { url: String, message: String },
     #[error("parse error for {url}: {message}")]
     Parse { url: String, message: String },
+    #[error("circuit breaker open for {domain}, retry after {retry_after_secs}s")]
+    CircuitBreakerOpen { domain: String, retry_after_secs: u64 },
+    #[error("circuit breaker fallback: {url} - {message}")]
+    CircuitBreakerFallback {
+        url: String,
+        message: String,
+        cached_content: String,
+        cached_status: u16,
+    },
 }
 
 impl CrawlError {
@@ -82,6 +91,9 @@ impl CrawlError {
                 _ => CrawlFailureCategory::Unknown,
             },
             Self::BodyRead { .. } | Self::Parse { .. } => CrawlFailureCategory::Parse,
+            Self::CircuitBreakerOpen { .. } | Self::CircuitBreakerFallback { .. } => {
+                CrawlFailureCategory::Unknown
+            }
         }
     }
 
@@ -94,6 +106,7 @@ impl CrawlError {
                 )
             }
             Self::HttpStatus { status, .. } => matches!(*status, 403 | 408 | 425 | 429 | 500..=599),
+            Self::CircuitBreakerOpen { .. } | Self::CircuitBreakerFallback { .. } => false,
             _ => false,
         }
     }
@@ -104,6 +117,10 @@ impl CrawlError {
                 retry_after_secs: Some(secs),
                 ..
             } => Some(Duration::from_secs(*secs)),
+            Self::CircuitBreakerOpen {
+                retry_after_secs,
+                ..
+            } => Some(Duration::from_secs(*retry_after_secs)),
             _ => None,
         }
     }
@@ -136,6 +153,17 @@ impl CrawlError {
             retry_after_secs,
             body_excerpt,
         }
+    }
+
+    /// Check if this error should trigger source health downgrade
+    pub fn is_critical(&self) -> bool {
+        matches!(
+            self.category(),
+            CrawlFailureCategory::Network | CrawlFailureCategory::Timeout
+        ) || matches!(
+            self,
+            CrawlError::HttpStatus { status: 500..=599, .. }
+        )
     }
 }
 
@@ -248,5 +276,51 @@ mod tests {
     #[test]
     fn category_string_stable() {
         assert_eq!(CrawlFailureCategory::Upstream.as_str(), "upstream");
+    }
+
+    #[test]
+    fn test_circuit_breaker_errors_not_retryable() {
+        let error = CrawlError::CircuitBreakerOpen {
+            domain: "example.com".to_string(),
+            retry_after_secs: 300,
+        };
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn test_circuit_breaker_fallback_not_retryable() {
+        let error = CrawlError::CircuitBreakerFallback {
+            url: "https://example.com".to_string(),
+            message: "using cache".to_string(),
+            cached_content: "cached".to_string(),
+            cached_status: 200,
+        };
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn test_error_is_critical() {
+        let timeout = CrawlError::Transport {
+            url: "https://test.com".into(),
+            message: "timeout".into(),
+            category: CrawlFailureCategory::Timeout,
+        };
+        assert!(timeout.is_critical());
+
+        let server = CrawlError::HttpStatus {
+            url: "https://test.com".into(),
+            status: 503,
+            retry_after_secs: None,
+            body_excerpt: None,
+        };
+        assert!(server.is_critical());
+
+        let client = CrawlError::HttpStatus {
+            url: "https://test.com".into(),
+            status: 404,
+            retry_after_secs: None,
+            body_excerpt: None,
+        };
+        assert!(!client.is_critical());
     }
 }

@@ -2092,6 +2092,7 @@ mod tests {
     // ── Signal Pattern Tests ─────────────────────────────────────────────
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_signal_pattern_matches() {
         let pattern = SignalPattern::new(r"(?i)\bGPU\b", "semiconductor", 0.8).unwrap();
         assert!(pattern.matches("NVIDIA GPU sales"));
@@ -2136,6 +2137,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_signal_pattern_with_entity_hint() {
         let pattern =
             SignalPattern::with_entity_hint(r"(?i)TSMC|Taiwan Semiconductor", "semiconductor", 0.9, "TSMC")
@@ -2337,6 +2339,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_get_category_returns_category_for_known_entity() {
         let registry = EntityRegistry::from_yaml_config();
 
@@ -2411,6 +2414,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_entity_for_context_text_contains_name() {
         let mut registry = EntityRegistry::empty();
         registry.register(

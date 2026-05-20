@@ -4,6 +4,9 @@
 //! success envelopes, error bodies, and status code mapping.
 
 use apex_core::errors::ApexError;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -202,6 +205,14 @@ impl ApiError {
     /// Map error code to HTTP status.
     pub fn http_status(&self) -> u16 {
         self.code.http_status()
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let status = StatusCode::from_u16(self.http_status())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (status, Json(error_response::<()>(self))).into_response()
     }
 }
 

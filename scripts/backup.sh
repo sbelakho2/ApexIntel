@@ -34,8 +34,8 @@ cp -r /opt/apexintel/config/ "${BACKUP_DIR}/config/" 2>/dev/null || true
 cp /opt/apexintel/config/recipes_seed.yaml "${BACKUP_DIR}/" 2>/dev/null || true
 
 # 5. Environment file (secrets redacted)
-if [[ -f /opt/apexintel/.env ]]; then
-    sed 's/=.*/=REDACTED/' /opt/apexintel/.env > "${BACKUP_DIR}/env_keys.txt"
+if [[ -f /opt/apexintel/config/.env ]]; then
+    sed 's/=.*/=REDACTED/' /opt/apexintel/config/.env > "${BACKUP_DIR}/env_keys.txt"
 fi
 
 # 6. Compute sizes

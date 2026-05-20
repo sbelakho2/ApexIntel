@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn test_orchestrator_mut_accessors() {
         let mut orch = GeneratorOrchestrator::new(test_registry(), TitleGenerator::new());
-        assert!(orch.registry_mut().len() > 0);
+        assert!(!orch.registry_mut().is_empty());
         assert!(orch.title_generator_mut().recent_titles().is_empty());
     }
 
@@ -551,6 +551,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_ingest_observations_flow_through_orchestrator() {
         // Pipeline with seed entities disabled (no pre-loaded entities)
         let config = DiscoveryConfig {
@@ -565,6 +566,7 @@ mod tests {
         );
 
         // Ingest observations containing a known ticker pattern
+        #[allow(clippy::disallowed_methods)]
         let observations = vec![serde_json::json!({
             "text": "Quantum Computing Inc announced breakthrough. NASDAQ:QCI."
         })];
@@ -770,6 +772,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_empty_registry_to_dynamic_discovery_flow() {
         // Pipeline and orchestrator both start empty
         let config = DiscoveryConfig {

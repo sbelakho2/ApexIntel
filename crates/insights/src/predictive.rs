@@ -1397,6 +1397,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_build_patterns_dynamic_based_on_data() {
         use apex_core::entities::ObservationType;
 
@@ -1612,6 +1613,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_pattern_from_observations_all_high_confidence() {
         let observations: Vec<Observation> = (0..10)
             .map(|i| Observation {

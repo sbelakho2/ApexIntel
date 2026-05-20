@@ -1,8 +1,9 @@
 use crate::*;
 
+use apex_api::middleware::session::require_session;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, post, patch, delete},
     Extension, Router,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -25,6 +26,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/logout", post(apex_api::web::auth::logout));
 
     let protected = Router::new()
+        // Existing endpoints...
         .route(
             "/api/warnings",
             get(warnings_handlers::list_warnings).delete(warnings_handlers::delete_all_warnings),
@@ -231,6 +233,103 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/llm/generate-memo",
             post(llm_handlers::llm_generate_memo),
         )
+        
+        // ─── Phase 4.3: Executive Dashboard ─────────────────────────────
+        .route(
+            "/api/executive/summary",
+            get(collaboration_handlers::get_executive_summary),
+        )
+        .route(
+            "/api/executive/opportunities",
+            get(collaboration_handlers::list_opportunities).post(collaboration_handlers::create_opportunity),
+        )
+        .route(
+            "/api/executive/opportunities/:id",
+            get(collaboration_handlers::get_opportunity).patch(collaboration_handlers::update_opportunity),
+        )
+        .route(
+            "/api/executive/threats",
+            get(collaboration_handlers::list_threats).post(collaboration_handlers::create_threat),
+        )
+        .route(
+            "/api/executive/threats/:id",
+            get(collaboration_handlers::get_threat).patch(collaboration_handlers::update_threat),
+        )
+
+        // ─── Phase 4.3: Investigation Workspaces ─────────────────────────
+        .route(
+            "/api/workspaces",
+            get(collaboration_handlers::list_workspaces).post(collaboration_handlers::create_workspace),
+        )
+        .route(
+            "/api/workspaces/:id",
+            get(collaboration_handlers::get_workspace)
+                .patch(collaboration_handlers::update_workspace)
+                .delete(collaboration_handlers::delete_workspace),
+        )
+        .route(
+            "/api/workspaces/:id/assignments",
+            get(collaboration_handlers::list_workspace_assignments).post(collaboration_handlers::assign_user_to_workspace),
+        )
+        .route(
+            "/api/workspaces/:id/assignments/:user_id",
+            delete(collaboration_handlers::remove_user_from_workspace),
+        )
+        .route(
+            "/api/workspaces/:id/shares",
+            get(collaboration_handlers::list_workspace_shares).post(collaboration_handlers::share_workspace),
+        )
+
+        // ─── Phase 4.3: Activity Feed ─────────────────────────────────────
+        .route(
+            "/api/activity-feed",
+            get(collaboration_handlers::get_activity_feed).post(collaboration_handlers::record_activity),
+        )
+
+        // ─── Phase 4.3: Daily Priority Queue ─────────────────────────────
+        .route(
+            "/api/queue",
+            get(collaboration_handlers::list_queue_items).post(collaboration_handlers::add_to_queue),
+        )
+        .route(
+            "/api/queue/:id",
+            patch(collaboration_handlers::update_queue_item),
+        )
+
+        // ─── Phase 4.3: Supplier Risk ──────────────────────────────────────
+        .route(
+            "/api/supplier-risk",
+            get(collaboration_handlers::list_supplier_risks).post(collaboration_handlers::add_supplier_risk),
+        )
+        .route(
+            "/api/supplier-risk/:id",
+            patch(collaboration_handlers::update_supplier_risk),
+        )
+
+        // ─── Phase 4.3: Pipeline Opportunities ────────────────────────────
+        .route(
+            "/api/pipeline",
+            get(collaboration_handlers::list_pipeline_opportunities).post(collaboration_handlers::create_pipeline_opportunity),
+        )
+        .route(
+            "/api/pipeline/:id/stage",
+            patch(collaboration_handlers::update_pipeline_stage),
+        )
+
+        // ─── Phase 4.3: Source Evidence ───────────────────────────────────
+        .route(
+            "/api/evidence",
+            get(collaboration_handlers::get_evidence).post(collaboration_handlers::add_evidence),
+        )
+
+        // ─── Phase 4.3: Team Assignments ──────────────────────────────────
+        .route(
+            "/api/team-assignments",
+            get(collaboration_handlers::list_team_assignments).post(collaboration_handlers::create_team_assignment),
+        )
+
+        // ─── Phase 4.3: Annotations (TODO: implement collab_routes module) ───
+        
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let web_pages = Router::new()
@@ -292,6 +391,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/recipes/new", get(apex_api::web::recipes::new_recipe))
         .route("/search", get(apex_api::web::search::search_page))
         .route("/security", get(apex_api::web::security::security_page))
+        .route(
+            "/security/trigger-scan",
+            post(apex_api::web::security::post_trigger_scan_html),
+        )
         .route("/admin", get(apex_api::web::admin::admin_page))
         .route("/memos", get(apex_api::web::memos::list_memos))
         .route(
@@ -317,6 +420,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .merge(web_pages)
         .route("/ws/warnings", get(warnings_ws))
         .layer(middleware::from_fn(add_rate_limit_headers))
+        .layer(Extension(state.rate_limiter.clone()))
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(

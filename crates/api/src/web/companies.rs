@@ -507,8 +507,8 @@ pub async fn list_companies(
         Some(&active_region),
         Some(&active_sector),
         Some(&search_query),
-        Some(&sort_field),
-        Some(&sort_dir_str),
+        None, // sort is appended by templates — avoid duplicate params
+        None, // dir  is appended by templates — avoid duplicate params
     );
     let page_base_href = if current_filters_href.contains('?') {
         format!("{}&", current_filters_href)

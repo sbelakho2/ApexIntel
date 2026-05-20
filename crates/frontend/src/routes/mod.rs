@@ -1,14 +1,17 @@
 pub mod admin;
 pub mod adversarial;
+pub mod analyst;
 pub mod calibration;
 pub mod causality;
 pub mod companies;
 pub mod company_detail;
 pub mod competitors;
+pub mod executive;
 pub mod graph;
 pub mod insights;
 pub mod login;
 pub mod memos;
+pub mod operational;
 pub mod overview;
 pub mod person_detail;
 pub mod persons;

@@ -1013,8 +1013,8 @@ fn public_sector_procurement_or_program_case(evidence_signals: &[EvidenceSignal]
 // Quality gate types and functions extracted to llm_orchestration module
 #[cfg(feature = "llm")]
 use llm_orchestration::{
-    emit_quality_gate_decisions, quality_gate_blocker, quality_gate_passes_ensemble,
-    quality_gate_requirement,
+    emit_quality_gate_decisions, has_confidence_boilerplate, quality_gate_blocker,
+    quality_gate_passes_ensemble, quality_gate_requirement,
 };
 
 /// Extract key facts from evidence text using pattern matching.
@@ -1451,10 +1451,11 @@ NEVER address the competitor itself as a target.",
     // ── System prompt: competitive intelligence operator, not passive analyst ──
     // Load our company profile from env so the model knows what we offer.
     let our_profile = std::env::var("COMPANY_PROFILE").unwrap_or_else(|_|
-        "An electronics manufacturing services (EMS) company with certified production facilities in \
-North Africa (Morocco, Tunisia) and Europe. Holds AS9100, ISO 9001, ISO 13485, and IATF 16949 \
-certifications. Capabilities: PCBA assembly, box build, test & inspection, supply chain management. \
-Focus markets: defense, aerospace, automotive, industrial, medical electronics."
+        "An electronics manufacturing services (EMS) company with production facilities in \
+North Africa (Morocco, Tunisia) and Europe. Certifications: ISO 9001:2015 and IPC (Institute for \
+Printed Circuits) ONLY. We DO NOT hold AS9100, ISO 13485, or IATF 16949 certifications. \
+Capabilities: PCBA assembly, box build, test & inspection, supply chain management. \
+Focus markets: industrial electronics, general electronics manufacturing."
         .to_string()
     );
 
@@ -1485,7 +1486,14 @@ Rules:
 - When a competitor has a weakness (delayed project, lost cert, supply problem), immediately name which of their customers from the evidence we should approach.
 - For EU and North African entities: these are either competitors to monitor or commercial targets. State which — and why.
 - FORBIDDEN phrases: 'continue monitoring', 'monitor the situation', 'remains to be seen', 'time will tell', 'various developments', 'warranting focused analysis', 'further developments', 'stay informed'
-- NEVER use bracket placeholders like [Company X], [specific service], [date], [competitor weakness], [our services], etc. Use real names from the evidence and entity profile. If no specific contact is known, name the company + a realistic title.",
+- NEVER use bracket placeholders like [Company X], [specific service], [date], [competitor weakness], [our services], etc. Use real names from the evidence and entity profile. If no specific contact is known, name the company + a realistic title.
+- CRITICAL — CERTIFICATION ACCURACY: Our company ONLY holds ISO 9001:2015 and IPC (Institute for Printed Circuits) certifications. \
+NEVER claim, imply, or assume we hold AS9100 (aerospace), ISO 13485 (medical devices), \
+IATF 16949 (automotive), or any other certification not explicitly listed in the OUR COMPANY profile section above. \
+If the evidence mentions certifications we do not hold, do not recommend qualification paths, proposal angles, \
+or compliance advantages based on those unheld certifications. Instead, acknowledge the gap and recommend \
+verification or gap-assessment actions. This is a FIRM REQUIREMENT — violating this will cause the output to be rejected.
+- CRITICAL: You MUST return ONLY the insight JSON schema specified below. NEVER return sanctions data, OFAC records, SDN entries, Treasury Department lists, consolidated screening data, or any government watch-list records. If you find yourself outputting fields like '_id', 'entity_number', 'programs', 'source: Specially Designated Nationals', STOP immediately and return the correct insight JSON schema instead.",
         our_profile = our_profile,
         competitor_mode_instruction = if entity_ctx.is_competitor {
             "⚠️ COMPETITOR ANALYSIS MODE: The entity you are analysing is a DIRECT EMS COMPETITOR — NOT a customer.\n\
@@ -1793,6 +1801,67 @@ MANDATORY:
             "LLM raw response"
         );
 
+        // ── SDN/OFAC contamination guard ──
+        // The fine-tuned model may regurgitate sanctions data instead of insight JSON.
+        // Detect this early and retry with corrective guidance.
+        let raw_lower = resp.text.to_ascii_lowercase();
+        let is_sdn_contaminated = raw_lower.contains("specially designated nationals")
+            || raw_lower.contains("\"source\": \"specially designated")
+            || raw_lower.contains("ofac")
+            || raw_lower.contains("treasury department")
+            || raw_lower.contains("entity_number")
+            || raw_lower.contains("sdn list")
+            || raw_lower.contains("consolidated screening")
+            || (raw_lower.contains("\"_id\"") && raw_lower.contains("\"programs\""));
+
+        if is_sdn_contaminated {
+            tracing::warn!(
+                entity = %entity_ctx.name,
+                attempt,
+                raw_preview = %crate::truncate_text(&resp.text, 200),
+                "LLM SDN/OFAC contamination detected — model returned sanctions data instead of insight JSON"
+            );
+            previous_failure_reasons.push("sdn_contamination");
+            crate::observability::WORKER_METRICS.record_llm_retry();
+            continue;
+        }
+
+        // ── Certification invention guard ──
+        // The model sometimes claims certifications (AS9100, IATF 16949, ISO 13485)
+        // that our company does NOT hold. Detect this in the raw response and retry.
+        // Our company ONLY holds ISO 9001:2015 and IPC.
+        let raw_text = resp.text.to_ascii_lowercase();
+        let is_cert_invented = {
+            // Check for possessive claims: "our [forbidden_cert]", "we hold [forbidden_cert]", etc.
+            let has_forbidden_cert = ["as9100", "iatf 16949", "iatf16949", "iso 13485", "13485 certification"]
+                .iter().any(|c| raw_text.contains(c));
+            let has_possessive_pattern = [
+                "our as9100", "our iatf", "our iso 13485",
+                "as9100 certification", "iatf 16949 certification", "iso 13485 certification",
+                "as9100 certified", "iatf certified", "13485 certified",
+                "we hold as9100", "we hold iatf", "we hold iso 13485",
+                "we are as9100", "we are iatf", "we are iso 13485",
+                "we have as9100", "we have iatf", "we have iso 13485",
+                "our facility is as9100", "our facility is iatf",
+                "as9100 and iso 13485", "iatf 16949 and ",
+                "with our as9100", "with our iatf",
+                "with our iso 13485",
+            ].iter().any(|p| raw_text.contains(p));
+            has_forbidden_cert && has_possessive_pattern
+        };
+
+        if is_cert_invented {
+            tracing::warn!(
+                entity = %entity_ctx.name,
+                attempt,
+                raw_preview = %crate::truncate_text(&resp.text, 200),
+                "LLM certification invention detected — model claimed certifications our company does not hold"
+            );
+            previous_failure_reasons.push("certification_invention");
+            crate::observability::WORKER_METRICS.record_llm_retry();
+            continue;
+        }
+
         let parsed: LlmInsightResponse = match resp.parse_json() {
             Ok(v) => v,
             Err(e) => {
@@ -1924,10 +1993,20 @@ MANDATORY:
             .iter()
             .any(|p| recommendation_lower.contains(p));
 
+        // Check for confidence/source boilerplate patterns (template leakage)
+        let narrative_has_confidence_boilerplate = has_confidence_boilerplate(&narrative)
+            || has_confidence_boilerplate(&recommendation)
+            || has_confidence_boilerplate(&headline);
+
         let gate_decisions = vec![
             quality_gate_blocker("generic_language", is_generic, false),
             quality_gate_blocker("malformed_output", malformed, false),
             quality_gate_blocker("placeholder_output", has_placeholders, false),
+            quality_gate_blocker(
+                "confidence_boilerplate",
+                narrative_has_confidence_boilerplate,
+                true,
+            ),
             quality_gate_requirement("narrative_words", words as f32, 85.0),
             quality_gate_requirement("narrative_references", reference_count as f32, 2.0),
             quality_gate_requirement(
@@ -4523,28 +4602,85 @@ fn format_status(run: &JobRun) -> &'static str {
     }
 }
 
+/// Homoglyph mappings for lookalike generation.
+/// Maps ASCII chars to visually similar Unicode chars.
+const HOMOGLYPHS: &[(&str, &[&str])] = &[
+    ("a", &["à", "á", "â", "ã", "ä", "å", "ɑ", "а"]),
+    ("c", &["ç", "ć", "č", "с"]),
+    ("d", &["đ", "ð"]),
+    ("e", &["è", "é", "ê", "ë", "ε", "е"]),
+    ("g", &["ğ", "ɡ"]),
+    ("h", &["һ"]),
+    ("i", &["ì", "í", "î", "ï", "ı", "і"]),
+    ("l", &["ł", "ɫ", "1"]),
+    ("n", &["ñ", "ŋ"]),
+    ("o", &["ò", "ó", "ô", "õ", "ö", "ø", "0", "о"]),
+    ("r", &["ŗ", "г"]),
+    ("s", &["ş", "š", "ś", "ѕ"]),
+    ("t", &["ţ", "ŧ"]),
+    ("u", &["ù", "ú", "û", "ü", "µ"]),
+    ("w", &["ŵ", "ω"]),
+    ("y", &["ý", "ÿ", "ŷ", "у"]),
+    ("z", &["ž", "ż", "ź"]),
+];
+
+/// TLD swap mappings — common typosquat TLD alternatives.
+const TLD_SWAPS: &[(&str, &[&str])] = &[
+    (".com", &[".co", ".cm", ".corn", ".om", ".com.co", ".net", ".org"]),
+    (".net", &[".ner", ".met", ".org"]),
+    (".org", &[".orq", ".og", ".net"]),
+    (".co.uk", &[".co.ck", ".co.uk.com"]),
+    (".de", &[".d3", ".de.com"]),
+    (".fr", &[".f", ".fr.com"]),
+    (".tn", &[".tn.com", ".rn"]),
+];
+
 /// Generate common typosquat/lookalike variants for a domain name.
-/// Covers: transposition, character omission, common substitutions, homoglyphs.
+/// Covers: transposition, character omission, character doubling,
+/// homoglyph substitution, hyphen insertion, and TLD swaps.
 fn generate_typosquat_variants(domain: &str) -> Vec<String> {
-    // Split off TLD so we only mutate the SLD
-    let parts: Vec<&str> = domain.rsplitn(2, '.').collect();
-    if parts.len() < 2 {
+    // Handle multi-part TLDs (co.uk, com.au, co.jp, etc.)
+    let multi_tlds = &[".co.uk", ".com.au", ".co.jp", ".co.nz", ".com.br", ".com.mx", ".co.za",
+                       ".com.ar", ".com.tn", ".net.au", ".org.uk", ".ac.uk", ".gov.uk"];
+    let (sld_str, tld_str) = {
+        let lower = domain.to_ascii_lowercase();
+        let mut found = None;
+        for mtld in multi_tlds {
+            if lower.ends_with(mtld) {
+                let base = &lower[..lower.len() - mtld.len()];
+                found = Some((base.to_string(), mtld.to_string()));
+                break;
+            }
+        }
+        match found {
+            Some((b, t)) => (b, t),
+            None => {
+                // Single TLD — split at last dot
+                let parts: Vec<&str> = domain.rsplitn(2, '.').collect();
+                if parts.len() < 2 {
+                    return vec![];
+                }
+                (parts[1].to_string(), format!(".{}", parts[0]))
+            }
+        }
+    };
+
+    let sld: Vec<char> = sld_str.chars().collect();
+    let n = sld.len();
+    if n == 0 {
         return vec![];
     }
-    let tld = parts[0];
-    let sld: Vec<char> = parts[1].chars().collect();
-    let n = sld.len();
     let mut variants = std::collections::HashSet::new();
 
-    // Transposition: swap adjacent chars
+    // 1. Transposition: swap adjacent chars
     for i in 0..n.saturating_sub(1) {
         let mut v = sld.clone();
         v.swap(i, i + 1);
         let s: String = v.iter().collect();
-        variants.insert(format!("{}.{}", s, tld));
+        variants.insert(format!("{}{}", s, tld_str));
     }
 
-    // Omission: drop each char
+    // 2. Omission: drop each char
     for i in 0..n {
         let s: String = sld
             .iter()
@@ -4553,17 +4689,50 @@ fn generate_typosquat_variants(domain: &str) -> Vec<String> {
             .map(|(_, c)| c)
             .collect();
         if !s.is_empty() {
-            variants.insert(format!("{}.{}", s, tld));
+            variants.insert(format!("{}{}", s, tld_str));
         }
     }
 
-    // Hyphen insertion
-    for i in 1..n {
-        let (a, b): (String, String) = (sld[..i].iter().collect(), sld[i..].iter().collect());
-        variants.insert(format!("{}-{}.{}", a, b, tld));
+    // 3. Character doubling (insert adjacent duplicate)
+    for i in 0..n {
+        let mut v: Vec<char> = sld.clone();
+        v.insert(i, sld[i]);
+        let s: String = v.iter().collect();
+        variants.insert(format!("{}{}", s, tld_str));
     }
 
-    variants.into_iter().take(50).collect()
+    // 4. Homoglyph substitution
+    for (i, ch) in sld.iter().enumerate() {
+        let lower_ch = ch.to_ascii_lowercase();
+        for &(ascii, glyphs) in HOMOGLYPHS {
+            if ascii.as_bytes() == [lower_ch as u8] {
+                for &glyph in glyphs {
+                    let mut v: Vec<char> = sld.clone();
+                    v[i] = glyph.chars().next().unwrap_or(*ch);
+                    let s: String = v.iter().collect();
+                    variants.insert(format!("{}{}", s, tld_str));
+                }
+            }
+        }
+    }
+
+    // 5. Hyphen insertion
+    for i in 1..n {
+        let (a, b): (String, String) = (sld[..i].iter().collect(), sld[i..].iter().collect());
+        variants.insert(format!("{}-{}{}", a, b, tld_str));
+    }
+
+    // 6. TLD swap
+    for &(tld_pattern, alts) in TLD_SWAPS {
+        if tld_str == tld_pattern {
+            for alt in alts {
+                variants.insert(format!("{}{}", sld_str, alt));
+            }
+        }
+    }
+
+    // Cap at a generous limit — most domains will generate 30-80 variants
+    variants.into_iter().take(100).collect()
 }
 
 #[cfg(test)]

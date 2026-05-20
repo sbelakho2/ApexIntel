@@ -10,7 +10,7 @@ use askama::Template;
 use axum::{
     extract::Form,
     extract::Path,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Redirect},
     Extension,
 };
@@ -455,8 +455,8 @@ pub async fn list_warnings(
         } else {
             Some(search_query.as_str())
         },
-        Some(sort_field.as_str()),
-        Some(sort_dir_str.as_str()),
+        None, // sort is appended by templates — avoid duplicate params
+        None, // dir  is appended by templates — avoid duplicate params
     );
     let page_base_href = if current_filters_href.contains('?') {
         format!("{}&", current_filters_href)
@@ -1019,13 +1019,15 @@ pub async fn acknowledge_warning_html(
                     Some(&format!("/warnings/{id}")),
                 )
                 .await;
-            Html(format!(
+            let mut headers = HeaderMap::new();
+            headers.insert("HX-Trigger", HeaderValue::from_static("warning-acknowledged"));
+            (headers, Html(format!(
                 r#"<div class="apex-card p-4 border-green-500/30 bg-green-500/5">
                      <p class="text-sm font-bold text-green-600">Warning acknowledged by {}</p>
                      <p class="text-[10px] text-muted-foreground mt-1">The warning has been marked as acknowledged.</p>
                    </div>"#,
                 session.username
-            )).into_response()
+            ))).into_response()
         }
         Ok(apex_store::postgres::AcknowledgeWarningResult::AlreadyAcknowledged) => {
             Html(r#"<div class="apex-card p-4"><p class="text-sm text-muted-foreground">Already acknowledged</p></div>"#.to_string()).into_response()

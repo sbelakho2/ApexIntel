@@ -4,6 +4,26 @@ fn normalize_warning_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
 
+/// Returns a deduplication window (as a Postgres INTERVAL string) proportional to
+/// warning severity. Higher-severity warnings have shorter windows so that fresh
+/// critical alerts are never suppressed for long, while low-severity noise is
+/// suppressed longer to reduce repetition.
+///
+///   critical →  7 days   (fast refresh — critical issues need current data)
+///   high     → 14 days
+///   medium   → 21 days   (unchanged from the original fixed window)
+///   low      → 30 days   (long suppression — low-severity noise is least valuable)
+///   unknown  → 30 days   (safe default: err on the side of suppression)
+fn dedup_window_for_severity(severity: &str) -> &'static str {
+    match severity.trim().to_ascii_lowercase().as_str() {
+        "critical" => "7 days",
+        "high" => "14 days",
+        "medium" => "21 days",
+        "low" => "30 days",
+        _ => "30 days",
+    }
+}
+
 fn push_hygiene_filter(qb: &mut QueryBuilder<Postgres>, has_where: &mut bool, exclude: bool) {
     if !exclude {
         return;
@@ -361,6 +381,7 @@ impl PgStore {
         });
         let recent_warning_signature =
             recent_warning_dedup_signature(&normalized_title, normalized_description.as_deref());
+        let dedup_window = dedup_window_for_severity(severity);
 
         if let Some((existing_id,)) = sqlx::query_as::<_, (Uuid,)>(
             r#"SELECT id
@@ -375,7 +396,7 @@ impl PgStore {
                        OR (
                            $6 IS NOT NULL
                            AND COALESCE(entity_ids, ARRAY[]::uuid[]) = COALESCE($7, ARRAY[]::uuid[])
-                           AND created_at > NOW() - INTERVAL '21 days'
+                           AND created_at > NOW() - $8::INTERVAL
                            AND left(trim(regexp_replace(regexp_replace(lower(coalesce(description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380) = $6
                        )
                    )
@@ -389,6 +410,7 @@ impl PgStore {
         .bind(&normalized_description)
         .bind(&recent_warning_signature)
         .bind(&normalized_entity_ids)
+        .bind(dedup_window)
         .fetch_optional(&self.pool)
         .await?
         {

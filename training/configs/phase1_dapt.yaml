@@ -12,9 +12,9 @@ model:
   attn_implementation: flash_attention_2   # falls back to sdpa if unavail
 
 lora:
-  r: 64
-  lora_alpha: 128
-  lora_dropout: 0.05
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0
   target_modules:
     - q_proj
     - k_proj

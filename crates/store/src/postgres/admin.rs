@@ -12,6 +12,19 @@ fn trigger_row_to_result(row: Option<(Uuid, String)>) -> Option<(String, String)
     row.map(|(id, kind)| (id.to_string(), kind))
 }
 
+pub fn is_valid_manual_trigger_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "dns_posture_scan"
+            | "lookalike_domain_scan"
+            | "kev_catalog_fetch"
+            | "full_crawl"
+            | "process_pending_observations"
+            | "run_nightly_pipeline"
+            | "run_weekly_pipeline"
+    )
+}
+
 impl PgStore {
     pub async fn get_admin_crawl_status(&self) -> Result<AdminCrawlStatus> {
         let (total_fp,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM page_fingerprints")

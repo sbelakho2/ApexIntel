@@ -28,8 +28,6 @@
 - Domain with DNS pointing to server (e.g. `starzerp.fi` → `77.42.65.89`)
 - SSL certificate (Let's Encrypt recommended)
 - Rust 1.77+ toolchain
-- Node.js 20+ with npm
-- Docker & Docker Compose v2
 
 ### Step-by-Step (estimated: 15 minutes)
 
@@ -42,15 +40,13 @@ cd /opt/apexintel
 cp .env.example .env
 # Edit .env — fill in:
 #   DATABASE_URL, REDIS_URL, NATS_URL, MINIO_*
-#   JWT_SECRET (generate: openssl rand -hex 32)
+#   SESSION_SECRET (generate: openssl rand -hex 32)
 #   SCRAPER_USER_AGENT, SCRAPER_PROXY_URL (optional)
 #   LLM_SERVER_URL (default: http://localhost:8081)
 nano .env
 
-# 3. Start infrastructure services
-docker compose up -d
-# Wait for PostgreSQL health check (~10 seconds)
-sleep 10
+# 3. Ensure infrastructure services are running (PostgreSQL, Redis, NATS, MinIO)
+#    See DEPLOYMENT.md sections 1-2 for production setup.
 
 # 4. Build Rust binaries
 cargo build --release
@@ -222,10 +218,10 @@ sudo systemctl start apexintel-api apexintel-worker
 
 ```bash
 # Graceful restart of all services
-sudo systemctl restart apexintel-{api,worker,frontend,llm}
+sudo systemctl restart apexintel-{api,worker,llm}
 
 # Verify all healthy
-for svc in api worker frontend llm; do
+for svc in api worker llm; do
   echo "=== apexintel-$svc ==="
   sudo systemctl is-active apexintel-$svc
 done
@@ -435,7 +431,7 @@ DATABASE_READ_URL=postgres://user:pass@replica:5432/apexintel
 
 ### Initial Hardening
 
-- [ ] Change default JWT secret (`openssl rand -hex 32`)
+- [ ] Change default session secret (`openssl rand -hex 32`)
 - [ ] Set strong PostgreSQL passwords
 - [ ] Enable `SCRAPER_PROXY_URL` for production crawling
 - [ ] Configure firewall (only 80/443 open externally)
@@ -447,7 +443,7 @@ DATABASE_READ_URL=postgres://user:pass@replica:5432/apexintel
 
 ### Ongoing Security
 
-- [ ] Rotate JWT secret quarterly
+- [ ] Rotate session secret quarterly
 - [ ] Update SSL certificates before expiry
 - [ ] Monitor `/api/health/deep` for component health
 - [ ] Review API access logs weekly for anomalies
@@ -605,7 +601,7 @@ bash scripts/uptime_check.sh
 | `MINIO_ENDPOINT` | Yes | `http://127.0.0.1:9000` | MinIO endpoint |
 | `MINIO_ACCESS_KEY` | Yes | — | MinIO access key |
 | `MINIO_SECRET_KEY` | Yes | — | MinIO secret key |
-| `JWT_SECRET` | Yes | — | JWT signing secret (hex-encoded) |
+| `SESSION_SECRET` | Yes | — | Session signing secret (hex-encoded, replaces JWT_SECRET) |
 | `LLM_SERVER_URL` | No | `http://127.0.0.1:8081` | LLM server URL |
 | `SCRAPER_USER_AGENT` | No | `ApexIntel/1.0` | Crawler user agent |
 | `SCRAPER_PROXY_URL` | No | — | HTTP proxy for crawling |

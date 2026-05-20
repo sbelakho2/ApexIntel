@@ -1,4 +1,4 @@
-//! Security handler — GET /security
+//! Security handler — GET /security and POST /security/trigger-scan
 //!
 //! Covers: security posture page with DNS analysis, KEV tracking,
 //! lookalike domain detection, and overall security scoring.
@@ -6,7 +6,12 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{extract::Query, http::HeaderMap, response::IntoResponse, Extension};
+use axum::{
+    extract::Query,
+    http::{HeaderMap, StatusCode},
+    response::{Html, IntoResponse},
+    Form, Extension,
+};
 use serde::Deserialize;
 
 use super::{is_htmx_request, PageContext};
@@ -34,6 +39,8 @@ pub struct KevItem {
     pub date_added: String,
     pub due_date: String,
     pub relevant_companies: Vec<String>,
+    pub relevance_score: f64,
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -148,7 +155,7 @@ pub async fn security_page(
 
     // DNS posture observations
     let dns_obs = store
-        .get_dns_posture_entries(100)
+        .get_dns_posture_entries(200)
         .await
         .unwrap_or_else(|e| {
             tracing::error!("Failed to load DNS posture: {e}");
@@ -184,7 +191,7 @@ pub async fn security_page(
         .collect();
 
     // KEV observations
-    let kev_obs = store.get_kev_relevance(50).await.unwrap_or_else(|e| {
+    let kev_obs = store.get_kev_relevance(200).await.unwrap_or_else(|e| {
         tracing::error!("Failed to load KEV data: {e}");
         vec![]
     });
@@ -199,7 +206,8 @@ pub async fn security_page(
                     .unwrap_or("")
                     .to_string(),
                 name: v
-                    .get("name")
+                    .get("vulnerability_name")
+                    .or_else(|| v.get("name"))
                     .and_then(|n| n.as_str())
                     .unwrap_or("")
                     .to_string(),
@@ -224,7 +232,8 @@ pub async fn security_page(
                     .unwrap_or("")
                     .to_string(),
                 relevant_companies: v
-                    .get("relevant_companies")
+                    .get("affected_companies")
+                    .or_else(|| v.get("relevant_companies"))
                     .and_then(|a| a.as_array())
                     .map(|a| {
                         a.iter()
@@ -232,12 +241,20 @@ pub async fn security_page(
                             .collect()
                     })
                     .unwrap_or_default(),
+                relevance_score: v
+                    .get("relevance_score")
+                    .and_then(|s| s.as_f64())
+                    .unwrap_or(0.0),
+                notes: v
+                    .get("notes")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()),
             }
         })
         .collect();
 
     // Lookalike domains
-    let lookalike_obs = store.get_lookalike_domains(50).await.unwrap_or_else(|e| {
+    let lookalike_obs = store.get_lookalike_domains(500).await.unwrap_or_else(|e| {
         tracing::error!("Failed to load lookalike domains: {e}");
         vec![]
     });
@@ -245,9 +262,27 @@ pub async fn security_page(
         .iter()
         .map(|o| {
             let v = &o.value;
+            // Data stores fields as: domain, original_domain, distance, threat_type, active
+            let distance = v.get("distance").and_then(|s| s.as_i64()).unwrap_or(1);
+            let threat_type = v
+                .get("threat_type")
+                .and_then(|s| s.as_str())
+                .unwrap_or("typosquat");
+            let risk_level = match threat_type {
+                "homoglyph" => "medium",
+                "tld_swap" => "medium",
+                _ => {
+                    // Lower distance = more risky
+                    if distance <= 1 {
+                        "medium"
+                    } else {
+                        "low"
+                    }
+                }
+            };
             LookalikeDomain {
                 domain: v
-                    .get("lookalike_domain")
+                    .get("domain")
                     .and_then(|s| s.as_str())
                     .unwrap_or("")
                     .to_string(),
@@ -256,17 +291,10 @@ pub async fn security_page(
                     .and_then(|s| s.as_str())
                     .unwrap_or("")
                     .to_string(),
-                similarity: v.get("similarity").and_then(|s| s.as_f64()).unwrap_or(0.0),
-                registered_at: v
-                    .get("registered_at")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s.to_string()),
+                similarity: (100.0 - (distance as f64).clamp(1.0, 10.0) * 10.0).max(0.0),
+                registered_at: Some(o.ts_utc.format("%Y-%m-%d %H:%M").to_string()),
                 is_active: v.get("active").and_then(|b| b.as_bool()).unwrap_or(false),
-                risk_level: v
-                    .get("risk_level")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("low")
-                    .to_string(),
+                risk_level: risk_level.to_string(),
             }
         })
         .collect();
@@ -459,4 +487,65 @@ pub async fn security_page(
 
     let _ = is_htmx_request(&headers);
     super::render_template(&tpl)
+}
+
+// ─── Trigger scan ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct TriggerScanForm {
+    pub job_kind: Option<String>,
+}
+
+/// POST /security/trigger-scan — trigger an on-demand security crawl job
+/// (e.g. dns_posture_scan, lookalike_domain_scan) and return an HTMX HTML
+/// fragment showing the result status.
+pub async fn post_trigger_scan_html(
+    Extension(store): Extension<Arc<PgStore>>,
+    Form(form): Form<TriggerScanForm>,
+) -> impl IntoResponse {
+    let requested_kind = form
+        .job_kind
+        .unwrap_or_else(|| "dns_posture_scan".to_string());
+
+    // Whitelist of security-relevant job kinds that can be triggered from the UI.
+    let allowed = [
+        "dns_posture_scan",
+        "lookalike_domain_scan",
+        "kev_catalog_fetch",
+    ];
+    if !allowed.contains(&requested_kind.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(format!(
+                "<div class=\"rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700\">Unknown scan type: {}</div>",
+                requested_kind
+            )),
+        );
+    }
+
+    match store.queue_job_trigger(&requested_kind).await {
+        Ok(trigger_id) => {
+            let short_id = &trigger_id[..trigger_id.len().min(8)];
+            (
+                StatusCode::ACCEPTED,
+                Html(format!(
+                    "<div class=\"apex-card p-4 border-green-500/30 bg-green-500/5\">\
+                     <div class=\"flex items-center gap-2\">\
+                     <span class=\"h-2 w-2 rounded-full bg-green-500 animate-pulse\"></span>\
+                     <p class=\"text-sm font-bold text-green-600\">{}</p>\
+                     </div>\
+                     <p class=\"mt-1 text-[11px] text-green-700\">Trigger ID: {}</p>\
+                     </div>",
+                    requested_kind, short_id
+                )),
+            )
+        }
+        Err(err) => {
+            tracing::error!(job_kind = %requested_kind, "queue_job_trigger failed: {err:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700\">Failed to queue security scan</div>".to_string()),
+            )
+        }
+    }
 }

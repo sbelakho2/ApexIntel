@@ -7,7 +7,7 @@ Wants=network.target
 Type=simple
 User=apexintel
 Group=apexintel
-Environment="LLM_CTX_SIZE=8192"
+Environment="LLM_CTX_SIZE=16384"
 Environment="LLM_THREADS=14"
 Environment="LLM_GPU_LAYERS=0"
 ExecStart=/usr/local/bin/llama-server \
@@ -17,9 +17,8 @@ ExecStart=/usr/local/bin/llama-server \
     --n-gpu-layers ${LLM_GPU_LAYERS} \
     --threads ${LLM_THREADS} \
     --batch-size 512 \
-    --parallel 2 \
-    --mlock \
-    --flash-attn \
+    --parallel 1 \
+    --flash-attn auto \
     --cont-batching
 Restart=on-failure
 RestartSec=30

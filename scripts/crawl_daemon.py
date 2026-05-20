@@ -4156,6 +4156,39 @@ async def scrape_social_media(pool: asyncpg.Pool, session: aiohttp.ClientSession
                     continue
                 company_map[domain_key] = (str(row["id"]), row["name"])
 
+    # ── Load POI (person of interest) names for social mention linking ─────
+    # This enables social posts mentioning POIs by name to be stored with
+    # entity_type="person", making them discoverable by get_poi_social_mentions()
+    # without expensive full-text scans. Previously only company names were
+    # matched, so POI mentions in social media were invisible to the evidence
+    # pipeline unless the company name also appeared in the same post.
+    poi_rows = await pool.fetch(
+        "SELECT id, name FROM persons WHERE name IS NOT NULL AND TRIM(name) != ''"
+    )
+    poi_map = {}
+    for row in poi_rows:
+        name_lower = row["name"].strip().lower()
+        # Skip very short or generic names that would cause false positives
+        if len(name_lower) < 4:
+            continue
+        poi_map[name_lower] = (str(row["id"]), row["name"])
+        # Also index on first+last name tokens for partial matches
+        name_tokens = [t for t in name_lower.split() if len(t) > 2]
+        if len(name_tokens) >= 2:
+            # Create a combined key from first and last name
+            combined = " ".join(name_tokens)
+            if combined != name_lower and combined not in poi_map:
+                poi_map[combined] = (str(row["id"]), row["name"])
+
+    # Pre-compile word-boundary regexes for POI names (same pattern as companies)
+    _poi_patterns = {}
+    for key in poi_map:
+        if len(key) <= 16:
+            try:
+                _poi_patterns[key] = re.compile(r'\b' + re.escape(key) + r'\b', re.IGNORECASE)
+            except re.error:
+                pass
+
     # Pre-compile word-boundary regexes for names ≤12 chars to avoid
     # substring false positives (e.g., "venture" in "joint venture",
     # "arrow" in "arrow key", country names in navigation text)
@@ -4167,8 +4200,8 @@ async def scrape_social_media(pool: asyncpg.Pool, session: aiohttp.ClientSession
             except re.error:
                 pass  # fallback to substring for bad patterns
 
-    stats = {"fetched": 0, "posts_parsed": 0, "company_mentions": 0, "signals": 0,
-             "darkweb_crossrefs": 0, "darkweb_breaches": 0}
+    stats = {"fetched": 0, "posts_parsed": 0, "company_mentions": 0, "poi_mentions": 0,
+             "signals": 0, "darkweb_crossrefs": 0, "darkweb_breaches": 0}
 
     for src in SOCIAL_MEDIA_SOURCES:
         url = src["url"]
@@ -4315,6 +4348,54 @@ async def scrape_social_media(pool: asyncpg.Pool, session: aiohttp.ClientSession
                     confidence=min(0.95, (credibility * 0.8) + darkweb_boost)  # boosted if dark web intel exists
                 )
 
+            # ── POI (Person of Interest) Name Matching ──────────────────────────
+            # Check if the social post mentions any tracked POI by name.
+            # When matched, store a SocialPost observation linked to the person
+            # so that get_poi_social_mentions() can find it efficiently.
+            # This is critical for the evidence pipeline — previously POI social
+            # mentions were invisible unless the company name also appeared in
+            # the same post.
+            poi_mentioned = set()
+            for key, (pid, pname) in poi_map.items():
+                pat = _poi_patterns.get(key)
+                if pat:
+                    if pat.search(text_lower):
+                        poi_mentioned.add((pid, pname))
+                else:
+                    # Long name: substring match is safe (already filtered short/generic names)
+                    if key in text_lower:
+                        poi_mentioned.add((pid, pname))
+
+            for pid, pname in poi_mentioned:
+                stats["poi_mentions"] += 1
+                poi_value_dict = {
+                    "platform": platform,
+                    "post_id": post.get("post_id", ""),
+                    "author": post.get("author", ""),
+                    "text": post.get("text", "")[:1000],
+                    "url": post.get("url", ""),
+                    "engagement": post.get("engagement", 0),
+                    "topic": topic,
+                    "signals": [s["type"] for s in signals],
+                    "mentioned_person": pname,
+                }
+
+                await store_observation(
+                    pool,
+                    obs_type="SocialPost",
+                    entity_id=pid,
+                    entity_type="person",
+                    value=poi_value_dict,
+                    provenance={
+                        "url": post.get("url", url),
+                        "fetch_ts": result["fetched_at"],
+                        "platform": platform,
+                        "credibility_tier": tier,
+                        "extractor_version": "apex-crawler-2.0",
+                    },
+                    confidence=credibility * 0.7,
+                )
+
             # Even without company match, store high-signal posts for trending analysis
             if not mentioned and signals and post.get("engagement", 0) > 50:
                 await store_observation(
@@ -4346,7 +4427,8 @@ async def scrape_social_media(pool: asyncpg.Pool, session: aiohttp.ClientSession
     log.info(
         f"✓ Social media scrape complete: "
         f"sources={stats['fetched']}, posts={stats['posts_parsed']}, "
-        f"company_mentions={stats['company_mentions']}, signals={stats['signals']}, "
+        f"company_mentions={stats['company_mentions']}, poi_mentions={stats['poi_mentions']}, "
+        f"signals={stats['signals']}, "
         f"darkweb_crossrefs={stats['darkweb_crossrefs']}, breach_corroborations={stats['darkweb_breaches']}"
     )
     return stats

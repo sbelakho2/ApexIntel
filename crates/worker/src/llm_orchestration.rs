@@ -495,9 +495,36 @@ pub(super) const GENERIC_PHRASES: &[&str] = &[
     "developments warrant attention",
     "stay informed",
     "keep an eye on",
+    "keep it on an active watchlist",
+    "keep on watchlist",
+    "active watchlist",
+    "look for formal confirmation",
+    "make a hard commitment",
+    "matters commercially",
     "in conclusion",
     "it is important to note",
     "overall",
+];
+
+/// Confidence/source boilerplate patterns that indicate template leakage.
+#[cfg(feature = "llm")]
+pub(super) const CONFIDENCE_BOILERPLATE_PATTERNS: &[&str] = &[
+    "roughly",
+    "% confidence",
+    "percent confidence",
+    "reported by",
+    "independent sources",
+    "non-social reporting",
+    "sources is being compared",
+    "being compared for corroboration",
+    "recurring reported themes",
+    "recurring themes involve",
+    "recurring themes include",
+    "background monitoring",
+    "monitor for follow-on",
+    "keep it on",
+    "on an active watchlist",
+    "formal confirmation",
 ];
 
 /// Malformed output fragments that indicate template leakage.
@@ -562,6 +589,33 @@ pub(super) fn has_causal_language(text: &str) -> bool {
 pub(super) fn has_counterfactual(text: &str) -> bool {
     let lower = text.to_lowercase();
     lower.contains("if ") && (lower.contains(" would ") || lower.contains(" could "))
+}
+
+/// Check if the narrative text contains confidence/source boilerplate patterns
+/// that indicate template leakage rather than natural LLM generation.
+/// This catches patterns like "roughly 52% confidence" or "Reported by 2 independent sources".
+#[cfg(feature = "llm")]
+pub(super) fn has_confidence_boilerplate(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    
+    // Heuristic 1: Check for percentage confidence mentions
+    let has_percentage_confidence = words.windows(2).any(|w| {
+        (w[0].parse::<f64>().is_ok() && (w[1] == "%" || w[1].starts_with('%')))
+            || (w[1] == "confidence" && w[0].parse::<f64>().is_ok())
+            || (w[0] == "confidence" && w[1].parse::<f64>().is_ok())
+    }) || words.windows(3).any(|w| {
+        w[0].parse::<f64>().is_ok() && w[1] == "%" && w[2] == "confidence"
+    });
+    
+    if has_percentage_confidence {
+        return true;
+    }
+    
+    // Heuristic 2: Source enumeration patterns
+    CONFIDENCE_BOILERPLATE_PATTERNS
+        .iter()
+        .any(|p| lower.contains(p))
 }
 
 /// Determine failure reasons for retry guidance.
@@ -683,6 +737,12 @@ pub(super) fn build_llm_retry_guidance(
             ),
             "reasoning" => guidance.push(
                 "Make the causal chain explicit with clear 'because/therefore' logic or a concrete counterfactual based on the evidence.".to_string(),
+            ),
+            "sdn_contamination" => guidance.push(
+                "CRITICAL ERROR: Your previous response contained OFAC/SDN sanctions data (Treasury Department watch-list records) instead of the required insight JSON. You MUST NOT output sanctions records, screening list entries, or government watch-list data. Return ONLY the exact JSON schema requested: {headline, narrative, recommendation, confidence, severity}. Write a competitive intelligence brief based on the evidence provided — do NOT regurgitate database records.".to_string(),
+            ),
+            "certification_invention" => guidance.push(
+                "CRITICAL ERROR: Your previous response claimed that our company holds AS9100, IATF 16949, or ISO 13485 certifications. Our company ONLY holds ISO 9001:2015 and IPC (Institute for Printed Circuits). We do NOT have AS9100 (aerospace), ISO 13485 (medical devices), or IATF 16949 (automotive) certifications. NEVER claim, imply, or assume we hold any certification not explicitly listed in the OUR COMPANY profile section. If the evidence mentions certifications we do not hold, do not recommend qualification paths, proposal angles, or compliance advantages based on those unheld certifications. Instead, acknowledge the gap and recommend verification or gap-assessment actions.".to_string(),
             ),
             _ => guidance.push(
                 "Keep the output concrete, evidence-cited, and commercially actionable.".to_string(),

@@ -6,7 +6,7 @@ pub(crate) struct SecuritySubQuery {
 }
 
 fn normalize_security_limit(limit: Option<i64>) -> i64 {
-    limit.unwrap_or(50).min(200)
+    limit.unwrap_or(100).min(500)
 }
 
 pub(crate) async fn get_dns_posture(
@@ -275,12 +275,12 @@ mod tests {
     use super::normalize_security_limit;
 
     #[test]
-    fn test_normalize_security_limit_defaults_to_fifty() {
-        assert_eq!(normalize_security_limit(None), 50);
+    fn test_normalize_security_limit_defaults_to_one_hundred() {
+        assert_eq!(normalize_security_limit(None), 100);
     }
 
     #[test]
-    fn test_normalize_security_limit_caps_at_two_hundred() {
-        assert_eq!(normalize_security_limit(Some(500)), 200);
+    fn test_normalize_security_limit_caps_at_five_hundred() {
+        assert_eq!(normalize_security_limit(Some(1000)), 500);
     }
 }

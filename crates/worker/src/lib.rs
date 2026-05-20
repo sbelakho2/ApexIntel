@@ -21,6 +21,7 @@ pub mod scheduler;
 pub mod self_improvement;
 pub mod sla_predictor;
 pub mod storage;
+pub mod warning_verifier;
 pub mod webhooks;
 pub mod weekly;
 

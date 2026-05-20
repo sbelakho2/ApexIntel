@@ -334,7 +334,7 @@ def main():
         report_to=tc.get("report_to", "none"),
         run_name=tc.get("run_name", "apexintel-dapt"),
         gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing_kwargs={"use_reentrant": True},
         ddp_find_unused_parameters=False,
         torch_compile=False,
         seed=42,

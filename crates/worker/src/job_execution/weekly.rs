@@ -31,6 +31,32 @@ pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) 
         ));
         return run;
     }
+    // Stage: auto-calibrate recipe precision thresholds based on FP rates
+    if let Err(e) = super::resilience::run_stage_with_retry(
+        "weekly_pipeline.auto_calibrate_thresholds",
+        WEEKLY_STAGE_TIMEOUT,
+        WEEKLY_STAGE_ATTEMPTS,
+        |_| async {
+            let adjustments = ctx
+                .store
+                .auto_calibrate_recipe_thresholds()
+                .await?;
+            if !adjustments.is_empty() {
+                tracing::info!(
+                    "auto-calibrated {} recipe(s) with high FP rate",
+                    adjustments.len()
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        },
+    )
+    .await
+    {
+        run.fail(&format!(
+            "weekly_pipeline: failed to auto-calibrate recipe thresholds: {e}"
+        ));
+        return run;
+    }
     let (staged_recipes, production_recipes, memo_inputs) =
         match super::resilience::run_stage_with_retry(
             "weekly_pipeline.load_inputs",

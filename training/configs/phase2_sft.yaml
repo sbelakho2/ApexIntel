@@ -15,26 +15,27 @@ model:
   phase1_adapter: ./training/outputs/phase1_dapt/best_adapter
 
 lora:
-  r: 64
-  lora_alpha: 128
-  lora_dropout: 0.05
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0
+  # Attention-only LoRA for Phase 2 SFT.
+  # Qwen3-30B-A3B is MoE — gate/up/down_proj exist in both shared_expert
+  # (dense) and experts (×128 routed). PEFT cannot handle stacked expert
+  # modules cleanly. The FFN layers were already adapted in Phase 1 DAPT.
   target_modules:
     - q_proj
     - k_proj
     - v_proj
     - o_proj
-    - gate_proj
-    - up_proj
-    - down_proj
   task_type: CAUSAL_LM
   bias: none
 
 training:
   output_dir: ./training/outputs/phase2_sft
   num_train_epochs: 5
-  per_device_train_batch_size: 1
-  per_device_eval_batch_size: 1
-  gradient_accumulation_steps: 8       # effective batch = 1×8×8 = 64
+  per_device_train_batch_size: 2       # 2 GPUs × 2 × 16 = 64 effective batch
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 16      # effective batch = 2×2×16 = 64
   learning_rate: 8.0e-6
   weight_decay: 0.01
   warmup_ratio: 0.05

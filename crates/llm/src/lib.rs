@@ -32,6 +32,19 @@ pub mod prompt_registry;
 pub mod recipe_hypothesis;
 pub mod self_improvement;
 pub mod validators;
+pub mod advanced_prompting;
+
+// Re-exports from advanced_prompting
+pub use advanced_prompting::{
+    AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence,
+    CalibrationConfig, CalibrationFactor, ChainOfThoughtConfig, ConfidenceLevel,
+    MultiPerspectiveConfig, MultiPerspectiveResult, PerspectiveResult, ReasoningPath,
+    ReasoningStep, SelfConsistencyConfig, SelfConsistencyResult,
+};
+
+pub mod agents;
+pub mod quality_control;
+pub mod rag;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Experimental modules (B290)

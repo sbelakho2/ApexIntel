@@ -1,4 +1,7 @@
 use std::sync::Arc;
+use std::time::Duration;
+
+use uuid::Uuid;
 
 use crate::*;
 
@@ -295,6 +298,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
 
     for record in enforcer.approaching_sla(&records, reminder_ahead_seconds) {
         let delivery_key = format!("sla-reminder:{}", record.id);
+        #[allow(clippy::disallowed_methods)]
         let detail = serde_json::json!({
             "warning_id": record.id,
             "severity": record.severity,
@@ -323,6 +327,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
     for alert in enforcer.check_sla_violations(&records) {
         let warning_id = alert.source_id.trim_start_matches("sla-breach:");
         let delivery_key = format!("notify:{}", alert.source_id);
+        #[allow(clippy::disallowed_methods)]
         let detail = serde_json::json!({
             "warning_id": warning_id,
             "severity": alert.severity.as_str(),
@@ -355,6 +360,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
             } else {
                 "failed"
             };
+            #[allow(clippy::disallowed_methods)]
             let payload = serde_json::json!({
                 "alert_id": notification.alert.source_id,
                 "subject": notification.subject,
@@ -399,9 +405,97 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
     run
 }
 
+/// Run dig for a specific record type and return the combined stdout, or empty on failure.
+async fn dig_lookup(domain: &str, rtype: &str, timeout_secs: u64) -> String {
+    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+        tokio::process::Command::new("dig")
+            .args([
+                "+short",
+                "+time=3",
+                "+tries=1",
+                rtype,
+                domain,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await
+    })
+    .await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Check for SPF (TXT record containing v=spf1).
+async fn check_spf(domain: &str) -> (bool, Option<String>) {
+    let txt = dig_lookup(domain, "TXT", 6).await;
+    for line in txt.lines() {
+        let cleaned = line.trim().trim_matches('"');
+        if cleaned.to_lowercase().contains("v=spf1") {
+            return (true, Some(cleaned.to_string()));
+        }
+    }
+    (false, None)
+}
+
+/// Check common DKIM selectors.
+async fn check_dkim(domain: &str) -> bool {
+    let selectors = [
+        "default", "google", "selector1", "selector2", "k1", "mail", "dkim",
+    ];
+    for sel in &selectors {
+        let dkim_domain = format!("{}._domainkey.{}", sel, domain);
+        let result = dig_lookup(&dkim_domain, "TXT", 6).await;
+        for line in result.lines() {
+            let cleaned = line.trim().trim_matches('"');
+            let lower = cleaned.to_lowercase();
+            if lower.contains("v=dkim1") || lower.contains("p=") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check DMARC (TXT at _dmarc.<domain>), returning (present, policy).
+async fn check_dmarc(domain: &str) -> (bool, Option<String>) {
+    let txt = dig_lookup(&format!("_dmarc.{}", domain), "TXT", 6).await;
+    for line in txt.lines() {
+        let cleaned = line.trim().trim_matches('"');
+        let lower = cleaned.to_lowercase();
+        if lower.contains("v=dmarc1") {
+            let policy = lower
+                .split(';')
+                .find_map(|part| part.trim().strip_prefix("p="))
+                .map(|p| p.trim().to_string());
+            return (true, policy);
+        }
+    }
+    (false, None)
+}
+
+/// Collect a DNS issue result for warning generation.
+#[allow(dead_code)]
+struct DnsIssueResult {
+    company_name: String,
+    domain: String,
+    region: Option<String>,
+    company_id: Uuid,
+    has_spf: bool,
+    has_dkim: bool,
+    has_dmarc: bool,
+    score: f64,
+}
+
 pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
+
     let companies = store
         .list_companies(
             &apex_store::postgres::CompanyListFilters {
@@ -416,21 +510,172 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
         )
         .await
         .unwrap_or_default();
+
     let mut checked = 0u64;
+    let mut dns_issues: Vec<DnsIssueResult> = Vec::new();
+
     for company in &companies {
-        if let Some(domain) = &company.domain {
-            tracing::debug!(domain = %domain, company = %company.name, "dns_posture_scan: queued domain check");
-            checked += 1;
+        let Some(domain) = &company.domain else { continue; };
+        if domain.is_empty() {
+            continue;
         }
+
+        // Perform DNS lookups (SPF, DKIM, DMARC) using dig subprocess
+        let (has_spf, spf_record) = check_spf(domain).await;
+        let has_dkim = check_dkim(domain).await;
+        let (has_dmarc, dmarc_policy) = check_dmarc(domain).await;
+
+        let posture_score = compute_dns_score(has_spf, has_dkim, has_dmarc);
+
+        // Persist to dedicated dns_posture_entries table
+        if let Err(e) = store
+            .insert_dns_posture_entry(
+                Some(company.id),
+                domain,
+                has_spf,
+                has_dkim,
+                has_dmarc,
+                dmarc_policy.as_deref(),
+                spf_record.as_deref(),
+                posture_score,
+            )
+            .await
+        {
+            tracing::warn!(
+                domain = %domain,
+                error = %e,
+                "dns_posture_scan: failed to persist to dns_posture_entries"
+            );
+        }
+
+        // Persist to observations table (for API/page consumption)
+        let pool = &store.pool;
+        let obs_id = Uuid::new_v4();
+        let now = chrono::Utc::now();
+        #[allow(clippy::disallowed_methods)]
+        let value = serde_json::json!({
+            "domain": domain,
+            "company_name": company.name,
+            "has_spf": has_spf,
+            "has_dkim": has_dkim,
+            "has_dmarc": has_dmarc,
+            "dmarc_policy": dmarc_policy,
+            "posture_score": posture_score,
+        });
+        #[allow(clippy::disallowed_methods)]
+        let provenance = serde_json::json!({
+            "source": "worker_dns_posture_scan",
+            "content_hash": format!("dns_{}_{}", domain, now.format("%Y%m%d")),
+        });
+
+        // Delete stale entry + insert fresh
+        let _ = sqlx::query(
+            r#"DELETE FROM observations
+               WHERE observation_type = 'dns_posture' AND entity_id = $1"#,
+        )
+        .bind(company.id)
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query(
+            r#"INSERT INTO observations
+               (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
+               VALUES ($1, 'dns_posture', $2, 'company', $3, $4::jsonb, $5::jsonb, 0.95)"#,
+        )
+        .bind(obs_id)
+        .bind(company.id)
+        .bind(now)
+        .bind(value)
+        .bind(provenance)
+        .execute(pool)
+        .await;
+
+        checked += 1;
+        if posture_score < 50.0 {
+            dns_issues.push(DnsIssueResult {
+                company_name: company.name.clone(),
+                domain: domain.clone(),
+                region: company.region.clone(),
+                company_id: company.id,
+                has_spf,
+                has_dkim,
+                has_dmarc,
+                score: posture_score,
+            });
+        }
+
+        tracing::info!(
+            domain = %domain,
+            company = %company.name,
+            has_spf = has_spf,
+            has_dkim = has_dkim,
+            has_dmarc = has_dmarc,
+            score = posture_score,
+            "dns_posture_scan: domain checked"
+        );
+
+        // Small delay to avoid overwhelming DNS servers
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // Generate security warnings for the worst DNS offenders (top 10 by worst score)
+    dns_issues.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+    for result in dns_issues.iter().take(10) {
+        let mut missing = Vec::new();
+        if !result.has_spf { missing.push("SPF"); }
+        if !result.has_dkim { missing.push("DKIM"); }
+        if !result.has_dmarc { missing.push("DMARC"); }
+
+        let title = format!("DNS posture: {} — missing {}", result.company_name, missing.join(", "));
+        let description = format!(
+            "{} is missing {} email authentication record{} (posture score: {:.0}%). \
+             This may increase email spoofing risk for this domain.",
+            result.domain,
+            missing.join(", "),
+            if missing.len() > 1 { "s" } else { "" },
+            result.score,
+        );
+        let severity = if result.score < 20.0 { "high" } else { "low" };
+
+        let _ = store
+            .insert_warning(
+                "security",
+                &title,
+                Some(&description),
+                severity,
+                result.region.as_deref(),
+                Some("worker_dns_posture_scan"),
+                None,
+                None,
+                Some(0.85),
+            )
+            .await;
+    }
+
+    let warning_count = dns_issues.len().min(10) as u64;
     run.succeed(
         checked,
         &format!(
-            "dns_posture_scan: queued {} domains for DNS posture check",
-            checked
+            "dns_posture_scan: checked {} domains ({} with issues, {} warnings generated)",
+            checked, dns_issues.len(), warning_count,
         ),
     );
     run
+}
+
+/// Compute a DNS posture score 0–100 based on SPF (30) + DKIM (30) + DMARC (40).
+fn compute_dns_score(has_spf: bool, has_dkim: bool, has_dmarc: bool) -> f64 {
+    let mut score = 0.0;
+    if has_spf {
+        score += 30.0;
+    }
+    if has_dkim {
+        score += 30.0;
+    }
+    if has_dmarc {
+        score += 40.0;
+    }
+    score
 }
 
 pub(super) async fn run_kev_catalog_fetch(kind: &JobKind) -> JobRun {
@@ -520,12 +765,13 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
             },
             Some(apex_store::postgres::CompanyOrderBy::Name),
             false,
-            200,
+            500,
             0,
         )
         .await
         .unwrap_or_default();
     let mut domains_scanned = 0u64;
+    let mut total_variants = 0u64;
     for company in &companies {
         if let Some(domain) = &company.domain {
             let variants: Vec<String> = generate_typosquat_variants(domain);
@@ -535,14 +781,79 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
                 company = %company.name,
                 "lookalike_domain_scan: variants generated"
             );
+            for variant in &variants {
+                // Persist to dedicated lookalike_domains table
+                if let Err(e) = store
+                    .insert_lookalike_domain(
+                        Some(company.id),
+                        domain,
+                        variant,
+                        "typosquat",
+                        1,
+                        true,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        domain = %domain,
+                        variant = %variant,
+                        error = %e,
+                        "lookalike_domain_scan: failed to persist variant"
+                    );
+                }
+
+                // Persist to observations table for API consumption
+                // (delete stale entry first, same pattern as Python scanner)
+                let pool = &store.pool;
+                let _ = sqlx::query(
+                    r#"DELETE FROM observations
+                       WHERE observation_type = 'typosquat' AND entity_id = $1
+                         AND value->>'domain' = $2"#,
+                )
+                .bind(company.id)
+                .bind(variant)
+                .execute(pool)
+                .await;
+
+                let obs_id = Uuid::new_v4();
+                let now = chrono::Utc::now();
+                #[allow(clippy::disallowed_methods)]
+                let value = serde_json::json!({
+                    "original_domain": domain,
+                    "domain": variant,
+                    "distance": 1,
+                    "threat_type": "typosquat",
+                    "active": true,
+                });
+                #[allow(clippy::disallowed_methods)]
+                let provenance = serde_json::json!({
+                    "source": "worker_lookalike_scan",
+                    "content_hash": format!("la_{}_{}", domain, variant),
+                });
+
+                let _ = sqlx::query(
+                    r#"INSERT INTO observations
+                       (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
+                       VALUES ($1, 'typosquat', $2, 'company', $3, $4::jsonb, $5::jsonb, 0.80)"#,
+                )
+                .bind(obs_id)
+                .bind(company.id)
+                .bind(now)
+                .bind(value)
+                .bind(provenance)
+                .execute(pool)
+                .await;
+
+                total_variants += 1;
+            }
             domains_scanned += 1;
         }
     }
     run.succeed(
-        domains_scanned,
+        total_variants,
         &format!(
-            "lookalike_domain_scan: scanned {} domains for lookalike variants",
-            domains_scanned
+            "lookalike_domain_scan: scanned {} domains, persisted {} lookalike variants",
+            domains_scanned, total_variants
         ),
     );
     run
