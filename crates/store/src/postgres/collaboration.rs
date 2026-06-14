@@ -594,6 +594,7 @@ impl PgStore {
         Ok(())
     }
 
+    #[allow(clippy::disallowed_methods)]
     pub async fn count_replay_candidates(
         &self,
         from_date: NaiveDate,
@@ -607,11 +608,11 @@ impl PgStore {
         );
         let from_ts = from_date
             .and_hms_opt(0, 0, 0)
-            .unwrap_or_else(|| panic!("midnight should be a valid time"))
+            .expect("midnight should be a valid time")
             .and_utc();
         let to_ts = to_date
             .and_hms_opt(23, 59, 59)
-            .unwrap_or_else(|| panic!("end-of-day should be a valid time"))
+            .expect("end-of-day should be a valid time")
             .and_utc();
         qb.push_bind(from_ts)
             .push(" AND ts_utc <= ")
@@ -685,6 +686,768 @@ impl PgStore {
         )
         .bind(id)
         .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // ─── Strategic Opportunities ──────────────────────────────────────────────
+
+    pub async fn list_strategic_opportunities(
+        &self,
+        include_closed: bool,
+        limit: i64,
+    ) -> Result<Vec<StrategicOpportunityRecord>> {
+        let limit = clamp_limit(limit);
+        let query = if include_closed {
+            "SELECT id, title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities ORDER BY priority_score DESC, created_at DESC LIMIT $1"
+        } else {
+            "SELECT id, title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE status != 'closed' ORDER BY priority_score DESC, created_at DESC LIMIT $1"
+        };
+        Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(query)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
+    pub async fn create_strategic_opportunity(
+        &self,
+        title: &str,
+        description: Option<&str>,
+        opportunity_type: &str,
+        priority_score: f64,
+        confidence: f64,
+        entity_id: Option<Uuid>,
+        entity_type: Option<&str>,
+        region: Option<&str>,
+        estimated_value: Option<&str>,
+        recommended_actions: &Value,
+        owner_id: Option<&str>,
+        due_date: Option<DateTime<Utc>>,
+    ) -> Result<StrategicOpportunityRecord> {
+        Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
+            r#"INSERT INTO strategic_opportunities
+                 (title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, due_date)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+               RETURNING id, title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at"#,
+        )
+        .bind(title)
+        .bind(description)
+        .bind(opportunity_type)
+        .bind(priority_score)
+        .bind(confidence)
+        .bind(entity_id)
+        .bind(entity_type)
+        .bind(region)
+        .bind(estimated_value)
+        .bind(recommended_actions)
+        .bind(owner_id)
+        .bind(due_date)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn get_strategic_opportunity(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<StrategicOpportunityRecord>> {
+        Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
+            "SELECT id, title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at FROM strategic_opportunities WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn update_strategic_opportunity_status(
+        &self,
+        id: Uuid,
+        status: &str,
+    ) -> Result<Option<StrategicOpportunityRecord>> {
+        Ok(sqlx::query_as::<_, StrategicOpportunityRecord>(
+            r#"UPDATE strategic_opportunities SET status = $2, updated_at = NOW()
+               WHERE id = $1
+               RETURNING id, title, description, opportunity_type, priority_score, confidence, entity_id, entity_type, region, estimated_value, recommended_actions, owner_id, status, due_date, metadata, created_at, updated_at"#,
+        )
+        .bind(id)
+        .bind(status)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // ─── Critical Threats ─────────────────────────────────────────────────────
+
+    pub async fn list_critical_threats(&self, limit: i64) -> Result<Vec<CriticalThreatRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, CriticalThreatRecord>(
+            "SELECT id, title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE status = 'active' ORDER BY impact_score DESC, created_at DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_critical_threat(
+        &self,
+        title: &str,
+        description: Option<&str>,
+        threat_type: &str,
+        severity: &str,
+        impact_score: f64,
+        confidence: f64,
+        entity_id: Option<Uuid>,
+        entity_type: Option<&str>,
+        region: Option<&str>,
+        mitigation_steps: &Value,
+        owner_id: Option<&str>,
+        sla_deadline: Option<DateTime<Utc>>,
+    ) -> Result<CriticalThreatRecord> {
+        Ok(sqlx::query_as::<_, CriticalThreatRecord>(
+            r#"INSERT INTO critical_threats
+                 (title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, sla_deadline)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+               RETURNING id, title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#,
+        )
+        .bind(title)
+        .bind(description)
+        .bind(threat_type)
+        .bind(severity)
+        .bind(impact_score)
+        .bind(confidence)
+        .bind(entity_id)
+        .bind(entity_type)
+        .bind(region)
+        .bind(mitigation_steps)
+        .bind(owner_id)
+        .bind(sla_deadline)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn get_critical_threat(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<CriticalThreatRecord>> {
+        Ok(sqlx::query_as::<_, CriticalThreatRecord>(
+            "SELECT id, title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn update_critical_threat_status(
+        &self,
+        id: Uuid,
+        status: &str,
+        resolved: bool,
+    ) -> Result<Option<CriticalThreatRecord>> {
+        let resolved_at = if resolved { "NOW()" } else { "NULL" };
+        let sql = format!(
+            r#"UPDATE critical_threats SET status = $2, resolved_at = {resolved_at}, updated_at = NOW()
+               WHERE id = $1
+               RETURNING id, title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at"#
+        );
+        Ok(sqlx::query_as::<_, CriticalThreatRecord>(&sql)
+            .bind(id)
+            .bind(status)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    // ─── Investigation Workspaces ─────────────────────────────────────────────
+
+    pub async fn list_investigation_workspaces(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<InvestigationWorkspaceRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
+            "SELECT id, name, description, workspace_type, owner_id, team_id, status, visibility, tags, entity_focus, findings, conclusions, metadata, created_at, updated_at, closed_at FROM investigation_workspaces ORDER BY updated_at DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_investigation_workspace(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        workspace_type: &str,
+        owner_id: &str,
+        team_id: Option<&str>,
+        visibility: &str,
+        tags: &[String],
+        entity_focus: &Value,
+    ) -> Result<InvestigationWorkspaceRecord> {
+        Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
+            r#"INSERT INTO investigation_workspaces
+                 (name, description, workspace_type, owner_id, team_id, visibility, tags, entity_focus)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING id, name, description, workspace_type, owner_id, team_id, status, visibility, tags, entity_focus, findings, conclusions, metadata, created_at, updated_at, closed_at"#,
+        )
+        .bind(name)
+        .bind(description)
+        .bind(workspace_type)
+        .bind(owner_id)
+        .bind(team_id)
+        .bind(visibility)
+        .bind(tags)
+        .bind(entity_focus)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn get_investigation_workspace(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<InvestigationWorkspaceRecord>> {
+        Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
+            "SELECT id, name, description, workspace_type, owner_id, team_id, status, visibility, tags, entity_focus, findings, conclusions, metadata, created_at, updated_at, closed_at FROM investigation_workspaces WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn update_investigation_workspace(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        description: Option<Option<&str>>,
+        status: Option<&str>,
+        tags: Option<&[String]>,
+        entity_focus: Option<&Value>,
+        findings: Option<Option<&str>>,
+        conclusions: Option<Option<&str>>,
+    ) -> Result<Option<InvestigationWorkspaceRecord>> {
+        let current = match self.get_investigation_workspace(id).await? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
+            r#"UPDATE investigation_workspaces SET
+                 name = $2,
+                 description = $3,
+                 status = $4,
+                 tags = $5,
+                 entity_focus = $6,
+                 findings = $7,
+                 conclusions = $8,
+                 closed_at = CASE WHEN $4 = 'closed' THEN COALESCE(closed_at, NOW()) ELSE closed_at END,
+                 updated_at = NOW()
+               WHERE id = $1
+               RETURNING id, name, description, workspace_type, owner_id, team_id, status, visibility, tags, entity_focus, findings, conclusions, metadata, created_at, updated_at, closed_at"#,
+        )
+        .bind(id)
+        .bind(name.unwrap_or(&current.name))
+        .bind(description.unwrap_or(current.description.as_deref()))
+        .bind(status.unwrap_or(&current.status))
+        .bind(tags.unwrap_or(&current.tags))
+        .bind(entity_focus.unwrap_or(&current.entity_focus))
+        .bind(findings.unwrap_or(current.findings.as_deref()))
+        .bind(conclusions.unwrap_or(current.conclusions.as_deref()))
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn delete_investigation_workspace(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM investigation_workspaces WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ─── Workspace Assignments ────────────────────────────────────────────────
+
+    pub async fn list_workspace_assignments(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Vec<WorkspaceAssignmentRecord>> {
+        Ok(sqlx::query_as::<_, WorkspaceAssignmentRecord>(
+            "SELECT id, workspace_id, user_id, role, assigned_by, assigned_at, updated_at FROM workspace_assignments WHERE workspace_id = $1 ORDER BY assigned_at ASC",
+        )
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_workspace_assignment(
+        &self,
+        workspace_id: Uuid,
+        user_id: &str,
+        role: &str,
+        assigned_by: &str,
+    ) -> Result<WorkspaceAssignmentRecord> {
+        Ok(sqlx::query_as::<_, WorkspaceAssignmentRecord>(
+            r#"INSERT INTO workspace_assignments (workspace_id, user_id, role, assigned_by)
+               VALUES ($1, $2, $3, $4)
+               RETURNING id, workspace_id, user_id, role, assigned_by, assigned_at, updated_at"#,
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .bind(role)
+        .bind(assigned_by)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn remove_workspace_assignment(
+        &self,
+        workspace_id: Uuid,
+        user_id: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM workspace_assignments WHERE workspace_id = $1 AND user_id = $2",
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ─── Activity Feed ────────────────────────────────────────────────────────
+
+    pub async fn list_activity_feed(
+        &self,
+        workspace_id: Option<Uuid>,
+        team_id: Option<&str>,
+        actor_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ActivityFeedRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, ActivityFeedRecord>(
+            "SELECT id, actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, workspace_id, team_id, visibility, created_at FROM activity_feed WHERE ($1::uuid IS NULL OR workspace_id = $1) AND ($2::text IS NULL OR team_id = $2) AND ($3::text IS NULL OR actor_id = $3) ORDER BY created_at DESC LIMIT $4",
+        )
+        .bind(workspace_id)
+        .bind(team_id)
+        .bind(actor_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_activity_entry(
+        &self,
+        actor_id: &str,
+        actor_name: &str,
+        action_type: &str,
+        entity_type: Option<&str>,
+        entity_id: Option<&str>,
+        entity_name: Option<&str>,
+        details: &Value,
+        workspace_id: Option<Uuid>,
+        team_id: Option<&str>,
+        visibility: &str,
+    ) -> Result<ActivityFeedRecord> {
+        Ok(sqlx::query_as::<_, ActivityFeedRecord>(
+            r#"INSERT INTO activity_feed
+                 (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, workspace_id, team_id, visibility)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               RETURNING id, actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, workspace_id, team_id, visibility, created_at"#,
+        )
+        .bind(actor_id)
+        .bind(actor_name)
+        .bind(action_type)
+        .bind(entity_type)
+        .bind(entity_id)
+        .bind(entity_name)
+        .bind(details)
+        .bind(workspace_id)
+        .bind(team_id)
+        .bind(visibility)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    // ─── Investigation Shares ─────────────────────────────────────────────────
+
+    pub async fn list_investigation_shares(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Vec<InvestigationShareRecord>> {
+        Ok(sqlx::query_as::<_, InvestigationShareRecord>(
+            "SELECT id, workspace_id, shared_by, shared_with, share_type, access_level, message, expires_at, created_at FROM investigation_shares WHERE workspace_id = $1 ORDER BY created_at DESC",
+        )
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_investigation_share(
+        &self,
+        workspace_id: Uuid,
+        shared_by: &str,
+        shared_with: &str,
+        share_type: &str,
+        access_level: &str,
+        message: Option<&str>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<InvestigationShareRecord> {
+        Ok(sqlx::query_as::<_, InvestigationShareRecord>(
+            r#"INSERT INTO investigation_shares
+                 (workspace_id, shared_by, shared_with, share_type, access_level, message, expires_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING id, workspace_id, shared_by, shared_with, share_type, access_level, message, expires_at, created_at"#,
+        )
+        .bind(workspace_id)
+        .bind(shared_by)
+        .bind(shared_with)
+        .bind(share_type)
+        .bind(access_level)
+        .bind(message)
+        .bind(expires_at)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    // ─── Daily Priority Queue ─────────────────────────────────────────────────
+
+    pub async fn list_priority_queue_items(
+        &self,
+        user_id: &str,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<PriorityQueueItemRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
+            "SELECT id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at FROM priority_queue WHERE user_id = $1 AND ($2::text IS NULL OR status = $2) ORDER BY queue_date DESC, priority DESC LIMIT $3",
+        )
+        .bind(user_id)
+        .bind(status)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_priority_queue_item(
+        &self,
+        user_id: &str,
+        item_type: &str,
+        item_id: Uuid,
+        item_title: &str,
+        priority: i32,
+        notes: Option<&str>,
+    ) -> Result<PriorityQueueItemRecord> {
+        Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
+            r#"INSERT INTO priority_queue
+                 (user_id, queue_date, item_type, item_id, item_title, priority, notes)
+               VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6)
+               ON CONFLICT (user_id, queue_date, item_type, item_id) DO UPDATE SET
+                 item_title = EXCLUDED.item_title,
+                 priority = EXCLUDED.priority,
+                 notes = EXCLUDED.notes,
+                 updated_at = NOW()
+               RETURNING id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at"#,
+        )
+        .bind(user_id)
+        .bind(item_type)
+        .bind(item_id)
+        .bind(item_title)
+        .bind(priority)
+        .bind(notes)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn update_priority_queue_item(
+        &self,
+        id: Uuid,
+        priority: Option<i32>,
+        status: Option<&str>,
+        notes: Option<Option<&str>>,
+    ) -> Result<Option<PriorityQueueItemRecord>> {
+        let current = match sqlx::query_as::<_, PriorityQueueItemRecord>(
+            "SELECT id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at FROM priority_queue WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        let new_status = status.unwrap_or(&current.status).to_string();
+        let completed_at: Option<DateTime<Utc>> = if new_status == "completed" {
+            Some(Utc::now())
+        } else {
+            None
+        };
+
+        Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
+            r#"UPDATE priority_queue SET
+                 priority = $2,
+                 status = $3,
+                 notes = $4,
+                 completed_at = $5,
+                 updated_at = NOW()
+               WHERE id = $1
+               RETURNING id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at"#,
+        )
+        .bind(id)
+        .bind(priority.unwrap_or(current.priority))
+        .bind(&new_status)
+        .bind(notes.unwrap_or(current.notes.as_deref()))
+        .bind(completed_at)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // ─── Supplier Risk Entries ────────────────────────────────────────────────
+
+    pub async fn list_supplier_risk_entries(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<SupplierRiskEntryRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, SupplierRiskEntryRecord>(
+            "SELECT id, supplier_id, risk_category, risk_score, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at FROM supplier_risk WHERE ($1::text IS NULL OR status = $1) ORDER BY risk_score DESC, created_at DESC LIMIT $2",
+        )
+        .bind(status)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_supplier_risk_entry(
+        &self,
+        supplier_id: &str,
+        risk_category: &str,
+        risk_score: f64,
+        risk_factors: &Value,
+        mitigation: Option<&str>,
+        owner_id: Option<&str>,
+    ) -> Result<SupplierRiskEntryRecord> {
+        Ok(sqlx::query_as::<_, SupplierRiskEntryRecord>(
+            r#"INSERT INTO supplier_risk
+                 (supplier_id, risk_category, risk_score, risk_factors, mitigation, owner_id)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               RETURNING id, supplier_id, risk_category, risk_score, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at"#,
+        )
+        .bind(supplier_id)
+        .bind(risk_category)
+        .bind(risk_score)
+        .bind(risk_factors)
+        .bind(mitigation)
+        .bind(owner_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn update_supplier_risk_entry(
+        &self,
+        id: Uuid,
+        risk_score: Option<f64>,
+        mitigation: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Option<SupplierRiskEntryRecord>> {
+        let current = match sqlx::query_as::<_, SupplierRiskEntryRecord>(
+            "SELECT id, supplier_id, risk_category, risk_score, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at FROM supplier_risk WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        Ok(sqlx::query_as::<_, SupplierRiskEntryRecord>(
+            r#"UPDATE supplier_risk SET
+                 risk_score = $2,
+                 mitigation = $3,
+                 status = $4,
+                 last_reviewed = NOW(),
+                 updated_at = NOW()
+               WHERE id = $1
+               RETURNING id, supplier_id, risk_category, risk_score, risk_factors, mitigation, owner_id, status, last_reviewed, next_review, created_at, updated_at"#,
+        )
+        .bind(id)
+        .bind(risk_score.unwrap_or(current.risk_score))
+        .bind(mitigation)
+        .bind(status.unwrap_or(&current.status))
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // ─── Pipeline Opportunities ───────────────────────────────────────────────
+
+    pub async fn list_pipeline_opportunities(
+        &self,
+        stage: Option<&str>,
+        owner_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<PipelineOpportunityRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(
+            "SELECT id, opportunity_id, title, stage, value_estimate, probability, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at FROM pipeline_opportunities WHERE ($1::text IS NULL OR stage = $1) AND ($2::text IS NULL OR owner_id = $2) ORDER BY created_at DESC LIMIT $3",
+        )
+        .bind(stage)
+        .bind(owner_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_pipeline_opportunity(
+        &self,
+        opportunity_id: Option<&str>,
+        title: &str,
+        stage: &str,
+        value_estimate: Option<f64>,
+        probability: f64,
+        owner_id: Option<&str>,
+        expected_close: Option<NaiveDate>,
+        notes: Option<&str>,
+    ) -> Result<PipelineOpportunityRecord> {
+        Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(
+            r#"INSERT INTO pipeline_opportunities
+                 (opportunity_id, title, stage, value_estimate, probability, owner_id, expected_close, notes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING id, opportunity_id, title, stage, value_estimate, probability, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at"#,
+        )
+        .bind(opportunity_id)
+        .bind(title)
+        .bind(stage)
+        .bind(value_estimate)
+        .bind(probability)
+        .bind(owner_id)
+        .bind(expected_close)
+        .bind(notes)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn update_pipeline_stage(
+        &self,
+        id: Uuid,
+        stage: &str,
+        notes: Option<&str>,
+    ) -> Result<Option<PipelineOpportunityRecord>> {
+        let closed_at_expr = if stage == "closed_won" || stage == "closed_lost" {
+            "COALESCE(closed_at, NOW())"
+        } else {
+            "closed_at"
+        };
+        let sql = format!(
+            r#"UPDATE pipeline_opportunities SET
+                 stage = $2,
+                 notes = COALESCE($3, notes),
+                 actual_close = CASE WHEN $2 IN ('closed_won','closed_lost') THEN COALESCE(actual_close, CURRENT_DATE) ELSE actual_close END,
+                 closed_at = {closed_at_expr},
+                 updated_at = NOW()
+               WHERE id = $1
+               RETURNING id, opportunity_id, title, stage, value_estimate, probability, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at"#
+        );
+        Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(&sql)
+            .bind(id)
+            .bind(stage)
+            .bind(notes)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    // ─── Source Evidence ──────────────────────────────────────────────────────
+
+    pub async fn list_source_evidence(
+        &self,
+        entity_type: Option<&str>,
+        entity_id: Option<&str>,
+        evidence_type: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<SourceEvidenceRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, SourceEvidenceRecord>(
+            "SELECT id, entity_type, entity_id, evidence_type, source_url, source_domain, source_name, reliability_score, content_hash, excerpt, metadata, created_at FROM source_evidence WHERE ($1::text IS NULL OR entity_type = $1) AND ($2::text IS NULL OR entity_id = $2) AND ($3::text IS NULL OR evidence_type = $3) ORDER BY created_at DESC LIMIT $4",
+        )
+        .bind(entity_type)
+        .bind(entity_id)
+        .bind(evidence_type)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_source_evidence(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        evidence_type: &str,
+        source_url: &str,
+        source_domain: Option<&str>,
+        source_name: Option<&str>,
+        reliability_score: f64,
+        excerpt: Option<&str>,
+        metadata: &Value,
+    ) -> Result<SourceEvidenceRecord> {
+        Ok(sqlx::query_as::<_, SourceEvidenceRecord>(
+            r#"INSERT INTO source_evidence
+                 (entity_type, entity_id, evidence_type, source_url, source_domain, source_name, reliability_score, excerpt, metadata)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               RETURNING id, entity_type, entity_id, evidence_type, source_url, source_domain, source_name, reliability_score, content_hash, excerpt, metadata, created_at"#,
+        )
+        .bind(entity_type)
+        .bind(entity_id)
+        .bind(evidence_type)
+        .bind(source_url)
+        .bind(source_domain)
+        .bind(source_name)
+        .bind(reliability_score)
+        .bind(excerpt)
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    // ─── Team Assignments ─────────────────────────────────────────────────────
+
+    pub async fn list_team_assignments(
+        &self,
+        entity_type: Option<&str>,
+        entity_id: Option<&str>,
+    ) -> Result<Vec<TeamAssignmentRecord>> {
+        Ok(sqlx::query_as::<_, TeamAssignmentRecord>(
+            "SELECT id, team_id, team_name, entity_type, entity_id, assigned_by, assigned_to, role, notes, created_at, updated_at FROM team_assignments WHERE ($1::text IS NULL OR entity_type = $1) AND ($2::text IS NULL OR entity_id = $2) ORDER BY created_at DESC",
+        )
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_team_assignment(
+        &self,
+        team_id: &str,
+        team_name: &str,
+        entity_type: &str,
+        entity_id: &str,
+        assigned_by: &str,
+        assigned_to: &str,
+        role: &str,
+        notes: Option<&str>,
+    ) -> Result<TeamAssignmentRecord> {
+        Ok(sqlx::query_as::<_, TeamAssignmentRecord>(
+            r#"INSERT INTO team_assignments
+                 (team_id, team_name, entity_type, entity_id, assigned_by, assigned_to, role, notes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (entity_type, entity_id, team_id) DO UPDATE SET
+                 team_name = EXCLUDED.team_name,
+                 assigned_to = EXCLUDED.assigned_to,
+                 role = EXCLUDED.role,
+                 notes = EXCLUDED.notes,
+                 updated_at = NOW()
+               RETURNING id, team_id, team_name, entity_type, entity_id, assigned_by, assigned_to, role, notes, created_at, updated_at"#,
+        )
+        .bind(team_id)
+        .bind(team_name)
+        .bind(entity_type)
+        .bind(entity_id)
+        .bind(assigned_by)
+        .bind(assigned_to)
+        .bind(role)
+        .bind(notes)
+        .fetch_one(&self.pool)
         .await?)
     }
 }

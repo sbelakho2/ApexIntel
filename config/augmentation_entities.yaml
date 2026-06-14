@@ -30,6 +30,34 @@ ems_companies:
   - [USI (Universal Scientific), TW, 3536.TW, Ems]
   - [Delta Electronics, TW, 2308.TW, Ems]
   - [Starz Electronics, TN, null, Ems]
+  - [Benchmark Electronics, US, BHE, Ems]
+  - [Plexus Corp., US, PLXS, Ems]
+  - [Venture Corporation, SG, V03.SI, Ems]
+  - [Sanmina, US, SANM, Ems]
+  - [SMTC Corporation, CA, SMTX, Ems]
+  - [KeyTronik, US, KTEC, Ems]
+  - [Kimball Electronics, US, KE, Ems]
+  - [Creation Technologies, CA, null, Ems]
+  - [Pegatron, TW, 4938.TW, Ems]
+  - [Wistron, TW, 3231.TW, Ems]
+  - [Inventec, TW, 2356.TW, Ems]
+  - [Quanta Computer, TW, 2382.TW, Ems]
+  - [Compal Electronics, TW, 2324.TW, Ems]
+  - [Cal-Comp Electronics, TH, null, Ems]
+  - [USI (Universal Scientific), TW, 3536.TW, Ems]
+  - [Delta Electronics, TW, 2308.TW, Ems]
+  # BESS pivot — battery pack & BMS manufacturers (medium-scale peers / competitors).
+  # Starz assembles packs from sourced cells and builds the BMS + enclosure itself, so
+  # these pack/BMS makers are its closest competitive set.
+  - [Pylontech, CN, null, Ems]
+  - [Dyness, CN, null, Ems]
+  - [Pytes Energy, CN, null, Ems]
+  - [Eguana Technologies, CA, null, Ems]
+  - [Sungrow Power Supply, CN, null, Ems]
+  - [BSLBATT, CN, null, Ems]
+  - [Sunwoda Energy, CN, null, Ems]
+  - [Nuvation Energy, US, null, Ems]
+  - [Ewert Energy Systems, US, null, Ems]
 oem_companies:
   - [Airbus Defence, FR, AIR.PA, Oem]
   - [BAE Systems, GB, BA.L, Oem]
@@ -43,6 +71,16 @@ oem_companies:
   - [Raytheon Technologies, US, RTX, Oem]
   - [Lockheed Martin, US, LMT, Oem]
   - [General Dynamics, US, GD, Oem]
+  # BESS pivot — Li-ion cell suppliers (Starz SOURCES its cells, so these are key
+  # supply-chain dependencies to monitor) and large battery/ESS brand OEMs.
+  - [CATL, CN, 300750.SZ, Oem]
+  - [BYD, CN, 002594.SZ, Oem]
+  - [LG Energy Solution, KR, 373220.KS, Oem]
+  - [Samsung SDI, KR, 006400.KS, Oem]
+  - [Panasonic Energy, JP, 6752.T, Oem]
+  - [EVE Energy, CN, 300014.SZ, Oem]
+  - [Gotion High-Tech, CN, 002074.SZ, Oem]
+  - [Tesla Energy, US, TSLA, Oem]
 capabilities:
   - SMT Assembly
   - Through-Hole Assembly
@@ -62,6 +100,23 @@ capabilities:
   - Functional Test
   - Burn-In Test
   - Environmental Stress Screening
+  # BESS pivot — battery pack & BMS manufacturing capabilities
+  - Battery Pack Assembly
+  - Battery Module Assembly
+  - BMS Design & Integration
+  - Cell Matching & Sorting
+  - Spot/Laser Welding (Cell Interconnect)
+  - Battery Enclosure Fabrication
+  - Battery Test & Cycling
+  - Thermal Management Design
+  - Battery Safety Compliance
+  - Battery Recycling & Disposal
+  - Renewable Energy System Integration
+  - Energy Storage System Design
+  - Microgrid Integration
+  - EV Charging Solutions
+  - Battery Performance Optimization
+  - Battery Data Analytics
 certifications:
   - ISO 9001:2015
   - ISO 14001:2015
@@ -74,6 +129,17 @@ certifications:
   - IPC-6012 Class 3
   - J-STD-001 CIS
   - ITAR Registered
+  # BESS pivot — battery safety, transport & energy-storage certifications
+  - UN 38.3 (Transport)
+  - IEC 62619 (Industrial Battery Safety)
+  - IEC 62133 (Portable Battery Safety)
+  - UL 1973 (Stationary Battery)
+  - UL 9540 (Energy Storage Systems)
+  - UL 9540A (Thermal Runaway)
+  - IEC 61427 (Renewable Storage)
+  - EN 50604-1 (Light EV Battery)
+  - IEC 62660 (EV Cells)
+  - ISO 26262 (Functional Safety)
 industries:
   - aerospace
   - defense
@@ -85,7 +151,15 @@ industries:
   - iot
   - energy
   - semiconductor
-regions: [US, CA, MX, DE, FR, GB, IL, TN, MA, TW, CN, JP, KR, SG, IN, IT, SE, NL]
+  # BESS pivot — energy-storage demand verticals
+  - energy_storage
+  - battery
+  - e_mobility
+  - solar
+  - telecom_backup
+  - ups
+  - microgrid
+regions: [US, CA, MX, DE, FR, GB, IL, TN, MA, TW, CN, JP, KR, SG, IN, IT, SE, NL, AU, ES, ZA, AE, NG, PL]
 roles:
   - [CEO, Executive]
   - [CTO, Technology]
@@ -97,5 +171,12 @@ roles:
   - [Quality Director, Quality]
   - [Procurement Director, Procurement]
   - [Sales Director, Sales]
+  # BESS pivot — energy-storage demand-side decision-makers & Starz battery roles
+  - [Head of Energy Storage, Executive]
+  - [Battery Engineering Manager, Technology]
+  - [Director of Procurement Batteries, Procurement]
+  - [BMS Firmware Lead, Technology]
+  - [Energy Storage Sales Manager, Sales]
+  - [Renewable Projects Director, Operations]
 first_names: [James, Sarah, Michael, Jennifer, Robert, Emily, David, Lisa, Thomas, Maria, Pierre, Francois, Hans, Keiko, Yuki, Wei, Chen, Ahmed, Fatima, Sami]
 last_names: [Smith, Johnson, Williams, Brown, Davis, Miller, Wilson, Taylor, Anderson, Lee, Dupont, Muller, Tanaka, Yamamoto, Wang, Zhang, Al-Rashid, Ben Ali, Cohen, Levy]

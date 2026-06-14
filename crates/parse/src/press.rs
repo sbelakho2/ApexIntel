@@ -89,6 +89,9 @@ pub struct PressExtract {
     pub url: String,
     pub language: Option<String>,
     pub extracted_at: DateTime<Utc>,
+    /// Named entities extracted via per-language NER pipeline.
+    #[serde(default)]
+    pub entities: Vec<crate::ner::ExtractedEntity>,
 }
 
 /// Topic tags for press articles.
@@ -123,6 +126,10 @@ pub fn extract_press(body_text: &str, title: &str, url: &str) -> PressExtract {
     }
     let normalized_url = normalize_url(url).unwrap_or_else(|| url.to_string());
 
+    // Extract entities using per-language NER pipeline (Phase 2.4)
+    let mut entities = crate::ner::extract_entities(&normalized_body, &lang);
+    crate::entity_canonical::resolve_entities_batch(&mut entities);
+
     PressExtract {
         headline: normalizer::normalize_whitespace(title),
         source,
@@ -134,6 +141,7 @@ pub fn extract_press(body_text: &str, title: &str, url: &str) -> PressExtract {
         url: normalized_url,
         language: Some(lang),
         extracted_at: Utc::now(),
+        entities,
     }
 }
 

@@ -1,11 +1,14 @@
 mod custom;
+mod dark_web;
 mod intelligence;
 mod nightly;
 mod poi;
 mod recipes;
 mod resilience;
 mod security;
+mod starzcrm;
 mod template_variation;
+mod triage;
 mod weekly;
 
 use std::sync::Arc;
@@ -40,6 +43,11 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
         JobKind::RecipeFire => recipes::run_recipe_fire(kind, store).await,
         JobKind::PoiDiscovery => poi::run_poi_discovery(store).await,
         JobKind::UpdateEmailDigest => weekly::run_update_email_digest(store).await,
+        JobKind::StarzCrmSync => starzcrm::run_starzcrm_sync(store).await,
+        JobKind::EmbeddingReindex => apex_worker::embedding_indexer::run_embedding_reindex(kind, store).await,
+        JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store).await,
+        JobKind::TriageProcessing => triage::run_triage_processing(kind, store).await,
+        JobKind::TrendAggregation => apex_worker::trend_aggregator::run_trend_aggregation(kind, store).await,
         JobKind::Custom(name) => custom::run_custom_job(name).await,
     }
 }

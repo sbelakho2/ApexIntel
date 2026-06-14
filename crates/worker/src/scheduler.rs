@@ -163,6 +163,16 @@ pub enum JobKind {
     RecipeFire,
     /// POI discovery — network-expansion from existing seed POIs to find new contacts.
     PoiDiscovery,
+    /// StarzCRM sync — read-only MySQL pull from collocated StarzCRM database.
+    StarzCrmSync,
+    /// Embedding reindex — generates vector embeddings for entities without them.
+    EmbeddingReindex,
+    /// Dark web forum scan — monitors breach forums, paste sites, ransomware blogs.
+    DarkWebScan,
+    /// AI Triage Engine — scores queued insights/warnings/alerts using LLM.
+    TriageProcessing,
+    /// Trend aggregation — computes materialized rollup metrics for historical trends.
+    TrendAggregation,
     Custom(String),
 }
 
@@ -190,6 +200,11 @@ impl JobKind {
             Self::SelfImprovementCycle => "self_improvement_cycle",
             Self::RecipeFire => "recipe_fire",
             Self::PoiDiscovery => "poi_discovery",
+            Self::StarzCrmSync => "starzcrm_sync",
+            Self::EmbeddingReindex => "embedding_reindex",
+            Self::DarkWebScan => "dark_web_scan",
+            Self::TriageProcessing => "triage_processing",
+            Self::TrendAggregation => "trend_aggregation",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -218,6 +233,11 @@ impl JobKind {
             "self_improvement_cycle" => Self::SelfImprovementCycle,
             "recipe_fire" => Self::RecipeFire,
             "poi_discovery" => Self::PoiDiscovery,
+            "starzcrm_sync" => Self::StarzCrmSync,
+            "embedding_reindex" => Self::EmbeddingReindex,
+            "dark_web_scan" => Self::DarkWebScan,
+            "triage_processing" => Self::TriageProcessing,
+            "trend_aggregation" => Self::TrendAggregation,
             other => Self::Custom(other.to_string()),
         }
     }
@@ -1138,6 +1158,68 @@ pub fn default_scheduler() -> Scheduler {
         .with_timeout(10800), // 3 h
     );
 
+    // Embedding reindex: nightly at 03:00 UTC — incremental embedding generation.
+    s.register(
+        JobDef::new(
+            JobKind::EmbeddingReindex,
+            Schedule::DailyAt { hour: 3, minute: 0 },
+        )
+        .with_jitter(180) // +3 min
+        .with_timeout(7200), // 2 h — LLM embedding inference can be slow
+    );
+
+    // Autocomplete index rebuild: daily at 04:15 UTC — after nightly data pipeline completes.
+    s.register(
+        JobDef::new(
+            JobKind::Custom("rebuild-autocomplete".to_string()),
+            Schedule::DailyAt {
+                hour: 4,
+                minute: 15,
+            },
+        )
+        .with_jitter(60) // +1 min
+        .with_timeout(600), // 10 min
+    );
+
+    // StarzCRM sync: hourly — read-only MySQL pull of deals/accounts.
+    s.register(
+        JobDef::new(JobKind::StarzCrmSync, Schedule::IntervalSecs(3600))
+            .with_jitter(60) // +1 min spread
+            .with_timeout(300), // 5 min max — localhost MySQL, should be fast
+    );
+
+    // Dark web forum scan: every 6 hours — monitors breach forums, paste sites, ransomware blogs.
+    s.register(
+        JobDef::new(JobKind::DarkWebScan, Schedule::IntervalSecs(21600))
+            .with_jitter(120) // +2 min spread
+            .with_timeout(3600), // 1 h — network-bound, may be slow
+    );
+
+    // ── AI Triage Engine ────────────────────────────────────────────────
+
+    // Triage processing: every 5 minutes — scores unscored triage items via LLM.
+    s.register(
+        JobDef::new(JobKind::TriageProcessing, Schedule::IntervalSecs(300))
+            .with_jitter(0)
+            .with_timeout(120), // 2 min — lightweight LLM scoring call
+    );
+
+    // ── Historical Trend Aggregation ────────────────────────────────────
+
+    // Trend aggregation: daily at 01:00 UTC — computes materialized rollup
+    // metrics for daily, weekly, monthly, quarterly, and yearly buckets.
+    s.register(
+        JobDef::new(
+            JobKind::TrendAggregation,
+            Schedule::DailyAt {
+                hour: 1,
+                minute: 0,
+            },
+        )
+        .with_jitter(0)
+        .with_timeout(3600), // 1 h — database aggregation queries
+    );
+
     s
 }
 
@@ -1622,6 +1704,10 @@ mod tests {
             "lookalike_domain_scan",
             "update_email_digest",
             "self_improvement_cycle",
+            "embedding_reindex",
+            "rebuild-autocomplete",
+            "starzcrm_sync",
+            "dark_web_scan",
         ];
 
         assert_eq!(s.jobs.len(), expected_jobs.len());

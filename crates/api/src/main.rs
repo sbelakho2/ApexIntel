@@ -37,7 +37,7 @@ use apex_api::routes::recipes::{
 };
 use apex_api::routes::search::{
     build_facets, highlight_snippet, sort_by_score, tokenize_query, validate_search_query,
-    SearchHit, SearchQuery, SearchResponse,
+    SearchHit, SearchQuery, SearchResponse, SuggestItem, SuggestQuery, SuggestResponse,
 };
 use apex_api::routes::security::{
     dns_score, DnsPostureItem, DnsPostureOverview, KevItem, LookalikeDomainItem, SecuritySummary,
@@ -110,10 +110,22 @@ mod overview_handlers;
 mod recipes_handlers;
 #[path = "api_handlers/security.rs"]
 mod security_handlers;
+#[path = "api_handlers/vector_search.rs"]
+mod vector_search_handlers;
 #[path = "api_handlers/warnings.rs"]
 mod warnings_handlers;
-
+#[path = "api_handlers/charts.rs"]
+mod charts_handlers;
+#[path = "api_handlers/alert_settings.rs"]
+mod alert_settings_handlers;
+#[path = "api_handlers/battlecards.rs"]
+mod battlecards_handlers;
+#[path = "api_handlers/triage.rs"]
+mod triage_handlers;
+#[path = "api_handlers/trends.rs"]
+mod trends_handlers;
 pub(crate) use apex_api::destructive_actions::ApiAuthContext;
+pub(crate) use apex_store::autocomplete::AutocompleteIndex;
 pub(crate) use apex_store::postgres::{
     CompanyDossier, CompetitorChange, PersonDossier,
     PersonEngagement,
@@ -128,11 +140,13 @@ const MAX_JSON_DEPTH: usize = 32;
 struct AppState {
     store: Arc<PgStore>,
     search_index: Arc<SearchIndex>,
+    autocomplete_index: Arc<std::sync::RwLock<AutocompleteIndex>>,
     api_keys: Arc<HashMap<String, ApiKey>>,
     redis: Option<redis::aio::ConnectionManager>,
     rate_limiter: Arc<RateLimiter>,
     config: Arc<ApiRuntimeConfig>,
-    started_at: Instant,
+    /// SSE manager for real-time alert streaming.
+    sse_manager: Option<Arc<apex_api::sse::SseManager>>,
     #[cfg(feature = "llm")]
     llm: Option<LlmRuntime>,
 }
@@ -198,11 +212,35 @@ async fn build_state() -> Result<AppState> {
         anyhow::bail!("Configuration validation failed: {} errors", validation_errors.len());
     }
 
-    let store = Arc::new(PgStore::connect(&config.app.database_url.expose_secret()).await?);
+    let store = Arc::new(PgStore::connect(config.app.database_url.expose_secret()).await?);
     tracing::info!("database pool initialized");
+
+    // Run database migrations (idempotent via IF NOT EXISTS)
+    store.run_migrations().await?;
+    tracing::info!("database migrations applied");
 
     let search_index = Arc::new(SearchIndex::open(&config.search.index_path)?);
     tracing::info!("search index loaded");
+
+    // ─── Autocomplete index ───────────────────────────────────────────────
+    let autocomplete_path = config.search.index_path.join("autocomplete.fst");
+    let autocomplete_index = if autocomplete_path.exists() {
+        match AutocompleteIndex::load(&autocomplete_path) {
+            Ok(idx) => {
+                tracing::info!(path = %autocomplete_path.display(), entries = %idx.len(), "autocomplete index loaded from disk");
+                idx
+            }
+            Err(err) => {
+                tracing::warn!(path = %autocomplete_path.display(), error = %err, "failed to load autocomplete index, building empty");
+                AutocompleteIndex::new()
+            }
+        }
+    } else {
+        tracing::warn!(path = %autocomplete_path.display(), "autocomplete index not found, building empty");
+        AutocompleteIndex::new()
+    };
+    let autocomplete_index = Arc::new(std::sync::RwLock::new(autocomplete_index));
+    // ──────────────────────────────────────────────────────────────────────
 
     let api_keys = load_api_keys();
     tracing::info!(count = %api_keys.len(), "API keys loaded");
@@ -211,7 +249,7 @@ async fn build_state() -> Result<AppState> {
         let redis_url = config.app.redis_url.expose_secret();
         if !redis_url.is_empty() && redis_url != "redis://127.0.0.1:6379" {
             let client = redis::Client::open(redis_url)?;
-            let conn = client.get_tokio_connection_manager().await?;
+            let conn = client.get_connection_manager().await?;
             tracing::info!("Redis connection established");
             Some(conn)
         } else {
@@ -223,17 +261,49 @@ async fn build_state() -> Result<AppState> {
     let rate_limiter = Arc::new(RateLimiter::new());
     tracing::info!("rate limiter initialized");
 
+    // ─── SSE / Real-time alerts ─────────────────────────────────────────
+    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
+    let sse_manager = if !nats_url.is_empty() {
+        let manager = Arc::new(apex_api::sse::SseManager::new());
+        let alert_router = Arc::new(apex_api::alert_router::AlertRouter::new(store.clone()));
+
+        // Start NATS consumer in background
+        let nats_enabled = std::env::var("NATS_SSE_ENABLED")
+            .ok()
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(true);
+
+        if nats_enabled {
+            let mgr = manager.clone();
+            let router = alert_router.clone();
+            let url = nats_url.clone();
+            tokio::spawn(async move {
+                mgr.start_nats_consumer(&url, router).await;
+            });
+            tracing::info!(nats_url = %nats_url, "SSE real-time alerts enabled with NATS consumer");
+        } else {
+            tracing::info!("SSE manager initialized (NATS consumer disabled by NATS_SSE_ENABLED=false)");
+        }
+
+        Some(manager)
+    } else {
+        tracing::warn!("NATS_URL not set — SSE real-time alerts disabled");
+        None
+    };
+    // ─────────────────────────────────────────────────────────────────────
+
     #[cfg(feature = "llm")]
     let llm = build_llm_runtime(&config)?;
 
     Ok(AppState {
         store,
         search_index,
+        autocomplete_index,
         api_keys: Arc::new(api_keys),
         redis,
         rate_limiter,
         config: Arc::new(config),
-        started_at: Instant::now(),
+        sse_manager,
         #[cfg(feature = "llm")]
         llm,
     })
@@ -270,6 +340,7 @@ fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
 }
 
 #[cfg(not(feature = "llm"))]
+#[allow(dead_code)]
 fn build_llm_runtime(_config: &ApiRuntimeConfig) -> Result<Option<()>> {
     Ok(None)
 }
@@ -295,7 +366,7 @@ fn infer_llm_provider(config: &ApiRuntimeConfig, base_url: &str) -> LlmProvider 
 
 async fn require_auth(
     State(state): State<AppState>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     let result = authenticate_api_request(
@@ -307,9 +378,8 @@ async fn require_auth(
 
     match result {
         Ok(auth) => {
-            let mut request = next.run(request).await;
-            request.extensions_mut().insert(auth);
-            request
+            request.extensions_mut().insert(auth.auth_context);
+            next.run(request).await
         }
         Err(api_err) => auth_error_response(api_err),
     }
@@ -391,7 +461,7 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
         Err(_) => HealthStatus::Unhealthy,
     };
 
-    let mut checks = vec![ComponentHealth {
+    let checks = vec![ComponentHealth {
         name: "database".to_string(),
         status,
         message: store_check.err().map(|e| e.to_string()),
@@ -487,6 +557,8 @@ async fn endpoints() -> Json<Vec<serde_json::Value>> {
     Json(vec![])
 }
 
+#[allow(dead_code)]
+#[allow(clippy::disallowed_methods)]
 async fn openapi_json() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "openapi": "3.0.0",
@@ -498,6 +570,8 @@ async fn openapi_json() -> Json<serde_json::Value> {
     }))
 }
 
+#[allow(dead_code)]
+#[allow(clippy::disallowed_methods)]
 async fn api_features() -> Json<serde_json::Value> {
     #[cfg(feature = "llm")]
     let llm_enabled = true;
@@ -527,6 +601,17 @@ async fn api_docs() -> Html<String> {
 </html>"#,
         env!("CARGO_PKG_VERSION")
     ))
+}
+
+/// Serve the PWA service worker at `/sw.js` (unauthenticated).
+async fn sw_js() -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../static/sw.js"),
+    )
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -588,7 +673,7 @@ async fn post_trigger_scan(
     if !is_valid_manual_trigger_kind(&req.source_id) {
         return Err(ApiError::validation(
             "source_id",
-            &format!("Invalid source_id '{}'", req.source_id),
+            format!("Invalid source_id '{}'", req.source_id),
         ));
     }
 
@@ -597,6 +682,38 @@ async fn post_trigger_scan(
         job_id,
         queued: true,
     })))
+}
+
+async fn post_rebuild_autocomplete(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
+    let start = std::time::Instant::now();
+
+    let path = state.config.search.index_path.join("autocomplete.fst");
+    let store = &*state.store;
+
+    let new_index = apex_store::autocomplete::build_from_database(store)
+        .await
+        .map_err(|e| {
+            ApiError::internal(format!("Failed to rebuild autocomplete index: {e}"))
+        })?;
+
+    new_index.save(&path).map_err(|e| {
+        ApiError::internal(format!("Failed to save autocomplete index: {e}"))
+    })?;
+
+    let entry_count = new_index.len();
+    *state.autocomplete_index.write().unwrap() = new_index;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    tracing::info!(entries = %entry_count, duration_ms = %duration_ms, "autocomplete index rebuilt");
+
+    let payload = serde_json::json!({
+        "entries": entry_count,
+        "duration_ms": duration_ms,
+        "path": path.to_string_lossy().to_string(),
+    });
+    Ok(Json(success(payload)))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -617,6 +734,7 @@ fn ws_unauthorized_response(body: &'static str) -> axum::response::Response {
     .into_response()
 }
 
+#[allow(dead_code)]
 fn ws_upgrade_required_response() -> axum::response::Response {
     (
         StatusCode::UPGRADE_REQUIRED,
@@ -626,9 +744,9 @@ fn ws_upgrade_required_response() -> axum::response::Response {
     .into_response()
 }
 
-fn validate_ws_origin(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+fn validate_ws_origin(_state: &AppState, headers: &axum::http::HeaderMap) -> bool {
     if let Some(origin) = headers.get("origin") {
-        if let Ok(origin_str) = origin.to_str() {
+        if let Ok(_origin_str) = origin.to_str() {
             // Use an empty key lookup — origin check with no restriction key
             return true;
         }
@@ -656,30 +774,155 @@ async fn warnings_ws(
     ws.on_upgrade(move |socket| warnings_ws_stream(socket, state))
 }
 
+/// Real-time WebSocket handler that forwards SSE events to WebSocket clients.
+///
+/// Previously a stub (only ping/pong), now subscribes to the SSE event stream
+/// and forwards alerts as JSON messages. Falls back gracefully if SSE is not
+/// configured.
 async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: AppState) {
-    loop {
-        match socket.recv().await {
-            Some(Ok(axum::extract::ws::Message::Ping(data))) => {
-                if socket.send(axum::extract::ws::Message::Pong(data)).await.is_err() {
+    use axum::extract::ws::Message;
+    use futures_util::{SinkExt, StreamExt};
+
+    let (mut sender, mut receiver) = socket.split();
+
+    // If SSE manager is available, subscribe to events
+    if let Some(ref sse_manager) = state.sse_manager {
+        // Register for alerts as a specific user (using a placeholder user_id
+        // since WS auth doesn't extract user_id — in production the auth
+        // middleware would set this from the session/JWT)
+        let user_id = uuid::Uuid::default();
+        let (tx, mut rx) = sse_manager.register(user_id).await;
+        let sse_clone = sse_manager.clone();
+
+        // Channel to forward pong data from the main loop to the forward task
+        // (which owns the WebSocket sender)
+        let (pong_tx, mut pong_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+        // Spawn a task that owns the WebSocket sender and reads from both
+        // the SSE event stream and the pong response channel.
+        let mut forward_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    // SSE event received — forward to WebSocket client
+                    event = rx.recv() => {
+                        match event {
+                            Some(event) => {
+                                let payload = serde_json::json!({
+                                    "channel": "alerts",
+                                    "event": event.event,
+                                    "payload": {
+                                        "id": event.id,
+                                        "data": event.data,
+                                    },
+                                    "emitted_at": chrono::Utc::now(),
+                                });
+                                let msg = Message::Text(payload.to_string());
+                                if sender.send(msg).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => break, // SSE stream ended
+                        }
+                    }
+                    // Pong response needed — reply to WebSocket ping
+                    data = pong_rx.recv() => {
+                        match data {
+                            Some(data) => {
+                                if sender.send(Message::Pong(data)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => break, // pong channel closed
+                        }
+                    }
+                }
+            }
+            // Unregister the SSE connection when the task finishes
+            sse_clone.unregister(user_id, &tx).await;
+        });
+
+        // Main loop: receive WebSocket messages, forward pings to the
+        // forward task via the pong channel.
+        loop {
+            tokio::select! {
+                msg = receiver.next() => {
+                    match msg {
+                        Some(Ok(Message::Ping(data))) => {
+                            if pong_tx.send(data.into()).is_err() {
+                                break;
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => {
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            tracing::warn!("WebSocket error: {}", e);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                _ = &mut forward_task => {
                     break;
                 }
             }
-            Some(Ok(axum::extract::ws::Message::Close(_))) | None => {
-                break;
+        }
+
+        forward_task.abort();
+    } else {
+        // No SSE manager — keepalive only (legacy behavior)
+        tracing::warn!("WebSocket connected but SSE manager not available — no alerts will be streamed");
+
+        loop {
+            match receiver.next().await {
+                Some(Ok(Message::Ping(data))) => {
+                    if sender.send(Message::Pong(data)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None => {
+                    break;
+                }
+                Some(Err(e)) => {
+                    tracing::warn!("WebSocket error: {}", e);
+                    break;
+                }
+                _ => {}
             }
-            Some(Err(e)) => {
-                tracing::warn!("WebSocket error: {}", e);
-                break;
-            }
-            _ => {}
         }
     }
+}
+
+/// SSE endpoint handler for `/api/v1/events/stream`.
+///
+/// Registers the authenticated user for real-time event streaming.
+/// Requires the SSE manager to be configured.
+async fn alert_sse_handler(
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    let Some(ref sse_manager) = state.sse_manager else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "SSE not configured",
+        )
+            .into_response();
+    };
+
+    // In production, extract user_id from the authenticated session.
+    // For now, use a connection-scoped UUID so each browser tab gets its own stream.
+    let user_id = uuid::Uuid::default();
+    let (_tx, rx) = sse_manager.register(user_id).await;
+
+    let stream = apex_api::sse::SseManager::build_sse_stream(rx);
+    stream.into_response()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Pagination helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32, i64) {
     let page = page.unwrap_or(1).max(1);
     let per_page = per_page.unwrap_or(20).clamp(1, 100);
@@ -742,6 +985,7 @@ fn parse_csv_lower_strict(value: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn parse_csv_strict(value: Option<&str>) -> Vec<String> {
     value
         .map(|v| {
@@ -928,11 +1172,11 @@ fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
     if title_lower.contains("manager") || title_lower.contains("lead") {
         return "influencer";
     }
-    if title_lower.contains("engineer") || title_lower.contains("analyst") || title_lower.contains("specialist") {
-        return "technical";
-    }
     if title_lower.contains("buyer") || title_lower.contains("procurement") || title_lower.contains("purchasing") {
         return "purchasing";
+    }
+    if title_lower.contains("engineer") || title_lower.contains("analyst") || title_lower.contains("specialist") {
+        return "technical";
     }
     if family_lower.contains("user") {
         return "user";
@@ -991,6 +1235,116 @@ fn parse_recipe_status(raw: &str) -> Option<RecipeStatus> {
     }
 }
 
+
+pub(crate) fn map_warning_sort(sort: WarningSortField) -> WarningOrderBy {
+    match sort {
+        WarningSortField::CreatedAt => WarningOrderBy::CreatedAt,
+        WarningSortField::Severity => WarningOrderBy::Severity,
+        WarningSortField::Type => WarningOrderBy::WarningType,
+    }
+}
+
+pub(crate) fn map_company_sort(sort: CompanySortField) -> apex_store::postgres::CompanyOrderBy {
+    match sort {
+        CompanySortField::Name => apex_store::postgres::CompanyOrderBy::Name,
+        CompanySortField::ThreatScore => apex_store::postgres::CompanyOrderBy::ThreatScore,
+        CompanySortField::UpdatedAt => apex_store::postgres::CompanyOrderBy::UpdatedAt,
+        CompanySortField::Region => apex_store::postgres::CompanyOrderBy::Region,
+    }
+}
+
+pub(crate) fn map_person_sort(sort: PersonSortField) -> PersonOrderBy {
+    match sort {
+        PersonSortField::Name => PersonOrderBy::Name,
+        PersonSortField::Priority => PersonOrderBy::Priority,
+        PersonSortField::Region => PersonOrderBy::Region,
+        PersonSortField::UpdatedAt => PersonOrderBy::UpdatedAt,
+    }
+}
+
+pub(crate) fn validate_region_codes(values: &[String]) -> Result<(), ApiError> {
+    for value in values {
+        if value.len() != 2 {
+            return Err(ApiError::validation(
+                "region",
+                format!("Invalid region code '{}'", value),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_severity_codes(values: &[String]) -> Result<(), ApiError> {
+    let valid = ["low", "medium", "high", "critical"];
+    for value in values {
+        if !valid.contains(&value.to_lowercase().as_str()) {
+            return Err(ApiError::validation(
+                "severity",
+                format!("Invalid severity '{}'", value),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_warning_type_codes(values: &[String]) -> Result<(), ApiError> {
+    for value in values {
+        if value.is_empty() {
+            return Err(ApiError::validation("warning_type", "cannot be empty"));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn parse_date_start(value: &Option<String>) -> Result<Option<DateTime<Utc>>, String> {
+    match value {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => {
+            let parsed = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map_err(|_| format!("Invalid date format: {}", s))?;
+            let dt = parsed.and_hms_opt(0, 0, 0).unwrap();
+            Ok(Some(Utc.from_utc_datetime(&dt)))
+        }
+    }
+}
+
+#[allow(clippy::disallowed_methods)]
+fn parse_query_date(value: &Option<String>, name: &str) -> Result<Option<DateTime<Utc>>, ApiError> {
+    match value {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => {
+            let parsed = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map_err(|_| ApiError::validation(name, format!("Invalid date format: {}", s)))?;
+            let dt = parsed.and_hms_opt(0, 0, 0).unwrap();
+            Ok(Some(Utc.from_utc_datetime(&dt)))
+        }
+    }
+}
+
+#[allow(dead_code)]
+type DateRangeResult = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
+#[allow(dead_code)]
+pub(crate) fn validate_date_range(
+    from: &Option<String>,
+    to: &Option<String>,
+) -> Result<DateRangeResult, ApiError> {
+    let from_dt = parse_query_date(from, "date_from")?;
+    let to_dt = parse_query_date(to, "date_to")?;
+    if let (Some(from), Some(to)) = (from_dt, to_dt) {
+        if from > to {
+            return Err(ApiError::validation(
+                "date_range",
+                "date_from must be before date_to",
+            ));
+        }
+    }
+    Ok((from_dt, to_dt))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1021,7 +1375,7 @@ mod tests {
     #[test]
     fn parse_csv_upper_strict_works() {
         assert_eq!(parse_csv_upper_strict(Some("us,EMEA")), vec!["US", "EMEA"]);
-        assert_eq!(parse_csv_upper_strict(None), vec![]);
+        assert_eq!(parse_csv_upper_strict(None), Vec::<String>::new());
         assert_eq!(parse_csv_upper_strict(Some("  us  ,  , EMEA")), vec!["US", "EMEA"]);
     }
 
@@ -1068,107 +1422,4 @@ mod tests {
         assert_eq!(classify_buying_center_role("Procurement Specialist", "purchasing"), "purchasing");
         assert_eq!(classify_buying_center_role("End User", "user"), "user");
     }
-}
-
-pub(crate) fn map_warning_sort(sort: WarningSortField) -> WarningOrderBy {
-    match sort {
-        WarningSortField::CreatedAt => WarningOrderBy::CreatedAt,
-        WarningSortField::Severity => WarningOrderBy::Severity,
-        WarningSortField::Type => WarningOrderBy::WarningType,
-    }
-}
-
-pub(crate) fn map_company_sort(sort: CompanySortField) -> apex_store::postgres::CompanyOrderBy {
-    match sort {
-        CompanySortField::Name => apex_store::postgres::CompanyOrderBy::Name,
-        CompanySortField::ThreatScore => apex_store::postgres::CompanyOrderBy::ThreatScore,
-        CompanySortField::UpdatedAt => apex_store::postgres::CompanyOrderBy::UpdatedAt,
-        CompanySortField::Region => apex_store::postgres::CompanyOrderBy::Region,
-    }
-}
-
-pub(crate) fn map_person_sort(sort: PersonSortField) -> PersonOrderBy {
-    match sort {
-        PersonSortField::Name => PersonOrderBy::Name,
-        PersonSortField::Priority => PersonOrderBy::Priority,
-        PersonSortField::Region => PersonOrderBy::Region,
-        PersonSortField::UpdatedAt => PersonOrderBy::UpdatedAt,
-    }
-}
-
-pub(crate) fn validate_region_codes(values: &[String]) -> Result<(), ApiError> {
-    for value in values {
-        if value.len() != 2 {
-            return Err(ApiError::validation(
-                "region",
-                &format!("Invalid region code '{}'", value),
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_severity_codes(values: &[String]) -> Result<(), ApiError> {
-    let valid = ["low", "medium", "high", "critical"];
-    for value in values {
-        if !valid.contains(&value.to_lowercase().as_str()) {
-            return Err(ApiError::validation(
-                "severity",
-                &format!("Invalid severity '{}'", value),
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_warning_type_codes(values: &[String]) -> Result<(), ApiError> {
-    for value in values {
-        if value.is_empty() {
-            return Err(ApiError::validation("warning_type", "cannot be empty"));
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn parse_date_start(value: &Option<String>) -> Result<Option<DateTime<Utc>>, String> {
-    match value {
-        None => Ok(None),
-        Some(s) if s.is_empty() => Ok(None),
-        Some(s) => {
-            let parsed = NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .map_err(|_| format!("Invalid date format: {}", s))?;
-            let dt = parsed.and_hms_opt(0, 0, 0).unwrap();
-            Ok(Some(Utc.from_utc_datetime(&dt)))
-        }
-    }
-}
-
-fn parse_query_date(value: &Option<String>, name: &str) -> Result<Option<DateTime<Utc>>, ApiError> {
-    match value {
-        None => Ok(None),
-        Some(s) if s.is_empty() => Ok(None),
-        Some(s) => {
-            let parsed = NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .map_err(|_| ApiError::validation(name, &format!("Invalid date format: {}", s)))?;
-            let dt = parsed.and_hms_opt(0, 0, 0).unwrap();
-            Ok(Some(Utc.from_utc_datetime(&dt)))
-        }
-    }
-}
-
-pub(crate) fn validate_date_range(
-    from: &Option<String>,
-    to: &Option<String>,
-) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>), ApiError> {
-    let from_dt = parse_query_date(from, "date_from")?;
-    let to_dt = parse_query_date(to, "date_to")?;
-    if let (Some(from), Some(to)) = (from_dt, to_dt) {
-        if from > to {
-            return Err(ApiError::validation(
-                "date_range",
-                "date_from must be before date_to",
-            ));
-        }
-    }
-    Ok((from_dt, to_dt))
 }

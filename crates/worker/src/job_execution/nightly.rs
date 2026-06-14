@@ -558,6 +558,41 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
 }
 
 pub(super) async fn run_pattern_mining(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+    #[cfg(feature = "llm")]
+    {
+        run_pattern_mining_mined(kind, store).await
+    }
+    #[cfg(not(feature = "llm"))]
+    {
+        run_pattern_mining_stats_only(kind, store).await
+    }
+}
+
+/// Map a terminal [`MiningStageResult`] onto the outer [`JobRun`], preserving the
+/// skip / succeed / fail semantics enforced by [`process_mining_stage`].
+fn finalize_mining_run(run: &mut JobRun, result: &MiningStageResult) {
+    let stage = process_mining_stage(result);
+    match stage.run.status {
+        apex_worker::scheduler::JobStatus::Succeeded { .. } => {
+            run.succeed(
+                stage.items,
+                &format!("mining completed: {}", stage.run.notes),
+            );
+        }
+        apex_worker::scheduler::JobStatus::Failed { .. } => {
+            run.fail(&format!("mining failed: {}", stage.run.notes));
+        }
+        _ => {
+            run.skip(&format!("mining stage not terminal: {}", stage.run.notes));
+        }
+    }
+}
+
+/// Legacy stats-only mining path, used when the worker is built without the
+/// `llm` feature (the `apex-learning` crate is gated behind it). Materializes
+/// simple aggregate candidates and reports DB-derived counters.
+#[cfg(not(feature = "llm"))]
+async fn run_pattern_mining_stats_only(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     let since = Utc::now() - chrono::Duration::hours(24);
@@ -587,27 +622,147 @@ pub(super) async fn run_pattern_mining(kind: &JobKind, store: &Arc<PgStore>) -> 
             return run;
         }
     };
-    let stage = process_mining_stage(&MiningStageResult {
-        candidates_found: mining_stats.candidates_found,
-        candidates_passed_gates: mining_stats.candidates_passed_gates,
-        hypotheses_generated: mining_stats.hypotheses_generated,
-        recipes_staged: mining_stats.recipes_staged,
-        errors: mining_stats.errors,
-    });
-    match stage.run.status {
-        apex_worker::scheduler::JobStatus::Succeeded { .. } => {
-            run.succeed(
-                stage.items,
-                &format!("mining completed: {}", stage.run.notes),
+    finalize_mining_run(
+        &mut run,
+        &MiningStageResult {
+            candidates_found: mining_stats.candidates_found,
+            candidates_passed_gates: mining_stats.candidates_passed_gates,
+            hypotheses_generated: mining_stats.hypotheses_generated,
+            recipes_staged: mining_stats.recipes_staged,
+            errors: mining_stats.errors,
+        },
+    );
+    run
+}
+
+/// Real pattern-mining pipeline (production path). Loads entity-linked
+/// observation event streams over a long lookback window, mines statistically
+/// robust cross-signal candidates (Fisher exact + cross-split stability +
+/// Benjamini-Hochberg FDR), persists them for audit, and generates + stages
+/// LLM-backed recipe hypotheses for human review.
+#[cfg(feature = "llm")]
+async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+    use apex_learning::miner::MinerConfig;
+
+    let mut run = JobRun::new(kind.clone());
+    run.start();
+
+    let lookback_days = *crate::config::PATTERN_MINING_LOOKBACK_DAYS;
+    let min_events = *crate::config::PATTERN_MINING_MIN_EVENTS;
+    let max_observations = *crate::config::PATTERN_MINING_MAX_OBSERVATIONS;
+    let max_candidates = *crate::config::PATTERN_MINING_MAX_CANDIDATES;
+    let max_q = *crate::config::PATTERN_MINING_MAX_Q;
+
+    // Assemble the statistical-miner gate configuration from the (clamped)
+    // environment-backed tunables. Defaults are identical to
+    // `MinerConfig::default()`; operators may calibrate sensitivity without a
+    // recompile. We still `validate()` defensively and fall back to the strict
+    // library defaults if a hand-edited environment ever produces an invalid
+    // combination, logging the reason.
+    let miner_config = {
+        let candidate = MinerConfig {
+            max_lag_days: (*crate::config::PATTERN_MINING_MAX_LAG_DAYS) as i32,
+            min_effect: *crate::config::PATTERN_MINING_MIN_EFFECT,
+            max_p: *crate::config::PATTERN_MINING_MAX_P,
+            min_stability: *crate::config::PATTERN_MINING_MIN_STABILITY,
+            time_splits: *crate::config::PATTERN_MINING_TIME_SPLITS,
+            entity_min_count: *crate::config::PATTERN_MINING_ENTITY_MIN_COUNT,
+        };
+        let errors = candidate.validate();
+        if errors.is_empty() {
+            candidate
+        } else {
+            tracing::warn!(
+                ?errors,
+                "pattern_mining: invalid miner config from environment; using strict defaults"
             );
+            MinerConfig::default()
         }
-        apex_worker::scheduler::JobStatus::Failed { .. } => {
-            run.fail(&format!("mining failed: {}", stage.run.notes));
+    };
+    tracing::info!(
+        max_lag_days = miner_config.max_lag_days,
+        min_effect = miner_config.min_effect,
+        max_p = miner_config.max_p,
+        min_stability = miner_config.min_stability,
+        time_splits = miner_config.time_splits,
+        entity_min_count = miner_config.entity_min_count,
+        max_q,
+        max_candidates,
+        "pattern_mining: miner gate configuration"
+    );
+
+    let lookback_since = Utc::now() - chrono::Duration::days(lookback_days);
+
+    // 1. Load entity-linked observation event streams over the lookback window.
+    let streams = match super::resilience::run_stage_with_retry(
+        "pattern_mining.load_streams",
+        NIGHTLY_STAGE_TIMEOUT,
+        NIGHTLY_STAGE_ATTEMPTS,
+        |_| async {
+            store
+                .load_observation_event_streams(lookback_since, min_events, max_observations)
+                .await
+        },
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            run.fail(&format!(
+                "pattern_mining: failed to load observation streams: {e}"
+            ));
+            return run;
         }
-        _ => {
-            run.skip(&format!("mining stage not terminal: {}", stage.run.notes));
-        }
+    };
+
+    if streams.len() < 2 {
+        run.skip(&format!(
+            "pattern_mining: insufficient observation streams ({} with >= {} events over {} days)",
+            streams.len(),
+            min_events,
+            lookback_days
+        ));
+        return run;
     }
+
+    // 2. Mine statistically robust candidates across all ordered signal pairs.
+    let candidates =
+        mine_pattern_candidates(&streams, &miner_config, max_q, max_candidates);
+    tracing::info!(
+        streams = streams.len(),
+        candidates = candidates.len(),
+        "pattern_mining: candidate mining complete"
+    );
+
+    // 3. Persist mined candidates for audit + analytics counters.
+    let rows: Vec<apex_store::postgres::MinedPatternCandidate> =
+        candidates.iter().map(mined_candidate_row).collect();
+    match store.insert_pattern_candidates(&rows).await {
+        Ok(n) => tracing::info!(persisted = n, "pattern_mining: persisted candidates"),
+        Err(e) => tracing::warn!(error = %e, "pattern_mining: candidate persistence failed"),
+    }
+
+    // 4. LLM-backed hypothesis generation + staging.
+    let outcome = generate_and_stage_hypotheses(store, &candidates).await;
+    tracing::info!(
+        candidates = candidates.len(),
+        generated = outcome.generated,
+        staged = outcome.staged,
+        failed = outcome.failed,
+        "pattern_mining: hypothesis generation complete"
+    );
+
+    let candidates_found = candidates.len() as u64;
+    finalize_mining_run(
+        &mut run,
+        &MiningStageResult {
+            candidates_found,
+            candidates_passed_gates: candidates_found,
+            hypotheses_generated: outcome.generated,
+            recipes_staged: outcome.staged,
+            errors: outcome.errors,
+        },
+    );
     run
 }
 
@@ -716,4 +871,516 @@ pub(super) async fn run_feature_drift_check(kind: &JobKind, store: &Arc<PgStore>
         }
     }
     run
+}
+
+// ────────────────────────────────────────────
+// Pattern-mining helpers (LLM build only)
+// ────────────────────────────────────────────
+
+/// Aggregate outcome of the hypothesis generation + staging stage.
+#[cfg(feature = "llm")]
+struct HypothesisStageOutcome {
+    /// Number of candidates for which the LLM produced a validated hypothesis.
+    generated: u64,
+    /// Number of validated hypotheses successfully persisted as staging recipes.
+    staged: u64,
+    /// Number of candidates that failed validation or hit an LLM error.
+    failed: u64,
+    /// Hard errors (LLM/infra/persistence) surfaced to the stage reporter.
+    errors: Vec<String>,
+}
+
+/// Enumerate every ordered `(outcome, signal)` observation-type pair, mine each
+/// for a statistically robust lagged correlation, then apply FDR correction,
+/// dedup overlapping candidates, rank by composite score, and cap the result.
+///
+/// Mining is intentionally *not* geo-filtered: correlational patterns are
+/// universal. Geographic targeting is applied later, when insights generated
+/// from these recipes are ranked for the analyst.
+#[cfg(feature = "llm")]
+fn mine_pattern_candidates(
+    streams: &HashMap<String, Vec<apex_learning::miner::EventRecord>>,
+    config: &apex_learning::miner::MinerConfig,
+    max_q: f64,
+    max_candidates: usize,
+) -> Vec<apex_learning::miner::PatternCandidate> {
+    use apex_learning::miner::{
+        apply_fdr_correction, deduplicate_candidates, mine_one_pair, rank_candidates,
+    };
+
+    // Sort labels for deterministic enumeration (and thus deterministic output).
+    let mut labels: Vec<&String> = streams.keys().collect();
+    labels.sort();
+
+    let mut candidates = Vec::new();
+    for outcome_label in &labels {
+        for signal_label in &labels {
+            if outcome_label == signal_label {
+                continue;
+            }
+            if let Some(candidate) = mine_one_pair(
+                outcome_label,
+                signal_label,
+                &streams[*outcome_label],
+                &streams[*signal_label],
+                config,
+            ) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    apply_fdr_correction(&mut candidates, max_q);
+    deduplicate_candidates(&mut candidates);
+    rank_candidates(&mut candidates);
+    candidates.truncate(max_candidates);
+    candidates
+}
+
+/// Build a persistable audit row for a mined candidate.
+#[cfg(feature = "llm")]
+fn mined_candidate_row(
+    candidate: &apex_learning::miner::PatternCandidate,
+) -> apex_store::postgres::MinedPatternCandidate {
+    let (a, b, c, d) = candidate.contingency;
+    apex_store::postgres::MinedPatternCandidate {
+        recipe_code: format!("mined_{}", candidate.outcome),
+        entity_type: candidate.outcome.clone(),
+        pattern_label: format!(
+            "{} <- {} (lag {}d, OR {:.2}, p {:.4}, q {:.4}, stability {:.2}, n {})",
+            candidate.outcome,
+            candidate.signals.join("+"),
+            candidate.best_lag_days,
+            candidate.effect_size,
+            candidate.p_value,
+            candidate.q_value,
+            candidate.stability,
+            a + b + c + d,
+        ),
+        passed_gates: true,
+        confidence: candidate.stability.clamp(0.0, 1.0),
+    }
+}
+
+/// Generate recipe hypotheses for the mined candidates via the LLM and persist
+/// each validated hypothesis as a `staging` recipe for human review.
+///
+/// Staging recipes are a review/metadata store — recipe firing is driven by the
+/// seed YAML, not the DB — so staging here never auto-injects into the live
+/// insight stream. Validation failures are *not* treated as hard errors (the
+/// model ran, the pattern simply didn't pass), whereas LLM/infra errors are
+/// surfaced so the stage reporter can flag a systemic problem.
+#[cfg(feature = "llm")]
+async fn generate_and_stage_hypotheses(
+    store: &Arc<PgStore>,
+    candidates: &[apex_learning::miner::PatternCandidate],
+) -> HypothesisStageOutcome {
+    use apex_learning::generate::{generate_hypotheses_batch, HypothesisResult};
+
+    let mut outcome = HypothesisStageOutcome {
+        generated: 0,
+        staged: 0,
+        failed: 0,
+        errors: Vec::new(),
+    };
+    if candidates.is_empty() {
+        return outcome;
+    }
+
+    let existing_codes = store.list_recipe_codes().await.unwrap_or_default();
+    let mut existing_set: HashSet<String> = existing_codes.iter().cloned().collect();
+
+    let client = crate::build_quality_llm_client();
+    let results = generate_hypotheses_batch(client.as_ref(), candidates, &existing_codes).await;
+
+    for (result, candidate) in results.iter().zip(candidates.iter()) {
+        match result {
+            HypothesisResult::Success(hyp) => {
+                outcome.generated += 1;
+                let code = namespace_recipe_code(&hyp.id, &existing_set);
+                let name = mined_recipe_name(hyp);
+                let definition = hypothesis_to_definition(&code, hyp, candidate);
+                match store
+                    .upsert_recipe_definition(&code, &name, "staging", &definition)
+                    .await
+                {
+                    Ok(()) => {
+                        outcome.staged += 1;
+                        existing_set.insert(code);
+                    }
+                    Err(e) => {
+                        outcome.errors.push(format!("stage '{code}': {e}"));
+                    }
+                }
+            }
+            HypothesisResult::ValidationFailed {
+                candidate_outcome,
+                issues,
+            } => {
+                outcome.failed += 1;
+                tracing::warn!(
+                    outcome = %candidate_outcome,
+                    issues = ?issues,
+                    "pattern_mining: hypothesis validation failed"
+                );
+            }
+            HypothesisResult::LlmError {
+                candidate_outcome,
+                error,
+            } => {
+                outcome.failed += 1;
+                tracing::warn!(
+                    outcome = %candidate_outcome,
+                    error = %error,
+                    "pattern_mining: hypothesis LLM error"
+                );
+                outcome
+                    .errors
+                    .push(format!("llm '{candidate_outcome}': {error}"));
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Derive a stable, unique, namespaced recipe code for a mined hypothesis.
+///
+/// The raw LLM id is lower-cased and sanitized to `[a-z0-9_]`, prefixed with
+/// `mined_` (so it can never collide with curated seed codes), and suffixed
+/// with `_2`, `_3`, … if needed to stay unique within the known code set.
+#[cfg(feature = "llm")]
+fn namespace_recipe_code(raw_id: &str, existing: &HashSet<String>) -> String {
+    let sanitized: String = raw_id
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    let sanitized = sanitized.trim_matches('_');
+
+    let base = if sanitized.is_empty() {
+        "mined_recipe".to_string()
+    } else if sanitized.starts_with("mined_") {
+        sanitized.to_string()
+    } else {
+        format!("mined_{sanitized}")
+    };
+
+    if !existing.contains(&base) {
+        return base;
+    }
+    let mut suffix = 2u32;
+    loop {
+        let candidate = format!("{base}_{suffix}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+/// Build a concise, human-readable display name for a mined recipe.
+#[cfg(feature = "llm")]
+fn mined_recipe_name(hyp: &apex_learning::hypothesis::RecipeHypothesis) -> String {
+    let signals = if hyp.signals.is_empty() {
+        "signal".to_string()
+    } else {
+        hyp.signals.join(" + ")
+    };
+    format!("Mined: {} <- {}", hyp.outcome, signals)
+        .chars()
+        .take(180)
+        .collect()
+}
+
+/// Serialize an LLM hypothesis into a `SeedRecipe`-shaped definition document
+/// (so a future promote step can load it verbatim), enriched with a
+/// `provenance` block capturing the mined statistics. The extra `provenance`
+/// key is ignored by `SeedRecipe` deserialization but available to review tools.
+#[cfg(feature = "llm")]
+fn hypothesis_to_definition(
+    code: &str,
+    hyp: &apex_learning::hypothesis::RecipeHypothesis,
+    candidate: &apex_learning::miner::PatternCandidate,
+) -> serde_json::Value {
+    let transforms: Vec<serde_json::Value> = hyp
+        .transforms
+        .iter()
+        .map(|t| match t.days {
+            Some(days) => serde_json::json!({ "type": t.kind, "days": days }),
+            None => serde_json::json!({ "type": t.kind }),
+        })
+        .collect();
+
+    let (a, b, c, d) = candidate.contingency;
+
+    serde_json::json!({
+        "id": code,
+        "name": mined_recipe_name(hyp),
+        "category": "mined",
+        "join": [hyp.join.clone()],
+        "outcome": hyp.outcome.clone(),
+        "signals": hyp.signals.clone(),
+        "transforms": transforms,
+        "test": { "type": hyp.test_type.clone() },
+        "thresholds": {
+            "min_effect": hyp.thresholds.min_effect,
+            "max_p_value": hyp.thresholds.max_p_value,
+            "min_stability": hyp.thresholds.min_stability,
+            "max_false_alarm_rate": hyp.thresholds.max_false_alarm_rate,
+        },
+        "narrative_template": hyp.narrative_template.clone(),
+        "action_playbook": hyp.action_playbook.clone(),
+        "applicability": {
+            "geos": hyp.applicability.geos.clone(),
+            "industries": hyp.applicability.industries.clone(),
+            "notes": hyp.applicability.notes.clone(),
+        },
+        "provenance": {
+            "source": "pattern_mining",
+            "mined_at": Utc::now().to_rfc3339(),
+            "candidate": {
+                "outcome": candidate.outcome.clone(),
+                "signals": candidate.signals.clone(),
+                "best_lag_days": candidate.best_lag_days,
+                "effect_size": candidate.effect_size,
+                "odds_ratio_ci_low": candidate.odds_ratio_ci_low,
+                "odds_ratio_ci_high": candidate.odds_ratio_ci_high,
+                "minimum_detectable_effect": candidate.minimum_detectable_effect,
+                "p_value": candidate.p_value,
+                "q_value": candidate.q_value,
+                "stability": candidate.stability,
+                "entity_coverage": candidate.entity_coverage,
+                "contingency": [a, b, c, d],
+            }
+        }
+    })
+}
+
+#[cfg(all(test, feature = "llm"))]
+mod pattern_mining_tests {
+    #![allow(clippy::disallowed_methods)]
+    use super::*;
+    use apex_learning::hypothesis::{
+        Applicability, HypothesisThresholds, RecipeHypothesis, TransformSpec,
+    };
+    use apex_learning::miner::{EventRecord, MinerConfig, PatternCandidate};
+
+    fn ts_day(day: i64) -> i64 {
+        day * 86_400
+    }
+
+    /// A permissive mining config: the statistical gates themselves are tested
+    /// in `apex-learning`; here we exercise the orchestration (enumeration, FDR,
+    /// dedup, rank, truncation), so the stability gate is disabled.
+    fn permissive_config() -> MinerConfig {
+        MinerConfig {
+            max_lag_days: 5,
+            min_effect: 1.5,
+            max_p: 0.3,
+            min_stability: 0.0,
+            time_splits: 2,
+            entity_min_count: 5,
+        }
+    }
+
+    /// Build a (signal, outcome) stream pair with a strong lag-0 association and
+    /// a non-degenerate 2×2 contingency (a=24, b=2, c=2, d=6).
+    fn correlated_pair() -> (Vec<EventRecord>, Vec<EventRecord>) {
+        let mut signal = Vec::new();
+        let mut outcome = Vec::new();
+        // a-cell: signal then outcome 3 days later.
+        for i in 0..24 {
+            let entity = format!("a{i}");
+            let day = 10 + (i % 12);
+            signal.push((entity.clone(), ts_day(day)));
+            outcome.push((entity, ts_day(day + 3)));
+        }
+        // b-cell: signal only.
+        for i in 0..2 {
+            signal.push((format!("b{i}"), ts_day(15)));
+        }
+        // c-cell: outcome only, inside the study window.
+        for i in 0..2 {
+            outcome.push((format!("c{i}"), ts_day(15)));
+        }
+        // d-cell: outcome only, before the study window (→ "neither").
+        for i in 0..6 {
+            outcome.push((format!("d{i}"), ts_day(1)));
+        }
+        (signal, outcome)
+    }
+
+    fn correlated_streams() -> HashMap<String, Vec<EventRecord>> {
+        let (signal, outcome) = correlated_pair();
+        let mut streams = HashMap::new();
+        streams.insert("alpha_signal".to_string(), signal);
+        streams.insert("zeta_outcome".to_string(), outcome);
+        // Independent stream (disjoint entities & time) → yields no candidate.
+        let noise: Vec<EventRecord> = (0..10).map(|i| (format!("n{i}"), ts_day(500 + i))).collect();
+        streams.insert("noise".to_string(), noise);
+        streams
+    }
+
+    fn sample_candidate() -> PatternCandidate {
+        PatternCandidate {
+            outcome: "RfQPosted".to_string(),
+            signals: vec!["WebChange.portal".to_string()],
+            best_lag_days: 30,
+            effect_size: 3.2,
+            odds_ratio_ci_low: Some(1.8),
+            odds_ratio_ci_high: Some(5.7),
+            minimum_detectable_effect: 1.6,
+            p_value: 0.004,
+            q_value: 0.02,
+            stability: 0.8,
+            entity_coverage: 0.45,
+            segments: Vec::new(),
+            contingency: (24, 4, 4, 18),
+        }
+    }
+
+    fn sample_hypothesis() -> RecipeHypothesis {
+        RecipeHypothesis {
+            id: "Supplier Distress Signal!".to_string(),
+            join: "Entity".to_string(),
+            outcome: "RfQPosted".to_string(),
+            signals: vec![
+                "WebChange.portal".to_string(),
+                "JobPost.procurement".to_string(),
+            ],
+            transforms: vec![
+                TransformSpec {
+                    kind: "Lag".to_string(),
+                    days: Some(30),
+                },
+                TransformSpec {
+                    kind: "Count".to_string(),
+                    days: None,
+                },
+            ],
+            test_type: "FisherExact".to_string(),
+            thresholds: HypothesisThresholds {
+                min_effect: 1.5,
+                max_p_value: 0.01,
+                min_stability: 0.7,
+                max_false_alarm_rate: 0.02,
+            },
+            narrative_template: "{{evidence:company_name}} signals a sourcing cycle".to_string(),
+            action_playbook: vec!["Reach out to procurement".to_string()],
+            applicability: Applicability {
+                geos: vec!["MA".to_string(), "TN".to_string()],
+                industries: vec!["energy".to_string()],
+                notes: "BESS demand".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn mine_pattern_candidates_empty_is_empty() {
+        let streams: HashMap<String, Vec<EventRecord>> = HashMap::new();
+        assert!(mine_pattern_candidates(&streams, &permissive_config(), 0.99, 10).is_empty());
+    }
+
+    #[test]
+    fn mine_pattern_candidates_single_stream_is_empty() {
+        let mut streams = HashMap::new();
+        streams.insert("only".to_string(), correlated_pair().0);
+        assert!(mine_pattern_candidates(&streams, &permissive_config(), 0.99, 10).is_empty());
+    }
+
+    #[test]
+    fn mine_pattern_candidates_finds_and_truncates() {
+        let streams = correlated_streams();
+        let cfg = permissive_config();
+        let candidates = mine_pattern_candidates(&streams, &cfg, 0.99, 10);
+        assert!(
+            !candidates.is_empty(),
+            "expected at least one mined candidate from a strong association"
+        );
+        // Every candidate's labels must come from the input stream keys.
+        for candidate in &candidates {
+            assert!(streams.contains_key(&candidate.outcome));
+            for signal in &candidate.signals {
+                assert!(streams.contains_key(signal));
+            }
+        }
+        let capped = mine_pattern_candidates(&streams, &cfg, 0.99, 1);
+        assert_eq!(capped.len(), 1, "truncation cap must be respected");
+    }
+
+    #[test]
+    fn mine_pattern_candidates_is_deterministic() {
+        let streams = correlated_streams();
+        let cfg = permissive_config();
+        let key = |v: &[PatternCandidate]| {
+            v.iter()
+                .map(|c| (c.outcome.clone(), c.signals.clone(), c.best_lag_days))
+                .collect::<Vec<_>>()
+        };
+        let first = mine_pattern_candidates(&streams, &cfg, 0.99, 10);
+        let second = mine_pattern_candidates(&streams, &cfg, 0.99, 10);
+        assert_eq!(key(&first), key(&second));
+    }
+
+    #[test]
+    fn mined_candidate_row_maps_fields() {
+        let row = mined_candidate_row(&sample_candidate());
+        assert_eq!(row.recipe_code, "mined_RfQPosted");
+        assert_eq!(row.entity_type, "RfQPosted");
+        assert!(row.passed_gates);
+        assert!(row.confidence >= 0.0 && row.confidence <= 1.0);
+        assert!(row.pattern_label.contains("RfQPosted"));
+    }
+
+    #[test]
+    fn namespace_recipe_code_sanitizes_and_prefixes() {
+        let empty = HashSet::new();
+        assert_eq!(
+            namespace_recipe_code("Supplier Distress!", &empty),
+            "mined_supplier_distress"
+        );
+        assert_eq!(namespace_recipe_code("mined_foo", &empty), "mined_foo");
+        assert_eq!(namespace_recipe_code("   ", &empty), "mined_recipe");
+    }
+
+    #[test]
+    fn namespace_recipe_code_dedups_against_existing() {
+        let mut existing = HashSet::new();
+        existing.insert("mined_foo".to_string());
+        assert_eq!(namespace_recipe_code("foo", &existing), "mined_foo_2");
+        existing.insert("mined_foo_2".to_string());
+        assert_eq!(namespace_recipe_code("foo", &existing), "mined_foo_3");
+    }
+
+    #[test]
+    fn mined_recipe_name_truncates_long_outcomes() {
+        let mut hyp = sample_hypothesis();
+        hyp.outcome = "X".repeat(300);
+        assert!(mined_recipe_name(&hyp).chars().count() <= 180);
+    }
+
+    #[test]
+    fn hypothesis_to_definition_round_trips_as_seed_recipe() {
+        let definition =
+            hypothesis_to_definition("mined_supplier_distress", &sample_hypothesis(), &sample_candidate());
+
+        // Provenance metadata is attached for review tooling.
+        assert_eq!(definition["provenance"]["source"], "pattern_mining");
+        assert_eq!(definition["join"], serde_json::json!(["Entity"]));
+        assert_eq!(definition["category"], "mined");
+
+        // The definition must deserialize cleanly into the canonical SeedRecipe
+        // shape so a future promote step can load it verbatim.
+        let seed: apex_worker::recipe_loader::SeedRecipe =
+            serde_json::from_value(definition).expect("definition must be a valid SeedRecipe");
+        assert_eq!(seed.id, "mined_supplier_distress");
+        assert_eq!(seed.outcome, "RfQPosted");
+        assert_eq!(seed.category, "mined");
+        assert_eq!(seed.join, vec!["Entity".to_string()]);
+        assert_eq!(seed.action_playbook, vec!["Reach out to procurement".to_string()]);
+        assert_eq!(seed.signals.len(), 2);
+        assert_eq!(seed.transforms.len(), 2);
+    }
 }

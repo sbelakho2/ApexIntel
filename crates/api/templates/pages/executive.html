@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Executive Dashboard — ApexIntel{% endblock %}
+
+{% block head %}
+<style>
+  @media print {
+    body { background: white !important; color: black !important; }
+    .apex-metric-card { break-inside: avoid; border: 1px solid #ddd !important; }
+    .no-print { display: none !important; }
+    .page-break { page-break-before: always; }
+  }
+  .exec-competitor-bar {
+    height: 8px;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+  .exec-risk-item {
+    border-left: 3px solid transparent;
+  }
+  .exec-risk-item.severity-critical { border-left-color: #D62D2D; }
+  .exec-risk-item.severity-high { border-left-color: #F97316; }
+  .exec-risk-item.severity-medium { border-left-color: #FFBE00; }
+  .exec-risk-item.severity-low { border-left-color: #4A90E2; }
+  .exec-trend-up { color: #22C55E; }
+  .exec-trend-down { color: #D62D2D; }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  {% call m::page_header("Executive Dashboard", "bar-chart-3", "C-suite intelligence — competitors, risks, opportunities, and strategic actions",
+    "<div class=\"flex items-center gap-2 no-print\">
+      <button type=\"button\" onclick=\"window.print()\" class=\"inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:bg-secondary/80\">
+        <svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"6 9 6 2 18 2 18 9\"/><path d=\"M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2\"/><rect x=\"6\" y=\"14\" width=\"12\" height=\"8\"/></svg>
+        Export PDF
+      </button>
+    </div>")
+  %}
+
+  {# ── KPI stat cards ── #}
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {% for card in stat_cards %}
+    <div class="apex-metric-card">
+      <div class="apex-metric-rail {{ card.accent_class }}"></div>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2 pt-1">
+        <div class="rounded-sm border border-border bg-secondary p-1.5 text-muted-foreground">
+          {% call m::icon(card.icon, "h-3.5 w-3.5") %}
+        </div>
+        {% if card.delta.is_some() %}
+        <span class="flex items-center gap-0.5 text-[11px] font-bold tabular-nums {% if card.direction == "up" %}apex-text-positive{% else if card.direction == "down" %}apex-text-danger{% else %}text-muted-foreground{% endif %}">
+          {{ card.delta.as_deref().unwrap_or("") }}
+        </span>
+        {% endif %}
+      </div>
+      <p class="apex-metric-label">{{ card.label }}</p>
+      <p class="mt-1.5 apex-metric-number text-2xl">{{ card.value }}</p>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ── Competitors by Mention Volume + Top Risks (two-column) ── #}
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    {# ── Competitors by Mention Volume ── #}
+    <div class="apex-card p-4">
+      <h2 class="mb-4 text-xs font-black uppercase tracking-[0.12em]">Competitors by Mention Volume</h2>
+      {% if competitors.is_empty() %}
+      <p class="py-6 text-center text-sm text-muted-foreground">No competitor mention data available</p>
+      {% else %}
+      <div class="space-y-4">
+        {% for c in competitors %}
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-semibold truncate">{{ c.name }}</span>
+              <span class="text-xs font-bold tabular-nums text-muted-foreground">{{ c.mention_count }}</span>
+            </div>
+            <div class="mt-1.5 w-full rounded-sm bg-secondary overflow-hidden">
+              <div class="exec-competitor-bar {% if c.risk_level == "high" %}metric-swatch-red{% else if c.risk_level == "medium" %}metric-swatch-amber{% else %}metric-swatch-steel{% endif %}" style="width: {{ c.bar_pct }}%"></div>
+            </div>
+          </div>
+          <span class="shrink-0 text-[10px] font-bold uppercase tracking-[0.08em] {% if c.risk_level == "high" %}apex-text-danger{% else if c.risk_level == "medium" %}apex-text-warning{% else %}text-muted-foreground{% endif %}">
+            {{ c.risk_level }}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    {# ── Top Risks ── #}
+    <div class="apex-card p-4">
+      <h2 class="mb-4 text-xs font-black uppercase tracking-[0.12em]">Top Risks</h2>
+      {% if top_risks.is_empty() %}
+      <p class="py-6 text-center text-sm text-muted-foreground">No critical threats identified</p>
+      {% else %}
+      <div class="space-y-3">
+        {% for r in top_risks %}
+        <div class="exec-risk-item severity-{{ r.severity }} rounded-sm border border-border bg-secondary/30 px-3 py-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-sm font-semibold truncate">{{ r.title }}</span>
+            {% call m::severity_badge(r.severity) %}
+          </div>
+          <div class="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            {% if !r.company.is_empty() %}
+            <span class="inline-flex items-center gap-1">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5C7 4 6 9 6 9z"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5C17 4 18 9 18 9z"/><path d="M4 22h16"/><path d="M10 22V2h4v20"/></svg>
+              {{ r.company }}
+            </span>
+            {% endif %}
+            {% if !r.region.is_empty() %}
+            <span>·</span>
+            <span>{{ r.region }}</span>
+            {% endif %}
+            <span class="ml-auto text-[10px] font-bold tabular-nums">
+              Score: {{ r.score_display }}
+            </span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Trending Topics + Recent Wins/Losses (two-column) ── #}
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    {# ── Trending Topics ── #}
+    <div class="apex-card p-4">
+      <h2 class="mb-4 text-xs font-black uppercase tracking-[0.12em]">Trending Topics</h2>
+      {% if trending_topics.is_empty() %}
+      <p class="py-6 text-center text-sm text-muted-foreground">No trending topics available</p>
+      {% else %}
+      <div class="divide-y divide-border">
+        {% for t in trending_topics %}
+        <div class="flex items-center justify-between gap-3 py-2.5">
+          <span class="text-sm font-semibold truncate">{{ t.topic }}</span>
+          <div class="flex shrink-0 items-center gap-3">
+            <span class="text-xs tabular-nums text-muted-foreground">{{ t.mention_count }} mentions</span>
+            <span class="exec-trend-up text-[11px] font-bold">{{ t.change_pct }}</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    {# ── Recent Wins / Losses ── #}
+    <div class="apex-card p-4">
+      <h2 class="mb-4 text-xs font-black uppercase tracking-[0.12em]">Recent Wins & Opportunities</h2>
+      {% if recent_wins_losses.is_empty() %}
+      <p class="py-6 text-center text-sm text-muted-foreground">No recent wins or losses recorded</p>
+      {% else %}
+      <div class="divide-y divide-border">
+        {% for w in recent_wins_losses %}
+        <div class="flex items-start gap-3 py-2.5">
+          <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-[10px] font-black {% if w.result_type == "win" %}bg-green-500/10 text-green-500{% else %}bg-primary/10 text-primary{% endif %}">
+            {% if w.result_type == "win" %}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            {% else %}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m5 12 7 7 7-7"/></svg>
+            {% endif %}
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-sm font-semibold truncate">{{ w.title }}</span>
+              <span class="shrink-0 text-[10px] font-bold uppercase tracking-[0.08em] {% if w.result_type == "win" %}apex-text-positive{% else %}text-muted-foreground{% endif %}">
+                {{ w.result_type }}
+              </span>
+            </div>
+            <p class="mt-0.5 text-[11px] text-muted-foreground">
+              {% if !w.company.is_empty() %}{{ w.company }} · {% endif %}{{ w.date }}
+            </p>
+            {% if !w.description.is_empty() %}
+            <p class="mt-1 text-xs text-muted-foreground line-clamp-2">{{ w.description }}</p>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Recommended Actions ── #}
+  <div class="apex-card">
+    <div class="border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recommended Actions</h2>
+    </div>
+    {% if recommended_actions.is_empty() %}
+    <p class="px-4 py-6 text-center text-sm text-muted-foreground">No recommended actions at this time</p>
+    {% else %}
+    <div class="divide-y divide-border">
+      {% for a in recommended_actions %}
+      <div class="px-4 py-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-secondary text-[10px] font-bold text-muted-foreground">{{ loop.index }}</span>
+              <span class="text-sm font-semibold">{{ a.title }}</span>
+            </div>
+            <p class="mt-1 text-xs text-muted-foreground">{{ a.description }}</p>
+            <div class="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+              <span class="inline-flex items-center gap-1">
+                {% call m::severity_badge(a.priority) %}
+              </span>
+              <span>Owner: {{ a.owner }}</span>
+              <span>Due: {{ a.due_date }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

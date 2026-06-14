@@ -172,9 +172,10 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)
     // 4. Record in audit log
     stmts.push((
         "INSERT INTO audit_log (action, entity_type, entity_id, detail) \
-         VALUES ('entity_merge', $1, $2, $3)"
+         VALUES ($1, $2, $3, $4)"
             .to_string(),
         vec![
+            "entity_merge".to_string(),
             entity_type_str.clone(),
             event.target_id.clone(),
             event_json.clone(),

@@ -1,0 +1,42 @@
+# Slack Webhook Configuration for ApexIntel
+#
+# Multiple webhook URLs for different channels. Each channel maps to a Slack
+# Incoming Webhook URL. Messages are routed based on alert type.
+#
+# Environment variables override these settings:
+#   SLACK_WEBHOOK_URLS             - comma-separated default URLs
+#   SLACK_WEBHOOK_TIMEOUT_SECS     - timeout (default: 10)
+#   SLACK_WEBHOOK_CHANNEL_<NAME>   - channel-specific URLs
+#   SLACK_WEBHOOK_<CHANNEL>_URL    - single channel URL (e.g., SLACK_WEBHOOK_SECURITY_URL)
+# ---------------------------------------------------------------------------
+timeout_secs: 10
+
+# Default webhook URLs used when no channel-specific match is found.
+default_urls:
+  - "https://hooks.slack.com/services/T00/B00/EXAMPLE"
+
+# Per-channel routing based on alert type.
+channels:
+  # Security-critical alerts (breaches, vulnerabilities, sanctions, etc.)
+  security:
+    - "https://hooks.slack.com/services/T00/B01/EXAMPLE_SECURITY"
+
+  # Competitive intelligence insights
+  insight:
+    - "https://hooks.slack.com/services/T00/B02/EXAMPLE_INSIGHT"
+
+  # Recipe match / opportunity alerts
+  recipe_match:
+    - "https://hooks.slack.com/services/T00/B03/EXAMPLE_RECIPE"
+
+  # Person-of-interest updates
+  poi_update:
+    - "https://hooks.slack.com/services/T00/B04/EXAMPLE_POI"
+
+  # Warning verification results
+  warning:
+    - "https://hooks.slack.com/services/T00/B05/EXAMPLE_WARNING"
+
+  # General / uncategorized alerts
+  general:
+    - "https://hooks.slack.com/services/T00/B06/EXAMPLE_GENERAL"

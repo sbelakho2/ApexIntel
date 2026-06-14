@@ -1,5 +1,6 @@
 pub mod academic;
 pub mod breach;
+pub mod dark_web;
 pub mod browser;
 pub mod browser_renderer;
 pub mod change_detection;

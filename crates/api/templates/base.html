@@ -2,7 +2,13 @@
 <html lang="en" class="{% if theme == "dark" %}dark{% endif %}">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1e293b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ApexIntel">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icons/icon-512.svg">
   <meta name="htmx-config" content='{"historyCacheSize": 10}'>
   <title>{% block title %}ApexIntel{% endblock %}</title>
 
@@ -80,6 +86,7 @@
   <link rel="stylesheet" href="/static/css/tailwind.css?v=20260315-insight-depth">
   <script src="/static/js/htmx.min.js?v=20260312-runtime-sweep-2" defer></script>
   <script src="/static/js/app.js?v=20260312-runtime-sweep-1" defer></script>
+  <script src="/static/js/sse-client.js?v=20260614-realtime-alerts" defer></script>
   <style>
     #mobile-nav {
       transform: translateX(-100%);
@@ -179,7 +186,7 @@
   </style>
   {% block head %}{% endblock %}
 </head>
-<body data-ws-warnings>
+<body data-ws-warnings data-sse>
   <!-- Skip link -->
   <a href="#main-content" class="skip-link">Skip to main content</a>
 
@@ -212,14 +219,23 @@
         </div>
         <nav class="flex-1 space-y-1 overflow-y-auto p-3">
           {% call nav_item("/", "Overview", "bar-chart-3") %}
+          {% call nav_item("/executive", "Executive", "bar-chart-3") %}
+          {% call nav_item("/trends", "Trends", "bar-chart-3") %}
           {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
           {% call nav_item("/insights", "Insights", "eye") %}
+          {% call nav_item("/triage", "Triage", "filter") %}
+          {% call nav_item("/workspaces", "Workspaces", "folder") %}
+          {% call nav_item("/queue", "Queue", "list") %}
+          {% call nav_item("/activity", "Activity", "activity") %}
           {% call nav_item("/memos", "Memos", "file-text") %}
           {% call nav_item("/notifications", "Inbox", "bell") %}
           {% call nav_item("/companies", "Companies", "boxes") %}
           {% call nav_item("/persons", "Persons", "users") %}
           {% call nav_item("/competitors", "Competitors", "target") %}
+          {% call nav_item("/battlecards", "Battlecards", "layers") %}
           {% call nav_item("/security", "Security", "shield") %}
+          {% call nav_item("/supplier-risk", "Risk", "shield") %}
+          {% call nav_item("/pipeline", "Pipeline", "zap") %}
           {% call nav_item("/graph", "Graph", "radio") %}
           {% call nav_item("/recipes", "Recipes", "zap") %}
           {% call nav_item("/search", "Search", "search") %}
@@ -247,14 +263,23 @@
         </div>
         <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
           {% call nav_item("/", "Overview", "bar-chart-3") %}
+          {% call nav_item("/executive", "Executive", "bar-chart-3") %}
+          {% call nav_item("/trends", "Trends", "bar-chart-3") %}
           {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
           {% call nav_item("/insights", "Insights", "eye") %}
+          {% call nav_item("/triage", "Triage", "filter") %}
+          {% call nav_item("/workspaces", "Workspaces", "folder") %}
+          {% call nav_item("/queue", "Queue", "list") %}
+          {% call nav_item("/activity", "Activity", "activity") %}
           {% call nav_item("/memos", "Memos", "file-text") %}
           {% call nav_item("/notifications", "Inbox", "bell") %}
           {% call nav_item("/companies", "Companies", "boxes") %}
           {% call nav_item("/persons", "Persons", "users") %}
           {% call nav_item("/competitors", "Competitors", "target") %}
+          {% call nav_item("/battlecards", "Battlecards", "layers") %}
           {% call nav_item("/security", "Security", "shield") %}
+          {% call nav_item("/supplier-risk", "Risk", "shield") %}
+          {% call nav_item("/pipeline", "Pipeline", "zap") %}
           {% call nav_item("/graph", "Graph", "radio") %}
           {% call nav_item("/recipes", "Recipes", "zap") %}
           {% call nav_item("/search", "Search", "search") %}
@@ -288,6 +313,16 @@
               </div>
               <div class="flex shrink-0 items-center gap-2">
                 <span class="hidden text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground xl:inline">{{ username }}</span>
+                <!-- Notification bell — badge count is in the sidebar -->
+                <a href="/notifications"
+                   class="relative inline-flex items-center justify-center rounded-sm border border-border bg-secondary px-2 py-1.5 text-foreground hover:bg-secondary/80"
+                   aria-label="Notifications"
+                   title="Notifications">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
+                    <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+                  </svg>
+                </a>
                 <button type="button" class="apex-theme-toggle" data-theme-toggle aria-label="Toggle theme">
                   <span data-theme-toggle-text>System</span>
                   <span class="apex-theme-toggle-state" data-theme-toggle-state>Day</span>
@@ -561,7 +596,100 @@
       });
     })();
   </script>
+  {% include "partials/notification_toast.html" %}
   {% block body_end %}{% endblock %}
+
+  <!-- ─── PWA: Service Worker Registration ────────────────────────────── -->
+  <script>
+    (() => {
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then((reg) => {
+            console.log('[PWA] Service worker registered:', reg.scope);
+          }).catch((err) => {
+            console.warn('[PWA] Service worker registration failed:', err);
+          });
+        });
+      }
+    })();
+  </script>
+
+  <!-- ─── PWA: "Add to Home Screen" Prompt ────────────────────────────── -->
+  <div id="a2hs-prompt"
+       class="fixed bottom-20 left-4 right-4 z-50 hidden rounded-sm border border-border bg-card p-4 shadow-lg md:bottom-6 md:left-auto md:right-6 md:w-96"
+       role="dialog" aria-labelledby="a2hs-title" aria-hidden="true">
+    <div class="flex items-start gap-3">
+      <div class="shrink-0">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary" aria-hidden="true">
+          <rect width="14" height="20" x="5" y="2" rx="2" ry="2"/>
+          <line x1="12" x2="12.01" y1="18" y2="18"/>
+        </svg>
+      </div>
+      <div class="min-w-0 flex-1">
+        <p id="a2hs-title" class="text-[13px] font-bold text-foreground">Install ApexIntel</p>
+        <p class="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          Add ApexIntel to your home screen for quick access and offline support.
+        </p>
+        <div class="mt-3 flex items-center gap-2">
+          <button id="a2hs-install"
+                  class="rounded-sm bg-primary px-3 py-1.5 text-[11px] font-bold text-primary-foreground hover:bg-primary/90 transition-colors">
+            Install
+          </button>
+          <button id="a2hs-dismiss"
+                  class="rounded-sm px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-secondary transition-colors">
+            Not now
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      let deferredPrompt = null;
+      const promptEl = document.getElementById('a2hs-prompt');
+      const installBtn = document.getElementById('a2hs-install');
+      const dismissBtn = document.getElementById('a2hs-dismiss');
+
+      if (!promptEl || !installBtn || !dismissBtn) return;
+
+      // Check if already installed (display-mode: standalone)
+      if (window.matchMedia('(display-mode: standalone)').matches) {
+        return;
+      }
+
+      // Check if user previously dismissed
+      if (window.localStorage?.getItem('apex-a2hs-dismissed')) {
+        return;
+      }
+
+      window.addEventListener('beforeinstallprompt', (event) => {
+        event.preventDefault();
+        deferredPrompt = event;
+        promptEl.classList.remove('hidden');
+        promptEl.setAttribute('aria-hidden', 'false');
+      });
+
+      installBtn.addEventListener('click', async () => {
+        if (!deferredPrompt) return;
+        deferredPrompt.prompt();
+        const result = await deferredPrompt.userChoice;
+        if (result.outcome === 'accepted') {
+          console.log('[PWA] User accepted A2HS prompt');
+        }
+        deferredPrompt = null;
+        promptEl.classList.add('hidden');
+        promptEl.setAttribute('aria-hidden', 'true');
+      });
+
+      dismissBtn.addEventListener('click', () => {
+        deferredPrompt = null;
+        promptEl.classList.add('hidden');
+        promptEl.setAttribute('aria-hidden', 'true');
+        window.localStorage?.setItem('apex-a2hs-dismissed', 'true');
+      });
+    })();
+  </script>
 
   </body>
 </html>
@@ -587,7 +715,8 @@
    {% if current_path == href %}aria-current="page"{% endif %}>
   <span class="h-1.5 w-1.5 rounded-full {% if current_path == href || current_path.starts_with(href) %}bg-primary{% else %}bg-border{% endif %}" aria-hidden="true"></span>
   {{ label }}
-  <span data-warning-badge
+  <span id="notification-badge"
+    data-count="{{ warning_count }}"
     class="ml-auto rounded-full bg-destructive px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}">
     {{ warning_count }}
   </span>

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 pub mod admin;
+pub mod battlecards;
 pub mod collaboration;
 pub mod companies;
 pub mod dossiers;
@@ -23,6 +24,7 @@ pub mod replay;
 pub mod search;
 pub mod security;
 pub mod semantic_search;
+pub mod vector_search;
 pub mod warnings;
 pub mod ws;
 
@@ -89,6 +91,20 @@ pub mod paths {
     pub const ANNOTATIONS: &str = "/api/annotations";
     pub const ANNOTATION_DETAIL: &str = "/api/annotations/:id";
     pub const EXPORT_HISTORY: &str = "/api/export-history";
+
+    // ─── Battlecards ────────────────────────────────────────────────────
+    pub const BATTLECARDS: &str = "/api/battlecards";
+    pub const BATTLECARD_DETAIL: &str = "/api/battlecards/:id";
+    pub const BATTLECARD_REGENERATE: &str = "/api/battlecards/:id/regenerate";
+    pub const BATTLECARD_EXPORT: &str = "/api/battlecards/:id/export";
+
+    // ─── Alert Settings ─────────────────────────────────────────────────
+    pub const VECTOR_SEARCH: &str = "/api/search/vector";
+    pub const SIMILAR_ENTITIES: &str = "/api/entities/:entity_type/:entity_id/similar";
+    pub const ADMIN_EMBEDDINGS_REINDEX: &str = "/api/admin/embeddings/reindex";
+    pub const SETTINGS_ALERTS: &str = "/api/settings/alerts";
+    pub const SETTINGS_ALERTS_ENTITY: &str = "/api/settings/alerts/entity/:entity_id";
+    pub const SETTINGS_ALERTS_GLOBAL: &str = "/api/settings/alerts/global";
 }
 
 // ─── Endpoint catalogue ─────────────────────────────────────────────────
@@ -754,6 +770,28 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "admin",
         },
+        // Vector search
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::VECTOR_SEARCH,
+            description: "Vector/embedding-based similarity search across all entities",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::SIMILAR_ENTITIES,
+            description: "Find entities similar to a given entity by embedding",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: paths::ADMIN_EMBEDDINGS_REINDEX,
+            description: "Trigger full or incremental embedding reindex (admin)",
+            auth_required: true,
+            min_role: "admin",
+        },
         // WebSocket
         EndpointDef {
             method: HttpMethod::Get,
@@ -768,6 +806,56 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             description: "Live calibration curve stream via WebSocket",
             auth_required: false,
             min_role: "public",
+        },
+        // Battlecards
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/battlecards",
+            description: "List battlecards with optional filters",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: "/api/battlecards",
+            description: "Create a new battlecard",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/battlecards/:id",
+            description: "Get a single battlecard by ID",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Put,
+            path: "/api/battlecards/:id/section",
+            description: "Update a battlecard section",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Delete,
+            path: "/api/battlecards/:id",
+            description: "Delete a battlecard",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Post,
+            path: "/api/battlecards/:id/regenerate",
+            description: "Regenerate a battlecard or section",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/battlecards/:id/export",
+            description: "Export a battlecard (markdown/slack/pdf)",
+            auth_required: true,
+            min_role: "viewer",
         },
     ]
 }
@@ -893,7 +981,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 86);
+        assert_eq!(eps.len(), 96);
     }
 
     #[test]

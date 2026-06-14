@@ -90,7 +90,7 @@ pub(crate) async fn get_insight_detail(
             .unwrap_or_default();
         all_observations.extend(observations);
     }
-    all_observations.sort_by(|left, right| right.ts_utc.cmp(&left.ts_utc));
+    all_observations.sort_by_key(|o| std::cmp::Reverse(o.ts_utc));
     all_observations.truncate(50);
 
     let related_warnings = state

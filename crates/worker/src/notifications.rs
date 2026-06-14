@@ -17,6 +17,7 @@
 //! LLM-enhanced alert bodies are available when the `llm` feature is active.
 
 use anyhow::{Context, Result};
+use apex_core::alert_config::AlertChannel;
 use apex_core::sla::SeveritySlaConfig;
 use chrono::{DateTime, Utc};
 use lettre::message::{header::ContentType, Mailbox, SinglePart};
@@ -30,38 +31,10 @@ use tracing::{debug, error, info};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Severity of an outgoing alert.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum AlertSeverity {
-    #[default]
-    Info,
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
-impl AlertSeverity {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Info => "info",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Critical => "critical",
-        }
-    }
-
-    /// Parse from string representation (case-insensitive).
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "critical" => Self::Critical,
-            "high" => Self::High,
-            "medium" => Self::Medium,
-            "low" => Self::Low,
-            _ => Self::Info,
-        }
-    }
-}
+///
+/// Re-exported from `apex_core::alert_config` to ensure a single canonical
+/// definition across the entire platform.
+pub use apex_core::alert_config::AlertSeverity;
 
 /// A pending alert derived from an `InsightCard` or a pipeline event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +209,26 @@ impl NotificationConfig {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Entity-aware alert filtering
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns `true` if the alert **should** be dispatched according to the
+/// entity's alert configuration.
+///
+/// When no per-entity config exists the alert is allowed through (the caller
+/// should fall back to channel-level thresholds in
+/// [`NotificationDispatcher::dispatch_batch`]).
+pub fn should_send_alert(
+    alert: &PendingAlert,
+    entity_config: Option<&apex_core::alert_config::EntityAlertConfig>,
+) -> bool {
+    match entity_config {
+        Some(cfg) => !cfg.is_alert_suppressed(&alert.category, alert.severity),
+        None => true,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Dispatcher
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -243,6 +236,8 @@ impl NotificationConfig {
 pub struct NotificationDispatcher {
     config: NotificationConfig,
     http: reqwest::Client,
+    /// Optional NATS publisher for real-time streaming.
+    nats: Option<crate::nats_stream::NatsPublisher>,
 }
 
 impl NotificationDispatcher {
@@ -253,11 +248,18 @@ impl NotificationDispatcher {
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_else(|error| panic!("failed to build reqwest client: {error}")),
+            nats: None,
         }
     }
 
     pub fn from_env() -> Self {
         Self::new(NotificationConfig::from_env())
+    }
+
+    /// Attach a NATS publisher for real-time alert streaming.
+    pub fn with_nats(mut self, publisher: crate::nats_stream::NatsPublisher) -> Self {
+        self.nats = Some(publisher);
+        self
     }
 
     /// Dispatch a batch of pending alerts; returns all `Notification` records
@@ -338,9 +340,70 @@ impl NotificationDispatcher {
                     records.push(notif);
                 }
             }
+
+            // Publish to NATS JetStream for real-time delivery
+            self.publish_to_nats(&alert).await;
         }
 
         records
+    }
+
+    /// Publish an alert to NATS JetStream for real-time fan-out to SSE/WebSocket clients.
+    ///
+    /// This is a fire-and-forget operation: failures are logged but never propagated
+    /// (graceful degradation).
+    async fn publish_to_nats(&self, alert: &PendingAlert) {
+        let Some(ref nats) = self.nats else {
+            return;
+        };
+        if !nats.is_connected() {
+            return;
+        }
+
+        let event_type = match alert.category.as_str() {
+            "insight" | "competitive_intel" | "market_intelligence" => {
+                crate::nats_stream::AlertEventType::NewInsight
+            }
+            "warning" | "verification" | "sla_breach" | "sla_reminder" => {
+                crate::nats_stream::AlertEventType::NewWarning
+            }
+            "recipe_match" | "opportunity" | "demand_procurement" => {
+                crate::nats_stream::AlertEventType::RecipeMatch
+            }
+            "competitor_change" | "competitor" => {
+                crate::nats_stream::AlertEventType::CompetitorChange
+            }
+            "supply_chain" | "supply_chain_risk" => {
+                crate::nats_stream::AlertEventType::SupplyChainRisk
+            }
+            _ => crate::nats_stream::AlertEventType::SystemAlert,
+        };
+
+        let event = crate::nats_stream::AlertEvent {
+            id: uuid::Uuid::new_v4(),
+            event_type,
+            severity: alert.severity,
+            title: alert.title.clone(),
+            description: alert.llm_narrative.clone().unwrap_or_else(|| alert.body.clone()),
+            entity_id: None, // PendingAlert uses String IDs; we'd need conversion
+            entity_name: Some(alert.entity_name.clone()),
+            user_ids: vec![],
+            metadata: serde_json::json!({
+                "source_id": alert.source_id,
+                "category": alert.category,
+                "priority_score": alert.priority_score,
+                "region": alert.region,
+            }),
+            created_at: alert.created_at,
+        };
+
+        if let Err(e) = nats.publish_alert(&event).await {
+            tracing::warn!(
+                alert_id = %event.id,
+                error = %e,
+                "Failed to publish alert to NATS"
+            );
+        }
     }
 
     async fn send_webhook(&self, cfg: &WebhookConfig, body: &str) -> Result<()> {
@@ -529,6 +592,64 @@ impl NotificationDispatcher {
             alert.created_at.format("%Y-%m-%d %H:%M UTC"),
         )
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slack integration bridge
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Send a Slack alert for a pending alert using the dedicated Block Kit module.
+///
+/// Bridges the legacy notification system with [`slack::SlackMessage`] and
+/// [`slack::SlackWebhook`].  Configuration is loaded from environment variables
+/// or the YAML config file.
+///
+/// # Errors
+///
+/// Returns an error if the Slack webhook client cannot be created or if all
+/// webhook deliveries fail after retries.
+pub async fn send_slack_alert(alert: &PendingAlert) -> anyhow::Result<()> {
+    let config = crate::slack::SlackConfig::from_env();
+    let webhook = crate::slack::SlackWebhook::new(&config)
+        .context("failed to create Slack webhook client for alert dispatch")?;
+
+    let severity = match alert.severity {
+        AlertSeverity::Critical => crate::slack::SlackMessageSeverity::Critical,
+        AlertSeverity::High => crate::slack::SlackMessageSeverity::High,
+        AlertSeverity::Medium => crate::slack::SlackMessageSeverity::Medium,
+        AlertSeverity::Low => crate::slack::SlackMessageSeverity::Low,
+        AlertSeverity::Info => crate::slack::SlackMessageSeverity::Info,
+    };
+
+    let alert_type = match alert.category.as_str() {
+        "security" | "security_breach" | "cyber" => crate::slack::AlertType::Security,
+        "insight" | "competitive_intel" | "market_intelligence" => {
+            crate::slack::AlertType::Insight
+        }
+        "recipe_match" | "opportunity" | "demand_procurement" => {
+            crate::slack::AlertType::RecipeMatch
+        }
+        "poi_update" | "poi" | "talent_movement" => crate::slack::AlertType::PoiUpdate,
+        "warning" | "verification" | "sla_breach" | "sla_reminder" => {
+            crate::slack::AlertType::Warning
+        }
+        _ => crate::slack::AlertType::General,
+    };
+
+    let body = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
+    let mut msg = crate::slack::SlackMessage::new(severity, alert_type, &alert.title, body)
+        .with_entity(&alert.entity_name);
+
+    if let Some(ref region) = alert.region {
+        msg = msg.with_region(region);
+    }
+
+    msg = msg.with_field("Priority Score", format!("{:.2}", alert.priority_score));
+    msg = msg.with_field("Source ID", &alert.source_id);
+
+    webhook.send(&msg).await.map_err(|e| {
+        anyhow::anyhow!("Slack alert delivery failed for {}: {e}", alert.source_id)
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

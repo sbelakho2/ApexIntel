@@ -271,6 +271,19 @@ pub fn is_ems_trade_show(event_name: &str) -> bool {
         "elec expo",
         "sistep",
         "midest",
+        // BESS pivot — battery / energy-storage trade shows
+        "the battery show",
+        "battery show",
+        "ees europe",
+        "ees north america",
+        "energy storage summit",
+        "intersolar",
+        "the smarter e",
+        "interbattery",
+        "battery tech expo",
+        "solar & storage live",
+        "enlit",
+        "cibf",
     ];
     known_shows.iter().any(|show| lower.contains(show))
 }

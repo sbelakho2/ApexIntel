@@ -1047,11 +1047,9 @@ impl FeedbackController {
                         suppressed.insert(cat.clone());
                     }
                 }
-                FeedbackSignalType::QualityDecline { trend, .. } => {
-                    if *trend < -0.3 {
-                        if let Some(ref cat) = sig.category {
-                            suppressed.insert(cat.clone());
-                        }
+                FeedbackSignalType::QualityDecline { trend, .. } if *trend < -0.3 => {
+                    if let Some(ref cat) = sig.category {
+                        suppressed.insert(cat.clone());
                     }
                 }
                 _ => {}

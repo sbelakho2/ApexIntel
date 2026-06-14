@@ -314,7 +314,7 @@ pub fn build_digest(
             }
         })
         .collect();
-    sections.sort_by(|a, b| b.stories.len().cmp(&a.stories.len()));
+    sections.sort_by_key(|b| std::cmp::Reverse(b.stories.len()));
 
     let total_stories: usize = sections.iter().map(|s| s.stories.len()).sum();
     let num_categories = sections.len();

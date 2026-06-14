@@ -40,7 +40,8 @@ pub enum BackpressureStrategy {
 /// ```
 /// use apex_core::bounded_queue::{BoundedQueue, BackpressureStrategy};
 ///
-/// let mut queue = BoundedQueue::new(3, BackpressureStrategy::DropOldest);
+/// let mut queue = BoundedQueue::new(3, BackpressureStrategy::DropOldest)
+///     .expect("capacity is within bounds");
 /// assert!(queue.push(1).is_ok());
 /// assert!(queue.push(2).is_ok());
 /// assert!(queue.push(3).is_ok());

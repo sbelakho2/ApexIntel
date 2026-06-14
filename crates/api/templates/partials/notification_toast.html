@@ -1,0 +1,13 @@
+<div id="notification-toast"
+     class="apex-toast"
+     style="display:none; position: fixed; top: 16px; right: 16px; z-index: 9999; min-width: 280px; max-width: 400px; background: rgb(var(--rams-panel)); border: 1px solid rgb(var(--rams-line)); padding: 12px;">
+  <div class="apex-toast-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+    <span class="apex-toast-type" style="font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em;">INFO</span>
+    <button type="button" onclick="this.closest('.apex-toast').style.display='none'"
+            style="background: none; border: none; color: rgb(var(--rams-muted)); cursor: pointer; font-size: 16px; line-height: 1; padding: 0;">&times;</button>
+  </div>
+  <div class="apex-toast-body">
+    <p class="apex-toast-title" style="font-size: 12px; font-weight: 700; margin: 0 0 4px 0;"></p>
+    <p class="apex-toast-description" style="font-size: 11px; color: rgb(var(--rams-muted)); margin: 0;"></p>
+  </div>
+</div>

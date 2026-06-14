@@ -336,6 +336,219 @@ pub(crate) async fn export_insights_csv(
     )
 }
 
+// ─── PDF Export Handlers ─────────────────────────────────────────────────
+
+/// Export a single insight as a downloadable PDF.
+pub(crate) async fn export_insight_pdf(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(_auth_ctx): Extension<ApiAuthContext>,
+) -> axum::response::Response {
+    let uid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(error_response::<()>(ApiError::bad_request("invalid insight id")))).into_response();
+        }
+    };
+
+    let insight = match state.store.get_insight(uid).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(error_response::<()>(ApiError::not_found("insight", &id)))).into_response();
+        }
+        Err(e) => {
+            tracing::error!(%e, "db error fetching insight for pdf export");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("failed to fetch insight")))).into_response();
+        }
+    };
+
+    let report_row = apex_insights::pdf_report::InsightReportRow {
+        id: insight.id.to_string(),
+        title: insight.title,
+        summary: insight.summary,
+        insight_type: insight.insight_type.unwrap_or_default(),
+        severity: apex_insights::InsightSeverity::Medium,
+        confidence: insight.confidence.unwrap_or(0.5),
+        region: insight.region,
+        evidence: Vec::new(),
+        sources: Vec::new(),
+        tags: insight.tags.unwrap_or_default(),
+        generated_at: None,
+    };
+
+    let report = apex_insights::pdf_report::PdfReport::from_insights(
+        &format!("Insight: {}", report_row.title),
+        &[report_row],
+    );
+
+    let pdf_bytes = match apex_api::pdf_writer::render_report_to_pdf(&report) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(%e, "pdf generation failed for insight {id}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("pdf generation failed")))).into_response();
+        }
+    };
+
+    let filename = format!("insight-{}.pdf", id);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/pdf"),
+            (
+                header::CONTENT_DISPOSITION,
+                &format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        axum::body::Body::from(pdf_bytes),
+    )
+        .into_response()
+}
+
+/// Export a company dossier as a downloadable PDF.
+pub(crate) async fn export_company_dossier_pdf(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(_auth_ctx): Extension<ApiAuthContext>,
+) -> axum::response::Response {
+    let uid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(error_response::<()>(ApiError::bad_request("invalid company id")))).into_response();
+        }
+    };
+
+    let dossier = match state.store.get_company_dossier(uid).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(error_response::<()>(ApiError::not_found("company dossier", &id)))).into_response();
+        }
+        Err(e) => {
+            tracing::error!(%e, "db error fetching company dossier for pdf export");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("failed to fetch dossier")))).into_response();
+        }
+    };
+
+    let title = format!("Dossier: {}", dossier.company.name);
+    let mut report = apex_insights::pdf_report::PdfReport::new(&title, apex_insights::pdf_report::ReportType::EntityDossier);
+    report.metadata.entity_id = Some(dossier.company.id.to_string());
+    report.metadata.entity_name = Some(dossier.company.name.clone());
+    {
+        let mut section = apex_insights::pdf_report::ReportSection::new("Company Profile");
+        section.body = format!(
+            "Name: {}\nType: {}\nCountry: {}\n",
+            dossier.company.name,
+            dossier.company.company_type.as_deref().unwrap_or("N/A"),
+            dossier.company.country_code.as_deref().unwrap_or("N/A"),
+        );
+        report.add_section(section);
+    }
+    {
+        let cap_count = dossier.capabilities.len();
+        let cert_count = dossier.certifications.len();
+        let site_count = dossier.sites.len();
+        let mut section = apex_insights::pdf_report::ReportSection::new("Overview");
+        section.body = format!(
+            "Capabilities: {}\nCertifications: {}\nSites: {}\nEdges (relationships): {}",
+            cap_count, cert_count, site_count, dossier.edges.len(),
+        );
+        report.add_section(section);
+    }
+
+    let pdf_bytes = match apex_api::pdf_writer::render_report_to_pdf(&report) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(%e, "pdf generation failed for company dossier {id}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("pdf generation failed")))).into_response();
+        }
+    };
+
+    let filename = format!("company-dossier-{}.pdf", id);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/pdf"),
+            (
+                header::CONTENT_DISPOSITION,
+                &format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        axum::body::Body::from(pdf_bytes),
+    )
+        .into_response()
+}
+
+/// Export a person of interest (POI) dossier as a downloadable PDF.
+pub(crate) async fn export_person_dossier_pdf(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Extension(_auth_ctx): Extension<ApiAuthContext>,
+) -> axum::response::Response {
+    let uid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(error_response::<()>(ApiError::bad_request("invalid person id")))).into_response();
+        }
+    };
+
+    let dossier = match state.store.get_person_dossier(uid).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(error_response::<()>(ApiError::not_found("person dossier", &id)))).into_response();
+        }
+        Err(e) => {
+            tracing::error!(%e, "db error fetching person dossier for pdf export");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("failed to fetch dossier")))).into_response();
+        }
+    };
+
+    let title = format!("POI Dossier: {}", dossier.person.name);
+    let mut report = apex_insights::pdf_report::PdfReport::new(&title, apex_insights::pdf_report::ReportType::EntityDossier);
+    report.metadata.entity_id = Some(dossier.person.id.to_string());
+    report.metadata.entity_name = Some(dossier.person.name.clone());
+    {
+        let mut section = apex_insights::pdf_report::ReportSection::new("Person Profile");
+        section.body = format!(
+            "Name: {}\nRole family: {}\n",
+            dossier.person.name,
+            dossier.person.role_family.as_deref().unwrap_or("N/A"),
+        );
+        report.add_section(section);
+    }
+    {
+        let art_count = dossier.artifacts.len();
+        let obs_count = dossier.observations.len();
+        let role_count = dossier.role_history.len();
+        let mut section = apex_insights::pdf_report::ReportSection::new("Overview");
+        section.body = format!(
+            "Artifacts: {}\nObservations: {}\nRole history entries: {}\nRelationships: {}",
+            art_count, obs_count, role_count, dossier.edges.len(),
+        );
+        report.add_section(section);
+    }
+
+    let pdf_bytes = match apex_api::pdf_writer::render_report_to_pdf(&report) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(%e, "pdf generation failed for person dossier {id}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("pdf generation failed")))).into_response();
+        }
+    };
+
+    let filename = format!("person-dossier-{}.pdf", id);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/pdf"),
+            (
+                header::CONTENT_DISPOSITION,
+                &format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        axum::body::Body::from(pdf_bytes),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{csv_escape, normalize_export_window, ExportQuery};

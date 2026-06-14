@@ -18,6 +18,7 @@ members = [
     "crates/investigation",
     "crates/geopolitical",
     "crates/threat_intel",
+    "crates/triage",
 ]
 resolver = "2"
 
@@ -56,6 +57,7 @@ hickory-resolver = "0.25"
 
 # Search
 tantivy = "0.22"
+fst = "0.4"
 
 # Tracing
 tracing = "0.1"
@@ -100,11 +102,26 @@ urlencoding = "2"
 # Unicode
 unicode-normalization = "0.1"
 
+# pgvector (PostgreSQL vector extension)
+pgvector = { version = "0.4", features = ["sqlx"] }
+
 # Redis
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
 
 # Config
 dotenvy = "0.15"
+
+# PDF Generation
+printpdf = "0.7"
+
+# Temporary files (dev/test)
+tempfile = "3"
+
+# OAuth2
+oauth2 = "4"
+
+# Secrets management
+secrecy = "0.8"
 
 # Threat Intelligence
 apex-threat-intel = { path = "crates/threat_intel" }

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}{{ battlecard.title }} — Battlecard — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li><a href="/battlecards" class="hover:text-foreground">Battlecards</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">{{ battlecard.title }}</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
+  <div>
+    <h1 class="text-lg font-black uppercase tracking-[0.08em]">{{ battlecard.title }}</h1>
+    <div class="flex items-center gap-3 mt-1">
+      <span class="text-[10px] font-bold uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm
+        {%- if battlecard.status == "active" %} bg-green-900/30 text-green-400
+        {%- else if battlecard.status == "draft" %} bg-yellow-900/30 text-yellow-400
+        {%- else if battlecard.status == "archived" %} bg-gray-800 text-muted-foreground
+        {%- else %} bg-muted text-muted-foreground{% endif %}">{{ battlecard.status }}</span>
+      {% if !competitor_name.is_empty() %}
+      <span class="text-xs text-muted-foreground">vs {{ competitor_name }}</span>
+      {% endif %}
+      <span class="text-[10px] text-muted-foreground">Updated {{ battlecard.updated_at.format("%Y-%m-%d %H:%M UTC") }}</span>
+    </div>
+  </div>
+  <div class="flex items-center gap-2">
+    <a href="/battlecards/{{ battlecard.id }}/export?format=markdown"
+       class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:bg-muted">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>Export</span>
+    </a>
+    <button type="button"
+            class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:bg-muted"
+            hx-post="/api/battlecards/{{ battlecard.id }}/regenerate"
+            hx-swap="none"
+            hx-trigger="click"
+            onclick="this.disabled=true;this.textContent='Regenerating…'">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      <span>Regenerate</span>
+    </button>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+  <!-- Section cards -->
+  {% for section in sections %}
+  <div class="apex-card p-4 {% if !section.has_data %}opacity-60{% endif %}">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="text-xs font-black uppercase tracking-[0.12em]">{{ section.label }}</h3>
+      {% if section.has_data %}
+      <span class="text-[10px] text-green-500 font-bold">✓</span>
+      {% else %}
+      <span class="text-[10px] text-muted-foreground">—</span>
+      {% endif %}
+    </div>
+    {% if !section.preview.is_empty() %}
+    <p class="text-xs text-muted-foreground line-clamp-3">{{ section.preview }}</p>
+    {% else %}
+    <p class="text-[10px] text-muted-foreground italic">
+      {%- if section.has_data %}Data available{% else %}Not yet generated{% endif -%}
+    </p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if battlecard.regenerated_at.is_some() %}
+<div class="mt-6 apex-card p-3">
+  <p class="text-[10px] text-muted-foreground">
+    Last regenerated: {{ battlecard.regenerated_at.unwrap().format("%Y-%m-%d %H:%M UTC") }}
+  </p>
+</div>
+{% endif %}
+{% endblock %}

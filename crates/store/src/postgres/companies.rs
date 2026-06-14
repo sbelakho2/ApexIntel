@@ -314,6 +314,36 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Batch-load the geographic / classification fields needed to apply
+    /// go-to-market targeting during insight ranking.
+    ///
+    /// Returns, per company id: `country_code` (ISO alpha-2), `region`,
+    /// `company_type`, and an `is_competitor` flag. The flag is true when
+    /// *either* the canonical `is_competitor` column *or* the
+    /// `metadata->>'is_competitor'` attribute is set, so a competitor flagged
+    /// through either path is never missed (and therefore never geo-penalised).
+    /// The caller uses these to weight demand-side opportunities by sales market
+    /// while leaving competitors and upstream suppliers globally monitored.
+    pub async fn get_company_geo_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Option<String>, Option<String>, Option<String>, bool)>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows: Vec<(Uuid, Option<String>, Option<String>, Option<String>, bool)> =
+            sqlx::query_as(
+                "SELECT id, country_code, region, company_type,
+                        (COALESCE(is_competitor, false)
+                         OR COALESCE((metadata->>'is_competitor')::boolean, false))
+                 FROM companies WHERE id = ANY($1)",
+            )
+            .bind(ids)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
     pub async fn list_companies_by_region(&self, region: &str) -> Result<Vec<CompanyRow>> {
         let rows = sqlx::query_as::<_, CompanyRow>(
             "SELECT id, name, legal_name, domain, country_code, region, company_type,

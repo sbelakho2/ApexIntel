@@ -755,7 +755,7 @@ impl BreachMonitor {
         events.dedup_by(|a, b| a.source == b.source && a.breach_name == b.breach_name);
 
         // Final sort: severity desc
-        events.sort_unstable_by(|a, b| b.severity.cmp(&a.severity));
+        events.sort_unstable_by_key(|e| std::cmp::Reverse(e.severity));
         events
     }
 }

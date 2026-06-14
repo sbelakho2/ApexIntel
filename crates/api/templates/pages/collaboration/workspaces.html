@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Workspaces — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Workspaces</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  <div class="flex items-start justify-between gap-4 border-b border-border pb-4">
+    <div class="flex items-start gap-3">
+      <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+        {% call m::icon("folder", "h-4 w-4") %}
+      </div>
+      <div>
+        <h1>Investigation Workspaces</h1>
+        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Collaborative investigation spaces for team intelligence work.</p>
+      </div>
+    </div>
+    <div>
+      <a href="/workspaces/new" class="apex-btn apex-btn-primary">New Workspace</a>
+    </div>
+  </div>
+
+  <div class="grid w-full gap-3 sm:grid-cols-3 lg:max-w-md">
+    <div class="apex-card p-3">
+      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Total</p>
+      <p class="mt-1 apex-metric-number text-2xl">{{ total }}</p>
+    </div>
+    <div class="apex-card p-3">
+      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Open</p>
+      <p class="mt-1 apex-metric-number text-2xl">{{ open_count }}</p>
+    </div>
+    <div class="apex-card p-3">
+      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Status</p>
+      <p class="mt-1 apex-metric-number text-2xl">{{ current_status }}</p>
+    </div>
+  </div>
+
+  <div class="flex flex-wrap gap-2">
+    {% call m::filter_chip("All", "/workspaces", current_status == "all", "default", "") %}
+    {% call m::filter_chip("Open", "/workspaces?status=open", current_status == "open", "accent", "") %}
+    {% call m::filter_chip("Closed", "/workspaces?status=closed", current_status == "closed", "default", "") %}
+  </div>
+
+  {% if workspaces.is_empty() %}
+  {% call m::empty_state("No Workspaces", "Create your first investigation workspace to begin collaborating with your team.") %}
+  {% else %}
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {% for ws in workspaces %}
+    <article class="apex-card p-4 hover:border-primary/40 transition-colors">
+      <a href="/workspaces/{{ ws.id }}" class="block">
+        <div class="flex items-start justify-between gap-2">
+          <h2 class="text-sm font-black uppercase tracking-[0.08em]">{{ ws.name }}</h2>
+          {% if ws.status == "open" %}
+          <span class="rounded-sm bg-primary/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Open</span>
+          {% else %}
+          <span class="rounded-sm bg-muted/60 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Closed</span>
+          {% endif %}
+        </div>
+        {% if !ws.description.is_empty() %}
+        <p class="mt-2 text-xs text-muted-foreground line-clamp-2">{{ ws.description }}</p>
+        {% endif %}
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <span class="text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ ws.workspace_type }}</span>
+          <span class="text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">·</span>
+          <span class="text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ ws.visibility }}</span>
+          {% for tag in ws.tags %}
+          {% call m::tag_pill(tag) %}
+          {% endfor %}
+        </div>
+        <p class="mt-2 text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ ws.created_at }}</p>
+      </a>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

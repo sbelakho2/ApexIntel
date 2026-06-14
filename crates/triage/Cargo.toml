@@ -1,0 +1,22 @@
+[package]
+name = "apex-triage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+apex-core = { path = "../core" }
+apex-llm = { path = "../llm" }
+apex-store = { path = "../store" }
+apex-insights = { path = "../insights" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+async-trait = { workspace = true }

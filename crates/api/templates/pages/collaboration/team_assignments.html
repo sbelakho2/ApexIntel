@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Team Assignments — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Team Assignments</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  <div class="flex items-start justify-between gap-4 border-b border-border pb-4">
+    <div class="flex items-start gap-3">
+      <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+        {% call m::icon("users", "h-4 w-4") %}
+      </div>
+      <div>
+        <h1>Team Assignments</h1>
+        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Track team-level assignments across entities.</p>
+      </div>
+    </div>
+    <div>
+      <details class="inline-block">
+        <summary class="apex-btn apex-btn-primary cursor-pointer">New Assignment</summary>
+        <div class="absolute z-30 mt-2 w-80 rounded-sm border border-border bg-card p-4 shadow-lg">
+          <form action="/team-assignments" method="post" class="space-y-2">
+            <input type="text" name="team_id" placeholder="Team ID" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <input type="text" name="team_name" placeholder="Team name" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <input type="text" name="entity_type" placeholder="Entity type (company, person)" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <input type="text" name="entity_id" placeholder="Entity ID" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <input type="text" name="assigned_to" placeholder="Assign to (user ID)" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <select name="role" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
+              <option value="lead">Lead</option>
+              <option value="analyst">Analyst</option>
+              <option value="reviewer">Reviewer</option>
+              <option value="contributor">Contributor</option>
+            </select>
+            <textarea name="notes" placeholder="Notes" rows="2"
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"></textarea>
+            <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Create</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="apex-card p-4">
+    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Total Assignments</p>
+    <p class="mt-1 apex-metric-number text-2xl">{{ total }}</p>
+  </div>
+
+  {% if assignments.is_empty() %}
+  {% call m::empty_state("No Team Assignments", "Create team assignments to track which teams are working on which entities.") %}
+  {% else %}
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-border">
+      <thead>
+        <tr class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+          <th class="px-4 py-3 text-left">Team</th>
+          <th class="px-4 py-3 text-left">Entity</th>
+          <th class="px-4 py-3 text-left">Assigned To</th>
+          <th class="px-4 py-3 text-left">Role</th>
+          <th class="px-4 py-3 text-left">Assigned By</th>
+          <th class="px-4 py-3 text-left">Notes</th>
+          <th class="px-4 py-3 text-right">Created</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-border">
+        {% for a in assignments %}
+        <tr class="text-xs hover:bg-secondary/30">
+          <td class="px-4 py-3">
+            <p class="font-bold">{{ a.team_name }}</p>
+            <p class="text-[10px] text-muted-foreground">{{ a.team_id }}</p>
+          </td>
+          <td class="px-4 py-3">
+            <p class="font-bold">{{ a.entity_id }}</p>
+            <p class="text-[10px] text-muted-foreground">{{ a.entity_type }}</p>
+          </td>
+          <td class="px-4 py-3 font-bold">{{ a.assigned_to }}</td>
+          <td class="px-4 py-3">
+            <span class="rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ a.role }}</span>
+          </td>
+          <td class="px-4 py-3 text-muted-foreground">{{ a.assigned_by }}</td>
+          <td class="px-4 py-3 max-w-xs truncate text-muted-foreground">{{ a.notes }}</td>
+          <td class="px-4 py-3 text-right text-[10px] text-muted-foreground">{{ a.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1156,6 +1156,88 @@ impl PgStore {
         .await?;
         Ok(result.rows_affected())
     }
+
+    /// Load entity-linked observation event streams for pattern mining.
+    ///
+    /// Returns a map keyed by `observation_type`, where each value is the chronologically
+    /// ordered list of `(entity_id, unix_timestamp_secs)` events. Streams with fewer than
+    /// `min_events` events are dropped, and the total number of loaded rows is capped at
+    /// `max_rows` (oldest first) to bound memory and query time. `observation_type` is the
+    /// mining signal taxonomy: the `value` JSONB carries no finer-grained sub-type.
+    pub async fn load_observation_event_streams(
+        &self,
+        since: DateTime<Utc>,
+        min_events: usize,
+        max_rows: i64,
+    ) -> Result<std::collections::HashMap<String, Vec<(String, i64)>>> {
+        let rows = sqlx::query_as::<_, (String, String, i64)>(
+            r#"SELECT observation_type,
+                      entity_id::text,
+                      EXTRACT(EPOCH FROM ts_utc)::bigint
+               FROM observations
+               WHERE ts_utc >= $1
+                 AND entity_id IS NOT NULL
+                 AND observation_type IS NOT NULL
+               ORDER BY ts_utc
+               LIMIT $2"#,
+        )
+        .bind(since)
+        .bind(max_rows.max(0))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut streams: std::collections::HashMap<String, Vec<(String, i64)>> =
+            std::collections::HashMap::new();
+        for (observation_type, entity_id, ts_secs) in rows {
+            streams
+                .entry(observation_type)
+                .or_default()
+                .push((entity_id, ts_secs));
+        }
+        streams.retain(|_, events| events.len() >= min_events);
+        Ok(streams)
+    }
+
+    /// Persist mined pattern candidates for audit and analytics counters.
+    ///
+    /// Each row is stamped with `created_at = now()` so it counts within the rolling
+    /// analytics window read by [`PgStore::get_mining_stats`]. Inserts run in a single
+    /// transaction and the number of inserted rows is returned.
+    pub async fn insert_pattern_candidates(
+        &self,
+        candidates: &[MinedPatternCandidate],
+    ) -> Result<u64> {
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut inserted = 0u64;
+        for candidate in candidates {
+            let result = sqlx::query(
+                r#"INSERT INTO pattern_candidates
+                       (recipe_code, entity_type, pattern_label, passed_gates, confidence, created_at)
+                   VALUES ($1, $2, $3, $4, $5, now())"#,
+            )
+            .bind(&candidate.recipe_code)
+            .bind(&candidate.entity_type)
+            .bind(&candidate.pattern_label)
+            .bind(candidate.passed_gates)
+            .bind(candidate.confidence)
+            .execute(&mut *tx)
+            .await?;
+            inserted += result.rows_affected();
+        }
+        tx.commit().await?;
+        Ok(inserted)
+    }
+
+    /// List all existing recipe codes, used to deduplicate newly staged hypotheses.
+    pub async fn list_recipe_codes(&self) -> Result<Vec<String>> {
+        let codes = sqlx::query_scalar::<_, String>("SELECT code FROM recipes")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(codes)
+    }
 }
 
 #[cfg(test)]

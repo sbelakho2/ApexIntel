@@ -7,6 +7,8 @@ pub mod job_post;
 pub mod multilingual;
 pub mod normalizer;
 pub mod patent;
+pub mod entity_canonical;
+pub mod ner;
 pub mod person;
 pub mod press;
 pub mod sentiment;

@@ -24,7 +24,9 @@
   </div>
   <div class="flex items-center gap-2">
     <a href="/persons/{{ id }}" class="rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Interactive View</a>
-    <button type="button" class="rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
+    <a href="/api/persons/{{ id }}/dossier/pdf"
+       class="rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary"
+       download>Export PDF</a>
   </div>
 </div>
 {% else %}
@@ -63,6 +65,9 @@
       <div><span class="font-black uppercase text-muted-foreground">Insights</span><br>{{ insight_count }}</div>
     </div>
   </div>
+
+  {# ── Entity activity chart (lazy-loaded via HTMX) ── #}
+  {% call m::entity_activity_chart(id, 30) %}
 
   {# ── Priority vector ── #}
   <div class="apex-card p-4">

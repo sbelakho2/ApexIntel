@@ -4,7 +4,6 @@ version = "0.2.0"
 edition = "2021"
 authors = ["ApexIntel Team"]
 description = "Intelligence insights generation for ApexIntel OSINT platform"
-license = "MIT OR Apache-2.0"
 repository = "https://github.com/sabelakhoua/ApexIntel"
 
 [dependencies]
@@ -18,31 +17,22 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Cross-crate dependencies (using workspace versions)
-apex-core = { path = "../core", optional = true }
-apex-llm = { path = "../llm", optional = true }
-apex-stats = { path = "../stats", optional = true }
+apex-core = { path = "../core" }
+apex-llm = { path = "../llm" }
+apex-stats = { path = "../stats" }
 
-# Additional dependencies for LLM feature modules
-regex = { version = "1", optional = true }
-sha2 = { version = "0.10", optional = true }
-hex = { version = "0.4", optional = true }
-lru = { version = "0.12", optional = true }
-rand = { version = "0.8", optional = true }
-serde_yaml = { version = "0.9", optional = true }
+# Additional dependencies
+regex = "1"
+sha2 = "0.10"
+hex = "0.4"
+lru = "0.12"
+rand = "0.8"
+serde_yaml = "0.9"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = "0.4"
 
 [features]
 default = []
-llm = [
-    "dep:apex-llm",
-    "dep:apex-core",
-    "dep:apex-stats",
-    "dep:regex",
-    "dep:sha2",
-    "dep:hex",
-    "dep:lru",
-    "dep:rand",
-    "dep:serde_yaml",
-]
+llm = []

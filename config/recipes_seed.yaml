@@ -12349,9 +12349,406 @@ recipes:
       industries: [all]
       notes: Reputation risk and negative publicity monitoring
 
+  # ============================================================================
+  # CATEGORY BESS: Battery Energy Storage Pivot Intelligence (BESS001-BESS012)
+  # Built for Starz's expansion into 5/10/15 kWh BESS packs, in-house BMS and
+  # custom pack design. Targets medium-sized demand-side buyers, cell supply
+  # chain risk, size-matched competitors and BESS decision-makers (POIs).
+  # Signals reuse feature keys the worker actually emits so recipes can fire.
+  # ============================================================================
+  - id: BESS001
+    name: residential_storage_sourcing_cycle
+    category: demand_procurement
+    join: Entity
+    outcome: RfQPosted
+    signals:
+      - JobPost.role_family=Procurement.increase
+      - WebChange.bess_product_page
+    transforms:
+      - type: Lag
+        days: 30
+      - type: Count
+        window_days: 14
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.5
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      {{evidence:company_name}} (solar / storage installer) is showing signs of a new
+      residential BESS sourcing cycle: procurement hiring combined with updates to its
+      energy-storage product pages. Demand for 5-15 kWh packs typically precedes RFQ
+      activity by 30-60 days.
+    action_playbook:
+      - Register on the buyer's supplier portal immediately
+      - Send 5/10/15 kWh pack and in-house BMS capability deck
+      - Offer a sample pack for qualification testing
+      - Schedule an introductory call with the procurement lead
+    applicability:
+      geos: [TN, MA, EG, EU]
+      industries: [energy_storage, battery, solar, microgrid]
+      notes: Demand-side signal for medium residential/commercial storage installers (primary markets MA/TN/EG, secondary EU)
+
+  - id: BESS002
+    name: telecom_backup_battery_tender
+    category: demand_procurement
+    join: Entity
+    outcome: RfQPosted
+    signals:
+      - Tender.bess_backup.posted
+      - JobPost.role_family=Procurement.increase
+    transforms:
+      - type: Lag
+        days: 45
+      - type: Count
+        window_days: 30
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.8
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Backup-power / energy-storage tender detected at {{evidence:company_name}}
+      (telecom or tower operator), alongside procurement hiring. This typically signals
+      an LFP backup-battery qualification round for 48V telecom sites.
+    action_playbook:
+      - Prepare the 48V LFP telecom backup pack datasheet
+      - Submit the bid before the tender deadline
+      - Highlight UN 38.3 and IEC 62619 compliance
+      - Engage the SQE team for pre-qualification
+    applicability:
+      geos: [TN, MA, EG, EU]
+      industries: [telecom_backup, ups, energy_storage, battery]
+      notes: Demand-side signal for telecom and tower backup-power buyers (primary markets MA/TN/EG, secondary EU)
+
+  - id: BESS003
+    name: emobility_pack_integrator_demand
+    category: demand_procurement
+    join: Entity
+    outcome: RfQPosted
+    signals:
+      - WebChange.bess_product_page
+      - JobPost.volume.anomaly
+    transforms:
+      - type: Lag
+        days: 30
+      - type: Count
+        window_days: 21
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.6
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      {{evidence:company_name}} (light e-mobility OEM or integrator) updated its battery
+      product pages and shows abnormal hiring. This often precedes a search for a pack
+      plus BMS integration partner for light e-mobility battery packs.
+    action_playbook:
+      - Pitch custom pack design with in-house BMS
+      - Offer tailored 10/15 kWh module configurations
+      - Share cycle-life and safety test data
+      - Arrange an engineering alignment call
+    applicability:
+      geos: [TN, MA, EG, EU]
+      industries: [e_mobility, energy_storage, battery]
+      notes: Demand-side signal for light e-mobility pack and BMS buyers (primary markets MA/TN/EG, secondary EU)
+
+  - id: BESS004
+    name: battery_cell_cost_spike
+    category: supply_chain_risk
+    join: Industry
+    outcome: AllocationWave
+    signals:
+      - Commodity.lithium.increase_20pct
+      - CommodityPrice.significant_move
+    transforms:
+      - type: Lag
+        days: 7
+    test:
+      type: CrossCorrelation
+    thresholds:
+      min_effect: 1.5
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Battery-grade lithium and related cell materials are spiking
+      ({{evidence:commodity}} move). Cell purchase costs for BESS packs will rise -
+      protect margins on open 5/10/15 kWh pack quotes.
+    action_playbook:
+      - Re-price open BESS pack quotes
+      - Lock forward cell purchase agreements
+      - Qualify a second cell supplier
+      - Review LFP vs NMC chemistry cost trade-off
+    applicability:
+      geos: [TN, MA, EG, EU, CN, KR, JP]
+      industries: [energy_storage, battery, e_mobility]
+      notes: Cell raw-material price risk for pack assemblers that buy cells (cell supply monitored globally)
+
+  - id: BESS005
+    name: cell_supply_allocation_risk
+    category: supply_chain_risk
+    join: Industry
+    outcome: AllocationWave
+    signals:
+      - Material.shortage
+      - SupplyChain.disruption
+    transforms:
+      - type: Lag
+        days: 7
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.6
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Cell or battery-material shortage signals detected in the energy-storage supply
+      chain. Cell allocation risk threatens BESS pack lead times and order commitments.
+    action_playbook:
+      - Increase safety stock of priority cell SKUs
+      - Diversify cell sourcing across regions
+      - Communicate revised lead times to buyers
+      - Prioritise allocation to committed orders
+    applicability:
+      geos: [TN, MA, EG, EU, CN, KR, JP]
+      industries: [energy_storage, battery, e_mobility, telecom_backup]
+      notes: Cell allocation and shortage risk for pack assemblers (cell supply monitored globally)
+
+  - id: BESS006
+    name: critical_mineral_export_restriction
+    category: supply_chain_risk
+    join: Industry
+    outcome: AllocationWave
+    signals:
+      - Geopolitical.risk
+      - Trade.restriction
+    transforms:
+      - type: Lag
+        days: 0
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.8
+      max_p_value: 0.01
+      min_stability: 0.85
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Export controls or trade restrictions on critical battery minerals (lithium,
+      cobalt, graphite, nickel) detected. Cell supply for BESS packs may be constrained
+      and pricing could move sharply.
+    action_playbook:
+      - Map cell BOM exposure to restricted minerals
+      - Pre-position inventory ahead of controls taking effect
+      - Engage alternative non-restricted suppliers
+      - Brief sales on potential price and lead-time impact
+    applicability:
+      geos: [TN, MA, EG, EU, CN, KR, JP, AU]
+      industries: [energy_storage, battery, e_mobility]
+      notes: Geopolitical cell-mineral supply risk for pack assemblers (mineral supply monitored globally)
+
+  - id: BESS007
+    name: bess_competitor_capacity_expansion
+    category: competitor_market
+    join: Entity
+    outcome: CompetitorCapabilityShift
+    signals:
+      - Company.expansion
+      - Competitor.activity
+    transforms:
+      - type: Lag
+        days: 30
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.5
+      max_p_value: 0.01
+      min_stability: 0.7
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Size-matched BESS competitor {{evidence:competitor_name}} is expanding pack or BMS
+      capacity. Assess overlap with Starz's 5-15 kWh segment and reinforce
+      differentiation.
+    action_playbook:
+      - Benchmark competitor pack specifications and pricing
+      - Reinforce in-house BMS and custom shell differentiation
+      - Update the competitive battlecard
+      - Inform the sales team of the competitive move
+    applicability:
+      geos: [TN, MA, EG, EU, CN, KR, JP, US]
+      industries: [energy_storage, battery, e_mobility]
+      notes: Size-matched BESS competitor capacity intelligence (competitors monitored globally)
+
+  - id: BESS008
+    name: bess_competitor_safety_cert_gain
+    category: competitor_market
+    join: Entity
+    outcome: CompetitorCapabilityShift
+    signals:
+      - CertificationUpdate.count
+      - Competitor.cert.new
+    transforms:
+      - type: Lag
+        days: 30
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.6
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      Competitor {{evidence:competitor_name}} gained a battery safety certification
+      (e.g. UN 38.3, IEC 62619 or UL 1973), unlocking new BESS markets. Close the
+      certification gap to stay competitive.
+    action_playbook:
+      - Audit Starz's battery cert roadmap (UN 38.3 / IEC 62619 / UL 1973)
+      - Prioritise certifications blocking target markets
+      - Position existing certifications in sales material
+      - Track the competitor's newly certified product lines
+    applicability:
+      geos: [TN, MA, EG, EU, CN, KR, JP, US]
+      industries: [energy_storage, battery, e_mobility, telecom_backup]
+      notes: Competitor battery-safety certification intelligence (competitors monitored globally)
+
+  - id: BESS009
+    name: bess_competitor_bms_patent_cluster
+    category: competitor_market
+    join: Entity
+    outcome: CompetitorCapabilityShift
+    signals:
+      - PatentPublished.technology_overlap
+      - Technology.count
+    transforms:
+      - type: Lag
+        days: 30
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.5
+      max_p_value: 0.01
+      min_stability: 0.7
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      BESS competitor patent or technology activity around battery management systems or
+      pack design detected for {{evidence:competitor_name}}. Potential IP overlap with
+      Starz's in-house BMS.
+    action_playbook:
+      - Review patents for freedom-to-operate on BMS design
+      - Assess overlap with the Starz BMS roadmap
+      - Strengthen differentiated BMS features
+      - Consult IP counsel if the overlap is material
+    applicability:
+      geos: [TN, MA, EG, EU, CN, KR, JP, US]
+      industries: [energy_storage, battery, e_mobility]
+      notes: Competitor BMS / pack IP overlap intelligence (competitors monitored globally)
+
+  - id: BESS010
+    name: bess_buyer_new_procurement_lead
+    category: strategic_poi
+    join: Entity
+    outcome: SupplierPanelRestructuring
+    signals:
+      - POI.role_change.imminent
+      - RoleChange.competitor_destination
+    transforms:
+      - type: Lag
+        days: 90
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 2.5
+      max_p_value: 0.01
+      min_stability: 0.8
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      New procurement or energy-storage lead {{evidence:poi_name}} at
+      {{evidence:company_name}} (BESS buyer). A fresh supplier panel for battery packs is
+      likely - engage within the critical 90-day window.
+    action_playbook:
+      - Prioritise outreach to {{evidence:poi_name}} in the first 90 days
+      - Tailor the pitch to BESS sourcing priorities
+      - Offer a quick-win sample pack
+      - Position in-house BMS and custom pack design
+    applicability:
+      geos: [TN, MA, EG, EU]
+      industries: [energy_storage, battery, solar, telecom_backup, e_mobility]
+      notes: POI decision-maker change at a BESS buyer (primary markets MA/TN/EG, secondary EU)
+
+  - id: BESS011
+    name: bess_engineering_talent_ramp
+    category: strategic_poi
+    join: Entity
+    outcome: RelationshipOpportunity
+    signals:
+      - PersonMention.role_change
+      - JobPost.volume.anomaly
+    transforms:
+      - type: Lag
+        days: 60
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 2.0
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      A competitor or buyer is hiring battery pack / BMS engineers (movement around
+      {{evidence:poi_name}}). This signals a BESS capability build-out or program ramp
+      worth tracking for downstream demand.
+    action_playbook:
+      - Map the hiring to likely BESS programs
+      - Identify the decision-makers behind the ramp
+      - Time the capability pitch to the build-out
+      - Monitor for downstream RFQ activity
+    applicability:
+      geos: [TN, MA, EG, EU, CN]
+      industries: [energy_storage, battery, e_mobility]
+      notes: Talent-movement signal of a BESS capability build-out (buyers in MA/TN/EG/EU, competitors monitored globally)
+
+  - id: BESS012
+    name: bess_poi_conference_presence
+    category: strategic_poi
+    join: Entity
+    outcome: RelationshipOpportunity
+    signals:
+      - TradeShow.speaker.poi_match
+      - POI.conference.speaker
+    transforms:
+      - type: Lag
+        days: 14
+    test:
+      type: FisherExact
+    thresholds:
+      min_effect: 1.8
+      max_p_value: 0.01
+      min_stability: 0.75
+      max_false_alarm_rate: 0.02
+    narrative_template: >
+      BESS decision-maker {{evidence:poi_name}} is speaking at a battery or
+      energy-storage event (e.g. The Battery Show, ees Europe, Intersolar). This is a
+      high-value engagement opportunity.
+    action_playbook:
+      - Arrange a meeting with {{evidence:poi_name}} at the event
+      - Prepare a 5/10/15 kWh pack and BMS demo
+      - Reference the talk themes in outreach
+      - Capture booth and contact intelligence
+    applicability:
+      geos: [TN, MA, EG, EU]
+      industries: [energy_storage, battery, solar, telecom_backup, e_mobility]
+      notes: POI thought-leadership engagement opportunity at battery events (primary markets MA/TN/EG, secondary EU)
+
 # Summary statistics
 _metadata:
-  total_recipes: 402
+  total_recipes: 414
   categories:
     A_demand_procurement: 50
     B_competitor_market: 50
@@ -12363,6 +12760,7 @@ _metadata:
     H_talent_ip: 5
     I_pricing_market: 7
     J_geopolitical_intelligence: 15
+    BESS_battery_energy_storage: 12
   priority_distribution:
     P0_critical: 72
     P1_high: 160

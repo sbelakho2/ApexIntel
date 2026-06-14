@@ -329,10 +329,6 @@ impl GeneratorOrchestrator {
     }
 }
 
-// Safety: all contained fields are Send + Sync
-unsafe impl Send for GeneratorOrchestrator {}
-unsafe impl Sync for GeneratorOrchestrator {}
-
 // ────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────

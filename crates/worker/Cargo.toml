@@ -41,6 +41,7 @@ apex-learning = { path = "../learning", optional = true }
 apex-insights = { path = "../insights", optional = true, features = ["llm"] }
 apex-parse = { path = "../parse", optional = true }
 apex-poi = { path = "../poi", optional = true }
+apex-triage = { path = "../triage" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 chrono = { workspace = true }
@@ -53,7 +54,7 @@ tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-sqlx = { workspace = true }
+sqlx = { workspace = true, features = ["mysql"] }
 serde_yaml = "0.9"
 redis = { workspace = true }
 regex = "1"
@@ -62,3 +63,6 @@ lazy_static = "1"
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder"] }
 chrono-tz = "0.10"
 unicode-normalization = { workspace = true }
+async-nats = { workspace = true }
+printpdf = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg-512" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="64" fill="url(#bg-512)"/>
+  <!-- Stylized "A" monogram -->
+  <g transform="translate(256,256)">
+    <polygon points="0,-144 -90,108 90,108" fill="none" stroke="#3b82f6" stroke-width="16" stroke-linejoin="round"/>
+    <line x1="-40" y1="36" x2="40" y2="36" stroke="#3b82f6" stroke-width="12" stroke-linecap="round"/>
+  </g>
+  <!-- Small radar/dot accents -->
+  <circle cx="340" cy="120" r="20" fill="#60a5fa" opacity="0.8"/>
+  <circle cx="380" cy="160" r="10" fill="#38bdf8" opacity="0.6"/>
+</svg>

@@ -18,6 +18,8 @@ llm = ["apex-llm"]
 apex-core = { path = "../core" }
 apex-store = { path = "../store" }
 apex-shared = { path = "../shared" }
+apex-insights = { path = "../insights" }
+apex-triage = { path = "../triage" }
 apex-llm = { path = "../llm", optional = true }
 sqlx = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -53,6 +55,10 @@ secrecy = "0.10"
 async-stream = "0.3"
 futures-core = "0.3"
 futures-util = "0.3"
+tokio-stream = "0.1"
+
+printpdf = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

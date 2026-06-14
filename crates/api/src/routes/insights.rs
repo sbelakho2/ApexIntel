@@ -161,7 +161,7 @@ pub fn group_by_region(insights: &[InsightResponse]) -> Vec<(String, Vec<&Insigh
         map.entry(i.region.clone()).or_default().push(i);
     }
     let mut result: Vec<_> = map.into_iter().collect();
-    result.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    result.sort_by_key(|a| std::cmp::Reverse(a.1.len()));
     result
 }
 

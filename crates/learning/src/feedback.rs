@@ -26,6 +26,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Default crawl interval (in hours) assumed for sources when no explicit
+/// per-source interval is available.  Used as the baseline `current_hours`
+/// in collection-frequency recommendations.
+pub const DEFAULT_CRAWL_INTERVAL_HOURS: f64 = 24.0;
+
 // ────────────────────────────────────────────
 // Source yield scoring
 // ────────────────────────────────────────────
@@ -570,7 +575,7 @@ pub fn generate_recommendations(
         recs.push(CollectionRecommendation {
             action: CollectionAction::DecreaseCrawlFrequency {
                 source_id: s.source_id.clone(),
-                current_hours: 24.0, // placeholder
+                current_hours: DEFAULT_CRAWL_INTERVAL_HOURS,
                 suggested_hours: 168.0,
             },
             reason: format!(
@@ -587,7 +592,7 @@ pub fn generate_recommendations(
         recs.push(CollectionRecommendation {
             action: CollectionAction::IncreaseCrawlFrequency {
                 source_id: s.source_id.clone(),
-                current_hours: 24.0,
+                current_hours: DEFAULT_CRAWL_INTERVAL_HOURS,
                 suggested_hours: 6.0,
             },
             reason: format!(
@@ -681,6 +686,7 @@ pub fn generate_recommendations(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
     use super::*;
 
     fn sample_yields() -> Vec<SourceYield> {
@@ -804,7 +810,7 @@ mod tests {
                 signal_types: vec!["DnsPosture".into()],
                 effect_size: 1.6 + i as f64 * 0.05,
                 p_value: 0.008,
-                best_lag_days: 60 + i as i32 * 10,
+                best_lag_days: 60 + i * 10,
                 category: "security".into(),
                 precision_at_retirement: Some(0.35),
                 weeks_active: 6,

@@ -57,6 +57,7 @@ pub enum EntityCategory {
 
 impl EntityCategory {
     /// Parse a category string into the enum.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().trim() {
             "semiconductor" | "chip" | "fab" => Self::Semiconductor,
@@ -482,6 +483,10 @@ pub struct EntityRegistry {
     categories: HashMap<String, EntityCategory>,
     /// Entities that were dynamically discovered (not from seed config).
     dynamically_discovered: HashSet<String>,
+    /// In-memory insight history per entity (keyed by lowercased entity name).
+    /// Populated by [`record_insight_record`](Self::record_insight_record)
+    /// and returned by [`get_entity_history`](Self::get_entity_history).
+    insight_history: HashMap<String, Vec<InsightRecord>>,
 }
 
 impl EntityRegistry {
@@ -500,6 +505,7 @@ impl EntityRegistry {
             last_insight_time: HashMap::new(),
             categories: HashMap::new(),
             dynamically_discovered: HashSet::new(),
+            insight_history: HashMap::new(),
         }
     }
 
@@ -525,6 +531,7 @@ impl EntityRegistry {
             last_insight_time: HashMap::with_capacity(capacity),
             categories: HashMap::with_capacity(capacity),
             dynamically_discovered: HashSet::new(),
+            insight_history: HashMap::with_capacity(capacity),
         }
     }
 
@@ -571,6 +578,7 @@ impl EntityRegistry {
             last_insight_time,
             categories,
             dynamically_discovered: HashSet::new(),
+            insight_history: HashMap::new(),
         }
     }
 
@@ -918,6 +926,25 @@ impl EntityRegistry {
         }
     }
 
+    /// Record a full insight record for an entity, storing it in the in-memory
+    /// history and updating the recency timestamp.
+    ///
+    /// This is the preferred method for tracking generated insights — it
+    /// enables [`get_entity_history`](Self::get_entity_history) to return
+    /// real records instead of an empty list.
+    pub fn record_insight_record(&mut self, record: InsightRecord) {
+        let key = record.entity_name.to_lowercase();
+        if self.entities.contains_key(&key) {
+            self.last_insight_time.insert(key.clone(), Instant::now());
+            let history = self.insight_history.entry(key).or_default();
+            // Keep at most 100 records per entity to bound memory.
+            if history.len() >= 100 {
+                history.remove(0);
+            }
+            history.push(record);
+        }
+    }
+
     /// Select a diverse set of entities for insight generation.
     ///
     /// # Diversity Strategy
@@ -1057,17 +1084,21 @@ impl EntityRegistry {
         selected
     }
 
-    /// Retrieve the insight history for an entity (stub for DB-backed lookup).
+    /// Retrieve the insight history for an entity from the in-memory store.
     ///
-    /// In a production deployment this would query the `insights` table via
-    /// [`crate::store::postgres::insights`]. The current implementation returns
-    /// an empty Vec as a placeholder; real callers should override this via
-    /// the [`EntityHistoryProvider`] trait.
+    /// Returns insight records previously stored via
+    /// [`record_insight_record`](Self::record_insight_record), sorted from
+    /// oldest to newest.  Returns an empty `Vec` if no insights have been
+    /// recorded for this entity.
+    ///
+    /// For database-backed history in production deployments, callers should
+    /// also query the `insights` table via the store layer and merge results.
     pub fn get_entity_history(&self, entity: &str) -> Vec<InsightRecord> {
-        // Stub: in production, query the insights table.
-        // This is kept as a Vec return for forward compatibility.
-        let _ = entity;
-        Vec::new()
+        let key = entity.to_lowercase();
+        self.insight_history
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1197,6 +1228,7 @@ impl EntityRegistry {
             self.last_insight_time.remove(name);
             self.categories.remove(name);
             self.dynamically_discovered.remove(name);
+            self.insight_history.remove(name);
         }
 
         to_remove
@@ -2289,6 +2321,63 @@ mod tests {
             registry.last_insight_time.contains_key("insightcorp"),
             "Should record insight time"
         );
+    }
+
+    #[test]
+    fn test_entity_registry_insight_history() {
+        let mut registry = EntityRegistry::empty();
+        registry.register(EntityProfile::new("HistoryCorp"));
+
+        // Initially no history
+        assert!(registry.get_entity_history("HistoryCorp").is_empty());
+
+        // Record an insight
+        let record = InsightRecord {
+            id: "ins-001".to_string(),
+            entity_name: "HistoryCorp".to_string(),
+            recipe_code: "SUPPLY_CHAIN_RISK".to_string(),
+            generated_at: 1700000000,
+            title: "Supply chain risk detected".to_string(),
+            confidence: 0.85,
+        };
+        registry.record_insight_record(record);
+
+        // History should now contain the record
+        let history = registry.get_entity_history("HistoryCorp");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "ins-001");
+        assert_eq!(history[0].recipe_code, "SUPPLY_CHAIN_RISK");
+        assert!((history[0].confidence - 0.85).abs() < 0.01);
+
+        // Case-insensitive lookup
+        let history_lower = registry.get_entity_history("historycorp");
+        assert_eq!(history_lower.len(), 1);
+
+        // Unknown entity returns empty
+        assert!(registry.get_entity_history("UnknownCorp").is_empty());
+    }
+
+    #[test]
+    fn test_entity_registry_insight_history_multiple_records() {
+        let mut registry = EntityRegistry::empty();
+        registry.register(EntityProfile::new("MultiCorp"));
+
+        for i in 0..5 {
+            registry.record_insight_record(InsightRecord {
+                id: format!("ins-{i:03}"),
+                entity_name: "MultiCorp".to_string(),
+                recipe_code: "RECIPE_A".to_string(),
+                generated_at: 1700000000 + i,
+                title: format!("Insight {i}"),
+                confidence: 0.5 + i as f64 * 0.1,
+            });
+        }
+
+        let history = registry.get_entity_history("MultiCorp");
+        assert_eq!(history.len(), 5);
+        // Records should be in insertion order
+        assert_eq!(history[0].id, "ins-000");
+        assert_eq!(history[4].id, "ins-004");
     }
 
     #[test]

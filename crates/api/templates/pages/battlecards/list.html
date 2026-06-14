@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Battlecards — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Battlecards</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("Battlecards", "layers", "Competitive intelligence battlecards — structured analysis of competitor positioning, feature gaps, and win/loss trends.", "") %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  {% call m::metric_card("Total", total.to_string(), "metric-rail-steel") %}
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail metric-rail-blue"></div>
+    <p class="apex-metric-label">Active</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">—</p>
+  </div>
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail metric-rail-green"></div>
+    <p class="apex-metric-label">Draft</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">—</p>
+  </div>
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail metric-rail-purple"></div>
+    <p class="apex-metric-label">Archived</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">—</p>
+  </div>
+</div>
+
+<div class="mb-4 apex-card p-3">
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Status:</span>
+    <a href="/battlecards"
+       hx-get="/battlecards"
+       hx-target="#main-results"
+       hx-push-url="true"
+       class="apex-filter-chip {% if active_status == "" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">All</a>
+    <a href="/battlecards?status=active"
+       hx-get="/battlecards?status=active"
+       hx-target="#main-results"
+       hx-push-url="true"
+       class="apex-filter-chip {% if active_status == "active" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Active</a>
+    <a href="/battlecards?status=draft"
+       hx-get="/battlecards?status=draft"
+       hx-target="#main-results"
+       hx-push-url="true"
+       class="apex-filter-chip {% if active_status == "draft" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Draft</a>
+    <a href="/battlecards?status=archived"
+       hx-get="/battlecards?status=archived"
+       hx-target="#main-results"
+       hx-push-url="true"
+       class="apex-filter-chip {% if active_status == "archived" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Archived</a>
+  </div>
+</div>
+
+<div class="apex-card p-4">
+  {% if battlecards.is_empty() %}
+    {% call m::empty_state("No battlecards yet", "Create a battlecard from a competitor profile to get started.") %}
+  {% else %}
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {% for bc in battlecards %}
+  <a href="/battlecards/{{ bc.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <p class="font-bold text-sm truncate">{{ bc.title }}</p>
+        {% if !bc.competitor_name.is_empty() %}
+        <p class="text-[10px] text-muted-foreground uppercase mt-1">vs {{ bc.competitor_name }}</p>
+        {% endif %}
+      </div>
+      <span class="text-[10px] font-bold uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm
+        {%- if bc.status == "active" %} bg-green-900/30 text-green-400
+        {%- else if bc.status == "draft" %} bg-yellow-900/30 text-yellow-400
+        {%- else if bc.status == "archived" %} bg-gray-800 text-muted-foreground
+        {%- else %} bg-muted text-muted-foreground{% endif %}">{{ bc.status }}</span>
+    </div>
+    <div class="mt-2 flex items-center gap-3 text-[10px] text-muted-foreground">
+      <span>{{ bc.section_count }} sections</span>
+      <span>{{ bc.updated_at }}</span>
+    </div>
+  </a>
+  {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if total > per_page %}
+<div class="mt-6 flex items-center justify-center gap-2">
+  {% if page > 1 %}
+  <a href="/battlecards?page={{ page - 1 }}&per_page={{ per_page }}&status={{ active_status }}"
+     hx-get="/battlecards?page={{ page - 1 }}&per_page={{ per_page }}&status={{ active_status }}"
+     hx-target="#main-results"
+     hx-push-url="true"
+     class="apex-action-link">← Prev</a>
+  {% endif %}
+  <span class="text-[10px] font-bold text-muted-foreground">Page {{ page }}</span>
+  {% if total > page * per_page %}
+  <a href="/battlecards?page={{ page + 1 }}&per_page={{ per_page }}&status={{ active_status }}"
+     hx-get="/battlecards?page={{ page + 1 }}&per_page={{ per_page }}&status={{ active_status }}"
+     hx-target="#main-results"
+     hx-push-url="true"
+     class="apex-action-link">Next →</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

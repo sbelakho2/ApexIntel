@@ -544,6 +544,8 @@ pub enum ObservationType {
     SpeakerAppearance,
     ProcurementSignal,
     CompetitorEvent,
+    /// Dark web forum post or paste matching monitored keywords.
+    DarkWebPost,
 }
 
 impl ObservationType {
@@ -565,6 +567,7 @@ impl ObservationType {
             Self::SpeakerAppearance => "SpeakerAppearance",
             Self::ProcurementSignal => "ProcurementSignal",
             Self::CompetitorEvent => "CompetitorEvent",
+            Self::DarkWebPost => "DarkWebPost",
         }
     }
 
@@ -587,6 +590,7 @@ impl ObservationType {
             "SpeakerAppearance" => Some(Self::SpeakerAppearance),
             "ProcurementSignal" => Some(Self::ProcurementSignal),
             "CompetitorEvent" => Some(Self::CompetitorEvent),
+            "DarkWebPost" => Some(Self::DarkWebPost),
             _ => None,
         }
     }

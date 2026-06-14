@@ -309,7 +309,7 @@ pub fn count_by_region(items: &[PersonListItem]) -> Vec<(String, usize)> {
         *map.entry(p.region.clone()).or_insert(0) += 1;
     }
     let mut result: Vec<_> = map.into_iter().collect();
-    result.sort_by(|a, b| b.1.cmp(&a.1));
+    result.sort_by_key(|a| std::cmp::Reverse(a.1));
     result
 }
 

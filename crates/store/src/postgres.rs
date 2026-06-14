@@ -226,6 +226,8 @@ mod admin;
 pub use admin::is_valid_manual_trigger_kind;
 mod analytics;
 mod artifacts;
+mod battlecards;
+pub use battlecards::BattlecardRow;
 mod collaboration;
 mod companies;
 mod company_assets;
@@ -237,11 +239,14 @@ mod llm_governance;
 mod logistics;
 mod memos;
 mod observations;
+mod alert_configs;
 mod persons;
 mod preferences;
 mod recipes;
 mod security;
 mod warnings;
+pub mod embeddings;
+pub mod trends;
 
 #[derive(Debug, Clone, Default)]
 pub struct WarningListFilters {
@@ -670,6 +675,22 @@ pub struct MiningStats {
     pub hypotheses_generated: u64,
     pub recipes_staged: u64,
     pub errors: Vec<String>,
+}
+
+/// A statistically-mined pattern candidate row to persist for audit and
+/// analytics counters in the `pattern_candidates` table.
+#[derive(Debug, Clone)]
+pub struct MinedPatternCandidate {
+    /// Stable code identifying the candidate's outcome stream (e.g. `mined_WebChange`).
+    pub recipe_code: String,
+    /// Entity/outcome type the pattern was mined for.
+    pub entity_type: String,
+    /// Human-readable summary of the mined relationship and its statistics.
+    pub pattern_label: String,
+    /// Whether the candidate cleared the statistical gates (effect, p-value, stability, FDR).
+    pub passed_gates: bool,
+    /// Confidence score in [0, 1] derived from the candidate's stability.
+    pub confidence: f64,
 }
 
 /// Stats for the POI refresh pipeline stage.
@@ -1509,6 +1530,203 @@ pub struct ExpansionSeedRow {
     pub org_name: String,
     pub org_domain: Option<String>,
     pub is_competitor: bool,
+}
+
+// --- Collaboration Record Types (Phase 4.3) ---
+
+/// Strategic opportunity record - maps to `strategic_opportunities` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct StrategicOpportunityRecord {
+    pub id: Uuid,
+    pub title: String,
+    pub description: Option<String>,
+    pub opportunity_type: String,
+    pub priority_score: f64,
+    pub confidence: f64,
+    pub entity_id: Option<String>,
+    pub entity_type: Option<String>,
+    pub region: Option<String>,
+    pub estimated_value: Option<String>,
+    pub recommended_actions: serde_json::Value,
+    pub owner_id: Option<String>,
+    pub status: String,
+    pub due_date: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Critical threat record - maps to `critical_threats` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct CriticalThreatRecord {
+    pub id: Uuid,
+    pub title: String,
+    pub description: Option<String>,
+    pub threat_type: String,
+    pub severity: String,
+    pub impact_score: f64,
+    pub confidence: f64,
+    pub entity_id: Option<String>,
+    pub entity_type: Option<String>,
+    pub region: Option<String>,
+    pub mitigation_steps: serde_json::Value,
+    pub owner_id: Option<String>,
+    pub status: String,
+    pub sla_deadline: Option<DateTime<Utc>>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Investigation workspace record - maps to `investigation_workspaces` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct InvestigationWorkspaceRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub workspace_type: String,
+    pub owner_id: String,
+    pub team_id: Option<String>,
+    pub status: String,
+    pub visibility: String,
+    pub tags: Vec<String>,
+    pub entity_focus: serde_json::Value,
+    pub findings: Option<String>,
+    pub conclusions: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
+/// Workspace assignment record - maps to `workspace_assignments` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct WorkspaceAssignmentRecord {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub user_id: String,
+    pub role: String,
+    pub assigned_by: String,
+    pub assigned_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Activity feed record - maps to `activity_feed` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ActivityFeedRecord {
+    pub id: Uuid,
+    pub actor_id: String,
+    pub actor_name: String,
+    pub action_type: String,
+    pub entity_type: Option<String>,
+    pub entity_id: Option<String>,
+    pub entity_name: Option<String>,
+    pub details: serde_json::Value,
+    pub workspace_id: Option<Uuid>,
+    pub team_id: Option<String>,
+    pub visibility: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Investigation share record - maps to `investigation_shares` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct InvestigationShareRecord {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub shared_by: String,
+    pub shared_with: String,
+    pub share_type: String,
+    pub access_level: String,
+    pub message: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Priority queue item record - maps to `daily_priority_queue` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct PriorityQueueItemRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub queue_date: NaiveDate,
+    pub item_type: String,
+    pub item_id: String,
+    pub item_title: String,
+    pub priority: i32,
+    pub status: String,
+    pub notes: Option<String>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Supplier risk entry record - maps to `supplier_risk_entries` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct SupplierRiskEntryRecord {
+    pub id: Uuid,
+    pub supplier_id: String,
+    pub risk_category: String,
+    pub risk_score: f64,
+    pub risk_factors: serde_json::Value,
+    pub mitigation: Option<String>,
+    pub owner_id: Option<String>,
+    pub status: String,
+    pub last_reviewed: Option<DateTime<Utc>>,
+    pub next_review: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Pipeline opportunity record - maps to `pipeline_opportunities` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct PipelineOpportunityRecord {
+    pub id: Uuid,
+    pub opportunity_id: Option<String>,
+    pub title: String,
+    pub stage: String,
+    pub value_estimate: Option<f64>,
+    pub probability: f64,
+    pub owner_id: Option<String>,
+    pub expected_close: Option<NaiveDate>,
+    pub actual_close: Option<NaiveDate>,
+    pub notes: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
+/// Source evidence record - maps to `source_evidence` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct SourceEvidenceRecord {
+    pub id: Uuid,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub evidence_type: String,
+    pub source_url: String,
+    pub source_domain: Option<String>,
+    pub source_name: Option<String>,
+    pub reliability_score: f64,
+    pub content_hash: Option<String>,
+    pub excerpt: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Team assignment record - maps to `team_assignments` table.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct TeamAssignmentRecord {
+    pub id: Uuid,
+    pub team_id: String,
+    pub team_name: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub assigned_by: String,
+    pub assigned_to: String,
+    pub role: String,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[cfg(test)]

@@ -137,6 +137,13 @@ pub fn ems_keywords(lang: &str) -> Vec<&'static str> {
             "circuits imprimés",
             "fabrication électronique",
             "câblage",
+            // BESS pivot — battery pack / BMS / energy storage
+            "batterie",
+            "stockage d'énergie",
+            "système de gestion de batterie",
+            "pack batterie",
+            "BMS",
+            "lithium",
         ],
         "ar" => vec![
             "تصنيع إلكتروني",
@@ -144,6 +151,11 @@ pub fn ems_keywords(lang: &str) -> Vec<&'static str> {
             "لوحات الدوائر المطبوعة",
             "تعهيد التصنيع",
             "تركيب المكونات السطحية",
+            // BESS pivot
+            "بطارية",
+            "تخزين الطاقة",
+            "نظام إدارة البطارية",
+            "ليثيوم",
         ],
         "zh" => vec![
             "电子制造服务",
@@ -152,6 +164,12 @@ pub fn ems_keywords(lang: &str) -> Vec<&'static str> {
             "合同制造",
             "电子组装",
             "代工生产",
+            // BESS pivot
+            "电池",
+            "储能",
+            "电池管理系统",
+            "锂电池",
+            "电池包",
         ],
         "ja" => vec!["電子製造サービス", "SMT実装", "基板組立", "受託製造"],
         "ko" => vec!["전자제조서비스", "SMT실장", "PCB조립", "위탁제조"],
@@ -167,6 +185,18 @@ pub fn ems_keywords(lang: &str) -> Vec<&'static str> {
             "ICT",
             "BGA",
             "conformal coating",
+            // BESS pivot — battery pack / BMS / energy-storage manufacturing
+            "BESS",
+            "battery energy storage",
+            "energy storage system",
+            "battery pack",
+            "battery module",
+            "battery management system",
+            "BMS",
+            "lithium-ion",
+            "LiFePO4",
+            "LFP",
+            "battery cell",
         ],
     }
 }

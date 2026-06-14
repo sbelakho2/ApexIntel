@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
+pub mod alert_config;
 pub mod analysis;
 pub mod bounded_queue;
 pub mod company_names;
@@ -19,4 +20,5 @@ pub mod similarity;
 pub mod sla;
 pub mod text;
 pub mod timeline;
+pub mod triage;
 pub mod validation;

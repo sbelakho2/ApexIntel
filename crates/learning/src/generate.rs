@@ -29,7 +29,7 @@ const MAX_RETRIES: usize = 2;
 #[derive(Debug)]
 pub enum HypothesisResult {
     /// Successfully generated and validated hypothesis.
-    Success(RecipeHypothesis),
+    Success(Box<RecipeHypothesis>),
     /// LLM returned a response but it failed validation.
     ValidationFailed {
         candidate_outcome: String,
@@ -104,7 +104,7 @@ pub async fn generate_hypothesis(
                 signals = hyp.signals.len(),
                 "generate_hypothesis: success"
             );
-            return HypothesisResult::Success(hyp);
+            return HypothesisResult::Success(Box::new(hyp));
         }
 
         tracing::warn!(
@@ -184,6 +184,7 @@ pub async fn generate_hypotheses_batch(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
     use super::*;
     use anyhow::Result;
     use async_trait::async_trait;

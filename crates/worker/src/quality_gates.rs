@@ -829,6 +829,14 @@ pub(super) fn has_unsupported_security_escalation(
 #[cfg(feature = "llm")]
 pub(super) fn low_signal_certification_warning_case(evidence_signals: &[EvidenceSignal]) -> bool {
     let normalized_signals = normalized_evidence_signal_texts(evidence_signals);
+    // Battery/energy-storage safety certifications (UN 38.3, IEC 62619, IEC 62133,
+    // UL 1973, UL 9540, EN 50604, ...) are first-class commercial intelligence for
+    // the BESS line of business, not low-signal compliance noise: a competitor
+    // obtaining them signals market entry, and a prospect requiring them signals a
+    // qualification window. Never treat warnings anchored to them as low-signal.
+    if has_battery_safety_certification_signal(&normalized_signals) {
+        return false;
+    }
     let corpus = normalized_signals.join(" ");
     let has_soft_certification_signal = has_soft_certification_signal(&normalized_signals);
     let has_non_certification_risk_markers = has_non_certification_risk_markers(&corpus);
@@ -837,6 +845,29 @@ pub(super) fn low_signal_certification_warning_case(evidence_signals: &[Evidence
     has_soft_certification_signal
         && !has_hard_failure_markers
         && !has_non_certification_risk_markers
+}
+
+/// Returns true when any evidence signal references a battery/energy-storage
+/// safety or performance certification. These standards are highly specific, so
+/// substring matching on the lowercased (digit-preserving) normalized text is
+/// both precise and robust to spacing/punctuation variants.
+#[cfg(feature = "llm")]
+fn has_battery_safety_certification_signal(normalized_signals: &[String]) -> bool {
+    const BATTERY_CERT_MARKERS: &[&str] = &[
+        "un38.3", "un 38.3", "un 38 3", "un383",
+        "iec 62619", "iec62619",
+        "iec 62133", "iec62133",
+        "iec 61427", "iec61427",
+        "iec 62660", "iec62660",
+        "ul 1973", "ul1973",
+        "ul 9540", "ul9540",
+        "en 50604", "en50604",
+    ];
+    normalized_signals.iter().any(|signal| {
+        BATTERY_CERT_MARKERS
+            .iter()
+            .any(|marker| signal.contains(marker))
+    })
 }
 
 #[cfg(feature = "llm")]

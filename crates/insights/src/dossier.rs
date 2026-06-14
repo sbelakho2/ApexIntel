@@ -749,7 +749,7 @@ pub fn summarize_artifacts(artifacts: &[PoiArtifact]) -> ArtifactSummarySection 
 
     // Highlights: most recent 5
     let mut sorted = artifacts.to_vec();
-    sorted.sort_by(|a, b| b.ts_utc.cmp(&a.ts_utc));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.ts_utc));
 
     let highlights: Vec<ArtifactHighlight> = sorted
         .iter()

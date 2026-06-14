@@ -10,17 +10,17 @@ fn normalize_warning_window(limit: i64, offset: i64) -> (i64, i64) {
 /// suppressed longer to reduce repetition.
 ///
 ///   critical →  7 days   (fast refresh — critical issues need current data)
-///   high     → 14 days
-///   medium   → 21 days   (unchanged from the original fixed window)
-///   low      → 30 days   (long suppression — low-severity noise is least valuable)
-///   unknown  → 30 days   (safe default: err on the side of suppression)
+///   high     → 10 days
+///   medium   → 10 days   (shortened so recurring demand/commercial signals resurface)
+///   low      → 14 days   (shortened from 30 days to raise overall warning volume)
+///   unknown  → 14 days   (safe default: err on the side of suppression)
 fn dedup_window_for_severity(severity: &str) -> &'static str {
     match severity.trim().to_ascii_lowercase().as_str() {
         "critical" => "7 days",
-        "high" => "14 days",
-        "medium" => "21 days",
-        "low" => "30 days",
-        _ => "30 days",
+        "high" => "10 days",
+        "medium" => "10 days",
+        "low" => "14 days",
+        _ => "14 days",
     }
 }
 

@@ -35,6 +35,8 @@ pub mod validators;
 pub mod advanced_prompting;
 
 // Re-exports from advanced_prompting
+pub mod embeddings;
+
 pub use advanced_prompting::{
     AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence,
     CalibrationConfig, CalibrationFactor, ChainOfThoughtConfig, ConfidenceLevel,

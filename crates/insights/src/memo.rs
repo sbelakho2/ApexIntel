@@ -480,7 +480,7 @@ pub fn build_regional_sections(
         .iter()
         .filter(|(k, _)| !known.contains(k.as_str()))
         .collect();
-    extra.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+    extra.sort_by_key(|(ka, _)| *ka);
 
     for (region_code, region_cards) in extra {
         let mut ordered = region_cards.clone();
@@ -812,6 +812,7 @@ pub fn generate_executive_summary(
 ///
 /// Applies deterministic heading variation (week-seeded) and deduplicates
 /// repeated narrative patterns across entities.
+#[allow(clippy::too_many_arguments)]
 pub fn render_memo_text(
     week: u32,
     year: i32,

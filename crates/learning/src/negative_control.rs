@@ -101,7 +101,7 @@ fn shuffle_times(signals: &[EventRecord], rng: &mut impl rand::Rng) -> Vec<Event
     timestamps.shuffle(rng);
     signals
         .iter()
-        .zip(timestamps.into_iter())
+        .zip(timestamps)
         .map(|((eid, _), new_ts)| (eid.clone(), new_ts))
         .collect()
 }
@@ -113,7 +113,7 @@ fn shuffle_entities(signals: &[EventRecord], rng: &mut impl rand::Rng) -> Vec<Ev
     entities.shuffle(rng);
     signals
         .iter()
-        .zip(entities.into_iter())
+        .zip(entities)
         .map(|((_, ts), new_eid)| (new_eid, *ts))
         .collect()
 }
@@ -289,8 +289,8 @@ pub fn passes_negative_controls(
 ) -> bool {
     let (time_res, entity_res) = run_full_negative_control(candidate, outcomes, signals, config);
 
-    let time_ok = time_res.map_or(false, |r| r.passed);
-    let entity_ok = entity_res.map_or(false, |r| r.passed);
+    let time_ok = time_res.is_some_and(|r| r.passed);
+    let entity_ok = entity_res.is_some_and(|r| r.passed);
 
     time_ok && entity_ok
 }
@@ -356,6 +356,7 @@ pub fn effect_ratio(observed: f64, permuted: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
     use super::*;
 
     /// Generate a genuine causal pattern: entity i's signal at day i*10,
@@ -851,7 +852,7 @@ mod tests {
         };
 
         let filtered =
-            filter_by_negative_controls(&[candidate.clone()], &outcomes, &signals, &config);
+            filter_by_negative_controls(std::slice::from_ref(&candidate), &outcomes, &signals, &config);
         // If the candidate survived, verify its fields are intact
         for c in &filtered {
             assert_eq!(c.outcome, "my_outcome");

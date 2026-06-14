@@ -120,6 +120,7 @@ pub struct ComparisonInsight {
 /// # Arguments
 /// * `starz_caps` — (capability_name, proof_grade, is_certified) tuples
 /// * `competitors` — (name, region, threat_score, overlap_score, capabilities) tuples
+#[allow(clippy::type_complexity)]
 pub fn build_comparison_matrix(
     starz_caps: &[(String, String, bool)],
     competitors: &[(String, String, f64, f64, Vec<(String, String, bool)>)],

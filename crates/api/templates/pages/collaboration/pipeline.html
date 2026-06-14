@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Pipeline — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li class="text-foreground" aria-current="page">Pipeline</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  <div class="flex items-start justify-between gap-4 border-b border-border pb-4">
+    <div class="flex items-start gap-3">
+      <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+        {% call m::icon("zap", "h-4 w-4") %}
+      </div>
+      <div>
+        <h1>Pipeline Opportunities</h1>
+        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Track strategic opportunities through the pipeline stages.</p>
+      </div>
+    </div>
+    <div>
+      <details class="inline-block">
+        <summary class="apex-btn apex-btn-primary cursor-pointer">New Opportunity</summary>
+        <div class="absolute z-30 mt-2 w-80 rounded-sm border border-border bg-card p-4 shadow-lg">
+          <form action="/pipeline" method="post" class="space-y-2">
+            <input type="text" name="title" placeholder="Opportunity title" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <select name="stage" required
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
+              <option value="identification">Identification</option>
+              <option value="qualification">Qualification</option>
+              <option value="proposal">Proposal</option>
+              <option value="negotiation">Negotiation</option>
+              <option value="closed_won">Closed Won</option>
+              <option value="closed_lost">Closed Lost</option>
+            </select>
+            <input type="number" name="value_estimate" step="0.01" placeholder="Estimated value"
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <input type="number" name="probability" min="0" max="100" step="1" value="50" placeholder="Probability %"
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <input type="text" name="owner_id" placeholder="Owner ID"
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
+            <input type="date" name="expected_close"
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
+            <textarea name="notes" placeholder="Notes" rows="2"
+              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"></textarea>
+            <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Create</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="apex-card p-4">
+    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Total Opportunities</p>
+    <p class="mt-1 apex-metric-number text-2xl">{{ total }}</p>
+  </div>
+
+  {% if opportunities.is_empty() %}
+  {% call m::empty_state("No Pipeline Opportunities", "Create pipeline opportunities to track strategic engagements.") %}
+  {% else %}
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-border">
+      <thead>
+        <tr class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+          <th class="px-4 py-3 text-left">Title</th>
+          <th class="px-4 py-3 text-left">Stage</th>
+          <th class="px-4 py-3 text-right">Value</th>
+          <th class="px-4 py-3 text-right">Probability</th>
+          <th class="px-4 py-3 text-left">Owner</th>
+          <th class="px-4 py-3 text-right">Expected Close</th>
+          <th class="px-4 py-3 text-left">Action</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-border">
+        {% for o in opportunities %}
+        <tr class="text-xs hover:bg-secondary/30">
+          <td class="px-4 py-3 font-bold max-w-xs truncate">{{ o.title }}</td>
+          <td class="px-4 py-3">
+            <span class="rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ o.stage }}</span>
+          </td>
+          <td class="px-4 py-3 text-right tabular-nums">
+            {% if !o.value_estimate.is_empty() %}
+            ${{ o.value_estimate }}
+            {% else %}
+            <span class="text-muted-foreground">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right tabular-nums">{{ "{:.0}"|format(o.probability) }}%</td>
+          <td class="px-4 py-3 text-muted-foreground">{{ o.owner_id }}</td>
+          <td class="px-4 py-3 text-right text-[10px] text-muted-foreground">{{ o.expected_close }}</td>
+          <td class="px-4 py-3">
+            <details class="inline-block">
+              <summary class="cursor-pointer text-[10px] font-black uppercase tracking-[0.1em] text-primary">Update</summary>
+              <div class="absolute z-30 mt-1 w-48 rounded-sm border border-border bg-card p-3 shadow-lg">
+                <form action="/pipeline/{{ o.id }}/stage" method="post" class="space-y-2">
+                  <select name="stage" required
+                    class="w-full rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] text-foreground">
+                    <option value="identification"{% if o.stage == "identification" %} selected{% endif %}>Identification</option>
+                    <option value="qualification"{% if o.stage == "qualification" %} selected{% endif %}>Qualification</option>
+                    <option value="proposal"{% if o.stage == "proposal" %} selected{% endif %}>Proposal</option>
+                    <option value="negotiation"{% if o.stage == "negotiation" %} selected{% endif %}>Negotiation</option>
+                    <option value="closed_won"{% if o.stage == "closed_won" %} selected{% endif %}>Closed Won</option>
+                    <option value="closed_lost"{% if o.stage == "closed_lost" %} selected{% endif %}>Closed Lost</option>
+                  </select>
+                  <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Update</button>
+                </form>
+              </div>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

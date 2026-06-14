@@ -12,6 +12,7 @@
 //! Phase 4.2: Intelligence Quality Assurance
 
 pub mod analysis;
+pub mod battlecards;
 pub mod patterns;
 pub mod risk_summarizer;
 pub mod trend_analyzer;
@@ -57,6 +58,8 @@ pub mod llm_enricher;
 pub mod news_digest;
 pub mod outcome_tracker;
 pub mod shortage_correlation;
+
+pub mod pdf_report;
 
 use serde::{Deserialize, Serialize};
 
@@ -170,7 +173,7 @@ impl InsightResult {
             b.severity
                 .priority()
                 .cmp(&a.severity.priority())
-                .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap())
+                .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
         });
         insights
     }

@@ -15,4 +15,7 @@ pub mod overview;
 pub mod preferences;
 pub mod recipes;
 pub mod security;
+pub mod vector_search;
+pub mod trends;
+pub mod triage;
 pub mod warnings;

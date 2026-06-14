@@ -3,10 +3,10 @@ use crate::*;
 use apex_api::middleware::session::require_session;
 use axum::{
     middleware,
-    routing::{get, post, patch, delete},
+    routing::{get, post, put, patch, delete},
     Extension, Router,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
 pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
     let public = Router::new()
@@ -23,7 +23,9 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/login",
             get(apex_api::web::auth::login_page).post(apex_api::web::auth::login_submit),
         )
-        .route("/logout", post(apex_api::web::auth::logout));
+        .route("/logout", post(apex_api::web::auth::logout))
+        // ─── PWA: Service worker (served without auth) ─────────────────
+        .route("/sw.js", get(sw_js));
 
     let protected = Router::new()
         // Existing endpoints...
@@ -69,6 +71,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             post(insights_handlers::analyze_insight),
         )
         .route(
+            "/api/insights/:id/pdf",
+            get(exports_handlers::export_insight_pdf),
+        )
+        .route(
             "/api/warnings/:id/analyze",
             post(insights_handlers::analyze_warning),
         )
@@ -86,6 +92,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/companies/:id/dossier",
             get(dossiers_handlers::get_company_dossier),
         )
+        .route(
+            "/api/companies/:id/dossier/pdf",
+            get(exports_handlers::export_company_dossier_pdf),
+        )
         .route("/api/persons", get(entities_handlers::list_persons))
         .route(
             "/api/persons/export",
@@ -98,6 +108,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route(
             "/api/persons/:id/dossier",
             get(dossiers_handlers::get_person_dossier),
+        )
+        .route(
+            "/api/persons/:id/dossier/pdf",
+            get(exports_handlers::export_person_dossier_pdf),
         )
         .route(
             "/api/persons/:id/engagement",
@@ -143,10 +157,37 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/competitors/:id/changes",
             get(competitors_handlers::get_competitor_changes),
         )
+        // Battlecards
+        .route(
+            "/api/battlecards",
+            get(battlecards_handlers::list_battlecards)
+                .post(battlecards_handlers::create_battlecard),
+        )
+        .route(
+            "/api/battlecards/:id",
+            get(battlecards_handlers::get_battlecard)
+                .delete(battlecards_handlers::delete_battlecard),
+        )
+        .route(
+            "/api/battlecards/:id/section",
+            put(battlecards_handlers::update_battlecard_section),
+        )
+        .route(
+            "/api/battlecards/:id/regenerate",
+            post(battlecards_handlers::regenerate_battlecard),
+        )
+        .route(
+            "/api/battlecards/:id/export",
+            get(battlecards_handlers::export_battlecard),
+        )
         .route("/api/search", get(overview_handlers::search))
         .route(
             "/api/search/semantic",
             get(overview_handlers::semantic_search),
+        )
+        .route(
+            "/api/search/suggest",
+            get(overview_handlers::suggest),
         )
         .route("/api/graph", get(overview_handlers::list_graph))
         .route(
@@ -210,6 +251,23 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(catalog_handlers::list_poi_artifacts),
         )
         .route("/api/dashboard", get(catalog_handlers::get_dashboard))
+
+        // ─── Alert Settings API Routes ───────────────────────────────────
+        .route(
+            "/api/settings/alerts",
+            get(alert_settings_handlers::list_alert_settings),
+        )
+        .route(
+            "/api/settings/alerts/entity/:entity_id",
+            get(alert_settings_handlers::get_entity_alert_config)
+                .put(alert_settings_handlers::upsert_entity_alert_config)
+                .delete(alert_settings_handlers::delete_entity_alert_config),
+        )
+        .route(
+            "/api/settings/alerts/global",
+            put(alert_settings_handlers::upsert_global_alert_defaults),
+        )
+
         .route("/api/admin/crawl-status", get(get_admin_crawl_status))
         .route(
             "/api/admin/recipe-performance",
@@ -217,6 +275,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route("/api/admin/poi-coverage", get(get_admin_poi_coverage))
         .route("/api/admin/trigger-scan", post(post_trigger_scan))
+        .route(
+            "/api/admin/search/rebuild-autocomplete",
+            post(post_rebuild_autocomplete),
+        )
         .route(
             "/api/llm/extract-entities",
             post(llm_handlers::llm_extract_entities),
@@ -234,6 +296,20 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             post(llm_handlers::llm_generate_memo),
         )
         
+        // ─── Entity Trend Chart Data Routes ──────────────────────────────
+        .route(
+            "/api/charts/entity/:id/activity",
+            get(charts_handlers::get_entity_activity_chart),
+        )
+        .route(
+            "/api/charts/entity/:id/activity/svg",
+            get(charts_handlers::get_entity_activity_chart_svg),
+        )
+        .route(
+            "/api/charts/entity/:id/observations",
+            get(charts_handlers::get_entity_observation_chart),
+        )
+
         // ─── Phase 4.3: Executive Dashboard ─────────────────────────────
         .route(
             "/api/executive/summary",
@@ -322,14 +398,68 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(collaboration_handlers::get_evidence).post(collaboration_handlers::add_evidence),
         )
 
+        // ─── Real-time Events (SSE) ────────────────────────────────────────
+        .route(
+            "/api/v1/events/stream",
+            get(crate::alert_sse_handler),
+        )
+
         // ─── Phase 4.3: Team Assignments ──────────────────────────────────
         .route(
             "/api/team-assignments",
             get(collaboration_handlers::list_team_assignments).post(collaboration_handlers::create_team_assignment),
         )
 
-        // ─── Phase 4.3: Annotations (TODO: implement collab_routes module) ───
-        
+        // ─── Vector Search Routes ──────────────────────────────────────────
+        .route(
+            "/api/search/vector",
+            get(vector_search_handlers::vector_search),
+        )
+        .route(
+            "/api/entities/:entity_type/:entity_id/similar",
+            get(vector_search_handlers::similar_entities),
+        )
+        .route(
+            "/api/admin/embeddings/reindex",
+            post(vector_search_handlers::reindex_embeddings),
+        )
+
+        // ─── AI Triage Engine API Routes ────────────────────────────────
+        .route("/api/triage", get(triage_handlers::list_triage))
+        .route("/api/triage/stats", get(triage_handlers::get_triage_stats))
+        .route("/api/triage/bands", get(triage_handlers::get_triage_bands))
+        .route(
+            "/api/triage/:id",
+            get(triage_handlers::get_triage_item),
+        )
+        .route(
+            "/api/triage/:id/override",
+            post(triage_handlers::override_triage_score),
+        )
+        .route(
+            "/api/triage/:id/acknowledge",
+            post(triage_handlers::acknowledge_triage_item),
+        )
+        .route(
+            "/api/triage/:id/resolve",
+            post(triage_handlers::resolve_triage_item),
+        )
+        .route(
+            "/api/triage/:id/dismiss",
+            post(triage_handlers::dismiss_triage_item),
+        )
+
+        // ─── Historical Trends API Routes ─────────────────────────────────
+        .route("/api/trends", get(trends_handlers::query_trends))
+        .route(
+            "/api/trends/comparison",
+            get(trends_handlers::trend_comparison),
+        )
+        .route(
+            "/api/trends/entities",
+            get(trends_handlers::entity_trends),
+        )
+
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let web_pages = Router::new()
@@ -386,10 +516,22 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/competitors",
             get(apex_api::web::competitors::list_competitors),
         )
+        .route(
+            "/battlecards",
+            get(apex_api::web::battlecards::list_battlecards),
+        )
+        .route(
+            "/battlecards/:id",
+            get(apex_api::web::battlecards::get_battlecard),
+        )
         .route("/graph", get(apex_api::web::graph::graph_page))
         .route("/recipes", get(apex_api::web::recipes::list_recipes))
         .route("/recipes/new", get(apex_api::web::recipes::new_recipe))
         .route("/search", get(apex_api::web::search::search_page))
+        .route(
+            "/search/suggestions",
+            get(apex_api::web::search::suggestions_html),
+        )
         .route("/security", get(apex_api::web::security::security_page))
         .route(
             "/security/trigger-scan",
@@ -410,15 +552,131 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(apex_api::web::settings::settings_page)
                 .post(apex_api::web::settings::save_settings),
         )
+        .route(
+            "/settings/alerts",
+            get(apex_api::web::alert_settings::alert_settings_page),
+        )
+
+        // ─── Collaboration Web Routes ──────────────────────────────────────
+        .route(
+            "/workspaces",
+            get(apex_api::web::collaboration::list_workspaces),
+        )
+        .route(
+            "/workspaces/new",
+            get(apex_api::web::collaboration::new_workspace_page),
+        )
+        .route(
+            "/workspaces",
+            post(apex_api::web::collaboration::create_workspace),
+        )
+        .route(
+            "/workspaces/:id",
+            get(apex_api::web::collaboration::get_workspace),
+        )
+        .route(
+            "/workspaces/:id/close",
+            post(apex_api::web::collaboration::close_workspace),
+        )
+        .route(
+            "/workspaces/:id/assign",
+            post(apex_api::web::collaboration::assign_user_to_workspace),
+        )
+        .route(
+            "/workspaces/:id/shares",
+            post(apex_api::web::collaboration::share_workspace),
+        )
+        .route("/queue", get(apex_api::web::collaboration::list_queue))
+        .route("/queue", post(apex_api::web::collaboration::add_to_queue))
+        .route(
+            "/queue/:id/complete",
+            post(apex_api::web::collaboration::complete_queue_item),
+        )
+        .route(
+            "/activity",
+            get(apex_api::web::collaboration::list_activity),
+        )
+        .route(
+            "/supplier-risk",
+            get(apex_api::web::collaboration::list_supplier_risks),
+        )
+        .route(
+            "/supplier-risk",
+            post(apex_api::web::collaboration::add_supplier_risk),
+        )
+        .route(
+            "/pipeline",
+            get(apex_api::web::collaboration::list_pipeline),
+        )
+        .route(
+            "/pipeline",
+            post(apex_api::web::collaboration::create_pipeline_opportunity),
+        )
+        .route(
+            "/pipeline/:id/stage",
+            post(apex_api::web::collaboration::update_pipeline_stage),
+        )
+        .route(
+            "/evidence",
+            get(apex_api::web::collaboration::list_evidence),
+        )
+        .route(
+            "/evidence",
+            post(apex_api::web::collaboration::add_evidence),
+        )
+        .route(
+            "/team-assignments",
+            get(apex_api::web::collaboration::list_team_assignments),
+        )
+        .route(
+            "/team-assignments",
+            post(apex_api::web::collaboration::create_team_assignment),
+        )
+
+        // ─── Executive Dashboard Web Route ─────────────────────────────────
+        .route(
+            "/executive",
+            get(apex_api::web::executive::executive_dashboard),
+        )
+
+        // ─── Historical Trends Web Route ───────────────────────────────────
+        .route("/trends", get(apex_api::web::trends::trends_page))
+
+        // ─── AI Triage Engine Web Routes ─────────────────────────────────
+        .route("/triage", get(apex_api::web::triage::list_triage))
+        .route(
+            "/triage/:id",
+            get(apex_api::web::triage::get_triage_item),
+        )
+        .route(
+            "/triage/:id/acknowledge",
+            post(apex_api::web::triage::acknowledge_triage_html),
+        )
+        .route(
+            "/triage/:id/resolve",
+            post(apex_api::web::triage::resolve_triage_html),
+        )
+        .route(
+            "/triage/:id/dismiss",
+            post(apex_api::web::triage::dismiss_triage_html),
+        )
+        .route(
+            "/triage/:id/override",
+            post(apex_api::web::triage::override_triage_html),
+        )
+
         .route_layer(middleware::from_fn(require_session))
         .layer(Extension(state.store.clone()))
-        .layer(Extension(state.search_index.clone()));
+        .layer(Extension(state.search_index.clone()))
+        .layer(Extension(state.autocomplete_index.clone()));
 
     Router::new()
         .merge(public)
         .merge(protected)
         .merge(web_pages)
         .route("/ws/warnings", get(warnings_ws))
+        // ─── PWA static files (dev mode; nginx serves in production) ───
+        .nest_service("/static", ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
         .layer(middleware::from_fn(add_rate_limit_headers))
         .layer(Extension(state.rate_limiter.clone()))
         .layer(cors)

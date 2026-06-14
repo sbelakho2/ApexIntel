@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block breadcrumb %}
+<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <li><a href="/" class="hover:text-foreground transition-colors">Home</a></li>
+    <li aria-hidden="true">/</li>
+    <li class="text-foreground" aria-current="page">Triage Queue</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="metric-rail-slate"></div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Total</div>
+    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.total }}</div>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="metric-rail-red"></div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Critical</div>
+    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.critical_count }}</div>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="metric-rail-amber"></div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">High / Medium</div>
+    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.high_count + stats.medium_count }}</div>
+  </div>
+  <div class="apex-card p-4 relative overflow-hidden">
+    <div class="metric-rail-green"></div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Resolved</div>
+    <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.resolved }}</div>
+  </div>
+</div>
+
+<div class="apex-card p-4 mb-6">
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Triage Band Distribution</h2>
+  </div>
+  <div class="apex-chart-legend">
+    <span class="apex-legend-item"><span class="metric-swatch-red"></span> Critical (≥0.80)</span>
+    <span class="apex-legend-item"><span class="metric-swatch-amber"></span> High (≥0.60)</span>
+    <span class="apex-legend-item"><span class="metric-swatch-blue"></span> Medium (≥0.40)</span>
+    <span class="apex-legend-item"><span class="metric-swatch-slate"></span> Low (<0.40)</span>
+  </div>
+</div>
+
+<div class="mb-4 apex-card p-3">
+  <form method="get" action="/triage" class="mb-3 flex flex-wrap items-center gap-2"
+        hx-get="/triage" hx-target="#triage-list" hx-push-url="true" hx-trigger="change, submit">
+    <input type="hidden" name="page" value="1">
+    <select name="status" class="apex-select text-xs">
+      <option value="" {% if current_status == "all" %}selected{% endif %}>All Statuses</option>
+      <option value="pending" {% if current_status == "pending" %}selected{% endif %}>Pending</option>
+      <option value="triaged" {% if current_status == "triaged" %}selected{% endif %}>Triaged</option>
+      <option value="acknowledged" {% if current_status == "acknowledged" %}selected{% endif %}>Acknowledged</option>
+      <option value="resolved" {% if current_status == "resolved" %}selected{% endif %}>Resolved</option>
+      <option value="dismissed" {% if current_status == "dismissed" %}selected{% endif %}>Dismissed</option>
+    </select>
+  </form>
+</div>
+
+<div id="triage-list">
+  {% if items.is_empty() %}
+    <div class="apex-card p-8 text-center">
+      <p class="text-sm text-muted-foreground">No triage items found.</p>
+    </div>
+  {% else %}
+    <div class="apex-card overflow-hidden mb-4">
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-left text-xs" data-dense-table data-table-name="triage">
+          <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+            <tr>
+              <th class="px-4 py-3">Score</th>
+              <th class="px-4 py-3">Title</th>
+              <th class="px-4 py-3">Type</th>
+              <th class="px-4 py-3">Status</th>
+              <th class="px-4 py-3">Entity</th>
+              <th class="px-4 py-3">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in items %}
+            <tr class="cursor-pointer border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30"
+                tabindex="0" data-row-link="/triage/{{ item.id }}">
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider"
+                      style="background-color: {{ item.score_band_color }}15; color: {{ item.score_band_color }}">
+                  {{ item.score_band }}
+                </span>
+              </td>
+              <td class="px-4 py-3 font-medium max-w-[240px] truncate">{{ item.title }}</td>
+              <td class="px-4 py-3 text-muted-foreground">{{ item.item_type.as_str() }}</td>
+              <td class="px-4 py-3">
+                <span class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-black uppercase tracking-wider
+                  {% if item.status.as_str() == "resolved" %}border-green-600/30 text-green-600
+                  {% else if item.status.as_str() == "dismissed" %}border-muted-foreground/30 text-muted-foreground
+                  {% else if item.status.as_str() == "acknowledged" %}border-blue-600/30 text-blue-600
+                  {% else if item.status.as_str() == "triaged" %}border-amber-600/30 text-amber-600
+                  {% else %}border-red-600/30 text-red-600{% endif %}">
+                  {{ item.status.as_str() }}
+                </span>
+              </td>
+              <td class="px-4 py-3 text-muted-foreground max-w-[160px] truncate">
+                {{ item.entity_name.as_deref().unwrap_or("-") }}
+              </td>
+              <td class="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                {{ item.created_at.format("%Y-%m-%d %H:%M") }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    {% if total_pages > 1 %}
+    <div class="mt-4 flex items-center justify-between">
+      <div class="flex gap-1">
+        {% if page > 1 %}
+        <a href="?page={{ page - 1 }}&status={{ current_status }}"
+           class="apex-btn-secondary px-3 py-1.5 text-xs"
+           hx-get="/triage?page={{ page - 1 }}&status={{ current_status }}"
+           hx-target="#triage-list" hx-push-url="true">← Prev</a>
+        {% endif %}
+        <span class="px-3 py-1.5 text-xs text-muted-foreground">
+          Page {{ page }} of {{ total_pages }}
+        </span>
+        {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}&status={{ current_status }}"
+           class="apex-btn-secondary px-3 py-1.5 text-xs"
+           hx-get="/triage?page={{ page + 1 }}&status={{ current_status }}"
+           hx-target="#triage-list" hx-push-url="true">Next →</a>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

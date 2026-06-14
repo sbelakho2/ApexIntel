@@ -438,6 +438,7 @@ pub fn validate_hypothesis(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
     use super::*;
 
     fn sample_candidate() -> PatternCandidate {

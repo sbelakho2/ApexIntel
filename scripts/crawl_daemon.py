@@ -1570,6 +1570,12 @@ def detect_signals(text: str, url: str) -> list[dict]:
         "graphite supply", "nickel shortage", "tungsten supply",
         "gallium restriction", "germanium export control", "mineral stockpile",
         "critical raw material", "supply chain decoupling", "mineral dependency",
+        # Battery cell raw materials — Starz sources cells for its BESS packs,
+        # so cell-grade material supply/price risk is directly relevant.
+        "battery-grade lithium", "lithium carbonate", "lithium hydroxide",
+        "lithium spodumene", "cathode material", "anode material",
+        "lfp cathode", "nickel sulphate", "manganese sulphate",
+        "battery cell shortage", "lithium-ion accumulator",
     ]
     n, matched = _count_kw_matches(text_lower, mineral_kw)
     if n >= 2:
@@ -1764,6 +1770,9 @@ NEWS_SOURCES = [
     {"url": "https://www.jeuneafrique.com/", "type": "news", "topic": "maghreb", "poi_signal": True},
     {"url": "https://www.leaders.com.tn/", "type": "news", "topic": "tunisia", "poi_signal": True},
     {"url": "https://www.leconomiste.com/", "type": "news", "topic": "morocco", "poi_signal": True},
+    {"url": "https://www.dailynewsegypt.com/", "type": "news", "topic": "egypt", "poi_signal": True},
+    {"url": "https://english.ahram.org.eg/", "type": "news", "topic": "egypt", "poi_signal": True},
+    {"url": "https://www.egyptindependent.com/", "type": "news", "topic": "egypt", "poi_signal": True},
     {"url": "https://www.africanews.com/", "type": "news", "topic": "africa", "poi_signal": True},
     
     # Asia-Pacific  
@@ -2055,6 +2064,10 @@ SOCIAL_MEDIA_SOURCES = [
     {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=sanctions+evasion&limit=25",       "platform": "bluesky", "topic": "sanctions",     "tier": "T2"},
     {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=energy+security+pipeline&limit=25","platform": "bluesky", "topic": "energy",        "tier": "T2"},
     {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=critical+minerals+supply&limit=25","platform": "bluesky", "topic": "minerals",      "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=battery+energy+storage&limit=25",  "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=BESS+project&limit=25",             "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=lithium+battery+supply&limit=25",   "platform": "bluesky", "topic": "battery",        "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=battery+management+system&limit=25","platform": "bluesky", "topic": "battery",        "tier": "T2"},
 
     # ─── Telegram Public Channels: OSINT & Geopolitics ────────────────────────
     # T3 credibility — high noise, requires corroboration
@@ -2104,6 +2117,15 @@ SOCIAL_MEDIA_SOURCES = [
     {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=energy+pipeline+shutdown&limit=25", "platform": "bluesky", "topic": "energy",        "tier": "T2"},
     {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=cyber+attack+infrastructure&limit=25", "platform": "bluesky", "topic": "cyber",    "tier": "T2"},
     {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=rare+earth+minerals&limit=25",      "platform": "bluesky", "topic": "minerals",      "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=battery+pack+manufacturer&limit=25", "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=LiFePO4+storage&limit=25",           "platform": "bluesky", "topic": "battery",        "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=energy+storage+tender&limit=25",     "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=lithium+cell+shortage&limit=25",     "platform": "bluesky", "topic": "battery",        "tier": "T2"},
+    # Geo-targeted BESS demand — Starz's primary sales markets (Morocco, Tunisia, Egypt)
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=battery+storage+Morocco&limit=25",   "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=energy+storage+Tunisia&limit=25",     "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=battery+storage+Egypt&limit=25",      "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
+    {"url": "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=solar+battery+North+Africa&limit=25", "platform": "bluesky", "topic": "energy_storage", "tier": "T2"},
 ]
 
 # Credibility weight by tier (used in cross-reference scoring)

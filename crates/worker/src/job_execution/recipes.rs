@@ -50,13 +50,28 @@ fn evidence_quality_from_signals(
 #[cfg(feature = "llm")]
 fn is_grounding_evidence_signal(signal: &EvidenceSignal) -> bool {
     let signal_type = signal.signal_type.trim().to_ascii_lowercase();
+    // Pure meta-signals (internal references, capabilities, graph edges, prior
+    // warnings) never count as grounding.
     if signal_type == "warning"
         || signal_type == "capability"
         || signal_type == "facility"
-        || signal_type == "poi"
         || signal_type.starts_with("graph_")
     {
         return false;
+    }
+
+    // Person-of-interest signals (executive moves, appointments, role changes)
+    // count as grounding ONLY when anchored to a concrete source URL — i.e. a
+    // verifiable announcement rather than an unsourced internal profile note.
+    // This lets a sourced leadership change at a target customer ground a
+    // commercial warning, while still excluding ungrounded POI meta-signals.
+    if signal_type == "poi"
+        || signal_type == "personmove"
+        || signal_type == "person_move"
+        || signal_type == "leadershipchange"
+        || signal_type == "leadership_change"
+    {
+        return !signal.source_url.trim().is_empty();
     }
 
     !signal.source_url.trim().is_empty() || signal.date_context.is_some()
@@ -80,17 +95,23 @@ fn should_emit_llm_warning(
 ) -> bool {
     let grounding_count = grounding_evidence_count(evidence_signals);
     let reference_count = count_numbered_references(warning_action, 12);
-    if grounding_count == 0 || reference_count == 0 {
+    // A warning must be anchored to verifiable evidence: require at least one
+    // grounded signal (source URL or dated observation) OR at least one numbered
+    // reference in the recommendation. Previously BOTH were mandatory, which
+    // silently dropped well-sourced warnings whose recommendation text simply
+    // did not contain "[1]"-style citations.
+    if grounding_count == 0 && reference_count == 0 {
         return false;
     }
 
     let normalized_severity = warning_severity.trim().to_ascii_lowercase();
     if normalized_severity != "critical" && !insight_inserted {
-        // Even without LLM insight, allow warnings through if the evidence
+        // Even without an LLM insight, allow warnings through if the evidence
         // contains strong concrete signals (tender notices, regulatory filings,
-        // security incidents, POI moves, social mentions with high engagement).
-        // This prevents quality gates from suppressing all warnings when the
-        // LLM insight was rejected but the underlying evidence is solid.
+        // security incidents, POI moves, certifications, product launches,
+        // capacity expansions, or import-volume shifts). This prevents quality
+        // gates from suppressing all warnings when the LLM insight was rejected
+        // but the underlying evidence is solid.
         if !has_concrete_evidence(evidence_signals) {
             return false;
         }
@@ -102,10 +123,10 @@ fn should_emit_llm_warning(
     }
 
     if normalized_severity == "critical" {
-        return evidence_quality >= 0.45;
+        return evidence_quality >= 0.35;
     }
 
-    grounding_count >= 2 && evidence_quality >= 0.55
+    grounding_count >= 1 && evidence_quality >= 0.45
 }
 
 /// Checks whether the evidence signals contain concrete, verifiable business
@@ -133,7 +154,7 @@ fn has_concrete_evidence(signals: &[EvidenceSignal]) -> bool {
             .collect()
     }
 
-    let concrete_normalized: [&str; 28] = [
+    let concrete_normalized: &[&str] = &[
         "tendernotice", "tender",
         "regulatoryfiling", "regulatory",
         "contractaward", "contract",
@@ -145,6 +166,14 @@ fn has_concrete_evidence(signals: &[EvidenceSignal]) -> bool {
         "governmentpolicy", "government", "policy",
         "tradeaction", "trade", "sanction",
         "certification",
+        // Commercial demand & BESS/battery signals: new product lines, capacity
+        // expansions, hiring ramps, and import-volume shifts are concrete,
+        // verifiable business activity for the battery line of business.
+        "productlaunch", "product",
+        "expansion", "capacityexpansion",
+        "importdata", "import",
+        "commodity",
+        "jobpost",
     ];
 
     let concrete_count = signals
@@ -411,8 +440,10 @@ fn apply_bias_mitigation(
         .unwrap_or(summary)
         .trim();
 
-    let mut da_config = DevilsAdvocateConfig::default();
-    da_config.generate_counter_narrative = false;
+    let da_config = DevilsAdvocateConfig {
+        generate_counter_narrative: false,
+        ..Default::default()
+    };
 
     let result = generate_devils_advocate(
         &claim,
@@ -724,6 +755,71 @@ fn recipe_warning_severity(
         "regulatory_policy" | "supply_chain_risk" | "cybersecurity_threat" => "high",
         _ => "medium",
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slack notification helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Send a Slack notification for a high- or critical-severity warning emitted
+/// by the recipe engine.
+///
+/// This is a best-effort helper: failures are logged but not propagated so the
+/// recipe pipeline continues uninterrupted.
+async fn notify_slack_high_severity(
+    warning_severity: &str,
+    title: &str,
+    description: &str,
+    entity_name: Option<&str>,
+    category: &str,
+    recipe_code: &str,
+) {
+    let severity_lower = warning_severity.trim().to_ascii_lowercase();
+    if severity_lower != "high" && severity_lower != "critical" {
+        return;
+    }
+
+    let config = apex_worker::slack::SlackConfig::from_env();
+    let Ok(webhook) = apex_worker::slack::SlackWebhook::new(&config) else {
+        tracing::warn!("recipes: failed to build SlackWebhook for high-severity alert");
+        return;
+    };
+
+    let slack_severity = apex_worker::slack::SlackMessageSeverity::from_str(warning_severity);
+    let alert_type = match category {
+        "security" | "security_breach" | "cyber" => apex_worker::slack::AlertType::Security,
+        "insight" | "competitive_intel" => apex_worker::slack::AlertType::Insight,
+        "recipe_match" | "opportunity" | "demand_procurement" => {
+            apex_worker::slack::AlertType::RecipeMatch
+        }
+        "poi_update" | "poi" | "talent_movement" => apex_worker::slack::AlertType::PoiUpdate,
+        "warning" | "verification" => apex_worker::slack::AlertType::Warning,
+        _ => apex_worker::slack::AlertType::General,
+    };
+
+    let mut msg =
+        apex_worker::slack::SlackMessage::new(slack_severity, alert_type, title, description)
+            .with_field("Recipe", recipe_code)
+            .with_field("Category", category);
+
+    if let Some(name) = entity_name {
+        msg = msg.with_entity(name);
+    }
+
+    if let Err(e) = webhook.send(&msg).await {
+        tracing::warn!(
+            recipe = %recipe_code,
+            severity = %warning_severity,
+            error = %e,
+            "recipes: failed to send Slack notification for high-severity warning"
+        );
+    } else {
+        tracing::info!(
+            recipe = %recipe_code,
+            severity = %warning_severity,
+            "recipes: Slack notification sent for high-severity warning"
+        );
+    }
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -1516,7 +1612,10 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 }
             }
             "bloomberg_global" | "ft_global" | "nyt_us" | "axios_us" | "politico_us"
-            | "the_hill" | "afp_global" => {
+            | "the_hill" | "afp_global" | "bbc_world" | "nyt_world" | "nyt_business"
+            | "dw_en" | "euronews" | "guardian_world" | "marketwatch" | "economist_finance"
+            | "energy_storage_news" | "electrek" | "pv_magazine" | "oilprice" | "gcaptain"
+            | "techcrunch" | "theverge" => {
                 for k in &[
                     "News.count",
                     "News.any",
@@ -1533,7 +1632,9 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     *fm.entry(k.to_string()).or_default() += c;
                 }
             }
-            "foreign_affairs" => {
+            "foreign_affairs" | "aljazeera_all" | "france24_en" | "northafricapost"
+            | "dailynewsegypt" | "egypt_independent" | "arabnews" | "middleeasteye"
+            | "africanews" => {
                 for k in &[
                     "Geopolitical.risk",
                     "Geopolitical.count",
@@ -2377,23 +2478,10 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let (feedback_tracker, adaptive_thresholds, recipe_quality_scores) =
         hydrate_feedback_tracker(store.as_ref(), now).await;
 
-    #[cfg(feature = "llm")]
-    candidates.sort_by(|left, right| {
-        let left_quality = recipe_quality_scores
-            .get(&left.recipe_code.to_ascii_uppercase())
-            .copied()
-            .unwrap_or(0.5);
-        let right_quality = recipe_quality_scores
-            .get(&right.recipe_code.to_ascii_uppercase())
-            .copied()
-            .unwrap_or(0.5);
-        let left_score = left.confidence * left.impact * (0.75 + 0.5 * left_quality);
-        let right_score = right.confidence * right.impact * (0.75 + 0.5 * right_quality);
-        right_score
-            .partial_cmp(&left_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
+    // Candidates are ranked below, after recent-insight coverage has been
+    // loaded, so that anti-repetition coverage weighting can be folded into the
+    // score. The set of entity UUIDs is order-independent, so it is safe to
+    // collect it from the unranked list here.
     let all_entity_uuids: Vec<Uuid> = candidates
         .iter()
         .filter_map(|c| Uuid::parse_str(&c.entity_id).ok())
@@ -2430,6 +2518,114 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             HashMap::new()
         }
     };
+
+    // ----- Anti-repetition: coverage-weighted ranking + weekly entity budget -----
+    // `recent_insights_by_entity` tells us how saturated each entity already is.
+    // It is used twice: (1) to dampen the ranking score of entities that already
+    // have many recent insights so under-covered entities surface in every run,
+    // and (2) to enforce a rolling 7-day per-entity budget in the firing loop.
+    #[cfg(feature = "llm")]
+    let entity_recent_total_count: HashMap<String, usize> = recent_insights_by_entity
+        .iter()
+        .map(|(entity_id, rows)| (entity_id.clone(), rows.len()))
+        .collect();
+
+    #[cfg(feature = "llm")]
+    let entity_recent_7d_count: HashMap<String, usize> = {
+        let cutoff = now - chrono::Duration::days(7);
+        recent_insights_by_entity
+            .iter()
+            .map(|(entity_id, rows)| {
+                let count = rows
+                    .iter()
+                    .filter(|row| row.created_at.map(|ts| ts >= cutoff).unwrap_or(false))
+                    .count();
+                (entity_id.clone(), count)
+            })
+            .collect()
+    };
+
+    // ----- Go-to-market geographic weighting -----
+    // Starz sells battery packs mostly into Morocco, Tunisia and Egypt, with a
+    // smaller EU focus, and nowhere else. Demand-side opportunities in those
+    // markets are boosted in the ranking while out-of-footprint buyers are
+    // de-prioritised. Competitors and upstream suppliers (cell makers,
+    // distributors, …) are exempt and keep full weight — they are monitored
+    // globally regardless of location. Entities with no geo row default to the
+    // neutral multiplier, so missing data never penalises a candidate.
+    #[cfg(feature = "llm")]
+    type EntityGeo = HashMap<String, (Option<String>, Option<String>, Option<String>, bool)>;
+    #[cfg(feature = "llm")]
+    let entity_geo: EntityGeo =
+        match store.get_company_geo_by_ids(&all_entity_uuids).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(id, country_code, region, company_type, is_competitor)| {
+                    (
+                        id.to_string(),
+                        (country_code, region, company_type, is_competitor),
+                    )
+                })
+                .collect(),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "recipe_fire: failed to load company geo for market targeting"
+                );
+                HashMap::new()
+            }
+        };
+
+    #[cfg(feature = "llm")]
+    {
+        let damping = *crate::config::COVERAGE_DAMPING_FACTOR;
+        let geo_multiplier = |entity_id: &str| -> f64 {
+            entity_geo
+                .get(entity_id)
+                .map(|(country_code, region, company_type, is_competitor)| {
+                    crate::geo_targeting::ranking_geo_multiplier(
+                        *is_competitor,
+                        company_type.as_deref(),
+                        country_code.as_deref(),
+                        region.as_deref(),
+                    )
+                })
+                .unwrap_or(1.0)
+        };
+        candidates.sort_by(|left, right| {
+            let left_quality = recipe_quality_scores
+                .get(&left.recipe_code.to_ascii_uppercase())
+                .copied()
+                .unwrap_or(0.5);
+            let right_quality = recipe_quality_scores
+                .get(&right.recipe_code.to_ascii_uppercase())
+                .copied()
+                .unwrap_or(0.5);
+            let left_cov = entity_recent_total_count
+                .get(&left.entity_id)
+                .copied()
+                .unwrap_or(0);
+            let right_cov = entity_recent_total_count
+                .get(&right.entity_id)
+                .copied()
+                .unwrap_or(0);
+            let left_weight = 1.0 / (1.0 + damping * left_cov as f64);
+            let right_weight = 1.0 / (1.0 + damping * right_cov as f64);
+            let left_score = left.confidence
+                * left.impact
+                * (0.75 + 0.5 * left_quality)
+                * left_weight
+                * geo_multiplier(&left.entity_id);
+            let right_score = right.confidence
+                * right.impact
+                * (0.75 + 0.5 * right_quality)
+                * right_weight
+                * geo_multiplier(&right.entity_id);
+            right_score
+                .partial_cmp(&left_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
 
     let company_names: HashMap<String, (String, Option<String>, Option<String>)> = match store
         .get_company_names_by_ids(&all_entity_uuids)
@@ -3152,7 +3348,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
              FROM insights i \
              CROSS JOIN LATERAL unnest(COALESCE(i.tags, ARRAY[]::text[])) AS t(tag) \
              CROSS JOIN LATERAL unnest(COALESCE(i.entity_ids, ARRAY[]::uuid[])) AS e(entity_id) \
-             WHERE i.created_at > NOW() - INTERVAL '48 hours' \
+             WHERE i.created_at > NOW() - INTERVAL '7 days' \
                AND t.tag ~ '^[A-Z][0-9]{3,}'",
         )
         .fetch_all(&store.pool)
@@ -3383,6 +3579,30 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     category = %c.category,
                     recipe = %c.recipe_code,
                     "recipe_fire: skipping duplicate entity+category LLM call"
+                );
+                skipped_dedup += 1;
+                continue;
+            }
+
+            // Rolling 7-day per-entity budget (anti-repetition across runs).
+            // Combines insights already persisted for this entity in the last
+            // week with any produced earlier in the current run, so a few
+            // high-signal companies cannot monopolize the insight stream night
+            // after night.
+            let weekly_budget = *crate::config::WEEKLY_ENTITY_INSIGHT_BUDGET;
+            let prior_7d = entity_recent_7d_count
+                .get(&c.entity_id)
+                .copied()
+                .unwrap_or(0);
+            let this_run = entity_run_count.get(&c.entity_id).copied().unwrap_or(0) as usize;
+            if prior_7d + this_run >= weekly_budget {
+                tracing::debug!(
+                    entity = %entity_label,
+                    category = %c.category,
+                    prior_7d,
+                    this_run,
+                    weekly_budget,
+                    "recipe_fire: weekly per-entity insight budget reached, skipping"
                 );
                 skipped_dedup += 1;
                 continue;
@@ -3874,6 +4094,17 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 )
                 .await;
             warnings_inserted += 1;
+
+            // Send Slack notification for high/critical severity warnings.
+            notify_slack_high_severity(
+                warning_severity,
+                &warn_title,
+                &diversified_action,
+                Some(&entity_label),
+                &c.category,
+                &c.recipe_code,
+            )
+            .await;
         }
 
         #[cfg(not(feature = "llm"))]
@@ -3915,6 +4146,17 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 )
                 .await;
             warnings_inserted += 1;
+
+            // Send Slack notification for high/critical severity warnings.
+            notify_slack_high_severity(
+                warning_severity,
+                &warn_title,
+                &diversified_action,
+                Some(&entity_label),
+                &c.category,
+                &c.recipe_code,
+            )
+            .await;
         }
     }
 
@@ -4131,7 +4373,8 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .map(|(_, cap, count)| (cap.clone(), "production".to_string(), *count > 0))
                 .collect();
 
-            let competitor_data: Vec<(String, String, f64, f64, Vec<(String, String, bool)>)> =
+            type CompetitorDataItem = (String, String, f64, f64, Vec<(String, String, bool)>);
+            let competitor_data: Vec<CompetitorDataItem> =
                 company_names
                     .iter()
                     .filter(|(eid, _)| *eid != &starz_eid)

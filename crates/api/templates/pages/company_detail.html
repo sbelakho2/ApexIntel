@@ -30,7 +30,9 @@
       {% if !briefing_mode %}
       <a href="/companies/{{ id }}?briefing=true" class="no-print rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing</a>
       {% else %}
-      <button type="button" class="no-print rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary">Print / PDF</button>
+      <a href="/api/companies/{{ id }}/dossier/pdf"
+         class="no-print rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary"
+         download>Export PDF</a>
       {% endif %}
       {% call m::score_ring(risk_score, 48) %}
     </div>
@@ -47,6 +49,59 @@
       <div><span class="font-black uppercase text-muted-foreground">Updated</span><br>{{ updated_at }}</div>
     </div>
   </div>
+
+  {# ── Entity activity chart (lazy-loaded via HTMX) ── #}
+  {% call m::entity_activity_chart(id, 30) %}
+
+  {% if !warnings.is_empty() %}
+  <div class="apex-card">
+    <div class="flex items-center justify-between border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Warnings</h2>
+      <span class="text-[10px] text-muted-foreground tabular-nums">{{ total_warnings }}</span>
+    </div>
+    <div class="divide-y divide-border">
+      {% for w in warnings %}
+      <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-semibold">{{ w.title }}</span>
+          <span class="shrink-0 text-[10px] text-muted-foreground tabular-nums">{{ w.created_at }}</span>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          {% call m::severity_badge(w.severity) %}
+          <span class="text-[10px] text-muted-foreground">{{ w.warning_type }}</span>
+          <span class="text-[10px] text-muted-foreground tabular-nums">{{ w.confidence_pct }}% confidence</span>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if !insights.is_empty() %}
+  <div class="apex-card">
+    <div class="flex items-center justify-between border-b border-border px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Insights</h2>
+      <span class="text-[10px] text-muted-foreground tabular-nums">{{ total_insights }}</span>
+    </div>
+    <div class="divide-y divide-border">
+      {% for i in insights %}
+      <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-semibold">{{ i.title }}</span>
+          <span class="shrink-0 text-[10px] text-muted-foreground tabular-nums">{{ i.created_at }}</span>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          {% if !i.insight_type.is_empty() %}<span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.insight_type }}</span>{% endif %}
+          <span class="text-[10px] text-muted-foreground tabular-nums">{{ i.confidence_pct }}% confidence</span>
+        </div>
+        {% if !i.summary.is_empty() %}
+        <p class="mt-1 text-[11px] text-muted-foreground line-clamp-2">{{ i.summary }}</p>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   {% if !key_persons.is_empty() %}
   <div class="apex-card">

@@ -800,6 +800,7 @@ pub fn pattern_category_from_observation_type(obs_type: &ObservationType) -> &'s
         ObservationType::SpeakerAppearance => "market_presence",
         ObservationType::ProcurementSignal => "procurement_expansion",
         ObservationType::CompetitorEvent => "competitive_threat",
+        ObservationType::DarkWebPost => "cyber_risk",
     }
 }
 

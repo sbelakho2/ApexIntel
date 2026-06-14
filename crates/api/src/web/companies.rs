@@ -104,6 +104,26 @@ pub struct CompanyFinancial {
 }
 
 #[derive(Clone, Debug)]
+pub struct CompanyWarning {
+    pub id: String,
+    pub title: String,
+    pub warning_type: String,
+    pub severity: String,
+    pub confidence_pct: i64,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompanyInsight {
+    pub id: String,
+    pub title: String,
+    pub insight_type: String,
+    pub summary: String,
+    pub confidence_pct: i64,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct RegionSlice {
     pub name: String,
     pub count: i64,
@@ -267,6 +287,8 @@ pub struct CompanyDetailPage {
     pub products: Vec<CompanyProduct>,
     pub recent_events: Vec<CompanyEvent>,
     pub dossier_entries: Vec<DossierEntry>,
+    pub warnings: Vec<CompanyWarning>,
+    pub insights: Vec<CompanyInsight>,
     pub financials: Vec<CompanyFinancial>,
     pub total_warnings: i64,
     pub total_insights: i64,
@@ -414,7 +436,7 @@ pub async fn list_companies(
                 dash_offset: String::new(),
             })
             .collect();
-        slices.sort_by(|a, b| b.count.cmp(&a.count));
+        slices.sort_by_key(|a| std::cmp::Reverse(a.count));
         let mut used_colors = std::collections::HashSet::<String>::new();
         for (index, slice) in slices.iter_mut().enumerate() {
             let mut color = region_color(&slice.name, index).to_string();
@@ -766,6 +788,45 @@ pub async fn get_company(
         })
         .collect::<Vec<_>>();
 
+    // Related warnings for this company (entity_ids array overlap on company id).
+    let warning_rows = store
+        .get_warnings_by_entity_ids(&[uuid], 50)
+        .await
+        .unwrap_or_default();
+    let total_warnings = warning_rows.len() as i64;
+    let warnings: Vec<CompanyWarning> = warning_rows
+        .iter()
+        .map(|w| CompanyWarning {
+            id: w.id.to_string(),
+            title: w.title.clone(),
+            warning_type: w.warning_type.clone(),
+            severity: w.severity.clone(),
+            confidence_pct: w.confidence.map(|c| (c * 100.0) as i64).unwrap_or(0),
+            created_at: w.ts_utc.format("%Y-%m-%d").to_string(),
+        })
+        .collect();
+
+    // Related insights for this company (entity_ids array overlap on company id).
+    let insight_rows = store
+        .get_insights_by_entity_ids(&[uuid], 50)
+        .await
+        .unwrap_or_default();
+    let total_insights = insight_rows.len() as i64;
+    let insights: Vec<CompanyInsight> = insight_rows
+        .iter()
+        .map(|i| CompanyInsight {
+            id: i.id.to_string(),
+            title: i.title.clone(),
+            insight_type: i.insight_type.clone().unwrap_or_default(),
+            summary: i.summary.chars().take(180).collect::<String>(),
+            confidence_pct: i.confidence.map(|c| (c * 100.0) as i64).unwrap_or(0),
+            created_at: i
+                .created_at
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default(),
+        })
+        .collect();
+
     let website = company.domain.clone().unwrap_or_default();
     let website_url = normalize_website_url(&website);
 
@@ -804,9 +865,11 @@ pub async fn get_company(
         products,
         recent_events,
         dossier_entries,
+        warnings,
+        insights,
         financials: vec![],
-        total_warnings: 0,
-        total_insights: 0,
+        total_warnings,
+        total_insights,
     };
 
     super::render_template(&tpl)

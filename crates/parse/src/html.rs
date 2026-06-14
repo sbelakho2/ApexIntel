@@ -19,6 +19,9 @@ pub struct PageContent {
     pub language: String,
     /// Per-field confidence: 0.0 = missing/default, 1.0 = strong signal (B109)
     pub field_confidence: FieldConfidence,
+    /// Named entities extracted via per-language NER pipeline.
+    #[serde(default)]
+    pub entities: Vec<crate::ner::ExtractedEntity>,
 }
 
 /// Confidence scores for each extracted field (B109).
@@ -85,6 +88,10 @@ pub fn extract_page(html_content: &str) -> Result<PageContent> {
         language: if effective_body.len() < 30 { 0.3 } else { 0.9 },
     };
 
+    // Extract entities using per-language NER pipeline (Phase 2.4)
+    let mut entities = crate::ner::extract_entities(&effective_body, &language);
+    crate::entity_canonical::resolve_entities_batch(&mut entities);
+
     Ok(PageContent {
         title,
         description,
@@ -94,6 +101,7 @@ pub fn extract_page(html_content: &str) -> Result<PageContent> {
         phones,
         language,
         field_confidence,
+        entities,
     })
 }
 

@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(dead_code))]
 #![allow(clippy::duplicated_attributes, clippy::too_many_arguments)]
+#![allow(clippy::disallowed_methods)]
 
 mod config;
 mod digest_filtering;
@@ -7,6 +8,8 @@ mod digest_filtering;
 mod evidence_scoring;
 #[allow(dead_code)]
 mod fallback_generation;
+#[cfg(feature = "llm")]
+mod geo_targeting;
 mod job_execution;
 #[allow(dead_code)]
 mod llm_orchestration;
@@ -1451,11 +1454,16 @@ NEVER address the competitor itself as a target.",
     // ── System prompt: competitive intelligence operator, not passive analyst ──
     // Load our company profile from env so the model knows what we offer.
     let our_profile = std::env::var("COMPANY_PROFILE").unwrap_or_else(|_|
-        "An electronics manufacturing services (EMS) company with production facilities in \
-North Africa (Morocco, Tunisia) and Europe. Certifications: ISO 9001:2015 and IPC (Institute for \
-Printed Circuits) ONLY. We DO NOT hold AS9100, ISO 13485, or IATF 16949 certifications. \
-Capabilities: PCBA assembly, box build, test & inspection, supply chain management. \
-Focus markets: industrial electronics, general electronics manufacturing."
+        "Starz Electronics is an electronics manufacturer (EMS heritage: PCBA assembly, box build, \
+test & inspection, supply chain management) whose primary growth focus is battery energy storage \
+systems (BESS): it designs and manufactures residential and commercial/industrial battery packs \
+(5, 10 and 15 kWh) with an in-house battery management system (BMS) and custom pack design, \
+sourcing lithium cells from global suppliers. Production facilities are in North Africa (Tunisia, \
+Morocco free zones) and Europe. Certifications: ISO 9001:2015 and IPC (Institute for Printed \
+Circuits) ONLY. We DO NOT hold AS9100, ISO 13485, or IATF 16949 certifications. Battery-pack sales \
+focus: PRIMARILY Morocco, Tunisia and Egypt; SECONDARILY (smaller focus) the European Union; we do \
+NOT sell battery packs in any other market. Cell suppliers and competing pack/BMS makers are \
+tracked globally regardless of their location."
         .to_string()
     );
 
@@ -1484,7 +1492,8 @@ Rules:
 - Name specific companies, people, facilities, certifications, dates, and dollar figures from the evidence.
 - ALL target companies in recommendations MUST come from: (a) the entity being analyzed, (b) companies or people named in the evidence signals, (c) competitors listed in the entity's competitive profile. DO NOT invent or generalize target names.
 - When a competitor has a weakness (delayed project, lost cert, supply problem), immediately name which of their customers from the evidence we should approach.
-- For EU and North African entities: these are either competitors to monitor or commercial targets. State which — and why.
+- GEOGRAPHIC GO-TO-MARKET: Starz sells battery packs PRIMARILY in Morocco, Tunisia and Egypt, and SECONDARILY (smaller focus) in the European Union — and nowhere else. When the analyzed entity is a potential pack BUYER or customer in these markets, direct sales, qualification, or partnership outreach is appropriate; weight Moroccan, Tunisian and Egyptian opportunities highest, then EU. When a potential buyer sits OUTSIDE these markets, do NOT pitch direct battery-pack sales — treat it as market intelligence, competitive monitoring, or supply-chain context instead.
+- Competitors (rival pack/BMS makers) and suppliers (cell manufacturers, distributors, component vendors) are monitored GLOBALLY regardless of location; geographic targeting never limits competitor or supplier intelligence. For any non-domestic entity, state plainly whether it is a competitor to monitor, a supplier to track, or an out-of-market buyer.
 - FORBIDDEN phrases: 'continue monitoring', 'monitor the situation', 'remains to be seen', 'time will tell', 'various developments', 'warranting focused analysis', 'further developments', 'stay informed'
 - NEVER use bracket placeholders like [Company X], [specific service], [date], [competitor weakness], [our services], etc. Use real names from the evidence and entity profile. If no specific contact is known, name the company + a realistic title.
 - CRITICAL — CERTIFICATION ACCURACY: Our company ONLY holds ISO 9001:2015 and IPC (Institute for Printed Circuits) certifications. \
@@ -3747,7 +3756,7 @@ If invalid/non-target: {"is_person":false,"target_fit":false}"#;
         }
     };
 
-    if !parsed.is_person || parsed.target_fit.unwrap_or(false) == false {
+    if !parsed.is_person || !parsed.target_fit.unwrap_or(false) {
         return Ok(None);
     }
 
@@ -4394,7 +4403,7 @@ fn is_high_quality_raw_artifact(raw: &RawPersonArtifact) -> bool {
     }
 
     if raw.source.starts_with("darkweb_") {
-        let has_evidence = raw.meta.get("domain").is_some() || raw.meta.get("source").is_some();
+        let has_evidence = raw.meta.contains_key("domain") || raw.meta.contains_key("source");
         let has_url = raw
             .url
             .as_deref()

@@ -15,6 +15,7 @@ use serde::Deserialize;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_store::autocomplete::AutocompleteIndex;
 use apex_store::postgres::{PgStore, WarningListFilters};
 use apex_store::tantivy_index::SearchIndex;
 
@@ -67,6 +68,24 @@ pub struct SearchPage {
     pub facets: Vec<SearchFacet>,
     pub active_type: String,
     pub took_ms: i64,
+}
+
+// ─── HTMX autocomplete partial template ────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "search_suggestions.html")]
+pub struct SearchSuggestionsPartial {
+    pub suggestions: Vec<SuggestItemPartial>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SuggestItemPartial {
+    pub text: String,
+    pub entity_type: String,
+    pub id: String,
+    pub subtext: Option<String>,
+    pub score: f64,
+    pub url: String,
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
@@ -200,4 +219,50 @@ fn build_empty_facets(active_type: &str) -> Vec<SearchFacet> {
             active: active_type == "insight",
         },
     ]
+}
+
+/// GET /search/suggestions — HTMX partial returning autocomplete dropdown.
+pub async fn suggestions_html(
+    Extension(autocomplete_index): Extension<Arc<std::sync::RwLock<AutocompleteIndex>>>,
+    axum::extract::Query(params): axum::extract::Query<SearchPageQuery>,
+) -> impl IntoResponse {
+    let query = params.q.unwrap_or_default().trim().to_lowercase();
+    if query.len() < 2 {
+        return Html("".to_string()).into_response();
+    }
+
+    let results = autocomplete_index.read().unwrap().suggest(&query, 10);
+
+    let items: Vec<SuggestItemPartial> = results
+        .into_iter()
+        .map(|s| {
+            let url = match s.entity_type.as_str() {
+                "company" => format!("/companies/{}", s.id),
+                "person" => format!("/persons/{}", s.id),
+                "insight" => format!("/insights/{}", s.id),
+                "warning" => format!("/warnings/{}", s.id),
+                _ => format!("/search?q={}", urlencoding(&s.text)),
+            };
+            SuggestItemPartial {
+                text: s.text,
+                entity_type: s.entity_type,
+                id: s.id.to_string(),
+                subtext: s.subtext,
+                score: s.score,
+                url,
+            }
+        })
+        .collect();
+
+    if items.is_empty() {
+        return Html("".to_string()).into_response();
+    }
+
+    let tpl = SearchSuggestionsPartial { suggestions: items };
+    super::render_template(&tpl)
+}
+
+/// URL-encode a simple string (no crate dependency needed for basic cases).
+fn urlencoding(s: &str) -> String {
+    s.replace(' ', "%20")
 }

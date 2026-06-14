@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="bg-192" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="32" fill="url(#bg-192)"/>
+  <!-- Stylized "A" monogram -->
+  <g transform="translate(96,96)">
+    <polygon points="0,-64 -40,48 40,48" fill="none" stroke="#3b82f6" stroke-width="8" stroke-linejoin="round"/>
+    <line x1="-18" y1="16" x2="18" y2="16" stroke="#3b82f6" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <!-- Small radar/dot accent -->
+  <circle cx="132" cy="48" r="8" fill="#60a5fa" opacity="0.8"/>
+</svg>

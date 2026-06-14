@@ -1,8 +1,8 @@
-//! CSV/XLSX export support for all data tables.
+//! CSV/XLSX/PDF export support for all data tables.
 //!
 //! Adds `?format=csv` and `?format=xlsx` query parameter support to list
 //! endpoints (warnings, insights, companies, persons, recipes) enabling
-//! bulk data export for analysts.
+//! bulk data export for analysts, plus PDF export for individual reports.
 
 use serde::Serialize;
 

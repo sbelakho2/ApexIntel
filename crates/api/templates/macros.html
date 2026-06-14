@@ -340,3 +340,97 @@
 {% macro role_family_color_class(family) %}
 {% if family == "Executive" %}apex-role-executive{% else if family == "Technical" %}apex-role-technical{% else if family == "Operations" %}apex-role-operations{% else if family == "Legal" %}apex-role-legal{% else if family == "Finance" %}apex-role-finance{% else %}text-muted-foreground{% endif %}
 {% endmacro %}
+
+{# ── Trend chart macro: inline SVG polyline from pre-computed points ─── #}
+{# points_str : pre-computed polyline points attribute string            #}
+{# area_str   : pre-computed polygon points for the fill area            #}
+{# has_data   : true when there are data points to render                #}
+{# NOTE: SVG point computation is too complex for Askama 0.12 templates; #}
+{#       compute the points string in Rust and pass it to this macro.    #}
+{% macro trend_chart(points_str, area_str, width, height, color, has_data) %}
+{% if has_data %}
+<div class="overflow-x-auto">
+  <svg width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}" role="img" aria-label="Trend chart" class="w-full">
+    <desc>Trend line chart</desc>
+    <polygon points="{{ area_str }}" fill="{{ color }}" opacity="0.10"/>
+    <polyline points="{{ points_str }}" fill="none" stroke="{{ color }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="{{ width - 4 }}" cy="{{ height / 2 }}" r="3" fill="{{ color }}" stroke="white" stroke-width="1.5"/>
+  </svg>
+</div>
+{% else %}
+<div class="apex-card p-6 text-center">
+  <p class="text-sm font-semibold text-muted-foreground">No trend data available</p>
+</div>
+{% endif %}
+{% endmacro %}
+
+{# ── Entity activity chart container (HTMX) ──────────────────────────── #}
+{# Renders a placeholder that loads chart SVG via HTMX on connect.      #}
+{# The SVG endpoint returns a full multi-series activity chart.          #}
+{% macro entity_activity_chart(entity_id, days) %}
+<div class="apex-card">
+  <div class="apex-card-header flex items-center justify-between gap-4">
+    <h3 class="text-xs font-black uppercase tracking-[0.12em]">Activity — Last {{ days }} Days</h3>
+    <div class="flex gap-1">
+      <a href="/api/charts/entity/{{ entity_id }}/activity?days=7" class="apex-filter-chip apex-filter-chip-idle text-[10px]"
+         hx-get="/api/charts/entity/{{ entity_id }}/activity?days=7"
+         hx-target="#entity-activity-chart-{{ entity_id }}"
+         hx-swap="innerHTML">7d</a>
+      <a href="/api/charts/entity/{{ entity_id }}/activity?days=30" class="apex-filter-chip apex-filter-chip-active text-[10px]"
+         hx-get="/api/charts/entity/{{ entity_id }}/activity?days=30"
+         hx-target="#entity-activity-chart-{{ entity_id }}"
+         hx-swap="innerHTML">30d</a>
+      <a href="/api/charts/entity/{{ entity_id }}/activity?days=90" class="apex-filter-chip apex-filter-chip-idle text-[10px]"
+         hx-get="/api/charts/entity/{{ entity_id }}/activity?days=90"
+         hx-target="#entity-activity-chart-{{ entity_id }}"
+         hx-swap="innerHTML">90d</a>
+    </div>
+  </div>
+  <div class="apex-card-body" id="entity-activity-chart-{{ entity_id }}"
+       hx-get="/api/charts/entity/{{ entity_id }}/activity?days={{ days }}"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+    <div class="flex items-center justify-center py-12">
+      <span class="text-xs font-semibold text-muted-foreground">Loading chart data...</span>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{# ── Observation trend bar chart macro ───────────────────────────────── #}
+{# Each bucket must have pre-computed fields: label, count, bar_h        #}
+{# bar_h = (count * plot_height) / max_count computed in Rust            #}
+{% macro observation_trend_chart(buckets, width, height, plot_h) %}
+{% if buckets.is_empty() %}
+<div class="apex-card p-6 text-center">
+  <p class="text-sm font-semibold text-muted-foreground">No observation data available</p>
+</div>
+{% else %}
+{% let n = buckets.len() %}
+{% let pad_left = 36 %}
+{% let pad_right = 8 %}
+{% let pad_top = 8 %}
+{% let pad_bottom = 28 %}
+{% let w = width %}
+{% let h = height %}
+{% let plot_w = w - pad_left - pad_right %}
+{% let bar_w = (plot_w / n) - 2 %}
+<div class="overflow-x-auto">
+  <svg width="{{ w }}" height="{{ h }}" viewBox="0 0 {{ w }} {{ h }}" role="img" aria-label="Observation trend bar chart" class="w-full">
+    <desc>Bar chart of {{ n }} observation buckets</desc>
+    <rect x="{{ pad_left }}" y="{{ pad_top }}" width="{{ plot_w }}" height="{{ plot_h }}" rx="6" fill="rgba(255,255,255,0.6)" stroke="rgba(22,22,22,0.10)" stroke-width="1"/>
+    <line x1="{{ pad_left }}" y1="{{ pad_top + plot_h }}" x2="{{ pad_left + plot_w }}" y2="{{ pad_top + plot_h }}" stroke="rgba(22,22,22,0.15)" stroke-width="1"/>
+    <line x1="{{ pad_left }}" y1="{{ pad_top + (plot_h / 2) }}" x2="{{ pad_left + plot_w }}" y2="{{ pad_top + (plot_h / 2) }}" stroke="rgba(22,22,22,0.08)" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="{{ pad_left - 4 }}" y="{{ pad_top + plot_h }}" text-anchor="end" font-size="9" font-weight="600" fill="var(--chart-label)">0</text>
+    {% for bucket in buckets %}
+    {% let x = pad_left + (loop.index0 * plot_w / n) + 1 %}
+    {% let y = pad_top + plot_h - bucket.bar_h %}
+    <rect x="{{ x }}" y="{{ y }}" width="{{ bar_w }}" height="{{ bucket.bar_h }}" rx="2" fill="var(--chart-series-blue)">
+      <title>{{ bucket.label }}: {{ bucket.count }}</title>
+    </rect>
+    <text x="{{ x + (bar_w / 2) }}" y="{{ pad_top + plot_h + 14 }}" text-anchor="end" transform="rotate(-45 {{ x + (bar_w / 2) }} {{ pad_top + plot_h + 14 }})" font-size="8" font-weight="600" fill="var(--chart-label)">{{ bucket.label }}</text>
+    {% endfor %}
+  </svg>
+</div>
+{% endif %}
+{% endmacro %}

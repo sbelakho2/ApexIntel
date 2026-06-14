@@ -217,7 +217,7 @@ pub fn count_by_severity(warnings: &[WarningResponse]) -> Vec<(String, usize)> {
         *counts.entry(w.severity.clone()).or_insert(0usize) += 1;
     }
     let mut result: Vec<_> = counts.into_iter().collect();
-    result.sort_by(|a, b| severity_rank(&b.0).cmp(&severity_rank(&a.0)));
+    result.sort_by_key(|a| std::cmp::Reverse(severity_rank(&a.0)));
     result
 }
 

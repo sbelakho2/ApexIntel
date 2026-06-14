@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // ────────────────────────────────────────────
 // Request types
@@ -58,6 +59,34 @@ pub struct SearchFacets {
 pub struct FacetCount {
     pub value: String,
     pub count: u64,
+}
+
+// ────────────────────────────────────────────
+// Autocomplete request/response types
+// ────────────────────────────────────────────
+
+/// Query parameters for the autocomplete suggest endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuggestQuery {
+    pub q: String,
+    pub limit: Option<usize>,
+}
+
+/// A single autocomplete suggestion (JSON API response).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestResponse {
+    pub suggestions: Vec<SuggestItem>,
+}
+
+/// A single suggestion item returned by the API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestItem {
+    pub text: String,
+    pub entity_type: String,
+    pub id: Uuid,
+    pub score: f64,
+    pub subtext: Option<String>,
 }
 
 // ────────────────────────────────────────────
@@ -175,7 +204,7 @@ pub fn highlight_snippet(text: &str, tokens: &[String], max_len: usize) -> Strin
     }
 
     // Sort by start position descending so back-to-front insertion preserves indices
-    ranges.sort_by(|a, b| b.0.cmp(&a.0));
+    ranges.sort_by_key(|a| std::cmp::Reverse(a.0));
     for (s, e) in ranges {
         snippet.insert_str(e, "</mark>");
         snippet.insert_str(s, "<mark>");
@@ -200,13 +229,13 @@ pub fn build_facets(results: &[SearchHit]) -> SearchFacets {
         .into_iter()
         .map(|(value, count)| FacetCount { value, count })
         .collect();
-    type_facets.sort_by(|a, b| b.count.cmp(&a.count));
+    type_facets.sort_by_key(|a| std::cmp::Reverse(a.count));
 
     let mut region_facets: Vec<FacetCount> = by_region
         .into_iter()
         .map(|(value, count)| FacetCount { value, count })
         .collect();
-    region_facets.sort_by(|a, b| b.count.cmp(&a.count));
+    region_facets.sort_by_key(|a| std::cmp::Reverse(a.count));
 
     SearchFacets {
         by_type: type_facets,

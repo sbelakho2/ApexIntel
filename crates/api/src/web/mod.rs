@@ -14,7 +14,13 @@ pub mod persons;
 pub mod recipes;
 pub mod search;
 pub mod security;
+pub mod alert_settings;
+pub mod battlecards;
+pub mod collaboration;
+pub mod executive;
 pub mod settings;
+pub mod trends;
+pub mod triage;
 pub mod warnings;
 
 use askama::Template;

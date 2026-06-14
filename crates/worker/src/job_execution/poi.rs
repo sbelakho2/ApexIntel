@@ -306,41 +306,40 @@ fn org_discovery_candidates_from_observation(
 
     // Extract patent applicant (organization)
     let patent = extract_patent(&combined_text, title, &source_url, "unknown");
-    if classify_patent_relevance(&patent) > 0.3 {
-        if !patent.applicant.is_empty() && is_discoverable_company_name(&patent.applicant) {
-            candidates.push(OrgDiscoveryCandidate {
-                name: patent.applicant.clone(),
-                event_name: patent.title.clone(),
-                source_url: patent.url.clone(),
-                source_kind: "patent_applicant",
-                description: format!(
-                    "Applicant of patent {}: {}",
-                    patent.patent_number, patent.title
-                ),
-                country: None,
-            });
-        }
+    if classify_patent_relevance(&patent) > 0.3
+        && !patent.applicant.is_empty() && is_discoverable_company_name(&patent.applicant)
+    {
+        candidates.push(OrgDiscoveryCandidate {
+            name: patent.applicant.clone(),
+            event_name: patent.title.clone(),
+            source_url: patent.url.clone(),
+            source_kind: "patent_applicant",
+            description: format!(
+                "Applicant of patent {}: {}",
+                patent.patent_number, patent.title
+            ),
+            country: None,
+        });
     }
 
     // Extract award recipients (organizations only — people are not companies)
     if is_award_content(&combined_text, title) {
         let award = extract_award(&combined_text, title, &source_url, "unknown");
-        if classify_award_relevance(&award) > 0.3 {
-            if award.recipient_type == apex_parse::award::RecipientType::Organization
-                && is_discoverable_company_name(&award.recipient)
-            {
-                candidates.push(OrgDiscoveryCandidate {
-                    name: award.recipient,
-                    event_name: award.award_name.clone(),
-                    source_url: award.url.clone(),
-                    source_kind: "award_recipient",
-                    description: format!(
-                        "Recipient of {} award: {}",
-                        award.award_name, award.description
-                    ),
-                    country: None,
-                });
-            }
+        if classify_award_relevance(&award) > 0.3
+            && award.recipient_type == apex_parse::award::RecipientType::Organization
+            && is_discoverable_company_name(&award.recipient)
+        {
+            candidates.push(OrgDiscoveryCandidate {
+                name: award.recipient,
+                event_name: award.award_name.clone(),
+                source_url: award.url.clone(),
+                source_kind: "award_recipient",
+                description: format!(
+                    "Recipient of {} award: {}",
+                    award.award_name, award.description
+                ),
+                country: None,
+            });
         }
     }
 
@@ -391,17 +390,17 @@ async fn run_org_first_company_discovery(
     let lookback_days = std::env::var("POI_ORG_DISCOVERY_LOOKBACK_DAYS")
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(30)
+        .unwrap_or(45)
         .clamp(1, 120);
     let observation_limit = std::env::var("POI_ORG_DISCOVERY_OBSERVATION_LIMIT")
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(600)
+        .unwrap_or(1000)
         .clamp(50, 5000);
     let insert_limit = std::env::var("POI_ORG_DISCOVERY_INSERT_LIMIT")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(60)
+        .unwrap_or(120)
         .clamp(1, 500);
 
     let observations = store
@@ -742,11 +741,11 @@ fn build_discovery_source_artifact(
 }
 
 #[cfg(feature = "llm")]
-async fn process_discovery_batch<'a>(
+async fn process_discovery_batch(
     store: &Arc<PgStore>,
     raw_discoveries: Vec<DiscoveredPoi>,
     known_name_keys: &mut HashSet<String>,
-    seed_lookup: &HashMap<String, &'a apex_store::postgres::ExpansionSeedRow>,
+    seed_lookup: &HashMap<String, &apex_store::postgres::ExpansionSeedRow>,
     company_seed_lookup: &HashMap<String, CompanyPoiSeedRow>,
     llm: &OpenAiCompatibleClient,
     person_scraper: Option<&PersonOsintScraper>,
@@ -1382,13 +1381,15 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 let api_key = std::env::var("LLM_API_KEY").ok();
                 let model =
                     std::env::var("LLM_MODEL").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
-                let mut cfg = apex_llm::inference::InferenceConfig::default();
-                cfg.model = model;
-                cfg.max_tokens = 900;
-                cfg.temperature = 0.35;
-                cfg.json_mode = true;
-                cfg.suppress_thinking = false;
-                cfg.timeout = std::time::Duration::from_secs(90);
+                let cfg = apex_llm::inference::InferenceConfig {
+                    model,
+                    max_tokens: 900,
+                    temperature: 0.35,
+                    json_mode: true,
+                    suppress_thinking: false,
+                    timeout: std::time::Duration::from_secs(90),
+                    ..Default::default()
+                };
                 InferenceLlmClient::new(base_url, api_key, cfg)
             };
 
@@ -1904,7 +1905,7 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
         let company_batch_total = if company_seeds.is_empty() {
             0
         } else {
-            (company_seeds.len() + company_seed_batch_size - 1) / company_seed_batch_size
+            company_seeds.len().div_ceil(company_seed_batch_size)
         };
 
         for (batch_index, company_seed_batch) in
@@ -1965,7 +1966,7 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
             let person_batch_total = if seeds.is_empty() {
                 0
             } else {
-                (seeds.len() + person_seed_batch_size - 1) / person_seed_batch_size
+                seeds.len().div_ceil(person_seed_batch_size)
             };
 
             for (batch_index, person_seed_batch) in seeds.chunks(person_seed_batch_size).enumerate()

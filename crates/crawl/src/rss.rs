@@ -80,7 +80,7 @@ impl RssFetcher {
                 }
             }
         }
-        all_items.sort_by(|a, b| b.published.cmp(&a.published));
+        all_items.sort_by_key(|b| std::cmp::Reverse(b.published));
         all_items
     }
 }

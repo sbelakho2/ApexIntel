@@ -361,7 +361,7 @@ pub(crate) async fn get_person_detail(
     };
 
     let org_id = row.primary_org_id;
-    let org_name = if let Some(oid) = org_id {
+    let _org_name = if let Some(oid) = org_id {
         match state.store.get_company(oid).await {
             Ok(Some(company)) => company.name,
             Ok(None) => "Independent".to_string(),

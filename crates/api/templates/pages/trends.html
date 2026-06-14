@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}Historical Trends — ApexIntel{% endblock %}
+
+{% block head %}
+<style>
+  .trends-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: end;
+  }
+  .trends-filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .trends-filter-group label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: rgb(var(--muted-foreground));
+  }
+  .trends-filter-group select,
+  .trends-filter-group input {
+    padding: 0.4rem 0.6rem;
+    font-size: 12px;
+    border: 1px solid rgb(var(--border));
+    border-radius: 2px;
+    background: rgb(var(--secondary));
+    color: rgb(var(--foreground));
+    min-width: 120px;
+  }
+  .trends-comparison-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 640px) {
+    .trends-comparison-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+  .trends-comparison-card {
+    border: 1px solid rgb(var(--border));
+    border-radius: 4px;
+    padding: 1rem;
+    background: rgb(var(--card));
+  }
+  .trends-comparison-card h3 {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: rgb(var(--muted-foreground));
+    margin-bottom: 0.5rem;
+  }
+  .trends-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+  }
+  .trends-entity-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .trends-entity-table th {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: rgb(var(--muted-foreground));
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgb(var(--border));
+  }
+  .trends-entity-table td {
+    font-size: 12px;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgb(var(--border));
+  }
+  .trends-entity-table tr:hover td {
+    background: rgb(var(--secondary));
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{% call m::page_header("Historical Trends", "bar-chart-3", "Long-term trend analysis across all metrics", "") %}
+
+<!-- ── Filter Bar ─────────────────────────────────────────────────────── -->
+<form method="get" action="/trends" id="trends-filter-form" class="apex-card p-4 mb-6">
+  <div class="trends-filter-bar">
+    <div class="trends-filter-group">
+      <label for="metric">Metric</label>
+      <select name="metric" id="metric" onchange="this.form.submit()">
+        {% for m in available_metrics %}
+        <option value="{{ m.value }}" {% if m.selected %}selected{% endif %}>{{ m.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="trends-filter-group">
+      <label for="bucket">Bucket</label>
+      <select name="bucket" id="bucket" onchange="this.form.submit()">
+        <option value="daily" {% if selected_bucket == "daily" %}selected{% endif %}>Daily</option>
+        <option value="weekly" {% if selected_bucket == "weekly" %}selected{% endif %}>Weekly</option>
+        <option value="monthly" {% if selected_bucket == "monthly" %}selected{% endif %}>Monthly</option>
+        <option value="quarterly" {% if selected_bucket == "quarterly" %}selected{% endif %}>Quarterly</option>
+        <option value="yearly" {% if selected_bucket == "yearly" %}selected{% endif %}>Yearly</option>
+      </select>
+    </div>
+
+    <div class="trends-filter-group">
+      <label for="range">Date Range</label>
+      <select name="range" id="range" onchange="this.form.submit()">
+        <option value="30d" {% if selected_range == "30d" %}selected{% endif %}>Last 30 Days</option>
+        <option value="90d" {% if selected_range == "90d" %}selected{% endif %}>Last 90 Days</option>
+        <option value="1y" {% if selected_range == "1y" %}selected{% endif %}>Last 1 Year</option>
+        <option value="5y" {% if selected_range == "5y" %}selected{% endif %}>Last 5 Years</option>
+        <option value="custom" {% if selected_range == "custom" %}selected{% endif %}>Custom</option>
+      </select>
+    </div>
+
+    {% if selected_range == "custom" %}
+    <div class="trends-filter-group">
+      <label for="from">From</label>
+      <input type="date" name="from" id="from" value="{{ from_date }}" onchange="this.form.submit()">
+    </div>
+    <div class="trends-filter-group">
+      <label for="to">To</label>
+      <input type="date" name="to" id="to" value="{{ to_date }}" onchange="this.form.submit()">
+    </div>
+    {% endif %}
+
+    <div class="trends-filter-group">
+      <label>&nbsp;</label>
+      <button type="submit" class="apex-filter-chip apex-filter-chip-active text-[11px]">Apply</button>
+    </div>
+  </div>
+</form>
+
+<!-- ── Summary Stat Cards ──────────────────────────────────────────────── -->
+<div class="trends-summary-grid mb-6">
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail bg-blue-500"></div>
+    <p class="apex-metric-label">Total</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.total }}</p>
+  </div>
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail bg-green-500"></div>
+    <p class="apex-metric-label">Average</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ "{:.1}"|format(summary.average) }}</p>
+  </div>
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail bg-amber-500"></div>
+    <p class="apex-metric-label">Min</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.min }}</p>
+  </div>
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail bg-purple-500"></div>
+    <p class="apex-metric-label">Max</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.max }}</p>
+  </div>
+  <div class="apex-metric-card">
+    <div class="apex-metric-rail bg-gray-500"></div>
+    <p class="apex-metric-label">Data Points</p>
+    <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.data_points }}</p>
+  </div>
+</div>
+
+<!-- ── Main Trend Chart ───────────────────────────────────────────────── -->
+<div class="apex-card mb-6">
+  <div class="apex-card-header">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">
+      {{ selected_metric }} — {{ selected_bucket }} trend
+    </h2>
+  </div>
+  <div class="apex-card-body">
+    {% if data_points.is_empty() %}
+    <div class="apex-card p-8 text-center">
+      <p class="text-sm font-semibold text-muted-foreground">No trend data available for the selected period. Run the trend aggregation job to populate data.</p>
+    </div>
+    {% else %}
+    <div class="overflow-x-auto">
+      <svg width="{{ chart_w }}" height="{{ chart_h }}" viewBox="0 0 {{ chart_w }} {{ chart_h }}" role="img" aria-label="Trend chart for {{ selected_metric }}" class="w-full">
+        <desc>Bar chart showing {{ selected_metric }} trend over {{ bar_count }} buckets</desc>
+
+        <!-- Grid lines -->
+        <line x1="{{ pad }}" y1="{{ pad }}" x2="{{ pad + plot_w }}" y2="{{ pad }}" stroke="rgb(var(--border))" stroke-width="0.5" stroke-dasharray="4 4"/>
+        <line x1="{{ pad }}" y1="{{ pad + plot_h / 2 }}" x2="{{ pad + plot_w }}" y2="{{ pad + plot_h / 2 }}" stroke="rgb(var(--border))" stroke-width="0.5" stroke-dasharray="4 4"/>
+        <line x1="{{ pad }}" y1="{{ pad + plot_h }}" x2="{{ pad + plot_w }}" y2="{{ pad + plot_h }}" stroke="rgb(var(--border))" stroke-width="1"/>
+
+        <!-- Y-axis labels -->
+        <text x="{{ pad - 4 }}" y="{{ pad + plot_h }}" text-anchor="end" font-size="9" fill="rgb(var(--muted-foreground))">0</text>
+        <text x="{{ pad - 4 }}" y="{{ pad + plot_h / 2 + 3 }}" text-anchor="end" font-size="9" fill="rgb(var(--muted-foreground))">{{ max_val_half }}</text>
+        <text x="{{ pad - 4 }}" y="{{ pad + 3 }}" text-anchor="end" font-size="9" fill="rgb(var(--muted-foreground))">{{ max_val }}</text>
+
+        <!-- Bars (pre-computed positions) -->
+        {% for bar in bar_data %}
+        <rect x="{{ bar.x }}" y="{{ bar.y }}" width="{{ bar.bar_w }}" height="{{ bar.bar_h }}" rx="2" fill="rgb(59, 130, 246)" opacity="0.85">
+          <title>{{ bar.date }}: {{ bar.value }}</title>
+        </rect>
+        {% endfor %}
+      </svg>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Comparison Cards ────────────────────────────────────────────────── -->
+<div class="trends-comparison-grid mb-6">
+  {% if let Some(mom) = mom_comparison %}
+  <div class="trends-comparison-card">
+    <h3>{{ mom.label }}</h3>
+    <div class="flex items-center justify-between mt-2">
+      <div>
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Current</p>
+        <p class="text-lg font-black">{{ mom.current_total }}</p>
+      </div>
+      <div class="text-center">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{{ mom.direction_class }}">
+          {% if mom.direction == "up" %}
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+          <polyline points="17 6 23 6 23 12"/>
+          {% else if mom.direction == "down" %}
+          <polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/>
+          <polyline points="17 18 23 18 23 12"/>
+          {% else %}
+          <line x1="5" y1="12" x2="19" y2="12"/>
+          {% endif %}
+        </svg>
+      </div>
+      <div class="text-right">
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Previous</p>
+        <p class="text-lg font-black">{{ mom.previous_total }}</p>
+      </div>
+    </div>
+    <div class="flex items-center justify-between mt-3 pt-3 border-t border-border">
+      <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Change</span>
+      <span class="text-sm font-black {{ mom.direction_class }}">
+        {{ mom.change_pct }} ({{ mom.change_abs }})
+      </span>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if let Some(yoy) = yoy_comparison %}
+  <div class="trends-comparison-card">
+    <h3>{{ yoy.label }}</h3>
+    <div class="flex items-center justify-between mt-2">
+      <div>
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Current</p>
+        <p class="text-lg font-black">{{ yoy.current_total }}</p>
+      </div>
+      <div class="text-center">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{{ yoy.direction_class }}">
+          {% if yoy.direction == "up" %}
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+          <polyline points="17 6 23 6 23 12"/>
+          {% else if yoy.direction == "down" %}
+          <polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/>
+          <polyline points="17 18 23 18 23 12"/>
+          {% else %}
+          <line x1="5" y1="12" x2="19" y2="12"/>
+          {% endif %}
+        </svg>
+      </div>
+      <div class="text-right">
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Previous</p>
+        <p class="text-lg font-black">{{ yoy.previous_total }}</p>
+      </div>
+    </div>
+    <div class="flex items-center justify-between mt-3 pt-3 border-t border-border">
+      <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Change</span>
+      <span class="text-sm font-black {{ yoy.direction_class }}">
+        {{ yoy.change_pct }} ({{ yoy.change_abs }})
+      </span>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Entity Breakdown Table ──────────────────────────────────────────── -->
+{% if !entity_data.is_empty() %}
+<div class="apex-card mb-6">
+  <div class="apex-card-header">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Top Entities by {{ selected_metric }}</h2>
+  </div>
+  <div class="apex-card-body p-0">
+    <table class="trends-entity-table">
+      <thead>
+        <tr>
+          <th>Entity Type</th>
+          <th>Entity ID</th>
+          <th>Metric</th>
+          <th class="text-right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in entity_data %}
+        <tr>
+          <td class="font-bold">{{ row.entity_type }}</td>
+          <td class="font-mono text-[11px]">{{ row.entity_id }}</td>
+          <td>{{ row.metric_name }}</td>
+          <td class="text-right font-bold tabular-nums">{{ row.total }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

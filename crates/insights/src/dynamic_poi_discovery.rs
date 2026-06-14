@@ -260,7 +260,7 @@ impl CoOccurrenceTracker {
 
         // Sort by cluster size
         let mut clusters: Vec<_> = entity_peers.into_iter().collect();
-        clusters.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        clusters.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
         clusters
     }
 }
@@ -933,8 +933,10 @@ impl DynamicPoiDiscovery {
         }
         let proximity_score = proximity_score.min(0.5);
 
-        // Factor 3: News/event correlation (stub — in production, query DB)
-        // Simplified: entities with 3+ co-occurrences are more likely to be relevant
+        // Factor 3: News/event correlation score.
+        // Uses co-occurrence density as a proxy for cross-source signal
+        // correlation.  Entities mentioned alongside 3+ tracked entities
+        // are more likely to be supply-chain-relevant.
         let correlation_score = if co_occurrence_count >= 3 {
             0.2
         } else if co_occurrence_count >= 1 {

@@ -357,6 +357,54 @@ pub(crate) async fn semantic_search(
     (StatusCode::OK, Json(success(response)))
 }
 
+/// GET /api/search/suggest — FST-based autocomplete suggestions.
+pub(crate) async fn suggest(
+    State(state): State<AppState>,
+    Query(params): Query<SuggestQuery>,
+) -> (StatusCode, Json<ApiResponse<SuggestResponse>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+
+    let query = params.q.trim().to_lowercase();
+    if query.len() < 2 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(error_response(ApiError::bad_request(
+                "q must be at least 2 characters",
+            ))),
+        );
+    }
+
+    let limit = params.limit.unwrap_or(10).clamp(1, 25);
+
+    let suggestions = state
+        .autocomplete_index
+        .read()
+        .unwrap()
+        .suggest(&query, limit);
+
+    let items: Vec<SuggestItem> = suggestions
+        .into_iter()
+        .map(|s| SuggestItem {
+            text: s.text,
+            entity_type: s.entity_type,
+            id: s.id,
+            score: s.score,
+            subtext: s.subtext,
+        })
+        .collect();
+
+    let response = SuggestResponse { suggestions: items };
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let meta = ResponseMeta::now()
+        .with_request_id(request_id)
+        .with_duration(duration_ms);
+    log_latency("suggest", duration_ms);
+
+    (StatusCode::OK, Json(success_with_meta(response, meta)))
+}
+
 #[cfg(test)]
 mod semantic_search_tests {
     use super::build_enhanced_search_query;
@@ -368,6 +416,114 @@ mod semantic_search_tests {
         assert!(query.contains("\"pcb assembly\"^4"));
         assert!(query.contains("title:pcb^3"));
         assert!(query.contains("assembly~1"));
+    }
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    use super::*;
+    use apex_store::autocomplete::{AutocompleteEntry, AutocompleteIndex};
+
+    fn build_test_index() -> AutocompleteIndex {
+        let entries = vec![
+            AutocompleteEntry {
+                text: "Apple Inc.".to_string(),
+                entity_type: "company".to_string(),
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+                score: 0.95,
+                subtext: Some("Technology • Cupertino, CA".to_string()),
+            },
+            AutocompleteEntry {
+                text: "Advanced Micro Devices".to_string(),
+                entity_type: "company".to_string(),
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+                score: 0.90,
+                subtext: Some("Semiconductors • Santa Clara, CA".to_string()),
+            },
+            AutocompleteEntry {
+                text: "Tim Cook".to_string(),
+                entity_type: "person".to_string(),
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
+                score: 0.85,
+                subtext: Some("CEO at Apple Inc.".to_string()),
+            },
+            AutocompleteEntry {
+                text: "TSMC".to_string(),
+                entity_type: "company".to_string(),
+                id: Uuid::parse_str("00000000-0000-0000-0000-000000000004").unwrap(),
+                score: 0.80,
+                subtext: Some("Semiconductor Manufacturing • Taiwan".to_string()),
+            },
+        ];
+        AutocompleteIndex::build(&entries).expect("valid FST")
+    }
+
+    #[test]
+    fn test_suggest_handler_empty_query_returns_empty() {
+        let index = build_test_index();
+        let results = index.suggest("", 10);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_handler_short_query_returns_empty() {
+        let index = build_test_index();
+        let results = index.suggest("a", 10);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_handler_prefix_ap() {
+        let index = build_test_index();
+        let results = index.suggest("ap", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "Apple Inc.");
+    }
+
+    #[test]
+    fn test_suggest_handler_prefix_adv() {
+        let index = build_test_index();
+        let results = index.suggest("adv", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "Advanced Micro Devices");
+    }
+
+    #[test]
+    fn test_suggest_handler_case_insensitive() {
+        let index = build_test_index();
+        let results = index.suggest("APPLE", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "Apple Inc.");
+    }
+
+    #[test]
+    fn test_suggest_handler_limit() {
+        let index = build_test_index();
+        let results = index.suggest("a", 10);
+        // "a" matches "Apple" and "Advanced" but prefix must be >= 2
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_handler_score_ordering() {
+        let index = build_test_index();
+        let results = index.suggest("a", 10);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_handler_includes_entity_types() {
+        let index = build_test_index();
+        let results = index.suggest("ti", 10);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].entity_type, "person");
+    }
+
+    #[test]
+    fn test_suggest_handler_no_match() {
+        let index = build_test_index();
+        let results = index.suggest("zzz", 10);
+        assert!(results.is_empty());
     }
 }
 

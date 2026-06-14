@@ -233,6 +233,7 @@ pub struct SupplierRiskEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AddSupplierRiskRequest {
+    pub supplier_id: String,
     pub risk_category: String,
     #[serde(default)]
     pub risk_score: f64,
@@ -269,7 +270,7 @@ pub struct PipelineOpportunity {
     pub opportunity_id: Option<String>,
     pub title: String,
     pub stage: String,
-    pub value_estimate: Option<i64>,
+    pub value_estimate: Option<f64>,
     pub probability: f64,
     pub owner_id: Option<String>,
     pub expected_close: Option<String>,
@@ -290,7 +291,7 @@ pub struct CreatePipelineOpportunityRequest {
     #[serde(default)]
     pub stage: String,
     #[serde(default)]
-    pub value_estimate: Option<i64>,
+    pub value_estimate: Option<f64>,
     #[serde(default)]
     pub probability: f64,
     #[serde(default)]
@@ -332,6 +333,8 @@ pub struct SourceEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AddEvidenceRequest {
+    pub entity_type: String,
+    pub entity_id: String,
     pub evidence_type: String,
     pub source_url: String,
     #[serde(default)]
@@ -368,6 +371,8 @@ pub struct TeamAssignment {
 pub struct CreateTeamAssignmentRequest {
     pub team_id: String,
     pub team_name: String,
+    pub entity_type: String,
+    pub entity_id: String,
     pub assigned_to: String,
     #[serde(default)]
     pub role: String,
@@ -519,6 +524,46 @@ pub fn validate_stage(stage: &str) -> Result<(), String> {
         return Err("stage must be discovery, qualification, proposal, negotiation, closed_won, or closed_lost".to_string());
     }
     Ok(())
+}
+
+/// Trims surrounding whitespace from an optional string, returning `None` when
+/// the value is absent or empty after trimming. Used to sanitise free-text
+/// fields before persistence so blank submissions are stored as `NULL`.
+pub fn normalize_optional_text(text: Option<String>) -> Option<String> {
+    text.and_then(|t| {
+        let trimmed = t.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+// ────────────────────────────────────────────
+// Executive Dashboard Types
+// ────────────────────────────────────────────
+
+/// Query parameters for the executive dashboard summary endpoint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExecutiveQuery {
+    pub include_threats: Option<bool>,
+    pub include_opportunities: Option<bool>,
+    pub region_filter: Option<String>,
+    pub priority_threshold: Option<f64>,
+}
+
+/// A recommended next action surfaced on the executive dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecommendedAction {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub priority: String,
+    pub owner: String,
+    pub due_date: Option<String>,
+    pub related_entity_id: Option<String>,
+    pub related_entity_type: Option<String>,
 }
 
 // ────────────────────────────────────────────
@@ -791,6 +836,7 @@ mod comprehensive_tests {
     #[test]
     fn add_supplier_risk_request_serialization() {
         let req = AddSupplierRiskRequest {
+            supplier_id: "00000000-0000-0000-0000-000000000001".to_string(),
             risk_category: "operational".to_string(),
             risk_score: 0.55,
             risk_factors: serde_json::json!(["Single source dependency"]),
@@ -814,7 +860,7 @@ mod comprehensive_tests {
             opportunity_id: Some("opp-456".to_string()),
             title: "New Client Acquisition".to_string(),
             stage: "proposal".to_string(),
-            value_estimate: Some(2_000_000),
+            value_estimate: Some(2_000_000.0),
             probability: 0.65,
             owner_id: Some("sales-lead".to_string()),
             expected_close: Some("2024-06-30".to_string()),
@@ -830,7 +876,7 @@ mod comprehensive_tests {
         let parsed: PipelineOpportunity = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.stage, "proposal");
-        assert_eq!(parsed.value_estimate, Some(2_000_000));
+        assert_eq!(parsed.value_estimate, Some(2_000_000.0));
         assert_eq!(parsed.probability, 0.65);
     }
 
@@ -840,7 +886,7 @@ mod comprehensive_tests {
             opportunity_id: Some("opp-789".to_string()),
             title: "Enterprise Deal".to_string(),
             stage: "discovery".to_string(),
-            value_estimate: Some(5_000_000),
+            value_estimate: Some(5_000_000.0),
             probability: 0.3,
             owner_id: Some("account-manager".to_string()),
             expected_close: Some("2024-09-30".to_string()),
@@ -896,6 +942,8 @@ mod comprehensive_tests {
     #[test]
     fn add_evidence_request_serialization() {
         let req = AddEvidenceRequest {
+            entity_type: "company".to_string(),
+            entity_id: "00000000-0000-0000-0000-000000000001".to_string(),
             evidence_type: "financial_report".to_string(),
             source_url: "https://sec.gov/filings/123".to_string(),
             source_name: Some("SEC Filing".to_string()),
@@ -941,6 +989,8 @@ mod comprehensive_tests {
         let req = CreateTeamAssignmentRequest {
             team_id: "team-compliance".to_string(),
             team_name: "Compliance Team".to_string(),
+            entity_type: "warning".to_string(),
+            entity_id: "00000000-0000-0000-0000-000000000001".to_string(),
             assigned_to: "compliance-officer".to_string(),
             role: "contributor".to_string(),
             notes: Some("Regulatory requirement".to_string()),

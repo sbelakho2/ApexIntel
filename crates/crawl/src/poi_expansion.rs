@@ -516,7 +516,7 @@ impl PoiExpansionEngine {
             let mut seen = HashSet::new();
             candidate_urls = homepage_candidates
                 .into_iter()
-                .chain(candidate_urls.into_iter())
+                .chain(candidate_urls)
                 .filter(|url| seen.insert(url.to_ascii_lowercase()))
                 .collect();
         }
