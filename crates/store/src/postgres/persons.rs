@@ -531,6 +531,147 @@ impl PgStore {
         Ok(())
     }
 
+    /// Query persons that need psychological profile enrichment.
+    /// Returns persons where psychographic fields are NULL or stale (>7 days).
+    pub async fn get_persons_needing_psych_enrichment(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PersonRow>> {
+        let (limit, offset) = normalize_person_window(limit, offset);
+        sqlx::query_as::<_, PersonRow>(
+            r#"SELECT id, name, name_ar, name_fr, primary_org_id, "current_role",
+                      role_family, region, country_code, public_bio, public_email,
+                      priority_vector, influence_score, trigger_topics, decision_style,
+                      risk_tolerance, change_appetite, communication_style,
+                      decision_mode, preferred_proof_type, pain_index, change_risk,
+                      role_drift_score,
+                      metadata, created_at, updated_at
+               FROM persons
+               WHERE decision_style IS NULL
+                  OR risk_tolerance IS NULL
+                  OR change_appetite IS NULL
+                  OR communication_style IS NULL
+                  OR (pain_index IS NULL AND influence_score IS NULL)
+               ORDER BY influence_score DESC NULLS LAST
+               LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Update psychological profile fields on a person record.
+    /// Only non-None fields are updated (COALESCE pattern).
+    /// Also stamps last_psych_enrichment_at.
+    pub async fn update_person_psych_profile(
+        &self,
+        person_id: Uuid,
+        priority_vector: Option<&str>,
+        decision_style: Option<&str>,
+        risk_tolerance: Option<&str>,
+        change_appetite: Option<&str>,
+        communication_style: Option<&str>,
+        pain_index: Option<f64>,
+        influence_score: Option<f64>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE persons SET
+                 priority_vector = COALESCE($2::jsonb, priority_vector),
+                 decision_style = COALESCE($3, decision_style),
+                 risk_tolerance = COALESCE($4, risk_tolerance),
+                 change_appetite = COALESCE($5, change_appetite),
+                 communication_style = COALESCE($6, communication_style),
+                 pain_index = COALESCE($7, pain_index),
+                 influence_score = COALESCE($8, influence_score),
+                 last_psych_enrichment_at = now(),
+                 updated_at = now()
+               WHERE id = $1"#,
+        )
+        .bind(person_id)
+        .bind(priority_vector)
+        .bind(decision_style)
+        .bind(risk_tolerance)
+        .bind(change_appetite)
+        .bind(communication_style)
+        .bind(pain_index.map(|v| v.clamp(0.0, 1.0)))
+        .bind(influence_score.map(|v| v.clamp(0.0, 1.0)))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update a person's company affiliation and role.
+    /// Creates a role_history entry if the company changes.
+    pub async fn update_person_company_and_role(
+        &self,
+        person_id: Uuid,
+        company_id: Option<Uuid>,
+        current_role: Option<&str>,
+        role_family: Option<&str>,
+        confidence: f64,
+    ) -> Result<()> {
+        // Check current org to detect changes
+        let current_org: Option<Uuid> =
+            sqlx::query_scalar("SELECT primary_org_id FROM persons WHERE id = $1")
+                .bind(person_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+
+        let org_changed = current_org != company_id;
+
+        sqlx::query(
+            r#"UPDATE persons SET
+                 primary_org_id = COALESCE($2, primary_org_id),
+                 "current_role" = COALESCE($3, "current_role"),
+                 role_family = COALESCE($4, role_family),
+                 updated_at = now()
+               WHERE id = $1"#,
+        )
+        .bind(person_id)
+        .bind(company_id)
+        .bind(current_role)
+        .bind(role_family)
+        .execute(&self.pool)
+        .await?;
+
+        // If organization changed, create a role_history entry
+        if org_changed && company_id.is_some() {
+            let org_name: Option<String> = sqlx::query_scalar(
+                "SELECT name FROM companies WHERE id = $1",
+            )
+            .bind(company_id.unwrap())
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten();
+
+            let role_text = current_role
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            let family_text = role_family
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            let org_name_text = org_name.unwrap_or_else(|| "Unknown".to_string());
+
+            self.insert_role_history(
+                person_id,
+                company_id,
+                &org_name_text,
+                &role_text,
+                Some(&family_text),
+                Some(Utc::now()),
+                None,
+                None,
+                confidence.clamp(0.0, 1.0),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn update_person_llm_enrichment(
         &self,
         id: Uuid,

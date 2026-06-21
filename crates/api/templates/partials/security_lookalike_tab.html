@@ -3,12 +3,12 @@
 
 <div id="security-lookalike-tab">
   {% if !lookalike_domains.is_empty() %}
-  <div class="divide-y divide-border">
+  <div class="divide-y divide-rams-line">
     {% for l in lookalike_domains %}
-    <div class="px-4 py-3 flex items-center justify-between hover:bg-muted/30 transition-colors">
+    <div class="px-4 py-3 flex items-center justify-between hover:bg-rams-panel">
       <div>
         <span class="text-sm font-semibold">{{ l.domain }}</span>
-        <span class="ml-2 text-[10px] text-muted-foreground">→ {{ l.target_domain }}</span>
+        <span class="ml-2 text-[10px] text-rams-muted">→ {{ l.target_domain }}</span>
         {% if l.is_active %}
         <span class="ml-2 text-[9px] font-bold uppercase apex-text-danger">Active</span>
         {% endif %}
@@ -17,13 +17,13 @@
         <span class="text-[11px] tabular-nums">{{ l.similarity }}% similar</span>
         {% call m::severity_badge(l.risk_level) %}
         {% if let Some(reg) = l.registered_at %}
-        <span class="text-[10px] text-muted-foreground tabular-nums">{{ reg }}</span>
+        <span class="text-[10px] text-rams-muted tabular-nums">{{ reg }}</span>
         {% endif %}
       </div>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No lookalike domains detected</p>
+  <p class="px-4 py-6 text-center text-sm text-rams-muted">No lookalike domains detected</p>
   {% endif %}
 </div>

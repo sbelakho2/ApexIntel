@@ -6,18 +6,18 @@
   <div class="overflow-x-auto">
   <table class="w-full min-w-[40rem]">
     <thead>
-      <tr class="border-b border-border">
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Domain</th>
-        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">SPF</th>
-        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">DKIM</th>
-        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">DMARC</th>
-        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">DNSSEC</th>
-        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-muted-foreground">Score</th>
+      <tr class="border-b border-rams-line">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-rams-muted">Domain</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-rams-muted">SPF</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-rams-muted">DKIM</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-rams-muted">DMARC</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-rams-muted">DNSSEC</th>
+        <th class="px-4 py-2 text-center text-[10px] font-black uppercase text-rams-muted">Score</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-border">
+    <tbody class="divide-y divide-rams-line">
       {% for d in dns_posture %}
-      <tr class="hover:bg-muted/30 transition-colors">
+      <tr class="hover:bg-rams-panel">
         <td class="px-4 py-2 text-sm">{{ d.domain }}</td>
         <td class="px-4 py-2 text-center {% if d.has_spf %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_spf %}✓{% else %}✗{% endif %}</td>
         <td class="px-4 py-2 text-center {% if d.has_dkim %}apex-text-positive{% else %}apex-text-danger{% endif %}">{% if d.has_dkim %}✓{% else %}✗{% endif %}</td>
@@ -30,6 +30,6 @@
   </table>
   </div>
   {% else %}
-  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No DNS posture data available</p>
+  <p class="px-4 py-6 text-center text-sm text-rams-muted">No DNS posture data available</p>
   {% endif %}
 </div>

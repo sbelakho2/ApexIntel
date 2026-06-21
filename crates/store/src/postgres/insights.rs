@@ -118,7 +118,6 @@ impl PgStore {
     ) -> Result<Vec<InsightRow>> {
         let (limit, offset) = normalize_insight_window(limit, offset);
 
-        // Query relies on indexes for created_at and region to stay performant.
         let mut qb: QueryBuilder<Postgres> = if let Some(bookmarked_by) =
             filters.bookmarked_by.as_deref()
         {
@@ -546,6 +545,86 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|row| row.0).collect())
+    }
+
+    /// Insert a deep competitive intelligence insight produced by the DeepInsightGenerator.
+    /// Stores the insight with full narrative, risk factors, and recommendations.
+    pub async fn insert_deep_insight(
+        &self,
+        insight_id: Uuid,
+        title: &str,
+        narrative: &str,
+        insight_type: &str,
+        company_id: &Uuid,
+        company_name: &str,
+        risk_factors: &[String],
+        recommendations: &[String],
+        confidence: f64,
+        created_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let metadata = serde_json::json!({
+            "company_name": company_name,
+            "risk_factors": risk_factors,
+            "recommendations": recommendations,
+            "generated_by": "DeepInsightGenerator",
+            "generation_pipeline": "insight_generation_worker",
+        });
+        let entity_ids: Vec<Uuid> = vec![*company_id];
+        let tags: Vec<String> = risk_factors
+            .iter()
+            .take(5)
+            .map(|rf| format!("risk:{}", rf.to_lowercase().replace(' ', "_")))
+            .collect();
+        sqlx::query(
+            r#"INSERT INTO insights
+               (id, title, title_hash, summary, insight_type, confidence,
+                evidence_urls, entity_ids, tags, metadata, created_at, updated_at)
+               VALUES ($1, $2, md5($2), $3, $4, $5, '{}', $6, $7, $8, $9, $9)
+               ON CONFLICT (id) DO UPDATE SET
+                 title = EXCLUDED.title,
+                 title_hash = md5(EXCLUDED.title),
+                 summary = EXCLUDED.summary,
+                 confidence = GREATEST(insights.confidence, EXCLUDED.confidence),
+                 tags = insights.tags || EXCLUDED.tags,
+                 metadata = insights.metadata || EXCLUDED.metadata,
+                 updated_at = now()"#,
+        )
+        .bind(insight_id)
+        .bind(title.trim())
+        .bind(narrative.trim())
+        .bind(insight_type)
+        .bind(confidence.clamp(0.0, 1.0))
+        .bind(&entity_ids)
+        .bind(&tags)
+        .bind(&metadata)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Link an insight to an entity (company or person) via a graph edge.
+    /// Creates an "insight_relates_to" edge from the insight to the entity.
+    pub async fn link_insight_to_entity(
+        &self,
+        insight_id: Uuid,
+        entity_id: &Uuid,
+        entity_type: &str,
+    ) -> Result<()> {
+        let edge = GraphEdge {
+            id: Uuid::new_v4(),
+            source_id: insight_id,
+            source_type: "insight".to_string(),
+            target_id: *entity_id,
+            target_type: entity_type.to_string(),
+            edge_type: EdgeType::CompanyCompany,
+            weight: 0.85,
+            confidence: 0.85,
+            evidence_ids: vec![],
+            metadata: serde_json::json!({}),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+        };
+        self.upsert_edge(&edge).await
     }
 
     pub async fn get_insight(&self, id: Uuid) -> Result<Option<InsightRow>> {

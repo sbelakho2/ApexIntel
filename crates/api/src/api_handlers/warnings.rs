@@ -1,7 +1,11 @@
 #![allow(clippy::disallowed_methods)]
 
 use crate::*;
+use apex_api::destructive_actions::{
+    authorize_delete_all_warnings, delete_all_warnings_audit_payload,
+};
 use apex_store::postgres::{AcknowledgeWarningResult, WarningReviewOutcome};
+use axum::http::HeaderMap;
 
 #[derive(Debug, Deserialize)]
 struct BulkDeleteRequest {
@@ -399,6 +403,7 @@ pub(crate) async fn acknowledge_warning(
 
 pub(crate) async fn delete_warning(
     State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let start = Instant::now();
@@ -416,6 +421,17 @@ pub(crate) async fn delete_warning(
 
     match state.store.delete_warning(id_parsed).await {
         Ok(true) => {
+            let _ = state
+                .store
+                .record_audit_event(
+                    &auth_ctx.user_id,
+                    "warning_deleted",
+                    &serde_json::json!({
+                        "warning_id": id_parsed,
+                        "deleted_by": auth_ctx.user_id,
+                    }),
+                )
+                .await;
             let duration_ms = start.elapsed().as_millis() as u64;
             let meta = ResponseMeta::now()
                 .with_request_id(request_id)
@@ -453,6 +469,7 @@ pub(crate) async fn delete_warning(
 
 pub(crate) async fn delete_warnings_bulk(
     State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let start = Instant::now();
@@ -469,6 +486,18 @@ pub(crate) async fn delete_warnings_bulk(
 
     match state.store.delete_warnings(&parsed_ids).await {
         Ok(count) => {
+            let _ = state
+                .store
+                .record_audit_event(
+                    &auth_ctx.user_id,
+                    "warnings_bulk_deleted",
+                    &serde_json::json!({
+                        "deleted_count": count,
+                        "requested_count": requested_count,
+                        "deleted_by": auth_ctx.user_id,
+                    }),
+                )
+                .await;
             let duration_ms = start.elapsed().as_millis() as u64;
             let meta = ResponseMeta::now()
                 .with_request_id(request_id)
@@ -499,13 +528,33 @@ pub(crate) async fn delete_warnings_bulk(
 
 pub(crate) async fn delete_all_warnings(
     State(state): State<AppState>,
+    Extension(auth_ctx): Extension<ApiAuthContext>,
+    headers: HeaderMap,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
 
+    let authorization = match authorize_delete_all_warnings(&headers, &auth_ctx) {
+        Ok(auth) => auth,
+        Err(err) => {
+            return (
+                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::FORBIDDEN),
+                Json(error_response(err)),
+            );
+        }
+    };
+
     match state.store.delete_all_warnings().await {
         Ok(count) => {
-            tracing::warn!(request_id = %request_id, "deleted ALL warnings: {} rows", count);
+            let _ = state
+                .store
+                .record_audit_event(
+                    &auth_ctx.user_id,
+                    "all_warnings_deleted",
+                    &delete_all_warnings_audit_payload(&auth_ctx, &authorization, count),
+                )
+                .await;
+            tracing::warn!(request_id = %request_id, user_id = %auth_ctx.user_id, reason = %authorization.reason, "deleted ALL warnings: {} rows", count);
             let duration_ms = start.elapsed().as_millis() as u64;
             let meta = ResponseMeta::now()
                 .with_request_id(request_id)

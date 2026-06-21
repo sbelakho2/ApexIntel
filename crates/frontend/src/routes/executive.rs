@@ -4,9 +4,12 @@
 
 use leptos::*;
 
-use crate::components::{
-    cards::{PageHeader, StatCard, SurfaceCard},
-    charts::probability_gauge::ProbabilityGauge,
+use crate::{
+    api::{self},
+    components::{
+        cards::{PageHeader, StatCard, SurfaceCard},
+        charts::probability_gauge::ProbabilityGauge,
+    },
 };
 
 // ────────────────────────────────────────────
@@ -78,66 +81,20 @@ pub struct ExecutiveSummary {
     pub recommended_actions: Vec<RecommendedAction>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ApiEnvelope<T> {
-    pub success: bool,
-    pub data: Option<T>,
-    pub error: Option<ApiErrorBody>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ApiErrorBody {
-    pub code: String,
-    pub message: String,
-}
-
 // ────────────────────────────────────────────
 // API Functions
 // ────────────────────────────────────────────
 
 pub async fn fetch_executive_summary() -> Result<ExecutiveSummary, String> {
-    let response = reqwest::get("http://localhost:8080/api/executive/summary")
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<ExecutiveSummary> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    envelope.data.ok_or_else(|| {
-        envelope.error.map(|e| e.message).unwrap_or_else(|| "Unknown error".to_string())
-    })
+    api::get_json("/api/executive/summary").await
 }
 
 pub async fn fetch_opportunities() -> Result<Vec<StrategicOpportunity>, String> {
-    let response = reqwest::get("http://localhost:8080/api/executive/opportunities")
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<StrategicOpportunity>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    envelope.data.ok_or_else(|| {
-        envelope.error.map(|e| e.message).unwrap_or_else(|| "Unknown error".to_string())
-    })
+    api::get_json("/api/executive/opportunities").await
 }
 
 pub async fn fetch_threats() -> Result<Vec<CriticalThreat>, String> {
-    let response = reqwest::get("http://localhost:8080/api/executive/threats")
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<CriticalThreat>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    envelope.data.ok_or_else(|| {
-        envelope.error.map(|e| e.message).unwrap_or_else(|| "Unknown error".to_string())
-    })
+    api::get_json("/api/executive/threats").await
 }
 
 // ────────────────────────────────────────────
@@ -449,6 +406,7 @@ pub fn ExecutivePage() -> impl IntoView {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use crate::api::ApiEnvelope;
 
     // ── API Response Type Tests ───────────────────────────────────────────────
 
@@ -738,7 +696,6 @@ mod tests {
             "success": false,
             "data": null,
             "error": {
-                "code": "NOT_FOUND",
                 "message": "Resource not found"
             }
         }"#;
@@ -747,7 +704,6 @@ mod tests {
         assert!(!envelope.success);
         assert!(envelope.data.is_none());
         assert!(envelope.error.is_some());
-        assert_eq!(envelope.error.unwrap().code, "NOT_FOUND");
     }
 
     // ── Market Intelligence Summary Tests ──────────────────────────────────────

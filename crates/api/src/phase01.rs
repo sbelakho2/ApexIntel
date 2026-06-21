@@ -740,6 +740,11 @@ fn company_row_to_detail(
     }
 
     let now = Utc::now();
+    let region_text = row.region.clone().unwrap_or_default();
+    let type_text = row.company_type.clone().unwrap_or_else(|| "Unknown type".to_string());
+    let domain_clone = row.domain.clone();
+    let metadata_ref = row.metadata.clone();
+
     CompanyDetail {
         id: row.id.to_string(),
         name: row.name,
@@ -749,8 +754,7 @@ fn company_row_to_detail(
         city: sites.iter().find_map(|site| site.city.clone()),
         website: row.domain,
         entity_type: row.company_type.unwrap_or_else(|| "unknown".to_string()),
-        is_competitor: row
-            .metadata
+        is_competitor: metadata_ref
             .as_ref()
             .and_then(|meta| meta.get("is_competitor"))
             .and_then(|value| value.as_bool())
@@ -788,13 +792,30 @@ fn company_row_to_detail(
             .collect(),
         recent_events: vec![CompanyEvent {
             event_type: "profile_loaded".to_string(),
-            description: "Company detail requested".to_string(),
+            description: format!(
+                "{} | {} | {} | Risk: {:.1}",
+                region_text,
+                type_text,
+                row.employee_estimate.map(|e| format!("~{} employees", e)).unwrap_or_default(),
+                row.risk_score.unwrap_or(0.0),
+            ),
             date: row.updated_at.unwrap_or(now),
-            source_url: None,
+            source_url: domain_clone,
         }],
-        community_badges: vec![],
-        source_entropy: None,
-        source_quality_label: None,
+        community_badges: metadata_ref
+            .as_ref()
+            .and_then(|meta| meta.get("community_badges"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        source_entropy: metadata_ref
+            .as_ref()
+            .and_then(|meta| meta.get("source_entropy"))
+            .and_then(|v| v.as_f64()),
+        source_quality_label: metadata_ref
+            .as_ref()
+            .and_then(|meta| meta.get("source_quality_label"))
+            .and_then(|v| v.as_str().map(String::from)),
         created_at: row.created_at.unwrap_or(now),
         updated_at: row.updated_at.unwrap_or(now),
     }

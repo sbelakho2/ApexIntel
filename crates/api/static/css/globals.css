@@ -3,52 +3,65 @@
 @tailwind utilities;
 
 @layer base {
+  /* ══════════════════════════════════════════════════════════════════════════
+     RAMS DESIGN TOKENS — Single Source of Truth
+     Light & Dark values per Sensei-Rams v3.0 specification
+     ══════════════════════════════════════════════════════════════════════════ */
   :root {
-    --background: 242 242 242;
-    --foreground: 16 16 16;
-    --card: 255 255 255;
-    --card-foreground: 16 16 16;
-    --popover: 255 255 255;
-    --popover-foreground: 16 24 40;
-    --primary: 255 190 0;
-    --primary-foreground: 18 18 18;
-    --secondary: 230 230 230;
-    --secondary-foreground: 24 24 24;
-    --muted: 217 217 217;
-    --muted-foreground: 96 96 96;
-    --accent: 74 144 226;
-    --accent-foreground: 255 255 255;
-    --destructive: 220 38 38;
-    --destructive-foreground: 255 255 255;
-    --error: 220 38 38;
-    --border: 188 188 188;
-    --input: 188 188 188;
-    --ring: 255 190 0;
+    /* ── Core Rams (light) ────────────────────────────────────────────── */
+    --rams-chassis: #F2F2F2;
+    --rams-module: #FFFFFF;
+    --rams-panel: #ECECEC;
+    --rams-line: #C0C0C0;
+    --rams-line-strong: #A8A8A8;
+    --rams-muted: #7A7A7A;
+    --rams-foreground: #1A1A1A;
 
+    /* ── Functional Accents (light) ────────────────────────────────────── */
+    --rams-orange: #E69400;
+    --rams-green: #2D8C3C;
+    --rams-red: #C42424;
+    --rams-steel: #3B6FB0;
+
+    /* ── Shadows (structural only) ─────────────────────────────────────── */
+    --rams-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    --rams-shadow-pressed: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    --rams-shadow-focus: 0 0 0 2px var(--rams-chassis), 0 0 0 4px var(--rams-orange);
+
+    /* ── Legacy Name Mapping (RGB triplets → Rams values) ──────────────── */
+    --background: 242 242 242;       /* → --rams-chassis #F2F2F2 */
+    --foreground: 26 26 26;          /* → --rams-foreground #1A1A1A */
+    --card: 255 255 255;             /* → --rams-module #FFFFFF */
+    --card-foreground: 26 26 26;
+    --popover: 255 255 255;
+    --popover-foreground: 26 26 26;
+    --primary: 230 148 0;            /* → --rams-orange #E69400 */
+    --primary-foreground: 255 255 255;
+    --secondary: 236 236 236;        /* → --rams-panel #ECECEC */
+    --secondary-foreground: 26 26 26;
+    --muted: 236 236 236;            /* → --rams-panel #ECECEC (surface) */
+    --muted-foreground: 122 122 122; /* → --rams-muted #7A7A7A */
+    --accent: 59 111 176;            /* → --rams-steel #3B6FB0 */
+    --accent-foreground: 255 255 255;
+    --destructive: 196 36 36;        /* → --rams-red #C42424 */
+    --destructive-foreground: 255 255 255;
+    --error: 196 36 36;              /* → --rams-red #C42424 */
+    --border: 217 217 217;           /* → --rams-line #D9D9D9 */
+    --input: 217 217 217;            /* → --rams-line #D9D9D9 */
+    --ring: 230 148 0;               /* → --rams-orange #E69400 */
+
+    --success: 45 140 60;            /* → --rams-green #2D8C3C */
+    --warning: 230 148 0;            /* → --rams-orange #E69400 */
+    --danger: 196 36 36;             /* → --rams-red #C42424 */
+    --info: 59 111 176;              /* → --rams-steel #3B6FB0 */
+
+    /* ── Radii (micro only) ────────────────────────────────────────────── */
     --radius-sm: 2px;
     --radius-md: 4px;
-    --radius-lg: 4px;
-    --radius-xl: 8px;
+    --radius-lg: 6px;
     --radius: 4px;
 
-    --success: 45 140 60;
-    --warning: 255 190 0;
-    --danger: 214 45 45;
-    --info: 74 144 226;
-
-    --rams-chassis: #F2F2F2;
-    --rams-module: #E6E6E6;
-    --rams-panel: #D9D9D9;
-    --rams-line: #CCCCCC;
-    --rams-muted: #999999;
-    --rams-foreground: #1A1A1A;
-    --rams-orange: #FFBE00;
-    --rams-red: #D62D2D;
-    --rams-green: #2D8C3C;
-    --rams-steel: #4A90E2;
-    --rams-accent: var(--rams-orange);
-
-    /* Surface Colors */
+    /* ── Surface scale (legacy, kept for backward compat) ──────────────── */
     --surface-50: 248 246 243;
     --surface-100: 240 238 234;
     --surface-200: 225 226 218;
@@ -60,7 +73,7 @@
     --surface-800: 38 42 40;
     --surface-900: 20 24 30;
 
-    /* Brand Colors */
+    /* ── Brand (legacy) ────────────────────────────────────────────────── */
     --brand-50: 237 242 252;
     --brand-100: 219 228 247;
     --brand-200: 191 205 239;
@@ -72,7 +85,7 @@
     --brand-800: 29 45 102;
     --brand-900: 20 32 73;
 
-    /* Chart Colors — Tableau-inspired vibrant palette */
+    /* ── Chart Colors (kept for chart infrastructure) ──────────────────── */
     --chart-bg-top: 255 255 255;
     --chart-bg-bottom: 247 249 252;
     --chart-grid: 189 198 210;
@@ -92,6 +105,7 @@
     --chart-series-pink: 236 72 153;
     --chart-series-teal: 20 184 166;
 
+    /* ── Spacing (4px grid) ────────────────────────────────────────────── */
     --space-1: 4px;
     --space-2: 8px;
     --space-3: 12px;
@@ -99,42 +113,71 @@
     --space-6: 24px;
     --space-8: 32px;
     --space-12: 48px;
+    --space-16: 64px;
   }
 
   :root.dark,
   :root[data-theme='dark'] {
-    --background: 12 14 16;
-    --foreground: 244 246 250;
-    --card: 22 25 28;
-    --card-foreground: 244 246 250;
-    --popover: 22 25 28;
-    --popover-foreground: 244 246 250;
-    --primary: 109 140 212;
-    --primary-foreground: 8 12 20;
-    --secondary: 30 33 36;
-    --secondary-foreground: 232 236 242;
-    --muted: 30 33 36;
-    --muted-foreground: 182 188 196;
-    --accent: 34 38 42;
-    --accent-foreground: 236 240 246;
-    --destructive: 220 38 38;
-    --destructive-foreground: 255 255 255;
-    --error: 248 113 113;
-    --border: 46 50 56;
-    --input: 46 50 56;
-    --ring: 120 152 224;
+    /* ── Core Rams (dark) ─────────────────────────────────────────────── */
+    --rams-chassis: #0E0F11;
+    --rams-module: #17191C;
+    --rams-panel: #1F2227;
+    --rams-line: #2A2E34;
+    --rams-line-strong: #3A3F47;
+    --rams-muted: #9AA1AB;
+    --rams-foreground: #ECEFF3;
 
-    --surface-50: 12 14 16;
+    /* ── Functional Accents (dark) ─────────────────────────────────────── */
+    --rams-orange: #FFBE00;
+    --rams-green: #4ADE80;
+    --rams-red: #F87171;
+    --rams-steel: #7AB0F0;
+
+    /* ── Shadows (dark) ────────────────────────────────────────────────── */
+    --rams-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --rams-shadow-pressed: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    --rams-shadow-focus: 0 0 0 2px var(--rams-chassis), 0 0 0 4px var(--rams-orange);
+
+    /* ── Legacy Name Mapping (dark) ────────────────────────────────────── */
+    --background: 14 15 17;          /* → --rams-chassis #0E0F11 */
+    --foreground: 236 239 243;       /* → --rams-foreground #ECEFF3 */
+    --card: 23 25 28;                /* → --rams-module #17191C */
+    --card-foreground: 236 239 243;
+    --popover: 23 25 28;
+    --popover-foreground: 236 239 243;
+    --primary: 255 190 0;            /* → --rams-orange #FFBE00 */
+    --primary-foreground: 14 15 17;
+    --secondary: 31 34 39;           /* → --rams-panel #1F2227 */
+    --secondary-foreground: 236 239 243;
+    --muted: 31 34 39;               /* → --rams-panel #1F2227 (surface) */
+    --muted-foreground: 154 161 171; /* → --rams-muted #9AA1AB */
+    --accent: 122 176 240;           /* → --rams-steel #7AB0F0 */
+    --accent-foreground: 14 15 17;
+    --destructive: 248 113 113;      /* → --rams-red #F87171 */
+    --destructive-foreground: 14 15 17;
+    --error: 248 113 113;            /* → --rams-red #F87171 */
+    --border: 42 46 52;              /* → --rams-line #2A2E34 */
+    --input: 42 46 52;               /* → --rams-line #2A2E34 */
+    --ring: 255 190 0;               /* → --rams-orange #FFBE00 */
+
+    --success: 74 222 128;           /* → --rams-green #4ADE80 */
+    --warning: 255 190 0;            /* → --rams-orange #FFBE00 */
+    --danger: 248 113 113;           /* → --rams-red #F87171 */
+    --info: 122 176 240;             /* → --rams-steel #7AB0F0 */
+
+    /* ── Surface scale (dark) ──────────────────────────────────────────── */
+    --surface-50: 14 15 17;
     --surface-100: 18 20 23;
     --surface-200: 26 30 34;
-    --surface-300: 46 50 56;
+    --surface-300: 42 46 52;
     --surface-400: 78 84 92;
     --surface-500: 120 128 138;
     --surface-600: 170 176 184;
     --surface-700: 210 214 220;
     --surface-800: 232 235 240;
-    --surface-900: 244 246 250;
+    --surface-900: 236 239 243;
 
+    /* ── Chart Colors (dark) ───────────────────────────────────────────── */
     --chart-bg-top: 24 27 31;
     --chart-bg-bottom: 18 21 24;
     --chart-grid: 88 98 111;
@@ -143,18 +186,6 @@
     --chart-label: 184 193 205;
     --chart-shadow: 2 6 23;
     --chart-spotlight: 38 42 48;
-
-    --rams-chassis: #1A1A1A;
-    --rams-module: #252525;
-    --rams-panel: #2D2D2D;
-    --rams-line: #404040;
-    --rams-muted: #666666;
-    --rams-foreground: #F2F2F2;
-
-    --success: 74 222 128;
-    --warning: 250 204 21;
-    --danger: 248 113 113;
-    --info: 125 211 252;
   }
 }
 
@@ -170,8 +201,6 @@
     -moz-osx-font-smoothing: grayscale;
     letter-spacing: -0.01em;
     background-color: var(--rams-chassis);
-    background-image: radial-gradient(circle, rgba(0, 0, 0, 0.06) 0.6px, transparent 0.6px);
-    background-size: 8px 8px;
     user-select: text;
   }
 
@@ -182,9 +211,9 @@
     z-index: 120;
     transform: translateY(-150%);
     padding: 0.5rem 0.75rem;
-    border: 1px solid rgb(var(--border));
-    background: rgb(var(--card));
-    color: rgb(var(--card-foreground));
+    border: 1px solid var(--rams-line);
+    background: var(--rams-module);
+    color: var(--rams-foreground);
     font-size: 0.75rem;
     font-weight: 800;
     text-transform: uppercase;
@@ -484,33 +513,21 @@
 }
 
 @layer components {
-  .transition-premium {
-    transition-property: all;
-    transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
-    transition-duration: 300ms;
-  }
-
+  /* ── Premium Card (rewritten: border-driven, no shadows, no hover-scale) ── */
   .premium-card {
-    @apply bg-card border border-border rounded-lg transition-premium shadow-premium
-      dark:bg-surface-100/95 dark:border-surface-300/60 dark:shadow-[0_12px_32px_rgba(0,0,0,0.45)];
+    @apply bg-rams-module border border-rams-line rounded-rams-md;
   }
   .premium-card:hover {
-    @apply border-primary/30 bg-muted/50 shadow-premium-hover
-      dark:border-brand-400/50 dark:bg-surface-200/80;
+    @apply border-rams-line-strong;
   }
 
+  /* ── Module Container (replaces "card" — structural, not floating) ──────── */
   .apex-card {
-    @apply bg-card border border-border rounded-sm shadow-none transition-none;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    @apply bg-rams-module border border-rams-line rounded-rams-md;
     min-width: 0;
-    content-visibility: auto;
-    contain-intrinsic-size: 260px;
-  }
-  .dark .apex-card {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   }
   .apex-card:hover {
-    @apply border-warning/70 bg-secondary;
+    @apply border-rams-line-strong;
   }
 
   .apex-metric-card {
@@ -525,32 +542,29 @@
     @apply text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground;
   }
 
+  /* ── Chart Frame (flat module: no gradient, no drop-shadow, micro radius) ── */
   .apex-chart-frame,
   .apex-chart-frame-tall {
     position: relative;
     isolation: isolate;
     overflow: visible;
-    border: 1px solid rgb(var(--chart-grid-soft) / 0.55);
-    border-radius: 12px;
-    background:
-      linear-gradient(180deg, rgb(var(--chart-bg-top)), rgb(var(--chart-bg-bottom)));
-    box-shadow:
-      0 1px 2px rgb(var(--chart-shadow) / 0.06),
-      0 4px 12px -4px rgb(var(--chart-shadow) / 0.08);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-md, 4px);
+    background: var(--rams-module);
     padding: 1rem 0.95rem 0.8rem;
   }
 
   .apex-chart-frame {
-    height: 220px;
+    min-height: 220px;
   }
 
   .apex-chart-frame-tall {
-    height: 246px;
+    min-height: 246px;
   }
 
   /* Dense variant: compact columns for 30-day views inside insights/warnings */
   .apex-chart-frame-dense {
-    height: 200px;
+    min-height: 200px;
   }
 
   .apex-chart-frame-dense .apex-viz-frame {
@@ -581,26 +595,12 @@
   .apex-chart-frame-dense .apex-viz-value {
     font-size: 8px;
   }
+.apex-chart-frame > *,
+.apex-chart-frame-tall > * {
+  position: relative;
+  z-index: 1;
+}
 
-  .apex-chart-frame::before,
-  .apex-chart-frame-tall::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background:
-      linear-gradient(to bottom, rgb(var(--chart-grid-soft) / 0.1) 1px, transparent 1px);
-    background-size: 100% 25%;
-    pointer-events: none;
-    opacity: 0.5;
-    border-radius: inherit;
-    overflow: hidden;
-  }
-
-  .apex-chart-frame > *,
-  .apex-chart-frame-tall > * {
-    position: relative;
-    z-index: 1;
-  }
 
   .apex-donut-chart {
     display: grid;
@@ -618,18 +618,14 @@
 
   .apex-donut-svg {
     overflow: visible;
-    filter: drop-shadow(0 4px 8px rgb(var(--chart-shadow) / 0.08));
   }
 
   .apex-donut-segment {
-    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms ease, filter 200ms ease;
-    transform-origin: center;
+    transition: opacity 120ms ease;
   }
 
   .apex-donut-segment:hover {
-    transform: scale(1.03);
-    opacity: 0.92;
-    filter: drop-shadow(0 0 6px rgb(var(--chart-shadow) / 0.18));
+    opacity: 0.85;
   }
 
   .apex-donut-center {
@@ -646,14 +642,14 @@
     font-weight: 800;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: rgb(var(--chart-label));
+    color: var(--rams-muted);
   }
 
   .apex-donut-center-value {
     font-size: 18px;
     font-weight: 800;
     letter-spacing: -0.03em;
-    color: rgb(var(--foreground));
+    color: var(--rams-foreground);
   }
 
   .apex-viz-frame {
@@ -690,13 +686,13 @@
 
   .apex-viz-value {
     font-size: 9px;
-    color: rgb(var(--foreground));
+    color: var(--rams-foreground);
   }
 
   .apex-viz-value-secondary {
     margin-top: -0.24rem;
     font-size: 8px;
-    color: rgb(var(--chart-label));
+    color: var(--rams-muted);
   }
 
   .apex-viz-track {
@@ -706,8 +702,8 @@
     align-items: end;
     justify-content: center;
     padding: 0 0.12rem;
-    border-radius: 6px;
-    background: rgb(var(--chart-grid-soft) / 0.18);
+    border-radius: 4px;
+    background: var(--rams-panel);
   }
 
   .apex-viz-track::after {
@@ -717,7 +713,7 @@
     right: 0;
     bottom: -1px;
     height: 2px;
-    background: rgb(var(--chart-axis) / 0.25);
+    background: rgb(from var(--rams-line-strong) r g b / 0.25);
     border-radius: 1px;
     pointer-events: none;
   }
@@ -734,32 +730,29 @@
     flex-direction: column-reverse;
     overflow: hidden;
     border-radius: 4px 4px 2px 2px;
-    box-shadow: 0 2px 6px -2px rgb(var(--chart-shadow) / 0.12);
-    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
-  }
-
-  .apex-viz-column:hover .apex-viz-stack,
-  .apex-viz-column:focus-within .apex-viz-stack,
-  .apex-viz-column:hover .apex-viz-dual-bar,
-  .apex-viz-column:focus-within .apex-viz-dual-bar {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 12px -4px rgb(var(--chart-shadow) / 0.18);
   }
 
   .apex-viz-segment,
   .apex-viz-dual-bar {
     width: 100%;
-    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), filter 200ms ease;
   }
 
-  .apex-viz-segment-low { background: rgb(var(--chart-series-blue)); border-radius: 2px 2px 0 0; }
-  .apex-viz-segment-medium { background: rgb(var(--chart-series-amber)); border-radius: 2px 2px 0 0; }
-  .apex-viz-segment-high { background: rgb(var(--chart-series-orange)); border-radius: 2px 2px 0 0; }
-  .apex-viz-segment-critical { background: rgb(var(--chart-series-red)); border-radius: 2px 2px 0 0; }
-  .apex-viz-segment-demand { background: rgb(var(--chart-series-red)); border-radius: 2px 2px 0 0; }
-  .apex-viz-segment-competitive { background: rgb(var(--chart-series-orange)); border-radius: 2px 2px 0 0; }
-  .apex-viz-segment-supply { background: rgb(var(--chart-series-amber)); border-radius: 2px 2px 0 0; }
-  .apex-viz-segment-security { background: rgb(var(--chart-series-blue)); border-radius: 2px 2px 0 0; }
+  /* Remove hover transforms on chart bars (decorative motion violation) */
+  .apex-viz-column:hover .apex-viz-stack,
+  .apex-viz-column:focus-within .apex-viz-stack,
+  .apex-viz-column:hover .apex-viz-dual-bar,
+  .apex-viz-column:focus-within .apex-viz-dual-bar {
+    /* No transform, no shadow — structural only */
+  }
+
+  .apex-viz-segment-low { background: var(--rams-steel); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-medium { background: var(--rams-orange); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-high { background: var(--rams-orange); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-critical { background: var(--rams-red); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-demand { background: var(--rams-red); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-competitive { background: var(--rams-orange); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-supply { background: var(--rams-orange); border-radius: 2px 2px 0 0; }
+  .apex-viz-segment-security { background: var(--rams-steel); border-radius: 2px 2px 0 0; }
   .apex-viz-segment-macro { background: rgb(var(--chart-series-slate)); border-radius: 2px 2px 0 0; }
   .apex-viz-segment-regulatory { background: rgb(var(--chart-series-violet)); border-radius: 2px 2px 0 0; }
   .apex-viz-segment-predictive { background: rgb(var(--chart-series-cyan)); border-radius: 2px 2px 0 0; }
@@ -769,12 +762,10 @@
     width: 44%;
     min-height: 4px;
     border-radius: 4px 4px 2px 2px;
-    box-shadow: 0 2px 6px -2px rgb(var(--chart-shadow) / 0.12);
-    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
   }
 
-  .apex-viz-dual-bar-success { background: rgb(var(--chart-series-green)); }
-  .apex-viz-dual-bar-errors { background: rgb(var(--chart-series-blue)); }
+  .apex-viz-dual-bar-success { background: var(--rams-green); }
+  .apex-viz-dual-bar-errors { background: var(--rams-steel); }
 
   .apex-viz-label {
     display: block;
@@ -782,7 +773,7 @@
     font-size: 9px;
     font-weight: 600;
     text-transform: uppercase;
-    color: rgb(var(--chart-label));
+    color: var(--rams-muted);
     white-space: nowrap;
     letter-spacing: 0.04em;
   }
@@ -797,18 +788,18 @@
   }
 
   .apex-line-chart-plot {
-    fill: rgb(var(--chart-grid-soft) / 0.18);
-    stroke: rgb(var(--chart-grid-soft) / 0.4);
+    fill: rgb(from var(--rams-line) r g b / 0.18);
+    stroke: rgb(from var(--rams-line) r g b / 0.4);
     stroke-width: 1;
   }
 
   .apex-line-chart-axis {
-    stroke: rgb(var(--chart-axis) / 0.4);
+    stroke: rgb(from var(--rams-line-strong) r g b / 0.4);
     stroke-width: 1;
   }
 
   .apex-line-chart-grid {
-    stroke: rgb(var(--chart-grid) / 0.18);
+    stroke: rgb(from var(--rams-line-strong) r g b / 0.18);
     stroke-width: 1;
     stroke-dasharray: 3 4;
   }
@@ -818,46 +809,42 @@
     stroke-width: 2.4;
     stroke-linejoin: round;
     stroke-linecap: round;
-    filter: drop-shadow(0 2px 4px rgb(var(--chart-shadow) / 0.08));
   }
 
-  .apex-line-chart-stroke-precision { stroke: rgb(var(--chart-series-red)); }
-  .apex-line-chart-stroke-recall { stroke: rgb(var(--chart-series-blue)); }
-  .apex-line-chart-stroke-fpr { stroke: rgb(var(--chart-series-amber)); }
+  .apex-line-chart-stroke-precision { stroke: var(--rams-red); }
+  .apex-line-chart-stroke-recall { stroke: var(--rams-steel); }
+  .apex-line-chart-stroke-fpr { stroke: var(--rams-orange); }
 
   .apex-line-chart-point {
-    stroke: rgb(var(--chart-bg-top));
+    stroke: var(--rams-module);
     stroke-width: 2;
-    filter: drop-shadow(0 2px 4px rgb(var(--chart-shadow) / 0.1));
   }
 
-  .apex-line-chart-point-precision { fill: rgb(var(--chart-series-red)); }
-  .apex-line-chart-point-recall { fill: rgb(var(--chart-series-blue)); }
-  .apex-line-chart-point-fpr { fill: rgb(var(--chart-series-amber)); }
+  .apex-line-chart-point-precision { fill: var(--rams-red); }
+  .apex-line-chart-point-recall { fill: var(--rams-steel); }
+  .apex-line-chart-point-fpr { fill: var(--rams-orange); }
 
   .apex-line-chart-value {
-    fill: rgb(var(--foreground));
+    fill: var(--rams-foreground);
     font-size: 8px;
     font-weight: 700;
   }
 
   .apex-line-chart-label {
-    fill: rgb(var(--chart-label));
+    fill: var(--rams-muted);
     font-size: 8px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
 
-  .apex-compare-bar {
-    filter: drop-shadow(0 2px 6px rgb(var(--chart-shadow) / 0.08));
-  }
+  .apex-compare-bar { }
 
-  .apex-compare-bar-threat { fill: rgb(var(--chart-series-red)); }
-  .apex-compare-bar-overlap { fill: rgb(var(--chart-series-blue)); }
+  .apex-compare-bar-threat { fill: var(--rams-red); }
+  .apex-compare-bar-overlap { fill: var(--rams-steel); }
 
   .apex-compare-value {
-    fill: rgb(var(--foreground));
+    fill: var(--rams-foreground);
     font-size: 8px;
     font-weight: 800;
     text-anchor: middle;
@@ -865,15 +852,15 @@
 
   @media (max-width: 640px) {
     .apex-chart-frame {
-      height: 196px;
+      min-height: 196px;
     }
 
     .apex-chart-frame-tall {
-      height: 220px;
+      min-height: 220px;
     }
 
     .apex-chart-frame-dense {
-      height: 180px;
+      min-height: 180px;
     }
 
     .apex-chart-frame-dense .apex-viz-track {
@@ -1003,7 +990,7 @@
     }
 
     .apex-chart-frame-dense {
-      height: 160px;
+      min-height: 160px;
     }
 
     .apex-chart-frame-dense .apex-viz-track {
@@ -1020,14 +1007,14 @@
   }
 
   .apex-chart-legend-item {
-    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase text-muted-foreground;
-    border-color: rgb(var(--chart-grid-soft) / 0.5);
-    background: rgb(var(--chart-bg-top) / 0.6);
+    @apply inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[10px] font-semibold uppercase text-muted-foreground;
+    border-color: var(--rams-line);
+    background: var(--rams-panel);
   }
 
   .apex-legend-swatch {
     @apply inline-block h-2.5 w-2.5 rounded-full;
-    box-shadow: 0 0 0 1.5px rgb(var(--chart-bg-top) / 0.8);
+    box-shadow: 0 0 0 1.5px rgb(from var(--rams-module) r g b / 0.8);
   }
 
   .apex-legend-swatch-dynamic {
@@ -1042,45 +1029,56 @@
     @apply inline-block h-2 w-3 rounded-full;
   }
 
+  /* ── Chip Component (micro radius, border-driven, no pills) ─────────────── */
+  .apex-chip {
+    @apply inline-flex items-center gap-1.5 rounded-rams-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em];
+  }
+  .apex-chip-idle {
+    @apply border-rams-line bg-rams-panel text-rams-muted;
+  }
+  .apex-chip-active {
+    @apply border-rams-foreground bg-rams-foreground text-rams-module;
+  }
+  .apex-chip-accent {
+    @apply border-rams-orange bg-rams-orange/15 text-rams-foreground;
+  }
+
+  /* ── Legacy alias ──────────────────────────────────────────────────── */
   .apex-filter-chip {
-    @apply rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] transition-none;
+    @apply rounded-sm border px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em];
   }
-
   .apex-filter-chip-idle {
-    @apply border-border bg-secondary text-muted-foreground hover:text-foreground;
+    @apply border-rams-line bg-rams-panel text-rams-muted;
   }
-
   .apex-filter-chip-active {
-    @apply border-foreground bg-foreground text-background;
+    @apply border-rams-foreground bg-rams-foreground text-rams-module;
   }
-
   .apex-filter-chip-accent {
-    @apply border-primary bg-primary/15 text-foreground hover:text-foreground;
+    @apply border-rams-orange bg-rams-orange/15 text-rams-foreground;
   }
-
   .apex-filter-chip-muted {
-    @apply border-border bg-secondary text-muted-foreground;
+    @apply border-rams-line bg-rams-panel text-rams-muted;
   }
 
   .apex-tier-critical {
-    background: rgb(var(--destructive) / 0.15);
-    color: rgb(var(--destructive));
-    border: 1px solid rgb(var(--destructive) / 0.4);
+    background: rgb(from var(--rams-red) r g b / 0.15);
+    color: var(--rams-red);
+    border: 1px solid rgb(from var(--rams-red) r g b / 0.4);
   }
   .apex-tier-high {
-    background: rgb(var(--chart-series-orange) / 0.12);
-    color: rgb(var(--chart-series-orange));
-    border: 1px solid rgb(var(--chart-series-orange) / 0.35);
+    background: rgb(from var(--rams-orange) r g b / 0.12);
+    color: var(--rams-orange);
+    border: 1px solid rgb(from var(--rams-orange) r g b / 0.35);
   }
   .apex-tier-medium {
-    background: rgb(var(--chart-series-amber) / 0.12);
-    color: rgb(var(--chart-series-amber));
-    border: 1px solid rgb(var(--chart-series-amber) / 0.35);
+    background: rgb(from var(--rams-orange) r g b / 0.12);
+    color: var(--rams-orange);
+    border: 1px solid rgb(from var(--rams-orange) r g b / 0.35);
   }
   .apex-tier-low {
-    background: rgb(var(--secondary) / 0.5);
-    color: rgb(var(--muted-foreground));
-    border: 1px solid rgb(var(--border));
+    background: rgb(from var(--rams-panel) r g b / 0.5);
+    color: var(--rams-muted);
+    border: 1px solid var(--rams-line);
   }
 
   .apex-action-link {
@@ -1097,6 +1095,28 @@
 
   .apex-mini-kind-insight {
     @apply bg-blue-500/15 text-blue-500;
+  }
+
+  /* Activity-feed accent variants — semantic, never used in isolation
+     (always paired with a label/icon per Rams accessibility rule). */
+  .apex-mini-kind-poi {
+    @apply bg-emerald-500/15 text-emerald-600;
+  }
+
+  .apex-mini-kind-crawl {
+    @apply bg-sky-500/15 text-sky-600;
+  }
+
+  .apex-mini-kind-threat {
+    @apply bg-red-500/15 text-red-600;
+  }
+
+  .apex-mini-kind-job {
+    @apply bg-violet-500/15 text-violet-600;
+  }
+
+  .apex-mini-kind-muted {
+    @apply bg-rams-panel text-rams-muted;
   }
 
   .apex-dot {
@@ -1130,7 +1150,7 @@
   }
 
   .apex-text-competitor {
-    color: color-mix(in srgb, var(--rams-orange) 76%, black);
+    color: var(--rams-orange);
   }
 
   .apex-link-steel {
@@ -1186,7 +1206,7 @@
 
   .apex-score-ring-warning {
     border-color: var(--rams-orange);
-    color: color-mix(in srgb, var(--rams-orange) 72%, black);
+    color: var(--rams-orange);
   }
 
   .apex-score-ring-info {
@@ -1195,39 +1215,39 @@
   }
 
   .metric-rail-blue { background-color: var(--rams-steel); }
-  .metric-rail-navy { background-color: color-mix(in srgb, var(--rams-steel) 45%, black); }
+  .metric-rail-navy { background-color: #1A384F; }
   .metric-rail-gold { background-color: var(--rams-orange); }
-  .metric-rail-red { background: rgb(var(--chart-series-red)); }
-  .metric-rail-orange { background: rgb(var(--chart-series-orange)); }
-  .metric-rail-amber { background: rgb(var(--chart-series-amber)); }
-  .metric-rail-green { background: rgb(var(--chart-series-green)); }
+  .metric-rail-red { background: var(--rams-red); }
+  .metric-rail-orange { background: var(--rams-orange); }
+  .metric-rail-amber { background: var(--rams-orange); }
+  .metric-rail-green { background: var(--rams-green); }
   .metric-rail-steel { background-color: var(--rams-steel); }
   .metric-rail-violet { background: rgb(var(--chart-series-violet)); }
 
   .metric-swatch-blue { background-color: var(--rams-steel); }
-  .metric-swatch-navy { background-color: color-mix(in srgb, var(--rams-steel) 45%, black); }
+  .metric-swatch-navy { background-color: #1A384F; }
   .metric-swatch-gold { background-color: var(--rams-orange); }
-  .metric-swatch-red { background: rgb(var(--chart-series-red)); }
-  .metric-swatch-orange { background: rgb(var(--chart-series-orange)); }
-  .metric-swatch-amber { background: rgb(var(--chart-series-amber)); }
-  .metric-swatch-green { background: rgb(var(--chart-series-green)); }
+  .metric-swatch-red { background: var(--rams-red); }
+  .metric-swatch-orange { background: var(--rams-orange); }
+  .metric-swatch-amber { background: var(--rams-orange); }
+  .metric-swatch-green { background: var(--rams-green); }
   .metric-swatch-steel { background-color: var(--rams-steel); }
   .metric-swatch-slate { background: rgb(var(--chart-series-slate)); }
   .metric-swatch-violet { background: rgb(var(--chart-series-violet)); }
   .metric-swatch-cyan { background: rgb(var(--chart-series-cyan)); }
   .metric-swatch-teal { background: rgb(var(--chart-series-teal)); }
 
-  .metric-text-red { color: rgb(var(--chart-series-red)); }
-  .metric-text-orange { color: rgb(var(--chart-series-orange)); }
-  .metric-text-amber { color: rgb(var(--chart-series-amber)); }
-  .metric-text-green { color: rgb(var(--chart-series-green)); }
+  .metric-text-red { color: var(--rams-red); }
+  .metric-text-orange { color: var(--rams-orange); }
+  .metric-text-amber { color: var(--rams-orange); }
+  .metric-text-green { color: var(--rams-green); }
   .metric-text-steel { color: var(--rams-steel); }
   .metric-text-blue { color: var(--rams-steel); }
 
   .apex-bar-column {
     height: var(--apex-bar-height, 0%);
     @apply rounded-sm;
-    background-color: color-mix(in srgb, var(--rams-steel) 84%, white);
+    background-color: var(--rams-steel);
   }
 
   .apex-card p,
@@ -1268,32 +1288,74 @@
     @apply fixed left-0 top-0 h-screen w-64 bg-card border-r flex flex-col z-40;
   }
   .sidebar-item {
-    @apply flex items-center gap-3 px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.08em] rounded-[var(--radius-sm)]
-      transition-none text-muted-foreground hover:text-foreground hover:bg-secondary;
+    @apply flex items-center gap-3 px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.08em] rounded-rams-sm
+      text-rams-muted;
   }
   .sidebar-item:hover,
   .sidebar-item:focus-visible,
   a:hover,
   a:focus-visible {
-    @apply text-foreground;
+    color: var(--rams-foreground);
   }
   .sidebar-item.active {
-    @apply bg-secondary text-foreground border border-border;
-    box-shadow: inset 3px 0 0 rgb(var(--warning));
+    background: var(--rams-panel);
+    color: var(--rams-foreground);
+    border: 1px solid var(--rams-line);
+    box-shadow: inset 3px 0 0 var(--rams-orange);
   }
 
-  /* ApexIntel-specific: severity ring */
-  .severity-critical { @apply border-l-4 border-l-red-500; }
-  .severity-high     { @apply border-l-4 border-l-orange-500; }
-  .severity-medium   { @apply border-l-4 border-l-yellow-500; }
-  .severity-low      { @apply border-l-4 border-l-blue-400; }
+  /* ApexIntel-specific: severity border cues (kept for card rails) */
+  .severity-critical,
+  .severity-high,
+  .severity-medium,
+  .severity-low {
+    border-left: 4px solid transparent;
+  }
+  .severity-critical {
+    border-left-color: var(--rams-red);
+  }
+  .severity-critical::before {
+    content: "◆";
+    margin-right: 0.25rem;
+    color: var(--rams-red);
+  }
+  .severity-high {
+    border-left-color: var(--rams-orange);
+  }
+  .severity-high::before {
+    content: "◆";
+    margin-right: 0.25rem;
+    color: var(--rams-orange);
+  }
+  .severity-medium {
+    border-left-color: var(--rams-muted);
+  }
+  .severity-medium::before {
+    content: "◇";
+    margin-right: 0.25rem;
+    color: var(--rams-muted);
+  }
+  .severity-low {
+    border-left-color: var(--rams-steel);
+  }
+  .severity-low::before {
+    content: "◇";
+    margin-right: 0.25rem;
+    color: var(--rams-steel);
+  }
 
   /* Intelligence score bar */
   .intel-score-bar {
-    @apply h-1.5 rounded-full bg-muted overflow-hidden;
+    height: 6px;
+    border-radius: var(--radius-sm, 2px);
+    background: var(--rams-panel);
+    overflow: hidden;
   }
   .intel-score-fill {
-    @apply h-full rounded-full bg-primary transition-[width] duration-500;
+    height: 100%;
+    border-radius: var(--radius-sm, 2px);
+    background: var(--rams-orange);
+    transition: width 200ms ease;
   }
 
   .intel-score-fill-dynamic {
@@ -1320,15 +1382,318 @@
 
   .route-progress {
     @apply fixed left-0 top-0 z-[110] h-1 w-full opacity-0;
-    background: linear-gradient(to right, rgba(var(--primary), 0.2), rgb(var(--primary)) 40%, rgba(var(--primary), 0.2));
+    background-color: var(--rams-orange);
     transform: scaleX(0);
     transform-origin: left;
-    transition: transform 220ms ease, opacity 220ms ease;
+    transition: transform 200ms ease, opacity 200ms ease;
   }
   .route-progress.is-active {
     opacity: 1;
     transform: scaleX(1);
   }
+  /* ══════════════════════════════════════════════════════════════════════════
+     TG-1: New Rams Component Classes
+     Shared vocabulary for all page task groups (TG-2..TG-12)
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /* ── Module (replaces "card" — structural container with header divider) ── */
+  .apex-module {
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-md, 4px);
+    min-width: 0;
+  }
+  .apex-module-header {
+    border-bottom: 1px solid var(--rams-line);
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .apex-module-body {
+    padding: 16px;
+  }
+  .apex-module-body-compact {
+    padding: 12px;
+  }
+
+  /* ── StatModule (metric card with top accent rail) ────────────────────── */
+  .apex-stat {
+    background: var(--rams-module);
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-md, 4px);
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+    min-width: 0;
+  }
+  .apex-stat-rail {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 4px;
+    width: 100%;
+  }
+  .apex-stat-rail-orange { background: var(--rams-orange); }
+  .apex-stat-rail-green  { background: var(--rams-green); }
+  .apex-stat-rail-red    { background: var(--rams-red); }
+  .apex-stat-rail-steel  { background: var(--rams-steel); }
+  .apex-stat-label {
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--rams-muted);
+    margin-top: 4px;
+  }
+  .apex-stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--rams-foreground);
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .apex-stat-delta {
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .apex-stat-delta-positive { color: var(--rams-green); }
+  .apex-stat-delta-negative { color: var(--rams-red); }
+
+  /* ── Badge (dot + label + semantic color — never color alone) ─────────── */
+  .apex-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+    border-radius: var(--radius-sm, 2px);
+    border: 1px solid transparent;
+  }
+  .apex-badge::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-sm, 2px);
+    flex-shrink: 0;
+  }
+  .apex-badge-critical {
+    border-color: var(--rams-red);
+    color: var(--rams-red);
+  }
+  .apex-badge-critical::before { background: var(--rams-red); }
+  .apex-badge-high {
+    border-color: var(--rams-orange);
+    color: var(--rams-orange);
+  }
+  .apex-badge-high::before { background: var(--rams-orange); }
+  .apex-badge-medium {
+    border-color: var(--rams-muted);
+    color: var(--rams-muted);
+  }
+  .apex-badge-medium::before { background: var(--rams-muted); }
+  .apex-badge-low {
+    border-color: var(--rams-steel);
+    color: var(--rams-steel);
+  }
+  .apex-badge-low::before { background: var(--rams-steel); }
+  .apex-badge-info {
+    border-color: var(--rams-steel);
+    color: var(--rams-steel);
+  }
+  .apex-badge-info::before { background: var(--rams-steel); }
+  .apex-badge-neutral {
+    border-color: var(--rams-line);
+    color: var(--rams-muted);
+  }
+  .apex-badge-neutral::before { background: var(--rams-line); }
+
+  /* ── Button Component ──────────────────────────────────────────────────── */
+  .apex-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.25;
+    border-radius: var(--radius-sm, 2px);
+    border: 1px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+  .apex-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .apex-btn-primary {
+    background: var(--rams-orange);
+    color: #FFFFFF;
+    border-color: var(--rams-orange);
+  }
+  .apex-btn-primary:hover:not(:disabled) {
+    background: #C47D00;
+    border-color: #C47D00;
+  }
+  .apex-btn-secondary {
+    background: var(--rams-panel);
+    color: var(--rams-foreground);
+    border-color: var(--rams-line);
+  }
+  .apex-btn-secondary:hover:not(:disabled) {
+    border-color: var(--rams-line-strong);
+    background: var(--rams-module);
+  }
+  .apex-btn-ghost {
+    background: transparent;
+    color: var(--rams-foreground);
+    border-color: transparent;
+  }
+  .apex-btn-ghost:hover:not(:disabled) {
+    background: var(--rams-panel);
+  }
+  .apex-btn-danger {
+    background: var(--rams-red);
+    color: #FFFFFF;
+    border-color: var(--rams-red);
+  }
+  .apex-btn-danger:hover:not(:disabled) {
+    background: #A01D1D;
+  }
+
+  /* ── Input Component ────────────────────────────────────────────────────── */
+  .apex-input {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    border: 1px solid var(--rams-line);
+    border-radius: var(--radius-sm, 2px);
+    background: var(--rams-panel);
+    color: var(--rams-foreground);
+    transition: border-color 120ms ease;
+  }
+  .apex-input:focus {
+    outline: none;
+    border-color: var(--rams-orange);
+    box-shadow: 0 0 0 2px var(--rams-chassis), 0 0 0 4px var(--rams-orange);
+  }
+  .apex-input::placeholder {
+    color: var(--rams-muted);
+  }
+  .apex-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ── DataTable ──────────────────────────────────────────────────────────── */
+  .apex-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .apex-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--rams-muted);
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rams-line);
+    background: var(--rams-panel);
+  }
+  .apex-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rams-line);
+    color: var(--rams-foreground);
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .apex-table tr:hover td {
+    background: var(--rams-panel);
+  }
+
+  /* ── Alert Component ────────────────────────────────────────────────────── */
+  .apex-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-radius: var(--radius-sm, 2px);
+    border: 1px solid;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .apex-alert-danger {
+    border-color: var(--rams-red);
+    color: var(--rams-red);
+    background: rgb(from var(--rams-red) r g b / 0.08);
+  }
+  .apex-alert-success {
+    border-color: var(--rams-green);
+    color: var(--rams-green);
+    background: rgb(from var(--rams-green) r g b / 0.08);
+  }
+  .apex-alert-warning {
+    border-color: var(--rams-orange);
+    color: var(--rams-orange);
+    background: rgb(from var(--rams-orange) r g b / 0.08);
+  }
+  .apex-alert-info {
+    border-color: var(--rams-steel);
+    color: var(--rams-steel);
+    background: rgb(from var(--rams-steel) r g b / 0.08);
+  }
+
+  /* ── Bar Component ──────────────────────────────────────────────────────── */
+  .apex-bar {
+    height: var(--apex-bar-height, 100%);
+    border-radius: var(--radius-sm, 2px);
+    min-height: 4px;
+    background: var(--rams-steel);
+  }
+  .apex-bar-orange { background: var(--rams-orange); }
+  .apex-bar-green  { background: var(--rams-green); }
+  .apex-bar-red    { background: var(--rams-red); }
+  .apex-bar-steel  { background: var(--rams-steel); }
+
+  /* ── Status Strip (bottom system-status bar) ────────────────────────────── */
+  .apex-status-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 4px 16px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    background: var(--rams-module);
+    border-top: 1px solid var(--rams-line);
+    color: var(--rams-muted);
+    min-height: 28px;
+  }
+  .apex-status-strip-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .apex-status-strip-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-sm, 2px);
+    background: var(--rams-line);
+  }
+  .apex-status-strip-dot-ok { background: var(--rams-green); }
+  .apex-status-strip-dot-warn { background: var(--rams-orange); }
+  .apex-status-strip-dot-err { background: var(--rams-red); }
 }
 
 @layer utilities {
@@ -1350,7 +1715,195 @@
   }
 }
 
-@media print {
+  /* ── Executive Dashboard: competitor bars, risk items, trend icons ── */
+  .exec-competitor-bar {
+    height: 8px;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+  .exec-risk-item {
+    border-left: 3px solid transparent;
+  }
+  .exec-risk-item.severity-critical { border-left-color: var(--rams-red); }
+  .exec-risk-item.severity-high     { border-left-color: var(--rams-orange); }
+  .exec-risk-item.severity-medium   { border-left-color: var(--rams-muted); }
+  .exec-risk-item.severity-low      { border-left-color: var(--rams-steel); }
+  .exec-trend-up   { color: var(--rams-green); }
+  .exec-trend-down { color: var(--rams-red); }
+
+  /* ── Graph Explorer: stage, canvas, chips, legends, panels ── */
+  .graph-stage {
+    position: relative;
+    min-height: 24rem;
+    border: 1px solid var(--rams-line);
+    background: var(--rams-module);
+    border-radius: 4px;
+    overflow: hidden;
+    touch-action: none;
+    cursor: grab;
+  }
+  .graph-stage svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 24rem;
+  }
+  .graph-stage.is-dragging { cursor: grabbing; }
+  .graph-empty {
+    display: grid;
+    place-items: center;
+    min-height: 24rem;
+    padding: 1.5rem;
+    text-align: center;
+    color: var(--rams-muted);
+    font-size: 0.875rem;
+    font-weight: 700;
+  }
+  .graph-search {
+    min-width: min(18rem, 100%);
+    flex: 1 1 16rem;
+  }
+  .graph-filter-chip {
+    min-height: 44px;
+    min-width: 44px;
+    flex: 0 0 auto;
+  }
+
+  /* ── Canvas SVG elements (managed by graph.js) ── */
+  #graph-container { min-height: 26rem; }
+  .graph-node-label {
+    font-size: 10px;
+    font-weight: 800;
+    fill: currentColor;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+  .graph-node,
+  .graph-edge {
+    transition: opacity 160ms ease, transform 160ms ease, stroke-width 160ms ease;
+  }
+  .graph-node { cursor: pointer; }
+  .graph-edge.is-dimmed,
+  .graph-node.is-dimmed { opacity: 0.16; }
+  .graph-node.is-active circle {
+    stroke: var(--rams-foreground);
+    stroke-width: 3;
+  }
+  .graph-node.is-match circle {
+    stroke: var(--rams-orange);
+    stroke-width: 4;
+  }
+  .graph-node.is-active .graph-node-label,
+  .graph-node.is-match .graph-node-label { opacity: 1; }
+
+  /* ── JS-generated chips (neighbors, legend) ── */
+  .graph-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--rams-line);
+    border-radius: 2px;
+    background: var(--rams-panel);
+    font-size: 0.65rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .graph-chip-swatch {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 2px;
+    display: inline-block;
+  }
+
+  /* ── JS-generated badges (viewport, mode) ── */
+  .graph-viewport-badge,
+  .graph-mode-badge {
+    position: absolute;
+    z-index: 3;
+    border-radius: 2px;
+    padding: 0.42rem 0.7rem;
+    border: 1px solid var(--rams-line);
+    background: var(--rams-panel);
+    font-size: 0.625rem;
+    font-weight: 900;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--rams-muted);
+  }
+  .graph-viewport-badge { left: 1rem; top: 1rem; }
+  .graph-mode-badge { right: 1rem; bottom: 1rem; }
+
+  /* ── JS-generated legend items ── */
+  .graph-legend {
+    position: absolute;
+    left: 1rem;
+    bottom: 1rem;
+    z-index: 3;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    max-width: min(100%, 36rem);
+  }
+  .graph-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    border-radius: 2px;
+    padding: 0.38rem 0.6rem;
+    border: 1px solid var(--rams-line);
+    background: var(--rams-panel);
+    font-size: 0.625rem;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--rams-muted);
+  }
+  .graph-legend-dot {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 2px;
+  }
+
+  /* ── Detail panels ── */
+  .graph-detail-list { display: grid; gap: 0.75rem; }
+  .graph-detail-item {
+    display: grid;
+    gap: 0.25rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--rams-line);
+  }
+  .graph-detail-item:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+  .graph-neighbor-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .graph-hint {
+    font-size: 0.75rem;
+    color: var(--rams-muted);
+    font-weight: 700;
+  }
+  .graph-hint.is-alert { color: var(--rams-red); }
+
+  @media (max-width: 640px) {
+    .graph-stage,
+    .graph-stage svg,
+    .graph-empty { min-height: 18rem; }
+    #graph-container { min-height: 22rem; }
+  }
+  @media (min-width: 960px) {
+    .graph-node-label { opacity: 0.74; }
+  }
+
+  /* ── Print styles ── */
+  @media print {
   .no-print { display: none !important; }
   html, body { background: white !important; color: black !important; }
   aside, header, #mobile-nav, #mobile-nav-overlay, #offline-banner, #route-progress { display: none !important; }
@@ -1383,4 +1936,87 @@
     break-before: page;
     page-break-before: always;
   }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Trends page styles (moved from trends.html embedded <style> — Rams-compliant)
+   ════════════════════════════════════════════════════════════════════════════ */
+.trends-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+.trends-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.trends-filter-group label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgb(var(--rams-muted));
+}
+.trends-filter-group select,
+.trends-filter-group input {
+  padding: 0.4rem 0.6rem;
+  font-size: 12px;
+  border: 1px solid rgb(var(--rams-line));
+  border-radius: 2px;
+  background: rgb(var(--rams-panel));
+  color: rgb(var(--rams-foreground));
+  min-width: 120px;
+}
+.trends-comparison-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 640px) {
+  .trends-comparison-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.trends-comparison-card {
+  border: 1px solid rgb(var(--rams-line));
+  border-radius: 4px;
+  padding: 1rem;
+  background: rgb(var(--rams-module));
+}
+.trends-comparison-card h3 {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgb(var(--rams-muted));
+  margin-bottom: 0.5rem;
+}
+.trends-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+.trends-entity-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.trends-entity-table th {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgb(var(--rams-muted));
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgb(var(--rams-line));
+}
+.trends-entity-table td {
+  font-size: 12px;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgb(var(--rams-line));
+}
+.trends-entity-table tr:hover td {
+  background: rgb(var(--rams-panel));
 }

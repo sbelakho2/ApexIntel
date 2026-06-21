@@ -14,6 +14,7 @@
 #![allow(clippy::should_implement_trait)]
 #![allow(clippy::disallowed_methods)]
 
+pub mod activity_logger;
 pub mod holiday_calendar;
 pub mod nats_stream;
 pub mod nightly;
@@ -27,6 +28,7 @@ pub mod storage;
 pub mod embedding_indexer;
 pub mod trend_aggregator;
 pub mod pdf_export;
+pub mod retry;
 pub mod warning_verifier;
 pub mod webhooks;
 pub mod weekly;

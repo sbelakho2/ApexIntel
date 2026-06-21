@@ -200,31 +200,62 @@ pub(crate) async fn similar_entities(
 
 /// `POST /api/admin/embeddings/reindex`
 ///
-/// Triggers a full or incremental embedding reindex. The actual work is delegated
-/// to the worker crate; this endpoint returns immediately with the reindex request
-/// acknowledged. Requires admin role.
+/// Triggers a full or incremental embedding reindex by enqueueing a job via
+/// the worker trigger queue. The actual work is handled by the worker crate;
+/// this endpoint returns immediately with the enqueued job ID.
+/// Requires admin role.
 pub(crate) async fn reindex_embeddings(
     State(state): State<AppState>,
     Query(params): Query<ReindexQuery>,
 ) -> (StatusCode, Json<ApiResponse<ReindexResponse>>) {
-    let _ = state;
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
-
     let is_full = params.full.unwrap_or(false);
 
-    // In a production system, this would enqueue a NATS message for the worker.
-    // For now, we acknowledge the request and return a status indicating the trigger.
-    let message = if is_full {
-        "Full embedding reindex triggered. This may take several hours. Check worker logs for progress."
-    } else {
-        "Incremental embedding reindex triggered. New entities without embeddings will be indexed."
+    // Enqueue the embedding_reindex job via worker trigger queue
+    let (job_id, chunks_indexed, status, message) = match state
+        .store
+        .queue_job_trigger("embedding_reindex")
+        .await
+    {
+        Ok(enqueued_id) => {
+            tracing::info!(
+                request_id = %request_id,
+                job_id = %enqueued_id,
+                full = is_full,
+                "reindex_embeddings: job enqueued successfully"
+            );
+            let msg = if is_full {
+                "Full embedding reindex enqueued. This may take several hours. Check worker logs for progress."
+            } else {
+                "Incremental embedding reindex enqueued. New entities without embeddings will be indexed."
+            };
+            (
+                enqueued_id,
+                0u64, // will be populated by worker
+                "enqueued".to_string(),
+                msg.to_string(),
+            )
+        }
+        Err(e) => {
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                "reindex_embeddings: failed to enqueue job"
+            );
+            (
+                String::new(),
+                0u64,
+                "error".to_string(),
+                format!("Failed to enqueue embedding reindex: {e}"),
+            )
+        }
     };
 
     let payload = ReindexResponse {
-        status: "accepted".to_string(),
-        chunks_indexed: 0,
-        message: message.to_string(),
+        status,
+        chunks_indexed,
+        message,
     };
 
     let duration_ms = start.elapsed().as_millis() as u64;

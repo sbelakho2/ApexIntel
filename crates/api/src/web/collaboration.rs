@@ -20,6 +20,7 @@ use uuid::Uuid;
 use apex_store::postgres::PgStore;
 
 use crate::middleware::session::WebSession;
+use crate::routes::collaboration::{fmt_json_value, format_activity_details};
 use crate::web::{render_template, PageContext};
 
 // ─── Query parameters ───────────────────────────────────────────────────
@@ -370,13 +371,6 @@ fn fmt_opt_f64(v: &Option<f64>) -> String {
     }
 }
 
-fn fmt_json_value(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::String(s) => s.clone(),
-        _ => serde_json::to_string(v).unwrap_or_default(),
-    }
-}
 
 
 // ─── Handlers — Workspaces ─────────────────────────────────────────────
@@ -602,10 +596,10 @@ pub async fn get_workspace(
         .map(|a| ActivityItem {
             id: a.id.to_string(),
             actor_name: a.actor_name,
-            action_type: a.action_type,
+            action_type: a.action_type.clone(),
             entity_type: fmt_opt(&a.entity_type),
             entity_name: fmt_opt(&a.entity_name),
-            details: fmt_json_value(&a.details),
+            details: format_activity_details(&a.action_type, &a.details),
             created_at: a.created_at.format("%Y-%m-%d %H:%M").to_string(),
         })
         .collect();
@@ -816,10 +810,10 @@ pub async fn list_activity(
         .map(|a| ActivityItem {
             id: a.id.to_string(),
             actor_name: a.actor_name,
-            action_type: a.action_type,
+            action_type: a.action_type.clone(),
             entity_type: fmt_opt(&a.entity_type),
             entity_name: fmt_opt(&a.entity_name),
-            details: fmt_json_value(&a.details),
+            details: format_activity_details(&a.action_type, &a.details),
             created_at: a.created_at.format("%Y-%m-%d %H:%M").to_string(),
         })
         .collect();

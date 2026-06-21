@@ -1,24 +1,72 @@
+mod adversarial;
 mod custom;
 mod dark_web;
+mod insights;
 mod intelligence;
 mod nightly;
+mod osint_enrichment;
 mod poi;
+mod psych_profile;
 mod recipes;
 mod resilience;
 mod security;
 mod starzcrm;
 mod template_variation;
+mod threat_intel;
 mod triage;
 mod weekly;
 
 use std::sync::Arc;
 
-use crate::{JobKind, JobRun, PgStore};
+use apex_store::postgres::PgStore;
+use apex_worker::activity_logger::ActivityLogger;
+use apex_worker::scheduler::JobStatus;
+use apex_worker::scheduler::{JobKind, JobRun};
+
+/// Log a general job-completion event to the activity feed.
+async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogger) {
+    let status_str = match &run.status {
+        JobStatus::Succeeded { .. } => "succeeded",
+        JobStatus::Failed { .. } => "failed",
+        JobStatus::Skipped { .. } => "skipped",
+        JobStatus::Running => "running",
+        JobStatus::Pending => "pending",
+    };
+
+    let action = match status_str {
+        "succeeded" => "job_completed",
+        "failed" => "job_failed",
+        "skipped" => "job_skipped",
+        _ => "job_unknown",
+    };
+
+    let details = serde_json::json!({
+        "job_kind": kind.as_str(),
+        "status": status_str,
+        "duration_ms": run.duration_ms(),
+        "items_processed": run.items_processed,
+        "notes": run.notes,
+    });
+
+    logger.insert(
+        "system",
+        "Worker Engine",
+        action,
+        Some("job"),
+        Some(&run.run_id),
+        Some(kind.as_str()),
+        &details,
+        None,
+        None,
+        "team",
+    ).await;
+}
 
 #[tracing::instrument(skip(kind, store), fields(job = %kind.as_str()))]
 pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     tracing::debug!(job = %kind.as_str(), "job_start");
-    match kind {
+    let logger = ActivityLogger::new(store.pool.clone());
+    let run = match kind {
         JobKind::CrawlCycle => nightly::run_crawl_cycle(store).await,
         JobKind::PatternMining => nightly::run_pattern_mining(kind, store).await,
         JobKind::HypothesisGeneration => nightly::run_hypothesis_generation(kind, store).await,
@@ -48,8 +96,16 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
         JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store).await,
         JobKind::TriageProcessing => triage::run_triage_processing(kind, store).await,
         JobKind::TrendAggregation => apex_worker::trend_aggregator::run_trend_aggregation(kind, store).await,
+        JobKind::InsightGeneration => insights::run_insight_generation(kind, store).await,
+        JobKind::ThreatIntelRefresh => threat_intel::run_threat_intel_refresh(kind, store).await,
+        JobKind::PsychProfileCompute => psych_profile::run_psych_profile_compute(kind, store).await,
+        JobKind::PoiRoleReclassify => poi::run_poi_role_reclassify(kind, store).await,
+        JobKind::OsintEnrichment => osint_enrichment::run_osint_enrichment(kind, store).await,
+        JobKind::AdversarialAnalysis => adversarial::run_adversarial_analysis(kind, store).await,
         JobKind::Custom(name) => custom::run_custom_job(name).await,
-    }
+    };
+    log_job_completion(kind, &run, &logger).await;
+    run
 }
 
 #[cfg(test)]

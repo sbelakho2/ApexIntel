@@ -67,9 +67,225 @@ pub enum EntityType {
     DateTime,
     /// Certification or standard.
     Certification,
+    /// Job title / professional role.
+    JobTitle,
     /// Other / unrecognised.
     Other,
 }
+
+/// A job title extraction with role-family classification and confidence scoring.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JobTitleExtraction {
+    /// The extracted title text.
+    pub title: String,
+    /// Confidence score [0.0, 1.0].
+    pub confidence: f64,
+    /// Role family classification (e.g. "C-Suite", "VP/Director", "Manager", "Technical").
+    pub role_family: String,
+    /// Byte offset range in the original text.
+    pub span: Option<(usize, usize)>,
+}
+
+/// Extract job titles with confidence scoring from text.
+/// Matches against known title lists and pattern-based extraction.
+pub fn extract_job_title_with_confidence(text: &str) -> Vec<JobTitleExtraction> {
+    let mut results = Vec::new();
+    let text_lower = text.to_lowercase();
+
+    // Try known-title matching first
+    for known in KNOWN_JOB_TITLES_EN.iter() {
+        let lower = known.to_lowercase();
+        if let Some(pos) = text_lower.find(&lower) {
+            let end = pos + known.len();
+            results.push(JobTitleExtraction {
+                title: text[pos..end].to_string(),
+                confidence: 0.9,
+                role_family: classify_title_to_role_family(known),
+                span: Some((pos, end)),
+            });
+        }
+    }
+
+    // Try Arabic titles
+    for known in KNOWN_JOB_TITLES_AR.iter() {
+        if let Some(pos) = text.find(known) {
+            let end = pos + known.len();
+            results.push(JobTitleExtraction {
+                title: text[pos..end].to_string(),
+                confidence: 0.9,
+                role_family: classify_title_to_role_family(known),
+                span: Some((pos, end)),
+            });
+        }
+    }
+
+    // Try French titles
+    for known in KNOWN_JOB_TITLES_FR.iter() {
+        if let Some(pos) = text.find(known) {
+            let end = pos + known.len();
+            results.push(JobTitleExtraction {
+                title: text[pos..end].to_string(),
+                confidence: 0.9,
+                role_family: classify_title_to_role_family(known),
+                span: Some((pos, end)),
+            });
+        }
+    }
+
+    // Try Chinese titles
+    for known in KNOWN_JOB_TITLES_ZH.iter() {
+        if let Some(pos) = text.find(known) {
+            let end = pos + known.len();
+            results.push(JobTitleExtraction {
+                title: text[pos..end].to_string(),
+                confidence: 0.9,
+                role_family: classify_title_to_role_family(known),
+                span: Some((pos, end)),
+            });
+        }
+    }
+
+    // Pattern-based: "NAME, TITLE at COMPANY" or "NAME, TITLE" with proper-case words
+    if results.is_empty() {
+        let re_patterns: &[(&str, f64)] = &[
+            (r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4}\s+(?:at|with|of|chez)\s+", 0.6),
+            (r"\b(?:VP|SVP|EVP|C[A-Z]O|Head|Lead|Director|Manager|Chief|President)\s+(?:of\s+)?[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,4}", 0.7),
+        ];
+        for (pat_str, conf) in re_patterns {
+            if let Ok(re) = Regex::new(pat_str) {
+                for mat in re.find_iter(text) {
+                    results.push(JobTitleExtraction {
+                        title: mat.as_str().to_string(),
+                        confidence: *conf,
+                        role_family: classify_title_to_role_family(mat.as_str()),
+                        span: Some((mat.start(), mat.end())),
+                    });
+                }
+            }
+        }
+    }
+
+    // Deduplicate by title
+    let mut seen = HashSet::new();
+    results.retain(|r| seen.insert(r.title.clone()));
+
+    // Sort by confidence descending
+    results.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    results
+}
+
+/// Classify a job title string into a role family.
+fn classify_title_to_role_family(title: &str) -> String {
+    let lower = title.to_lowercase();
+    if lower.contains("ceo") || lower.contains("chief executive") || lower.contains("president") || lower.contains("chairman") || lower.contains("founder") || lower.contains("owner") {
+        "C-Suite".to_string()
+    } else if lower.contains("cfo") || lower.contains("coo") || lower.contains("cto") || lower.contains("cio") || lower.contains("cmo") || lower.contains("cpo") || lower.contains("cro") || lower.contains("chief") {
+        "C-Suite".to_string()
+    } else if lower.contains("vp") || lower.contains("vice president") || lower.contains("svp") || lower.contains("evp") || lower.contains("executive vice") {
+        "VP/Director".to_string()
+    } else if lower.contains("director") || lower.contains("head of") || lower.contains("global head") {
+        "VP/Director".to_string()
+    } else if lower.contains("manager") || lower.contains("supervisor") || lower.contains("team lead") || lower.contains("lead") {
+        "Manager".to_string()
+    } else if lower.contains("engineer") || lower.contains("developer") || lower.contains("analyst") || lower.contains("specialist") || lower.contains("architect") {
+        "Technical".to_string()
+    } else if lower.contains("general") || lower.contains("admiral") || lower.contains("colonel") || lower.contains("major") || lower.contains("captain") || lower.contains("commander") {
+        "Defense/Government".to_string()
+    } else if lower.contains("secretary") || lower.contains("minister") || lower.contains("ambassador") || lower.contains("governor") {
+        "Defense/Government".to_string()
+    } else {
+        "Other".to_string()
+    }
+}
+
+/// Known English job titles (100+ across industries).
+static KNOWN_JOB_TITLES_EN: &[&str] = &[
+    // C-Suite
+    "Chief Executive Officer", "Chief Financial Officer", "Chief Operating Officer",
+    "Chief Technology Officer", "Chief Information Officer", "Chief Marketing Officer",
+    "Chief Strategy Officer", "Chief Information Security Officer", "Chief Procurement Officer",
+    "Chief Human Resources Officer", "Chief Data Officer", "Chief Analytics Officer",
+    "Chief Risk Officer", "Chief Compliance Officer", "Chief Revenue Officer",
+    "Chairman", "President", "Founder", "Co-Founder", "Owner", "Partner",
+    // VP-Level
+    "Senior Vice President", "Executive Vice President", "Vice President of Operations",
+    "Vice President of Supply Chain", "Vice President of Manufacturing",
+    "Vice President of Engineering", "Vice President of Sales",
+    "Vice President of Procurement", "Vice President of Quality",
+    "Vice President of Research and Development", "Vice President of Business Development",
+    "Vice President of Logistics", "Vice President of Finance",
+    "Vice President of Marketing", "Vice President of Strategy",
+    "Group Vice President", "Regional Vice President",
+    // Director-Level
+    "Managing Director", "Executive Director", "Senior Director",
+    "Director of Supply Chain", "Director of Operations", "Director of Manufacturing",
+    "Director of Engineering", "Director of Procurement", "Director of Quality",
+    "Director of Logistics", "Director of Sales", "Director of Marketing",
+    "Director of Business Development", "Director of Finance",
+    "Regional Director", "Site Director", "Plant Director", "Factory Director",
+    "Director of Compliance", "Director of Security",
+    // Manager-Level
+    "General Manager", "Senior Manager", "Supply Chain Manager", "Operations Manager",
+    "Plant Manager", "Quality Manager", "Procurement Manager", "Engineering Manager",
+    "Program Manager", "Product Manager", "Project Manager", "Logistics Manager",
+    "Warehouse Manager", "Production Manager", "Sourcing Manager",
+    "Category Manager", "Commodity Manager", "Supplier Quality Manager",
+    "Global Supply Chain Director", "Head of Supply Chain", "Head of Operations",
+    "Head of Manufacturing", "Head of Quality", "Head of Procurement",
+    "Head of Engineering", "Head of Sales", "Head of Marketing",
+    // Defense/Government
+    "General", "Admiral", "Colonel", "Lieutenant Colonel", "Major", "Captain", "Commander",
+    "Secretary of Defense", "Undersecretary", "Deputy Secretary",
+    "Assistant Secretary", "Director of National Intelligence",
+    "Program Executive Officer", "Brigadier General", "Major General",
+    // Other
+    "Principal", "Senior Advisor", "Senior Consultant",
+    "Lead Engineer", "Staff Engineer", "Distinguished Engineer",
+    "Technical Fellow", "Research Fellow", "Senior Fellow",
+    "Senior Analyst", "Principal Engineer", "Staff Scientist",
+];
+
+/// Known Arabic job titles.
+static KNOWN_JOB_TITLES_AR: &[&str] = &[
+    "مدير عام", "رئيس تنفيذي", "مدير العمليات", "مدير المالي", "مدير التسويق",
+    "مدير الموارد البشرية", "مدير المشتريات", "مدير سلسلة التوريد", "مدير الجودة",
+    "مدير المصنع", "مدير الإنتاج", "مدير الهندسة", "مدير المبيعات",
+    "مدير الخدمات اللوجستية", "مدير المشاريع", "مدير تقنية المعلومات",
+    "رئيس مجلس الإدارة", "نائب الرئيس", "مدير إدارة", "مدير قطاع",
+    "رئيس قسم", "مهندس", "مهندس أول", "استشاري", "مستشار",
+    "مدير تطوير الأعمال", "مدير الامتثال", "مدير الأمن", "مدير المخاطر",
+    "العميد", "العقيد", "المقدم", "الرائد", "نقيب", "لواء", "فريق",
+    "وكيل وزارة", "مساعد وكيل", "سفير", "محافظ",
+];
+
+/// Known French job titles.
+static KNOWN_JOB_TITLES_FR: &[&str] = &[
+    "Directeur Général", "Président Directeur Général", "Directeur des Opérations",
+    "Directeur Financier", "Directeur Marketing", "Directeur des Ressources Humaines",
+    "Directeur des Achats", "Directeur de la Chaîne d'Approvisionnement",
+    "Directeur Qualité", "Directeur d'Usine", "Directeur de Production",
+    "Directeur de l'Ingénierie", "Directeur Commercial", "Directeur Logistique",
+    "Directeur de Projet", "Directeur Informatique", "Directeur Technique",
+    "Directeur Recherche et Développement", "Directeur de la Stratégie",
+    "Président", "Vice-Président", "Secrétaire Général", "Chef de Projet",
+    "Chef de Service", "Chef d'Équipe", "Responsable", "Ingénieur",
+    "Ingénieur Principal", "Consultant", "Conseiller", "Analyste",
+    "Responsable Qualité", "Responsable Achats", "Responsable Logistique",
+    "Responsable Production", "Responsable Commercial", "Gérant",
+    "Directeur Adjoint", "Sous-Directeur",
+];
+
+/// Known Chinese job titles.
+static KNOWN_JOB_TITLES_ZH: &[&str] = &[
+    "总经理", "首席执行官", "首席运营官", "首席财务官", "首席技术官",
+    "首席信息官", "首席营销官", "副总裁", "高级副总裁", "执行副总裁",
+    "总监", "副总监", "经理", "高级经理", "采购经理", "供应链总监",
+    "质量经理", "运营总监", "工厂经理", "生产经理", "工程经理",
+    "销售总监", "市场总监", "人力资源总监", "财务总监", "技术总监",
+    "研发总监", "项目经理", "物流经理", "仓储经理", "区域经理",
+    "总工程师", "主任", "副主任", "科长", "处长", "局长",
+    "董事长", "总裁", "创始人", "合伙人",
+];
 
 // ─── Main Dispatch ─────────────────────────────────────────────────────────────
 
@@ -295,150 +511,99 @@ fn extract_company_suffixes(text: &str, lang: &str, confidence: f64) -> Vec<Extr
 
 // ─── Compiled regexes: company suffixes ────────────────────────────────────────
 
-static RE_COMPANY_EN: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})\s+(Inc\.?|Corp\.?|Ltd\.?|LLC|Co\.|Group|Holdings|Technologies|Electronics|Manufacturing|Services|Limited|Corporation|Incorporated|Enterprises|International)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
+macro_rules! build_company_regex {
+    ($name:ident, $pattern:expr) => {
+        static $name: LazyLock<Regex> = LazyLock::new(|| {
+            RegexBuilder::new($pattern)
+                .size_limit(200_000)
+                .dfa_size_limit(200_000)
+                .build()
+                .unwrap_or_else(|error| panic!("invalid company regex {}: {error}", stringify!($name)))
+        });
+    };
+}
 
-static RE_COMPANY_FR: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-ZÀ-Ÿ][A-Za-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][A-Za-zà-ÿ]+){0,3})\s+(S\.?A\.?(?:S\.?)?|S\.?A\.?R\.?L\.?|EURL|SASU|SARL|SA|EURL|SNC|SCS|CA|Group|Sciences|Technologies|Électronique|Manufacturing)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_DE: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-ZÄÖÜß][A-Za-zäöüß]+(?:\s+[A-ZÄÖÜß][A-Za-zäöüß]+){0,3})\s+(GmbH|AG|SE\s?&?\s?Co\.?\s?KG|GmbH\s?&?\s?Co\.?\s?KG|KG|OHG|UG|e\.?V\.?|Group|Technologies|Elektronik|Manufacturing)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_ES: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-ZÁÉÍÓÚÜÑ][A-Za-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][A-Za-záéíóúüñ]+){0,3})\s+(S\.?A\.?|S\.?L\.?|S\.?A\.?P\.?I\.?|S\.?L\.?U\.?|S\.?C\.?|CORP|Group|Tecnologías|Electrónica|Manufacturing)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_IT: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-ZÀ-Ÿ][A-Za-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][A-Za-zà-ÿ]+){0,3})\s+(S\.?p\.?A\.?|S\.?r\.?l\.?|S\.?a\.?s\.?|S\.?n\.?c\.?|SOCIETÀ|Group|Tecnologie|Elettronica|Manufacturing)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_PT: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-ZÁÉÍÓÚÂÃÇÊÕ][A-Za-záéíóúâãçêõ]+(?:\s+[A-ZÁÉÍÓÚÂÃÇÊÕ][A-Za-záéíóúâãçêõ]+){0,3})\s+(S\.?A\.?|Ltda\.?|S\.?A\.?R\.?L\.?|Group|Tecnologias|Eletrónica|Manufacturing)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_NL: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(BV|NV|CV|VOF|Group|Technologieën|Elektronica|Manufacturing)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_TR: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"\b([A-ZİĞÜŞÖÇ][A-Za-zığüşöç]+(?:\s+[A-ZİĞÜŞÖÇ][A-Za-zığüşöç]+){0,3})\s+(A\.?Ş\.?|Ltd\.?Şti\.?|Tic\.?|San\.?|Group|Teknolojileri|Elektronik|Üretim)\b"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_ZH: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"([\u4e00-\u9fff]{2,10})(?:有限公司|有限责任公司|股份有限公司|集团|控股|电子|科技|实业|制造|工业|股份公司|公司)"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_JA: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,10})(?:株式会社|有限会社|合同会社|会社)"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-static RE_COMPANY_KO: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"([\uac00-\ud7af\u1100-\u11ff]{2,10})(?:\(주\)|주식회사|유한회사|합자회사|회사)"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
+build_company_regex!(RE_COMPANY_EN,
+    r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})\s+(Inc\.?|Corp\.?|Ltd\.?|LLC|Co\.|Group|Holdings|Technologies|Electronics|Manufacturing|Services|Limited|Corporation|Incorporated|Enterprises|International)\b"
+);
+build_company_regex!(RE_COMPANY_FR,
+    r"\b([A-ZÀ-Ÿ][A-Za-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][A-Za-zà-ÿ]+){0,3})\s+(S\.?A\.?(?:S\.?)?|S\.?A\.?R\.?L\.?|EURL|SASU|SARL|SA|EURL|SNC|SCS|CA|Group|Sciences|Technologies|Électronique|Manufacturing)\b"
+);
+build_company_regex!(RE_COMPANY_DE,
+    r"\b([A-ZÄÖÜß][A-Za-zäöüß]+(?:\s+[A-ZÄÖÜß][A-Za-zäöüß]+){0,3})\s+(GmbH|AG|SE\s?&?\s?Co\.?\s?KG|GmbH\s?&?\s?Co\.?\s?KG|KG|OHG|UG|e\.?V\.?|Group|Technologies|Elektronik|Manufacturing)\b"
+);
+build_company_regex!(RE_COMPANY_ES,
+    r"\b([A-ZÁÉÍÓÚÜÑ][A-Za-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][A-Za-záéíóúüñ]+){0,3})\s+(S\.?A\.?|S\.?L\.?|S\.?A\.?P\.?I\.?|S\.?L\.?U\.?|S\.?C\.?|CORP|Group|Tecnologías|Electrónica|Manufacturing)\b"
+);
+build_company_regex!(RE_COMPANY_IT,
+    r"\b([A-ZÀ-Ÿ][A-Za-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][A-Za-zà-ÿ]+){0,3})\s+(S\.?p\.?A\.?|S\.?r\.?l\.?|S\.?a\.?s\.?|S\.?n\.?c\.?|SOCIETÀ|Group|Tecnologie|Elettronica|Manufacturing)\b"
+);
+build_company_regex!(RE_COMPANY_PT,
+    r"\b([A-ZÁÉÍÓÚÂÃÇÊÕ][A-Za-záéíóúâãçêõ]+(?:\s+[A-ZÁÉÍÓÚÂÃÇÊÕ][A-Za-záéíóúâãçêõ]+){0,3})\s+(S\.?A\.?|Ltda\.?|S\.?A\.?R\.?L\.?|Group|Tecnologias|Eletrónica|Manufacturing)\b"
+);
+build_company_regex!(RE_COMPANY_NL,
+    r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(BV|NV|CV|VOF|Group|Technologieën|Elektronica|Manufacturing)\b"
+);
+build_company_regex!(RE_COMPANY_TR,
+    r"\b([A-ZİĞÜŞÖÇ][A-Za-zığüşöç]+(?:\s+[A-ZİĞÜŞÖÇ][A-Za-zığüşöç]+){0,3})\s+(A\.?Ş\.?|Ltd\.?Şti\.?|Tic\.?|San\.?|Group|Teknolojileri|Elektronik|Üretim)\b"
+);
+build_company_regex!(RE_COMPANY_ZH,
+    r"([\u4e00-\u9fff]{2,10})(?:有限公司|有限责任公司|股份有限公司|集团|控股|电子|科技|实业|制造|工业|股份公司|公司)"
+);
+build_company_regex!(RE_COMPANY_JA,
+    r"([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,10})(?:株式会社|有限会社|合同会社|会社)"
+);
+build_company_regex!(RE_COMPANY_KO,
+    r"([\uac00-\ud7af\u1100-\u11ff]{2,10})(?:\(주\)|주식회사|유한회사|합자회사|회사)"
+);
 
 // ─── Compiled regexes: person names ────────────────────────────────────────────
 
-/// Generic English/Latin person name pattern: honorific + capitalized name.
-static RE_PERSON_EN: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Eng\.?|Hon\.?|Sen\.?|Rep\.?|CEO|CTO|CFO|VP|SVP|EVP|GM|Director|President|Chairman|Chairwoman)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
+macro_rules! build_person_regex {
+    ($name:ident, $pattern:expr) => {
+        static $name: LazyLock<Regex> = LazyLock::new(|| {
+            RegexBuilder::new($pattern)
+                .size_limit(200_000)
+                .dfa_size_limit(200_000)
+                .build()
+                .unwrap_or_else(|error| panic!("invalid person regex {}: {error}", stringify!($name)))
+        });
+    };
+}
 
-/// French honorifics.
-static RE_PERSON_FR: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:M\.|Mme|Mlle|Dr\.|Pr\.|Ing\.|Directeur|Directrice|Président|Présidente|PDG|DG|Chef)\s+([A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// German honorifics.
-static RE_PERSON_DE: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:Herr|Frau|Dr\.|Prof\.|Dipl\.-Ing\.|Ing\.|Geschäftsführer|Vorstand|Direktor|Präsident)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Spanish honorifics.
-static RE_PERSON_ES: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:Sr\.|Sra\.|Srta\.|Dr\.|Dra\.|Prof\.|Ing\.|Lic\.|Director|Directora|Presidente|Gerente)\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Italian honorifics.
-static RE_PERSON_IT: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:Sig\.|Sig\.ra|Sig\.na|Dr\.|Dott\.|Dott\.ssa|Prof\.|Ing\.|Direttore|Direttrice|Presidente|Amministratore)\s+([A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Portuguese honorifics.
-static RE_PERSON_PT: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:Sr\.|Sra\.|Srta\.|Dr\.|Dra\.|Prof\.|Eng\.|Diretor|Diretora|Presidente|Gerente)\s+([A-ZÁÉÍÓÚÂÃÇÊÕ][a-záéíóúâãçêõ]+(?:\s+[A-ZÁÉÍÓÚÂÃÇÊÕ][a-záéíóúâãçêõ]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Dutch honorifics.
-static RE_PERSON_NL: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:Dhr\.|Mevr\.|Dr\.|Prof\.|Ir\.|Ing\.|Directeur|Voorzitter|Manager)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Turkish honorifics.
-static RE_PERSON_TR: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:Bay|Bayan|Dr\.|Prof\.|Müh\.|Yönetici|Müdür|Başkan|CEO)\s+([A-ZİĞÜŞÖÇ][a-zığüşöç]+(?:\s+[A-ZİĞÜŞÖÇ][a-zığüşöç]+){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Persian honorifics.
-static RE_PERSON_FA: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:آقای|خانم|دکتر|مهندس|پروفسور|جناب|سرکار)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Hebrew honorifics.
-static RE_PERSON_HE: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:מר|גב׳|ד״ר|פרופ׳|מר׳|עו״ד)\s+([\u0590-\u05FF]{2,15}(?:\s+[\u0590-\u05FF]{2,15}){1,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
-
-/// Arabic honorifics.
-static RE_PERSON_AR: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(
-        r"(?:السيد|السيدة|الآنسة|الدكتور|المهندس|البروفيسور|الاستاذ|الاستاذة|سعادة)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap()
-});
+build_person_regex!(RE_PERSON_EN,
+    r"(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Eng\.?|Hon\.?|Sen\.?|Rep\.?|CEO|CTO|CFO|VP|SVP|EVP|GM|Director|President|Chairman|Chairwoman)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
+);
+build_person_regex!(RE_PERSON_FR,
+    r"(?:M\.|Mme|Mlle|Dr\.|Pr\.|Ing\.|Directeur|Directrice|Président|Présidente|PDG|DG|Chef)\s+([A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){1,3})"
+);
+build_person_regex!(RE_PERSON_DE,
+    r"(?:Herr|Frau|Dr\.|Prof\.|Dipl\.-Ing\.|Ing\.|Geschäftsführer|Vorstand|Direktor|Präsident)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+){1,3})"
+);
+build_person_regex!(RE_PERSON_ES,
+    r"(?:Sr\.|Sra\.|Srta\.|Dr\.|Dra\.|Prof\.|Ing\.|Lic\.|Director|Directora|Presidente|Gerente)\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+){1,3})"
+);
+build_person_regex!(RE_PERSON_IT,
+    r"(?:Sig\.|Sig\.ra|Sig\.na|Dr\.|Dott\.|Dott\.ssa|Prof\.|Ing\.|Direttore|Direttrice|Presidente|Amministratore)\s+([A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){1,3})"
+);
+build_person_regex!(RE_PERSON_PT,
+    r"(?:Sr\.|Sra\.|Srta\.|Dr\.|Dra\.|Prof\.|Eng\.|Diretor|Diretora|Presidente|Gerente)\s+([A-ZÁÉÍÓÚÂÃÇÊÕ][a-záéíóúâãçêõ]+(?:\s+[A-ZÁÉÍÓÚÂÃÇÊÕ][a-záéíóúâãçêõ]+){1,3})"
+);
+build_person_regex!(RE_PERSON_NL,
+    r"(?:Dhr\.|Mevr\.|Dr\.|Prof\.|Ir\.|Ing\.|Directeur|Voorzitter|Manager)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
+);
+build_person_regex!(RE_PERSON_TR,
+    r"(?:Bay|Bayan|Dr\.|Prof\.|Müh\.|Yönetici|Müdür|Başkan|CEO)\s+([A-ZİĞÜŞÖÇ][a-zığüşöç]+(?:\s+[A-ZİĞÜŞÖÇ][a-zığüşöç]+){1,3})"
+);
+build_person_regex!(RE_PERSON_FA,
+    r"(?:آقای|خانم|دکتر|مهندس|پروفسور|جناب|سرکار)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
+);
+build_person_regex!(RE_PERSON_HE,
+    r"(?:מר|גב׳|ד״ר|פרופ׳|מר׳|עו״ד)\s+([\u0590-\u05FF]{2,15}(?:\s+[\u0590-\u05FF]{2,15}){1,3})"
+);
+build_person_regex!(RE_PERSON_AR,
+    r"(?:السيد|السيدة|الآنسة|الدكتور|المهندس|البروفيسور|الاستاذ|الاستاذة|سعادة)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
+);
 
 // ─── Location / Geopolitical dictionaries (multi-language) ─────────────────────
 
@@ -663,7 +828,7 @@ fn extract_arabic_entities(text: &str) -> Vec<ExtractedEntity> {
     // Arabic usually places the legal form BEFORE the company name: شركة فوكسكون
     let ar_company_prefix = RegexBuilder::new(
         r"(?:شركة|مجموعة|مؤسسة|بنك|مصنع|معمل|وكالة)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap();
+    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap_or_else(|e| panic!("invalid arabic company regex: {e}"));
     entities.extend(regex_matches(text, &ar_company_prefix, EntityType::Organization, 0.80));
 
     // Known EMS companies
@@ -703,7 +868,7 @@ fn extract_chinese_entities(text: &str) -> Vec<ExtractedEntity> {
     // Person names: Chinese 2-3 character names (common surname + given name pattern)
     let zh_person_re = RegexBuilder::new(
         r"([\u4e00-\u9fff]{2,3}(?:[\u4e00-\u9fff]{1,2})?)"
-    ).size_limit(100_000).dfa_size_limit(100_000).build().unwrap();
+    ).size_limit(100_000).dfa_size_limit(100_000).build().unwrap_or_else(|e| panic!("invalid chinese person regex: {e}"));
     // Persons matched with lower confidence — ambiguous with other entities
     entities.extend(regex_matches(text, &zh_person_re, EntityType::Person, 0.40));
 
@@ -953,7 +1118,7 @@ fn extract_persian_entities(text: &str) -> Vec<ExtractedEntity> {
     // Company patterns: Persian legal forms
     let fa_company_re = RegexBuilder::new(
         r"([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})\s*(?:شرکت|گروه|موسسه|بانک|کارخانه|شرکت)\s"
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap();
+    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap_or_else(|e| panic!("invalid persian company regex: {e}"));
     entities.extend(regex_matches(text, &fa_company_re, EntityType::Organization, 0.80));
 
     // Known EMS companies
@@ -980,7 +1145,7 @@ fn extract_hebrew_entities(text: &str) -> Vec<ExtractedEntity> {
     // to avoid raw string conflicts, since " terminates r"..." raw strings.
     let he_company_re = RegexBuilder::new(
         r#"([\u0590-\u05FF]{2,15}(?:\s+[\u0590-\u05FF]{2,15}){0,2})\s*(?:בע"מ|ע"מ|קבוצת|חברת|בנק)"#
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap();
+    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap_or_else(|e| panic!("invalid hebrew company regex: {e}"));
     entities.extend(regex_matches(text, &he_company_re, EntityType::Organization, 0.80));
 
     // Known EMS companies

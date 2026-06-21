@@ -1,4 +1,7 @@
-use apex_shared::{BayesianInterpretation, CalibrationCurve, ConfidenceInterval};
+use apex_shared::{
+    BayesianInterpretation, CalibrationCurve, ConfidenceInterval, GrangerCausalPair,
+    PlacementAlert, PredictiveAlert, QuarantineItem, SourceReliabilityHistory, SurvivalPoint,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
@@ -328,6 +331,10 @@ pub struct PreferencesResponse {
     pub preferences: UserPreferences,
 }
 
+pub async fn get_json<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+    get_api(path).await
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn get_api<T: DeserializeOwned>(path: &str) -> Result<T, String> {
     use gloo_net::http::Request;
@@ -559,6 +566,37 @@ pub async fn fetch_security_summary() -> Result<SecuritySummary, String> {
     get_api("/api/security").await
 }
 
+pub async fn fetch_adversarial_placements() -> Result<Vec<PlacementAlert>, String> {
+    get_api("/api/adversarial/placements").await
+}
+
+pub async fn fetch_quarantine_items() -> Result<Vec<QuarantineItem>, String> {
+    get_api("/api/adversarial/quarantine").await
+}
+
+pub async fn fetch_source_reliability_history() -> Result<SourceReliabilityHistory, String> {
+    get_api("/api/adversarial/source-reliability").await
+}
+
+pub async fn fetch_trends(page: u32) -> Result<PagedResponse<Value>, String> {
+    get_api(&format!(
+        "/api/trends{}",
+        query_string(&[
+            ("page", Some(page.to_string())),
+            ("per_page", Some("12".to_string()))
+        ])
+    ))
+    .await
+}
+
+pub async fn fetch_strategic_radar() -> Result<Value, String> {
+    get_api("/api/strategic-radar").await
+}
+
+pub async fn fetch_competitive_landscape() -> Result<Value, String> {
+    get_api("/api/competitive-landscape").await
+}
+
 pub async fn fetch_calibration_curve() -> Result<CalibrationCurve, String> {
     get_api("/api/admin/calibration").await
 }
@@ -572,6 +610,18 @@ pub async fn fetch_competitors(page: u32) -> Result<PagedResponse<CompanyListIte
         ])
     ))
     .await
+}
+
+pub async fn fetch_causal_pairs() -> Result<Vec<GrangerCausalPair>, String> {
+    get_api("/api/causality/pairs").await
+}
+
+pub async fn fetch_predictive_alerts() -> Result<Vec<PredictiveAlert>, String> {
+    get_api("/api/causality/alerts").await
+}
+
+pub async fn fetch_survival_points() -> Result<Vec<SurvivalPoint>, String> {
+    get_api("/api/causality/survival").await
 }
 
 pub async fn fetch_competitor_changes(page: u32) -> Result<PagedResponse<Value>, String> {
@@ -647,4 +697,102 @@ pub async fn submit_login(username: &str, password: &str) -> Result<String, Stri
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn submit_login(_username: &str, _password: &str) -> Result<String, String> {
     Err("Login submission is only available in the browser runtime".to_string())
+}
+
+// === Activity Feed Types ===
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ActivityEvent {
+    pub id: String,
+    pub event_type: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub severity: String,
+    pub timestamp: String,
+    pub entity_name: Option<String>,
+    pub entity_id: Option<String>,
+    pub source: Option<String>,
+    pub source_url: Option<String>,
+}
+
+pub async fn fetch_activity_feed(limit: u32, offset: u32) -> Result<Vec<ActivityEvent>, String> {
+    get_api(&format!(
+        "/api/activity?limit={}&offset={}",
+        limit, offset
+    ))
+    .await
+}
+
+// === Battlecards Types ===
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BattlecardSummary {
+    pub id: String,
+    pub account_name: String,
+    pub threat_level: String,
+    pub win_probability: f64,
+    pub competitor_count: u32,
+    pub key_intel: String,
+    pub last_updated: Option<String>,
+}
+
+pub async fn fetch_battlecards() -> Result<Vec<BattlecardSummary>, String> {
+    get_api("/api/battlecards").await
+}
+
+// === Supply Chain Risk Types ===
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SupplyRiskSummary {
+    pub id: String,
+    pub name: String,
+    pub risk_level: String,
+    pub category: String,
+    pub impact_score: i64,
+    pub last_detected: String,
+}
+
+pub async fn fetch_supply_risks() -> Result<Vec<SupplyRiskSummary>, String> {
+    get_api("/api/supply-risk").await
+}
+
+// === Threat Intelligence Types ===
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ThreatIntelSummary {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub severity: String,
+    pub category: String,
+    pub source: String,
+    pub confidence: f64,
+    pub affected_entity_count: u32,
+    pub detected_at: String,
+    pub mitre_tactic: Option<String>,
+}
+
+pub async fn fetch_threat_intel() -> Result<Vec<ThreatIntelSummary>, String> {
+    get_api("/api/threat-intel").await
+}
+
+// === Psychological Profiles Types ===
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PsychProfileSummary {
+    pub person_id: String,
+    pub person_name: String,
+    pub current_role: String,
+    pub company_name: String,
+    pub decision_style: String,
+    pub influence_role: String,
+    pub pain_points: Vec<String>,
+    pub change_appetite: f64,
+    pub communication_style: String,
+    pub recommended_approach: String,
+    pub traits: Vec<String>,
+}
+
+pub async fn fetch_psych_profiles() -> Result<Vec<PsychProfileSummary>, String> {
+    get_api("/api/psych-profiles").await
 }

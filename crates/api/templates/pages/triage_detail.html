@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
 {% block breadcrumb %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground transition-colors">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li aria-hidden="true">/</li>
-    <li><a href="/triage" class="hover:text-foreground transition-colors">Triage Queue</a></li>
+    <li><a href="/triage" class="hover:text-rams-foreground">Triage Queue</a></li>
     <li aria-hidden="true">/</li>
-    <li class="text-foreground" aria-current="page">{{ item.title }}</li>
+    <li class="text-rams-foreground" aria-current="page">{{ item.title }}</li>
   </ol>
 </nav>
 {% endblock %}
@@ -19,30 +19,30 @@
     <div class="flex items-start justify-between gap-4">
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-3 mb-2">
-          <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider"
+          <span class="inline-flex items-center gap-1 rounded-sm px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider"
                 style="background-color: {{ item.score_band_color }}15; color: {{ item.score_band_color }}">
             {{ item.score_band }}
           </span>
-          <span class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-black uppercase tracking-wider
-            {% if item.status.as_str() == "resolved" %}border-green-600/30 text-green-600
-            {% else if item.status.as_str() == "dismissed" %}border-muted-foreground/30 text-muted-foreground
-            {% else if item.status.as_str() == "acknowledged" %}border-blue-600/30 text-blue-600
-            {% else if item.status.as_str() == "triaged" %}border-amber-600/30 text-amber-600
-            {% else %}border-red-600/30 text-red-600{% endif %}">
+          <span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-wider
+            {% if item.status.as_str() == "resolved" %}border-rams-green/30 text-rams-green
+            {% else if item.status.as_str() == "dismissed" %}border-rams-muted/30 text-rams-muted
+            {% else if item.status.as_str() == "acknowledged" %}border-rams-steel/30 text-rams-steel
+            {% else if item.status.as_str() == "triaged" %}border-rams-orange/30 text-rams-orange
+            {% else %}border-rams-red/30 text-rams-red{% endif %}">
             {{ item.status.as_str() }}
           </span>
-          <span class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+          <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
             {{ item.item_type.as_str() }}
           </span>
         </div>
         <h1 class="text-lg font-black">{{ item.title }}</h1>
         {% if !item.description.is_empty() %}
-          <p class="mt-2 text-sm text-muted-foreground">{{ item.description }}</p>
+          <p class="mt-2 text-sm text-rams-muted">{{ item.description }}</p>
         {% endif %}
       </div>
       <div class="text-right shrink-0">
         <div class="text-3xl font-black tabular-nums">{{ score_pct }}</div>
-        <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Score</div>
+        <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Score</div>
       </div>
     </div>
 
@@ -50,23 +50,23 @@
     <div class="mt-6 grid grid-cols-5 gap-3">
       <div class="text-center">
         <div class="text-xs font-black tabular-nums">{{ urgency_pct }}</div>
-        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-muted-foreground mt-0.5">Urgency</div>
+        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Urgency</div>
       </div>
       <div class="text-center">
         <div class="text-xs font-black tabular-nums">{{ impact_pct }}</div>
-        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-muted-foreground mt-0.5">Impact</div>
+        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Impact</div>
       </div>
       <div class="text-center">
         <div class="text-xs font-black tabular-nums">{{ actionability_pct }}</div>
-        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-muted-foreground mt-0.5">Actionability</div>
+        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Actionability</div>
       </div>
       <div class="text-center">
         <div class="text-xs font-black tabular-nums">{{ novelty_pct }}</div>
-        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-muted-foreground mt-0.5">Novelty</div>
+        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Novelty</div>
       </div>
       <div class="text-center">
         <div class="text-xs font-black tabular-nums">{{ confidence_pct }}</div>
-        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-muted-foreground mt-0.5">Confidence</div>
+        <div class="text-[9px] font-black uppercase tracking-[0.1em] text-rams-muted mt-0.5">Confidence</div>
       </div>
     </div>
   </div>
@@ -76,27 +76,27 @@
     <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Details</h2>
     <dl class="grid grid-cols-2 gap-4 text-sm">
       <div>
-        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Source ID</dt>
+        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Source ID</dt>
         <dd class="mt-0.5 font-mono text-xs">{{ item.source_id }}</dd>
       </div>
       <div>
-        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Entity</dt>
+        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Entity</dt>
         <dd class="mt-0.5">{{ item.entity_name.as_deref().unwrap_or("-") }}</dd>
       </div>
       <div>
-        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Static Severity</dt>
+        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Static Severity</dt>
         <dd class="mt-0.5">{{ item.static_severity.as_deref().unwrap_or("-") }}</dd>
       </div>
       <div>
-        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Composite Score</dt>
+        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Composite Score</dt>
         <dd class="mt-0.5 font-black tabular-nums">{{ item.composite_score }}</dd>
       </div>
       <div>
-        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Created</dt>
+        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Created</dt>
         <dd class="mt-0.5">{{ item.created_at.format("%Y-%m-%d %H:%M UTC") }}</dd>
       </div>
       <div>
-        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Overridden</dt>
+        <dt class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Overridden</dt>
         <dd class="mt-0.5">{% if item.is_overridden %}Yes ({{ item.override_score.unwrap_or(0.0) }}){% else %}No{% endif %}</dd>
       </div>
     </dl>
@@ -117,14 +117,14 @@
         </form>
         <form method="post" action="/triage/{{ item.id }}/dismiss" style="display:inline"
               onsubmit="return confirm('Dismiss this triage item?')">
-          <button type="submit" class="apex-btn-ghost px-4 py-2 text-xs text-muted-foreground">Dismiss</button>
+          <button type="submit" class="apex-btn-ghost px-4 py-2 text-xs text-rams-muted">Dismiss</button>
         </form>
       {% endif %}
     </div>
 
     <!-- Override form -->
-    <div class="mt-4 pt-4 border-t border-border">
-      <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground mb-2">Override Score</h3>
+    <div class="mt-4 pt-4 border-t border-rams-line">
+      <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-2">Override Score</h3>
       <form method="post" action="/triage/{{ item.id }}/override" class="flex items-center gap-2">
         <input type="number" name="score" min="0" max="1" step="0.05"
                value="{{ item.composite_score }}"

@@ -375,8 +375,11 @@ impl PgStore {
                 Ok(row.map(|r| r.0))
             }
             "observation" => {
+                // Observation text lives in the `value` JSONB column under the
+                // `content` key (written by the crawl pipeline). There is no
+                // top-level `content` column on the observations table.
                 let row: Option<(String,)> = sqlx::query_as(
-                    "SELECT COALESCE(content, label) FROM observations WHERE id = $1::uuid",
+                    "SELECT COALESCE(value->>'content', value->>'body_excerpt', value->>'title', value->>'description', '') FROM observations WHERE id = $1::uuid",
                 )
                 .bind(entity_id)
                 .fetch_optional(&self.pool)

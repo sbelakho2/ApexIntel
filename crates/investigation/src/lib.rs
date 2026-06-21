@@ -217,7 +217,7 @@ pub use workflows::{
     ThreatAssessment, WorkflowResult,
     // Person Deep-Dive
     EngagementStrategy, NetworkMapping, PersonDeepDiveReport, PersonDeepDiveWorkflow,
-    ProfessionalHistory, RiskIndicator, TriggerEvent,
+    ProfessionalHistory, PsychologicalProfile, RiskIndicatorReport, TriggerEvent,
     // Supply Chain Threat
     AlternativeSupplier, ConcentrationRisk, FinancialStability, GeographicRisk,
     SinglePointOfFailure, SupplyChainThreatReport, SupplyChainThreatWorkflow,

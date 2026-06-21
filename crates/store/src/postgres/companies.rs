@@ -200,8 +200,8 @@ impl PgStore {
                (id, name, legal_name, domain, country_code, region, company_type,
                 industry_tags, employee_estimate, revenue_estimate_usd,
                 risk_score, threat_score, overlap_score, strategic_relevance,
-                metadata, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                is_competitor, metadata, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                ON CONFLICT (id) DO UPDATE SET
                  name = EXCLUDED.name,
                  legal_name = EXCLUDED.legal_name,
@@ -216,6 +216,7 @@ impl PgStore {
                  threat_score = EXCLUDED.threat_score,
                  overlap_score = EXCLUDED.overlap_score,
                  strategic_relevance = EXCLUDED.strategic_relevance,
+                 is_competitor = EXCLUDED.is_competitor,
                  metadata = EXCLUDED.metadata,
                  updated_at = now()"#,
         )
@@ -233,6 +234,7 @@ impl PgStore {
         .bind(c.threat_score)
         .bind(c.overlap_score)
         .bind(c.strategic_relevance)
+        .bind(c.is_competitor.unwrap_or(false))
         .bind(&c.metadata)
         .bind(c.created_at)
         .bind(c.updated_at)
@@ -246,7 +248,7 @@ impl PgStore {
             "SELECT id, name, legal_name, domain, country_code, region, company_type,
                     industry_tags, employee_estimate, revenue_estimate_usd,
                     risk_score, threat_score, overlap_score, strategic_relevance,
-                    metadata, created_at, updated_at
+                    is_competitor, metadata, created_at, updated_at
              FROM companies WHERE id = $1",
         )
         .bind(id)
@@ -264,7 +266,7 @@ impl PgStore {
             "SELECT id, name, legal_name, domain, country_code, region, company_type,
                     industry_tags, employee_estimate, revenue_estimate_usd,
                     risk_score, threat_score, overlap_score, strategic_relevance,
-                    metadata, created_at, updated_at
+                    is_competitor, metadata, created_at, updated_at
              FROM companies
              WHERE lower(regexp_replace(coalesce(domain, ''), '^www\\.', '')) = $1
              ORDER BY updated_at DESC
@@ -286,7 +288,7 @@ impl PgStore {
             "SELECT id, name, legal_name, domain, country_code, region, company_type,
                     industry_tags, employee_estimate, revenue_estimate_usd,
                     risk_score, threat_score, overlap_score, strategic_relevance,
-                    metadata, created_at, updated_at
+                    is_competitor, metadata, created_at, updated_at
              FROM companies
              WHERE lower(name) = lower($1) OR lower(coalesce(legal_name, '')) = lower($1)
              ORDER BY updated_at DESC

@@ -4,11 +4,11 @@
 {% block title %}Persons — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Persons</li>
+    <li class="text-rams-foreground" aria-current="page">Persons</li>
   </ol>
 </nav>
 {% endblock %}
@@ -26,14 +26,14 @@
 <div class="apex-card p-4 mb-6">
   <div class="mb-3 flex items-center justify-between">
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">Influence Score Distribution</h2>
-    <span class="text-[10px] uppercase font-bold text-muted-foreground">Influence band</span>
+    <span class="text-[10px] uppercase font-bold text-rams-muted">Influence band</span>
   </div>
   <div class="grid grid-cols-5 gap-3 items-end h-40">
     {% for g in influence_groups %}
     <div class="flex h-full flex-col justify-end">
       <div class="apex-bar-column" style="--apex-bar-height:{{ g.pct }}%"></div>
-      <p class="mt-2 text-[10px] text-center font-bold text-muted-foreground">{{ g.range }}</p>
-      <p class="text-[10px] text-center text-muted-foreground">{{ g.count }}</p>
+      <p class="mt-2 text-[10px] text-center font-bold text-rams-muted">{{ g.range }}</p>
+      <p class="text-[10px] text-center text-rams-muted">{{ g.count }}</p>
     </div>
     {% endfor %}
   </div>
@@ -41,10 +41,10 @@
 
 <div class="mb-4 apex-card p-3">
   <form method="get" action="/persons" class="mb-3 flex flex-wrap items-center gap-2">
-    <label for="persons-search" class="text-[10px] font-bold uppercase text-muted-foreground">Search</label>
+    <label for="persons-search" class="text-[10px] font-bold uppercase text-rams-muted">Search</label>
     <input id="persons-search" name="q" type="text" value="{{ search_query }}"
            placeholder="Name, role, organization"
-           class="w-full sm:min-w-[220px] rounded-sm border border-border bg-background px-2 py-1 text-xs" />
+           class="w-full sm:min-w-[220px] rounded-rams-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs" />
     <button type="submit" class="apex-action-link">Apply</button>
     {% if !search_query.is_empty() %}
     <a href="/persons" class="apex-action-link">Clear</a>
@@ -52,26 +52,26 @@
   </form>
 
   <div class="flex flex-wrap items-center gap-2">
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Refine POI list:</span>
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Refine POI list:</span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Region:</span>
     {% for r in region_filters %}
       {% call m::filter_chip(r.label, r.href, r.active, "default", "") %}
     {% endfor %}
-    <span class="mx-2 h-4 w-px bg-border"></span>
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Priority:</span>
+    <span class="mx-2 h-4 w-px bg-rams-line"></span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Priority:</span>
     {% for p in priority_filters %}
       {% call m::filter_chip(p.label, p.href, p.active, "default", "") %}
     {% endfor %}
-    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
+    <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {{ active_filters }}</span>
     <a href="{{ reset_href }}" class="apex-action-link">Reset Filters</a>
   </div>
 </div>
 
 <div class="apex-card overflow-hidden mb-4">
-  <div class="flex items-center justify-between border-b border-border px-4 py-3">
+  <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
     <div>
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
-      <p class="mt-1 text-[11px] text-muted-foreground">Dense POI review for influence ranking, organization coverage, and tag scanning.</p>
+      <p class="mt-1 text-[11px] text-rams-muted">Dense POI review for influence ranking, organization coverage, and tag scanning.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
       <a href="/api/persons/export" class="apex-action-link">CSV</a>
@@ -79,7 +79,7 @@
   </div>
   <div class="overflow-x-auto">
     <table class="min-w-full text-left text-xs" data-dense-table data-table-name="persons">
-      <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+      <thead class="bg-rams-panel/40 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
         <tr>
           <th class="px-4 py-3">Name</th>
           <th class="px-4 py-3">Role</th>
@@ -92,14 +92,14 @@
       </thead>
       <tbody>
         {% for p in persons %}
-        <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/persons/{{ p.id }}">
+        <tr class="border-t border-rams-line hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/persons/{{ p.id }}">
           <td class="px-4 py-3 font-semibold">{{ p.name }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{{ p.role }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{{ p.organization }}</td>
+          <td class="px-4 py-3 text-rams-muted">{{ p.role }}</td>
+          <td class="px-4 py-3 text-rams-muted">{{ p.organization }}</td>
           <td class="px-4 py-3">{{ p.region }}</td>
           <td class="px-4 py-3"><span class="apex-filter-chip apex-filter-chip-muted">{{ p.priority }}</span></td>
           <td class="px-4 py-3 text-right font-bold tabular-nums">{{ p.influence_score }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{% if p.tags.is_empty() %}—{% else %}{% for tag in p.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
+          <td class="px-4 py-3 text-rams-muted">{% if p.tags.is_empty() %}—{% else %}{% for tag in p.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -111,24 +111,24 @@
   {% if persons.is_empty() %}
     {% call m::empty_state("No persons match current filters", "Try broadening region/priority filters or reset filters to review all tracked POIs.") %}
   {% else %}
-    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</div>
+    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
     {% for p in persons %}
-    <a href="/persons/{{ p.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
+    <a href="/persons/{{ p.id }}" class="apex-card p-4 hover:bg-rams-panel block">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <p class="font-bold text-sm truncate">{{ p.name }}</p>
-          <p class="mt-1 text-[10px] uppercase text-muted-foreground truncate">{{ p.role }} · {{ p.organization }}</p>
+          <p class="mt-1 text-[10px] uppercase text-rams-muted truncate">{{ p.role }} · {{ p.organization }}</p>
         </div>
         <span class="apex-filter-chip apex-filter-chip-muted">{{ p.priority }}</span>
       </div>
-      <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+      <div class="mt-2 flex items-center justify-between text-[10px] text-rams-muted">
         <span>{{ p.region }}</span>
         <span class="font-bold">{{ p.influence_score }}</span>
       </div>
       {% if !p.tags.is_empty() %}
       <div class="mt-2 flex flex-wrap gap-1.5">
         {% for tag in p.tags %}
-        <span class="rounded-sm border border-border bg-secondary px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">{{ tag }}</span>
+        <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 text-[10px] uppercase text-rams-muted">{{ tag }}</span>
         {% endfor %}
       </div>
       {% endif %}

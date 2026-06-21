@@ -277,8 +277,8 @@ impl TitleGenerator {
         entities: &[String],
     ) -> String {
         let entity = entities.first().map(|s| s.as_str()).unwrap_or(entity_name);
-        let verb = pick_random(VERBS);
-        let noun = pick_random(NOUNS);
+        let verb = pick_random(VERBS).unwrap_or(&"expands");
+        let noun = pick_random(NOUNS).unwrap_or(&"capacity");
         let context_phrase = truncate_context(&context.text, 6);
         format!("{} {} {} amid {}", entity, verb, noun, context_phrase)
     }
@@ -292,11 +292,11 @@ impl TitleGenerator {
     ) -> String {
         let entity = entities.first().map(|s| s.as_str()).unwrap_or(entity_name);
         let risk_topic = match context.category.as_deref() {
-            Some("supply_chain") => pick_random(SUPPLY_CHAIN_RISKS),
-            Some("regulatory") => pick_random(REGULATORY_RISKS),
-            Some("security") => pick_random(SECURITY_RISKS),
-            Some("trade") => pick_random(TRADE_RISKS),
-            _ => pick_random(GENERIC_RISKS),
+            Some("supply_chain") => pick_random(SUPPLY_CHAIN_RISKS).unwrap_or(&"supply chain risk"),
+            Some("regulatory") => pick_random(REGULATORY_RISKS).unwrap_or(&"regulatory risk"),
+            Some("security") => pick_random(SECURITY_RISKS).unwrap_or(&"security risk"),
+            Some("trade") => pick_random(TRADE_RISKS).unwrap_or(&"trade risk"),
+            _ => pick_random(GENERIC_RISKS).unwrap_or(&"market risk"),
         };
         format!("{}'s exposure to {}", entity, risk_topic)
     }
@@ -327,9 +327,9 @@ impl TitleGenerator {
             "Competitor".to_string()
         };
 
-        let metric = pick_random(METRICS);
-        let comparison = pick_random(COMPARISONS);
-        let metric2 = pick_random(METRICS);
+        let metric = pick_random(METRICS).unwrap_or(&"revenue growth");
+        let comparison = pick_random(COMPARISONS).unwrap_or(&"outpaces");
+        let metric2 = pick_random(METRICS).unwrap_or(&"market share");
 
         format!(
             "{}'s {} {} {}'s {}",
@@ -340,12 +340,12 @@ impl TitleGenerator {
     /// TrendAnalysis: "[Trend] in [sector/industry]"
     fn generate_trend_analysis(&self, context: &SignalContext, entity_name: &str) -> String {
         let trend = match context.category.as_deref() {
-            Some("demand") => pick_random(DEMAND_TRENDS),
-            Some("supply_chain") => pick_random(SUPPLY_CHAIN_TRENDS),
-            Some("commodity") => pick_random(COMMODITY_TRENDS),
-            Some("security") => pick_random(SECURITY_TRENDS),
-            Some("regulatory") => pick_random(REGULATORY_TRENDS),
-            _ => pick_random(GENERIC_TRENDS),
+            Some("demand") => pick_random(DEMAND_TRENDS).unwrap_or(&"Demand growth"),
+            Some("supply_chain") => pick_random(SUPPLY_CHAIN_TRENDS).unwrap_or(&"Supply chain shift"),
+            Some("commodity") => pick_random(COMMODITY_TRENDS).unwrap_or(&"Commodity trend"),
+            Some("security") => pick_random(SECURITY_TRENDS).unwrap_or(&"Security trend"),
+            Some("regulatory") => pick_random(REGULATORY_TRENDS).unwrap_or(&"Regulatory shift"),
+            _ => pick_random(GENERIC_TRENDS).unwrap_or(&"Market trend"),
         };
         let sector = infer_sector(context, entity_name);
         format!("{} in {}", trend, sector)
@@ -353,8 +353,8 @@ impl TitleGenerator {
 
     /// DataDiscovery: "New [data_type] reveals [entity]'s [insight]"
     fn generate_data_discovery(&self, _context: &SignalContext, entity_name: &str) -> String {
-        let data_type = pick_random(DATA_TYPES);
-        let insight = pick_random(DISCOVERY_INSIGHTS);
+        let data_type = pick_random(DATA_TYPES).unwrap_or(&"regulatory filing");
+        let insight = pick_random(DISCOVERY_INSIGHTS).unwrap_or(&"strategic plans");
         format!(
             "New {} reveals {}'s {}",
             data_type, entity_name, insight
@@ -363,7 +363,7 @@ impl TitleGenerator {
 
     /// ImpactAssessment: "What [event] means for [entity/stakeholder]"
     fn generate_impact_assessment(&self, _context: &SignalContext, entity_name: &str) -> String {
-        let event = pick_random(IMPACT_EVENTS);
+        let event = pick_random(IMPACT_EVENTS).unwrap_or(&"recent developments");
         format!("What {} means for {}", event, entity_name)
     }
 
@@ -374,9 +374,9 @@ impl TitleGenerator {
         entity_name: &str,
         _registry: Option<&EntityRegistry>,
     ) -> String {
-        let past = pick_random(PAST_FOCUS_AREAS);
-        let current = pick_random(CURRENT_FOCUS_AREAS);
-        let transformation = pick_random(TRANSFORMATION_TYPES);
+        let past = pick_random(PAST_FOCUS_AREAS).unwrap_or(&"traditional operations");
+        let current = pick_random(CURRENT_FOCUS_AREAS).unwrap_or(&"digital transformation");
+        let transformation = pick_random(TRANSFORMATION_TYPES).unwrap_or(&"strategic pivot");
         format!(
             "From {} to {}: {}'s {}",
             past, current, entity_name, transformation
@@ -385,8 +385,8 @@ impl TitleGenerator {
 
     /// SignalSynthesis: "[N] signals pointing to [conclusion]"
     fn generate_signal_synthesis(&self, _context: &SignalContext, _entity_name: &str) -> String {
-        let n = pick_random(&[2, 3, 4, 5]);
-        let conclusion = pick_random(CONCLUSIONS);
+        let n = pick_random(&[2, 3, 4, 5]).unwrap_or(&3);
+        let conclusion = pick_random(CONCLUSIONS).unwrap_or(&"market changes");
         // Capitalize the first letter of the conclusion for a proper title
         let conclusion_capped = {
             let mut chars = conclusion.chars();
@@ -551,13 +551,14 @@ pub fn diversity_boost(time_since_last_insight: Option<Duration>) -> f64 {
 // ────────────────────────────────────────────
 
 /// Pick a random element from a slice.
-fn pick_random<T>(items: &[T]) -> &T {
+/// Returns `None` if the slice is empty (safe fallback for production paths).
+fn pick_random<T>(items: &[T]) -> Option<&T> {
     if items.is_empty() {
-        panic!("pick_random called on empty slice");
+        return None;
     }
     let mut rng = rand::thread_rng();
     let idx = rng.gen_range(0..items.len());
-    &items[idx]
+    Some(&items[idx])
 }
 
 /// Truncate context text to a maximum number of words.

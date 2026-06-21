@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Severity
@@ -1051,6 +1051,7 @@ mod tests {
 
     #[test]
     fn slack_config_from_env_empty() {
+        let _guard = SLACK_ENV_TEST_LOCK.lock().unwrap();
         // No env vars set — should produce empty config with defaults.
         // Save and clear all SLACK_WEBHOOK_* vars to prevent races with
         // parallel tests that manipulate these env vars.
@@ -1091,6 +1092,7 @@ mod tests {
 
     #[test]
     fn slack_config_from_env_with_urls() {
+        let _guard = SLACK_ENV_TEST_LOCK.lock().unwrap();
         // Temporarily set env vars
         unsafe {
             std::env::set_var(
@@ -1111,6 +1113,7 @@ mod tests {
 
     #[test]
     fn slack_config_from_env_with_timeout() {
+        let _guard = SLACK_ENV_TEST_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("SLACK_WEBHOOK_TIMEOUT_SECS", "30");
         }
@@ -1123,8 +1126,14 @@ mod tests {
         }
     }
 
+    /// A mutex that serializes all tests that touch `SLACK_WEBHOOK_*` env vars,
+    /// preventing races between parallel test threads. Tests that set or clear
+    /// these vars must lock this mutex for their entire body.
+    static SLACK_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn slack_config_from_env_with_channel_urls() {
+        let _guard = SLACK_ENV_TEST_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var(
                 "SLACK_WEBHOOK_SECURITY_URL",

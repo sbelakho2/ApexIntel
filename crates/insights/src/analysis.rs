@@ -80,10 +80,21 @@ impl IntelligenceAnalyzer {
         if self.config.enable_pattern_detection {
             let patterns = self.pattern_detector.detect_all(&input.pattern_data);
             for pattern in patterns {
-                let insight = pattern.to_insight(&format!(
+                let mut insight = pattern.to_insight(&format!(
                     "{} entities involved",
                     pattern.entities_involved.len()
                 ));
+                // Ensure every pattern insight carries source attribution
+                if insight.sources.is_empty() && !pattern.evidence.is_empty() {
+                    insight.sources = pattern.evidence.clone();
+                }
+                if insight.sources.is_empty() {
+                    insight.sources.push(format!(
+                        "pattern_detector:v1:type_{}:entities_{}",
+                        pattern.pattern_type.as_str(),
+                        pattern.entities_involved.len()
+                    ));
+                }
                 all_insights.push(insight);
             }
         }
@@ -138,7 +149,7 @@ impl IntelligenceAnalyzer {
         }
     }
 
-    /// Convert trend to insight.
+    /// Convert trend to insight, with proper source attribution.
     fn trend_to_insight(&self, trend: &Trend, series_name: &str) -> Insight {
         let severity = if trend.strength >= 0.8 && trend.confidence >= 0.8 {
             InsightSeverity::High
@@ -147,6 +158,28 @@ impl IntelligenceAnalyzer {
         } else {
             InsightSeverity::Low
         };
+
+        // Build structured source attribution from trend data
+        let mut sources: Vec<String> = Vec::new();
+        sources.push(format!(
+            "trend_series:{}:{}_data_points",
+            series_name,
+            trend.data_points
+        ));
+        sources.push(format!(
+            "trend_name:{}",
+            trend.name
+        ));
+        // Include date range for traceability
+        sources.push(format!(
+            "timerange:{}-{}",
+            trend.start_date.format("%Y-%m-%d"),
+            trend.end_date.format("%Y-%m-%d")
+        ));
+        sources.push(format!(
+            "detector:ApexIntel-Analysis-v1:confidence_{:.2}",
+            trend.confidence
+        ));
 
         Insight::new(
             &format!("Trend: {} - {}", series_name, trend.direction.as_str()),
@@ -165,6 +198,7 @@ impl IntelligenceAnalyzer {
             trend.direction.as_str().to_string(),
             "trend".to_string(),
         ])
+        .with_sources(sources)
     }
 
     /// Deduplicate insights by title similarity.

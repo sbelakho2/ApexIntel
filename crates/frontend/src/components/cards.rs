@@ -24,12 +24,12 @@ pub fn SurfaceCard(
     children: Children,
 ) -> impl IntoView {
     view! {
-        <section class="surface-card">
-            <div class="surface-card-header">
-                <h2 class="surface-card-title">{title}</h2>
-                {subtitle.map(|text| view! { <p class="surface-card-subtitle">{text}</p> })}
+        <section class="apex-module">
+            <div class="apex-module-header">
+                <h2 class="apex-module-title">{title}</h2>
+                {subtitle.map(|text| view! { <p class="apex-module-subtitle">{text}</p> })}
             </div>
-            <div class="surface-card-body">{children()}</div>
+            <div class="apex-module-body">{children()}</div>
         </section>
     }
 }
@@ -42,16 +42,17 @@ pub fn StatCard(
     children: Children,
 ) -> impl IntoView {
     view! {
-        <div class="surface-card stat-card">
-            <div class="surface-card-body">
+        <div class="apex-stat">
+            <div class="apex-stat-rail"></div>
+            <div class="apex-stat-body">
                 <div class="stat-card-top">
                     <div>
-                        <p class="stat-label">{label}</p>
-                        <p class="stat-value">{value}</p>
+                        <p class="apex-stat-label">{label}</p>
+                        <p class="apex-stat-value">{value}</p>
                     </div>
-                    {children()}
+                    <div class="apex-stat-icon">{children()}</div>
                 </div>
-                <div class="stat-delta">{delta}</div>
+                <div class="apex-stat-delta">{delta}</div>
             </div>
         </div>
     }

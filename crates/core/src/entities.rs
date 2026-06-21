@@ -91,6 +91,7 @@ pub struct Company {
     pub threat_score: f64,
     pub overlap_score: f64,
     pub strategic_relevance: f64,
+    pub is_competitor: Option<bool>,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -114,6 +115,7 @@ impl Company {
             threat_score: 0.0,
             overlap_score: 0.0,
             strategic_relevance: 0.0,
+            is_competitor: None,
             metadata: serde_json::json!({}),
             created_at: now,
             updated_at: now,
@@ -546,6 +548,9 @@ pub enum ObservationType {
     CompetitorEvent,
     /// Dark web forum post or paste matching monitored keywords.
     DarkWebPost,
+    /// SEC EDGAR filing (10-K, 8-K, DEF 14A, Form 4, etc.) — public-company
+    /// financial and officer/director change disclosures.
+    SecFiling,
 }
 
 impl ObservationType {
@@ -568,6 +573,7 @@ impl ObservationType {
             Self::ProcurementSignal => "ProcurementSignal",
             Self::CompetitorEvent => "CompetitorEvent",
             Self::DarkWebPost => "DarkWebPost",
+            Self::SecFiling => "SecFiling",
         }
     }
 
@@ -591,6 +597,7 @@ impl ObservationType {
             "ProcurementSignal" => Some(Self::ProcurementSignal),
             "CompetitorEvent" => Some(Self::CompetitorEvent),
             "DarkWebPost" => Some(Self::DarkWebPost),
+            "SecFiling" => Some(Self::SecFiling),
             _ => None,
         }
     }

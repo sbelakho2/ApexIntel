@@ -4,6 +4,7 @@
 
 use leptos::*;
 
+use crate::api_config::api_url;
 use crate::components::{
     cards::{PageHeader, SurfaceCard},
     charts::probability_gauge::ProbabilityGauge,
@@ -50,6 +51,13 @@ pub struct ActivityEntry {
     pub entity_id: Option<String>,
     pub entity_name: Option<String>,
     pub details: serde_json::Value,
+    pub formatted_details: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
     pub created_at: String,
 }
 
@@ -122,85 +130,122 @@ pub struct ApiEnvelope<T> {
 // API Functions
 // ────────────────────────────────────────────
 
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_workspaces() -> Result<Vec<InvestigationWorkspace>, String> {
-    let response = reqwest::get("http://localhost:8080/api/workspaces")
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<InvestigationWorkspace>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    envelope.data.ok_or_else(|| "Failed to fetch workspaces".to_string())
-}
-
-pub async fn fetch_workspace(id: &str) -> Result<InvestigationWorkspace, String> {
-    let response = reqwest::get(&format!("http://localhost:8080/api/workspaces/{}", id))
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<InvestigationWorkspace> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    envelope.data.ok_or_else(|| "Failed to fetch workspace".to_string())
-}
-
-pub async fn create_workspace(req: CreateWorkspaceRequest) -> Result<InvestigationWorkspace, String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .post("http://localhost:8080/api/workspaces")
-        .json(&req)
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::get(&api_url("/api/workspaces"))
+        .credentials(RequestCredentials::SameOrigin)
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<InvestigationWorkspace> = response
-        .json()
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<InvestigationWorkspace>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
+    envelope.data.ok_or_else(|| "Failed to fetch workspaces".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_workspaces() -> Result<Vec<InvestigationWorkspace>, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch_workspace(id: &str) -> Result<InvestigationWorkspace, String> {
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::get(&api_url(&format!("/api/workspaces/{}", id)))
+        .credentials(RequestCredentials::SameOrigin)
+        .send()
         .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
+        .map_err(|e| format!("Request failed: {}", e))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<InvestigationWorkspace> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
+    envelope.data.ok_or_else(|| "Failed to fetch workspace".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_workspace(_id: &str) -> Result<InvestigationWorkspace, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn create_workspace(req: CreateWorkspaceRequest) -> Result<InvestigationWorkspace, String> {
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::post(&api_url("/api/workspaces"))
+        .credentials(RequestCredentials::SameOrigin)
+        .json(&req)
+        .map_err(|e| format!("Serialization error: {}", e))?
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<InvestigationWorkspace> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
     envelope.data.ok_or_else(|| "Failed to create workspace".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn create_workspace(_req: CreateWorkspaceRequest) -> Result<InvestigationWorkspace, String> {
+    Err("WASM mutations are only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_activity_feed(workspace_id: Option<&str>) -> Result<Vec<ActivityEntry>, String> {
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
     let url = match workspace_id {
-        Some(id) => format!("http://localhost:8080/api/activity-feed?workspace_id={}", id),
-        None => "http://localhost:8080/api/activity-feed".to_string(),
+        Some(id) => api_url(&format!("/api/activity-feed?workspace_id={}", id)),
+        None => api_url("/api/activity-feed"),
     };
-    
-    let response = reqwest::get(&url)
+    let response = Request::get(&url)
+        .credentials(RequestCredentials::SameOrigin)
+        .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<ActivityEntry>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<ActivityEntry>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
     envelope.data.ok_or_else(|| "Failed to fetch activity feed".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_activity_feed(_workspace_id: Option<&str>) -> Result<Vec<ActivityEntry>, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_entity_relationships(
     _entity_type: &str,
     entity_id: &str,
 ) -> Result<EntityGraphData, String> {
-    let response = reqwest::get(&format!(
-        "http://localhost:8080/api/graph/neighborhood/{}",
-        entity_id
-    ))
-    .await
-    .map_err(|e| format!("Request failed: {}", e))?;
-    
-    // Parse graph neighborhood response
-    let json: serde_json::Value = response
-        .json()
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::get(&api_url(&format!("/api/graph/neighborhood/{}", entity_id)))
+        .credentials(RequestCredentials::SameOrigin)
+        .send()
         .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    // Transform to EntityGraphData
+        .map_err(|e| format!("Request failed: {}", e))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 {
+        return Err(format!("API error (status {})", status));
+    }
     let nodes = json["nodes"]
         .as_array()
         .map(|arr| {
@@ -214,7 +259,6 @@ pub async fn fetch_entity_relationships(
                 .collect()
         })
         .unwrap_or_default();
-    
     let edges = json["edges"]
         .as_array()
         .map(|arr| {
@@ -233,32 +277,54 @@ pub async fn fetch_entity_relationships(
                 .collect()
         })
         .unwrap_or_default();
-    
     Ok(EntityGraphData { nodes, edges })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_entity_relationships(
+    _entity_type: &str,
+    _entity_id: &str,
+) -> Result<EntityGraphData, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_source_evidence(
     entity_type: Option<&str>,
     entity_id: Option<&str>,
 ) -> Result<Vec<SourceEvidence>, String> {
-    let mut url = "http://localhost:8080/api/evidence".to_string();
-    if let Some(et) = entity_type {
-        url.push_str(&format!("?entity_type={}", et));
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let base = api_url("/api/evidence");
+    let url = if let Some(et) = entity_type {
         if let Some(eid) = entity_id {
-            url.push_str(&format!("&entity_id={}", eid));
+            format!("{}?entity_type={}&entity_id={}", base, et, eid)
+        } else {
+            format!("{}?entity_type={}", base, et)
         }
-    }
-    
-    let response = reqwest::get(&url)
+    } else {
+        base
+    };
+    let response = Request::get(&url)
+        .credentials(RequestCredentials::SameOrigin)
+        .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<SourceEvidence>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<SourceEvidence>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
     envelope.data.ok_or_else(|| "Failed to fetch evidence".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_source_evidence(
+    _entity_type: Option<&str>,
+    _entity_id: Option<&str>,
+) -> Result<Vec<SourceEvidence>, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
 }
 
 // ────────────────────────────────────────────
@@ -387,6 +453,9 @@ fn ActivityFeedItem(activity: ActivityEntry) -> impl IntoView {
         _ => "📝",
     };
 
+    let details_str = activity.formatted_details.clone().unwrap_or_default();
+    let has_details = !details_str.is_empty();
+
     view! {
         <div class="activity-item">
             <span class="activity-icon">{action_icon}</span>
@@ -401,6 +470,7 @@ fn ActivityFeedItem(activity: ActivityEntry) -> impl IntoView {
                 {activity.entity_type.map(|et| view! {
                     <span class="entity-type-badge">{et}</span>
                 })}
+                {has_details.then(|| view! { <p class="activity-details">{details_str}</p> })}
                 <span class="activity-time">{activity.created_at}</span>
             </div>
         </div>
@@ -564,7 +634,7 @@ pub fn AnalystPage() -> impl IntoView {
                             view! {
                                 <div class="empty-state">
                                     <p>"No active workspaces."</p>
-                                    <button class="btn-primary">"Create New"</button>
+                                    <button class="apex-btn apex-btn-primary">"Create New"</button>
                                 </div>
                             }.into_view()
                         } else {

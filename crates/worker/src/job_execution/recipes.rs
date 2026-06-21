@@ -3379,6 +3379,9 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let mut entity_run_count: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
 
+    let activity_logger =
+        apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+
     for (idx, c) in candidates.iter().enumerate() {
         if !deduped_idxs.contains(&idx) {
             skipped_dedup += 1;
@@ -4002,6 +4005,18 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     #[cfg(feature = "llm")]
                     {
                         insight_inserted = true;
+                    }
+                    // Log insight generation to activity feed (fire-and-forget)
+                    if !entity_label.is_empty() {
+                        activity_logger
+                            .log_insight_generated(
+                                &entity_label,
+                                &title,
+                                stored_confidence,
+                                &c.category,
+                                Some(&c.entity_id),
+                            )
+                            .await;
                     }
                     if let Some(entity_uuid) = entity_uuid {
                         if let Err(error) = store

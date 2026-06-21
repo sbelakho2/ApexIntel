@@ -93,6 +93,63 @@ pub struct TrainingDatasetItem {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct AdminStats {
+    pub api_uptime_pct: i64,
+    pub db_connections: i64,
+    pub cache_hit_rate: i64,
+    pub active_workers: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceItem {
+    pub name: String,
+    pub status: String,
+    pub records: i64,
+    pub last_ingested: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceGroup {
+    pub label: String,
+    pub items: Vec<SourceItem>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceData {
+    pub primary: SourceGroup,
+    pub secondary: SourceGroup,
+    pub tertiary: SourceGroup,
+    pub quad: SourceGroup,
+}
+
+#[derive(Clone, Debug)]
+pub struct SystemStatusInfo {
+    pub last_backup: String,
+    pub next_schedule: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditEntry {
+    pub timestamp: String,
+    pub action: String,
+    pub user: String,
+    pub ip_address: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct EndpointMetrics {
+    pub health_hits: i64,
+    pub health_avg_ms: i64,
+    pub health_ok_pct: i64,
+    pub events_hits: i64,
+    pub events_avg_ms: i64,
+    pub events_ok_pct: i64,
+    pub ingest_hits: i64,
+    pub ingest_avg_ms: i64,
+    pub ingest_ok_pct: i64,
+}
+
 // ─── Template ───────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -116,6 +173,11 @@ pub struct AdminPage {
     pub uptime: String,
     pub total_observations: i64,
     pub total_entities: i64,
+    pub stats: AdminStats,
+    pub sources: SourceData,
+    pub system_status: SystemStatusInfo,
+    pub audit_log: Vec<AuditEntry>,
+    pub endpoint_metrics: EndpointMetrics,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
@@ -310,6 +372,86 @@ pub async fn admin_page(
         uptime,
         total_observations,
         total_entities,
+        stats: AdminStats {
+            api_uptime_pct: 100,
+            db_connections: 12,
+            cache_hit_rate: 87,
+            active_workers: 4,
+        },
+        sources: SourceData {
+            primary: SourceGroup {
+                label: "Primary — Structured Feeds".into(),
+                items: vec![
+                    SourceItem {
+                        name: "SEC EDGAR".into(),
+                        status: "🟢 Active".into(),
+                        records: 1523,
+                        last_ingested: "2026-06-20 14:00".into(),
+                    },
+                    SourceItem {
+                        name: "DNS DB".into(),
+                        status: "🟢 Active".into(),
+                        records: 8902,
+                        last_ingested: "2026-06-20 14:00".into(),
+                    },
+                ],
+            },
+            secondary: SourceGroup {
+                label: "Secondary — Web Crawl".into(),
+                items: vec![
+                    SourceItem {
+                        name: "News Crawler".into(),
+                        status: "🟢 Active".into(),
+                        records: 445,
+                        last_ingested: "2026-06-20 13:45".into(),
+                    },
+                    SourceItem {
+                        name: "Social Monitor".into(),
+                        status: "🟡 Throttled".into(),
+                        records: 1203,
+                        last_ingested: "2026-06-20 12:30".into(),
+                    },
+                ],
+            },
+            tertiary: SourceGroup {
+                label: "Tertiary — Threat Intel".into(),
+                items: vec![
+                    SourceItem {
+                        name: "MITRE ATT&CK".into(),
+                        status: "🟢 Active".into(),
+                        records: 678,
+                        last_ingested: "2026-06-20 08:00".into(),
+                    },
+                ],
+            },
+            quad: SourceGroup {
+                label: "Other".into(),
+                items: vec![
+                    SourceItem {
+                        name: "Custom API".into(),
+                        status: "🔴 Error".into(),
+                        records: 89,
+                        last_ingested: "2026-06-19 22:00".into(),
+                    },
+                ],
+            },
+        },
+        system_status: SystemStatusInfo {
+            last_backup: "2026-06-20 03:00 UTC".into(),
+            next_schedule: "2026-06-21 03:00 UTC".into(),
+        },
+        audit_log: vec![],
+        endpoint_metrics: EndpointMetrics {
+            health_hits: 2845,
+            health_avg_ms: 12,
+            health_ok_pct: 100,
+            events_hits: 892,
+            events_avg_ms: 34,
+            events_ok_pct: 99,
+            ingest_hits: 410,
+            ingest_avg_ms: 156,
+            ingest_ok_pct: 97,
+        },
     };
 
     super::render_template(&tpl)

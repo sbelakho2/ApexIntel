@@ -1,7 +1,7 @@
 //! Storage integration layer for the worker pipeline.
 //!
 //! This module provides functions to build pipeline stage results from the
-//! actual database state, replacing the file-based stub approach.
+//! actual database, replacing the file-based stub approach.
 //!
 //! # Architecture
 //!
@@ -21,23 +21,32 @@ use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::Row;
 
+use crate::activity_logger::ActivityLogger;
 use crate::nightly::{
     CrawlStageResult, DriftCheckStageResult, MiningStageResult, PoiRefreshStageResult,
 };
 use crate::weekly::{MemoInputs, ProductionRecipe, StagedRecipe};
 
 /// Context for building pipeline inputs from storage.
+///
+/// Holds the database connection pool, current run timestamp, and the
+/// shared [`ActivityLogger`] for recording pipeline events to the activity feed.
 pub struct StorageContext {
     pub store: PgStore,
     pub run_timestamp: DateTime<Utc>,
+    /// Activity logger for recording system events to the activity feed.
+    /// Wired from `main.rs` so all storage build functions can log events.
+    pub activity_logger: ActivityLogger,
 }
 
 impl StorageContext {
-    pub async fn new(database_url: &str) -> Result<Self> {
+    /// Create a new storage context with the given activity logger.
+    pub async fn new(database_url: &str, activity_logger: ActivityLogger) -> Result<Self> {
         let store = PgStore::connect(database_url).await?;
         Ok(Self {
             store,
             run_timestamp: Utc::now(),
+            activity_logger,
         })
     }
 }

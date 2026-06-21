@@ -10,45 +10,53 @@
 <div class="space-y-6">
   {% call m::page_header("Overview", "bar-chart-3", "Real-time intelligence dashboard — warnings, insights, coverage, and system health.", "") %}
 
-  {# ── KPI stat cards ── #}
+  {# ── KPI stat cards (apex-stat with top accent rail) ── #}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
     {% for stat in stats %}
-    <div class="apex-metric-card">
-      <div class="apex-metric-rail {{ stat.accent_class }}"></div>
+    <div class="apex-stat">
+      <div class="apex-stat-rail
+        {%- if stat.accent_class == "metric-rail-red" %} apex-stat-rail-red
+        {%- else if stat.accent_class == "metric-rail-orange" %} apex-stat-rail-orange
+        {%- else if stat.accent_class == "metric-rail-green" %} apex-stat-rail-green
+        {%- else if stat.accent_class == "metric-rail-steel" %} apex-stat-rail-steel
+        {%- else %} apex-stat-rail-steel{% endif %}"></div>
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2 pt-1">
-        <div class="rounded-sm border border-border bg-secondary p-1.5 text-muted-foreground">
+        <div class="rounded-rams-sm border border-rams-line bg-rams-panel p-1.5 text-rams-muted">
           {% call m::icon(stat.icon, "h-3.5 w-3.5") %}
         </div>
         {% if stat.delta.is_some() %}
-        <span class="flex items-center gap-0.5 text-[11px] font-bold tabular-nums {% if stat.direction == "up" %}apex-text-positive{% else if stat.direction == "down" %}apex-text-danger{% else %}text-muted-foreground{% endif %}">
+        <span class="flex items-center gap-0.5 text-[11px] font-bold tabular-nums
+          {%- if stat.direction == "up" %} apex-stat-delta-positive
+          {%- else if stat.direction == "down" %} apex-stat-delta-negative
+          {%- else %} text-rams-muted{% endif %}">
           {{ stat.delta.as_deref().unwrap_or("") }}
         </span>
         {% endif %}
       </div>
-      <p class="apex-metric-label">{{ stat.label }}</p>
-      <p class="mt-1.5 apex-metric-number text-2xl">{{ stat.value }}</p>
+      <p class="apex-stat-label">{{ stat.label }}</p>
+      <p class="apex-stat-value mt-1.5">{{ stat.value }}</p>
     </div>
     {% endfor %}
   </div>
 
   <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-    {# ── Recent warnings ── #}
-    <div class="apex-card">
-      <div class="border-b border-border px-4 py-3">
-        <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Warnings</h2>
+    {# ── Recent warnings module ── #}
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Recent Warnings</h2>
       </div>
-      <div class="divide-y divide-border">
+      <div class="divide-y divide-rams-line">
         {% for w in recent_warnings %}
-        <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+        <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-rams-panel">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-sm font-semibold truncate">{{ w.title }}</span>
+            <span class="text-sm font-semibold truncate text-rams-foreground">{{ w.title }}</span>
             {% call m::severity_badge(w.severity) %}
           </div>
-          <p class="mt-1 text-[11px] text-muted-foreground">{{ w.company_name }} · {{ w.created_at }}</p>
+          <p class="mt-1 text-[11px] text-rams-muted">{{ w.company_name }} · {{ w.created_at }}</p>
         </a>
         {% endfor %}
         {% if recent_warnings.is_empty() %}
-        <p class="px-4 py-6 text-center text-sm text-muted-foreground">No recent warnings</p>
+        <p class="px-4 py-6 text-center text-sm text-rams-muted">No recent warnings</p>
         {% endif %}
       </div>
       <a href="/warnings" class="m-3 mt-2 flex items-center justify-center gap-2 apex-action-link px-3 py-2 tracking-[0.12em]">
@@ -56,111 +64,151 @@
       </a>
     </div>
 
-    {# ── Coverage by region (legacy parity) ── #}
-    <div class="apex-card p-4">
-      <h2 class="mb-4 text-xs font-black uppercase tracking-[0.12em]">Coverage by Region</h2>
-      <div class="apex-chart-frame-tall">
-        {% call m::region_donut_chart(region_slices, 140, 18, 70, 58) %}
+    {# ── Coverage by region module ── #}
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Coverage by Region</h2>
       </div>
-      {% if region_slices.is_empty() %}
-      <p class="mt-3 text-center text-sm text-muted-foreground">No regional coverage data</p>
-      {% endif %}
+      <div class="apex-module-body">
+        <div class="apex-chart-frame-tall">
+          {% call m::region_donut_chart(region_slices, 140, 18, 70, 58) %}
+        </div>
+        {% if region_slices.is_empty() %}
+        <p class="mt-3 text-center text-sm text-rams-muted">No regional coverage data</p>
+        {% endif %}
+      </div>
     </div>
   </div>
 
-  {# ── Secondary KPI row (matches legacy 8-card layout) ── #}
+  {# ── Secondary KPI row ── #}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-    {% call m::metric_card("Active Recipes", recipes_active.to_string(), "metric-rail-green") %}
-    {% call m::metric_card("Companies Tracked", companies_tracked.to_string(), "metric-rail-steel") %}
-    {% call m::metric_card("Persons Tracked", persons_tracked.to_string(), "metric-rail-orange") %}
-    {% call m::metric_card("Data Freshness", data_freshness, "metric-rail-red") %}
-    <div class="apex-card border-t-2 border-t-border px-4 py-3">
-      <p class="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Portfolio Health</p>
-      <p class="mt-1 text-lg font-black {{ portfolio_health_class }}">{{ portfolio_health }}</p>
+    <div class="apex-stat">
+      <div class="apex-stat-rail apex-stat-rail-green"></div>
+      <p class="apex-stat-label">Active Recipes</p>
+      <p class="apex-stat-value mt-1.5">{{ recipes_active }}</p>
+    </div>
+    <div class="apex-stat">
+      <div class="apex-stat-rail apex-stat-rail-steel"></div>
+      <p class="apex-stat-label">Companies Tracked</p>
+      <p class="apex-stat-value mt-1.5">{{ companies_tracked }}</p>
+    </div>
+    <div class="apex-stat">
+      <div class="apex-stat-rail apex-stat-rail-orange"></div>
+      <p class="apex-stat-label">Persons Tracked</p>
+      <p class="apex-stat-value mt-1.5">{{ persons_tracked }}</p>
+    </div>
+    <div class="apex-stat">
+      <div class="apex-stat-rail apex-stat-rail-red"></div>
+      <p class="apex-stat-label">Data Freshness</p>
+      <p class="apex-stat-value mt-1.5">{{ data_freshness }}</p>
+    </div>
+    <div class="apex-stat">
+      <div class="apex-stat-rail
+        {%- if portfolio_health_class == "apex-text-positive" %} apex-stat-rail-green
+        {%- else if portfolio_health_class == "apex-text-danger" %} apex-stat-rail-red
+        {%- else %} apex-stat-rail-steel{% endif %}"></div>
+      <p class="apex-stat-label">Portfolio Health</p>
+      <p class="apex-stat-value mt-1.5 {{ portfolio_health_class }}">{{ portfolio_health }}</p>
     </div>
   </div>
 
-  {# ── Warning trend + crawl activity (pre-migration parity) ── #}
+  {# ── Warning trend + crawl activity ── #}
   <div class="grid gap-6 lg:grid-cols-2">
-    <div class="apex-card p-4">
-      <h2 class="mb-4 text-xs font-black uppercase tracking-[0.12em]">Warning Trend (30d)</h2>
-      <div class="apex-chart-frame-tall">
-        {% call m::warning_trend_chart(warning_trend) %}
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Warning Trend (30d)</h2>
       </div>
-      <p class="mt-3 text-[11px] text-muted-foreground" data-chart-detail>Tap or focus a bar for exact values.</p>
-      <div class="apex-chart-legend">
-        {% call m::legend_item("Critical", "metric-swatch-red", "small") %}
-        {% call m::legend_item("High", "metric-swatch-amber", "small") %}
-        {% call m::legend_item("Medium", "metric-swatch-orange", "small") %}
-        {% call m::legend_item("Low", "metric-swatch-steel", "small") %}
+      <div class="apex-module-body">
+        <div class="apex-chart-frame-tall">
+          {% call m::warning_trend_chart(warning_trend) %}
+        </div>
+        <p class="mt-3 text-[11px] text-rams-muted" data-chart-detail>Tap or focus a bar for exact values.</p>
+        <div class="apex-chart-legend">
+          {% call m::legend_item("Critical", "metric-swatch-red", "small") %}
+          {% call m::legend_item("High", "metric-swatch-amber", "small") %}
+          {% call m::legend_item("Medium", "metric-swatch-orange", "small") %}
+          {% call m::legend_item("Low", "metric-swatch-steel", "small") %}
+        </div>
       </div>
     </div>
 
-    <div class="apex-card p-4">
-      <h2 class="mb-4 text-xs font-black uppercase tracking-[0.12em]">Crawl Activity (24h)</h2>
-      <div class="apex-chart-frame-tall">
-        {% call m::crawl_activity_chart(crawl_activity) %}
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Crawl Activity (24h)</h2>
       </div>
-      <p class="mt-3 text-[11px] text-muted-foreground" data-chart-detail>Tap or focus a bar for exact values.</p>
-      <div class="apex-chart-legend">
-        {% call m::legend_item("Pages Crawled", "metric-swatch-green", "small") %}
-        {% call m::legend_item("Observations", "metric-swatch-steel", "small") %}
+      <div class="apex-module-body">
+        <div class="apex-chart-frame-tall">
+          {% call m::crawl_activity_chart(crawl_activity) %}
+        </div>
+        <p class="mt-3 text-[11px] text-rams-muted" data-chart-detail>Tap or focus a bar for exact values.</p>
+        <div class="apex-chart-legend">
+          {% call m::legend_item("Pages Crawled", "metric-swatch-green", "small") %}
+          {% call m::legend_item("Observations", "metric-swatch-steel", "small") %}
+        </div>
       </div>
     </div>
   </div>
 
-  {# ── Activity timeline ── #}
-  <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Activity</h2>
+  {# ── Activity timeline module (real activity_feed table) ── #}
+  <div class="apex-module">
+    <div class="apex-module-header">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Recent Activity</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for a in activity %}
-      <a href="{{ a.href }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
-        <div class="flex items-center justify-between">
-        <div class="flex items-start gap-2">
-          <span class="apex-mini-kind {% if a.kind == "Warning" %}apex-mini-kind-warning{% else %}apex-mini-kind-insight{% endif %}">
-            {% if a.kind == "Warning" %}W{% else %}I{% endif %}
-          </span>
-          <div>
-            <span class="text-sm font-semibold">{{ a.kind }}</span>
-            <p class="text-[11px] text-muted-foreground">{{ a.description }}</p>
+      {% if !a.href.is_empty() %}<a href="{{ a.href }}" class="block px-4 py-3 hover:bg-rams-panel focus-visible:bg-rams-panel focus-visible:outline-none">{% else %}<div class="px-4 py-3">{% endif %}
+        <div class="flex items-center justify-between gap-2">
+        <div class="flex items-start gap-2 min-w-0">
+          <span class="apex-mini-kind apex-mini-kind-{{ a.accent }}" aria-hidden="true">{{ a.icon }}</span>
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-[11px] font-black uppercase tracking-wide text-rams-foreground">{{ a.kind }}</span>
+              {% if !a.actor.is_empty() && a.actor != "system" %}
+              <span class="text-[10px] text-rams-muted">· {{ a.actor }}</span>
+              {% endif %}
+            </div>
+            <p class="text-[12px] text-rams-foreground/90 truncate">{{ a.description }}</p>
           </div>
         </div>
         {% if !a.timestamp.is_empty() %}
-        <span class="text-[10px] tabular-nums text-muted-foreground shrink-0 ml-2">{{ a.timestamp }}</span>
+        <span class="text-[10px] tabular-nums text-rams-muted shrink-0" data-numeric>{{ a.timestamp }}</span>
         {% endif %}
         </div>
-      </a>
+      {% if !a.href.is_empty() %}</a>{% else %}</div>{% endif %}
       {% endfor %}
       {% if activity.is_empty() %}
-      <p class="px-4 py-6 text-center text-sm text-muted-foreground">No recent activity</p>
+      <div class="px-4 py-10 text-center">
+        <div class="mx-auto mb-2 flex h-8 w-8 items-center justify-center border border-rams-line rounded-sm text-rams-muted" aria-hidden="true">∅</div>
+        <p class="text-sm font-semibold text-rams-foreground">No activity yet</p>
+        <p class="text-[11px] text-rams-muted mt-1">Activity appears here as the worker crawls sources, discovers POIs, and generates insights.</p>
+      </div>
       {% endif %}
     </div>
   </div>
 
-  <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Top Insights</h2>
+  {# ── Top insights module ── #}
+  <div class="apex-module">
+    <div class="apex-module-header">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Top Insights</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for i in top_insights %}
-      <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+      <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-rams-panel">
         <div class="flex items-center justify-between gap-2">
-          <span class="text-sm font-semibold truncate">{{ i.title }}</span>
-          <span class="text-[10px] font-bold tabular-nums text-muted-foreground">{{ i.confidence_pct }}%</span>
+          <span class="text-sm font-semibold truncate text-rams-foreground">{{ i.title }}</span>
+          <span class="text-[10px] font-bold tabular-nums text-rams-muted">{{ i.confidence_pct }}%</span>
         </div>
-        <p class="mt-1 text-[11px] text-muted-foreground">{{ i.category }} · {{ i.created_at }}</p>
+        <p class="mt-1 text-[11px] text-rams-muted">{{ i.category }} · {{ i.created_at }}</p>
       </a>
       {% endfor %}
       {% if top_insights.is_empty() %}
-      <p class="px-4 py-6 text-center text-sm text-muted-foreground">No recent insights</p>
+      <p class="px-4 py-6 text-center text-sm text-rams-muted">No recent insights</p>
       {% endif %}
     </div>
   </div>
 
   {# ── Data freshness footer ── #}
-  <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground text-right">
+  <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted text-right">
     Data freshness: {{ data_freshness }}
   </p>
 </div>

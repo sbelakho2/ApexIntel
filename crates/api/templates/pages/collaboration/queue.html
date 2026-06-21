@@ -4,38 +4,35 @@
 {% block title %}Priority Queue — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Priority Queue</li>
+    <li class="text-rams-foreground" aria-current="page">Priority Queue</li>
   </ol>
 </nav>
 {% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-start justify-between gap-4 border-b border-border pb-4">
+  <div class="flex items-start justify-between gap-4 border-b border-rams-line pb-4">
     <div class="flex items-start gap-3">
-      <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+      <div class="mt-1 rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-foreground">
         {% call m::icon("list", "h-4 w-4") %}
       </div>
       <div>
         <h1>Daily Priority Queue</h1>
-        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Your prioritized daily task list.</p>
+        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-rams-muted">Your prioritized daily task list.</p>
       </div>
     </div>
     <div>
       <details class="inline-block">
         <summary class="apex-btn apex-btn-primary cursor-pointer">Add Item</summary>
-        <div class="absolute z-30 mt-2 w-80 rounded-sm border border-border bg-card p-4 shadow-lg">
+        <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
           <form action="/queue" method="post" class="space-y-2">
-            <input type="text" name="item_title" placeholder="Title" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <input type="text" name="item_id" placeholder="Entity or item ID"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <select name="item_type" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
+            <input type="text" name="item_title" placeholder="Title" required class="apex-input">
+            <input type="text" name="item_id" placeholder="Entity or item ID" class="apex-input">
+            <select name="item_type" required class="apex-input">
               <option value="insight">Insight</option>
               <option value="warning">Warning</option>
               <option value="company">Company</option>
@@ -43,10 +40,8 @@
               <option value="task">Task</option>
               <option value="review">Review</option>
             </select>
-            <input type="number" name="priority" min="1" max="10" value="5"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
-            <textarea name="notes" placeholder="Optional notes" rows="2"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"></textarea>
+            <input type="number" name="priority" min="1" max="10" value="5" class="apex-input">
+            <textarea name="notes" placeholder="Optional notes" rows="2" class="apex-input"></textarea>
             <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Add to Queue</button>
           </form>
         </div>
@@ -55,17 +50,20 @@
   </div>
 
   <div class="grid w-full gap-3 sm:grid-cols-3 lg:max-w-md">
-    <div class="apex-card p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Total</p>
-      <p class="mt-1 apex-metric-number text-2xl">{{ total }}</p>
+    <div class="apex-stat">
+      <div class="apex-stat-rail apex-stat-rail-steel"></div>
+      <p class="apex-stat-label">Total</p>
+      <p class="apex-stat-value">{{ total }}</p>
     </div>
-    <div class="apex-card p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Pending</p>
-      <p class="mt-1 apex-metric-number text-2xl">{{ pending_count }}</p>
+    <div class="apex-stat">
+      <div class="apex-stat-rail apex-stat-rail-orange"></div>
+      <p class="apex-stat-label">Pending</p>
+      <p class="apex-stat-value">{{ pending_count }}</p>
     </div>
-    <div class="apex-card p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">View</p>
-      <p class="mt-1 apex-metric-number text-2xl">{{ current_status }}</p>
+    <div class="apex-stat">
+      <div class="apex-stat-rail apex-stat-rail-steel"></div>
+      <p class="apex-stat-label">View</p>
+      <p class="apex-stat-value">{{ current_status }}</p>
     </div>
   </div>
 
@@ -80,38 +78,40 @@
   {% else %}
   <div class="space-y-3">
     {% for item in items %}
-    <article class="apex-card p-4 {% if item.status == "completed" %}opacity-60{% endif %}">
-      <div class="flex flex-col items-start justify-between gap-4 sm:flex-row">
-        <div class="min-w-0 flex-1">
-          <div class="flex flex-wrap items-center gap-2">
-            {% if item.priority >= 8 %}
-            <span class="rounded-sm bg-destructive/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-destructive">P{{ item.priority }}</span>
-            {% else if item.priority >= 5 %}
-            <span class="rounded-sm bg-primary/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-primary">P{{ item.priority }}</span>
-            {% else %}
-            <span class="rounded-sm bg-muted/60 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">P{{ item.priority }}</span>
+    <article class="apex-module {% if item.status == "completed" %}opacity-60{% endif %}">
+      <div class="apex-module-body">
+        <div class="flex flex-col items-start justify-between gap-4 sm:flex-row">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              {% if item.priority >= 8 %}
+              <span class="apex-badge apex-badge-critical">P{{ item.priority }}</span>
+              {% else if item.priority >= 5 %}
+              <span class="apex-badge apex-badge-high">P{{ item.priority }}</span>
+              {% else %}
+              <span class="apex-badge apex-badge-neutral">P{{ item.priority }}</span>
+              {% endif %}
+              <span class="apex-chip apex-chip-idle">{{ item.item_type }}</span>
+              {% if item.status == "completed" %}
+              <span class="apex-badge apex-badge-info">Completed</span>
+              {% else %}
+              <span class="apex-badge apex-badge-high">Pending</span>
+              {% endif %}
+            </div>
+            <h2 class="mt-2 text-base font-bold text-rams-foreground">{{ item.item_title }}</h2>
+            {% if !item.notes.is_empty() %}
+            <p class="mt-1 text-sm text-rams-muted">{{ item.notes }}</p>
             {% endif %}
-            <span class="rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em]">{{ item.item_type }}</span>
-            {% if item.status == "completed" %}
-            <span class="text-[10px] font-black uppercase tracking-[0.1em] text-success">Completed</span>
-            {% else %}
-            <span class="text-[10px] font-black uppercase tracking-[0.1em] text-primary">Pending</span>
+            <p class="mt-2 text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">ID: {{ item.item_id }} · Created: {{ item.created_at }}</p>
+            {% if !item.completed_at.is_empty() %}
+            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Completed: {{ item.completed_at }}</p>
             {% endif %}
           </div>
-          <h2 class="mt-2 text-base font-bold">{{ item.item_title }}</h2>
-          {% if !item.notes.is_empty() %}
-          <p class="mt-1 text-sm text-muted-foreground">{{ item.notes }}</p>
-          {% endif %}
-          <p class="mt-2 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">ID: {{ item.item_id }} · Created: {{ item.created_at }}</p>
-          {% if !item.completed_at.is_empty() %}
-          <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Completed: {{ item.completed_at }}</p>
+          {% if item.status != "completed" %}
+          <form action="/queue/{{ item.id }}/complete" method="post">
+            <button type="submit" class="apex-btn apex-btn-primary text-[10px]">Complete</button>
+          </form>
           {% endif %}
         </div>
-        {% if item.status != "completed" %}
-        <form action="/queue/{{ item.id }}/complete" method="post">
-          <button type="submit" class="apex-btn apex-btn-primary text-[10px]">Complete</button>
-        </form>
-        {% endif %}
       </div>
     </article>
     {% endfor %}

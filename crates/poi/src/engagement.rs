@@ -81,6 +81,53 @@ fn role_talking_points(role: &RoleFamily) -> Vec<String> {
             "Export growth contribution".to_string(),
             "Compliance with local content requirements".to_string(),
         ],
+        RoleFamily::Quality => vec![
+            "PPM performance data".to_string(),
+            "Process capability metrics (Cpk)".to_string(),
+            "Audit readiness package".to_string(),
+            "Supplier scorecard overview".to_string(),
+        ],
+        RoleFamily::Logistics | RoleFamily::PortLogistics => vec![
+            "Transit time reliability".to_string(),
+            "Customs clearance efficiency".to_string(),
+            "Port congestion contingency plans".to_string(),
+            "Multi-modal transport options".to_string(),
+        ],
+        RoleFamily::CertificationBody => vec![
+            "Accreditation scope details".to_string(),
+            "Audit methodology transparency".to_string(),
+            "Previous audit outcomes".to_string(),
+        ],
+        RoleFamily::IndustryAssociation => vec![
+            "Industry trends and benchmarks".to_string(),
+            "Collaboration opportunities".to_string(),
+            "Thought leadership positioning".to_string(),
+        ],
+        RoleFamily::Distributor => vec![
+            "Volume pricing tiers".to_string(),
+            "Inventory availability and lead times".to_string(),
+            "Regional distribution network".to_string(),
+        ],
+        RoleFamily::Finance => vec![
+            "ROI projections".to_string(),
+            "Payment terms and financing options".to_string(),
+            "Financial stability indicators".to_string(),
+        ],
+        RoleFamily::Legal => vec![
+            "Regulatory compliance overview".to_string(),
+            "Contract terms transparency".to_string(),
+            "IP protection commitments".to_string(),
+        ],
+        RoleFamily::Military => vec![
+            "ITAR/EAR compliance status".to_string(),
+            "Secure supply chain certification".to_string(),
+            "Long-term program commitment capacity".to_string(),
+        ],
+        RoleFamily::Intelligence => vec![
+            "Secure communication protocols".to_string(),
+            "Threat intelligence sharing framework".to_string(),
+            "Classified program handling capability".to_string(),
+        ],
         _ => vec!["Reliability and competence".to_string()],
     }
 }

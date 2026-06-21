@@ -4,27 +4,27 @@
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 mb-6">
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1 metric-rail-steel"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Recipes</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Recipes</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ active_recipes_count }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1 metric-rail-green"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Production</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Production</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ production_count }}</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1 metric-rail-red"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Precision %</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Avg Precision %</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_precision }}%</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1 metric-rail-orange"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Coverage %</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Coverage %</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ avg_recall }}%</p>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="absolute top-0 left-0 w-full h-1 metric-rail-violet"></div>
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Alerts (7d)</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Alerts (7d)</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ total_fired }}</p>
   </div>
 </div>
@@ -34,28 +34,28 @@
   <div class="mb-3 flex items-center justify-between">
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">Precision / Recall / FPR Trend (30d)</h2>
     <div class="flex items-center gap-2">
-      <span class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">Precision</span>
-      <span class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">Recall</span>
-      <span class="rounded-sm border border-foreground bg-foreground text-background px-2 py-1 text-[9px] font-black uppercase">FPR</span>
+      <span class="rounded-sm border border-rams-foreground bg-rams-foreground text-rams-chassis px-2 py-1 text-[9px] font-black uppercase">Precision</span>
+      <span class="rounded-sm border border-rams-foreground bg-rams-foreground text-rams-chassis px-2 py-1 text-[9px] font-black uppercase">Recall</span>
+      <span class="rounded-sm border border-rams-foreground bg-rams-foreground text-rams-chassis px-2 py-1 text-[9px] font-black uppercase">FPR</span>
     </div>
   </div>
   <div class="apex-chart-frame">
     {% call m::recipe_line_chart(recipe_chart_w, precision_points, recall_points, fpr_points, recipe_perf_trend) %}
   </div>
   <details class="mt-3">
-    <summary class="text-[10px] font-bold uppercase cursor-pointer text-muted-foreground hover:text-foreground select-none">Chart data table</summary>
+    <summary class="text-[10px] font-bold uppercase cursor-pointer text-rams-muted hover:text-rams-foreground select-none">Chart data table</summary>
     <div class="mt-2 overflow-x-auto">
       <table class="w-full min-w-[34rem] text-[10px]">
-        <thead><tr class="border-b border-border">
-          <th class="py-1 pr-3 text-left font-bold uppercase text-muted-foreground">Month</th>
+        <thead><tr class="border-b border-rams-line">
+          <th class="py-1 pr-3 text-left font-bold uppercase text-rams-muted">Month</th>
           <th class="py-1 pr-3 text-right font-bold uppercase metric-text-red">Precision %</th>
           <th class="py-1 pr-3 text-right font-bold uppercase metric-text-steel">Recall %</th>
           <th class="py-1 text-right font-bold uppercase metric-text-orange">FPR %</th>
         </tr></thead>
-        <tbody class="divide-y divide-border">
+        <tbody class="divide-y divide-rams-line">
           {% for row in recipe_perf_trend %}
           <tr>
-            <td class="py-1 pr-3 text-muted-foreground">{{ row.month }}</td>
+            <td class="py-1 pr-3 text-rams-muted">{{ row.month }}</td>
             <td class="py-1 pr-3 text-right tabular-nums font-bold">{{ row.precision_pct }}%</td>
             <td class="py-1 pr-3 text-right tabular-nums font-bold">{{ row.recall_pct }}%</td>
             <td class="py-1 text-right tabular-nums font-bold">{{ row.fpr_pct }}%</td>
@@ -69,12 +69,12 @@
 
 <div class="mb-4 apex-card p-3">
   <div class="flex flex-wrap items-center gap-2">
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Status:</span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Status:</span>
     <a href="/recipes" hx-get="/recipes" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status.is_empty() %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">All</a>
     <a href="/recipes?status=production" hx-get="/recipes?status=production" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status == "production" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">production</a>
     <a href="/recipes?status=staging" hx-get="/recipes?status=staging" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status == "staging" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">staging</a>
     <a href="/recipes?status=deprecated" hx-get="/recipes?status=deprecated" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if active_status == "deprecated" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">deprecated</a>
-    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {% if active_status.is_empty() %}0{% else %}1{% endif %}</span>
+    <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {% if active_status.is_empty() %}0{% else %}1{% endif %}</span>
     <a href="/recipes" hx-get="/recipes" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset</a>
   </div>
 </div>
@@ -84,7 +84,7 @@
     {% call m::empty_state("No Recipes", "Create your first recipe to start automating intelligence gathering.") %}
   {% else %}
     {% for r in recipes %}
-    <div class="apex-card p-4 hover:bg-muted/30 transition-colors">
+    <div class="apex-card p-4 hover:bg-rams-panel">
       <div class="flex items-start justify-between gap-2 mb-2">
         <span class="text-sm font-semibold leading-tight">{{ r.name }}</span>
         {% if r.status == "active" %}{% call m::status_badge("Active", "success") %}
@@ -92,22 +92,22 @@
         {% else if r.status == "draft" %}{% call m::status_badge("Draft", "") %}
         {% else %}{% call m::status_badge(r.status, "") %}{% endif %}
       </div>
-      <p class="text-[11px] text-muted-foreground mb-3">{{ r.description|truncate(80) }}</p>
-      <div class="grid grid-cols-3 gap-2 text-center border-t border-border pt-3">
+      <p class="text-[11px] text-rams-muted mb-3">{{ r.description|truncate(80) }}</p>
+      <div class="grid grid-cols-3 gap-2 text-center border-t border-rams-line pt-3">
         <div>
-          <p class="text-[9px] font-bold uppercase text-muted-foreground">Runs</p>
+          <p class="text-[9px] font-bold uppercase text-rams-muted">Runs</p>
           <p class="text-sm font-black tabular-nums">{{ r.total_runs }}</p>
         </div>
         <div>
-          <p class="text-[9px] font-bold uppercase text-muted-foreground">Success</p>
+          <p class="text-[9px] font-bold uppercase text-rams-muted">Success</p>
           <p class="text-sm font-black tabular-nums">{{ r.success_rate }}%</p>
         </div>
         <div>
-          <p class="text-[9px] font-bold uppercase text-muted-foreground">Schedule</p>
+          <p class="text-[9px] font-bold uppercase text-rams-muted">Schedule</p>
           <p class="text-[10px] font-black truncate">{{ r.schedule }}</p>
         </div>
       </div>
-      <p class="mt-2 text-[9px] text-muted-foreground text-right">Last run: {{ r.last_run.as_deref().unwrap_or("—") }}</p>
+      <p class="mt-2 text-[9px] text-rams-muted text-right">Last run: {{ r.last_run.as_deref().unwrap_or("—") }}</p>
     </div>
     {% endfor %}
   {% endif %}
@@ -115,10 +115,10 @@
 
 {% if total_pages > 1 %}
 <div class="mt-4 flex items-center justify-between">
-  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <p class="text-[11px] text-rams-muted">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
   <div class="flex gap-1">
-    {% if page > 1 %}<a href="/recipes?page={{ page - 1 }}" hx-get="/recipes?page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
-    {% if page < total_pages %}<a href="/recipes?page={{ page + 1 }}" hx-get="/recipes?page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+    {% if page > 1 %}<a href="/recipes?page={{ page - 1 }}" hx-get="/recipes?page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="/recipes?page={{ page + 1 }}" hx-get="/recipes?page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
   </div>
 </div>
 {% endif %}

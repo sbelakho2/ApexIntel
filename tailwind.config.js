@@ -3,14 +3,31 @@ module.exports = {
   content: [
     "./crates/api/templates/**/*.html",
     "./crates/api/static/js/**/*.js",
+    "./crates/frontend/src/**/*.rs",
   ],
   darkMode: "class",
   theme: {
     extend: {
       fontFamily: {
         display: ["var(--font-apex)", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "JetBrains Mono", "ui-monospace", "monospace"],
       },
+      /* ── Rams Color Family ─────────────────────────────────────────── */
       colors: {
+        rams: {
+          chassis: "var(--rams-chassis)",
+          module: "var(--rams-module)",
+          panel: "var(--rams-panel)",
+          line: "var(--rams-line)",
+          "line-strong": "var(--rams-line-strong)",
+          muted: "var(--rams-muted)",
+          foreground: "var(--rams-foreground)",
+          orange: "var(--rams-orange)",
+          green: "var(--rams-green)",
+          red: "var(--rams-red)",
+          steel: "var(--rams-steel)",
+        },
+        /* ── Legacy shadcn-style names (mapped to Rams) ──────────────── */
         border: "rgb(var(--border) / <alpha-value>)",
         input: "rgb(var(--input) / <alpha-value>)",
         ring: "rgb(var(--ring) / <alpha-value>)",
@@ -71,16 +88,50 @@ module.exports = {
       borderColor: {
         DEFAULT: "rgb(var(--border) / <alpha-value>)",
       },
+      /* ── Rams Radii (micro only, no element exceeds 6px) ──────────── */
       borderRadius: {
+        "rams-xs": "0",
+        "rams-sm": "2px",
+        "rams-md": "4px",
+        "rams-lg": "6px",
+        /* Legacy aliases */
         lg: "var(--radius-lg)",
         md: "var(--radius-md)",
         sm: "var(--radius-sm)",
       },
+      /* ── Rams Spacing (4px grid) ───────────────────────────────────── */
+      spacing: {
+        "rams-1": "4px",
+        "rams-2": "8px",
+        "rams-3": "12px",
+        "rams-4": "16px",
+        "rams-6": "24px",
+        "rams-8": "32px",
+        "rams-12": "48px",
+        "rams-16": "64px",
+      },
+      /* ── Rams Shadows (structural only, no floating) ──────────────── */
       boxShadow: {
-        premium: "0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.05)",
-        "premium-hover": "0 4px 16px rgba(0,0,0,0.1), 0 1px 4px rgba(0,0,0,0.06)",
+        "rams-inset": "var(--rams-shadow-inset)",
+        "rams-pressed": "var(--rams-shadow-pressed)",
+        "rams-focus": "var(--rams-shadow-focus)",
+        /* Legacy premium card shadows removed — anti-pattern */
+      },
+      /* ── Rams Transition Durations (≤200ms, utilitarian) ───────────── */
+      transitionDuration: {
+        "rams-instant": "50ms",
+        "rams-fast": "120ms",
+        "rams-normal": "200ms",
+      },
+      /* ── Rams Transition Timing ────────────────────────────────────── */
+      transitionTimingFunction: {
+        "rams-ease": "cubic-bezier(0.2, 0, 0, 1)",
       },
     },
   },
-  plugins: [],
+  plugins: [
+    require("@tailwindcss/forms"),
+    require("@tailwindcss/typography"),
+    require("tailwindcss-animate"),
+  ],
 };

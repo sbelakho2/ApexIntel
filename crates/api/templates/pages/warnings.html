@@ -4,11 +4,11 @@
 {% block title %}Warnings — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Warnings</li>
+    <li class="text-rams-foreground" aria-current="page">Warnings</li>
   </ol>
 </nav>
 {% endblock %}
@@ -17,122 +17,144 @@
 {% call m::page_header("Warning Center", "alert-triangle", "Real-time warnings with severity, type, and region filters.", "") %}
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-  {% call m::metric_card("Critical", critical_count.to_string(), "metric-rail-red") %}
-  {% call m::metric_card("High", high_count.to_string(), "metric-rail-amber") %}
-  {% call m::metric_card("Medium", medium_count.to_string(), "metric-rail-orange") %}
-  {% call m::metric_card("Low", low_count.to_string(), "metric-rail-steel") %}
+  <div class="apex-stat">
+    <div class="apex-stat-rail apex-stat-rail-red"></div>
+    <p class="apex-stat-label">Critical</p>
+    <p class="apex-stat-value mt-1.5">{{ critical_count }}</p>
+  </div>
+  <div class="apex-stat">
+    <div class="apex-stat-rail" style="background:var(--rams-orange);"></div>
+    <p class="apex-stat-label">High</p>
+    <p class="apex-stat-value mt-1.5">{{ high_count }}</p>
+  </div>
+  <div class="apex-stat">
+    <div class="apex-stat-rail" style="background:color-mix(in srgb, var(--rams-orange) 60%, var(--rams-muted));"></div>
+    <p class="apex-stat-label">Medium</p>
+    <p class="apex-stat-value mt-1.5">{{ medium_count }}</p>
+  </div>
+  <div class="apex-stat">
+    <div class="apex-stat-rail apex-stat-rail-steel"></div>
+    <p class="apex-stat-label">Low</p>
+    <p class="apex-stat-value mt-1.5">{{ low_count }}</p>
+  </div>
 </div>
 
 {# ── Warning Trend (30d) ── #}
-<div class="apex-card p-4 mb-6">
-  <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Warning Trend (30d)</h2>
+<div class="apex-module mb-6">
+  <div class="apex-module-header">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Warning Trend (30d)</h2>
     <a href="/api/warnings" class="apex-action-link">Export JSON</a>
   </div>
-  <div class="apex-chart-frame apex-chart-frame-dense">
-    {% call m::warning_trend_chart(warning_trend) %}
+  <div class="apex-module-body">
+    <div class="apex-chart-frame apex-chart-frame-dense">
+      {% call m::warning_trend_chart(warning_trend) %}
+    </div>
+    <div class="apex-chart-legend">
+      {% call m::legend_item("Critical", "metric-swatch-red", "small") %}
+      {% call m::legend_item("High", "metric-swatch-orange", "small") %}
+      {% call m::legend_item("Medium", "metric-swatch-amber", "small") %}
+      {% call m::legend_item("Low", "metric-swatch-steel", "small") %}
+    </div>
   </div>
-  <div class="apex-chart-legend">
-    {% call m::legend_item("Critical", "metric-swatch-red", "small") %}
-    {% call m::legend_item("High", "metric-swatch-orange", "small") %}
-    {% call m::legend_item("Medium", "metric-swatch-amber", "small") %}
-    {% call m::legend_item("Low", "metric-swatch-steel", "small") %}
-  </div>
-  </div>
-
-<div class="mb-4 apex-card p-3">
-  <form method="get" action="/warnings" class="mb-3 flex flex-wrap items-center gap-2"
-        hx-get="/warnings" hx-target="#main-results" hx-push-url="true">
-    <label for="warnings-search" class="text-[10px] font-bold uppercase text-muted-foreground">Search</label>
-    <input id="warnings-search" name="q" type="text" value="{{ search_query }}"
-           placeholder="Title, type, region"
-           class="w-full sm:min-w-[220px] rounded-sm border border-border bg-background px-2 py-1 text-xs" />
-    <input type="hidden" name="severity" value="{{ active_severity }}" />
-    <input type="hidden" name="status" value="{{ active_status }}" />
-    <input type="hidden" name="warning_type" value="{{ active_type }}" />
-    <input type="hidden" name="region" value="{{ active_region }}" />
-    <input type="hidden" name="sort" value="{{ sort_field }}" />
-    <input type="hidden" name="dir" value="{{ sort_dir }}" />
-    <button type="submit" class="apex-action-link">Apply</button>
-    {% if !search_query.is_empty() %}
-    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Clear</a>
-    {% endif %}
-  </form>
-
-  <div class="flex flex-wrap items-center gap-2">
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">View:</span>
-    {% for chip in scope_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
-    {% endfor %}
-    {% if active_scope != "all" %}
-    <span class="text-[10px] text-muted-foreground">Low-signal DNS hygiene findings are hidden here.</span>
-    {% endif %}
-    <span class="mx-2 h-4 w-px bg-border"></span>
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Severity:</span>
-    {% for chip in severity_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
-    {% endfor %}
-    <span class="mx-2 h-4 w-px bg-border"></span>
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Status:</span>
-    {% for chip in status_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
-    {% endfor %}
-    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
-    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>
-  </div>
-  {% if type_filters.len() > 2 %}
-  <div class="mt-2 flex flex-wrap items-center gap-2">
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Type:</span>
-    {% for chip in type_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
-    {% endfor %}
-  </div>
-  {% endif %}
-  {% if region_filters.len() > 2 %}
-  <div class="mt-2 flex flex-wrap items-center gap-2">
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
-    {% for chip in region_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
-    {% endfor %}
-  </div>
-  {% endif %}
 </div>
 
-<div class="apex-card overflow-hidden mb-4">
-  <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+{# ── Filter bar ── #}
+<div class="apex-module mb-4">
+  <div class="apex-module-body-compact">
+    <form method="get" action="/warnings" class="mb-3 flex flex-wrap items-center gap-2"
+          hx-get="/warnings" hx-target="#main-results" hx-push-url="true">
+      <label for="warnings-search" class="text-[10px] font-bold uppercase text-rams-muted">Search</label>
+      <input id="warnings-search" name="q" type="text" value="{{ search_query }}"
+             placeholder="Title, type, region"
+             class="w-full sm:min-w-[220px] rounded-rams-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs text-rams-foreground" />
+      <input type="hidden" name="severity" value="{{ active_severity }}" />
+      <input type="hidden" name="status" value="{{ active_status }}" />
+      <input type="hidden" name="warning_type" value="{{ active_type }}" />
+      <input type="hidden" name="region" value="{{ active_region }}" />
+      <input type="hidden" name="sort" value="{{ sort_field }}" />
+      <input type="hidden" name="dir" value="{{ sort_dir }}" />
+      <button type="submit" class="apex-btn apex-btn-secondary text-[10px] px-3 py-1">Apply</button>
+      {% if !search_query.is_empty() %}
+      <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Clear</a>
+      {% endif %}
+    </form>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">View:</span>
+      {% for chip in scope_filters %}
+      <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-active{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
+      {% endfor %}
+      {% if active_scope != "all" %}
+      <span class="text-[10px] text-rams-muted">Low-signal DNS hygiene findings are hidden here.</span>
+      {% endif %}
+      <span class="mx-2 h-4 w-px bg-rams-line"></span>
+      <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Severity:</span>
+      {% for chip in severity_filters %}
+      <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-active{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
+      {% endfor %}
+      <span class="mx-2 h-4 w-px bg-rams-line"></span>
+      <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Status:</span>
+      {% for chip in status_filters %}
+      <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-active{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
+      {% endfor %}
+      <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {{ active_filters }}</span>
+      <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>
+    </div>
+    {% if type_filters.len() > 2 %}
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Type:</span>
+      {% for chip in type_filters %}
+      <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-active{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if region_filters.len() > 2 %}
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Region:</span>
+      {% for chip in region_filters %}
+      <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-active{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Analyst table (apex-table) ── #}
+<div class="apex-module overflow-hidden mb-4">
+  <div class="apex-module-header">
     <div>
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
-      <p class="mt-1 text-[11px] text-muted-foreground">Arrow keys move between rows. Press Enter to open the selected warning.</p>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Analyst Table</h2>
+      <p class="mt-1 text-[11px] text-rams-muted">Arrow keys move between rows. Press Enter to open the selected warning.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
       <a href="/api/warnings" class="apex-action-link">JSON</a>
     </div>
   </div>
   <div class="overflow-x-auto">
-    <table class="min-w-full text-left text-xs" data-dense-table data-table-name="warnings">
-      <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+    <table class="apex-table" data-dense-table data-table-name="warnings">
+      <thead>
         <tr>
-          <th class="px-4 py-3"><a href="{{ page_base_href }}sort=severity&dir={% if sort_field == "severity" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Severity</a></th>
-          <th class="px-4 py-3">Title</th>
-          <th class="px-4 py-3">Type</th>
-          <th class="px-4 py-3">Company</th>
-          <th class="px-4 py-3">Region</th>
-          <th class="px-4 py-3 text-right">Confidence</th>
-          <th class="px-4 py-3"><a href="{{ page_base_href }}sort=created_at&dir={% if sort_field == "created_at" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Created</a></th>
-          <th class="px-4 py-3">Status</th>
+          <th><a href="{{ page_base_href }}sort=severity&dir={% if sort_field == "severity" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Severity</a></th>
+          <th>Title</th>
+          <th>Type</th>
+          <th>Company</th>
+          <th>Region</th>
+          <th class="text-right">Confidence</th>
+          <th><a href="{{ page_base_href }}sort=created_at&dir={% if sort_field == "created_at" && sort_dir == "desc" %}asc{% else %}desc{% endif %}">Created</a></th>
+          <th>Status</th>
         </tr>
       </thead>
       <tbody>
         {% for w in warnings %}
-        <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/warnings/{{ w.id }}">
-          <td class="px-4 py-3">{% call m::severity_badge(w.severity) %}</td>
-          <td class="px-4 py-3 font-semibold">{{ w.title }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{{ w.warning_type }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{{ w.company_name }}</td>
-          <td class="px-4 py-3">{% call m::region_badge(w.region) %}</td>
-          <td class="px-4 py-3 text-right font-bold tabular-nums">{{ w.confidence_pct }}%</td>
-          <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ w.created_at }}</td>
-          <td class="px-4 py-3">{% if w.acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>{% else %}<span class="text-[10px] font-bold uppercase apex-text-warning">Active</span>{% endif %}</td>
+        <tr class="cursor-pointer hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/warnings/{{ w.id }}">
+          <td>{% call m::severity_badge(w.severity) %}</td>
+          <td class="font-semibold">{{ w.title }}</td>
+          <td class="text-rams-muted">{{ w.warning_type }}</td>
+          <td class="text-rams-muted">{{ w.company_name }}</td>
+          <td>{% call m::region_badge(w.region) %}</td>
+          <td class="text-right font-bold tabular-nums">{{ w.confidence_pct }}%</td>
+          <td class="tabular-nums text-rams-muted">{{ w.created_at }}</td>
+          <td>{% if w.acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>{% else %}<span class="text-[10px] font-bold uppercase apex-text-warning">Active</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -140,29 +162,32 @@
   </div>
 </div>
 
+{# ── Narrative cards ── #}
 <div class="space-y-3">
   {% if warnings.is_empty() %}
     {% call m::empty_state("No warnings match the current filters", "Try adjusting filters or reset.") %}
   {% else %}
-    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</p>
     {% for w in warnings %}
-      <div class="apex-card p-4 hover:bg-muted/30 transition-colors" id="warning-card-{{ w.id }}">
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <a href="/warnings/{{ w.id }}" class="text-sm font-semibold hover:underline">{{ w.title }}</a>
-            <div class="mt-1.5 flex flex-wrap items-center gap-2">
-              {% call m::severity_badge(w.severity) %}
-              {% call m::region_badge(w.region) %}
-              {% if w.acknowledged %}
-              <span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>
-              {% endif %}
+      <div class="apex-module" id="warning-card-{{ w.id }}">
+        <div class="apex-module-body">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <a href="/warnings/{{ w.id }}" class="text-sm font-semibold text-rams-foreground hover:underline">{{ w.title }}</a>
+              <div class="mt-1.5 flex flex-wrap items-center gap-2">
+                {% call m::severity_badge(w.severity) %}
+                {% call m::region_badge(w.region) %}
+                {% if w.acknowledged %}
+                <span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>
+                {% endif %}
+              </div>
             </div>
+            <span class="text-xs font-bold tabular-nums text-rams-muted">{{ w.confidence_pct }}%</span>
           </div>
-          <span class="text-xs font-bold tabular-nums text-muted-foreground">{{ w.confidence_pct }}%</span>
-        </div>
-        <div class="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
-          <span>{{ w.company_name }} · {{ w.warning_type }}</span>
-          <span class="tabular-nums">{{ w.created_at }}</span>
+          <div class="mt-2 flex items-center justify-between text-[10px] text-rams-muted">
+            <span>{{ w.company_name }} · {{ w.warning_type }}</span>
+            <span class="tabular-nums">{{ w.created_at }}</span>
+          </div>
         </div>
       </div>
     {% endfor %}
@@ -172,10 +197,10 @@
 {# ── Pagination ── #}
 {% if total_pages > 1 %}
 <div class="mt-4 flex items-center justify-between">
-  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <p class="text-[11px] text-rams-muted">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
   <div class="flex gap-1">
-    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" hx-get="{{ page_base_href }}page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
-    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" hx-get="{{ page_base_href }}page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" hx-get="{{ page_base_href }}page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1 text-[10px] font-bold text-rams-muted hover:text-rams-foreground">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" hx-get="{{ page_base_href }}page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1 text-[10px] font-bold text-rams-muted hover:text-rams-foreground">Next</a>{% endif %}
   </div>
 </div>
 {% endif %}

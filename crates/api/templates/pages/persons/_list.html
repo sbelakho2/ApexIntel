@@ -1,0 +1,133 @@
+{# ── HTMX partial: persons list results fragment ──────────────────────── #}
+{% import "macros.html" as m %}
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
+  {% call m::metric_card("Persons Tracked", total_persons.to_string(), "metric-rail-steel") %}
+  {% call m::metric_card("Priority A", priority_a.to_string(), "metric-rail-red") %}
+  {% call m::metric_card("Priority B", priority_b.to_string(), "metric-rail-orange") %}
+  {% call m::metric_card("Avg Influence", avg_influence.to_string(), "metric-rail-green") %}
+</div>
+
+<div class="apex-card p-4 mb-6">
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Influence Score Distribution</h2>
+    <span class="text-[10px] uppercase font-bold text-rams-muted">Influence band</span>
+  </div>
+  <div class="grid grid-cols-5 gap-3 items-end h-40">
+    {% for g in influence_groups %}
+    <div class="flex h-full flex-col justify-end">
+      <div class="apex-bar-column" style="--apex-bar-height:{{ g.pct }}%"></div>
+      <p class="mt-2 text-[10px] text-center font-bold text-rams-muted">{{ g.range }}</p>
+      <p class="text-[10px] text-center text-rams-muted">{{ g.count }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="mb-4 apex-card p-3">
+  <form method="get" action="/persons" class="mb-3 flex flex-wrap items-center gap-2"
+        hx-get="/persons" hx-target="#main-results" hx-push-url="true">
+    <label for="persons-search" class="text-[10px] font-bold uppercase text-rams-muted">Search</label>
+    <input id="persons-search" name="q" type="text" value="{{ search_query }}"
+           placeholder="Name, role, organization"
+           class="w-full sm:min-w-[220px] rounded-rams-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs" />
+    <button type="submit" class="apex-action-link">Apply</button>
+    {% if !search_query.is_empty() %}
+    <a href="/persons" hx-get="/persons" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Clear</a>
+    {% endif %}
+  </form>
+
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Region:</span>
+    {% for r in region_filters %}
+      {% call m::filter_chip(r.label, r.href, r.active, "default", "") %}
+    {% endfor %}
+    <span class="mx-2 h-4 w-px bg-rams-line"></span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Priority:</span>
+    {% for p in priority_filters %}
+      {% call m::filter_chip(p.label, p.href, p.active, "default", "") %}
+    {% endfor %}
+    <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {{ active_filters }}</span>
+    <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>
+  </div>
+</div>
+
+<div class="apex-card overflow-hidden mb-4">
+  <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+    <div>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
+      <p class="mt-1 text-[11px] text-rams-muted">Dense POI review for influence ranking, organization coverage, and tag scanning.</p>
+    </div>
+    <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
+      <a href="/api/persons/export" class="apex-action-link">CSV</a>
+    </div>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-left text-xs" data-dense-table data-table-name="persons">
+      <thead class="bg-rams-panel/40 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+        <tr>
+          <th class="px-4 py-3">Name</th>
+          <th class="px-4 py-3">Role</th>
+          <th class="px-4 py-3">Organization</th>
+          <th class="px-4 py-3">Region</th>
+          <th class="px-4 py-3">Priority</th>
+          <th class="px-4 py-3 text-right">Influence</th>
+          <th class="px-4 py-3">Tags</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in persons %}
+        <tr class="border-t border-rams-line hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/persons/{{ p.id }}">
+          <td class="px-4 py-3 font-semibold">{{ p.name }}</td>
+          <td class="px-4 py-3 text-rams-muted">{{ p.role }}</td>
+          <td class="px-4 py-3 text-rams-muted">{{ p.organization }}</td>
+          <td class="px-4 py-3">{{ p.region }}</td>
+          <td class="px-4 py-3"><span class="apex-filter-chip apex-filter-chip-muted">{{ p.priority }}</span></td>
+          <td class="px-4 py-3 text-right font-bold tabular-nums">{{ p.influence_score }}</td>
+          <td class="px-4 py-3 text-rams-muted">{% if p.tags.is_empty() %}—{% else %}{% for tag in p.tags %}{{ tag }}{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {% if persons.is_empty() %}
+    {% call m::empty_state("No persons match current filters", "Try broadening region/priority filters or reset filters to review all tracked POIs.") %}
+  {% else %}
+    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
+    {% for p in persons %}
+    <a href="/persons/{{ p.id }}" class="apex-card p-4 hover:bg-rams-panel block">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-bold text-sm truncate">{{ p.name }}</p>
+          <p class="mt-1 text-[10px] uppercase text-rams-muted truncate">{{ p.role }} · {{ p.organization }}</p>
+        </div>
+        <span class="apex-filter-chip apex-filter-chip-muted">{{ p.priority }}</span>
+      </div>
+      <div class="mt-2 flex items-center justify-between text-[10px] text-rams-muted">
+        <span>{{ p.region }}</span>
+        <span class="font-bold">{{ p.influence_score }}</span>
+      </div>
+      {% if !p.tags.is_empty() %}
+      <div class="mt-2 flex flex-wrap gap-1.5">
+        {% for tag in p.tags %}
+        <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 text-[10px] uppercase text-rams-muted">{{ tag }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </a>
+    {% endfor %}
+  {% endif %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 flex items-center justify-between">
+  <p class="text-[11px] text-rams-muted">{{ total_persons }} total · Page {{ page }} of {{ total_pages }}</p>
+  <div class="flex gap-1">
+    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" hx-get="{{ page_base_href }}page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" hx-get="{{ page_base_href }}page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+  </div>
+</div>
+{% endif %}

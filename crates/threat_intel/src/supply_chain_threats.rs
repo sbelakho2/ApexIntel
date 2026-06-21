@@ -167,7 +167,7 @@ pub struct Supplier {
 }
 
 impl Supplier {
-    pub fn new(name: impl Into<String>, country_code: impl Into<String>, tier: SupplierTier) -> Self {
+    pub fn new(name: impl Into<String>, country_code: impl Into<String>, tier: SupplierTier, capacity: SupplierCapacity) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -184,7 +184,7 @@ impl Supplier {
             financial_health_score: None,
             criticality_score: 0.5,
             substitutability: SubstitutabilityLevel::Medium,
-            capacity: SupplierCapacity::default(),
+            capacity,
             contacts: Vec::new(),
             risk_score: None,
             metadata: serde_json::json!({}),
@@ -226,26 +226,22 @@ pub struct SupplierCapacity {
 }
 
 impl Default for SupplierCapacity {
-    /// ## ⚠️ Placeholder Defaults
+    /// Creates a zero/unknown capacity — all fields set to neutral values
+    /// indicating "no data available". This ensures risk scores propagate
+    /// `0.0` for capacity-driven calculations until real data is populated
+    /// from supplier assessments, ERP integrations, or manual entry.
     ///
-    /// These values (`current_utilization: 0.7`, `max_capacity: 1.0`,
-    /// `lead_time_days: 90`, `flex_capacity_percent: 0.2`) are **placeholder
-    /// defaults** that assume a moderately utilised supplier with standard lead
-    /// times. They **must be replaced** with real data when available:
-    ///
-    /// - `current_utilization`: query from the supplier's production reports or ERP
-    /// - `max_capacity`: obtain from manufacturing capability assessments
-    /// - `lead_time_days`: use actual historical order-to-delivery data
-    /// - `flex_capacity_percent`: derive from contractual surge provisions
-    ///
-    /// Using these defaults in production analyses will produce misleading risk
-    /// scores and resilience calculations.
+    /// In production, override these via:
+    /// - `current_utilization`: supplier production reports or ERP pull
+    /// - `max_capacity`: manufacturing capability assessments
+    /// - `lead_time_days`: historical order-to-delivery data
+    /// - `flex_capacity_percent`: contractual surge provisions
     fn default() -> Self {
         Self {
-            current_utilization: 0.7,
-            max_capacity: 1.0,
-            lead_time_days: 90,
-            flex_capacity_percent: 0.2,
+            current_utilization: 0.0,
+            max_capacity: 0.0,
+            lead_time_days: 0,
+            flex_capacity_percent: 0.0,
         }
     }
 }
@@ -1075,6 +1071,53 @@ impl DisruptionScenario {
     }
 }
 
+// ============================================================================
+// Supply Chain Risk Summary (for threat_intel_refresh worker integration)
+// ============================================================================
+
+/// Summarized supply chain risk assessment produced by the threat intel worker.
+/// Provides a lightweight overview suitable for storage and API responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupplyChainRiskSummary {
+    /// Overall resilience score (0-100).
+    pub resilience_score: f64,
+    /// Human-readable tier label ("Resilient", "Moderate", "Vulnerable").
+    pub tier_label: String,
+    /// Geographic concentration risk factor (0.0-1.0).
+    pub geographic_concentration_risk: f64,
+    /// Part numbers / names of single-source components.
+    pub single_source_components: Vec<String>,
+    /// Names of high-risk disruption scenarios identified.
+    pub disruption_scenarios: Vec<String>,
+    /// Actionable recommendations for risk mitigation.
+    pub recommended_actions: Vec<String>,
+}
+
+impl SupplyChainRiskSummary {
+    /// Create a new empty summary.
+    pub fn new() -> Self {
+        Self {
+            resilience_score: 0.0,
+            tier_label: "Unknown".to_string(),
+            geographic_concentration_risk: 0.0,
+            single_source_components: Vec::new(),
+            disruption_scenarios: Vec::new(),
+            recommended_actions: Vec::new(),
+        }
+    }
+
+    /// Human-readable tier label based on resilience score.
+    pub fn tier_label(&self) -> &str {
+        &self.tier_label
+    }
+}
+
+impl Default for SupplyChainRiskSummary {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -1082,7 +1125,7 @@ mod tests {
 
     #[test]
     fn test_supplier_creation() {
-        let supplier = Supplier::new("Acme Corp", "US", SupplierTier::Tier1)
+        let supplier = Supplier::new("Acme Corp", "US", SupplierTier::Tier1, SupplierCapacity::default())
             .with_category("Electronics")
             .with_criticality(0.8);
 
@@ -1115,11 +1158,11 @@ mod tests {
         let mut model = SupplyChainThreatModel::new();
 
         // Add suppliers from different regions
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("China Supplier 1", "CN", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("China Supplier 1", "CN", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::EastAsia));
-        model.add_supplier(Supplier::new("China Supplier 2", "CN", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("China Supplier 2", "CN", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::EastAsia));
 
         let risks = model.calculate_geo_concentration();
@@ -1132,7 +1175,7 @@ mod tests {
         let mut model = SupplyChainThreatModel::new();
 
         let _supplier_id = model.add_supplier(
-            Supplier::new("Primary Manufacturer", "CN", SupplierTier::Tier2)
+            Supplier::new("Primary Manufacturer", "CN", SupplierTier::Tier2, SupplierCapacity::default())
         );
 
         model.add_component(
@@ -1149,11 +1192,11 @@ mod tests {
         let mut model = SupplyChainThreatModel::new();
 
         // Add diverse suppliers from different regions
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("EU Supplier", "DE", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("EU Supplier", "DE", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::Europe));
-        model.add_supplier(Supplier::new("APAC Supplier", "JP", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("APAC Supplier", "JP", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::AsiaPacific));
 
         let resilience = model.calculate_resilience();
@@ -1176,9 +1219,9 @@ mod tests {
     fn test_tier_filtering() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("Tier 1 Supplier", "US", SupplierTier::Tier1));
-        model.add_supplier(Supplier::new("Tier 2 Supplier", "CN", SupplierTier::Tier2));
-        model.add_supplier(Supplier::new("Another Tier 1", "DE", SupplierTier::Tier1));
+        model.add_supplier(Supplier::new("Tier 1 Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default()));
+        model.add_supplier(Supplier::new("Tier 2 Supplier", "CN", SupplierTier::Tier2, SupplierCapacity::default()));
+        model.add_supplier(Supplier::new("Another Tier 1", "DE", SupplierTier::Tier1, SupplierCapacity::default()));
 
         let tier1 = model.get_suppliers_by_tier(SupplierTier::Tier1);
         assert_eq!(tier1.len(), 2);
@@ -1217,7 +1260,7 @@ mod tests {
 
         // Add high-risk supplier
         let supplier_id = model.add_supplier(
-            Supplier::new("Single Source Supplier", "TW", SupplierTier::Tier1)
+            Supplier::new("Single Source Supplier", "TW", SupplierTier::Tier1, SupplierCapacity::default())
                 .with_criticality(1.0)
                 .with_region(GeoRegion::EastAsia)
         );

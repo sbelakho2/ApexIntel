@@ -4,11 +4,11 @@
 {% block title %}Companies — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Companies</li>
+    <li class="text-rams-foreground" aria-current="page">Companies</li>
   </ol>
 </nav>
 {% endblock %}
@@ -39,9 +39,9 @@
     <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Quick Links</h2>
     <div class="space-y-2">
       {% for q in quick_links %}
-      <a href="/companies/{{ q.id }}" class="flex items-center justify-between rounded-sm border border-border bg-secondary/30 px-3 py-2 text-sm hover:bg-secondary">
+      <a href="/companies/{{ q.id }}" class="flex items-center justify-between rounded-rams-sm border border-rams-line bg-rams-panel/30 px-3 py-2 text-sm hover:bg-rams-panel">
         <span class="font-bold">{{ q.name }}</span>
-        <span class="text-[10px] text-muted-foreground uppercase">{{ q.tier }}</span>
+        <span class="text-[10px] text-rams-muted uppercase">{{ q.tier }}</span>
       </a>
       {% endfor %}
     </div>
@@ -52,10 +52,10 @@
 <div class="mb-4 apex-card p-3">
     <form method="get" action="/companies" class="mb-3 flex flex-wrap items-center gap-2"
       hx-get="/companies" hx-target="#main-results" hx-push-url="true">
-    <label for="companies-search" class="text-[10px] font-bold uppercase text-muted-foreground">Search</label>
+    <label for="companies-search" class="text-[10px] font-bold uppercase text-rams-muted">Search</label>
     <input id="companies-search" name="q" type="text" value="{{ search_query }}"
            placeholder="Company, sector, region"
-           class="w-full sm:min-w-[220px] rounded-sm border border-border bg-background px-2 py-1 text-xs" />
+           class="w-full sm:min-w-[220px] rounded-rams-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs" />
     <input type="hidden" name="region" value="{{ active_region }}" />
     <input type="hidden" name="sector" value="{{ active_sector }}" />
     <input type="hidden" name="sort" value="{{ sort_field }}" />
@@ -67,25 +67,25 @@
   </form>
 
   <div class="flex flex-wrap items-center gap-2">
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Region:</span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Region:</span>
     {% for chip in region_filters %}
     <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
-    <span class="mx-2 h-4 w-px bg-border"></span>
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Tier:</span>
+    <span class="mx-2 h-4 w-px bg-rams-line"></span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Tier:</span>
     {% for chip in tier_filters %}
     <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
-    <span class="mx-2 text-[10px] font-bold uppercase text-muted-foreground">Active: {{ active_filters }}</span>
+    <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {{ active_filters }}</span>
     <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>
   </div>
 </div>
 
 <div class="apex-card overflow-hidden mb-4">
-  <div class="flex items-center justify-between border-b border-border px-4 py-3">
+  <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
     <div>
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Table</h2>
-      <p class="mt-1 text-[11px] text-muted-foreground">Compact company view for ranking by threat, region coverage, and recent updates.</p>
+      <p class="mt-1 text-[11px] text-rams-muted">Compact company view for ranking by threat, region coverage, and recent updates.</p>
     </div>
     <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
       <a href="/api/companies/export" class="apex-action-link">CSV</a>
@@ -93,7 +93,7 @@
   </div>
   <div class="overflow-x-auto">
     <table class="min-w-full text-left text-xs" data-dense-table data-table-name="companies">
-      <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+      <thead class="bg-rams-panel/40 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
         <tr>
           <th class="px-4 py-3"><a href="{{ page_base_href }}sort=name&dir={% if sort_field == "name" && sort_dir == "asc" %}desc{% else %}asc{% endif %}">Company</a></th>
           <th class="px-4 py-3"><a href="{{ page_base_href }}sort=region&dir={% if sort_field == "region" && sort_dir == "asc" %}desc{% else %}asc{% endif %}">Region</a></th>
@@ -107,15 +107,15 @@
       </thead>
       <tbody>
         {% for c in companies %}
-        <tr class="border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30" tabindex="0" data-row-link="/companies/{{ c.id }}">
+        <tr class="border-t border-rams-line hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/companies/{{ c.id }}">
           <td class="px-4 py-3 font-semibold">{{ c.name }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{{ c.region }}</td>
-          <td class="px-4 py-3 text-muted-foreground">{{ c.sector }}</td>
+          <td class="px-4 py-3 text-rams-muted">{{ c.region }}</td>
+          <td class="px-4 py-3 text-rams-muted">{{ c.sector }}</td>
           <td class="px-4 py-3 text-right font-bold tabular-nums">{% if c.risk_score > 0 %}{{ c.risk_score }}{% else %}—{% endif %}</td>
-          <td class="px-4 py-3 text-right tabular-nums text-muted-foreground">{{ c.warning_count }}</td>
-          <td class="px-4 py-3 text-right tabular-nums text-muted-foreground">{{ c.insight_count }}</td>
-          <td class="px-4 py-3">{% if c.is_competitor %}<span class="apex-text-competitor">Competitor</span>{% else %}<span class="text-muted-foreground">Tracked</span>{% endif %}</td>
-          <td class="px-4 py-3 tabular-nums text-muted-foreground">{{ c.updated_at }}</td>
+          <td class="px-4 py-3 text-right tabular-nums text-rams-muted">{{ c.warning_count }}</td>
+          <td class="px-4 py-3 text-right tabular-nums text-rams-muted">{{ c.insight_count }}</td>
+          <td class="px-4 py-3">{% if c.is_competitor %}<span class="apex-text-competitor">Competitor</span>{% else %}<span class="text-rams-muted">Tracked</span>{% endif %}</td>
+          <td class="px-4 py-3 tabular-nums text-rams-muted">{{ c.updated_at }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -127,13 +127,13 @@
   {% if companies.is_empty() %}
     <div class="col-span-full">{% call m::empty_state("No companies found", "Try broadening your filter or adjusting the region/sector selection. Companies are added automatically via monitoring recipes and manual seeding.") %}</div>
   {% else %}
-    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Narrative cards</div>
+    <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
     {% for c in companies %}
-    <a href="/companies/{{ c.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
+    <a href="/companies/{{ c.id }}" class="apex-card p-4 hover:bg-rams-panel block">
       <div class="flex items-start justify-between gap-2">
         <div>
           <p class="font-bold text-sm">{{ c.name }}</p>
-          <p class="text-[10px] text-muted-foreground uppercase mt-1">{{ c.region }} · {{ c.sector }}</p>
+          <p class="text-[10px] text-rams-muted uppercase mt-1">{{ c.region }} · {{ c.sector }}</p>
         </div>
         {% if c.risk_score > 0 %}<p class="text-xs">Threat: <span class="font-bold tabular-nums">{{ c.risk_score }}</span></p>{% endif %}
       </div>
@@ -145,10 +145,10 @@
 
 {% if total_pages > 1 %}
 <div class="mt-4 flex items-center justify-between">
-  <p class="text-[11px] text-muted-foreground">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
+  <p class="text-[11px] text-rams-muted">{{ total }} total · Page {{ page }} of {{ total_pages }}</p>
   <div class="flex gap-1">
-    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" hx-get="{{ page_base_href }}page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
-    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" hx-get="{{ page_base_href }}page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-sm border border-border px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
+    {% if page > 1 %}<a href="{{ page_base_href }}page={{ page - 1 }}" hx-get="{{ page_base_href }}page={{ page - 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Prev</a>{% endif %}
+    {% if page < total_pages %}<a href="{{ page_base_href }}page={{ page + 1 }}" hx-get="{{ page_base_href }}page={{ page + 1 }}" hx-target="#main-results" hx-push-url="true" class="rounded-rams-sm border border-rams-line px-2 py-1 text-[10px] font-bold">Next</a>{% endif %}
   </div>
 </div>
 {% endif %}

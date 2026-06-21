@@ -13,7 +13,7 @@
 use crate::alert_router::AlertRouter;
 use anyhow::{Context, Result};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures_util::stream::Stream;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};

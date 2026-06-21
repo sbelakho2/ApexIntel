@@ -4,38 +4,35 @@
 {% block title %}Source Evidence — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Evidence</li>
+    <li class="text-rams-foreground" aria-current="page">Evidence</li>
   </ol>
 </nav>
 {% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-start justify-between gap-4 border-b border-border pb-4">
+  <div class="flex items-start justify-between gap-4 border-b border-rams-line pb-4">
     <div class="flex items-start gap-3">
-      <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+      <div class="mt-1 rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-foreground">
         {% call m::icon("file", "h-4 w-4") %}
       </div>
       <div>
         <h1>Source Evidence</h1>
-        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Collected source evidence across entities.</p>
+        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-rams-muted">Collected source evidence across entities.</p>
       </div>
     </div>
     <div>
       <details class="inline-block">
         <summary class="apex-btn apex-btn-primary cursor-pointer">Add Evidence</summary>
-        <div class="absolute z-30 mt-2 w-80 rounded-sm border border-border bg-card p-4 shadow-lg">
+        <div class="absolute z-30 mt-2 w-80 rounded-rams-sm border border-rams-line bg-rams-module p-4">
           <form action="/evidence" method="post" class="space-y-2">
-            <input type="text" name="entity_type" placeholder="Entity type (company, person)" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <input type="text" name="entity_id" placeholder="Entity ID" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <select name="evidence_type" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
+            <input type="text" name="entity_type" placeholder="Entity type (company, person)" required class="apex-input">
+            <input type="text" name="entity_id" placeholder="Entity ID" required class="apex-input">
+            <select name="evidence_type" required class="apex-input">
               <option value="news">News</option>
               <option value="social">Social Media</option>
               <option value="regulatory">Regulatory Filing</option>
@@ -45,16 +42,11 @@
               <option value="webpage">Web Page</option>
               <option value="other">Other</option>
             </select>
-            <input type="url" name="source_url" placeholder="Source URL" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <input type="text" name="source_domain" placeholder="Source domain"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <input type="text" name="source_name" placeholder="Source name"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <input type="number" name="reliability_score" min="0" max="100" step="0.1" value="50"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
-            <textarea name="excerpt" placeholder="Excerpt" rows="2"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"></textarea>
+            <input type="url" name="source_url" placeholder="Source URL" required class="apex-input">
+            <input type="text" name="source_domain" placeholder="Source domain" class="apex-input">
+            <input type="text" name="source_name" placeholder="Source name" class="apex-input">
+            <input type="number" name="reliability_score" min="0" max="100" step="0.1" value="50" class="apex-input">
+            <textarea name="excerpt" placeholder="Excerpt" rows="2" class="apex-input"></textarea>
             <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Add Evidence</button>
           </form>
         </div>
@@ -62,8 +54,8 @@
     </div>
   </div>
 
-  <div class="apex-card p-4">
-    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Total Evidence Items</p>
+  <div class="apex-stat">
+    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Total Evidence Items</p>
     <p class="mt-1 apex-metric-number text-2xl">{{ total }}</p>
   </div>
 
@@ -71,9 +63,9 @@
   {% call m::empty_state("No Evidence", "Add source evidence to support intelligence findings.") %}
   {% else %}
   <div class="overflow-x-auto">
-    <table class="min-w-full divide-y divide-border">
+    <table class="apex-table">
       <thead>
-        <tr class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+        <tr>
           <th class="px-4 py-3 text-left">Entity</th>
           <th class="px-4 py-3 text-left">Type</th>
           <th class="px-4 py-3 text-left">Source</th>
@@ -82,35 +74,35 @@
           <th class="px-4 py-3 text-right">Added</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-border">
+      <tbody>
         {% for e in items %}
-        <tr class="text-xs hover:bg-secondary/30">
+        <tr>
           <td class="px-4 py-3">
             <p class="font-bold">{{ e.entity_id }}</p>
-            <p class="text-[10px] text-muted-foreground">{{ e.entity_type }}</p>
+            <p class="text-[10px] text-rams-muted">{{ e.entity_type }}</p>
           </td>
           <td class="px-4 py-3">
-            <span class="rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ e.evidence_type }}</span>
+            <span class="apex-chip apex-chip-idle">{{ e.evidence_type }}</span>
           </td>
           <td class="px-4 py-3 max-w-xs truncate">
-            <a href="{{ e.source_url }}" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline">
+            <a href="{{ e.source_url }}" target="_blank" rel="noopener noreferrer" class="text-rams-steel hover:text-rams-orange">
               {{ e.source_domain }}
             </a>
             {% if !e.source_name.is_empty() %}
-            <p class="text-[10px] text-muted-foreground">{{ e.source_name }}</p>
+            <p class="text-[10px] text-rams-muted">{{ e.source_name }}</p>
             {% endif %}
           </td>
           <td class="px-4 py-3 text-right">
             {% if e.reliability_score >= 70.0 %}
-            <span class="font-black text-success">{{ "{:.0}"|format(e.reliability_score) }}</span>
+            <span class="apex-badge apex-badge-high">{{ "{:.0}"|format(e.reliability_score) }}</span>
             {% else if e.reliability_score >= 40.0 %}
-            <span class="font-black text-primary">{{ "{:.0}"|format(e.reliability_score) }}</span>
+            <span class="apex-badge apex-badge-neutral">{{ "{:.0}"|format(e.reliability_score) }}</span>
             {% else %}
-            <span class="font-black text-muted-foreground">{{ "{:.0}"|format(e.reliability_score) }}</span>
+            <span class="apex-badge apex-badge-neutral opacity-60">{{ "{:.0}"|format(e.reliability_score) }}</span>
             {% endif %}
           </td>
-          <td class="px-4 py-3 max-w-xs truncate text-muted-foreground">{{ e.excerpt }}</td>
-          <td class="px-4 py-3 text-right text-[10px] text-muted-foreground">{{ e.created_at }}</td>
+          <td class="px-4 py-3 max-w-xs truncate text-rams-muted">{{ e.excerpt }}</td>
+          <td class="px-4 py-3 text-right text-[10px] text-rams-muted">{{ e.created_at }}</td>
         </tr>
         {% endfor %}
       </tbody>

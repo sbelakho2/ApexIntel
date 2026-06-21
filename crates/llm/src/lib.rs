@@ -24,6 +24,7 @@
 //! All pure logic (routing, config validation, response parsing) is testable
 //! without external services.  Async HTTP is hidden behind the `LlmClient`
 //! trait — provide a mock impl in tests.
+pub mod anti_hallucination;
 pub mod evaluation;
 pub mod inference;
 pub mod insight_gen;
@@ -73,7 +74,7 @@ use serde::{Deserialize, Serialize};
 
 pub const EXPERIMENTAL_FEATURES_ENABLED: bool = cfg!(feature = "experimental");
 
-pub(crate) fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
+pub fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
     if input.len() <= max_bytes {
         return input;
     }

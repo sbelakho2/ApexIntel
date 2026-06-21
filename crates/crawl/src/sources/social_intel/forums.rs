@@ -247,10 +247,8 @@ impl ForumMonitor {
             ForumPlatform::Discourse => self.scan_discourse(forum).await,
             ForumPlatform::StackOverflow => self.scan_stackoverflow(forum).await,
             ForumPlatform::HackerNews => self.scan_hackernews(forum).await,
-            _ => {
-                info!(forum = %forum.name, "Platform type not yet implemented");
-                Ok(Vec::new())
-            }
+            ForumPlatform::Discord => self.scan_discord(forum).await,
+            ForumPlatform::CustomForum => self.scan_custom_forum(forum).await,
         }
     }
 
@@ -487,7 +485,7 @@ impl ForumMonitor {
                     platform: "stackoverflow".to_string(),
                     forum_id: forum.forum_id.clone(),
                     activity_id: q.question_id.map(|i| i.to_string()).unwrap_or_default(),
-                    activity_type: ForumActivityType::Question,
+                    activity_type: ForumActivityType::Post,
                     author: q.owner.as_ref().and_then(|o| o.display_name.clone()).unwrap_or_else(|| "unknown".to_string()),
                     profile_url: q.owner.and_then(|o| o.link).unwrap_or_default(),
                     title,
@@ -590,6 +588,272 @@ impl ForumMonitor {
             .collect();
 
         Ok(activities)
+    }
+
+    /// Scan Discord servers for keyword mentions via public search endpoints.
+    /// Uses Discord's public discoverable server search API where available,
+    /// falls back to scraping public guild channels if accessible.
+    async fn scan_discord(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+        // Discord public guild search (discoverable servers only)
+        let keywords = &forum.target_keywords;
+        let mut activities = Vec::new();
+
+        // Use Discord's public API for discoverable server search
+        // Each keyword is searched individually via the guild discovery endpoint
+        for kw in keywords.iter().take(10) {
+            let search_url = format!(
+                "https://discord.com/api/v9/discoverable-guilds?query={}&limit=10",
+                urlencoding::encode(kw)
+            );
+
+            let resp = match self
+                .client
+                .get(&search_url)
+                .header("Accept", "application/json")
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(keyword = %kw, error = %e, "Discord discoverable guilds request failed");
+                    continue;
+                }
+            };
+
+            if !resp.status().is_success() {
+                debug!(status = %resp.status(), keyword = %kw, "Discord API returned non-success");
+                continue;
+            }
+
+            #[derive(Deserialize)]
+            #[allow(dead_code)]
+            struct DiscordGuild {
+                id: Option<String>,
+                name: Option<String>,
+                description: Option<String>,
+                approximate_member_count: Option<i64>,
+                approximate_presence_count: Option<i64>,
+            }
+
+            let guilds: Vec<DiscordGuild> = resp.json().await.unwrap_or_default();
+
+            for guild in guilds {
+                let name = match guild.name.as_ref() {
+                    Some(n) => n.clone(),
+                    None => continue,
+                };
+                let description = guild.description.clone().unwrap_or_default();
+                let combined = format!("{} {}", name, description).to_lowercase();
+
+                let matched: Vec<String> = forum
+                    .target_keywords
+                    .iter()
+                    .chain(self.config.global_keywords.iter())
+                    .filter(|k| combined.contains(&k.to_lowercase()))
+                    .cloned()
+                    .collect();
+
+                if matched.is_empty() {
+                    continue;
+                }
+
+                activities.push(ForumActivity {
+                    platform: "discord".to_string(),
+                    forum_id: forum.forum_id.clone(),
+                    activity_id: guild.id.unwrap_or_default(),
+                    activity_type: ForumActivityType::Profile,
+                    author: name.clone(),
+                    profile_url: format!("https://discord.com/servers/{}", guild.id.unwrap_or_default()),
+                    title: format!("Discord Server: {}", name),
+                    body: description,
+                    matched_keywords: matched,
+                    published_at: Some(Utc::now()),
+                    upvote_count: guild.approximate_member_count.unwrap_or(0) as u64,
+                    reply_count: guild.approximate_presence_count.unwrap_or(0) as u64,
+                    activity_url: format!("https://discord.com/servers/{}", guild.id.unwrap_or_default()),
+                    sentiment: SentimentLabel::Neutral,
+                    relevance_score: 0.35,
+                });
+            }
+        }
+
+        Ok(activities)
+    }
+
+    /// Scan a custom forum (generic RSS/HTML scraping).
+    /// Attempts RSS feed first, falls back to HTML scraping of the base URL.
+    async fn scan_custom_forum(&self, forum: &MonitoredForum) -> Result<Vec<ForumActivity>> {
+        let mut activities = Vec::new();
+
+        // Try RSS feed if available
+        if let Some(rss_url) = forum.rss_url.as_ref() {
+            match self.scan_custom_forum_rss(forum, rss_url).await {
+                Ok(rss_activities) => {
+                    activities.extend(rss_activities);
+                }
+                Err(e) => {
+                    debug!(forum = %forum.name, error = %e, "Custom forum RSS scan failed, trying HTML");
+                }
+            }
+        }
+
+        // Fallback: scrape the base URL HTML for keyword matches
+        if activities.is_empty() {
+            match self.scan_custom_forum_html(forum).await {
+                Ok(html_activities) => {
+                    activities.extend(html_activities);
+                }
+                Err(e) => {
+                    debug!(forum = %forum.name, error = %e, "Custom forum HTML scan failed");
+                }
+            }
+        }
+
+        Ok(activities)
+    }
+
+    /// Scan a custom forum via its RSS feed.
+    async fn scan_custom_forum_rss(
+        &self,
+        forum: &MonitoredForum,
+        rss_url: &str,
+    ) -> Result<Vec<ForumActivity>> {
+        let resp = self
+            .client
+            .get(rss_url)
+            .send()
+            .await
+            .context("Custom forum RSS fetch")?;
+
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+
+        let body = resp.text().await.context("read custom forum RSS")?;
+        let items = crate::rss::parse_feed(&body).unwrap_or_default();
+
+        let keywords: Vec<String> = forum
+            .target_keywords
+            .iter()
+            .chain(self.config.global_keywords.iter())
+            .cloned()
+            .collect();
+
+        let activities = items
+            .into_iter()
+            .filter(|item| {
+                let combined = format!("{} {}", item.title, item.description).to_lowercase();
+                keywords
+                    .iter()
+                    .any(|kw| combined.contains(&kw.to_lowercase()))
+            })
+            .map(|item| {
+                let body = crate::social::strip_urls(&item.description);
+                let matched = keywords
+                    .iter()
+                    .filter(|kw| body.to_lowercase().contains(&kw.to_lowercase()))
+                    .cloned()
+                    .collect();
+
+                ForumActivity {
+                    platform: forum.platform_type.as_str().to_string(),
+                    forum_id: forum.forum_id.clone(),
+                    activity_id: item.guid.clone(),
+                    activity_type: ForumActivityType::Post,
+                    author: item.author.clone().unwrap_or_else(|| "unknown".to_string()),
+                    profile_url: String::new(),
+                    title: item.title.clone(),
+                    body,
+                    matched_keywords: matched,
+                    published_at: item.published,
+                    upvote_count: 0,
+                    reply_count: 0,
+                    activity_url: item.link.clone(),
+                    sentiment: SentimentLabel::Neutral,
+                    relevance_score: 0.4,
+                }
+            })
+            .collect();
+
+        Ok(activities)
+    }
+
+    /// Scan a custom forum by scraping its base URL HTML for keyword matches.
+    async fn scan_custom_forum_html(
+        &self,
+        forum: &MonitoredForum,
+    ) -> Result<Vec<ForumActivity>> {
+        let resp = self
+            .client
+            .get(&forum.base_url)
+            .send()
+            .await
+            .context("Custom forum HTML fetch")?;
+
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+
+        let html = resp.text().await.context("read custom forum HTML")?;
+        // Strip HTML tags to get plain text
+        let plain = html
+            .replace('<', "\n<")
+            .split('<')
+            .filter_map(|s| s.split('>').nth(1))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let keywords: Vec<String> = forum
+            .target_keywords
+            .iter()
+            .chain(self.config.global_keywords.iter())
+            .cloned()
+            .collect();
+
+        let matched: Vec<String> = keywords
+            .iter()
+            .filter(|kw| plain.to_lowercase().contains(&kw.to_lowercase()))
+            .cloned()
+            .collect();
+
+        if matched.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Extract a relevant snippet around the first keyword match
+        let snippet = {
+            let lower = plain.to_lowercase();
+            let first_match = matched
+                .iter()
+                .filter_map(|kw| lower.find(&kw.to_lowercase()).map(|pos| (pos, kw.len())))
+                .min_by_key(|(pos, _)| *pos);
+
+            if let Some((pos, len)) = first_match {
+                let start = pos.saturating_sub(200);
+                let end = (pos + len + 300).min(plain.len());
+                plain[start..end].to_string()
+            } else {
+                plain.chars().take(500).collect()
+            }
+        };
+
+        Ok(vec![ForumActivity {
+            platform: forum.platform_type.as_str().to_string(),
+            forum_id: forum.forum_id.clone(),
+            activity_id: format!("html-{}", Utc::now().timestamp()),
+            activity_type: ForumActivityType::Thread,
+            author: "scraper".to_string(),
+            profile_url: String::new(),
+            title: format!("{} — keyword match", forum.name),
+            body: crate::social::strip_urls(&snippet),
+            matched_keywords: matched,
+            published_at: Some(Utc::now()),
+            upvote_count: 0,
+            reply_count: 0,
+            activity_url: forum.base_url.clone(),
+            sentiment: SentimentLabel::Neutral,
+            relevance_score: 0.3,
+        }])
     }
 }
 

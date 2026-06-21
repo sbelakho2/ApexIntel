@@ -16,7 +16,6 @@ members = [
     "crates/shared",
     "crates/frontend",
     "crates/investigation",
-    "crates/geopolitical",
     "crates/threat_intel",
     "crates/triage",
 ]
@@ -121,7 +120,7 @@ tempfile = "3"
 oauth2 = "4"
 
 # Secrets management
-secrecy = "0.8"
+secrecy = { version = "0.10", features = ["serde"] }
 
 # Threat Intelligence
 apex-threat-intel = { path = "crates/threat_intel" }

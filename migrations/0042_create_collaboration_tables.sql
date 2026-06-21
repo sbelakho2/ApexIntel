@@ -101,8 +101,14 @@ CREATE TABLE IF NOT EXISTS activity_feed (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     
     CONSTRAINT chk_activity_action_type CHECK (action_type IN (
-        'create', 'update', 'delete', 'share', 'assign', 'comment', 'resolve', 
-        'reopen', 'escalate', 'deescalate', 'approve', 'reject', 'merge', 'split'
+        'create', 'update', 'delete', 'share', 'assign', 'comment', 'resolve',
+        'reopen', 'escalate', 'deescalate', 'approve', 'reject', 'merge', 'split',
+        -- System event types
+        'insight_generated', 'poi_discovered', 'crawl_completed', 'company_detected',
+        'threat_detected', 'psych_profile_updated', 'battlecard_generated',
+        'memo_generated', 'recipe_promoted',
+        -- Job lifecycle events
+        'job_completed', 'job_failed', 'job_skipped'
     )),
     CONSTRAINT chk_activity_visibility CHECK (visibility IN ('private', 'team', 'organization', 'public'))
 );

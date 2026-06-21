@@ -4,11 +4,11 @@
 {% block title %}Battlecards — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Battlecards</li>
+    <li class="text-rams-foreground" aria-current="page">Battlecards</li>
   </ol>
 </nav>
 {% endblock %}
@@ -19,7 +19,7 @@
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Total", total.to_string(), "metric-rail-steel") %}
   <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-blue"></div>
+    <div class="apex-metric-rail metric-rail-steel"></div>
     <p class="apex-metric-label">Active</p>
     <p class="mt-1.5 apex-metric-number text-2xl">—</p>
   </div>
@@ -29,7 +29,7 @@
     <p class="mt-1.5 apex-metric-number text-2xl">—</p>
   </div>
   <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-purple"></div>
+    <div class="apex-metric-rail metric-rail-steel"></div>
     <p class="apex-metric-label">Archived</p>
     <p class="mt-1.5 apex-metric-number text-2xl">—</p>
   </div>
@@ -37,7 +37,7 @@
 
 <div class="mb-4 apex-card p-3">
   <div class="flex flex-wrap items-center gap-2">
-    <span class="text-[10px] font-bold uppercase text-muted-foreground mr-1">Status:</span>
+    <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Status:</span>
     <a href="/battlecards"
        hx-get="/battlecards"
        hx-target="#main-results"
@@ -67,21 +67,21 @@
   {% else %}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
   {% for bc in battlecards %}
-  <a href="/battlecards/{{ bc.id }}" class="apex-card p-4 hover:bg-muted/30 transition-colors block">
+  <a href="/battlecards/{{ bc.id }}" class="apex-card p-4 hover:bg-rams-panel block">
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0">
         <p class="font-bold text-sm truncate">{{ bc.title }}</p>
         {% if !bc.competitor_name.is_empty() %}
-        <p class="text-[10px] text-muted-foreground uppercase mt-1">vs {{ bc.competitor_name }}</p>
+        <p class="text-[10px] text-rams-muted uppercase mt-1">vs {{ bc.competitor_name }}</p>
         {% endif %}
       </div>
       <span class="text-[10px] font-bold uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm
-        {%- if bc.status == "active" %} bg-green-900/30 text-green-400
-        {%- else if bc.status == "draft" %} bg-yellow-900/30 text-yellow-400
-        {%- else if bc.status == "archived" %} bg-gray-800 text-muted-foreground
-        {%- else %} bg-muted text-muted-foreground{% endif %}">{{ bc.status }}</span>
+        {%- if bc.status == "active" %} bg-rams-green/20 text-rams-green
+        {%- else if bc.status == "draft" %} bg-rams-orange/20 text-rams-orange
+        {%- else if bc.status == "archived" %} bg-rams-panel text-rams-muted
+        {%- else %} bg-rams-panel text-rams-muted{% endif %}">{{ bc.status }}</span>
     </div>
-    <div class="mt-2 flex items-center gap-3 text-[10px] text-muted-foreground">
+    <div class="mt-2 flex items-center gap-3 text-[10px] text-rams-muted">
       <span>{{ bc.section_count }} sections</span>
       <span>{{ bc.updated_at }}</span>
     </div>
@@ -100,7 +100,7 @@
      hx-push-url="true"
      class="apex-action-link">← Prev</a>
   {% endif %}
-  <span class="text-[10px] font-bold text-muted-foreground">Page {{ page }}</span>
+  <span class="text-[10px] font-bold text-rams-muted">Page {{ page }}</span>
   {% if total > page * per_page %}
   <a href="/battlecards?page={{ page + 1 }}&per_page={{ per_page }}&status={{ active_status }}"
      hx-get="/battlecards?page={{ page + 1 }}&per_page={{ per_page }}&status={{ active_status }}"

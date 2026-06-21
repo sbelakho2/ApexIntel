@@ -1,100 +1,75 @@
-use apex_shared::{
-    BandClass, ConfidenceInterval, GrangerCausalPair, PredictiveAlert, SurvivalPoint,
-};
+use apex_shared::{BandClass, ConfidenceInterval, GrangerCausalPair, PredictiveAlert, SurvivalPoint};
 use leptos::*;
 
+use crate::api;
 use crate::components::{
     cards::{PageHeader, SurfaceCard},
     charts::{causal_graph::CausalGraph, survival_curve::SurvivalCurve},
     panels::PredictiveAlertList,
 };
 
-fn sample_pairs() -> Vec<GrangerCausalPair> {
-    vec![
-        GrangerCausalPair {
-            cause_signal: "hiring_velocity".to_string(),
-            effect_signal: "capacity_expansion".to_string(),
-            optimal_lag_days: 21,
-            p_value: 0.008,
-            significant_after_fdr: true,
-        },
-        GrangerCausalPair {
-            cause_signal: "customer_mentions".to_string(),
-            effect_signal: "program_award".to_string(),
-            optimal_lag_days: 28,
-            p_value: 0.014,
-            significant_after_fdr: true,
-        },
-    ]
-}
-
-fn sample_alerts() -> Vec<PredictiveAlert> {
-    vec![PredictiveAlert {
-        trigger_signal: "hiring_velocity".to_string(),
-        predicted_signal: "capacity_expansion".to_string(),
-        expected_within_days: 21,
-        historical_precision: 0.72,
-        confidence_interval: ConfidenceInterval {
-            value: 0.72,
-            lower: 0.64,
-            upper: 0.79,
-            half_width: 0.075,
-            band_class: BandClass::Moderate,
-        },
-    }]
-}
-
-fn sample_survival() -> Vec<SurvivalPoint> {
-    vec![
-        SurvivalPoint {
-            day: 0,
-            survival_probability: 1.0,
-        },
-        SurvivalPoint {
-            day: 7,
-            survival_probability: 0.96,
-        },
-        SurvivalPoint {
-            day: 14,
-            survival_probability: 0.91,
-        },
-        SurvivalPoint {
-            day: 21,
-            survival_probability: 0.83,
-        },
-        SurvivalPoint {
-            day: 30,
-            survival_probability: 0.74,
-        },
-    ]
-}
-
 #[component]
 pub fn CausalityPage() -> impl IntoView {
-    let pairs = sample_pairs();
-    let alerts = sample_alerts();
-    let survival = sample_survival();
+    let pairs_resource =
+        create_resource(|| (), |_| async { api::fetch_causal_pairs().await });
+    let alerts_resource =
+        create_resource(|| (), |_| async { api::fetch_predictive_alerts().await });
+    let survival_resource =
+        create_resource(|| (), |_| async { api::fetch_survival_points().await });
 
     view! {
         <div class="page">
             <PageHeader
                 eyebrow="Temporal Reasoning"
                 title="Causal And Predictive Views"
-                subtitle="The WASM frontend now includes directed causal rendering, predictive alert cards, and survival-style timeline charts."
+                subtitle="Directed causal rendering, predictive alert cards, and survival-style timeline charts with live data from the temporal analysis pipeline."
             />
 
             <div class="two-up">
-                <SurfaceCard title="Granger Pairs" subtitle="Directed relationships are rendered with lag and p-value labels.">
-                    <CausalGraph pairs=pairs />
+                <SurfaceCard title="Granger Pairs" subtitle="Directed relationships with lag and p-value labels from live Granger causality analysis.">
+                    <Suspense fallback=move || view! { <p class="muted-copy">Loading causal pairs...</p> }>
+                        {move || pairs_resource.get().map(|result| match result {
+                            Ok(pairs) => {
+                                if pairs.is_empty() {
+                                    view! { <p class="muted-copy">No significant Granger-causal relationships detected yet. More temporal data needed for causality testing.</p> }.into_view()
+                                } else {
+                                    view! { <CausalGraph pairs=pairs /> }.into_view()
+                                }
+                            },
+                            Err(err) => view! { <p class="error-copy">Failed to load causal pairs: {err}</p> }.into_view(),
+                        })}
+                    </Suspense>
                 </SurfaceCard>
 
-                <SurfaceCard title="Predictive Alerts" subtitle="Shared confidence intervals are rendered inline with predicted windows.">
-                    <PredictiveAlertList alerts=alerts />
+                <SurfaceCard title="Predictive Alerts" subtitle="Shared confidence intervals rendered inline with predicted windows from live data.">
+                    <Suspense fallback=move || view! { <p class="muted-copy">Loading predictive alerts...</p> }>
+                        {move || alerts_resource.get().map(|result| match result {
+                            Ok(alerts) => {
+                                if alerts.is_empty() {
+                                    view! { <p class="muted-copy">No predictive alerts triggered. The system is monitoring for leading-indicator patterns.</p> }.into_view()
+                                } else {
+                                    view! { <PredictiveAlertList alerts=alerts /> }.into_view()
+                                }
+                            },
+                            Err(err) => view! { <p class="error-copy">Failed to load alerts: {err}</p> }.into_view(),
+                        })}
+                    </Suspense>
                 </SurfaceCard>
             </div>
 
-            <SurfaceCard title="Survival Curve" subtitle="Kaplan-Meier style step rendering for churn or disruption timing.">
-                <SurvivalCurve points=survival />
+            <SurfaceCard title="Survival Curve" subtitle="Kaplan-Meier style step rendering for churn or disruption timing from live survival analysis.">
+                <Suspense fallback=move || view! { <p class="muted-copy">Loading survival data...</p> }>
+                    {move || survival_resource.get().map(|result| match result {
+                        Ok(points) => {
+                            if points.is_empty() {
+                                view! { <p class="muted-copy">Survival data is being accumulated. Check back after the system has processed more temporal records.</p> }.into_view()
+                            } else {
+                                view! { <SurvivalCurve points=points /> }.into_view()
+                            }
+                        },
+                        Err(err) => view! { <p class="error-copy">Failed to load survival data: {err}</p> }.into_view(),
+                    })}
+                </Suspense>
             </SurfaceCard>
         </div>
     }

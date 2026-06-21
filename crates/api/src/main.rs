@@ -118,12 +118,22 @@ mod warnings_handlers;
 mod charts_handlers;
 #[path = "api_handlers/alert_settings.rs"]
 mod alert_settings_handlers;
+#[path = "api_handlers/activity.rs"]
+mod activity_handlers;
 #[path = "api_handlers/battlecards.rs"]
 mod battlecards_handlers;
+#[path = "api_handlers/psych_profiles.rs"]
+mod psych_profiles_handlers;
+#[path = "api_handlers/supply_risk.rs"]
+mod supply_risk_handlers;
+#[path = "api_handlers/threat_intel.rs"]
+mod threat_intel_handlers;
 #[path = "api_handlers/triage.rs"]
 mod triage_handlers;
 #[path = "api_handlers/trends.rs"]
 mod trends_handlers;
+#[path = "api_handlers/psych.rs"]
+mod psych_handlers;
 pub(crate) use apex_api::destructive_actions::ApiAuthContext;
 pub(crate) use apex_store::autocomplete::AutocompleteIndex;
 pub(crate) use apex_store::postgres::{
@@ -311,29 +321,44 @@ async fn build_state() -> Result<AppState> {
 
 #[cfg(feature = "llm")]
 fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
-    if config.llm.model_name.is_empty() {
+    // Model name / endpoint / key now live on AppConfig (config.app); the
+    // LlmRuntimeConfig (config.llm) only carries token & timeout budgets plus
+    // provider override / validation policy.
+    let model_name = config.llm_model_name();
+    if model_name.is_empty() {
         return Ok(None);
     }
 
-    let provider = infer_llm_provider(config, "https://api.openai.com/v1");
+    let base_url = config
+        .app
+        .llm_base_url
+        .clone()
+        .unwrap_or_else(|| "http://localhost:8080".to_string());
+    let provider = infer_llm_provider(config, &base_url);
+    let api_key = config
+        .app
+        .llm_api_key
+        .as_ref()
+        .map(|secret| apex_llm::ApiKeySecret::from(secret.expose_secret().clone()));
+
     let primary = ModelConfig {
-        provider,
-        model_name: config.llm.model_name.clone(),
-        base_url: config.llm.base_url.clone(),
-        api_key: config.llm.api_key.clone(),
-        max_tokens: config.llm.max_tokens,
-        temperature: config.llm.temperature,
-        timeout_secs: config.http.timeout_secs,
+        model_name: model_name.to_string(),
+        provider: provider.clone(),
+        base_url: base_url.clone(),
+        api_key: api_key.clone(),
+        max_tokens: config.llm.primary_max_tokens,
+        temperature: 0.2,
+        timeout_seconds: config.llm.primary_timeout_secs,
     };
 
     let lightweight = ModelConfig {
+        model_name: model_name.to_string(),
         provider,
-        model_name: config.llm.lightweight_model.clone(),
-        base_url: primary.base_url.clone(),
-        api_key: primary.api_key.clone(),
-        max_tokens: 512,
+        base_url,
+        api_key,
+        max_tokens: config.llm.lightweight_max_tokens,
         temperature: 0.0,
-        timeout_secs: 30,
+        timeout_seconds: config.llm.lightweight_timeout_secs,
     };
 
     Ok(Some(LlmRuntime { primary, lightweight }))
@@ -351,15 +376,24 @@ fn load_api_keys() -> HashMap<String, ApiKey> {
 
 #[cfg(feature = "llm")]
 fn infer_llm_provider(config: &ApiRuntimeConfig, base_url: &str) -> LlmProvider {
-    if let Some(provider) = config.llm.provider {
-        return provider;
+    use apex_api::config::LlmProviderChoice;
+
+    // Explicit override wins over URL inference.
+    if let Some(choice) = config.llm.provider_override {
+        return match choice {
+            LlmProviderChoice::LlamaCpp => LlmProvider::LlamaCpp,
+            LlmProviderChoice::OpenAi => LlmProvider::OpenAi,
+            LlmProviderChoice::AzureOpenAi => LlmProvider::AzureOpenAi,
+        };
     }
-    if base_url.contains("openai") {
+
+    if base_url.contains("azure") {
+        LlmProvider::AzureOpenAi
+    } else if base_url.contains("openai") {
         LlmProvider::OpenAi
-    } else if base_url.contains("anthropic") {
-        LlmProvider::Anthropic
     } else {
-        LlmProvider::OpenAi
+        // Local llama-server / OpenAI-compatible endpoint is the platform default.
+        LlmProvider::LlamaCpp
     }
 }
 
@@ -461,7 +495,7 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
         Err(_) => HealthStatus::Unhealthy,
     };
 
-    let checks = vec![ComponentHealth {
+    let mut checks = vec![ComponentHealth {
         name: "database".to_string(),
         status,
         message: store_check.err().map(|e| e.to_string()),
@@ -554,7 +588,53 @@ async fn health_deep(State(mut state): State<AppState>) -> (StatusCode, Json<Hea
 }
 
 async fn endpoints() -> Json<Vec<serde_json::Value>> {
-    Json(vec![])
+    Json(vec![
+        serde_json::json!({ "method": "GET", "path": "/api/health", "desc": "Health check" }),
+        serde_json::json!({ "method": "GET", "path": "/api/health/live", "desc": "Liveness probe" }),
+        serde_json::json!({ "method": "GET", "path": "/api/health/ready", "desc": "Readiness probe" }),
+        serde_json::json!({ "method": "GET", "path": "/api/health/deep", "desc": "Deep health check" }),
+        serde_json::json!({ "method": "GET", "path": "/api/warnings", "desc": "List warnings" }),
+        serde_json::json!({ "method": "GET", "path": "/api/warnings/:id", "desc": "Get warning detail" }),
+        serde_json::json!({ "method": "POST", "path": "/api/warnings/:id/acknowledge", "desc": "Acknowledge warning" }),
+        serde_json::json!({ "method": "GET", "path": "/api/insights", "desc": "List insights" }),
+        serde_json::json!({ "method": "GET", "path": "/api/insights/:id", "desc": "Get insight detail" }),
+        serde_json::json!({ "method": "GET", "path": "/api/companies", "desc": "List companies" }),
+        serde_json::json!({ "method": "GET", "path": "/api/companies/:id", "desc": "Get company detail" }),
+        serde_json::json!({ "method": "GET", "path": "/api/companies/:id/dossier", "desc": "Get company dossier" }),
+        serde_json::json!({ "method": "GET", "path": "/api/persons", "desc": "List persons" }),
+        serde_json::json!({ "method": "GET", "path": "/api/persons/:id", "desc": "Get person detail" }),
+        serde_json::json!({ "method": "GET", "path": "/api/persons/:id/dossier", "desc": "Get person dossier" }),
+        serde_json::json!({ "method": "GET", "path": "/api/persons/:id/engagement", "desc": "Get person engagement" }),
+        serde_json::json!({ "method": "GET", "path": "/api/search", "desc": "Full-text search" }),
+        serde_json::json!({ "method": "GET", "path": "/api/search/semantic", "desc": "Semantic/vector search" }),
+        serde_json::json!({ "method": "GET", "path": "/api/search/suggest", "desc": "Autocomplete suggestions" }),
+        serde_json::json!({ "method": "GET", "path": "/api/graph", "desc": "List graph edges" }),
+        serde_json::json!({ "method": "GET", "path": "/api/graph/neighborhood/:id", "desc": "Get graph neighborhood" }),
+        serde_json::json!({ "method": "GET", "path": "/api/recipes", "desc": "List recipes" }),
+        serde_json::json!({ "method": "GET", "path": "/api/security", "desc": "Security overview" }),
+        serde_json::json!({ "method": "GET", "path": "/api/security/dns-posture", "desc": "DNS posture check" }),
+        serde_json::json!({ "method": "GET", "path": "/api/competitors", "desc": "List competitors" }),
+        serde_json::json!({ "method": "GET", "path": "/api/battlecards", "desc": "List battle cards" }),
+        serde_json::json!({ "method": "GET", "path": "/api/memos", "desc": "List weekly memos" }),
+        serde_json::json!({ "method": "GET", "path": "/api/insights/weekly-memo", "desc": "Latest weekly memo" }),
+        serde_json::json!({ "method": "GET", "path": "/api/dashboard", "desc": "Dashboard stats" }),
+        serde_json::json!({ "method": "GET", "path": "/api/sites", "desc": "List sites" }),
+        serde_json::json!({ "method": "GET", "path": "/api/capabilities", "desc": "List capabilities" }),
+        serde_json::json!({ "method": "GET", "path": "/api/certifications", "desc": "List certifications" }),
+        serde_json::json!({ "method": "GET", "path": "/api/observations", "desc": "List observations" }),
+        serde_json::json!({ "method": "GET", "path": "/api/executive/summary", "desc": "Executive summary" }),
+        serde_json::json!({ "method": "GET", "path": "/api/workspaces", "desc": "List workspaces" }),
+        serde_json::json!({ "method": "GET", "path": "/api/queue", "desc": "Priority queue" }),
+        serde_json::json!({ "method": "GET", "path": "/api/supplier-risk", "desc": "Supplier risk list" }),
+        serde_json::json!({ "method": "GET", "path": "/api/pipeline", "desc": "Pipeline opportunities" }),
+        serde_json::json!({ "method": "GET", "path": "/api/triage", "desc": "AI triage items" }),
+        serde_json::json!({ "method": "GET", "path": "/api/trends", "desc": "Historical trends" }),
+        serde_json::json!({ "method": "GET", "path": "/api/search/vector", "desc": "Vector similarity search" }),
+        serde_json::json!({ "method": "GET", "path": "/api/features", "desc": "API feature flags" }),
+        serde_json::json!({ "method": "GET", "path": "/api/openapi.json", "desc": "OpenAPI specification" }),
+        serde_json::json!({ "method": "GET", "path": "/ws/warnings", "desc": "WebSocket warnings feed" }),
+        serde_json::json!({ "method": "GET", "path": "/api/v1/events/stream", "desc": "SSE real-time events" }),
+    ])
 }
 
 #[allow(dead_code)]
@@ -563,10 +643,53 @@ async fn openapi_json() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "openapi": "3.0.0",
         "info": {
-            "title": "ApexIntel API",
+            "title": "ApexIntel Intelligence API",
             "version": env!("CARGO_PKG_VERSION"),
+            "description": "OSINT intelligence platform for supply chain risk, competitive analysis, and POI profiling in the electronics manufacturing sector."
         },
-        "paths": {}
+        "servers": [{"url": "/api", "description": "ApexIntel API"}],
+        "paths": {
+            "/health": { "get": { "summary": "Health check", "tags": ["System"] } },
+            "/health/live": { "get": { "summary": "Liveness probe", "tags": ["System"] } },
+            "/health/ready": { "get": { "summary": "Readiness probe", "tags": ["System"] } },
+            "/warnings": { "get": { "summary": "List warnings", "tags": ["Warnings"] } },
+            "/warnings/{id}": {
+                "get": { "summary": "Get warning detail", "tags": ["Warnings"] },
+                "delete": { "summary": "Delete warning", "tags": ["Warnings"] }
+            },
+            "/warnings/{id}/acknowledge": { "post": { "summary": "Acknowledge warning", "tags": ["Warnings"] } },
+            "/insights": { "get": { "summary": "List insights", "tags": ["Insights"] } },
+            "/insights/{id}": { "get": { "summary": "Get insight detail", "tags": ["Insights"] } },
+            "/companies": { "get": { "summary": "List companies", "tags": ["Companies"] } },
+            "/companies/{id}": { "get": { "summary": "Get company detail", "tags": ["Companies"] } },
+            "/companies/{id}/dossier": { "get": { "summary": "Get company dossier", "tags": ["Companies"] } },
+            "/persons": { "get": { "summary": "List persons", "tags": ["Persons"] } },
+            "/persons/{id}": { "get": { "summary": "Get person detail", "tags": ["Persons"] } },
+            "/persons/{id}/engagement": { "get": { "summary": "Get engagement profile", "tags": ["Persons"] } },
+            "/search": { "get": { "summary": "Full-text search", "tags": ["Search"] } },
+            "/search/semantic": { "get": { "summary": "Semantic vector search", "tags": ["Search"] } },
+            "/search/suggest": { "get": { "summary": "Autocomplete suggestions", "tags": ["Search"] } },
+            "/graph": { "get": { "summary": "List graph edges", "tags": ["Graph"] } },
+            "/graph/neighborhood/{id}": { "get": { "summary": "Get neighborhood", "tags": ["Graph"] } },
+            "/recipes": { "get": { "summary": "List recipes", "tags": ["Recipes"] } },
+            "/competitors": { "get": { "summary": "List competitors", "tags": ["Competitors"] } },
+            "/battlecards": { "get": { "summary": "List battlecards", "tags": ["Battlecards"] } },
+            "/triage": { "get": { "summary": "List AI triage items", "tags": ["Triage"] } },
+            "/trends": { "get": { "summary": "Query historical trends", "tags": ["Trends"] } },
+            "/features": { "get": { "summary": "API feature flags", "tags": ["System"] } },
+            "/llm/extract-entities": { "post": { "summary": "LLM entity extraction", "tags": ["LLM"] } },
+            "/llm/generate-memo": { "post": { "summary": "LLM memo generation", "tags": ["LLM"] } },
+            "/llm/synthesize-poi": { "post": { "summary": "LLM POI synthesis", "tags": ["LLM"] } }
+        },
+        "components": {
+            "securitySchemes": {
+                "ApiKeyAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "Authorization"
+                }
+            }
+        }
     }))
 }
 
@@ -665,7 +788,7 @@ struct TriggerScanResponse {
 }
 
 async fn post_trigger_scan(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<TriggerScanRequest>,
 ) -> Result<Json<ApiResponse<TriggerScanResponse>>, ApiError> {
     use apex_store::postgres::is_valid_manual_trigger_kind;
@@ -677,7 +800,10 @@ async fn post_trigger_scan(
         ));
     }
 
-    let job_id = Uuid::new_v4().to_string();
+    let job_id = state.store.queue_job_trigger(&req.source_id).await.map_err(|e| {
+        ApiError::internal(format!("Failed to queue job trigger: {e}"))
+    })?;
+
     Ok(Json(success(TriggerScanResponse {
         job_id,
         queued: true,
@@ -1041,49 +1167,128 @@ fn log_latency(endpoint: &str, duration_ms: u64) {
 fn company_row_to_detail(
     row: CompanyRow,
     sites: Vec<SiteRow>,
-    _certs: Vec<CertificationRow>,
+    certs: Vec<CertificationRow>,
     persons: Vec<PersonRow>,
 ) -> CompanyDetail {
     let key_persons: Vec<CompanyKeyPerson> = persons
-        .into_iter()
+        .iter()
         .map(|p| CompanyKeyPerson {
             person_id: p.id.to_string(),
-            name: p.name,
-            role: p.current_role.unwrap_or_default(),
+            name: p.name.clone(),
+            role: p.current_role.clone().unwrap_or_else(|| p.role_family.clone().unwrap_or_else(|| "Unknown".to_string())),
         })
         .collect();
 
-    let recent_events: Vec<CompanyEvent> = vec![];
+    // Extract capabilities from industry_tags and site capabilities
+    let mut capabilities: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Some(ref tags) = row.industry_tags {
+        for tag in tags {
+            capabilities.insert(tag.clone());
+        }
+    }
+    for site in &sites {
+        if let Some(ref site_caps) = site.capabilities {
+            for cap in site_caps {
+                capabilities.insert(cap.clone());
+            }
+        }
+    }
+
+    // Extract certifications from the certs parameter
+    let certifications: Vec<String> = certs
+        .iter()
+        .map(|c| c.standard.clone())
+        .collect();
+
+    // Determine if competitor from the canonical column, with metadata fallback
+    let is_competitor = row
+        .is_competitor
+        .unwrap_or_else(|| {
+            row.metadata
+                .as_ref()
+                .and_then(|meta| meta.get("is_competitor"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        });
+
+    // Extract city from sites
+    let city = sites
+        .iter()
+        .find_map(|s| s.city.clone());
+
+    let now = Utc::now();
+
+    // Build a baseline recent event from the company's own metadata
+    let region_text = row.region.clone().unwrap_or_default();
+    let type_text = row.company_type.clone().unwrap_or_else(|| "Unknown type".to_string());
+    let domain_clone = row.domain.clone();
+
+    let recent_events = vec![CompanyEvent {
+        event_type: "profile_loaded".to_string(),
+        description: format!(
+            "{} | {} | {} | Risk: {:.1}",
+            region_text,
+            type_text,
+            row.employee_estimate.map(|e| format!("~{} employees", e)).unwrap_or_default(),
+            row.risk_score.unwrap_or(0.0),
+        ),
+        date: row.updated_at.unwrap_or(now),
+        source_url: domain_clone,
+    }];
+
+    // Extract community_badges and source_quality metrics from metadata JSON
+    let metadata_ref = row.metadata.clone();
+    let community_badges: Vec<String> = metadata_ref
+        .as_ref()
+        .and_then(|meta| meta.get("community_badges"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    let source_entropy: Option<f64> = metadata_ref
+        .as_ref()
+        .and_then(|meta| meta.get("source_entropy"))
+        .and_then(|v| v.as_f64());
+
+    let source_quality_label: Option<String> = metadata_ref
+        .as_ref()
+        .and_then(|meta| meta.get("source_quality_label"))
+        .and_then(|v| v.as_str().map(String::from));
 
     CompanyDetail {
         id: row.id.to_string(),
         name: row.name,
         legal_name: row.legal_name,
-        region: row.region.clone().unwrap_or_default(),
-        country: row.country_code.clone().unwrap_or_default(),
-        city: None,
-        website: row.domain.clone(),
-        entity_type: row.company_type.unwrap_or_default(),
-        is_competitor: false,
+        region: row.region.unwrap_or_default(),
+        country: row.country_code.unwrap_or_default(),
+        city,
+        website: row.domain,
+        entity_type: row.company_type.unwrap_or_else(|| "unknown".to_string()),
+        is_competitor,
         threat_score: row.threat_score,
         overlap_score: row.overlap_score,
-        capabilities: vec![],
-        certifications: vec![],
+        capabilities: capabilities.into_iter().collect(),
+        certifications,
         sites: sites
             .into_iter()
             .map(|s| CompanySite {
                 name: s.name,
-                location: s.city.as_deref().or(s.region.as_deref()).unwrap_or("").to_string(),
-                site_type: s.site_type.unwrap_or_default(),
+                location: [s.address, s.city, s.region, s.country_code]
+                    .into_iter()
+                    .flatten()
+                    .filter(|v| !v.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                site_type: s.site_type.unwrap_or_else(|| "site".to_string()),
             })
             .collect(),
         key_persons,
         recent_events,
-        community_badges: vec![],
-        source_entropy: None,
-        source_quality_label: None,
-        created_at: row.created_at.unwrap_or(Utc::now()),
-        updated_at: row.updated_at.unwrap_or(Utc::now()),
+        community_badges,
+        source_entropy,
+        source_quality_label,
+        created_at: row.created_at.unwrap_or(now),
+        updated_at: row.updated_at.unwrap_or(now),
     }
 }
 

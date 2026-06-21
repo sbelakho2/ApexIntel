@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}{% if is_new %}New Battlecard{% else %}Edit {{ battlecard.title }}{% endif %} — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li><a href="/battlecards" class="hover:text-rams-foreground">Battlecards</a></li>
+    <li class="select-none">/</li>
+    <li class="text-rams-foreground" aria-current="page">{% if is_new %}New{% else %}Edit{% endif %}</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% if is_new %}
+{% call m::page_header("New Battlecard", "layers", "Create a new competitive intelligence battlecard.", "") %}
+{% else %}
+{% call m::page_header("Edit Battlecard", "layers", "Update battlecard information and AI-generated sections.", "") %}
+{% endif %}
+
+<form method="post" action="{% if is_new %}/battlecards{% else %}/battlecards/{{ battlecard.id }}{% endif %}" hx-disable class="space-y-6">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if !is_new %}
+  <input type="hidden" name="_method" value="put">
+  {% endif %}
+
+  <div class="apex-card p-4">
+    <h3 class="text-xs font-black uppercase tracking-[0.12em] mb-4">Basic Information</h3>
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div>
+        <label for="title" class="block text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted mb-1">Title</label>
+        <input type="text" id="title" name="title" value="{{ battlecard.title }}" required
+               class="apex-input w-full" placeholder="e.g., Klue Q3 2026 Battlecard">
+      </div>
+      <div>
+        <label for="competitor_id" class="block text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted mb-1">Competitor</label>
+        <select id="competitor_id" name="competitor_id" required class="apex-select w-full">
+          <option value="">Select competitor…</option>
+          {% for comp in competitors %}
+          <option value="{{ comp.id }}" {% if battlecard.competitor_id.to_string() == comp.id %}selected{% endif %}>{{ comp.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="status" class="block text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted mb-1">Status</label>
+        <select id="status" name="status" class="apex-select w-full">
+          <option value="draft" {% if battlecard.status == "draft" %}selected{% endif %}>Draft</option>
+          <option value="active" {% if battlecard.status == "active" %}selected{% endif %}>Active</option>
+          <option value="archived" {% if battlecard.status == "archived" %}selected{% endif %}>Archived</option>
+        </select>
+      </div>
+      <div>
+        <label for="our_company_id" class="block text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted mb-1">Our Company</label>
+        <select id="our_company_id" name="our_company_id" required class="apex-select w-full">
+          <option value="">Select company…</option>
+          {% for comp in our_companies %}
+          <option value="{{ comp.id }}" {% if battlecard.our_company_id.to_string() == comp.id %}selected{% endif %}>{{ comp.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  {% if !is_new %}
+  <div class="apex-card p-4">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-xs font-black uppercase tracking-[0.12em]">AI-Generated Sections</h3>
+      <button type="button"
+              class="apex-btn text-[10px]"
+              hx-post="/api/battlecards/{{ battlecard.id }}/regenerate"
+              hx-swap="none"
+              onclick="this.disabled=true;this.textContent='Regenerating…'">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        Regenerate All
+      </button>
+    </div>
+    <p class="text-[10px] text-rams-muted">Sections are generated automatically by the AI engine. Click "Regenerate All" to refresh all sections at once. Individual sections can be edited below once generated.</p>
+  </div>
+
+  <div class="space-y-4">
+    {% for section in sections %}
+    <details class="apex-card p-4 {% if !section.has_data %}opacity-60{% endif %}">
+      <summary class="cursor-pointer text-xs font-black uppercase tracking-[0.12em] flex items-center gap-2">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-rams-muted"><polyline points="9 18 15 12 9 6"/></svg>
+        {{ section.label }}
+        {% if section.has_data %}
+        <span class="apex-badge-dot apex-badge-success-dot"></span>
+        {% endif %}
+      </summary>
+      <div class="mt-4">
+        <textarea name="section_{{ section.name }}" rows="8"
+                  class="apex-input w-full font-mono text-[12px]"
+                  placeholder="This section will be auto-generated. Use Regenerate or leave blank.">{% if section.has_data %}{{ section.preview }}{% endif %}</textarea>
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="flex items-center justify-end gap-3">
+    <a href="/battlecards" class="apex-btn">Cancel</a>
+    <button type="submit" class="apex-btn apex-btn-primary">
+      {% if is_new %}Create Battlecard{% else %}Save Changes{% endif %}
+    </button>
+  </div>
+</form>
+{% endblock %}

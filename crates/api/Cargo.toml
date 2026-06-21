@@ -13,12 +13,14 @@ edition = "2021"
 [features]
 default = []
 llm = ["apex-llm"]
+llm-tool-calling = ["llm"]
 
 [dependencies]
 apex-core = { path = "../core" }
 apex-store = { path = "../store" }
 apex-shared = { path = "../shared" }
 apex-insights = { path = "../insights" }
+apex-investigation = { path = "../investigation" }
 apex-triage = { path = "../triage" }
 apex-llm = { path = "../llm", optional = true }
 sqlx = { workspace = true }
@@ -51,7 +53,7 @@ askama_axum = "0.4"
 hmac = "0.12"
 parking_lot = "0.12"
 base64 = "0.22"
-secrecy = "0.10"
+secrecy = { workspace = true }
 async-stream = "0.3"
 futures-core = "0.3"
 futures-util = "0.3"

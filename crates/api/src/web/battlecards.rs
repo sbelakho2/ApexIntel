@@ -89,7 +89,15 @@ pub async fn list_battlecards(
     Extension(session): Extension<WebSession>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let _ctx = PageContext::from_session(&session, "/battlecards", 0);
+    let warning_count = store
+        .count_warnings(&apex_store::postgres::WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
+
+    let _ctx = PageContext::from_session(&session, "/battlecards", warning_count);
 
     let page_u32 = query.page.unwrap_or(1).max(1);
     let per_page_u32 = query.per_page.unwrap_or(50).clamp(1, 100);
@@ -108,7 +116,19 @@ pub async fn list_battlecards(
     let page = page_u32 as i64;
     let per_page = per_page_u32 as i64;
 
-    let warning_count = 0i64; // TODO: wire real warning count
+    // Collect all competitor_ids to batch-fetch company names
+    let competitor_ids: Vec<Uuid> = rows.iter().map(|r| r.competitor_id).collect();
+    let company_names: std::collections::HashMap<Uuid, String> =
+        match store.get_company_names_by_ids(&competitor_ids).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(id, name, _region, _company_type)| (id, name))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("Failed to fetch competitor names for battlecards: {e:#}");
+                std::collections::HashMap::new()
+            }
+        };
 
     let battlecards: Vec<BattlecardListItem> = rows
         .into_iter()
@@ -132,7 +152,10 @@ pub async fn list_battlecards(
                 id: row.id.to_string(),
                 title: row.title,
                 status: row.status,
-                competitor_name: String::new(), // populated from join in full impl
+                competitor_name: company_names
+                    .get(&row.competitor_id)
+                    .cloned()
+                    .unwrap_or_default(),
                 updated_at: row.updated_at.format("%Y-%m-%d %H:%M UTC").to_string(),
                 section_count,
             }

@@ -29,6 +29,7 @@ llm = [
     "apex-insights",
     "parse",
     "apex-poi",
+    "apex-threat-intel",
 ]
 
 [dependencies]
@@ -42,6 +43,7 @@ apex-insights = { path = "../insights", optional = true, features = ["llm"] }
 apex-parse = { path = "../parse", optional = true }
 apex-poi = { path = "../poi", optional = true }
 apex-triage = { path = "../triage" }
+apex-threat-intel = { path = "../threat_intel", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 chrono = { workspace = true }

@@ -114,7 +114,7 @@ pub use company_intelligence::{
 };
 pub use person_deep_dive::{
     EngagementStrategy, NetworkMapping, PersonDeepDiveReport, PersonDeepDiveWorkflow,
-    ProfessionalHistory, RiskIndicator, TriggerEvent,
+    ProfessionalHistory, PsychologicalProfile, RiskIndicatorReport, TriggerEvent,
 };
 pub use supply_chain_threat::{
     AlternativeSupplier, ConcentrationRisk, FinancialStability, GeographicRisk,

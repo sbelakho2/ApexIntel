@@ -5,6 +5,8 @@
 use leptos::*;
 use serde_json::Value;
 
+use crate::api_config::api_url;
+
 // ────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────
@@ -116,34 +118,47 @@ pub fn AnnotationEditor(
                 visibility: visibility.get(),
             };
 
-            let client = reqwest::Client::new();
-            let response = client
-                .post("http://localhost:8080/api/annotations")
-                .json(&req)
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(json) => {
-                            if let Some(data) = json.get("data") {
-                                if let Ok(annotation) = serde_json::from_value::<Annotation>(data.clone()) {
-                                    on_save.call(annotation);
-                                    set_body.set(String::new());
-                                    set_tags_input.set(String::new());
+            #[cfg(target_arch = "wasm32")]
+            {
+                use gloo_net::http::Request;
+                use web_sys::RequestCredentials;
+                let response = match Request::post(&api_url("/api/annotations"))
+                    .credentials(RequestCredentials::SameOrigin)
+                    .json(&req) {
+                        Ok(r) => r.send().await,
+                        Err(e) => { set_error(Some(format!("Serialization error: {}", e))); set_is_submitting.set(false); return; }
+                    };
+                match response {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        match resp.text().await {
+                            Ok(body) => {
+                                if status >= 400 {
+                                    set_error(Some(format!("Failed to save: {}", status)));
+                                } else {
+                                    match serde_json::from_str::<serde_json::Value>(&body) {
+                                        Ok(json) => {
+                                            if let Some(data) = json.get("data") {
+                                                if let Ok(annotation) = serde_json::from_value::<Annotation>(data.clone()) {
+                                                    on_save.call(annotation);
+                                                    set_body.set(String::new());
+                                                    set_tags_input.set(String::new());
+                                                }
+                                            }
+                                        }
+                                        Err(e) => set_error(Some(format!("Failed to parse response: {}", e))),
+                                    }
                                 }
                             }
+                            Err(e) => set_error(Some(format!("Failed to read response: {}", e))),
                         }
-                        Err(e) => set_error(Some(format!("Failed to parse response: {}", e))),
                     }
+                    Err(e) => set_error(Some(format!("Request failed: {}", e))),
                 }
-                Ok(resp) => {
-                    set_error(Some(format!("Failed to save: {}", resp.status())));
-                }
-                Err(e) => {
-                    set_error(Some(format!("Request failed: {}", e)));
-                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                set_error(Some("WASM mutations are only available in the browser runtime".to_string()));
             }
 
             set_is_submitting.set(false);
@@ -157,7 +172,7 @@ pub fn AnnotationEditor(
             </div>
             
             <textarea
-                class="annotation-textarea"
+                class="apex-textarea"
                 placeholder="Write your annotation..."
                 value=body
                 on:input=move |e| set_body.set(event_target_value(&e))
@@ -169,7 +184,7 @@ pub fn AnnotationEditor(
                     <label>"Tags (comma-separated)"</label>
                     <input
                         type="text"
-                        class="tags-input"
+                        class="apex-input"
                         placeholder="e.g., important, follow-up, urgent"
                         value=tags_input
                         on:input=move |e| set_tags_input.set(event_target_value(&e))
@@ -178,7 +193,7 @@ pub fn AnnotationEditor(
                 <div class="editor-field">
                     <label>"Visibility"</label>
                     <select
-                        class="visibility-select"
+                        class="apex-select"
                         value=visibility
                         on:change=move |e| set_visibility.set(event_target_value(&e))
                     >
@@ -195,7 +210,7 @@ pub fn AnnotationEditor(
 
             <div class="editor-actions">
                 <button
-                    class="btn-primary"
+                    class="apex-btn apex-btn-primary"
                     disabled=is_submitting()
                     on:click=handle_submit
                 >
@@ -230,7 +245,7 @@ pub fn AnnotationList(
                     </div>
                     <div class="annotation-actions">
                         <button
-                            class="btn-icon"
+                            class="apex-btn-icon"
                             title="Delete annotation"
                             on:click=move |_| on_delete.call(annotation.id.clone())
                         >
@@ -275,32 +290,38 @@ pub fn TeamAssignmentPanel(
                 notes: if notes.get().is_empty() { None } else { Some(notes.get()) },
             };
 
-            let client = reqwest::Client::new();
-            let response = client
-                .post("http://localhost:8080/api/team-assignments")
-                .json(&req)
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(json) => {
-                            if let Some(data) = json.get("data") {
-                                if let Ok(assignment) = serde_json::from_value::<TeamAssignment>(data.clone()) {
-                                    on_assign.call(assignment);
-                                    set_team_id.set(String::new());
-                                    set_team_name.set(String::new());
-                                    set_assigned_to.set(String::new());
-                                    set_notes.set(String::new());
-                                    set_show_form.set(false);
+            #[cfg(target_arch = "wasm32")]
+            {
+                use gloo_net::http::Request;
+                use web_sys::RequestCredentials;
+                let response = match Request::post(&api_url("/api/team-assignments"))
+                    .credentials(RequestCredentials::SameOrigin)
+                    .json(&req) {
+                        Ok(r) => r.send().await,
+                        Err(_) => { set_is_submitting.set(false); return; }
+                    };
+                match response {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        if status < 400 {
+                            if let Ok(body) = resp.text().await {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                    if let Some(data) = json.get("data") {
+                                        if let Ok(assignment) = serde_json::from_value::<TeamAssignment>(data.clone()) {
+                                            on_assign.call(assignment);
+                                            set_team_id.set(String::new());
+                                            set_team_name.set(String::new());
+                                            set_assigned_to.set(String::new());
+                                            set_notes.set(String::new());
+                                            set_show_form.set(false);
+                                        }
+                                    }
                                 }
                             }
                         }
-                        Err(_) => {}
                     }
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
 
             set_is_submitting.set(false);
@@ -312,7 +333,7 @@ pub fn TeamAssignmentPanel(
             <div class="panel-header">
                 <h4>"Team Assignments"</h4>
                 <button
-                    class="btn-secondary"
+                    class="apex-btn apex-btn-secondary"
                     on:click=move |_| set_show_form.update(|v| *v = !*v)
                 >
                     {move || if show_form() { "Cancel" } else { "Assign Team Member" }}
@@ -327,6 +348,7 @@ pub fn TeamAssignmentPanel(
                                 <label>"Team ID"</label>
                                 <input
                                     type="text"
+                                    class="apex-input"
                                     value=team_id
                                     on:input=move |e| set_team_id.set(event_target_value(&e))
                                     placeholder="team-risk-analysis"
@@ -336,6 +358,7 @@ pub fn TeamAssignmentPanel(
                                 <label>"Team Name"</label>
                                 <input
                                     type="text"
+                                    class="apex-input"
                                     value=team_name
                                     on:input=move |e| set_team_name.set(event_target_value(&e))
                                     placeholder="Risk Analysis Team"
@@ -347,6 +370,7 @@ pub fn TeamAssignmentPanel(
                                 <label>"Assign To"</label>
                                 <input
                                     type="text"
+                                    class="apex-input"
                                     value=assigned_to
                                     on:input=move |e| set_assigned_to.set(event_target_value(&e))
                                     placeholder="user@company.com"
@@ -355,6 +379,7 @@ pub fn TeamAssignmentPanel(
                             <div class="form-field">
                                 <label>"Role"</label>
                                 <select
+                                    class="apex-select"
                                     value=role
                                     on:change=move |e| set_role.set(event_target_value(&e))
                                 >
@@ -368,6 +393,7 @@ pub fn TeamAssignmentPanel(
                         <div class="form-field">
                             <label>"Notes"</label>
                             <textarea
+                                class="apex-textarea"
                                 value=notes
                                 on:input=move |e| set_notes.set(event_target_value(&e))
                                 placeholder="Optional notes..."
@@ -375,7 +401,7 @@ pub fn TeamAssignmentPanel(
                             />
                         </div>
                         <button
-                            class="btn-primary"
+                            class="apex-btn apex-btn-primary"
                             disabled=is_submitting()
                             on:click=handle_submit
                         >
@@ -394,7 +420,7 @@ pub fn TeamAssignmentPanel(
                             <span class="role-badge">{assignment.role}</span>
                         </div>
                         <button
-                            class="btn-icon"
+                            class="apex-btn-icon"
                             title="Remove assignment"
                             on:click=move |_| on_remove.call(assignment.id.clone())
                         >
@@ -443,30 +469,36 @@ pub fn InvestigationSharePanel(
                 message: if message.get().is_empty() { None } else { Some(message.get()) },
             };
 
-            let client = reqwest::Client::new();
-            let response = client
-                .post(&format!("http://localhost:8080/api/workspaces/{}/shares", workspace_id))
-                .json(&req)
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(json) => {
-                            if let Some(data) = json.get("data") {
-                                if let Ok(share) = serde_json::from_value::<InvestigationShare>(data.clone()) {
-                                    on_share.call(share);
-                                    set_shared_with.set(String::new());
-                                    set_message.set(String::new());
-                                    set_show_form.set(false);
+            #[cfg(target_arch = "wasm32")]
+            {
+                use gloo_net::http::Request;
+                use web_sys::RequestCredentials;
+                let response = match Request::post(&api_url(&format!("/api/workspaces/{}/shares", workspace_id)))
+                    .credentials(RequestCredentials::SameOrigin)
+                    .json(&req) {
+                        Ok(r) => r.send().await,
+                        Err(_) => { set_is_submitting.set(false); return; }
+                    };
+                match response {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        if status < 400 {
+                            if let Ok(body) = resp.text().await {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                    if let Some(data) = json.get("data") {
+                                        if let Ok(share) = serde_json::from_value::<InvestigationShare>(data.clone()) {
+                                            on_share.call(share);
+                                            set_shared_with.set(String::new());
+                                            set_message.set(String::new());
+                                            set_show_form.set(false);
+                                        }
+                                    }
                                 }
                             }
                         }
-                        Err(_) => {}
                     }
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
 
             set_is_submitting.set(false);
@@ -478,7 +510,7 @@ pub fn InvestigationSharePanel(
             <div class="panel-header">
                 <h4>"Investigation Sharing"</h4>
                 <button
-                    class="btn-secondary"
+                    class="apex-btn apex-btn-secondary"
                     on:click=move |_| set_show_form.update(|v| *v = !*v)
                 >
                     {move || if show_form() { "Cancel" } else { "Share Investigation" }}
@@ -492,6 +524,7 @@ pub fn InvestigationSharePanel(
                             <label>"Share With (email or user ID)"</label>
                             <input
                                 type="text"
+                                class="apex-input"
                                 value=shared_with
                                 on:input=move |e| set_shared_with.set(event_target_value(&e))
                                 placeholder="analyst@company.com"
@@ -501,6 +534,7 @@ pub fn InvestigationSharePanel(
                             <div class="form-field">
                                 <label>"Share Type"</label>
                                 <select
+                                    class="apex-select"
                                     value=share_type
                                     on:change=move |e| set_share_type.set(event_target_value(&e))
                                 >
@@ -512,6 +546,7 @@ pub fn InvestigationSharePanel(
                             <div class="form-field">
                                 <label>"Access Level"</label>
                                 <select
+                                    class="apex-select"
                                     value=access_level
                                     on:change=move |e| set_access_level.set(event_target_value(&e))
                                 >
@@ -524,6 +559,7 @@ pub fn InvestigationSharePanel(
                         <div class="form-field">
                             <label>"Message (optional)"</label>
                             <textarea
+                                class="apex-textarea"
                                 value=message
                                 on:input=move |e| set_message.set(event_target_value(&e))
                                 placeholder="Add a note to the recipient..."
@@ -531,7 +567,7 @@ pub fn InvestigationSharePanel(
                             />
                         </div>
                         <button
-                            class="btn-primary"
+                            class="apex-btn apex-btn-primary"
                             disabled=is_submitting()
                             on:click=handle_submit
                         >
@@ -555,7 +591,7 @@ pub fn InvestigationSharePanel(
                         <div class="share-actions">
                             <span class="shared-by">"by {share.shared_by}"</span>
                             <button
-                                class="btn-icon"
+                                class="apex-btn-icon"
                                 title="Revoke access"
                                 on:click=move |_| on_revoke.call(share.id.clone())
                             >

@@ -2,25 +2,25 @@
 
 <div id="company-dossier-tab">
   {% if !dossier_entries.is_empty() %}
-  <div class="divide-y divide-border">
+  <div class="divide-y divide-rams-line">
     {% for entry in dossier_entries %}
-    <div class="px-4 py-3 hover:bg-muted/30 transition-colors">
+    <div class="px-4 py-3 hover:bg-rams-panel">
       <div class="flex items-center justify-between">
         <span class="text-sm font-semibold">{{ entry.field_name }}</span>
         {% if entry.verified %}
         <span class="text-[9px] font-bold uppercase apex-text-positive">Verified</span>
         {% else %}
-        <span class="text-[9px] font-bold text-muted-foreground uppercase">Unverified</span>
+        <span class="text-[9px] font-bold text-rams-muted uppercase">Unverified</span>
         {% endif %}
       </div>
       <p class="mt-1 text-sm">{{ entry.value }}</p>
       {% if !entry.source.is_empty() %}
-      <p class="mt-0.5 text-[10px] text-muted-foreground">Source: {{ entry.source }}</p>
+      <p class="mt-0.5 text-[10px] text-rams-muted">Source: {{ entry.source }}</p>
       {% endif %}
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No dossier entries available</p>
+  <p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>
   {% endif %}
 </div>

@@ -4,25 +4,25 @@
 {% block title %}Activity Feed — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Activity</li>
+    <li class="text-rams-foreground" aria-current="page">Activity</li>
   </ol>
 </nav>
 {% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-start justify-between gap-4 border-b border-border pb-4">
+  <div class="flex items-start justify-between gap-4 border-b border-rams-line pb-4">
     <div class="flex items-start gap-3">
-      <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+      <div class="mt-1 rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-foreground">
         {% call m::icon("activity", "h-4 w-4") %}
       </div>
       <div>
         <h1>Activity Feed</h1>
-        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Cross-entity activity stream across workspaces and teams.</p>
+        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-rams-muted">Cross-entity activity stream across workspaces and teams.</p>
       </div>
     </div>
   </div>
@@ -30,38 +30,40 @@
   {% if items.is_empty() %}
   {% call m::empty_state("No Activity", "Team actions and system events will appear here as they occur.") %}
   {% else %}
-  <div class="space-y-3">
+  <div class="space-y-0 divide-y divide-rams-line">
     {% for a in items %}
-    <article class="apex-card p-4">
-      <div class="flex items-start gap-3">
-        <div class="rounded-sm border border-border bg-secondary p-2 text-muted-foreground">
-          {% if a.action_type == "created" || a.action_type == "added" %}
-          {% call m::icon("plus", "h-4 w-4") %}
-          {% else if a.action_type == "updated" || a.action_type == "modified" %}
-          {% call m::icon("edit", "h-4 w-4") %}
-          {% else if a.action_type == "deleted" || a.action_type == "removed" %}
-          {% call m::icon("trash", "h-4 w-4") %}
-          {% else if a.action_type == "shared" %}
-          {% call m::icon("share", "h-4 w-4") %}
-          {% else if a.action_type == "reviewed" || a.action_type == "approved" %}
-          {% call m::icon("check", "h-4 w-4") %}
-          {% else %}
-          {% call m::icon("activity", "h-4 w-4") %}
-          {% endif %}
-        </div>
-        <div class="min-w-0 flex-1">
-          <p class="text-sm font-bold">{{ a.actor_name }}
-            <span class="font-normal text-muted-foreground">{{ a.action_type }}</span>
-          </p>
-          {% if !a.entity_name.is_empty() %}
-          <p class="mt-0.5 text-xs text-muted-foreground">
-            {% if !a.entity_type.is_empty() %}<span class="font-bold uppercase">{{ a.entity_type }}</span>: {% endif %}{{ a.entity_name }}
-          </p>
-          {% endif %}
-          {% if !a.details.is_empty() %}
-          <p class="mt-1 text-sm leading-relaxed text-muted-foreground">{{ a.details }}</p>
-          {% endif %}
-          <p class="mt-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ a.created_at }}</p>
+    <article class="apex-module rounded-none border-x-0 border-t-0 last:border-b">
+      <div class="apex-module-body">
+        <div class="flex items-start gap-3">
+          <div class="rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-muted">
+            {% if a.action_type == "created" || a.action_type == "added" %}
+            {% call m::icon("plus", "h-4 w-4") %}
+            {% else if a.action_type == "updated" || a.action_type == "modified" %}
+            {% call m::icon("edit", "h-4 w-4") %}
+            {% else if a.action_type == "deleted" || a.action_type == "removed" %}
+            {% call m::icon("trash", "h-4 w-4") %}
+            {% else if a.action_type == "shared" %}
+            {% call m::icon("share", "h-4 w-4") %}
+            {% else if a.action_type == "reviewed" || a.action_type == "approved" %}
+            {% call m::icon("check", "h-4 w-4") %}
+            {% else %}
+            {% call m::icon("activity", "h-4 w-4") %}
+            {% endif %}
+          </div>
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-bold text-rams-foreground">{{ a.actor_name }}
+              <span class="apex-badge apex-badge-neutral font-normal">{{ a.action_type }}</span>
+            </p>
+            {% if !a.entity_name.is_empty() %}
+            <p class="mt-0.5 text-xs text-rams-muted">
+              {% if !a.entity_type.is_empty() %}<span class="font-bold uppercase text-rams-foreground">{{ a.entity_type }}</span>: {% endif %}{{ a.entity_name }}
+            </p>
+            {% endif %}
+            {% if !a.details.is_empty() %}
+            <p class="mt-1 text-sm leading-relaxed text-rams-muted">{{ a.details }}</p>
+            {% endif %}
+            <p class="mt-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ a.created_at }}</p>
+          </div>
         </div>
       </div>
     </article>

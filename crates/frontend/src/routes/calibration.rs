@@ -7,38 +7,16 @@ use crate::components::{
     charts::reliability_diagram::ReliabilityDiagram,
 };
 
+/// Returns an empty calibration curve when no live data is available.
+/// The calibration endpoint (/api/admin/calibration) and WebSocket stream
+/// (/ws/calibration) provide live data; this fallback is used only during
+/// initial load and shows a clear "waiting for data" state.
 fn sample_curve() -> CalibrationCurve {
     CalibrationCurve {
-        points: vec![
-            CalibrationPoint {
-                predicted_probability: 0.1,
-                observed_frequency: 0.12,
-                bin_count: 42,
-            },
-            CalibrationPoint {
-                predicted_probability: 0.3,
-                observed_frequency: 0.28,
-                bin_count: 76,
-            },
-            CalibrationPoint {
-                predicted_probability: 0.5,
-                observed_frequency: 0.54,
-                bin_count: 95,
-            },
-            CalibrationPoint {
-                predicted_probability: 0.7,
-                observed_frequency: 0.69,
-                bin_count: 68,
-            },
-            CalibrationPoint {
-                predicted_probability: 0.9,
-                observed_frequency: 0.87,
-                bin_count: 29,
-            },
-        ],
-        brier_score: 0.081,
-        reliability: 0.94,
-        resolution: 0.17,
+        points: vec![],
+        brier_score: 0.0,
+        reliability: 0.0,
+        resolution: 0.0,
     }
 }
 

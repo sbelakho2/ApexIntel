@@ -3,9 +3,9 @@ use leptos::*;
 #[component]
 pub fn FilterBar(title: &'static str, children: Children) -> impl IntoView {
     view! {
-        <section class="filter-bar">
-            <div class="filter-bar-title">{title}</div>
-            <div class="filter-chip-row">{children()}</div>
+        <section class="apex-filter-bar">
+            <div class="apex-filter-bar-title">{title}</div>
+            <div class="apex-chip-row">{children()}</div>
         </section>
     }
 }
@@ -21,9 +21,9 @@ pub fn FilterChip(
             type="button"
             class=move || {
                 if active.get() {
-                    "filter-chip filter-chip-active"
+                    "apex-chip apex-chip-active"
                 } else {
-                    "filter-chip"
+                    "apex-chip"
                 }
             }
             on:click=move |_| on_click.call(())
@@ -44,21 +44,21 @@ pub fn Pagination(
         move || ((total + per_page as u64).saturating_sub(1) / per_page as u64).max(1) as u32;
 
     view! {
-        <div class="pagination-row">
+        <div class="apex-pagination">
             <button
                 type="button"
-                class="pagination-button"
+                class="apex-btn"
                 disabled=move || page.get() <= 1
                 on:click=move |_| set_page.update(|value| *value = value.saturating_sub(1).max(1))
             >
                 "Previous"
             </button>
-            <span class="pagination-label">
+            <span class="apex-pagination-label">
                 {move || format!("Page {} of {}", page.get(), total_pages())}
             </span>
             <button
                 type="button"
-                class="pagination-button"
+                class="apex-btn"
                 disabled=move || page.get() >= total_pages()
                 on:click=move |_| set_page.update(|value| *value = (*value + 1).min(total_pages()))
             >

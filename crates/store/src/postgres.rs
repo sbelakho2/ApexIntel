@@ -635,8 +635,18 @@ impl PgStore {
     // --- Schema Migration ---
 
     /// Run the full schema creation. Idempotent via IF NOT EXISTS.
+    /// Set APEX_SKIP_MIGRATIONS=true to skip (useful when the embedded migration
+    /// checksums don't match the database's `_sqlx_migrations` table).
     pub async fn run_migrations(&self) -> Result<()> {
-        sqlx::migrate!("./migrations").run(&self.pool).await?;
+        if std::env::var("APEX_SKIP_MIGRATIONS")
+            .ok()
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false)
+        {
+            tracing::warn!("APEX_SKIP_MIGRATIONS is set — skipping database migrations entirely");
+            return Ok(());
+        }
+        sqlx::migrate!("../../migrations").run(&self.pool).await?;
         Ok(())
     }
 }
@@ -847,6 +857,7 @@ pub struct CompanyRow {
     pub threat_score: Option<f64>,
     pub overlap_score: Option<f64>,
     pub strategic_relevance: Option<f64>,
+    pub is_competitor: Option<bool>,
     pub metadata: Option<serde_json::Value>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
@@ -1756,6 +1767,7 @@ mod tests {
             threat_score: Some(0.1),
             overlap_score: Some(0.8),
             strategic_relevance: Some(0.9),
+            is_competitor: Some(false),
             metadata: Some(serde_json::json!({})),
             created_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),

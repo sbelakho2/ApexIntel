@@ -91,6 +91,9 @@ impl PgStore {
             param_idx,
             param_idx + 1
         ));
+        // param_idx is used implicitly via the format! macros above for
+        // the dynamic SQL parameter numbering.
+        let _ = param_idx;
 
         let mut q = sqlx::query_as::<_, BattlecardRow>(&sql);
 
@@ -124,6 +127,9 @@ impl PgStore {
             sql.push_str(&format!(" AND competitor_id = ${}", param_idx));
             param_idx += 1;
         }
+        // param_idx tracks dynamic SQL parameter numbering; it is consumed
+        // by the format! macros in the conditional blocks above.
+        let _ = param_idx;
 
         let mut q = sqlx::query_as::<_, (i64,)>(&sql);
 

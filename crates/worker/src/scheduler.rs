@@ -173,6 +173,24 @@ pub enum JobKind {
     TriageProcessing,
     /// Trend aggregation — computes materialized rollup metrics for historical trends.
     TrendAggregation,
+    /// Insight generation — produces competitive intelligence insights from recent observations.
+    InsightGeneration,
+    /// Threat intelligence refresh — updates threat actor profiles, campaigns, and supply chain risk scores.
+    ThreatIntelRefresh,
+    /// Psychological profile computation — recalculates psych profiles for all POIs from current artifacts.
+    PsychProfileCompute,
+    /// POI role reclassification — re-derives `role_family` for every person from
+    /// their `current_role` using the canonical role classifier, correcting stale
+    /// seeded values (e.g. everything seeded as 'C-Suite') so procurement,
+    /// supply-chain, and quality contacts are accurately categorized.
+    PoiRoleReclassify,
+    /// OSINT enrichment — invokes structured-source fetchers (SEC EDGAR filings,
+    /// NVD/CVE vulnerabilities, RDAP domain registration, OpenAlex academic,
+    /// WHOIS, DNS posture, Certificate Transparency) for tracked companies and
+    /// domains. Produces typed observations with full provenance.
+    OsintEnrichment,
+    /// Adversarial analysis — runs placement clustering, source entropy detection, and quarantine management.
+    AdversarialAnalysis,
     Custom(String),
 }
 
@@ -205,6 +223,12 @@ impl JobKind {
             Self::DarkWebScan => "dark_web_scan",
             Self::TriageProcessing => "triage_processing",
             Self::TrendAggregation => "trend_aggregation",
+            Self::InsightGeneration => "insight_generation",
+            Self::ThreatIntelRefresh => "threat_intel_refresh",
+            Self::PsychProfileCompute => "psych_profile_compute",
+            Self::PoiRoleReclassify => "poi_role_reclassify",
+            Self::OsintEnrichment => "osint_enrichment",
+            Self::AdversarialAnalysis => "adversarial_analysis",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -238,6 +262,12 @@ impl JobKind {
             "dark_web_scan" => Self::DarkWebScan,
             "triage_processing" => Self::TriageProcessing,
             "trend_aggregation" => Self::TrendAggregation,
+            "insight_generation" => Self::InsightGeneration,
+            "threat_intel_refresh" => Self::ThreatIntelRefresh,
+            "psych_profile_compute" => Self::PsychProfileCompute,
+            "poi_role_reclassify" => Self::PoiRoleReclassify,
+            "osint_enrichment" => Self::OsintEnrichment,
+            "adversarial_analysis" => Self::AdversarialAnalysis,
             other => Self::Custom(other.to_string()),
         }
     }
@@ -1220,6 +1250,78 @@ pub fn default_scheduler() -> Scheduler {
         .with_timeout(3600), // 1 h — database aggregation queries
     );
 
+    // ── Competitive Intelligence Insight Generation ─────────────────────
+
+    // Insight generation: every 6 hours — produces competitive intelligence
+    // insights from recent observations, grouped by company.
+    s.register(
+        JobDef::new(JobKind::InsightGeneration, Schedule::IntervalSecs(21600))
+            .with_jitter(300) // +5 min spread
+            .with_timeout(7200), // 2 h — LLM inference can be slow
+    );
+
+    // ── Threat Intelligence Refresh ─────────────────────────────────────
+
+    // Threat intel refresh: every 6 hours — updates supply chain risk scores,
+    // threat actor profiles, competitive intelligence, and attack surface assessments.
+    s.register(
+        JobDef::new(JobKind::ThreatIntelRefresh, Schedule::IntervalSecs(21600))
+            .with_jitter(600) // +10 min spread
+            .with_timeout(7200), // 2 h — multiple assessment modules
+    );
+
+    // ── Psychological Profile Computation ───────────────────────────────
+
+    // Psych profile compute: daily at 05:30 UTC — recalculates psych profiles
+    // for all POIs from current artifacts and metadata.
+    s.register(
+        JobDef::new(
+            JobKind::PsychProfileCompute,
+            Schedule::DailyAt {
+                hour: 5,
+                minute: 30,
+            },
+        )
+        .with_jitter(180) // +3 min spread
+        .with_timeout(3600), // 1 h — per-person artifact analysis
+    );
+
+    // POI role reclassify: daily at 05:45 UTC — re-derives role_family for every
+    // person from their current_role via the canonical classifier. Corrects the
+    // stale seeded 'C-Suite' default so procurement/supply-chain/quality
+    // contacts are accurately categorized for buying-center recommendations.
+    s.register(
+        JobDef::new(
+            JobKind::PoiRoleReclassify,
+            Schedule::DailyAt {
+                hour: 5,
+                minute: 45,
+            },
+        )
+        .with_jitter(120)
+        .with_timeout(900), // 15 min — pure CPU classification, no I/O
+    );
+
+    // OSINT enrichment: every 6 hours — invokes structured-source fetchers
+    // (SEC EDGAR, NVD/CVE, RDAP, OpenAlex, DNS posture) for tracked companies.
+    // These produce typed observations with full provenance, complementing the
+    // generic RSS/web crawl.
+    s.register(
+        JobDef::new(JobKind::OsintEnrichment, Schedule::IntervalSecs(21600))
+            .with_jitter(600) // +10 min spread
+            .with_timeout(3600), // 1 h — multiple HTTP sources
+    );
+
+    // ── Adversarial Analysis ────────────────────────────────────────────
+
+    // Adversarial analysis: every 6 hours — placement clustering, source entropy
+    // detection, and quarantine management.
+    s.register(
+        JobDef::new(JobKind::AdversarialAnalysis, Schedule::IntervalSecs(21600))
+            .with_jitter(900) // +15 min spread — avoid overlap with other 6h jobs
+            .with_timeout(3600), // 1 h — clustering + entropy + quarantine
+    );
+
     s
 }
 
@@ -1688,6 +1790,8 @@ mod tests {
             "hypothesis_generation",
             "poi_refresh",
             "poi_discovery",
+            "poi_role_reclassify",
+            "osint_enrichment",
             "promotion_board",
             "strategy_memo",
             "recipe_deprecation",
@@ -1708,6 +1812,12 @@ mod tests {
             "rebuild-autocomplete",
             "starzcrm_sync",
             "dark_web_scan",
+            "triage_processing",
+            "trend_aggregation",
+            "insight_generation",
+            "threat_intel_refresh",
+            "psych_profile_compute",
+            "adversarial_analysis",
         ];
 
         assert_eq!(s.jobs.len(), expected_jobs.len());

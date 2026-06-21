@@ -69,10 +69,42 @@ static RE_LABELED_SPEAKER_NAME: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 
-/// Capitalised job title with trailing preposition — "Chief Executive Officer at".
+/// Capitalised job title with a trailing separator — "Chief Procurement Officer at",
+/// "Head of Sourcing at", "VP Procurement, Foxconn", "Commodity Manager | Foxconn", etc.
+///
+/// Previously this only matched `Title … at`, which silently dropped the most
+/// supply-chain-relevant titles: "Procurement Lead, Foxconn", "Commodity Manager | …",
+/// "Category Buyer — Foxconn", "SQE / Supplier Quality", and any title using a
+/// separator other than the word "at". It now accepts `at`, `,`, `|`, `—`, `–`,
+/// `/`, and `·` as separators AND recognises the full procurement / supply-chain
+/// / quality / operations title vocabulary, not just C-suite + generic Director/VP.
 static RE_TITLE_AT: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(
-        r"(?i)(CEO|CTO|CFO|COO|CMO|CISO|CRO|President|Director|VP|Vice President|Head of|Manager|Secretary|Minister|General|Admiral|Ambassador|Chairman|Commissioner|Governor)\b[^<]{0,120}?\bat\b",
+        r"(?i)\b(\
+CEO|CTO|CFO|COO|CMO|CISO|CRO|CPO|CHRO|\
+President|Chairman|Founder|Co[- ]Founder|Managing Director|General Manager|\
+Vice President|VP|SVP|EVP|Director|Head of|\
+Chief .{2,40} Officer|\
+Procurement (?:Manager|Director|Lead|Specialist|Officer|Head|VP|Vice President)|\
+Purchasing (?:Manager|Director|Lead|Officer|Agent|Specialist)|\
+Sourcing (?:Manager|Director|Lead|Specialist|Head|Officer)|\
+Commodity (?:Manager|Director|Lead|Specialist)|\
+Category (?:Manager|Director|Lead|Buyer)|\
+Supply(?:Chain)? (?:Manager|Director|Lead|Head|VP|Vice President|Specialist|Planner|Analyst)|\
+Buyer|Senior Buyer|NPI Buyer|Strategic Buyer|\
+Supplier (?:Quality|Development) (?:Engineer|Manager|Lead|Specialist)|\
+SQE|Quality (?:Manager|Director|Engineer|Lead|Assurance)|\
+Operations (?:Manager|Director|Lead|VP|Vice President|Head)|\
+Plant (?:Manager|Director)|Site (?:Manager|Director|Lead)|\
+Logistics (?:Manager|Director|Lead|Coordinator)|\
+Business Development (?:Manager|Director|Lead|VP|Head)|\
+Strategic (?:Accounts|Partnerships) (?:Manager|Director)|\
+Sales (?:Manager|Director|VP|Vice President|Head)|\
+Account (?:Manager|Director|Executive)|\
+Engineering (?:Manager|Director|Lead|VP|Head)|\
+R&D (?:Manager|Director|Head)|\
+Secretary|Minister|General|Admiral|Ambassador|Commissioner|Governor\
+)\b[^<]{0,120}?\b(?:at|,|\||—|–|/|·|@)\b",
     )
 });
 

@@ -90,16 +90,12 @@ VALUES
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Test Data for Activity Feed
 -- ─────────────────────────────────────────────────────────────────────────────
-
-INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, workspace_id, visibility)
-VALUES
-    ('analyst-1', 'John Smith', 'create', 'workspace', 'ws-333301', 'Supply Chain Risk Assessment', '{"type": "investigation"}'::jsonb, '33333333-3333-3333-3333-333333333301', 'team'),
-    ('analyst-2', 'Jane Doe', 'update', 'opportunity', 'opp-101', 'Enterprise License - Global Corp', '{"field": "stage", "old": "proposal", "new": "negotiation"}'::jsonb, NULL, 'organization'),
-    ('analyst-1', 'John Smith', 'share', 'workspace', 'ws-333303', 'Security Incident Response', '{"shared_with": "team-security", "access": "read_write"}'::jsonb, '33333333-3333-3333-3333-333333333303', 'team'),
-    ('analyst-3', 'Bob Wilson', 'comment', 'threat', 'threat-203', 'Cybersecurity Vulnerability', '{"comment": "Patch deployed successfully"}'::jsonb, NULL, 'organization'),
-    ('analyst-2', 'Jane Doe', 'assign', 'workspace', 'ws-333305', 'Due Diligence - Acquisition Target', '{"assigned_to": "analyst-4", "role": "contributor"}'::jsonb, '33333333-3333-3333-3333-333333333305', 'private'),
-    ('analyst-1', 'John Smith', 'resolve', 'warning', 'warning-001', 'Critical security alert', '{"resolution": "Emergency patch applied"}'::jsonb, NULL, 'team'),
-    ('analyst-3', 'Bob Wilson', 'escalate', 'threat', 'threat-201', 'Supply Chain Disruption Risk', '{"escalated_to": "executive-team", "reason": "Critical timeline"}'::jsonb, NULL, 'organization');
+-- NOTE: The dummy "John Smith / Jane Doe / Bob Wilson" activity rows that used
+-- to live here were removed — they are fake fixture data that shipped to every
+-- environment (including production) and made the activity feed look stubbed.
+-- The live `activity_feed` table is now populated by the worker's
+-- `ActivityLogger` on every real crawl, POI discovery, insight generation,
+-- threat detection, and job lifecycle event. Do NOT re-add seed rows here.
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Test Data for Team Assignments

@@ -45,27 +45,161 @@ pub trait AlertDispatcher: Send + Sync {
     );
 }
 
-/// A no-op dispatcher that silently discards all alerts.
+/// A fallback dispatcher that logs alerts and writes them to the activity_feed table.
+///
+/// Used when the real [`AlertRouter`] / [`SseManager`] are not available
+/// (e.g. during development or in a Worker-only deployment without SSE).
+pub struct LoggingAlertDispatcher {
+    db_pool: Option<sqlx::PgPool>,
+}
+
+impl LoggingAlertDispatcher {
+    /// Create a dispatcher that logs to console only.
+    pub fn console_only() -> Self {
+        Self { db_pool: None }
+    }
+
+    /// Create a dispatcher that also writes alert events to `activity_feed`.
+    pub fn with_db(pool: sqlx::PgPool) -> Self {
+        Self { db_pool: Some(pool) }
+    }
+}
+
+#[async_trait]
+impl AlertDispatcher for LoggingAlertDispatcher {
+    async fn dispatch_triage_alert(
+        &self,
+        item_type: &TriageItemType,
+        source_id: &str,
+        title: &str,
+        description: &str,
+        composite_score: f64,
+        entity_id: Option<Uuid>,
+        entity_name: Option<&str>,
+    ) -> Vec<Uuid> {
+        let severity = if composite_score >= 0.80 { "critical" }
+            else if composite_score >= 0.60 { "high" }
+            else if composite_score >= 0.40 { "medium" }
+            else { "low" };
+
+        let item_type_label = format!("{:?}", item_type);
+        tracing::warn!(
+            target = "triage::alert",
+            %item_type_label, %source_id, %title, composite_score, %severity,
+            entity_name = entity_name.unwrap_or("none"),
+            "Triage alert dispatched"
+        );
+
+        if let Some(ref pool) = self.db_pool {
+            let details = serde_json::json!({
+                "item_type": item_type_label,
+                "source_id": source_id,
+                "composite_score": composite_score,
+                "severity": severity,
+                "entity_name": entity_name,
+                "description": if description.len() > 500 { &description[..500] } else { description },
+            });
+            let _ = sqlx::query(
+                "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
+                 VALUES ($1, $2, 'triage_alert', 'triage_item', $3, $4, $5, NOW())"
+            )
+            .bind(Uuid::nil())
+            .bind("ApexIntel Triage Engine")
+            .bind(source_id)
+            .bind(entity_name.unwrap_or("unknown"))
+            .bind(details)
+            .execute(pool)
+            .await;
+        }
+        Vec::new() // No SSE subscriptions to return from the fallback
+    }
+
+    async fn notify_queue_update(&self, stats_json: &str) {
+        tracing::info!(
+            target = "triage::queue",
+            stats = %stats_json,
+            "Triage queue stats updated"
+        );
+        if let Some(ref pool) = self.db_pool {
+            let details = serde_json::json!({ "stats": stats_json });
+            let _ = sqlx::query(
+                "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
+                 VALUES ($1, $2, 'triage_queue_update', 'triage_queue', $3, 'system', $4, NOW())"
+            )
+            .bind(Uuid::nil())
+            .bind("ApexIntel Triage Engine")
+            .bind(Uuid::nil())
+            .bind(details)
+            .execute(pool)
+            .await;
+        }
+    }
+
+    async fn notify_status_change(&self, queue_item_id: Uuid, new_status: &str, title: &str) {
+        tracing::info!(
+            target = "triage::status",
+            %queue_item_id, %new_status, %title,
+            "Triage item status changed"
+        );
+        if let Some(ref pool) = self.db_pool {
+            let details = serde_json::json!({ "new_status": new_status, "title": title });
+            let _ = sqlx::query(
+                "INSERT INTO activity_feed (actor_id, actor_name, action_type, entity_type, entity_id, entity_name, details, created_at)
+                 VALUES ($1, $2, 'triage_status_change', 'triage_item', $3, $4, $5, NOW())"
+            )
+            .bind(Uuid::nil())
+            .bind("ApexIntel Triage Engine")
+            .bind(queue_item_id)
+            .bind(title)
+            .bind(details)
+            .execute(pool)
+            .await;
+        }
+    }
+}
+
+/// (Kept for backward compatibility — prefer [`LoggingAlertDispatcher`].)
+#[deprecated(note = "Use LoggingAlertDispatcher instead")]
 pub struct NoopAlertDispatcher;
 
 #[async_trait]
+#[allow(deprecated)]
 impl AlertDispatcher for NoopAlertDispatcher {
     async fn dispatch_triage_alert(
         &self,
-        _item_type: &TriageItemType,
-        _source_id: &str,
-        _title: &str,
-        _description: &str,
-        _composite_score: f64,
+        item_type: &TriageItemType,
+        source_id: &str,
+        title: &str,
+        description: &str,
+        composite_score: f64,
         _entity_id: Option<Uuid>,
-        _entity_name: Option<&str>,
+        entity_name: Option<&str>,
     ) -> Vec<Uuid> {
+        tracing::warn!(
+            target = "triage::alert",
+            item_type = ?item_type, %source_id, %title, composite_score,
+            entity_name = entity_name.unwrap_or("none"),
+            "Triage alert dispatched via deprecated NoopAlertDispatcher — alerts are NOT being delivered to users! Switch to LoggingAlertDispatcher."
+        );
+        let _ = description;
         Vec::new()
     }
 
-    async fn notify_queue_update(&self, _stats_json: &str) {}
+    async fn notify_queue_update(&self, stats_json: &str) {
+        tracing::warn!(
+            target = "triage::queue",
+            stats = %stats_json,
+            "Triage queue update via deprecated NoopAlertDispatcher — update is NOT propagated!"
+        );
+    }
 
-    async fn notify_status_change(&self, _queue_item_id: Uuid, _new_status: &str, _title: &str) {}
+    async fn notify_status_change(&self, queue_item_id: Uuid, new_status: &str, title: &str) {
+        tracing::warn!(
+            target = "triage::status",
+            %queue_item_id, %new_status, %title,
+            "Triage status change via deprecated NoopAlertDispatcher — change is NOT propagated!"
+        );
+    }
 }
 
 // ─── RouterIntegration ────────────────────────────────────────────────────────

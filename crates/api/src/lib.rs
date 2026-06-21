@@ -23,6 +23,6 @@ pub mod pdf_writer;
 pub mod web;
 
 pub const API_LLM_FEATURE_ENABLED: bool = cfg!(feature = "llm");
-pub const API_EXPERIMENTAL_LLM_TOOL_CALLING_ENABLED: bool = false;
+pub const API_EXPERIMENTAL_LLM_TOOL_CALLING_ENABLED: bool = cfg!(feature = "llm-tool-calling");
 pub const API_VERSIONED_ALIAS_ENABLED: bool = true;
 pub const API_OPENAPI_ENABLED: bool = true;

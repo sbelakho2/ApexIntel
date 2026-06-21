@@ -4,13 +4,13 @@
 {% block title %}{{ title }} — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li><a href="/insights" class="hover:text-foreground">Insights</a></li>
+    <li><a href="/insights" class="hover:text-rams-foreground">Insights</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">{{ title }}</li>
+    <li class="text-rams-foreground" aria-current="page">{{ title }}</li>
   </ol>
 </nav>
 {% endblock %}
@@ -21,15 +21,15 @@
     <div>
       <h1>{{ title }}</h1>
       <div class="mt-2 flex flex-wrap items-center gap-2">
-        <span class="mobile-inline-chip inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ category_css }}">{{ category_label }}</span>
-        <span class="inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ impact_css }}">{{ impact_tier }}</span>
-        <span class="text-[11px] tabular-nums text-muted-foreground">Confidence: {{ confidence }}%</span>
-        {% if !region.is_empty() %}<span class="text-[10px] text-muted-foreground">{{ region }}</span>{% endif %}
+        <span class="mobile-inline-chip inline-flex items-center rounded-rams-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ category_css }}">{{ category_label }}</span>
+        <span class="inline-flex items-center rounded-rams-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ impact_css }}">{{ impact_tier }}</span>
+        <span class="text-[11px] tabular-nums text-rams-muted">Confidence: {{ confidence }}%</span>
+        {% if !region.is_empty() %}<span class="text-[10px] text-rams-muted">{{ region }}</span>{% endif %}
         {% if bookmarked %}<span class="text-[10px] font-bold uppercase apex-text-warning">Bookmarked</span>{% endif %}
       </div>
     </div>
     <div class="flex items-center gap-2">
-            <a href="/insights/{{ id }}?briefing=1" class="apex-btn apex-btn-secondary">Briefing</a>
+      <a href="/insights/{{ id }}?briefing=1" class="apex-btn apex-btn-secondary">Briefing</a>
       <button hx-post="/insights/{{ id }}/bookmark"
               hx-target="#bookmark-status"
               hx-swap="innerHTML"
@@ -40,9 +40,9 @@
               hx-target="#analysis-panel"
               hx-swap="outerHTML"
               hx-indicator="#analyze-spinner"
-                class="apex-btn apex-btn-secondary">
+              class="apex-btn apex-btn-secondary">
         Analyze
-              <span id="analyze-spinner" class="htmx-indicator ml-1 apex-spinner-sm"></span>
+        <span id="analyze-spinner" class="htmx-indicator ml-1 apex-spinner-sm"></span>
       </button>
       <a href="/api/insights/{{ id }}/pdf"
          class="apex-btn apex-btn-secondary"
@@ -51,86 +51,98 @@
   </div>
   <div id="bookmark-status"></div>
 
-  <div class="apex-card p-4">
-    {% if !summary.is_empty() && summary != body %}
-    <div class="text-sm font-semibold mb-2">{{ summary|safe }}</div>
-    {% endif %}
-    <div class="text-sm leading-relaxed">{{ body|safe }}</div>
-    <div class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-[11px]">
-      <div><span class="font-black uppercase text-muted-foreground">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline">{{ company_name }}</a></div>
-      <div><span class="font-black uppercase text-muted-foreground">Created</span><br>{{ created_at }}{% if !age_label.is_empty() %} <span class="text-muted-foreground">({{ age_label }})</span>{% endif %}</div>
-      <div><span class="font-black uppercase text-muted-foreground">Evidence</span><br>{{ evidence_count }} source{% if evidence_count != 1 %}s{% endif %}{% if !source_diversity.is_empty() && source_diversity != "None" %} · {{ source_diversity }} diversity{% endif %}</div>
-      <div><span class="font-black uppercase text-muted-foreground">Updated</span><br>{% if !updated_at.is_empty() %}{{ updated_at }}{% else %}—{% endif %}</div>
-    </div>    {% if information_gain_bits.is_some() || quality_score_pct.is_some() %}
-    <div class="mt-3 flex flex-wrap gap-3 text-[10px]">
-      {% if let Some(ig) = information_gain_bits %}
-      <span class="rounded-sm border border-border bg-secondary/30 px-2 py-0.5 font-bold tabular-nums" title="Information gain measures how much this insight narrows your uncertainty">IG {{ ig }} bits</span>
+  <div class="apex-module">
+    <div class="apex-module-body">
+      {% if !summary.is_empty() && summary != body %}
+      <div class="text-sm font-semibold mb-2">{{ summary|safe }}</div>
       {% endif %}
-      {% if let Some(qs) = quality_score_pct %}
-      <span class="rounded-sm border border-border bg-secondary/30 px-2 py-0.5 font-bold tabular-nums" title="Quality score based on analyst feedback (actioned/dismissed ratio)">Quality {{ qs }}%</span>
+      <div class="text-sm leading-relaxed">{{ body|safe }}</div>
+      <div class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-[11px]">
+        <div><span class="font-black uppercase text-rams-muted">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline">{{ company_name }}</a></div>
+        <div><span class="font-black uppercase text-rams-muted">Created</span><br>{{ created_at }}{% if !age_label.is_empty() %} <span class="text-rams-muted">({{ age_label }})</span>{% endif %}</div>
+        <div><span class="font-black uppercase text-rams-muted">Evidence</span><br>{{ evidence_count }} source{% if evidence_count != 1 %}s{% endif %}{% if !source_diversity.is_empty() && source_diversity != "None" %} · {{ source_diversity }} diversity{% endif %}</div>
+        <div><span class="font-black uppercase text-rams-muted">Updated</span><br>{% if !updated_at.is_empty() %}{{ updated_at }}{% else %}—{% endif %}</div>
+      </div>
+      {% if information_gain_bits.is_some() || quality_score_pct.is_some() %}
+      <div class="mt-3 flex flex-wrap gap-3 text-[10px]">
+        {% if let Some(ig) = information_gain_bits %}
+        <span class="rounded-rams-sm border border-rams-line bg-rams-panel/30 px-2 py-0.5 font-bold tabular-nums" title="Information gain measures how much this insight narrows your uncertainty">IG {{ ig }} bits</span>
+        {% endif %}
+        {% if let Some(qs) = quality_score_pct %}
+        <span class="rounded-rams-sm border border-rams-line bg-rams-panel/30 px-2 py-0.5 font-bold tabular-nums" title="Quality score based on analyst feedback (actioned/dismissed ratio)">Quality {{ qs }}%</span>
+        {% endif %}
+      </div>
       {% endif %}
-    </div>
-    {% endif %}    {% if !tags.is_empty() %}
-    <div class="mt-3 flex flex-wrap gap-1">
-      {% for tag in tags %}{% call m::tag_pill(tag) %}{% endfor %}
-    </div>
-    {% endif %}
-  </div>
-
-  <div class="grid gap-4 xl:grid-cols-2">
-    <div class="apex-card p-4">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Notes</h2>
-      <form action="/insights/{{ id }}/notes" method="post" class="mt-4 space-y-3">
-        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
-          Note
-          <textarea name="body" rows="4" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="Capture why this insight matters and what should happen next."></textarea>
-        </label>
-        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
-          Tags
-          <input type="text" name="tags" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="memo, escalation, competitor">
-        </label>
-        <button type="submit" class="apex-btn apex-btn-secondary">Add Note</button>
-      </form>
-    </div>
-
-    <div class="apex-card p-4">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Commentary</h2>
-      {% if annotations.is_empty() %}
-      <p class="mt-4 text-sm text-muted-foreground">No analyst commentary has been attached yet.</p>
-      {% else %}
-      <div class="mt-4 space-y-3">
-        {% for annotation in annotations %}
-        <article class="rounded-sm border border-border bg-secondary/30 p-3">
-          <div class="flex items-center justify-between gap-3">
-            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">{{ annotation.author }} · {{ annotation.visibility }}</p>
-            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ annotation.created_at }}</p>
-          </div>
-          <p class="mt-2 text-sm leading-relaxed">{{ annotation.body }}</p>
-          {% if !annotation.tags.is_empty() %}
-          <div class="mt-2 flex flex-wrap gap-1">
-            {% for tag in annotation.tags %}
-            <span class="rounded-sm border border-border bg-background px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ tag }}</span>
-            {% endfor %}
-          </div>
-          {% endif %}
-        </article>
-        {% endfor %}
+      {% if !tags.is_empty() %}
+      <div class="mt-3 flex flex-wrap gap-1">
+        {% for tag in tags %}{% call m::tag_pill(tag) %}{% endfor %}
       </div>
       {% endif %}
     </div>
   </div>
 
+  <div class="grid gap-4 xl:grid-cols-2">
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Notes</h2>
+      </div>
+      <div class="apex-module-body">
+        <form action="/insights/{{ id }}/notes" method="post" class="space-y-3">
+          <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+            Note
+            <textarea name="body" rows="4" class="apex-input mt-2 w-full" placeholder="Capture why this insight matters and what should happen next."></textarea>
+          </label>
+          <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+            Tags
+            <input type="text" name="tags" class="apex-input mt-2 w-full" placeholder="memo, escalation, competitor">
+          </label>
+          <button type="submit" class="apex-btn apex-btn-secondary">Add Note</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Commentary</h2>
+      </div>
+      <div class="apex-module-body">
+        {% if annotations.is_empty() %}
+        <p class="text-sm text-rams-muted">No analyst commentary has been attached yet.</p>
+        {% else %}
+        <div class="space-y-3">
+          {% for annotation in annotations %}
+          <article class="rounded-rams-sm border border-rams-line bg-rams-panel/30 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">{{ annotation.author }} · {{ annotation.visibility }}</p>
+              <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ annotation.created_at }}</p>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed">{{ annotation.body }}</p>
+            {% if !annotation.tags.is_empty() %}
+            <div class="mt-2 flex flex-wrap gap-1">
+              {% for tag in annotation.tags %}
+              <span class="rounded-rams-sm border border-rams-line bg-rams-chassis px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ tag }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </article>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
   {% if !evidence.is_empty() %}
-  <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
+  <div class="apex-module">
+    <div class="apex-module-header">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Sources</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for e in evidence %}
       <div class="px-4 py-3">
         <p class="text-sm font-semibold"><a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="hover:underline">{{ e.snippet }} · {{ e.source }}</a></p>
-        <p class="mt-1 break-words text-[10px] text-muted-foreground">{{ e.url }}</p>
-        <p class="mt-1 text-[10px] text-muted-foreground">Relevance: {{ e.relevance }}%</p>
+        <p class="mt-1 break-words text-[10px] text-rams-muted">{{ e.url }}</p>
+        <p class="mt-1 text-[10px] text-rams-muted">Relevance: {{ e.relevance }}%</p>
       </div>
       {% endfor %}
     </div>
@@ -138,17 +150,17 @@
   {% endif %}
 
   {% if !dissenting_opinions.is_empty() %}
-  <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
+  <div class="apex-module">
+    <div class="apex-module-header">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Dissenting Views</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for d in dissenting_opinions %}
       <div class="px-4 py-3">
         <div class="flex items-center gap-2 text-[10px]">
-          <span class="rounded-sm bg-amber-500/10 px-1.5 py-0.5 font-bold uppercase text-amber-600">{{ d.severity }}</span>
-          <span class="text-muted-foreground">{{ d.category }}</span>
-          <span class="ml-auto tabular-nums text-muted-foreground">{{ d.confidence_pct }}% conf</span>
+          <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 font-bold uppercase text-rams-foreground">{{ d.severity }}</span>
+          <span class="text-rams-muted">{{ d.category }}</span>
+          <span class="ml-auto tabular-nums text-rams-muted">{{ d.confidence_pct }}% conf</span>
         </div>
         <p class="mt-1 text-sm leading-relaxed">{{ d.rationale }}</p>
       </div>
@@ -158,9 +170,11 @@
   {% endif %}
 
   {% if let Some(analysis) = ai_analysis %}
-  <div class="apex-card p-4" id="analysis-panel">
-    <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
-    <p class="text-sm leading-relaxed">{{ analysis }}</p>
+  <div class="apex-module" id="analysis-panel">
+    <div class="apex-module-body">
+      <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
+      <p class="text-sm leading-relaxed">{{ analysis }}</p>
+    </div>
   </div>
   {% else %}
   <div id="analysis-panel"></div>

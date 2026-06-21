@@ -4,32 +4,32 @@
 {% block title %}{{ workspace.name }} — Workspace — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
-    <li><a href="/workspaces" class="hover:text-foreground">Workspaces</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
+    <li><a href="/workspaces" class="hover:text-rams-foreground">Workspaces</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">{{ workspace.name }}</li>
+    <li class="text-rams-foreground" aria-current="page">{{ workspace.name }}</li>
   </ol>
 </nav>
 {% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-start justify-between gap-4 border-b border-border pb-4">
+  <div class="flex items-start justify-between gap-4 border-b border-rams-line pb-4">
     <div class="flex items-start gap-3">
-      <div class="mt-1 rounded-sm border border-border bg-secondary p-2 text-foreground">
+      <div class="mt-1 rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-foreground">
         {% call m::icon("folder", "h-4 w-4") %}
       </div>
       <div>
         <h1>{{ workspace.name }}</h1>
-        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{{ workspace.workspace_type }} · {{ workspace.visibility }} · {{ workspace.status }}</p>
+        <p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-rams-muted">{{ workspace.workspace_type }} · {{ workspace.visibility }} · {{ workspace.status }}</p>
       </div>
     </div>
     <div>
       {% if workspace.status == "open" %}
       <form action="/workspaces/{{ workspace.id }}/close" method="post" class="inline">
-        <button type="submit" class="apex-btn apex-btn-critical">Close Workspace</button>
+        <button type="submit" class="apex-btn apex-btn-danger">Close Workspace</button>
       </form>
       {% endif %}
     </div>
@@ -38,179 +38,204 @@
   <div class="grid gap-6 lg:grid-cols-3">
     <div class="lg:col-span-2 space-y-6">
       {% if !workspace.description.is_empty() %}
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Description</h3>
-        <p class="mt-2 text-sm leading-relaxed">{{ workspace.description }}</p>
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Description</h3>
+        </div>
+        <div class="apex-module-body">
+          <p class="text-sm leading-relaxed text-rams-foreground">{{ workspace.description }}</p>
+        </div>
       </div>
       {% endif %}
 
       {% if !workspace.tags.is_empty() %}
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Tags</h3>
-        <div class="mt-2 flex flex-wrap gap-2">
-          {% for tag in workspace.tags %}
-          {% call m::tag_pill(tag) %}
-          {% endfor %}
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Tags</h3>
+        </div>
+        <div class="apex-module-body">
+          <div class="flex flex-wrap gap-2">
+            {% for tag in workspace.tags %}
+            {% call m::tag_pill(tag) %}
+            {% endfor %}
+          </div>
         </div>
       </div>
       {% endif %}
 
       {% if !workspace.findings.is_empty() %}
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Findings</h3>
-        <p class="mt-2 text-sm leading-relaxed text-foreground">{{ workspace.findings }}</p>
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Findings</h3>
+        </div>
+        <div class="apex-module-body">
+          <p class="text-sm leading-relaxed text-rams-foreground">{{ workspace.findings }}</p>
+        </div>
       </div>
       {% endif %}
 
       {% if !workspace.conclusions.is_empty() %}
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Conclusions</h3>
-        <p class="mt-2 text-sm leading-relaxed text-foreground">{{ workspace.conclusions }}</p>
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Conclusions</h3>
+        </div>
+        <div class="apex-module-body">
+          <p class="text-sm leading-relaxed text-rams-foreground">{{ workspace.conclusions }}</p>
+        </div>
       </div>
       {% endif %}
 
       {% if !activity.is_empty() %}
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Activity</h3>
-        <div class="mt-3 space-y-3">
-          {% for a in activity %}
-          <div class="flex items-start gap-3 border-b border-border pb-3 last:border-0 last:pb-0">
-            <div class="rounded-sm border border-border bg-secondary p-1.5 text-muted-foreground">
-              {% call m::icon("activity", "h-3 w-3") %}
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Activity</h3>
+        </div>
+        <div class="apex-module-body">
+          <div class="space-y-3">
+            {% for a in activity %}
+            <div class="flex items-start gap-3 border-b border-rams-line pb-3 last:border-0 last:pb-0">
+              <div class="rounded-rams-sm border border-rams-line bg-rams-panel p-1.5 text-rams-muted">
+                {% call m::icon("activity", "h-3 w-3") %}
+              </div>
+              <div class="min-w-0 flex-1">
+                <p class="text-xs font-bold text-rams-foreground">{{ a.actor_name }} <span class="font-normal text-rams-muted">{{ a.action_type }}</span></p>
+                {% if !a.entity_name.is_empty() %}
+                <p class="mt-0.5 text-[10px] text-rams-muted">{{ a.entity_type }}: {{ a.entity_name }}</p>
+                {% endif %}
+                {% if !a.details.is_empty() %}
+                <p class="mt-0.5 text-[10px] text-rams-muted">{{ a.details }}</p>
+                {% endif %}
+                <p class="mt-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ a.created_at }}</p>
+              </div>
             </div>
-            <div class="min-w-0 flex-1">
-              <p class="text-xs font-bold">{{ a.actor_name }} <span class="font-normal text-muted-foreground">{{ a.action_type }}</span></p>
-              {% if !a.entity_name.is_empty() %}
-              <p class="mt-0.5 text-[10px] text-muted-foreground">{{ a.entity_type }}: {{ a.entity_name }}</p>
-              {% endif %}
-              {% if !a.details.is_empty() %}
-              <p class="mt-0.5 text-[10px] text-muted-foreground">{{ a.details }}</p>
-              {% endif %}
-              <p class="mt-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ a.created_at }}</p>
-            </div>
+            {% endfor %}
           </div>
-          {% endfor %}
         </div>
       </div>
       {% endif %}
     </div>
 
     <div class="space-y-6">
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Details</h3>
-        <dl class="mt-3 space-y-2">
-          <div class="flex justify-between">
-            <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Owner</dt>
-            <dd class="text-xs font-bold">{{ workspace.owner_id }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Type</dt>
-            <dd class="text-xs font-bold capitalize">{{ workspace.workspace_type }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Visibility</dt>
-            <dd class="text-xs font-bold capitalize">{{ workspace.visibility }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Status</dt>
-            <dd class="text-xs font-bold">{{ workspace.status }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Created</dt>
-            <dd class="text-xs font-bold">{{ workspace.created_at }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Updated</dt>
-            <dd class="text-xs font-bold">{{ workspace.updated_at }}</dd>
-          </div>
-          {% if !workspace.closed_at.is_empty() %}
-          <div class="flex justify-between">
-            <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Closed</dt>
-            <dd class="text-xs font-bold">{{ workspace.closed_at }}</dd>
-          </div>
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Details</h3>
+        </div>
+        <div class="apex-module-body">
+          <dl class="space-y-2">
+            <div class="flex justify-between">
+              <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Owner</dt>
+              <dd class="text-xs font-bold text-rams-foreground">{{ workspace.owner_id }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Type</dt>
+              <dd class="text-xs font-bold capitalize text-rams-foreground">{{ workspace.workspace_type }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Visibility</dt>
+              <dd class="text-xs font-bold capitalize text-rams-foreground">{{ workspace.visibility }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Status</dt>
+              <dd class="text-xs font-bold text-rams-foreground">{{ workspace.status }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Created</dt>
+              <dd class="text-xs font-bold text-rams-foreground">{{ workspace.created_at }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Updated</dt>
+              <dd class="text-xs font-bold text-rams-foreground">{{ workspace.updated_at }}</dd>
+            </div>
+            {% if !workspace.closed_at.is_empty() %}
+            <div class="flex justify-between">
+              <dt class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Closed</dt>
+              <dd class="text-xs font-bold text-rams-foreground">{{ workspace.closed_at }}</dd>
+            </div>
+            {% endif %}
+          </dl>
+        </div>
+      </div>
+
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Assignments</h3>
+        </div>
+        <div class="apex-module-body">
+          {% if assignments.is_empty() %}
+          <p class="text-xs text-rams-muted">No assignments yet.</p>
+          {% else %}
+          <ul class="space-y-2">
+            {% for a in assignments %}
+            <li class="flex items-center justify-between border-b border-rams-line pb-2 last:border-0 last:pb-0">
+              <div>
+                <p class="text-xs font-bold text-rams-foreground">{{ a.user_id }}</p>
+                <p class="text-[10px] text-rams-muted">{{ a.role }}</p>
+              </div>
+              <span class="text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ a.assigned_at }}</span>
+            </li>
+            {% endfor %}
+          </ul>
           {% endif %}
-        </dl>
+
+          <details class="mt-3">
+            <summary class="cursor-pointer text-[10px] font-black uppercase tracking-[0.1em] text-rams-orange">Assign User</summary>
+            <form action="/workspaces/{{ workspace.id }}/assign" method="post" class="mt-3 space-y-2">
+              <input type="text" name="user_id" placeholder="User ID" required class="apex-input">
+              <select name="role" required class="apex-input">
+                <option value="viewer">Viewer</option>
+                <option value="contributor">Contributor</option>
+                <option value="owner">Owner</option>
+              </select>
+              <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Assign</button>
+            </form>
+          </details>
+        </div>
       </div>
 
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Assignments</h3>
-        {% if assignments.is_empty() %}
-        <p class="mt-2 text-xs text-muted-foreground">No assignments yet.</p>
-        {% else %}
-        <ul class="mt-3 space-y-2">
-          {% for a in assignments %}
-          <li class="flex items-center justify-between border-b border-border pb-2 last:border-0 last:pb-0">
-            <div>
-              <p class="text-xs font-bold">{{ a.user_id }}</p>
-              <p class="text-[10px] text-muted-foreground">{{ a.role }}</p>
-            </div>
-            <span class="text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ a.assigned_at }}</span>
-          </li>
-          {% endfor %}
-        </ul>
-        {% endif %}
+      <div class="apex-module">
+        <div class="apex-module-header">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Shares</h3>
+        </div>
+        <div class="apex-module-body">
+          {% if shares.is_empty() %}
+          <p class="text-xs text-rams-muted">Not shared yet.</p>
+          {% else %}
+          <ul class="space-y-2">
+            {% for s in shares %}
+            <li class="flex items-center justify-between border-b border-rams-line pb-2 last:border-0 last:pb-0">
+              <div>
+                <p class="text-xs font-bold text-rams-foreground">{{ s.shared_with }}</p>
+                <p class="text-[10px] text-rams-muted">{{ s.access_level }} · {{ s.share_type }}</p>
+                {% if !s.message.is_empty() %}
+                <p class="text-[10px] text-rams-muted">{{ s.message }}</p>
+                {% endif %}
+              </div>
+              <span class="text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ s.created_at }}</span>
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
 
-        <details class="mt-3">
-          <summary class="cursor-pointer text-[10px] font-black uppercase tracking-[0.1em] text-primary">Assign User</summary>
-          <form action="/workspaces/{{ workspace.id }}/assign" method="post" class="mt-3 space-y-2">
-            <input type="text" name="user_id" placeholder="User ID" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <select name="role" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
-              <option value="viewer">Viewer</option>
-              <option value="contributor">Contributor</option>
-              <option value="owner">Owner</option>
-            </select>
-            <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Assign</button>
-          </form>
-        </details>
-      </div>
-
-      <div class="apex-card p-4">
-        <h3 class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Shares</h3>
-        {% if shares.is_empty() %}
-        <p class="mt-2 text-xs text-muted-foreground">Not shared yet.</p>
-        {% else %}
-        <ul class="mt-3 space-y-2">
-          {% for s in shares %}
-          <li class="flex items-center justify-between border-b border-border pb-2 last:border-0 last:pb-0">
-            <div>
-              <p class="text-xs font-bold">{{ s.shared_with }}</p>
-              <p class="text-[10px] text-muted-foreground">{{ s.access_level }} · {{ s.share_type }}</p>
-              {% if !s.message.is_empty() %}
-              <p class="text-[10px] text-muted-foreground">{{ s.message }}</p>
-              {% endif %}
-            </div>
-            <span class="text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ s.created_at }}</span>
-          </li>
-          {% endfor %}
-        </ul>
-        {% endif %}
-
-        <details class="mt-3">
-          <summary class="cursor-pointer text-[10px] font-black uppercase tracking-[0.1em] text-primary">Share Workspace</summary>
-          <form action="/workspaces/{{ workspace.id }}/shares" method="post" class="mt-3 space-y-2">
-            <input type="text" name="shared_with" placeholder="User or Team ID" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <select name="share_type" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
-              <option value="user">User</option>
-              <option value="team">Team</option>
-              <option value="organization">Organization</option>
-            </select>
-            <select name="access_level" required
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
-              <option value="read">Read</option>
-              <option value="write">Write</option>
-              <option value="admin">Admin</option>
-            </select>
-            <input type="text" name="message" placeholder="Optional message"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground">
-            <input type="date" name="expires_at"
-              class="w-full rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-xs text-foreground">
-            <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Share</button>
-          </form>
-        </details>
+          <details class="mt-3">
+            <summary class="cursor-pointer text-[10px] font-black uppercase tracking-[0.1em] text-rams-orange">Share Workspace</summary>
+            <form action="/workspaces/{{ workspace.id }}/shares" method="post" class="mt-3 space-y-2">
+              <input type="text" name="shared_with" placeholder="User or Team ID" required class="apex-input">
+              <select name="share_type" required class="apex-input">
+                <option value="user">User</option>
+                <option value="team">Team</option>
+                <option value="organization">Organization</option>
+              </select>
+              <select name="access_level" required class="apex-input">
+                <option value="read">Read</option>
+                <option value="write">Write</option>
+                <option value="admin">Admin</option>
+              </select>
+              <input type="text" name="message" placeholder="Optional message" class="apex-input">
+              <input type="date" name="expires_at" class="apex-input">
+              <button type="submit" class="apex-btn apex-btn-primary w-full text-[10px]">Share</button>
+            </form>
+          </details>
+        </div>
       </div>
     </div>
   </div>

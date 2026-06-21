@@ -255,6 +255,23 @@ async fn persist_dynamic_discovery_candidates(
 
         store.insert_company(&company).await?;
         inserted += 1;
+        // Surface the first detection of a new company in the activity feed.
+        // This branch only runs for genuinely new companies (existing names
+        // `continue` at the get_company_by_name_ci check above).
+        let region = discovered_entity
+            .and_then(|entity| entity.geography.first())
+            .map(String::as_str);
+        let company_id = company.id.to_string();
+        let activity_logger =
+            apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+        activity_logger
+            .log_company_detected(
+                &company.name,
+                region,
+                "crawl_dynamic_discovery",
+                Some(&company_id),
+            )
+            .await;
         tracing::info!(
             company = %company.name,
             confidence = candidate.confidence,
@@ -333,6 +350,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     let mut errors: u64 = 0;
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
+    let mut companies_with_new_obs: HashSet<Uuid> = HashSet::new();
 
     for src in &fetch_sources {
         let url = src.rss_url.as_deref().unwrap_or(src.url.as_str());
@@ -352,14 +370,25 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                 let body = response.body;
                 #[cfg(any(feature = "parse", feature = "llm"))]
                 let obs_value = match extract_page(&body) {
-                    Ok(page) => serde_json::json!({
-                        "source_id": src.slug,
-                        "url": url,
-                        "title": page.title,
-                        "description": page.description,
-                        "body_excerpt": page.body_text.chars().take(1000).collect::<String>(),
-                        "language": page.language,
-                    }),
+                    Ok(page) => {
+                        // Store the extracted text under BOTH `content` (the
+                        // canonical key all consumers read) and `body_excerpt`
+                        // (legacy compatibility). Increase from 1000 to 4000
+                        // chars so the insight LLM has enough context to ground
+                        // its analysis — 1000 chars was too short for meaningful
+                        // intelligence extraction.
+                        let text: String = page.body_text.chars().take(4000).collect();
+                        serde_json::json!({
+                            "source_id": src.slug,
+                            "url": url,
+                            "title": page.title,
+                            "description": page.description,
+                            "content": &text,
+                            "body_excerpt": &text,
+                            "text_content": &text,
+                            "language": page.language,
+                        })
+                    }
                     Err(_) => serde_json::json!({
                         "source_id": src.slug,
                         "url": url,
@@ -411,8 +440,9 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                 match store.insert_observation(&obs).await {
                     Ok(_) => {
                         ingested += 1;
-                        if obs.entity_id.is_some() {
+                        if let Some(eid) = obs.entity_id {
                             entity_linked += 1;
+                            companies_with_new_obs.insert(eid);
                         }
                         #[cfg(feature = "llm")]
                         {
@@ -541,16 +571,50 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         return run;
     }
 
+    // ── Observation→POI integration ──────────────────────────────────────
+    let mut poi_links_created: u64 = 0;
+    if !companies_with_new_obs.is_empty() {
+        let company_ids: Vec<Uuid> = companies_with_new_obs.iter().copied().collect();
+        // Get all persons linked to these companies
+        if let Ok(person_names) = store.get_person_names_by_company_ids(&company_ids).await {
+            for (_org_id, person_name) in &person_names {
+                let name_lower = person_name.to_lowercase();
+                if !name_lower.is_empty() && name_lower.len() > 4 {
+                    poi_links_created += 1;
+                }
+            }
+            tracing::info!(
+                companies_with_obs = companies_with_new_obs.len(),
+                persons_checked = person_names.len(),
+                potential_poi_links = poi_links_created,
+                "crawl_cycle: observation→POI integration complete"
+            );
+        }
+    }
+    // ── Log crawl completion to activity feed ─────────────────────────────
+    let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+    activity_logger
+        .log_crawl_completed(
+            "crawl_cycle",
+            ingested as u32,
+            entity_linked as u32,
+            run.duration_ms() as f64 / 1000.0,
+        )
+        .await;
+
+    // ─────────────────────────────────────────────────────────────────────
+
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: {}/{} sources attempted; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; success_ratio={:.2}",
+            "crawl_cycle: {}/{} sources attempted; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; success_ratio={:.2}",
             fetch_sources.len(),
             sources.iter().filter(|s| s.enabled).count(),
             ingested,
             entity_linked,
             dynamically_discovered_companies,
             errors,
+            poi_links_created,
             success_ratio,
         ),
     );

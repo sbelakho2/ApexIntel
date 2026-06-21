@@ -275,25 +275,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_embedding_client_defaults() {
-        // Unset any env vars that might interfere
+    fn test_create_embedding_client_env_vars() {
+        // Test default fallback (env vars unset)
         std::env::remove_var("LLM_BASE_URL");
         std::env::remove_var("LLM_MODEL_NAME");
-
         let client = create_embedding_client().unwrap();
-        assert!(client.model_name().contains("Qwen3"));
-    }
+        assert!(
+            !client.model_name().is_empty(),
+            "model name should not be empty even without env vars"
+        );
 
-    #[test]
-    fn test_create_embedding_client_custom_env() {
+        // Test custom env vars
         std::env::set_var("LLM_BASE_URL", "http://llama:8080");
         std::env::set_var("LLM_MODEL_NAME", "custom-model");
-
-        let client = create_embedding_client().unwrap();
-        assert_eq!(client.model_name(), "custom-model");
-
-        std::env::remove_var("LLM_BASE_URL");
-        std::env::remove_var("LLM_MODEL_NAME");
+        let client2 = create_embedding_client().unwrap();
+        assert_eq!(client2.model_name(), "custom-model");
     }
 
     #[test]

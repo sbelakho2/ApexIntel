@@ -27,6 +27,7 @@ pub mod quality_assurance;
 pub mod company_discovery;
 pub mod entity_relevance;
 pub mod entity_verifier;
+pub mod poi_targeting;
 pub mod title_diversity;
 
 // Intelligence pipeline modules
@@ -41,6 +42,12 @@ pub mod comparison;
 
 // Supporting modules
 pub mod adversarial;
+pub mod psychological;
+
+// Phase 4.4: Psychological profiling subsystem (canonical compute + persistence).
+pub mod psych_compute;
+pub mod psych_store;
+
 pub mod cep;
 pub mod cert_expiry;
 pub mod cert_gap;
@@ -60,6 +67,17 @@ pub mod outcome_tracker;
 pub mod shortage_correlation;
 
 pub mod pdf_report;
+
+// ─── Psychological profiling re-exports ─────────────────────────────────────
+// Convenience re-exports so downstream crates (worker, api) can depend on the
+// canonical engine and record types without reaching into the sub-modules.
+pub use psych_compute::{
+    BehavioralPatternResult, EngagementResult, PsychComputeEngine, PsychObservation,
+    PsychProfileResult, RawProfileSnapshot,
+};
+pub use psych_store::{
+    BehavioralPatternRecord, EngagementProfileRecord, PsychProfileRecord,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -215,4 +233,16 @@ pub use quality_assurance::{
     ThresholdAdjustment, ValidationConfig, ValidationContent, ValidationError,
     ValidationResult, ValidationStatus, ValidationWarning,
     SourceCredibilityScorer, QualityImprovementEngine,
+};
+
+// Psychological & Behavioral Intelligence exports
+pub use psychological::{
+    BehavioralPattern, BehavioralPatternDetector, BehavioralPatternType,
+    BigFiveTraits, BiasContext, CognitiveBias, CognitiveBiasDetector,
+    EngagementStrategist, EngagementStrategy, EntityType, HexacoTraits,
+    OrgCultureProfile, OrgCultureProfiler, OrgCultureSignal,
+    PersonalityAssessor, ProfileSnapshot, PsychologicalProfiler,
+    SentimentAggregator, SentimentAnomaly, SentimentBucket,
+    SentimentSignal, SentimentTrend, StrategyContext, StrategyType,
+    TrendDirection,
 };

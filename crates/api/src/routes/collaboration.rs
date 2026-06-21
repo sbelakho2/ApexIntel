@@ -102,6 +102,7 @@ pub struct ActivityEntry {
     pub entity_id: Option<String>,
     pub entity_name: Option<String>,
     pub details: Value,
+    pub formatted_details: String,
     pub workspace_id: Option<String>,
     pub team_id: Option<String>,
     pub visibility: String,
@@ -134,6 +135,143 @@ pub struct RecordActivityRequest {
     pub team_id: Option<String>,
     #[serde(default)]
     pub visibility: String,
+}
+
+/// Format a JSON value for inline display — returns the string for strings,
+/// empty string for null, serialized JSON for everything else.
+pub fn fmt_json_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s.clone(),
+        _ => serde_json::to_string(v).unwrap_or_default(),
+    }
+}
+
+/// Format activity-feed details into a human-readable summary string based on the
+/// `action_type`.  System events logged by [`ActivityLogger`] store structured JSON
+/// in `details`; this function extracts the relevant fields and produces a short
+/// description that can be safely rendered as inline text.
+pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -> String {
+    let obj = match details {
+        serde_json::Value::Object(m) => m,
+        serde_json::Value::String(s) => return s.clone(),
+        serde_json::Value::Null => return String::new(),
+        other => return serde_json::to_string(other).unwrap_or_default(),
+    };
+
+    match action_type {
+        // ── System event types (from ActivityLogger) ──────────────────────
+        "insight_generated" => {
+            let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let conf = obj.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if title.is_empty() {
+                format!("Confidence: {:.0}%", conf * 100.0)
+            } else {
+                format!("\"{}\" (conf: {:.0}%)", title, conf * 100.0)
+            }
+        }
+        "poi_discovered" => {
+            let role = obj.get("role").and_then(|v| v.as_str()).unwrap_or("");
+            let company = obj.get("company").and_then(|v| v.as_str()).unwrap_or("");
+            if !role.is_empty() && !company.is_empty() {
+                format!("{} at {}", role, company)
+            } else if !role.is_empty() {
+                role.to_string()
+            } else if !company.is_empty() {
+                format!("at {}", company)
+            } else {
+                String::new()
+            }
+        }
+        "crawl_completed" => {
+            let urls = obj.get("urls_crawled").and_then(|v| v.as_u64()).unwrap_or(0);
+            let obs = obj.get("new_observations").and_then(|v| v.as_u64()).unwrap_or(0);
+            let secs = obj.get("duration_secs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            format!("{} pages crawled, {} new observations (in {:.0}s)", urls, obs, secs)
+        }
+        "company_detected" => {
+            let signal = obj.get("signal_type").and_then(|v| v.as_str()).unwrap_or("");
+            let region = obj.get("region").and_then(|v| v.as_str());
+            match (signal, region) {
+                (s, Some(r)) if !s.is_empty() => format!("{} · {}", s, r),
+                (s, _) if !s.is_empty() => s.to_string(),
+                _ => String::new(),
+            }
+        }
+        "threat_detected" => {
+            let ttype = obj.get("threat_type").and_then(|v| v.as_str()).unwrap_or("");
+            let sev = obj.get("severity").and_then(|v| v.as_str()).unwrap_or("");
+            if !ttype.is_empty() && !sev.is_empty() {
+                format!("{} [{}]", ttype, sev)
+            } else if !ttype.is_empty() {
+                ttype.to_string()
+            } else if !sev.is_empty() {
+                format!("Severity: {}", sev)
+            } else {
+                String::new()
+            }
+        }
+        "psych_profile_updated" => {
+            let quality = obj.get("profile_quality").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            format!("Profile quality: {:.2}", quality)
+        }
+        "battlecard_generated" => {
+            let comp = obj.get("competitor").and_then(|v| v.as_str()).unwrap_or("");
+            if !comp.is_empty() {
+                format!("vs {}", comp)
+            } else {
+                String::new()
+            }
+        }
+        "memo_generated" => {
+            let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let count = obj.get("entity_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            if !title.is_empty() {
+                format!("\"{}\" ({} entities)", title, count)
+            } else {
+                format!("{} entities", count)
+            }
+        }
+        "recipe_promoted" => {
+            let code = obj.get("recipe_code").and_then(|v| v.as_str()).unwrap_or("");
+            let cat = obj.get("category").and_then(|v| v.as_str()).unwrap_or("");
+            if !code.is_empty() && !cat.is_empty() {
+                format!("{} [{}]", code, cat)
+            } else if !code.is_empty() {
+                code.to_string()
+            } else if !cat.is_empty() {
+                cat.to_string()
+            } else {
+                String::new()
+            }
+        }
+        "job_completed" | "job_failed" | "job_skipped" | "job_unknown" => {
+            let job_kind = obj.get("job_kind").and_then(|v| v.as_str()).unwrap_or("");
+            let items = obj.get("items_processed").and_then(|v| v.as_u64()).unwrap_or(0);
+            let dur = obj.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let notes = obj.get("notes").and_then(|v| v.as_str()).unwrap_or("");
+            let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or(action_type);
+            let mut out = format!("{} — {} ({} items, {}ms)", job_kind, status, items, dur);
+            if !notes.is_empty() {
+                out.push_str(&format!(" — {}", notes));
+            }
+            out
+        }
+
+        // ── Collaboration CRUD action types ───────────────────────────────
+        // For these, details often contains a free-text message or comment.
+        _ => {
+            // Try to extract a "message" or "comment" field first
+            if let Some(msg) = obj.get("message").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                return msg.to_string();
+            }
+            if let Some(comment) = obj.get("comment").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                return comment.to_string();
+            }
+            // Fall back to generic JSON rendering
+            fmt_json_value(details)
+        }
+    }
 }
 
 // ────────────────────────────────────────────
@@ -1016,6 +1154,7 @@ mod comprehensive_tests {
             entity_id: Some("warning-789".to_string()),
             entity_name: Some("Security Alert #1234".to_string()),
             details: serde_json::json!({"severity": "high"}),
+            formatted_details: String::new(),
             workspace_id: Some("ws-111".to_string()),
             team_id: Some("team-security".to_string()),
             visibility: "team".to_string(),

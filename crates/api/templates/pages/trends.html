@@ -3,90 +3,6 @@
 
 {% block title %}Historical Trends — ApexIntel{% endblock %}
 
-{% block head %}
-<style>
-  .trends-filter-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    align-items: end;
-  }
-  .trends-filter-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-  .trends-filter-group label {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: rgb(var(--muted-foreground));
-  }
-  .trends-filter-group select,
-  .trends-filter-group input {
-    padding: 0.4rem 0.6rem;
-    font-size: 12px;
-    border: 1px solid rgb(var(--border));
-    border-radius: 2px;
-    background: rgb(var(--secondary));
-    color: rgb(var(--foreground));
-    min-width: 120px;
-  }
-  .trends-comparison-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-  }
-  @media (max-width: 640px) {
-    .trends-comparison-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-  .trends-comparison-card {
-    border: 1px solid rgb(var(--border));
-    border-radius: 4px;
-    padding: 1rem;
-    background: rgb(var(--card));
-  }
-  .trends-comparison-card h3 {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: rgb(var(--muted-foreground));
-    margin-bottom: 0.5rem;
-  }
-  .trends-summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 0.75rem;
-  }
-  .trends-entity-table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-  .trends-entity-table th {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: rgb(var(--muted-foreground));
-    text-align: left;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid rgb(var(--border));
-  }
-  .trends-entity-table td {
-    font-size: 12px;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid rgb(var(--border));
-  }
-  .trends-entity-table tr:hover td {
-    background: rgb(var(--secondary));
-  }
-</style>
-{% endblock %}
-
 {% block content %}
 {% call m::page_header("Historical Trends", "bar-chart-3", "Long-term trend analysis across all metrics", "") %}
 
@@ -145,27 +61,27 @@
 <!-- ── Summary Stat Cards ──────────────────────────────────────────────── -->
 <div class="trends-summary-grid mb-6">
   <div class="apex-metric-card">
-    <div class="apex-metric-rail bg-blue-500"></div>
+    <div class="apex-metric-rail metric-rail-steel"></div>
     <p class="apex-metric-label">Total</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.total }}</p>
   </div>
   <div class="apex-metric-card">
-    <div class="apex-metric-rail bg-green-500"></div>
+    <div class="apex-metric-rail metric-rail-green"></div>
     <p class="apex-metric-label">Average</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ "{:.1}"|format(summary.average) }}</p>
   </div>
   <div class="apex-metric-card">
-    <div class="apex-metric-rail bg-amber-500"></div>
+    <div class="apex-metric-rail metric-rail-amber"></div>
     <p class="apex-metric-label">Min</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.min }}</p>
   </div>
   <div class="apex-metric-card">
-    <div class="apex-metric-rail bg-purple-500"></div>
+    <div class="apex-metric-rail metric-rail-violet"></div>
     <p class="apex-metric-label">Max</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.max }}</p>
   </div>
   <div class="apex-metric-card">
-    <div class="apex-metric-rail bg-gray-500"></div>
+    <div class="apex-metric-rail metric-rail-slate"></div>
     <p class="apex-metric-label">Data Points</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.data_points }}</p>
   </div>
@@ -181,7 +97,7 @@
   <div class="apex-card-body">
     {% if data_points.is_empty() %}
     <div class="apex-card p-8 text-center">
-      <p class="text-sm font-semibold text-muted-foreground">No trend data available for the selected period. Run the trend aggregation job to populate data.</p>
+      <p class="text-sm font-semibold text-rams-muted">No trend data available for the selected period. Run the trend aggregation job to populate data.</p>
     </div>
     {% else %}
     <div class="overflow-x-auto">
@@ -189,18 +105,18 @@
         <desc>Bar chart showing {{ selected_metric }} trend over {{ bar_count }} buckets</desc>
 
         <!-- Grid lines -->
-        <line x1="{{ pad }}" y1="{{ pad }}" x2="{{ pad + plot_w }}" y2="{{ pad }}" stroke="rgb(var(--border))" stroke-width="0.5" stroke-dasharray="4 4"/>
-        <line x1="{{ pad }}" y1="{{ pad + plot_h / 2 }}" x2="{{ pad + plot_w }}" y2="{{ pad + plot_h / 2 }}" stroke="rgb(var(--border))" stroke-width="0.5" stroke-dasharray="4 4"/>
-        <line x1="{{ pad }}" y1="{{ pad + plot_h }}" x2="{{ pad + plot_w }}" y2="{{ pad + plot_h }}" stroke="rgb(var(--border))" stroke-width="1"/>
+        <line x1="{{ pad }}" y1="{{ pad }}" x2="{{ pad + plot_w }}" y2="{{ pad }}" stroke="rgb(var(--rams-line))" stroke-width="0.5" stroke-dasharray="4 4"/>
+        <line x1="{{ pad }}" y1="{{ pad + plot_h / 2 }}" x2="{{ pad + plot_w }}" y2="{{ pad + plot_h / 2 }}" stroke="rgb(var(--rams-line))" stroke-width="0.5" stroke-dasharray="4 4"/>
+        <line x1="{{ pad }}" y1="{{ pad + plot_h }}" x2="{{ pad + plot_w }}" y2="{{ pad + plot_h }}" stroke="rgb(var(--rams-line))" stroke-width="1"/>
 
         <!-- Y-axis labels -->
-        <text x="{{ pad - 4 }}" y="{{ pad + plot_h }}" text-anchor="end" font-size="9" fill="rgb(var(--muted-foreground))">0</text>
-        <text x="{{ pad - 4 }}" y="{{ pad + plot_h / 2 + 3 }}" text-anchor="end" font-size="9" fill="rgb(var(--muted-foreground))">{{ max_val_half }}</text>
-        <text x="{{ pad - 4 }}" y="{{ pad + 3 }}" text-anchor="end" font-size="9" fill="rgb(var(--muted-foreground))">{{ max_val }}</text>
+        <text x="{{ pad - 4 }}" y="{{ pad + plot_h }}" text-anchor="end" font-size="9" fill="rgb(var(--rams-muted))">0</text>
+        <text x="{{ pad - 4 }}" y="{{ pad + plot_h / 2 + 3 }}" text-anchor="end" font-size="9" fill="rgb(var(--rams-muted))">{{ max_val_half }}</text>
+        <text x="{{ pad - 4 }}" y="{{ pad + 3 }}" text-anchor="end" font-size="9" fill="rgb(var(--rams-muted))">{{ max_val }}</text>
 
         <!-- Bars (pre-computed positions) -->
         {% for bar in bar_data %}
-        <rect x="{{ bar.x }}" y="{{ bar.y }}" width="{{ bar.bar_w }}" height="{{ bar.bar_h }}" rx="2" fill="rgb(59, 130, 246)" opacity="0.85">
+        <rect x="{{ bar.x }}" y="{{ bar.y }}" width="{{ bar.bar_w }}" height="{{ bar.bar_h }}" rx="2" fill="rgb(var(--rams-steel))" opacity="0.85">
           <title>{{ bar.date }}: {{ bar.value }}</title>
         </rect>
         {% endfor %}
@@ -217,7 +133,7 @@
     <h3>{{ mom.label }}</h3>
     <div class="flex items-center justify-between mt-2">
       <div>
-        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Current</p>
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Current</p>
         <p class="text-lg font-black">{{ mom.current_total }}</p>
       </div>
       <div class="text-center">
@@ -234,12 +150,12 @@
         </svg>
       </div>
       <div class="text-right">
-        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Previous</p>
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Previous</p>
         <p class="text-lg font-black">{{ mom.previous_total }}</p>
       </div>
     </div>
-    <div class="flex items-center justify-between mt-3 pt-3 border-t border-border">
-      <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Change</span>
+    <div class="flex items-center justify-between mt-3 pt-3 border-t border-rams-line">
+      <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Change</span>
       <span class="text-sm font-black {{ mom.direction_class }}">
         {{ mom.change_pct }} ({{ mom.change_abs }})
       </span>
@@ -252,7 +168,7 @@
     <h3>{{ yoy.label }}</h3>
     <div class="flex items-center justify-between mt-2">
       <div>
-        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Current</p>
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Current</p>
         <p class="text-lg font-black">{{ yoy.current_total }}</p>
       </div>
       <div class="text-center">
@@ -269,12 +185,12 @@
         </svg>
       </div>
       <div class="text-right">
-        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Previous</p>
+        <p class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Previous</p>
         <p class="text-lg font-black">{{ yoy.previous_total }}</p>
       </div>
     </div>
-    <div class="flex items-center justify-between mt-3 pt-3 border-t border-border">
-      <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">Change</span>
+    <div class="flex items-center justify-between mt-3 pt-3 border-t border-rams-line">
+      <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Change</span>
       <span class="text-sm font-black {{ yoy.direction_class }}">
         {{ yoy.change_pct }} ({{ yoy.change_abs }})
       </span>

@@ -6,21 +6,21 @@
   <div class="overflow-x-auto">
   <table class="w-full min-w-[44rem]">
     <thead>
-      <tr class="border-b border-border">
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">CVE</th>
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Name</th>
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Vendor</th>
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Due Date</th>
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-muted-foreground">Affected</th>
+      <tr class="border-b border-rams-line">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-rams-muted">CVE</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-rams-muted">Name</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-rams-muted">Vendor</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-rams-muted">Due Date</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase text-rams-muted">Affected</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-border">
+    <tbody class="divide-y divide-rams-line">
       {% for k in kev_items %}
-      <tr class="hover:bg-muted/30 transition-colors">
+      <tr class="hover:bg-rams-panel">
         <td class="px-4 py-2 text-sm font-mono font-bold">{{ k.cve_id }}</td>
         <td class="px-4 py-2 text-sm">{{ k.name }}</td>
         <td class="px-4 py-2 text-[11px]">{{ k.vendor }} / {{ k.product }}</td>
-        <td class="px-4 py-2 text-[11px] tabular-nums text-muted-foreground">{{ k.due_date }}</td>
+        <td class="px-4 py-2 text-[11px] tabular-nums text-rams-muted">{{ k.due_date }}</td>
         <td class="px-4 py-2">
           <div class="flex flex-wrap gap-1">
             {% for co in k.relevant_companies %}
@@ -34,6 +34,6 @@
   </table>
   </div>
   {% else %}
-  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No known exploited vulnerabilities tracked</p>
+  <p class="px-4 py-6 text-center text-sm text-rams-muted">No known exploited vulnerabilities tracked</p>
   {% endif %}
 </div>

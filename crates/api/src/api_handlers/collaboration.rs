@@ -198,6 +198,10 @@ fn assignment_from_record(r: WorkspaceAssignmentRecord) -> WorkspaceAssignment {
 }
 
 fn activity_from_record(r: ActivityFeedRecord) -> ActivityEntry {
+    let formatted_details = apex_api::routes::collaboration::format_activity_details(
+        &r.action_type,
+        &r.details,
+    );
     ActivityEntry {
         id: r.id.to_string(),
         actor_id: r.actor_id,
@@ -207,6 +211,7 @@ fn activity_from_record(r: ActivityFeedRecord) -> ActivityEntry {
         entity_id: r.entity_id.map(|u| u.to_string()),
         entity_name: r.entity_name,
         details: r.details,
+        formatted_details,
         workspace_id: r.workspace_id.map(|u| u.to_string()),
         team_id: r.team_id,
         visibility: r.visibility,

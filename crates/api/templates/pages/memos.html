@@ -4,196 +4,22 @@
 {% block title %}Memos — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Memos</li>
+    <li class="text-rams-foreground" aria-current="page">Memos</li>
   </ol>
 </nav>
 {% endblock %}
 
 {% block content %}
-{% if briefing_mode %}
-<div class="mb-4 flex flex-wrap items-center justify-between gap-4 no-print">
-  <div>
-    <h1>Executive Briefing</h1>
-    <p class="mt-2 text-sm text-muted-foreground">Print and PDF-friendly weekly memo layout.</p>
+<div id="main-results"
+     hx-get="/memos/_list"
+     hx-trigger="load once, refreshMemos from:body"
+     hx-indicator="#memos-loading">
+  <div id="memos-loading" class="htmx-indicator flex justify-center py-12">
+    <span class="apex-spinner apex-spinner-md" aria-label="Loading memos…" role="status"></span>
   </div>
-  <div class="flex flex-wrap items-center gap-2">
-    <a href="/memos" class="mobile-toolbar-control apex-btn apex-btn-secondary">Interactive View</a>
-    <button type="button" class="mobile-toolbar-control apex-btn apex-btn-primary">Print / PDF</button>
-  </div>
-</div>
-{% endif %}
-{% call m::page_header("Strategy Memos", "file-text", "Weekly strategy memos for executive review.", "") %}
-
-{% if let Some(latest) = memos.first() %}
-<div class="briefing-page apex-card p-6 mb-6 border-l-4 border-l-primary">
-  <div class="mb-4 flex flex-wrap items-start justify-between gap-4">
-    <div>
-      <h3 class="text-xl font-black uppercase">{{ latest.title }}</h3>
-      <p class="text-sm text-muted-foreground mt-1">Period: {{ latest.week_start }} • {{ latest.week_end }}</p>
-      <p class="text-xs text-muted-foreground mt-1">Generated: {{ latest.created_at }}</p>
-    </div>
-    <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
-      {% if !briefing_mode %}
-      <a href="/memos?briefing=true" class="mobile-toolbar-control no-print apex-btn apex-btn-secondary">Briefing Layout</a>
-      {% endif %}
-      <span class="mobile-inline-chip apex-badge apex-badge-success"><span class="apex-badge-dot"></span>Current</span>
-    </div>
-  </div>
-
-  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-    <div class="rounded-sm border border-border bg-secondary/50 p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Warnings</p>
-      <span class="text-lg font-black tabular-nums">{{ latest.warning_count }}</span>
-    </div>
-    <div class="rounded-sm border border-border bg-secondary/50 p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Insights</p>
-      <span class="text-lg font-black tabular-nums">{{ latest.insight_count }}</span>
-    </div>
-    <div class="rounded-sm border border-border bg-secondary/50 p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Key Findings</p>
-      <span class="text-lg font-black tabular-nums">{{ latest.key_findings.len() }}</span>
-    </div>
-    <div class="rounded-sm border border-border bg-secondary/50 p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Sections</p>
-      <span class="text-lg font-black tabular-nums">{{ latest.sections.len() }}</span>
-    </div>
-    <div class="rounded-sm border border-border bg-secondary/50 p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Week Start</p>
-      <span class="text-sm font-black tabular-nums">{{ latest.week_start }}</span>
-    </div>
-    <div class="rounded-sm border border-border bg-secondary/50 p-3">
-      <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Week End</p>
-      <span class="text-sm font-black tabular-nums">{{ latest.week_end }}</span>
-    </div>
-  </div>
-</div>
-
-<div class="grid gap-4 lg:grid-cols-2 mb-6">
-  {% for section in latest.sections %}
-  <div class="apex-card p-4">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-2">{{ section.heading }}</h2>
-    <p class="text-sm leading-relaxed text-muted-foreground">{{ section.body }}</p>
-  </div>
-  {% endfor %}
-</div>
-
-<div class="apex-card mb-6">
-  <div class="border-b border-border px-4 py-3">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em]">Priority Actions</h2>
-  </div>
-  <div class="overflow-x-auto p-0">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th class="w-16">Priority</th>
-          <th>Action</th>
-          <th class="w-28">Deadline</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for finding in latest.key_findings %}
-        <tr>
-          <td><span class="rounded-sm border border-border bg-secondary px-2 py-1 text-[10px] font-black uppercase">P1</span></td>
-          <td class="text-sm">{{ finding }}</td>
-          <td class="text-sm tabular-nums">{{ latest.week_end }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-
-{% if !briefing_mode %}
-<div class="apex-card p-4">
-  <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Past Memos</h2>
-  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-    {% for memo in memos %}
-      {% if loop.index > 1 && loop.index <= 9 %}
-      <div class="rounded-sm border border-border bg-secondary/30 p-3 hover:bg-secondary">
-        <p class="text-sm font-bold">{{ memo.title }}</p>
-        <p class="text-xs text-muted-foreground mt-1">{{ memo.week_start }} – {{ memo.week_end }}</p>
-        <div class="flex items-center gap-3 mt-2 text-[10px] text-muted-foreground">
-          <span>{{ memo.key_findings.len() }} highlights</span>
-          <span>•</span>
-          <span>{{ memo.sections.len() }} sections</span>
-        </div>
-      </div>
-      {% endif %}
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
-{% else %}
-  {% call m::empty_state("No Memos", "No weekly memos have been generated yet.") %}
-
-  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mt-6">
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-[0.12em] mb-2">What are memos?</h3>
-      <p class="text-sm text-muted-foreground leading-relaxed">Weekly strategy memos are generated automatically every Monday. They summarize the most important warnings, insights, and competitor changes from the past 7 days.</p>
-    </div>
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-[0.12em] mb-2">Key sections</h3>
-      <ul class="space-y-1.5 text-sm text-muted-foreground">
-        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-primary"></span>Executive Summary</li>
-        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-red"></span>Critical Warnings</li>
-        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-orange"></span>Market Insights</li>
-        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-green"></span>Competitor Moves</li>
-        <li class="flex items-center gap-2"><span class="apex-dot apex-dot-steel"></span>Priority Actions</li>
-      </ul>
-    </div>
-    <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-[0.12em] mb-2">Getting started</h3>
-      <p class="text-sm text-muted-foreground leading-relaxed">Ensure data ingestion is running and at least one week of warnings or insights has been collected. The first memo will generate automatically on the next scheduled run.</p>
-    </div>
-  </div>
-
-  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mt-6">
-    <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 h-1 w-full metric-rail-steel"></div>
-      <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Total Memos</p>
-      <p class="mt-1.5 apex-metric-number text-2xl">0</p>
-    </div>
-    <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 h-1 w-full metric-rail-green"></div>
-      <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">This Period</p>
-      <p class="mt-1.5 apex-metric-number text-2xl">—</p>
-    </div>
-    <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 h-1 w-full metric-rail-orange"></div>
-      <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Avg Actions</p>
-      <p class="mt-1.5 apex-metric-number text-2xl">—</p>
-    </div>
-    <div class="apex-card p-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 h-1 w-full metric-rail-red"></div>
-      <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Schedule</p>
-      <p class="mt-1.5 apex-metric-number text-2xl">Weekly</p>
-    </div>
-  </div>
-{% endif %}
-
-<div class="mt-6 space-y-4 {% if briefing_mode %}no-print{% endif %}">
-  {% for memo in memos %}
-    {% if loop.index > 9 && loop.index <= 12 %}
-    <div class="apex-card">
-      <div class="border-b border-border px-4 py-3 flex items-center justify-between">
-        <div>
-          <h2 class="text-sm font-semibold">{{ memo.title }}</h2>
-          <p class="text-[10px] text-muted-foreground">{{ memo.week_start }} – {{ memo.week_end }}</p>
-        </div>
-        <div class="flex gap-2 text-[10px] text-muted-foreground">
-          <span>{{ memo.warning_count }} warnings</span>
-          <span>{{ memo.insight_count }} insights</span>
-        </div>
-      </div>
-      <div class="px-4 py-3">
-        <p class="text-sm leading-relaxed">{{ memo.summary }}</p>
-      </div>
-    </div>
-    {% endif %}
-  {% endfor %}
 </div>
 {% endblock %}

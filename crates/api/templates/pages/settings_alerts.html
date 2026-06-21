@@ -4,13 +4,13 @@
 {% block title %}Alert Settings — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li><a href="/settings" class="hover:text-foreground">Settings</a></li>
+    <li><a href="/settings" class="hover:text-rams-foreground">Settings</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">Alert Thresholds</li>
+    <li class="text-rams-foreground" aria-current="page">Alert Thresholds</li>
   </ol>
 </nav>
 {% endblock %}
@@ -28,13 +28,13 @@
 <div class="grid gap-6">
   {# ── Global Defaults ─────────────────────────────────────────────────── #}
   <div class="apex-card" id="global-defaults">
-    <div class="border-b border-border px-4 py-3">
+    <div class="border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Global Defaults</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Minimum Severity</span>
-        <select id="global-min-severity" class="h-7 w-40 rounded border border-border bg-background px-2 text-xs">
+        <select id="global-min-severity" class="h-7 w-40 rounded border border-rams-line bg-rams-chassis px-2 text-xs">
           <option value="info"{% if global_min_severity == "info" %} selected{% endif %}>Info</option>
           <option value="low"{% if global_min_severity == "low" %} selected{% endif %}>Low</option>
           <option value="medium"{% if global_min_severity == "medium" %} selected{% endif %}>Medium</option>
@@ -44,75 +44,75 @@
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Cooldown (minutes)</span>
-        <input type="number" id="global-cooldown" value="{{ global_cooldown }}" class="h-7 w-24 rounded border border-border bg-background px-2 text-xs" min="0" max="1440" />
+        <input type="number" id="global-cooldown" value="{{ global_cooldown }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="1440" />
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Max Daily Alerts</span>
-        <input type="number" id="global-max-daily" value="{{ global_max_daily }}" class="h-7 w-24 rounded border border-border bg-background px-2 text-xs" min="0" max="10000" />
+        <input type="number" id="global-max-daily" value="{{ global_max_daily }}" class="h-7 w-24 rounded border border-rams-line bg-rams-chassis px-2 text-xs" min="0" max="10000" />
       </div>
       <div class="flex items-center justify-between px-4 py-3">
         <span class="text-sm font-bold">Enabled Channels</span>
         <div class="flex gap-3">
-          <label class="flex items-center gap-1.5 text-xs">
+          <label class="flex items-center gap-2 text-xs">
             <input type="checkbox" class="channel-checkbox" value="in_app"{% if global_channels_in_app %} checked{% endif %} /> In-App
           </label>
-          <label class="flex items-center gap-1.5 text-xs">
+          <label class="flex items-center gap-2 text-xs">
             <input type="checkbox" class="channel-checkbox" value="email"{% if global_channels_email %} checked{% endif %} /> Email
           </label>
-          <label class="flex items-center gap-1.5 text-xs">
+          <label class="flex items-center gap-2 text-xs">
             <input type="checkbox" class="channel-checkbox" value="slack"{% if global_channels_slack %} checked{% endif %} /> Slack
           </label>
-          <label class="flex items-center gap-1.5 text-xs">
+          <label class="flex items-center gap-2 text-xs">
             <input type="checkbox" class="channel-checkbox" value="webhook"{% if global_channels_webhook %} checked{% endif %} /> Webhook
           </label>
         </div>
       </div>
     </div>
-    <div class="border-t border-border px-4 py-3 flex justify-end">
+    <div class="border-t border-rams-line px-4 py-3 flex justify-end">
       <button id="save-global-defaults" class="apex-btn apex-btn-primary text-xs h-7 px-4">Save Global Defaults</button>
     </div>
   </div>
 
   {# ── Entity Overrides ───────────────────────────────────────────────── #}
   <div class="apex-card" id="entity-overrides">
-    <div class="border-b border-border px-4 py-3 flex items-center justify-between">
+    <div class="border-b border-rams-line px-4 py-3 flex items-center justify-between">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Entity Overrides</h2>
-      <span class="text-[10px] text-muted-foreground">{{ entity_count }} configured</span>
+      <span class="text-[10px] text-rams-muted">{{ entity_count }} configured</span>
     </div>
     {% if entity_configs.is_empty() %}
     <div class="p-8 text-center">
-      <p class="text-xs text-muted-foreground">No entity-specific overrides yet. All entities use global defaults.</p>
-      <p class="text-xs text-muted-foreground mt-1">Set an override via the entity detail page or the API.</p>
+      <p class="text-xs text-rams-muted">No entity-specific overrides yet. All entities use global defaults.</p>
+      <p class="text-xs text-rams-muted mt-1">Set an override via the entity detail page or the API.</p>
     </div>
     {% else %}
     <div class="overflow-x-auto">
       <table class="w-full text-xs">
         <thead>
-          <tr class="border-b border-border bg-muted/30">
-            <th class="px-4 py-2.5 text-left font-black uppercase tracking-[0.1em]">Entity ID</th>
-            <th class="px-4 py-2.5 text-left font-black uppercase tracking-[0.1em]">Min Severity</th>
-            <th class="px-4 py-2.5 text-left font-black uppercase tracking-[0.1em]">Cooldown</th>
-            <th class="px-4 py-2.5 text-left font-black uppercase tracking-[0.1em]">Max Daily</th>
-            <th class="px-4 py-2.5 text-left font-black uppercase tracking-[0.1em]">Enabled</th>
-            <th class="px-4 py-2.5 text-right font-black uppercase tracking-[0.1em]">Actions</th>
+          <tr class="border-b border-rams-line bg-rams-panel">
+            <th class="px-4 py-3 text-left font-black uppercase tracking-[0.1em]">Entity ID</th>
+            <th class="px-4 py-3 text-left font-black uppercase tracking-[0.1em]">Min Severity</th>
+            <th class="px-4 py-3 text-left font-black uppercase tracking-[0.1em]">Cooldown</th>
+            <th class="px-4 py-3 text-left font-black uppercase tracking-[0.1em]">Max Daily</th>
+            <th class="px-4 py-3 text-left font-black uppercase tracking-[0.1em]">Enabled</th>
+            <th class="px-4 py-3 text-right font-black uppercase tracking-[0.1em]">Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for cfg in entity_configs %}
-          <tr class="border-b border-border hover:bg-muted/20">
-            <td class="px-4 py-2.5 font-mono text-[10px]">{{ cfg.entity_id }}</td>
-            <td class="px-4 py-2.5">{{ cfg.min_severity.as_str() }}</td>
-            <td class="px-4 py-2.5">{{ cfg.cooldown_minutes }}m</td>
-            <td class="px-4 py-2.5">{{ cfg.max_daily_alerts }}</td>
-            <td class="px-4 py-2.5">
+          <tr class="border-b border-rams-line hover:bg-rams-panel">
+            <td class="px-4 py-3 font-mono text-[10px]">{{ cfg.entity_id }}</td>
+            <td class="px-4 py-3">{{ cfg.min_severity.as_str() }}</td>
+            <td class="px-4 py-3">{{ cfg.cooldown_minutes }}m</td>
+            <td class="px-4 py-3">{{ cfg.max_daily_alerts }}</td>
+            <td class="px-4 py-3">
               {% if cfg.enabled %}
-              <span class="inline-flex items-center gap-1 rounded bg-green-900/30 px-1.5 py-0.5 text-[10px] font-black uppercase text-green-400">Active</span>
+              <span class="inline-flex items-center gap-1 rounded-sm bg-rams-green/20 px-2 py-1 text-[10px] font-black uppercase text-rams-green">Active</span>
               {% else %}
-              <span class="inline-flex items-center gap-1 rounded bg-red-900/30 px-1.5 py-0.5 text-[10px] font-black uppercase text-red-400">Disabled</span>
+              <span class="inline-flex items-center gap-1 rounded-sm bg-rams-red/20 px-2 py-1 text-[10px] font-black uppercase text-rams-red">Disabled</span>
               {% endif %}
             </td>
-            <td class="px-4 py-2.5 text-right">
-              <button class="delete-entity-config text-[10px] font-black uppercase text-red-400 hover:text-red-300" data-entity-id="{{ cfg.entity_id }}">Delete</button>
+            <td class="px-4 py-3 text-right">
+              <button class="delete-entity-config text-[10px] font-black uppercase text-rams-red hover:text-rams-red/80" data-entity-id="{{ cfg.entity_id }}">Delete</button>
             </td>
           </tr>
           {% endfor %}
@@ -182,7 +182,7 @@
 
   function showToast(msg, type) {
     const el = document.createElement('div');
-    el.className = `fixed top-4 right-4 z-50 px-4 py-2 rounded text-xs font-bold shadow-lg ${type === 'success' ? 'bg-green-900 text-green-200' : 'bg-red-900 text-red-200'}`;
+    el.className = `fixed top-4 right-4 z-50 px-4 py-2 rounded-sm text-xs font-bold ${type === 'success' ? 'bg-rams-green/20 text-rams-green' : 'bg-rams-red/20 text-rams-red'}`;
     el.textContent = msg;
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 3000);

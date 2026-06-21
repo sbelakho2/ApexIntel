@@ -13,6 +13,7 @@ pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) 
     let ctx = StorageContext {
         store: PgStore::from_pool(store.pool.clone()),
         run_timestamp: Utc::now(),
+        activity_logger: ActivityLogger::new(store.pool.clone()),
     };
     if let Err(e) = super::resilience::run_stage_with_retry(
         "weekly_pipeline.persist_metrics",
@@ -87,6 +88,16 @@ pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) 
         &Default::default(),
         &Default::default(),
     );
+    // Surface each promoted recipe in the activity feed so analysts can see
+    // the promotion board acting in real time (previously these events were
+    // computed but never logged — the log_recipe_promoted method was dead code).
+    if let Some(promo) = report.promotion_result.as_ref() {
+        for (recipe_code, _reason) in &promo.promoted {
+            ctx.activity_logger
+                .log_recipe_promoted(recipe_code, "promotion_board")
+                .await;
+        }
+    }
     if report.overall_success {
         let items = match kind {
             JobKind::PromotionBoard => report
@@ -356,6 +367,10 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                         sections = section_count,
                         "strategy_memo: memo persisted to weekly_memos"
                     );
+                    // Surface the generated memo in the activity feed.
+                    let memo_logger =
+                        apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+                    memo_logger.log_memo_generated(&title, card_count as u32).await;
                 }
                 run.succeed(
                     section_count as u64,

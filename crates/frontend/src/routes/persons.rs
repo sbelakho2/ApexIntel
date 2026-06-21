@@ -50,7 +50,7 @@ pub fn PersonsPage() -> impl IntoView {
                             <div class="timeline-list">
                                 <For each=move || payload.items.clone() key=|item| item.id.clone() let:item>
                                     <article class="timeline-item">
-                                        <A class="inline-link" href=format!("/persons/{}", item.id)>{item.name.clone()}</A>
+                                        <A class="inline-link" href=format!("/wasm/persons/{}", item.id)>{item.name.clone()}</A>
                                         <span class="muted-copy">{format!("{} · {} · {}", item.role, item.organization, item.region)}</span>
                                         <span class="muted-copy">{format!("Priority {} · influence {}", item.priority, item.influence_score)}</span>
                                     </article>

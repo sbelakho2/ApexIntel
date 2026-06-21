@@ -20,6 +20,9 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 # Threat intelligence integration
 apex-threat-intel = { workspace = true }
 
+# POI profiling - real data extraction
+apex-poi = { path = "../poi" }
+
 # Async runtime
 tokio = { version = "1.0", features = ["rt", "macros"] }
 

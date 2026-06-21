@@ -905,46 +905,89 @@ impl DeepInsightGenerator {
         }
     }
 
-    /// Generate actionable recommendations.
+    /// Generate actionable recommendations with role-aware stakeholder targeting.
+    ///
+    /// Maps insight risk categories to the correct decision-makers:
+    /// - SupplyChain → Supply Chain Director / Head of Procurement
+    /// - Regulatory → Compliance Officer / Legal Counsel
+    /// - Competitive → Market Intelligence Lead / Sales Director
+    /// - Security → CISO / IT Operations Lead
+    /// - Financial → Finance Director
+    /// - Operational → Operations Director
+    /// - Reputational → Communications Director
+    ///
+    /// Never defaults to generic "Executive Leadership" or "CEO" — always
+    /// targets the role-specific person who can act on the insight.
     fn generate_recommendations(&self, insight: &mut DeepInsight) {
         // Only generate recommendations if confidence meets threshold
         if insight.confidence < self.config.action_confidence_threshold {
             return;
         }
 
+        // Determine the best primary stakeholder from risk categories
+        let primary = self.primary_stakeholder(insight);
+        let secondary = self.secondary_stakeholder(insight);
+
         // Generate based on severity
         match insight.severity {
             InsightSeverityLevel::Critical | InsightSeverityLevel::High => {
-                // Add immediate action recommendations
+                // Immediate action recommendation with role-specific stakeholders
                 insight.add_recommendation(
                     ActionRecommendation::new(
                         "Immediate Investigation Required",
                         format!(
-                            "High confidence ({:.0}%) and {} corroborating sources indicate this \
-                            insight warrants immediate investigation and stakeholder notification.",
+                            "High confidence ({:.0}%) and {} corroborating sources indicate \
+                            this insight warrants immediate investigation. Notify {} and {}.",
                             insight.confidence * 100.0,
-                            insight.corroboration_count
+                            insight.corroboration_count,
+                            primary,
+                            secondary
                         )
                     )
                     .with_priority(ActionPriority::Critical)
                     .with_impact(0.9)
                     .add_stakeholder("Intelligence Team")
-                    .add_stakeholder("Executive Leadership")
+                    .add_stakeholder(primary)
+                    .add_stakeholder(secondary)
                 );
 
-                // Risk-specific recommendations
+                // Use entity-specific stakeholders from evidence
+                if !insight.entities.is_empty() {
+                    let mut entity_rec = ActionRecommendation::new(
+                        "Notify Affected Entities",
+                        format!(
+                            "Entities flagged by this insight: {}. {} to coordinate notification.",
+                            insight.entities.join(", "),
+                            primary
+                        )
+                    )
+                    .with_priority(ActionPriority::High)
+                    .with_impact(0.7)
+                    .add_stakeholder(primary);
+                    for entity in &insight.entities {
+                        entity_rec = entity_rec.add_stakeholder(entity.as_str());
+                    }
+                    insight.add_recommendation(entity_rec);
+                }
+
+                // Risk-specific recommendations with role-appropriate owners
                 let mut risk_recommendations = Vec::new();
                 for risk in &insight.risk_factors {
+                    let owner = risk_owner_for_category(&risk.category);
                     let rec = ActionRecommendation::new(
                         format!("Mitigate {} Risk", risk.category.label()),
                         format!(
-                            "Address {} risk with {} supporting evidence indicators.",
+                            "Address {} risk with {} supporting evidence indicators. \
+                            Primary owner: {}.",
                             risk.category.label(),
-                            risk.supporting_evidence.len()
+                            risk.supporting_evidence.len(),
+                            owner
                         )
                     )
                     .with_priority(ActionPriority::High)
                     .with_impact(risk.severity)
+                    .add_stakeholder(owner)
+                    .add_stakeholder(primary)
                     .add_metric("Risk factor resolved or mitigated");
                     risk_recommendations.push(rec);
                 }
@@ -953,21 +996,48 @@ impl DeepInsightGenerator {
                 }
             }
             _ => {
-                // Lower priority recommendations
+                // Monitor recommendation with role-specific owner
                 insight.add_recommendation(
                     ActionRecommendation::new(
                         "Monitor Situation",
                         format!(
-                            "Continue monitoring this development. Confidence level is {:.0}% \
-                            with {} source(s) providing corroboration.",
+                            "{} to continue monitoring this development. \
+                            Confidence is {:.0}% with {} corroborating source(s).",
+                            primary,
                             insight.confidence * 100.0,
                             insight.corroboration_count
                         )
                     )
                     .with_priority(ActionPriority::Medium)
                     .with_impact(0.5)
+                    .add_stakeholder(primary)
                 );
             }
+        }
+    }
+
+    /// Determine the primary stakeholder from the dominant risk category.
+    fn primary_stakeholder(&self, insight: &DeepInsight) -> &'static str {
+        if let Some(risk) = insight.risk_factors.first() {
+            return risk_owner_for_category(&risk.category);
+        }
+        "Relevant Department Head"
+    }
+
+    /// Determine the secondary stakeholder for cross-functional awareness.
+    fn secondary_stakeholder(&self, insight: &DeepInsight) -> &'static str {
+        if let Some(risk) = insight.risk_factors.first() {
+            match risk.category {
+                RiskCategory::SupplyChain => "Head of Procurement",
+                RiskCategory::Regulatory => "Legal Counsel",
+                RiskCategory::Security => "IT Operations Lead",
+                RiskCategory::Competitive => "Sales Director",
+                RiskCategory::Financial => "Operations Director",
+                RiskCategory::Reputational => "Public Relations Lead",
+                _ => "Operations Manager",
+            }
+        } else {
+            "Operations Manager"
         }
     }
 
@@ -986,6 +1056,23 @@ impl Default for DeepInsightGenerator {
 // ============================================================================
 // Utility Functions
 // ============================================================================
+
+/// Maps a risk category to the correct stakeholder for ownership.
+/// Never defaults to "Executive Leadership" or "CEO".
+fn risk_owner_for_category(category: &RiskCategory) -> &'static str {
+    match category {
+        RiskCategory::SupplyChain => "Supply Chain Director",
+        RiskCategory::Regulatory => "Compliance Officer",
+        RiskCategory::Security => "CISO",
+        RiskCategory::Competitive => "Market Intelligence Lead",
+        RiskCategory::Financial => "Finance Director",
+        RiskCategory::Reputational => "Communications Director",
+        RiskCategory::Geopolitical => "Geopolitical Risk Lead",
+        RiskCategory::Environmental => "Sustainability Director",
+        RiskCategory::Legal => "General Counsel",
+        RiskCategory::Strategic => "Strategy Director",
+    }
+}
 
 fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {

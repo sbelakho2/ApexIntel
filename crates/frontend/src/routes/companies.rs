@@ -39,7 +39,7 @@ pub fn CompaniesPage() -> impl IntoView {
                             <div class="timeline-list">
                                 <For each=move || payload.items.clone() key=|item| item.id.clone() let:item>
                                     <article class="timeline-item">
-                                        <A class="inline-link" href=format!("/companies/{}", item.id)>{item.name.clone()}</A>
+                                        <A class="inline-link" href=format!("/wasm/companies/{}", item.id)>{item.name.clone()}</A>
                                         <span class="muted-copy">{format!("{} · {} · {}", item.entity_type, item.region, item.country)}</span>
                                         <span class="muted-copy">{format!("Threat {} · updated {}", item.threat_score.unwrap_or_default(), item.updated_at)}</span>
                                         <Show when=move || item.source_entropy.is_some()>

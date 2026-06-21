@@ -4,13 +4,13 @@
 {% block title %}{{ name }} — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li><a href="/companies" class="hover:text-foreground">Companies</a></li>
+    <li><a href="/companies" class="hover:text-rams-foreground">Companies</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">{{ name }}</li>
+    <li class="text-rams-foreground" aria-current="page">{{ name }}</li>
   </ol>
 </nav>
 {% endblock %}
@@ -22,16 +22,16 @@
       <h1>{{ name }}</h1>
       <div class="mt-2 flex items-center gap-2">
         {% call m::region_badge(region) %}
-        <span class="text-[11px] text-muted-foreground">{{ sector }}</span>
+        <span class="text-[11px] text-rams-muted">{{ sector }}</span>
         {% if is_competitor %}<span class="text-[10px] font-bold uppercase apex-text-competitor">Competitor</span>{% endif %}
       </div>
     </div>
     <div class="flex items-center gap-3">
       {% if !briefing_mode %}
-      <a href="/companies/{{ id }}?briefing=true" class="no-print rounded-sm border border-border bg-secondary px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-foreground">Briefing</a>
+      <a href="/companies/{{ id }}?briefing=true" class="no-print rounded-rams-sm border border-rams-line bg-rams-panel px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] hover:text-rams-foreground">Briefing</a>
       {% else %}
       <a href="/api/companies/{{ id }}/dossier/pdf"
-         class="no-print rounded-sm border border-primary/40 bg-primary/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-primary"
+         class="no-print rounded-rams-sm border border-rams-orange/40 bg-rams-orange/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-rams-orange"
          download>Export PDF</a>
       {% endif %}
       {% call m::score_ring(risk_score, 48) %}
@@ -44,9 +44,9 @@
     <p class="mt-2 text-[11px]"><a href="{{ website_url }}" class="apex-link-steel hover:underline" target="_blank" rel="noopener noreferrer">{{ website }}</a></p>
     {% endif %}
     <div class="mt-4 grid grid-cols-3 gap-4 text-[11px]">
-      <div><span class="font-black uppercase text-muted-foreground">Warnings</span><br>{{ total_warnings }}</div>
-      <div><span class="font-black uppercase text-muted-foreground">Insights</span><br>{{ total_insights }}</div>
-      <div><span class="font-black uppercase text-muted-foreground">Updated</span><br>{{ updated_at }}</div>
+      <div><span class="font-black uppercase text-rams-muted">Warnings</span><br>{{ total_warnings }}</div>
+      <div><span class="font-black uppercase text-rams-muted">Insights</span><br>{{ total_insights }}</div>
+      <div><span class="font-black uppercase text-rams-muted">Updated</span><br>{{ updated_at }}</div>
     </div>
   </div>
 
@@ -55,21 +55,21 @@
 
   {% if !warnings.is_empty() %}
   <div class="apex-card">
-    <div class="flex items-center justify-between border-b border-border px-4 py-3">
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Warnings</h2>
-      <span class="text-[10px] text-muted-foreground tabular-nums">{{ total_warnings }}</span>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ total_warnings }}</span>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for w in warnings %}
-      <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+      <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-rams-panel">
         <div class="flex items-center justify-between gap-2">
           <span class="text-sm font-semibold">{{ w.title }}</span>
-          <span class="shrink-0 text-[10px] text-muted-foreground tabular-nums">{{ w.created_at }}</span>
+          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ w.created_at }}</span>
         </div>
         <div class="mt-1 flex flex-wrap items-center gap-2">
           {% call m::severity_badge(w.severity) %}
-          <span class="text-[10px] text-muted-foreground">{{ w.warning_type }}</span>
-          <span class="text-[10px] text-muted-foreground tabular-nums">{{ w.confidence_pct }}% confidence</span>
+          <span class="text-[10px] text-rams-muted">{{ w.warning_type }}</span>
+          <span class="text-[10px] text-rams-muted tabular-nums">{{ w.confidence_pct }}% confidence</span>
         </div>
       </a>
       {% endfor %}
@@ -79,23 +79,23 @@
 
   {% if !insights.is_empty() %}
   <div class="apex-card">
-    <div class="flex items-center justify-between border-b border-border px-4 py-3">
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Insights</h2>
-      <span class="text-[10px] text-muted-foreground tabular-nums">{{ total_insights }}</span>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ total_insights }}</span>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for i in insights %}
-      <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+      <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-rams-panel">
         <div class="flex items-center justify-between gap-2">
           <span class="text-sm font-semibold">{{ i.title }}</span>
-          <span class="shrink-0 text-[10px] text-muted-foreground tabular-nums">{{ i.created_at }}</span>
+          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ i.created_at }}</span>
         </div>
         <div class="mt-1 flex flex-wrap items-center gap-2">
-          {% if !i.insight_type.is_empty() %}<span class="inline-flex items-center rounded-sm border border-border bg-secondary px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.insight_type }}</span>{% endif %}
-          <span class="text-[10px] text-muted-foreground tabular-nums">{{ i.confidence_pct }}% confidence</span>
+          {% if !i.insight_type.is_empty() %}<span class="inline-flex items-center rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.insight_type }}</span>{% endif %}
+          <span class="text-[10px] text-rams-muted tabular-nums">{{ i.confidence_pct }}% confidence</span>
         </div>
         {% if !i.summary.is_empty() %}
-        <p class="mt-1 text-[11px] text-muted-foreground line-clamp-2">{{ i.summary }}</p>
+        <p class="mt-1 text-[11px] text-rams-muted line-clamp-2">{{ i.summary }}</p>
         {% endif %}
       </a>
       {% endfor %}
@@ -105,16 +105,16 @@
 
   {% if !key_persons.is_empty() %}
   <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
+    <div class="border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Key Persons</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for p in key_persons %}
-      <a href="/persons/{{ p.person_id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+      <a href="/persons/{{ p.person_id }}" class="block px-4 py-3 hover:bg-rams-panel">
         <span class="text-sm font-semibold">{{ p.name }}</span>
-        <span class="ml-2 text-[11px] text-muted-foreground">{{ p.role }} since {{ p.since }}</span>
+        <span class="ml-2 text-[11px] text-rams-muted">{{ p.role }} since {{ p.since }}</span>
         {% if !p.background_snippet.is_empty() %}
-        <p class="mt-0.5 text-[10px] text-muted-foreground line-clamp-1">{{ p.background_snippet }}</p>
+        <p class="mt-0.5 text-[10px] text-rams-muted line-clamp-1">{{ p.background_snippet }}</p>
         {% endif %}
       </a>
       {% endfor %}
@@ -124,14 +124,14 @@
 
   {% if !sites.is_empty() %}
   <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
+    <div class="border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Sites</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for s in sites %}
       <div class="px-4 py-3">
         <span class="text-sm font-semibold">{{ s.name }}</span>
-        <span class="ml-2 text-[11px] text-muted-foreground">{{ s.location }} · {{ s.site_type }}</span>
+        <span class="ml-2 text-[11px] text-rams-muted">{{ s.location }} · {{ s.site_type }}</span>
       </div>
       {% endfor %}
     </div>
@@ -140,32 +140,32 @@
 
   {% if briefing_mode %}
   <div class="apex-card page-break-before">
-    <div class="border-b border-border px-4 py-3">
+    <div class="border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Changes</h2>
     </div>
     {% if !recent_events.is_empty() %}
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for ev in recent_events %}
       <div class="px-4 py-3">
         <div class="flex items-center justify-between">
           <span class="text-sm font-semibold">{{ ev.kind }}</span>
-          <span class="text-[10px] text-muted-foreground tabular-nums">{{ ev.date }}</span>
+          <span class="text-[10px] text-rams-muted tabular-nums">{{ ev.date }}</span>
         </div>
-        <p class="mt-1 text-[11px] text-muted-foreground">{{ ev.description }}</p>
+        <p class="mt-1 text-[11px] text-rams-muted">{{ ev.description }}</p>
       </div>
       {% endfor %}
     </div>
     {% else %}
-    <p class="px-4 py-6 text-center text-sm text-muted-foreground">No recent changes recorded</p>
+    <p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>
     {% endif %}
   </div>
 
   <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
+    <div class="border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Dossier</h2>
     </div>
     {% if !dossier_entries.is_empty() %}
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for entry in dossier_entries %}
       <div class="px-4 py-3">
         <div class="flex items-center justify-between">
@@ -173,70 +173,70 @@
           {% if entry.verified %}
           <span class="text-[9px] font-bold uppercase apex-text-positive">Verified</span>
           {% else %}
-          <span class="text-[9px] font-bold text-muted-foreground uppercase">Unverified</span>
+          <span class="text-[9px] font-bold text-rams-muted uppercase">Unverified</span>
           {% endif %}
         </div>
         <p class="mt-1 text-sm">{{ entry.value }}</p>
         {% if !entry.source.is_empty() %}
-        <p class="mt-0.5 text-[10px] text-muted-foreground">Source: {{ entry.source }}</p>
+        <p class="mt-0.5 text-[10px] text-rams-muted">Source: {{ entry.source }}</p>
         {% endif %}
       </div>
       {% endfor %}
     </div>
     {% else %}
-    <p class="px-4 py-6 text-center text-sm text-muted-foreground">No dossier entries available</p>
+    <p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>
     {% endif %}
   </div>
   {% else %}
   <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
+    <div class="border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Changes</h2>
     </div>
 
     <div>
       {% if !recent_events.is_empty() %}
-      <div class="divide-y divide-border">
+      <div class="divide-y divide-rams-line">
         {% for ev in recent_events %}
-        <div class="px-4 py-3 hover:bg-muted/30 transition-colors">
+        <div class="px-4 py-3 hover:bg-rams-panel">
           <div class="flex items-center justify-between">
             <span class="text-sm font-semibold">{{ ev.kind }}</span>
-            <span class="text-[10px] text-muted-foreground tabular-nums">{{ ev.date }}</span>
+            <span class="text-[10px] text-rams-muted tabular-nums">{{ ev.date }}</span>
           </div>
-          <p class="mt-1 text-[11px] text-muted-foreground">{{ ev.description }}</p>
+          <p class="mt-1 text-[11px] text-rams-muted">{{ ev.description }}</p>
         </div>
         {% endfor %}
       </div>
       {% else %}
-      <p class="px-4 py-6 text-center text-sm text-muted-foreground">No recent changes recorded</p>
+      <p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>
       {% endif %}
     </div>
 
-    <div class="border-y border-border px-4 py-3">
+    <div class="border-y border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Dossier</h2>
     </div>
 
     <div>
       {% if !dossier_entries.is_empty() %}
-      <div class="divide-y divide-border">
+      <div class="divide-y divide-rams-line">
         {% for entry in dossier_entries %}
-        <div class="px-4 py-3 hover:bg-muted/30 transition-colors">
+        <div class="px-4 py-3 hover:bg-rams-panel">
           <div class="flex items-center justify-between">
             <span class="text-sm font-semibold">{{ entry.field_name }}</span>
             {% if entry.verified %}
             <span class="text-[9px] font-bold uppercase apex-text-positive">Verified</span>
             {% else %}
-            <span class="text-[9px] font-bold text-muted-foreground uppercase">Unverified</span>
+            <span class="text-[9px] font-bold text-rams-muted uppercase">Unverified</span>
             {% endif %}
           </div>
           <p class="mt-1 text-sm">{{ entry.value }}</p>
           {% if !entry.source.is_empty() %}
-          <p class="mt-0.5 text-[10px] text-muted-foreground">Source: {{ entry.source }}</p>
+          <p class="mt-0.5 text-[10px] text-rams-muted">Source: {{ entry.source }}</p>
           {% endif %}
         </div>
         {% endfor %}
       </div>
       {% else %}
-      <p class="px-4 py-6 text-center text-sm text-muted-foreground">No dossier entries available</p>
+      <p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>
       {% endif %}
     </div>
   </div>

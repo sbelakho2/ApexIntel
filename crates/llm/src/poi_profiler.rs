@@ -257,8 +257,19 @@ Respond ONLY with valid JSON matching this exact schema:
         };
 
         let system = concat!(
-            "You are an expert enterprise sales copywriter for the electronics manufacturing sector. ",
-            "You write concise, compelling B2B outreach that resonates with technical procurement and quality executives.\n/no_think"
+            "You are an expert enterprise B2B copywriter. ",
+            "You write concise, compelling outreach that is highly personalized to the specific role and responsibilities of the recipient. ",
+            "Tailor the message to their actual function:\n",
+            "- For procurement/supply chain/purchasing: emphasize TCO, supply security, lead times, compliance\n",
+            "- For quality/compliance: emphasize certifications, audit readiness, process capability, traceability\n",
+            "- For engineering/R&D: emphasize DFM support, prototyping speed, technical collaboration, BOM optimization\n",
+            "- For operations/manufacturing: emphasize line stability, capacity flexibility, OTD, escalation paths\n",
+            "- For executives/C-suite: emphasize strategic partnership, growth, regional advantage, innovation\n",
+            "- For security/IT: emphasize zero-trust, incident response, vendor risk management\n",
+            "- For finance: emphasize cost transparency, ROI, margin impact\n",
+            "Match the tone to their seniority: technical depth for engineers, strategic framing for executives, operational specifics for managers.\n",
+            "IMPORTANT: Never default to CEO/executive framing when the recipient is a functional buyer or manager. ",
+            "A procurement manager needs cost and supply details, not strategic vision.\n/no_think"
         );
 
         let user = format!(

@@ -4,13 +4,13 @@
 {% block title %}{{ title }} — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li><a href="/warnings" class="hover:text-foreground">Warnings</a></li>
+    <li><a href="/warnings" class="hover:text-rams-foreground">Warnings</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">{{ title }}</li>
+    <li class="text-rams-foreground" aria-current="page">{{ title }}</li>
   </ol>
 </nav>
 {% endblock %}
@@ -36,7 +36,7 @@
       <button hx-post="/warnings/{{ id }}/acknowledge"
               hx-target="#ack-status"
               hx-swap="innerHTML"
-          class="no-print apex-btn apex-btn-success">
+          class="no-print apex-btn apex-btn-primary">
         Acknowledge
       </button>
       {% endif %}
@@ -52,116 +52,139 @@
   </div>
   <div id="ack-status"></div>
 
-  <div class="apex-card p-4">
-    <p class="text-sm leading-relaxed">{{ description }}</p>
-    <div class="mt-4 grid grid-cols-2 gap-4 text-[11px]">
-      <div><span class="font-black uppercase text-muted-foreground">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline">{{ company_name }}</a></div>
-      <div><span class="font-black uppercase text-muted-foreground">Type</span><br>{{ warning_type }}</div>
-      <div><span class="font-black uppercase text-muted-foreground">Confidence</span><br>{{ confidence }}%</div>
-      <div><span class="font-black uppercase text-muted-foreground">Created</span><br>{{ created_at }}</div>
-    </div>
-    {% if let Some(outcome) = review_outcome %}
-    <div class="apex-alert apex-alert-success mt-4 text-sm">
-      <p class="text-[10px] font-black uppercase tracking-[0.1em] text-primary">Review Outcome</p>
-      <p class="mt-1 font-semibold">{{ outcome }}</p>
-      {% if let Some(note) = acknowledged_note %}
-      <p class="mt-2 text-muted-foreground">{{ note }}</p>
+  {# ── Description module ── #}
+  <div class="apex-module">
+    <div class="apex-module-body">
+      <p class="text-sm leading-relaxed text-rams-foreground">{{ description }}</p>
+      <div class="mt-4 grid grid-cols-2 gap-4 text-[11px]">
+        <div><span class="font-black uppercase text-rams-muted">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline text-rams-foreground">{{ company_name }}</a></div>
+        <div><span class="font-black uppercase text-rams-muted">Type</span><br><span class="text-rams-foreground">{{ warning_type }}</span></div>
+        <div><span class="font-black uppercase text-rams-muted">Confidence</span><br><span class="text-rams-foreground font-bold tabular-nums">{{ confidence }}%</span></div>
+        <div><span class="font-black uppercase text-rams-muted">Created</span><br><span class="text-rams-foreground tabular-nums">{{ created_at }}</span></div>
+      </div>
+      {% if let Some(outcome) = review_outcome %}
+      <div class="apex-alert apex-alert-success mt-4 text-sm">
+        <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-green">Review Outcome</p>
+        <p class="mt-1 font-semibold text-rams-foreground">{{ outcome }}</p>
+        {% if let Some(note) = acknowledged_note %}
+        <p class="mt-2 text-rams-muted">{{ note }}</p>
+        {% endif %}
+      </div>
       {% endif %}
     </div>
-    {% endif %}
   </div>
 
+  {# ── Resolution notes & Analyst notes ── #}
   <div class="grid gap-4 xl:grid-cols-2 {% if briefing_mode %}no-print{% endif %}">
-    <div class="apex-card p-4">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Resolution Notes</h2>
-      <form action="/warnings/{{ id }}/review" method="post" class="mt-4 space-y-3">
-        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
-          Review Outcome
-          <select name="review_outcome" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm">
-            <option value="">Leave unchanged</option>
-            <option value="true_positive">True positive</option>
-            <option value="false_positive">False positive</option>
-          </select>
-        </label>
-        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
-          Note
-          <textarea name="note" rows="4" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="Capture analyst resolution context."></textarea>
-        </label>
-        <button type="submit" class="apex-btn apex-btn-primary">Save Review</button>
-      </form>
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Resolution Notes</h2>
+      </div>
+      <div class="apex-module-body">
+        <form action="/warnings/{{ id }}/review" method="post" class="space-y-3">
+          <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+            Review Outcome
+            <select name="review_outcome" class="apex-input mt-2">
+              <option value="">Leave unchanged</option>
+              <option value="true_positive">True positive</option>
+              <option value="false_positive">False positive</option>
+            </select>
+          </label>
+          <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+            Note
+            <textarea name="note" rows="4" class="apex-input mt-2" placeholder="Capture analyst resolution context."></textarea>
+          </label>
+          <button type="submit" class="apex-btn apex-btn-primary">Save Review</button>
+        </form>
+      </div>
     </div>
 
-    <div class="apex-card p-4">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Analyst Notes</h2>
-      <form action="/warnings/{{ id }}/notes" method="post" class="mt-4 space-y-3">
-        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
-          Note
-          <textarea name="body" rows="4" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="Persist team context for this warning."></textarea>
-        </label>
-        <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">
-          Tags
-          <input type="text" name="tags" class="mt-2 w-full rounded-sm border border-border bg-background px-3 py-2 text-sm" placeholder="supplier, escalation, follow-up">
-        </label>
-        <button type="submit" class="apex-btn apex-btn-secondary">Add Note</button>
-      </form>
+    <div class="apex-module">
+      <div class="apex-module-header">
+        <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Analyst Notes</h2>
+      </div>
+      <div class="apex-module-body">
+        <form action="/warnings/{{ id }}/notes" method="post" class="space-y-3">
+          <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+            Note
+            <textarea name="body" rows="4" class="apex-input mt-2" placeholder="Persist team context for this warning."></textarea>
+          </label>
+          <label class="block text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+            Tags
+            <input type="text" name="tags" class="apex-input mt-2" placeholder="supplier, escalation, follow-up">
+          </label>
+          <button type="submit" class="apex-btn apex-btn-secondary">Add Note</button>
+        </form>
 
-      {% if !annotations.is_empty() %}
-      <div class="mt-4 space-y-3">
-        {% for annotation in annotations %}
-        <article class="rounded-sm border border-border bg-secondary/30 p-3">
-          <div class="flex items-center justify-between gap-3">
-            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">{{ annotation.author }} · {{ annotation.visibility }}</p>
-            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ annotation.created_at }}</p>
-          </div>
-          <p class="mt-2 text-sm leading-relaxed">{{ annotation.body }}</p>
-          {% if !annotation.tags.is_empty() %}
-          <div class="mt-2 flex flex-wrap gap-1">
-            {% for tag in annotation.tags %}
-            <span class="rounded-sm border border-border bg-background px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{{ tag }}</span>
-            {% endfor %}
-          </div>
-          {% endif %}
-        </article>
+        {% if !annotations.is_empty() %}
+        <div class="mt-4 space-y-3">
+          {% for annotation in annotations %}
+          <article class="rounded-rams-sm border border-rams-line bg-rams-panel/30 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">{{ annotation.author }} · {{ annotation.visibility }}</p>
+              <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ annotation.created_at }}</p>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-rams-foreground">{{ annotation.body }}</p>
+            {% if !annotation.tags.is_empty() %}
+            <div class="mt-2 flex flex-wrap gap-1">
+              {% for tag in annotation.tags %}
+              <span class="rounded-rams-sm border border-rams-line bg-rams-chassis px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ tag }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </article>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Related entities module ── #}
+  {% if !related_entities.is_empty() %}
+  <div class="apex-module">
+    <div class="apex-module-header">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Related Entities</h2>
+    </div>
+    <div class="apex-module-body">
+      <div class="flex flex-wrap gap-2">
+        {% for entity in related_entities %}
+        <a href="/{{ entity.kind }}s/{{ entity.id }}" class="inline-flex items-center gap-1.5 rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-1.5 text-sm font-medium text-rams-foreground hover:bg-rams-panel">
+          {% if entity.kind == "company" %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Co</span>{% else %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">P</span>{% endif %}
+          {{ entity.name }}
+        </a>
         {% endfor %}
       </div>
-      {% endif %}
-    </div>
-  </div>
-
-  {% if !related_entities.is_empty() %}
-  <div class="apex-card p-4">
-    <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Related Entities</h2>
-    <div class="flex flex-wrap gap-2">
-      {% for entity in related_entities %}
-      <a href="/{{ entity.kind }}s/{{ entity.id }}" class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted/30 transition-colors">
-        {% if entity.kind == "company" %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Co</span>{% else %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">P</span>{% endif %}
-        {{ entity.name }}
-      </a>
-      {% endfor %}
     </div>
   </div>
   {% endif %}
 
+  {# ── Evidence module ── #}
   {% if !evidence.is_empty() %}
-  <div class="apex-card">
-    <div class="border-b border-border px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Evidence</h2>
+  <div class="apex-module">
+    <div class="apex-module-header">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Evidence</h2>
     </div>
-    <div class="divide-y divide-border">
+    <div class="divide-y divide-rams-line">
       {% for e in evidence %}
       <div class="px-4 py-3">
-        <p class="text-sm">{{ e.snippet }}</p>
-        <p class="mt-1 text-[10px] text-muted-foreground">{{ e.source }} · {{ e.found_at }}</p>
+        <p class="text-sm text-rams-foreground">{{ e.snippet }}</p>
+        <p class="mt-1 text-[10px] text-rams-muted">{{ e.source }} · {{ e.found_at }}</p>
       </div>
       {% endfor %}
     </div>
   </div>
   {% endif %}
 
+  {# ── AI Analysis module ── #}
   {% if let Some(analysis) = ai_analysis %}
-  <div class="apex-card p-4" id="analysis-panel">
-    <h2 class="mb-2 text-xs font-black uppercase tracking-[0.12em]">AI Analysis</h2>
-    <p class="text-sm leading-relaxed">{{ analysis }}</p>
+  <div class="apex-module" id="analysis-panel">
+    <div class="apex-module-header">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">AI Analysis</h2>
+    </div>
+    <div class="apex-module-body">
+      <p class="text-sm leading-relaxed text-rams-foreground">{{ analysis }}</p>
+    </div>
   </div>
   {% else %}
   <div id="analysis-panel"></div>

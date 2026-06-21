@@ -4,6 +4,7 @@
 
 use leptos::*;
 
+use crate::api_config::api_url;
 use crate::components::{
     cards::{PageHeader, SurfaceCard},
 };
@@ -100,76 +101,122 @@ pub struct ApiEnvelope<T> {
 // API Functions
 // ────────────────────────────────────────────
 
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_priority_queue(user_id: &str) -> Result<Vec<PriorityQueueItem>, String> {
-    let response = reqwest::get(&format!(
-        "http://localhost:8080/api/queue?user_id={}",
-        user_id
-    ))
-    .await
-    .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<PriorityQueueItem>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    envelope.data.ok_or_else(|| "Failed to fetch priority queue".to_string())
-}
-
-pub async fn add_to_queue(req: AddToQueueRequest) -> Result<PriorityQueueItem, String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .post("http://localhost:8080/api/queue")
-        .json(&req)
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let url = format!("{}?user_id={}", api_url("/api/queue"), user_id);
+    let response = Request::get(&url)
+        .credentials(RequestCredentials::SameOrigin)
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<PriorityQueueItem> = response
-        .json()
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<PriorityQueueItem>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
+    envelope.data.ok_or_else(|| "Failed to fetch priority queue".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_priority_queue(_user_id: &str) -> Result<Vec<PriorityQueueItem>, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn add_to_queue(req: AddToQueueRequest) -> Result<PriorityQueueItem, String> {
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::post(&api_url("/api/queue"))
+        .credentials(RequestCredentials::SameOrigin)
+        .json(&req)
+        .map_err(|e| format!("Serialization error: {}", e))?
+        .send()
         .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
+        .map_err(|e| format!("Request failed: {}", e))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<PriorityQueueItem> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
     envelope.data.ok_or_else(|| "Failed to add to queue".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn add_to_queue(_req: AddToQueueRequest) -> Result<PriorityQueueItem, String> {
+    Err("WASM mutations are only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_supplier_risks() -> Result<Vec<SupplierRiskEntry>, String> {
-    let response = reqwest::get("http://localhost:8080/api/supplier-risk")
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::get(&api_url("/api/supplier-risk"))
+        .credentials(RequestCredentials::SameOrigin)
+        .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<SupplierRiskEntry>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<SupplierRiskEntry>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
     envelope.data.ok_or_else(|| "Failed to fetch supplier risks".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_supplier_risks() -> Result<Vec<SupplierRiskEntry>, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_pipeline() -> Result<Vec<PipelineOpportunity>, String> {
-    let response = reqwest::get("http://localhost:8080/api/pipeline")
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::get(&api_url("/api/pipeline"))
+        .credentials(RequestCredentials::SameOrigin)
+        .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<PipelineOpportunity>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<PipelineOpportunity>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
     envelope.data.ok_or_else(|| "Failed to fetch pipeline".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_pipeline() -> Result<Vec<PipelineOpportunity>, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn fetch_alerts() -> Result<Vec<AlertItem>, String> {
-    let response = reqwest::get("http://localhost:8080/api/alerts")
+    use gloo_net::http::Request;
+    use web_sys::RequestCredentials;
+    let response = Request::get(&api_url("/api/alerts"))
+        .credentials(RequestCredentials::SameOrigin)
+        .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
-    let envelope: ApiEnvelope<Vec<AlertItem>> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<AlertItem>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    if status >= 400 || !envelope.success {
+        return Err(format!("API error (status {})", status));
+    }
     envelope.data.ok_or_else(|| "Failed to fetch alerts".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn fetch_alerts() -> Result<Vec<AlertItem>, String> {
+    Err("WASM data fetching is only available in the browser runtime".to_string())
 }
 
 // ────────────────────────────────────────────
@@ -437,28 +484,44 @@ pub fn OperationalPage() -> impl IntoView {
                 subtitle="Daily priority queue, supplier risk monitoring, pipeline tracking, and alerts."
             />
 
-            // Tab Navigation
-            <div class="tab-navigation">
+            // Tab Navigation — accessible ARIA tab pattern
+            <div class="tab-navigation" role="tablist" aria-label="Operational views">
                 <button 
                     class={format!("tab-button {}", if active_tab.get() == "queue" { "active" } else { "" })}
+                    role="tab"
+                    aria-selected={move || (active_tab.get() == "queue").to_string()}
+                    aria-controls="panel-queue"
+                    id="tab-queue"
                     on:click=move |_| set_active_tab.set("queue".to_string())
                 >
                     "Daily Queue"
                 </button>
                 <button 
                     class={format!("tab-button {}", if active_tab.get() == "suppliers" { "active" } else { "" })}
+                    role="tab"
+                    aria-selected={move || (active_tab.get() == "suppliers").to_string()}
+                    aria-controls="panel-suppliers"
+                    id="tab-suppliers"
                     on:click=move |_| set_active_tab.set("suppliers".to_string())
                 >
                     "Supplier Risk"
                 </button>
                 <button 
                     class={format!("tab-button {}", if active_tab.get() == "pipeline" { "active" } else { "" })}
+                    role="tab"
+                    aria-selected={move || (active_tab.get() == "pipeline").to_string()}
+                    aria-controls="panel-pipeline"
+                    id="tab-pipeline"
                     on:click=move |_| set_active_tab.set("pipeline".to_string())
                 >
                     "Pipeline"
                 </button>
                 <button 
                     class={format!("tab-button {}", if active_tab.get() == "alerts" { "active" } else { "" })}
+                    role="tab"
+                    aria-selected={move || (active_tab.get() == "alerts").to_string()}
+                    aria-controls="panel-alerts"
+                    id="tab-alerts"
                     on:click=move |_| set_active_tab.set("alerts".to_string())
                 >
                     "Alerts"
@@ -491,7 +554,7 @@ pub fn OperationalPage() -> impl IntoView {
                                                     view! {
                                                         <div class="empty-state">
                                                             <p>"No items in your queue today."</p>
-                                                            <button class="btn-primary">"Add Item"</button>
+                                                            <button class="apex-btn apex-btn-primary">"Add Item"</button>
                                                         </div>
                                                     }.into_view()
                                                 } else { view! {}.into_view() }}

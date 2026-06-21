@@ -92,7 +92,7 @@ pub fn propagate_weighted_risk_with_decay(
 /// - f and f' are continuous everywhere (C1 at the knee)
 /// - Monotonically increasing
 fn soft_saturate(x: f64) -> f64 {
-    /// Risk level at which the curve starts bending toward 1.0.
+    // Risk level at which the curve starts bending toward 1.0.
     const KNEE: f64 = 0.8;
     if x <= 0.0 {
         0.0
@@ -239,7 +239,7 @@ fn percentile(samples: &[f64], quantile: f64) -> f64 {
 impl DecayModel {
     pub fn hop_multiplier(self, hop: u8) -> f64 {
         match self {
-            Self::Linear(factor) => factor.clamp(0.0, 1.0),
+            Self::Linear(factor) => factor.clamp(0.0, 1.0).powi(hop as i32),
             Self::Exponential { lambda } => (-(lambda.max(0.0)) * hop as f64).exp().clamp(0.0, 1.0),
             Self::InverseSquare => 1.0 / (1.0 + hop as f64).powi(2),
             Self::Step { max_hops } => {

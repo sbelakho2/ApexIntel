@@ -4,13 +4,13 @@
 {% block title %}New Recipe — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li class="select-none">/</li>
-    <li><a href="/recipes" class="hover:text-foreground">Recipes</a></li>
+    <li><a href="/recipes" class="hover:text-rams-foreground">Recipes</a></li>
     <li class="select-none">/</li>
-    <li class="text-foreground" aria-current="page">New</li>
+    <li class="text-rams-foreground" aria-current="page">New</li>
   </ol>
 </nav>
 {% endblock %}
@@ -20,23 +20,23 @@
   {% call m::page_header("Create Recipe", "sparkles", "Submit a recipe definition with plain HTML inputs. JSON sections replace the old JavaScript builder.", "") %}
 
   <div class="apex-alert apex-alert-info mb-4">
-    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Zero-JavaScript Mode</p>
-    <p class="mt-2 text-sm text-muted-foreground">Enter the signal, transform, threshold, and action arrays as JSON. This replaces the retired client-side recipe builder.</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Zero-JavaScript Mode</p>
+    <p class="mt-2 text-sm text-rams-muted">Enter the signal, transform, threshold, and action arrays as JSON. This replaces the retired client-side recipe builder.</p>
   </div>
 
   <form method="post" action="/recipes/create-form" class="space-y-4">
     <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-3">Basic Information</h3>
+      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-3">Basic Information</h3>
       <div class="grid gap-3 sm:grid-cols-2">
         <label class="flex flex-col gap-0.5">
-          <span class="text-[9px] font-bold uppercase text-muted-foreground">Recipe Name</span>
+          <span class="text-[9px] font-bold uppercase text-rams-muted">Recipe Name</span>
           <input type="text" name="name" required placeholder="e.g. Competitor Patent Surge"
-            class="rounded-sm border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary w-full">
+            class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-rams-line w-full">
         </label>
         <div class="flex gap-3">
           <label class="flex flex-col gap-0.5">
-            <span class="text-[9px] font-bold uppercase text-muted-foreground">Severity</span>
-            <select name="severity" class="rounded-sm border border-border bg-background px-2 py-1 text-xs">
+            <span class="text-[9px] font-bold uppercase text-rams-muted">Severity</span>
+            <select name="severity" class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs">
               <option value="critical">critical</option>
               <option value="high">high</option>
               <option value="medium" selected>medium</option>
@@ -45,49 +45,49 @@
             </select>
           </label>
           <label class="flex flex-col gap-0.5">
-            <span class="text-[9px] font-bold uppercase text-muted-foreground">Cooldown (hrs)</span>
+            <span class="text-[9px] font-bold uppercase text-rams-muted">Cooldown (hrs)</span>
             <input type="number" name="cooldown_hours" value="24" min="1" max="720"
-              class="rounded-sm border border-border bg-background px-2 py-1 text-xs w-20">
+              class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs w-20">
           </label>
           <label class="flex flex-col gap-0.5 justify-end">
-            <span class="text-[9px] font-bold uppercase text-muted-foreground">Enabled</span>
-            <input type="checkbox" name="enabled" checked class="h-4 w-4 rounded border-border">
+            <span class="text-[9px] font-bold uppercase text-rams-muted">Enabled</span>
+            <input type="checkbox" name="enabled" checked class="h-4 w-4 rounded border-rams-line">
           </label>
         </div>
       </div>
       <label class="flex flex-col gap-0.5 mt-2">
-        <span class="text-[9px] font-bold uppercase text-muted-foreground">Description</span>
+        <span class="text-[9px] font-bold uppercase text-rams-muted">Description</span>
         <textarea name="description" rows="3" placeholder="What does this recipe detect?"
-          class="rounded-sm border border-border bg-background px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-primary"></textarea>
+          class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-rams-line"></textarea>
       </label>
     </div>
 
     <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">Signals JSON</h3>
-      <textarea name="signals_json" rows="6" class="rounded-sm border border-border bg-background px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-primary">[
+      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Signals JSON</h3>
+      <textarea name="signals_json" rows="6" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
   {"source_type":"observation","entity_type":"company","keywords":"capacity, expansion","match_mode":"any"}
 ]</textarea>
     </div>
 
     <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">Transforms JSON</h3>
-      <textarea name="transforms_json" rows="5" class="rounded-sm border border-border bg-background px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-primary">[
+      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Transforms JSON</h3>
+      <textarea name="transforms_json" rows="5" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
   {"kind":"count","window_days":7,"aggregation":"sum"}
 ]</textarea>
     </div>
 
     <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">Thresholds JSON</h3>
-      <textarea name="thresholds_json" rows="5" class="rounded-sm border border-border bg-background px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-primary">[
+      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Thresholds JSON</h3>
+      <textarea name="thresholds_json" rows="5" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
   {"metric":"count","operator":">=","value":3}
 ]</textarea>
     </div>
 
     <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">Narrative Template</h3>
+      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Narrative Template</h3>
       <textarea name="narrative_template" rows="3"
-        class="rounded-sm border border-border bg-background px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-primary">{% raw %}{{entity_name}} triggered {{recipe_name}}: {{summary}}{% endraw %}</textarea>
-      <p class="text-[9px] text-muted-foreground mt-1">
+        class="rounded-sm border border-rams-line bg-rams-chassis px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-rams-line">{% raw %}{{entity_name}} triggered {{recipe_name}}: {{summary}}{% endraw %}</textarea>
+      <p class="text-[9px] text-rams-muted mt-1">
         Variables: <code class="text-[9px]">{% raw %}{{entity_name}}{% endraw %}</code>,
         <code class="text-[9px]">{% raw %}{{recipe_name}}{% endraw %}</code>,
         <code class="text-[9px]">{% raw %}{{summary}}{% endraw %}</code>,
@@ -98,8 +98,8 @@
     </div>
 
     <div class="apex-card p-4">
-      <h3 class="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">Actions JSON</h3>
-      <textarea name="actions_json" rows="5" class="rounded-sm border border-border bg-background px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-primary">[
+      <h3 class="text-xs font-black uppercase tracking-wider text-rams-muted mb-2">Actions JSON</h3>
+      <textarea name="actions_json" rows="5" class="rounded-sm border border-rams-line bg-rams-chassis px-3 py-2 text-xs font-mono w-full focus:outline-none focus:ring-1 focus:ring-rams-line">[
   {"kind":"warning","target":"analyst"}
 ]</textarea>
     </div>

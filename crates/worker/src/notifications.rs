@@ -17,7 +17,6 @@
 //! LLM-enhanced alert bodies are available when the `llm` feature is active.
 
 use anyhow::{Context, Result};
-use apex_core::alert_config::AlertChannel;
 use apex_core::sla::SeveritySlaConfig;
 use chrono::{DateTime, Utc};
 use lettre::message::{header::ContentType, Mailbox, SinglePart};

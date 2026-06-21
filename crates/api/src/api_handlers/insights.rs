@@ -788,6 +788,177 @@ Write EXACTLY 4 paragraphs, each on a new line:
     )
 }
 
+/// POST /api/insights/:id/investigate — open a deep investigation from an
+/// insight's evidence using the `apex_investigation` analysis engine (ACH
+/// hypothesis generation, chain-of-thought reasoning, threat modeling,
+/// narrative synthesis). Returns a structured investigation result.
+///
+/// This wires the previously-orphaned `apex_investigation` crate into the live
+/// system. The engine is pure CPU (no LLM call), so it works regardless of the
+/// `llm` feature flag.
+pub(crate) async fn investigate_insight(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    let start = Instant::now();
+    let request_id = Uuid::new_v4().to_string();
+    let uid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid UUID"))),
+            )
+        }
+    };
+
+    // Load the insight + its entities.
+    let insight = match state.store.get_insight(uid).await {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found("Insight", &id))),
+            )
+        }
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "investigate_insight: get_insight failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal("Failed to load insight"))),
+            );
+        }
+    };
+
+    let entity_ids: Vec<Uuid> = insight.entity_ids.clone().unwrap_or_default();
+    let primary_entity_id = entity_ids.first().copied();
+    let company_names = state
+        .store
+        .get_company_names_by_ids(&entity_ids)
+        .await
+        .unwrap_or_default();
+    let entity_name = company_names
+        .first()
+        .map(|(_, name, _, _)| name.clone())
+        .unwrap_or_else(|| insight.title.clone());
+
+    // Load recent observations for the primary entity as investigation evidence.
+    let mut evidence_items: Vec<apex_investigation::reasoning::EvidenceItem> = Vec::new();
+    if let Some(eid) = primary_entity_id {
+        let obs = state
+            .store
+            .get_observations_by_entity(eid, 30)
+            .await
+            .unwrap_or_default();
+        for (i, o) in obs.iter().enumerate() {
+            evidence_items.push(apex_investigation::reasoning::EvidenceItem {
+                id: format!("obs-{i}"),
+                entity_id: eid.to_string(),
+                entity_type: "company".to_string(),
+                evidence_type: o.observation_type.clone(),
+                description: value_as_text(&o.value),
+                source: o
+                    .provenance
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("observation")
+                    .to_string(),
+                confidence: o.confidence.unwrap_or(0.7),
+                timestamp: o.ts_utc,
+                raw_data: o.value.clone(),
+            });
+        }
+    }
+
+    // Add the insight itself as a high-confidence evidence item.
+    evidence_items.push(apex_investigation::reasoning::EvidenceItem {
+        id: format!("insight-{uid}"),
+        entity_id: primary_entity_id.map(|u| u.to_string()).unwrap_or_default(),
+        entity_type: "company".to_string(),
+        evidence_type: "intelligence_insight".to_string(),
+        description: insight.summary.clone(),
+        source: "insight_engine".to_string(),
+        confidence: insight.confidence.unwrap_or(0.7),
+        timestamp: insight.created_at.unwrap_or_else(chrono::Utc::now),
+        raw_data: serde_json::json!({
+            "insight_type": insight.insight_type,
+            "category": insight.insight_type,
+        }),
+    });
+
+    // Run the investigation engine.
+    let engine = apex_investigation::investigations::InvestigationEngine::new();
+    let investigation_type = match insight.insight_type.as_deref() {
+        Some("supply_chain_risk") => apex_investigation::investigations::InvestigationType::SupplyChainAnalysis,
+        Some("competitor_market") => apex_investigation::investigations::InvestigationType::CompanyDeepDive,
+        Some("geopolitical_analysis") => apex_investigation::investigations::InvestigationType::GeopoliticalRisk,
+        Some("security_compliance") | Some("cybersecurity_threat") => apex_investigation::investigations::InvestigationType::ThreatAssessment,
+        _ => apex_investigation::investigations::InvestigationType::CompanyDeepDive,
+    };
+    let investigation_type_label = format!("{investigation_type:?}");
+
+    let mut investigation = engine.create_investigation(
+        &format!("Investigation: {}", insight.title),
+        investigation_type,
+        &entity_name,
+        "company",
+    );
+
+    let result = engine.run_investigation(&mut investigation, evidence_items);
+
+    // Serialize the investigation result for the API response.
+    let response = serde_json::json!({
+        "investigation_id": investigation.id,
+        "status": format!("{:?}", investigation.status),
+        "priority": format!("{:?}", investigation.priority),
+        "target_entity": entity_name,
+        "investigation_type": investigation_type_label,
+        "overall_confidence": result.overall_confidence,
+        "hypothesis_count": result.hypotheses.len(),
+        "gap_count": result.gaps.as_ref().map(|g| {
+            g.financial_gaps.len() + g.operational_gaps.len() + g.leadership_gaps.len()
+                + g.supply_chain_gaps.len()
+        }).unwrap_or(0),
+        "reasoning_chain_count": result.reasoning_chains.len(),
+        "executive_summary": result.report.as_ref().map(|r| r.executive_summary.clone()),
+        "recommendations": result.report.as_ref().map(|r| {
+            r.recommendations.iter().map(|rec| serde_json::json!({
+                "priority": format!("{:?}", rec.priority),
+                "title": rec.title,
+                "description": rec.description,
+                "expected_impact": rec.expected_impact,
+                "effort": format!("{:?}", rec.effort),
+                "time_to_implement": rec.time_to_implement,
+            })).collect::<Vec<_>>()
+        }).unwrap_or_default(),
+        "hypotheses": result.hypotheses.iter().take(5).map(|h| serde_json::json!({
+            "label": h.label,
+            "description": h.description,
+            "prior": h.prior,
+            "posterior": h.posterior,
+            "supporting_evidence_types": h.supporting_evidence.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "threat_model": result.threat_model.as_ref().map(|tm| serde_json::json!({
+            "overall_risk_score": tm.overall_risk_score,
+            "tier1_supplier_count": tm.tier1_suppliers.len(),
+            "single_source_components": tm.single_source_components.len(),
+            "disruption_scenarios": tm.disruption_scenarios.len(),
+        })),
+    });
+
+    let dur = start.elapsed().as_millis() as u64;
+    log_latency("investigate_insight", dur);
+    (
+        StatusCode::OK,
+        Json(success_with_meta(
+            response,
+            ResponseMeta::now()
+                .with_request_id(request_id)
+                .with_duration(dur),
+        )),
+    )
+}
+
 #[cfg(not(feature = "llm"))]
 pub(crate) async fn analyze_insight(
     State(_state): State<AppState>,
@@ -1071,6 +1242,33 @@ pub(crate) async fn analyze_warning(
     Path(_id): Path<String>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     llm_service_unavailable("LLM feature disabled")
+}
+
+/// Best-effort extraction of a human-readable text description from an
+/// observation's `value` JSON field. Handles strings, objects with a `content`
+/// / `description` / `text` key, and arrays by joining their string elements.
+fn value_as_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(map) => {
+            for key in &["content", "description", "text", "title", "summary"] {
+                if let Some(v) = map.get(*key) {
+                    if let Some(s) = v.as_str() {
+                        if !s.trim().is_empty() {
+                            return s.to_string();
+                        }
+                    }
+                }
+            }
+            value.to_string()
+        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect::<Vec<_>>()
+            .join("; "),
+        _ => value.to_string(),
+    }
 }
 
 #[cfg(test)]

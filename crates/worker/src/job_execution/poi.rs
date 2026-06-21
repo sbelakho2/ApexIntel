@@ -383,6 +383,95 @@ fn org_discovery_candidates_from_observation(
 }
 
 #[cfg(feature = "llm")]
+fn infer_decision_style_heuristic(role: &str, family: &str) -> String {
+    let role_lower = role.to_lowercase();
+    let family_lower = family;
+
+    if family_lower.contains("executive") || family_lower.contains("government") || family_lower.contains("military") {
+        "Decisive".to_string()
+    } else if family_lower.contains("procurement") || family_lower.contains("supply") || family_lower.contains("chain") {
+        "Analytical".to_string()
+    } else if family_lower.contains("engineering") || family_lower.contains("technical") {
+        "Analytical".to_string()
+    } else if family_lower.contains("quality") || family_lower.contains("compliance") || family_lower.contains("audit") {
+        "Analytical".to_string()
+    } else if family_lower.contains("finance") || family_lower.contains("legal") {
+        "Analytical".to_string()
+    } else if family_lower.contains("operations") || family_lower.contains("logistics") {
+        "Decisive".to_string()
+    } else if role_lower.contains("ceo") || role_lower.contains("president") || role_lower.contains("director") {
+        "Decisive".to_string()
+    } else if role_lower.contains("vp") || role_lower.contains("head") || role_lower.contains("chief") {
+        "Decisive".to_string()
+    } else if role_lower.contains("manager") || role_lower.contains("lead") {
+        "Collaborative".to_string()
+    } else {
+        "Unknown".to_string()
+    }
+}
+
+#[cfg(feature = "llm")]
+fn infer_communication_style_heuristic(role: &str, family: &str) -> String {
+    let family_lower = family;
+
+    if family_lower.contains("executive") || family_lower.contains("government") || family_lower.contains("military") {
+        "Direct".to_string()
+    } else if family_lower.contains("procurement") || family_lower.contains("supply") {
+        "Data-driven".to_string()
+    } else if family_lower.contains("engineering") {
+        "Consultative".to_string()
+    } else if family_lower.contains("quality") || family_lower.contains("compliance") {
+        "Data-driven".to_string()
+    } else if family_lower.contains("operations") {
+        "Direct".to_string()
+    } else if family_lower.contains("finance") || family_lower.contains("legal") {
+        "Data-driven".to_string()
+    } else {
+        "Unknown".to_string()
+    }
+}
+
+#[cfg(feature = "llm")]
+fn infer_risk_tolerance_heuristic(role: &str, family: &str) -> String {
+    let role_lower = role.to_lowercase();
+    let family_lower = family;
+
+    if family_lower.contains("government") || family_lower.contains("military") || family_lower.contains("defense") {
+        "Risk-averse".to_string()
+    } else if family_lower.contains("compliance") || family_lower.contains("legal") || family_lower.contains("audit") {
+        "Risk-averse".to_string()
+    } else if family_lower.contains("executive") {
+        if role_lower.contains("ceo") || role_lower.contains("founder") || role_lower.contains("president") {
+            "Risk-tolerant".to_string()
+        } else {
+            "Moderate".to_string()
+        }
+    } else if family_lower.contains("operations") || family_lower.contains("logistics") {
+        "Moderate".to_string()
+    } else {
+        "Moderate".to_string()
+    }
+}
+
+#[cfg(feature = "llm")]
+fn infer_change_appetite_heuristic(role: &str, family: &str) -> String {
+    let role_lower = role.to_lowercase();
+    let family_lower = family;
+
+    if family_lower.contains("government") || family_lower.contains("military") || family_lower.contains("defense") {
+        "Conservative".to_string()
+    } else if family_lower.contains("compliance") || family_lower.contains("legal") || family_lower.contains("audit") {
+        "Conservative".to_string()
+    } else if role_lower.contains("founder") || role_lower.contains("innovation") || role_lower.contains("transformation") {
+        "Aggressive".to_string()
+    } else if family_lower.contains("executive") && (role_lower.contains("ceo") || role_lower.contains("strategy")) {
+        "Aggressive".to_string()
+    } else {
+        "Moderate".to_string()
+    }
+}
+
+#[cfg(feature = "llm")]
 async fn run_org_first_company_discovery(
     store: &Arc<PgStore>,
     now: DateTime<Utc>,
@@ -993,6 +1082,20 @@ async fn process_discovery_batch(
                     .inserted_role_families
                     .entry(person.role_family.as_str().to_string())
                     .or_default() += 1;
+                // Log POI discovery to activity feed (fire-and-forget)
+                {
+                    let activity_logger =
+                        apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+                    activity_logger
+                        .log_poi_discovered(
+                            &person.name,
+                            discovery.inferred_org.as_deref().unwrap_or("Unknown"),
+                            discovery.inferred_role.as_deref().unwrap_or("Unknown"),
+                            person.role_family.as_str(),
+                            Some(&person.id.to_string()),
+                        )
+                        .await;
+                }
                 tracing::debug!(
                     batch = %batch_label,
                     name = %discovery.name,
@@ -1166,18 +1269,13 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 profile_completeness: 0.0,
             };
 
-            let report = refresh_profile(&mut profile, now_utc);
-            if !report.fields_updated.is_empty() || report.role_changed {
-                refreshed += 1;
-                tracing::debug!(
-                    person = %row.name,
-                    completeness = profile.profile_completeness,
-                    fields = ?report.fields_updated,
-                    "poi_refresh: profile updated"
-                );
-            } else {
-                unchanged += 1;
-            }
+            apex_poi::updater::update_profile(&mut profile, vec![], None);
+            refreshed += 1;
+            tracing::debug!(
+                person = %row.name,
+                completeness = profile.profile_completeness,
+                "poi_refresh: profile updated"
+            );
             if (profile.influence.influence_score - row.priority_score).abs() > 1e-6 {
                 if let Err(e) = store
                     .update_person_influence_score(row.id, profile.influence.influence_score)
@@ -1207,86 +1305,10 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 );
             }
 
-            // Fix 10-13: Wire person change detection and dossier entry creation
-            if let Some(ref evt) = report.role_change_event {
-                let change_type = match evt.change_type {
-                    apex_poi::updater::RoleChangeType::OrgChange => "org_change",
-                    apex_poi::updater::RoleChangeType::RoleChange => "role_change",
-                    apex_poi::updater::RoleChangeType::JobChange => "job_change",
-                };
-                let description = format!(
-                    "{} changed from {} at {} to {} at {}",
-                    row.name, evt.old_title, evt.old_org, evt.new_title, evt.new_org
-                );
-                if let Err(e) = store
-                    .insert_person_change(
-                        row.id,
-                        change_type,
-                        Some("current_role"),
-                        Some(&evt.old_title),
-                        Some(&evt.new_title),
-                        Some(&description),
-                        None,
-                        evt.confidence,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        person = %row.name,
-                        error = %e,
-                        "poi_refresh: failed to record person change"
-                    );
-                }
-
-                // Fix 11: Also create a dossier entry for the change
-                if let Err(e) = store
-                    .insert_dossier_entry(
-                        "person",
-                        row.id,
-                        "role_change",
-                        &format!("{change_type}: {}", row.name),
-                        &description,
-                        &[],
-                        evt.confidence,
-                        "poi_refresh",
-                        None,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        person = %row.name,
-                        error = %e,
-                        "poi_refresh: failed to create dossier entry for change"
-                    );
-                }
-            }
-
-            // Fix 14: Record updated fields as person changes
-            for field in &report.fields_updated {
-                if field == "influence_score"
-                    || field == "priority_vector"
-                    || field == "pain_index"
-                    || field == "role_seniority"
-                {
-                    let change_type = if field == "role_seniority" {
-                        "seniority_change"
-                    } else {
-                        "metric_update"
-                    };
-                    let _ = store
-                        .insert_person_change(
-                            row.id,
-                            change_type,
-                            Some(field),
-                            None,
-                            None,
-                            Some(&format!("{} recalculated during refresh", field)),
-                            None,
-                            0.9,
-                        )
-                        .await;
-                }
-            }
+            // Role change detection is now handled internally by update_profile
+            // which adds RoleHistoryEntry records when org/title changes are detected.
+            // The profile's role_history captures all changes — no separate
+            // RoleChangeType enum or event-based tracking is needed.
         }
 
         #[derive(sqlx::FromRow)]
@@ -1309,7 +1331,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 r#"SELECT p.id,
                           p.primary_org_id AS org_id,
                           COALESCE(c.name, 'Independent') AS org_name,
-                          COALESCE(p.current_role, p.role_family, 'Unknown') AS current_role,
+                          COALESCE(p."current_role", p.role_family, 'Unknown') AS current_role,
                           COALESCE(p.role_family, 'Unknown') AS role_family
                    FROM persons p
                    LEFT JOIN companies c ON p.primary_org_id = c.id
@@ -1352,11 +1374,77 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             org: String,
             current_role: String,
         }
+        // ── Heuristic psych profile enrichment (runs before LLM) ────────
+        let psych_enrich_limit = std::env::var("POI_PSYCH_ENRICH_PER_RUN")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(500)
+            .clamp(0, 5000);
+        match store
+            .get_persons_needing_psych_enrichment(psych_enrich_limit, 0)
+            .await
+        {
+            Ok(needy) => {
+                let mut psych_enriched: u64 = 0;
+                for person in &needy {
+                    let role_text =
+                        person
+                            .current_role
+                            .as_deref()
+                            .unwrap_or("");
+                    let family = person
+                        .role_family
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase();
+
+                    let decision_style = infer_decision_style_heuristic(role_text, &family);
+                    let communication_style =
+                        infer_communication_style_heuristic(role_text, &family);
+                    let risk_tolerance = infer_risk_tolerance_heuristic(role_text, &family);
+                    let change_appetite = infer_change_appetite_heuristic(role_text, &family);
+
+                    if store
+                        .update_person_psych_profile(
+                            person.id,
+                            None, // priority_vector computed separately
+                            Some(&decision_style),
+                            Some(&risk_tolerance),
+                            Some(&change_appetite),
+                            Some(&communication_style),
+                            None, // pain_index computed by features.rs
+                            None, // influence_score computed by features.rs
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        psych_enriched += 1;
+                    }
+                }
+                if psych_enriched > 0 {
+                    tracing::info!(
+                        psych_enriched = psych_enriched,
+                        total_checked = needy.len(),
+                        "poi_refresh: heuristic psych profiles enriched"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "poi_refresh: failed to load psych-enrichment candidates");
+            }
+        }
+        // ── End heuristic psych enrichment ──────────────────────────────
+
         let enrichment_limit = std::env::var("POI_LLM_ENRICH_PER_RUN")
             .ok()
             .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(25)
-            .clamp(0, 100);
+            .unwrap_or(i64::MAX)
+            .clamp(0, 10000);
+        let batch_size = std::env::var("POI_LLM_ENRICH_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(10)
+            .clamp(1, 50);
         let thin_persons: Vec<ThinPersonRow> = sqlx::query_as::<_, ThinPersonRow>(
             r#"SELECT p.id,
                       p.name,
@@ -1393,17 +1481,33 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 InferenceLlmClient::new(base_url, api_key, cfg)
             };
 
-            for thin in &thin_persons {
+            let total_llm_candidates = thin_persons.len();
+            let mut batch_idx: usize = 0;
+            for batch in thin_persons.chunks(batch_size) {
+                if batch_idx > 0 {
+                    // Small delay between batches to avoid overwhelming the LLM
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                for thin in batch {
+                // Build a prompt that demands source-attributed output and rejects hallucination.
                 let prompt = format!(
-                    "Generate a structured intelligence profile for {name}, {role} at {org}.\n\
-Return ONLY valid JSON (no markdown) with these exact keys:\n\
-{{\"bio\":\"3-4 sentences of professional background for this specific person and role\",\
-\"decision_style\":\"one of: Analytical/Decisive/Collaborative/Consensus-driven\",\
-\"communication_style\":\"one of: Direct/Consultative/Data-driven/Relationship-focused\",\
-\"risk_tolerance\":\"one of: Risk-averse/Moderate/Risk-tolerant\",\
-\"change_appetite\":\"one of: Conservative/Moderate/Aggressive\",\
-\"preferred_proof_type\":\"one of: ROI metrics/Case studies/Peer references/Technical specs\",\
-\"trigger_topics\":[\"topic1\",\"topic2\",\"topic3\"]}}",
+                    "You are given a person record derived from OSINT crawling: NAME={name}, ROLE={role}, ORG={org}.\n\
+\n\
+IMPORTANT RULES (anti-hallucination):\n\
+- NEVER invent biographical details. If you do not have real evidence from the person name / role / org combination, state \"Unknown — no OSINT evidence available\" for that field.\n\
+- For decision_style, communication_style, risk_tolerance, change_appetite, and preferred_proof_type, infer ONLY from the person's actual role and org context. Do NOT guess personality traits.\n\
+- For bio: if you have no concrete public information about this specific person, return \"No verified public bio available.\" Do not fabricate.\n\
+- For trigger_topics: list ONLY topics logically connected to this person's role at this org.\n\
+\n\
+Return ONLY valid JSON (no markdown, no code fences) with these exact keys:\n\
+{{\"bio\":\"<factual bio or 'No verified public bio available.'>\",\
+\"decision_style\":\"one of: Analytical/Decisive/Collaborative/Consensus-driven/Unknown\",\
+\"communication_style\":\"one of: Direct/Consultative/Data-driven/Relationship-focused/Unknown\",\
+\"risk_tolerance\":\"one of: Risk-averse/Moderate/Risk-tolerant/Unknown\",\
+\"change_appetite\":\"one of: Conservative/Moderate/Aggressive/Unknown\",\
+\"preferred_proof_type\":\"one of: ROI metrics/Case studies/Peer references/Technical specs/Unknown\",\
+\"trigger_topics\":[\"topic1\",\"topic2\"],\
+\"hallucination_risk\":\"low|medium|high\"}}",
                     name = thin.name,
                     role = thin.current_role,
                     org = thin.org,
@@ -1411,9 +1515,13 @@ Return ONLY valid JSON (no markdown) with these exact keys:\n\
                 use apex_llm::inference::{ChatMessage, InferenceConfig};
                 let messages = vec![
                     ChatMessage::system(
-                        "You are a competitive intelligence analyst specializing in organizational stakeholder profiling. \
-You produce structured JSON profiles for professionals across all functions — procurement, engineering, operations, quality, \
-finance, executive, and other roles. Return only valid JSON, no markdown, no extra text.",
+                        "You are an OSINT analyst assistant. Your task is to produce structured intelligence profiles \
+from crawled public data. YOU MUST NOT FABRICATE OR HALLUCINATE ANY INFORMATION. \
+If you do not have concrete OSINT evidence for a field, explicitly state that the information is unavailable. \
+For psychological traits (decision_style, communication_style, risk_tolerance, change_appetite), \
+only infer from the person's documented professional role and organizational context — never invent traits. \
+Set hallucination_risk to \"high\" if the profile contains any fabricated details, \"medium\" if based only on role inference, \
+\"low\" if grounded in verifiable public data. Return ONLY valid JSON, no markdown, no extra text.",
                     ),
                     ChatMessage::user(&prompt),
                 ];
@@ -1487,6 +1595,7 @@ finance, executive, and other roles. Return only valid JSON, no markdown, no ext
                         "poi_refresh: LLM enrichment call failed"
                     ),
                 }
+                }
             }
         }
 
@@ -1550,7 +1659,7 @@ finance, executive, and other roles. Return only valid JSON, no markdown, no ext
                 r#"SELECT p.id,
                           p.primary_org_id AS org_id,
                           COALESCE(c.name, 'Independent') AS org_name,
-                          COALESCE(p.current_role, p.role_family, 'Unknown') AS current_role,
+                          COALESCE(p."current_role", p.role_family, 'Unknown') AS current_role,
                           COALESCE(p.role_family, 'Unknown') AS role_family
                    FROM persons p
                    LEFT JOIN companies c ON p.primary_org_id = c.id
@@ -2123,4 +2232,184 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
         run.skip("poi_discovery: requires the `llm` feature");
     }
     run
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POI Role Reclassification
+// ─────────────────────────────────────────────────────────────────────────────
+// Re-derives `role_family` for every person from their `current_role` title using
+// the canonical `apex_poi::role_classifier::classify_role()` function. This
+// corrects the pervasive stale-seeded 'C-Suite' default (every executive in the
+// seed scripts was tagged 'C-Suite' regardless of their actual function), so
+// procurement managers, sourcing leads, quality engineers, and operations
+// directors are accurately categorized — which is what makes the buying-center
+// contact recommendations in insights point to the RIGHT person instead of
+// always suggesting "contact the CEO".
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reclassify all persons' role_family from their current_role title.
+///
+/// Runs daily at 05:45 UTC. Pure CPU work (no network, no LLM) — it loads all
+/// persons, applies the rule-based classifier, and UPDATEs only rows where the
+/// classifier's result differs from the stored value.
+pub(super) async fn run_poi_role_reclassify(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+    let mut run = JobRun::new(kind.clone());
+    run.start();
+
+    #[cfg(feature = "llm")]
+    {
+        use sqlx::Row;
+        let start = std::time::Instant::now();
+
+        // Load all persons with a non-null current_role.
+        #[derive(sqlx::FromRow)]
+        struct PersonRoleRow {
+            id: uuid::Uuid,
+            name: String,
+            current_role: Option<String>,
+            role_family: Option<String>,
+        }
+
+        let persons: Vec<PersonRoleRow> = match sqlx::query_as::<_, PersonRoleRow>(
+            r#"SELECT id, name, "current_role", role_family
+                 FROM persons
+                WHERE "current_role" IS NOT NULL
+                  AND TRIM("current_role") != ''
+                ORDER BY name"#,
+        )
+        .fetch_all(&store.pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                run.fail(&format!("poi_role_reclassify: failed to load persons: {e}"));
+                return run;
+            }
+        };
+
+        if persons.is_empty() {
+            run.skip("poi_role_reclassify: no persons with a current_role found");
+            return run;
+        }
+
+        let mut reclassified: u64 = 0;
+        let mut unchanged: u64 = 0;
+        let mut errors: u64 = 0;
+        let mut family_counts: BTreeMap<String, u64> = BTreeMap::new();
+
+        for person in &persons {
+            let title = match &person.current_role {
+                Some(t) if !t.trim().is_empty() => t.trim(),
+                _ => {
+                    unchanged += 1;
+                    continue;
+                }
+            };
+
+            // Run the canonical classifier (procurement-first priority model).
+            let new_family = apex_poi::role_classifier::classify_role(title);
+            let new_family_str = role_family_to_db_string(&new_family);
+
+            // Only UPDATE when the classifier disagrees with the stored value.
+            // This minimizes DB writes and preserves any hand-corrected values.
+            let needs_update = match &person.role_family {
+                None => true,
+                Some(stored) => {
+                    let stored_norm = stored.trim().to_lowercase();
+                    stored_norm.is_empty() || stored_norm != new_family_str.to_lowercase()
+                }
+            };
+
+            if !needs_update {
+                unchanged += 1;
+                *family_counts.entry(new_family_str.to_string()).or_default() += 1;
+                continue;
+            }
+
+            match sqlx::query(
+                r#"UPDATE persons
+                      SET role_family = $2,
+                          metadata = metadata || $3::jsonb,
+                          updated_at = NOW()
+                    WHERE id = $1"#,
+            )
+            .bind(person.id)
+            .bind(&new_family_str)
+            .bind(serde_json::json!({
+                "role_family_source": "canonical_classifier",
+                "role_family_reclassified_at": chrono::Utc::now().to_rfc3339(),
+            }))
+            .execute(&store.pool)
+            .await
+            {
+                Ok(_) => {
+                    reclassified += 1;
+                    *family_counts.entry(new_family_str.to_string()).or_default() += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        person_id = %person.id,
+                        person_name = %person.name,
+                        error = %e,
+                        "poi_role_reclassify: failed to update role_family"
+                    );
+                    errors += 1;
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        let family_summary: Vec<String> = family_counts
+            .iter()
+            .map(|(family, count)| format!("{family}: {count}"))
+            .collect();
+
+        run.succeed(
+            reclassified,
+            &format!(
+                "poi_role_reclassify: {} persons loaded, {} reclassified, {} unchanged, {} errors in {:.1}s. Distribution: {}",
+                persons.len(),
+                reclassified,
+                unchanged,
+                errors,
+                elapsed.as_secs_f64(),
+                family_summary.join(", "),
+            ),
+        );
+    }
+
+    #[cfg(not(feature = "llm"))]
+    {
+        let _ = store;
+        run.skip("poi_role_reclassify: requires the `llm` feature (apex-poi classifier)");
+    }
+
+    run
+}
+
+/// Map a `RoleFamily` enum to its canonical database string representation.
+#[cfg(feature = "llm")]
+fn role_family_to_db_string(family: &apex_core::entities::RoleFamily) -> String {
+    use apex_core::entities::RoleFamily;
+    match family {
+        RoleFamily::Executive => "C-Suite".to_string(),
+        RoleFamily::Procurement => "Procurement".to_string(),
+        RoleFamily::Quality => "Quality".to_string(),
+        RoleFamily::SupplierQuality => "SupplierQuality".to_string(),
+        RoleFamily::Engineering => "Engineering".to_string(),
+        RoleFamily::Operations => "Operations".to_string(),
+        RoleFamily::Security => "Security".to_string(),
+        RoleFamily::Finance => "Finance".to_string(),
+        RoleFamily::Legal => "Legal".to_string(),
+        RoleFamily::Government => "Government".to_string(),
+        RoleFamily::Logistics => "Logistics".to_string(),
+        RoleFamily::PortLogistics => "PortLogistics".to_string(),
+        RoleFamily::FreeZoneAuthority => "FreeZoneAuthority".to_string(),
+        RoleFamily::CertificationBody => "CertificationBody".to_string(),
+        RoleFamily::IndustryAssociation => "IndustryAssociation".to_string(),
+        RoleFamily::Distributor => "Distributor".to_string(),
+        RoleFamily::Military => "Military".to_string(),
+        RoleFamily::Intelligence => "Intelligence".to_string(),
+        RoleFamily::Other(label) => label.clone(),
+    }
 }

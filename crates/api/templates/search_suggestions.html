@@ -1,20 +1,20 @@
-<div class="apex-autocomplete-dropdown absolute left-0 right-0 z-50 mt-1 rounded-sm border border-border bg-card shadow-lg">
+<div class="apex-autocomplete-dropdown absolute left-0 right-0 z-50 mt-1 rounded-sm border border-rams-line bg-rams-module">
   <ul class="py-1" role="listbox" aria-label="Search suggestions">
     {% for s in suggestions %}
     <li role="option" aria-selected="false">
       <a href="{{ s.url }}"
-         class="flex items-center gap-3 px-3 py-2 text-sm hover:bg-muted/40 transition-colors"
+         class="flex items-center gap-3 px-3 py-2 text-sm hover:bg-rams-panel"
          onclick="event.stopPropagation(); document.getElementById('search-input').value='{{ s.text|escape }}';">
-        <span class="inline-flex items-center rounded-sm bg-muted/60 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-muted-foreground shrink-0">
+        <span class="inline-flex items-center rounded-sm bg-rams-panel px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted shrink-0">
           {{ s.entity_type }}
         </span>
         <div class="min-w-0 flex-1">
-          <div class="truncate font-medium text-foreground">{{ s.text }}</div>
+          <div class="truncate font-medium text-rams-foreground">{{ s.text }}</div>
           {% if let Some(subtext) = s.subtext %}
-          <div class="truncate text-[10px] text-muted-foreground">{{ subtext }}</div>
+          <div class="truncate text-[10px] text-rams-muted">{{ subtext }}</div>
           {% endif %}
         </div>
-        <span class="shrink-0 text-[10px] text-muted-foreground tabular-nums">{{ (s.score * 100.0).round() }}</span>
+        <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ (s.score * 100.0).round() }}</span>
       </a>
     </li>
     {% endfor %}

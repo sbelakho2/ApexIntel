@@ -103,8 +103,7 @@ use apex_parse::html::extract_page;
 use apex_poi::model::{
     InfluenceProfile, PoiProfile, PriorityVector as PoiPriorityVector, PsychProfile, RoleFamily,
 };
-#[cfg(feature = "llm")]
-use apex_poi::updater::refresh_profile;
+// apex_poi::updater now exposes `update_profile` instead of `refresh_profile`
 use apex_recipes::engine::{FeatureMap, RecipeEngine};
 #[cfg(feature = "llm")]
 use apex_store::postgres::{
@@ -124,6 +123,7 @@ use apex_worker::recipe_loader::{
 use apex_worker::scheduler::{
     default_scheduler, validate_custom_command, JobKind, JobRun, JobStatus, Scheduler,
 };
+use apex_worker::activity_logger::ActivityLogger;
 use apex_worker::storage::{
     build_memo_inputs, load_production_recipes, load_staged_recipes, StorageContext,
 };
@@ -2540,6 +2540,11 @@ async fn main() -> Result<()> {
     // opening a second connection when the pool was already created above.
     let store = Arc::new(PgStore::from_pool(pool.clone()));
     tracing::info!("store initialized");
+
+    // Create the shared ActivityLogger for recording system events
+    // to the activity_feed table across all pipeline stages.
+    let activity_logger = ActivityLogger::new(pool.clone());
+    tracing::info!("activity_logger initialized");
 
     let mut scheduler_state = default_scheduler();
     match store.list_worker_job_states().await {

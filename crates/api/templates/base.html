@@ -88,51 +88,57 @@
   <script src="/static/js/app.js?v=20260312-runtime-sweep-1" defer></script>
   <script src="/static/js/sse-client.js?v=20260614-realtime-alerts" defer></script>
   <style>
+    /* ── Mobile Navigation Drawer — slide transition, structural shadow only ── */
     #mobile-nav {
       transform: translateX(-100%);
-      transition: transform 180ms ease;
+      transition: transform var(--rams-normal, 200ms) var(--rams-ease, cubic-bezier(0.2, 0, 0, 1)),
+                  box-shadow var(--rams-normal, 200ms) var(--rams-ease, cubic-bezier(0.2, 0, 0, 1));
     }
-
     #mobile-nav.is-open {
       transform: translateX(0);
+      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.35);
     }
 
     #mobile-nav-overlay {
       opacity: 0;
       pointer-events: none;
-      transition: opacity 180ms ease;
+      transition: opacity var(--rams-fast, 120ms) ease;
     }
-
     #mobile-nav-overlay.is-open {
       opacity: 1;
       pointer-events: auto;
     }
 
+    /* ── Theme Toggle Button — consumes Rams tokens ─────────────────────────── */
     .apex-theme-toggle {
       display: inline-flex;
       align-items: center;
       gap: 0.45rem;
-      border: 1px solid rgb(var(--border));
-      background: rgb(var(--secondary));
+      border: 1px solid var(--rams-line);
+      background: var(--rams-panel);
       border-radius: 2px;
       padding: 0.45rem 0.7rem;
-      color: rgb(var(--foreground));
+      color: var(--rams-foreground);
       font-size: 10px;
       font-weight: 900;
       letter-spacing: 0.12em;
       text-transform: uppercase;
       white-space: nowrap;
     }
-
+    .apex-theme-toggle:hover {
+      border-color: var(--rams-line-strong);
+    }
     .apex-theme-toggle-state {
-      color: rgb(var(--muted-foreground));
+      color: var(--rams-muted);
       font-size: 9px;
     }
 
+    /* ── Mobile Tab Bar — safe area inset ─────────────────────────────────────── */
     .apex-mobile-tabbar {
       padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
     }
 
+    /* ── Chart Scroll Containers ──────────────────────────────────────────────── */
     .apex-chart-scroll {
       width: 100%;
       overflow-x: auto;
@@ -141,11 +147,9 @@
       padding-bottom: 0.25rem;
       scrollbar-width: thin;
     }
-
     .apex-chart-scroll-inner {
       min-width: 32rem;
     }
-
     .apex-chart-scroll-inner-wide {
       min-width: 38rem;
     }
@@ -154,17 +158,14 @@
       .apex-chart-scroll-inner {
         min-width: 28rem;
       }
-
       .apex-chart-scroll-inner-wide {
         min-width: 32rem;
       }
     }
-
     @media (max-width: 420px) {
       .apex-chart-scroll-inner {
         min-width: 24rem;
       }
-
       .apex-chart-scroll-inner-wide {
         min-width: 28rem;
       }
@@ -175,7 +176,6 @@
         gap: 0.3rem;
         padding: 0.45rem 0.55rem;
       }
-
       .apex-theme-toggle [data-theme-toggle-text] {
         max-width: 4.8rem;
         overflow: hidden;
@@ -190,58 +190,61 @@
   <!-- Skip link -->
   <a href="#main-content" class="skip-link">Skip to main content</a>
 
+  <!-- Control-station bezel frame (desktop only) -->
   <div class="fixed inset-0 border-[8px] border-rams-chassis pointer-events-none z-[100] hidden md:block" aria-hidden="true"></div>
 
   <!-- Icon sprite (hidden) -->
   {% include "sprite_include.html" %}
 
-  <div class="min-h-screen bg-background">
+  <div class="min-h-screen bg-rams-chassis">
     <div id="route-progress" class="route-progress" aria-hidden="true"></div>
     <p class="sr-only" aria-live="polite">Page loaded</p>
-    <div class="pointer-events-none fixed inset-0 z-40 hidden border-[6px] border-background lg:block" aria-hidden="true"></div>
 
     <!-- Offline banner -->
-    <div id="offline-banner" class="hidden border-b border-border bg-destructive/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-destructive sm:px-6 lg:px-8" role="status" aria-live="polite">
+    <div id="offline-banner" class="hidden border-b border-rams-line bg-rams-red/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-rams-red sm:px-6 lg:px-8" role="status" aria-live="polite">
       Offline: showing cached or local data only
     </div>
 
     <div class="flex">
-      <div id="mobile-nav-overlay" class="fixed inset-0 z-30 bg-black/40 lg:hidden" hidden aria-hidden="true"></div>
-      <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-40 flex w-[min(18rem,82vw)] flex-col border-r border-border bg-card shadow-2xl lg:hidden" aria-label="Mobile navigation" aria-hidden="true">
-        <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+      <!-- Mobile nav overlay -->
+      <div id="mobile-nav-overlay" class="fixed inset-0 z-30 bg-black/60 lg:hidden" hidden aria-hidden="true"></div>
+
+      <!-- Mobile navigation drawer -->
+      <aside id="mobile-nav" class="fixed inset-y-0 left-0 z-40 flex w-[min(18rem,82vw)] flex-col border-r border-rams-line bg-rams-module lg:hidden" aria-label="Mobile navigation" aria-hidden="true">
+        <div class="flex items-center justify-between gap-3 border-b border-rams-line px-4 py-3">
           <div class="min-w-0">
-            <p class="text-[10px] font-black uppercase tracking-[0.14em] text-muted-foreground">Navigation</p>
-            <p class="truncate text-sm font-black uppercase tracking-[0.08em] text-foreground">Menu</p>
+            <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Navigation</p>
+            <p class="truncate text-sm font-black uppercase tracking-[0.08em] text-rams-foreground">Menu</p>
           </div>
-          <button type="button" id="mobile-nav-close" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm border border-border bg-secondary text-foreground" aria-label="Close navigation menu">
+          <button type="button" id="mobile-nav-close" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel text-rams-foreground" aria-label="Close navigation menu">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </div>
         <nav class="flex-1 space-y-1 overflow-y-auto p-3">
-          {% call nav_item("/", "Overview", "bar-chart-3") %}
-          {% call nav_item("/executive", "Executive", "bar-chart-3") %}
-          {% call nav_item("/trends", "Trends", "bar-chart-3") %}
-          {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
-          {% call nav_item("/insights", "Insights", "eye") %}
-          {% call nav_item("/triage", "Triage", "filter") %}
-          {% call nav_item("/workspaces", "Workspaces", "folder") %}
-          {% call nav_item("/queue", "Queue", "list") %}
-          {% call nav_item("/activity", "Activity", "activity") %}
-          {% call nav_item("/memos", "Memos", "file-text") %}
-          {% call nav_item("/notifications", "Inbox", "bell") %}
-          {% call nav_item("/companies", "Companies", "boxes") %}
-          {% call nav_item("/persons", "Persons", "users") %}
-          {% call nav_item("/competitors", "Competitors", "target") %}
-          {% call nav_item("/battlecards", "Battlecards", "layers") %}
-          {% call nav_item("/security", "Security", "shield") %}
-          {% call nav_item("/supplier-risk", "Risk", "shield") %}
-          {% call nav_item("/pipeline", "Pipeline", "zap") %}
-          {% call nav_item("/graph", "Graph", "radio") %}
-          {% call nav_item("/recipes", "Recipes", "zap") %}
-          {% call nav_item("/search", "Search", "search") %}
-          {% call nav_item("/settings", "Settings", "server") %}
+          {% call nav_item("/", "Overview") %}
+          {% call nav_item("/executive", "Executive") %}
+          {% call nav_item("/trends", "Trends") %}
+          {% call nav_item_badge("/warnings", "Warnings") %}
+          {% call nav_item("/insights", "Insights") %}
+          {% call nav_item("/triage", "Triage") %}
+          {% call nav_item("/workspaces", "Workspaces") %}
+          {% call nav_item("/queue", "Queue") %}
+          {% call nav_item("/activity", "Activity") %}
+          {% call nav_item("/memos", "Memos") %}
+          {% call nav_item("/notifications", "Inbox") %}
+          {% call nav_item("/companies", "Companies") %}
+          {% call nav_item("/persons", "Persons") %}
+          {% call nav_item("/competitors", "Competitors") %}
+          {% call nav_item("/battlecards", "Battlecards") %}
+          {% call nav_item("/security", "Security") %}
+          {% call nav_item("/supplier-risk", "Risk") %}
+          {% call nav_item("/pipeline", "Pipeline") %}
+          {% call nav_item("/graph", "Graph") %}
+          {% call nav_item("/recipes", "Recipes") %}
+          {% call nav_item("/search", "Search") %}
+          {% call nav_item("/settings", "Settings") %}
         </nav>
-        <div class="border-t border-border p-3">
+        <div class="border-t border-rams-line p-3">
           <div class="space-y-3 px-2">
             <button type="button" class="apex-theme-toggle w-full justify-between" data-theme-toggle aria-label="Toggle theme">
               <span data-theme-toggle-text>System</span>
@@ -249,73 +252,75 @@
             </button>
           </div>
           <div class="mt-3 px-2">
-            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
-            <p class="text-xs font-bold text-foreground">{{ username }}</p>
+            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Operator</p>
+            <p class="text-xs font-bold text-rams-foreground">{{ username }}</p>
           </div>
         </div>
       </aside>
 
       <!-- Desktop sidebar -->
-      <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-border lg:bg-card" aria-label="Main navigation">
-        <div class="min-h-16 border-b border-border px-4 flex flex-col justify-center">
-          <p class="text-lg font-black uppercase tracking-[0.08em]">ApexIntel</p>
-          <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Competitive Intelligence</p>
+      <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-rams-line lg:bg-rams-module" aria-label="Main navigation">
+        <div class="min-h-16 border-b border-rams-line px-4 flex flex-col justify-center">
+          <p class="text-lg font-black uppercase tracking-[0.08em] text-rams-foreground">ApexIntel</p>
+          <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-rams-muted">Competitive Intelligence</p>
         </div>
         <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
-          {% call nav_item("/", "Overview", "bar-chart-3") %}
-          {% call nav_item("/executive", "Executive", "bar-chart-3") %}
-          {% call nav_item("/trends", "Trends", "bar-chart-3") %}
-          {% call nav_item_badge("/warnings", "Warnings", "alert-triangle") %}
-          {% call nav_item("/insights", "Insights", "eye") %}
-          {% call nav_item("/triage", "Triage", "filter") %}
-          {% call nav_item("/workspaces", "Workspaces", "folder") %}
-          {% call nav_item("/queue", "Queue", "list") %}
-          {% call nav_item("/activity", "Activity", "activity") %}
-          {% call nav_item("/memos", "Memos", "file-text") %}
-          {% call nav_item("/notifications", "Inbox", "bell") %}
-          {% call nav_item("/companies", "Companies", "boxes") %}
-          {% call nav_item("/persons", "Persons", "users") %}
-          {% call nav_item("/competitors", "Competitors", "target") %}
-          {% call nav_item("/battlecards", "Battlecards", "layers") %}
-          {% call nav_item("/security", "Security", "shield") %}
-          {% call nav_item("/supplier-risk", "Risk", "shield") %}
-          {% call nav_item("/pipeline", "Pipeline", "zap") %}
-          {% call nav_item("/graph", "Graph", "radio") %}
-          {% call nav_item("/recipes", "Recipes", "zap") %}
-          {% call nav_item("/search", "Search", "search") %}
-          {% call nav_item("/settings", "Settings", "server") %}
+          {% call nav_item("/", "Overview") %}
+          {% call nav_item("/executive", "Executive") %}
+          {% call nav_item("/trends", "Trends") %}
+          {% call nav_item_badge("/warnings", "Warnings") %}
+          {% call nav_item("/insights", "Insights") %}
+          {% call nav_item("/triage", "Triage") %}
+          {% call nav_item("/workspaces", "Workspaces") %}
+          {% call nav_item("/queue", "Queue") %}
+          {% call nav_item("/activity", "Activity") %}
+          {% call nav_item("/memos", "Memos") %}
+          {% call nav_item("/notifications", "Inbox") %}
+          {% call nav_item("/companies", "Companies") %}
+          {% call nav_item("/persons", "Persons") %}
+          {% call nav_item("/competitors", "Competitors") %}
+          {% call nav_item("/battlecards", "Battlecards") %}
+          {% call nav_item("/security", "Security") %}
+          {% call nav_item("/supplier-risk", "Risk") %}
+          {% call nav_item("/pipeline", "Pipeline") %}
+          {% call nav_item("/graph", "Graph") %}
+          {% call nav_item("/recipes", "Recipes") %}
+          {% call nav_item("/search", "Search") %}
+          {% call nav_item("/settings", "Settings") %}
         </nav>
-        <div class="border-t border-border p-3">
+        <div class="border-t border-rams-line p-3">
           <div class="px-2">
-            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-muted-foreground">Operator</p>
-            <p class="text-xs font-bold text-foreground">{{ username }}</p>
+            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Operator</p>
+            <p class="text-xs font-bold text-rams-foreground">{{ username }}</p>
           </div>
         </div>
       </aside>
 
       <main id="main-content" class="flex-1 min-w-0 pb-24 md:pb-10 lg:pb-8" tabindex="-1">
-        <header class="sticky top-0 z-20 bg-background/95">
+        <header class="sticky top-0 z-20 bg-rams-chassis/95">
           <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div class="flex min-h-12 items-center justify-end border-b border-border py-2 lg:hidden">
+            <!-- Mobile header: hamburger only -->
+            <div class="flex min-h-12 items-center justify-end border-b border-rams-line py-2 lg:hidden">
               <div class="flex shrink-0 items-center gap-2">
-                <button type="button" id="mobile-nav-toggle" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm border border-border bg-secondary text-foreground" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open navigation menu">
+                <button type="button" id="mobile-nav-toggle" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel text-rams-foreground" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open navigation menu">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
                   <span class="sr-only">Open navigation menu</span>
                 </button>
               </div>
             </div>
-            <div class="hidden min-h-14 items-center justify-between gap-4 border-b border-border py-2.5 lg:flex">
+            <!-- Desktop header: slim structural strip -->
+            <div class="hidden min-h-14 items-center justify-between gap-4 border-b border-rams-line py-2.5 lg:flex">
               <div class="min-w-0">
                 <div class="flex items-center gap-3">
-                  <p class="text-sm font-black uppercase tracking-[0.08em] text-foreground">ApexIntel</p>
-                  <span class="text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground">Competitive Intelligence</span>
+                  <p class="text-sm font-black uppercase tracking-[0.08em] text-rams-foreground">ApexIntel</p>
+                  <span class="text-[10px] font-bold uppercase tracking-[0.12em] text-rams-muted">Competitive Intelligence</span>
                 </div>
               </div>
               <div class="flex shrink-0 items-center gap-2">
-                <span class="hidden text-[10px] font-bold uppercase tracking-[0.12em] text-muted-foreground xl:inline">{{ username }}</span>
-                <!-- Notification bell — badge count is in the sidebar -->
+                <span class="hidden text-[10px] font-bold uppercase tracking-[0.12em] text-rams-muted xl:inline">{{ username }}</span>
+                <!-- Notification bell -->
                 <a href="/notifications"
-                   class="relative inline-flex items-center justify-center rounded-sm border border-border bg-secondary px-2 py-1.5 text-foreground hover:bg-secondary/80"
+                   class="relative inline-flex items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1.5 text-rams-foreground hover:border-rams-line-strong"
                    aria-label="Notifications"
                    title="Notifications">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -329,7 +334,7 @@
                 </button>
                 <form action="/logout" method="post" class="inline">
                   <button type="submit"
-                    class="inline-flex items-center gap-1.5 rounded-sm border border-border bg-secondary px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-foreground hover:text-destructive hover:border-destructive/40"
+                    class="inline-flex items-center gap-1.5 rounded-rams-sm border border-rams-line bg-rams-panel px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-rams-foreground hover:text-rams-red hover:border-rams-red/40"
                     aria-label="Sign out"
                     title="Sign out">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -341,34 +346,60 @@
             {% block breadcrumbs %}{% endblock %}
           </div>
         </header>
+
+        <!-- Main content area -->
         <div class="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8" id="main-results">
           {% block content %}{% endblock %}
         </div>
+
+        <!-- Desktop status strip (control-station element) -->
+        <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 hidden lg:block">
+          <div class="apex-status-strip">
+            <div class="apex-status-strip-item">
+              <span class="apex-status-strip-dot apex-status-strip-dot-ok"></span>
+              <span>System Online</span>
+            </div>
+            <div class="apex-status-strip-item">
+              <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Operator:</span>
+              <span class="text-rams-foreground">{{ username }}</span>
+            </div>
+            <div class="apex-status-strip-item">
+              <span id="data-freshness-indicator" class="apex-status-strip-dot apex-status-strip-dot-ok"></span>
+              <span id="data-freshness-text">Data Fresh</span>
+            </div>
+          </div>
+        </div>
       </main>
 
-      <nav class="apex-mobile-tabbar fixed inset-x-0 bottom-0 z-20 border-t border-border bg-card/95 px-2 pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur lg:hidden" aria-label="Quick navigation">
+      <!-- Mobile tab bar (5 most-used items, fixed bottom, structural border) -->
+      <nav class="apex-mobile-tabbar fixed inset-x-0 bottom-0 z-20 border-t border-rams-line bg-rams-module px-2 pt-2 lg:hidden" aria-label="Quick navigation">
         <div class="grid grid-cols-5 gap-2">
           <a href="/"
-             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path == "/" %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+             class="flex min-h-12 flex-col items-center justify-center rounded-rams-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path == "/" %}bg-rams-panel text-rams-foreground{% else %}text-rams-muted{% endif %}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
             <span>Home</span>
           </a>
           <a href="/warnings"
-             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/warnings") %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+             class="flex min-h-12 flex-col items-center justify-center rounded-rams-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/warnings") %}bg-rams-panel text-rams-foreground{% else %}text-rams-muted{% endif %}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
             <span>Alerts</span>
           </a>
           <a href="/insights"
-             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/insights") %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+             class="flex min-h-12 flex-col items-center justify-center rounded-rams-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/insights") %}bg-rams-panel text-rams-foreground{% else %}text-rams-muted{% endif %}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>
             <span>Intel</span>
           </a>
           <a href="/search"
-             class="flex min-h-12 flex-col items-center justify-center rounded-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/search") %}bg-secondary text-foreground{% else %}text-muted-foreground{% endif %}">
+             class="flex min-h-12 flex-col items-center justify-center rounded-rams-sm px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] {% if current_path.starts_with("/search") %}bg-rams-panel text-rams-foreground{% else %}text-rams-muted{% endif %}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
             <span>Search</span>
           </a>
           <button type="button"
                   id="mobile-nav-bottom-toggle"
-                  class="flex min-h-12 flex-col items-center justify-center rounded-sm border border-border bg-secondary px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-foreground"
+                  class="flex min-h-12 flex-col items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-2 text-[10px] font-black uppercase tracking-[0.1em] text-rams-foreground"
                   aria-expanded="false"
                   aria-controls="mobile-nav">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             <span>Menu</span>
           </button>
         </div>
@@ -616,27 +647,27 @@
 
   <!-- ─── PWA: "Add to Home Screen" Prompt ────────────────────────────── -->
   <div id="a2hs-prompt"
-       class="fixed bottom-20 left-4 right-4 z-50 hidden rounded-sm border border-border bg-card p-4 shadow-lg md:bottom-6 md:left-auto md:right-6 md:w-96"
+       class="fixed bottom-20 left-4 right-4 z-50 hidden rounded-rams-sm border border-rams-line bg-rams-module p-4 md:bottom-6 md:left-auto md:right-6 md:w-96"
        role="dialog" aria-labelledby="a2hs-title" aria-hidden="true">
     <div class="flex items-start gap-3">
       <div class="shrink-0">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-rams-orange" aria-hidden="true">
           <rect width="14" height="20" x="5" y="2" rx="2" ry="2"/>
           <line x1="12" x2="12.01" y1="18" y2="18"/>
         </svg>
       </div>
       <div class="min-w-0 flex-1">
-        <p id="a2hs-title" class="text-[13px] font-bold text-foreground">Install ApexIntel</p>
-        <p class="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+        <p id="a2hs-title" class="text-[13px] font-bold text-rams-foreground">Install ApexIntel</p>
+        <p class="mt-1 text-[11px] leading-relaxed text-rams-muted">
           Add ApexIntel to your home screen for quick access and offline support.
         </p>
         <div class="mt-3 flex items-center gap-2">
           <button id="a2hs-install"
-                  class="rounded-sm bg-primary px-3 py-1.5 text-[11px] font-bold text-primary-foreground hover:bg-primary/90 transition-colors">
+                  class="rounded-rams-sm bg-rams-orange px-3 py-1.5 text-[11px] font-bold text-white hover:opacity-90">
             Install
           </button>
           <button id="a2hs-dismiss"
-                  class="rounded-sm px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:bg-secondary transition-colors">
+                  class="rounded-rams-sm px-3 py-1.5 text-[11px] font-medium text-rams-muted hover:bg-rams-panel">
             Not now
           </button>
         </div>
@@ -700,24 +731,22 @@
 <svg class="{{ class }}"><use href="/static/icons/sprite.svg#icon-{{ name }}"/></svg>
 {% endmacro %}
 
-{% macro nav_item(href, label, icon_name) %}
+{% macro nav_item(href, label) %}
 <a href="{{ href }}"
    class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
-  <span class="h-1.5 w-1.5 rounded-full {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}bg-primary{% else %}bg-border{% endif %}" aria-hidden="true"></span>
   {{ label }}
 </a>
 {% endmacro %}
 
-{% macro nav_item_badge(href, label, icon_name) %}
+{% macro nav_item_badge(href, label) %}
 <a href="{{ href }}"
    class="sidebar-item {% if current_path == href || current_path.starts_with(href) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
-  <span class="h-1.5 w-1.5 rounded-full {% if current_path == href || current_path.starts_with(href) %}bg-primary{% else %}bg-border{% endif %}" aria-hidden="true"></span>
   {{ label }}
   <span id="notification-badge"
     data-count="{{ warning_count }}"
-    class="ml-auto rounded-full bg-destructive px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}">
+    class="ml-auto rounded-rams-sm bg-rams-red px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}">
     {{ warning_count }}
   </span>
 </a>

@@ -28,7 +28,7 @@ pub enum ChangeAppetite {
 }
 
 /// Proof type preferences.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ProofType {
     KpiMetrics,
     Certifications,
@@ -151,14 +151,50 @@ pub struct PsychProfile {
 }
 
 impl PsychProfile {
+    /// Creates a default profile with neutral values.
+    /// ⚠️ Callers MUST override this with real computed data.
+    /// This exists solely for struct initialization; it should never
+    /// be serialized or presented to users without enrichment.
     pub fn default_profile() -> Self {
         Self {
             decision_style: DecisionStyle::BalancedAnalytical,
             change_appetite: ChangeAppetite::Pragmatist,
-            pain_index: 0.3,
-            preferred_proof: vec![ProofType::KpiMetrics, ProofType::Certifications],
-            risk_tolerance: 0.5,
+            pain_index: 0.0,
+            preferred_proof: vec![],
+            risk_tolerance: 0.0,
         }
+    }
+
+    /// Returns true if this profile has been enriched with real data
+    /// (i.e., it is not the neutral default).
+    pub fn is_enriched(&self) -> bool {
+        self.pain_index > 0.0
+            || self.risk_tolerance > 0.0
+            || !self.preferred_proof.is_empty()
+            || self.decision_style != DecisionStyle::BalancedAnalytical
+            || self.change_appetite != ChangeAppetite::Pragmatist
+    }
+
+    /// Returns a quality score [0.0, 1.0] indicating how much real signal
+    /// is baked into this profile vs. neutral defaults.
+    pub fn enrichment_quality(&self) -> f64 {
+        let mut score = 0.0_f64;
+        if self.decision_style != DecisionStyle::BalancedAnalytical {
+            score += 0.15;
+        }
+        if self.change_appetite != ChangeAppetite::Pragmatist {
+            score += 0.15;
+        }
+        if self.pain_index > 0.0 {
+            score += 0.20;
+        }
+        if !self.preferred_proof.is_empty() {
+            score += 0.10;
+        }
+        if self.risk_tolerance > 0.0 {
+            score += 0.20;
+        }
+        score.min(1.0)
     }
 }
 

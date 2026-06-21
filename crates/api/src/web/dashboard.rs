@@ -57,12 +57,53 @@ pub struct TopInsight {
 }
 
 /// An activity event for the timeline widget.
+///
+/// Backed by the real `activity_feed` table (written by the worker's
+/// `ActivityLogger` on every crawl, POI discovery, insight generation, threat
+/// detection, and job lifecycle event). Previously this widget UNIONed only
+/// `warnings` + `insights`, hiding the bulk of real system activity.
 #[derive(Clone, Debug)]
 pub struct ActivityEvent {
+    /// Human-readable action verb (e.g. "Insight", "POI discovered", "Crawl").
     pub kind: String,
+    /// One-line description combining actor + entity + detail.
     pub description: String,
+    /// Formatted timestamp (MM-DD HH:MM).
     pub timestamp: String,
+    /// Deep-link href to the relevant entity page, if any.
     pub href: String,
+    /// Single-glyph icon code for the badge (I/W/P/C/T/J).
+    pub icon: &'static str,
+    /// Semantic accent class for the badge (insight/warning/poi/crawl/threat/job).
+    pub accent: &'static str,
+    /// Secondary actor label (e.g. "system", "John Smith").
+    pub actor: String,
+}
+
+/// Map an `activity_feed.action_type` to a (kind label, icon glyph, accent class).
+fn classify_activity_action(action_type: &str) -> (&'static str, &'static str, &'static str) {
+    match action_type {
+        "insight_generated" => ("Insight", "I", "insight"),
+        "poi_discovered" => ("POI discovered", "P", "poi"),
+        "crawl_completed" => ("Crawl", "C", "crawl"),
+        "company_detected" => ("Company", "C", "crawl"),
+        "threat_detected" => ("Threat", "T", "threat"),
+        "psych_profile_updated" => ("Profile", "P", "poi"),
+        "battlecard_generated" => ("Battlecard", "B", "insight"),
+        "memo_generated" => ("Memo", "M", "insight"),
+        "recipe_promoted" => ("Recipe", "R", "crawl"),
+        "job_completed" => ("Job", "J", "job"),
+        "job_failed" => ("Job failed", "J", "threat"),
+        "job_skipped" => ("Job skipped", "J", "muted"),
+        "create" => ("Created", "+", "insight"),
+        "update" => ("Updated", "~", "crawl"),
+        "delete" => ("Deleted", "−", "threat"),
+        "share" => ("Shared", "↗", "job"),
+        "comment" => ("Comment", "…", "muted"),
+        "resolve" => ("Resolved", "✓", "poi"),
+        "escalate" => ("Escalated", "↑", "threat"),
+        _ => ("Activity", "•", "muted"),
+    }
 }
 
 /// Severity breakdown for the mini-chart.
@@ -438,29 +479,33 @@ pub async fn dashboard(
     // Compute donut chart segments (size=120, stroke=14 → radius=53)
     let donut_segments = compute_donut_segments(&severity_breakdown, 53.0);
 
-    // Build real timestamped activity feed from warnings + insights
+    // Read the REAL activity feed. The worker's `ActivityLogger` writes a row
+    // here on every crawl, POI discovery, insight generation, threat detection,
+    // battlecard/memo generation, recipe promotion, and job lifecycle event.
+    // Previously this widget UNIONed only `warnings` + `insights`, which hid the
+    // bulk of genuine system activity and made the feed look empty/stubbed.
     #[derive(sqlx::FromRow)]
     struct ActivityRow {
-        event_id: String,
-        event_kind: String,
-        description: String,
-        ts: DateTime<Utc>,
+        action_type: String,
+        actor_name: String,
+        entity_type: Option<String>,
+        entity_id: Option<String>,
+        entity_name: Option<String>,
+        details: serde_json::Value,
+        created_at: DateTime<Utc>,
     }
 
     let activity_rows: Vec<ActivityRow> = sqlx::query_as::<_, ActivityRow>(
-         r#"SELECT id::text AS event_id,
-                'Warning' AS event_kind,
-                  COALESCE(title, 'Untitled') || ' [' || UPPER(severity) || ']' AS description,
-                  ts_utc AS ts
-           FROM warnings
-           UNION ALL
-            SELECT id::text AS event_id,
-                'Insight' AS event_kind,
-                  COALESCE(title, 'Untitled') || ' (' || COALESCE(insight_type, 'general') || ')' AS description,
-                  COALESCE(created_at, now()) AS ts
-           FROM insights
-           ORDER BY ts DESC
-           LIMIT 12"#,
+        r#"SELECT action_type,
+                  actor_name,
+                  entity_type,
+                  entity_id,
+                  entity_name,
+                  COALESCE(details, '{}'::jsonb) AS details,
+                  created_at
+             FROM activity_feed
+            ORDER BY created_at DESC
+            LIMIT 12"#,
     )
     .fetch_all(&store.pool)
     .await
@@ -468,15 +513,58 @@ pub async fn dashboard(
 
     let activity: Vec<ActivityEvent> = activity_rows
         .into_iter()
-        .map(|r| ActivityEvent {
-            kind: r.event_kind.clone(),
-            description: r.description,
-            timestamp: r.ts.format("%m-%d %H:%M").to_string(),
-            href: if r.event_kind == "Warning" {
-                format!("/warnings/{}", r.event_id)
+        .map(|r| {
+            let (kind, icon, accent) = classify_activity_action(&r.action_type);
+
+            // Build a readable description from entity + details.
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(name) = &r.entity_name {
+                if !name.trim().is_empty() {
+                    parts.push(name.clone());
+                }
+            }
+            // Surface a short detail note when present (e.g. "generated 3 insights").
+            if let Some(note) = r
+                .details
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+            {
+                parts.push(note.to_string());
+            } else if let Some(obj) = r.details.as_object() {
+                // Fallback: take the first string-valued detail field.
+                if let Some((_, v)) = obj.iter().find(|(_, v)| v.is_string()) {
+                    if let Some(s) = v.as_str() {
+                        if !s.trim().is_empty() {
+                            parts.push(s.to_string());
+                        }
+                    }
+                }
+            }
+            let description = if parts.is_empty() {
+                kind.to_string()
             } else {
-                format!("/insights/{}", r.event_id)
-            },
+                parts.join(" — ")
+            };
+
+            // Build a deep-link when the entity is addressable.
+            let href = match (r.entity_type.as_deref(), r.entity_id.as_deref()) {
+                (Some("company"), Some(id)) if !id.is_empty() => format!("/companies/{}", id),
+                (Some("person"), Some(id)) if !id.is_empty() => format!("/persons/{}", id),
+                (Some("insight"), Some(id)) if !id.is_empty() => format!("/insights/{}", id),
+                (Some("warning"), Some(id)) if !id.is_empty() => format!("/warnings/{}", id),
+                _ => String::new(),
+            };
+
+            ActivityEvent {
+                kind: kind.to_string(),
+                description,
+                timestamp: r.created_at.format("%m-%d %H:%M").to_string(),
+                href,
+                icon,
+                accent,
+                actor: r.actor_name,
+            }
         })
         .collect();
 

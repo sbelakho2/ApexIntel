@@ -105,6 +105,16 @@ pub mod paths {
     pub const SETTINGS_ALERTS: &str = "/api/settings/alerts";
     pub const SETTINGS_ALERTS_ENTITY: &str = "/api/settings/alerts/entity/:entity_id";
     pub const SETTINGS_ALERTS_GLOBAL: &str = "/api/settings/alerts/global";
+
+    // ─── Adversarial ──────────────────────────────────────────────────────
+    pub const ADVERSARIAL_PLACEMENTS: &str = "/api/adversarial/placements";
+    pub const ADVERSARIAL_QUARANTINE: &str = "/api/adversarial/quarantine";
+    pub const ADVERSARIAL_SOURCE_RELIABILITY: &str = "/api/adversarial/source-reliability";
+
+    // ─── Trends & Strategic Intelligence ───────────────────────────────────
+    pub const TRENDS: &str = "/api/trends";
+    pub const STRATEGIC_RADAR: &str = "/api/strategic-radar";
+    pub const COMPETITIVE_LANDSCAPE: &str = "/api/competitive-landscape";
 }
 
 // ─── Endpoint catalogue ─────────────────────────────────────────────────
@@ -688,6 +698,28 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "analyst",
         },
+        // Psychological profiling (canonical psych tables)
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/persons/:id/psych",
+            description: "Latest psychological profile for a person",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/persons/:id/behavioral-patterns",
+            description: "Recent behavioral pattern events for a person",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: "/api/persons/:id/engagement-profile",
+            description: "Latest psych engagement profile for a person",
+            auth_required: true,
+            min_role: "viewer",
+        },
         // Competitors
         EndpointDef {
             method: HttpMethod::Get,
@@ -981,7 +1013,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 96);
+        assert_eq!(eps.len(), 99);
     }
 
     #[test]

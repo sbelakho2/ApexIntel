@@ -1,0 +1,266 @@
+warning: fields `model` and `usage` are never read
+  --> crates/llm/src/embeddings.rs:25:5
+   |
+23 | struct EmbeddingResponse {
+   warning: fields `model` and `usage` are never read
+  --> crates/llm/src/embeddings.rs:25:5
+   |
+23 | struct EmbeddingResponse {
+   |        ----------------- fields in this struct
+24 |     data: Vec<EmbeddingData>,
+25 |     model: Option<String>,
+   |     ^^^^^
+26 |     usage: Option<EmbeddingUsage>,
+   |     ^^^^^
+   |
+   = note: `EmbeddingResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `prompt_tokens` and `total_tokens` are never read
+  --> crates/llm/src/embeddings.rs:37:5
+   |
+36 | struct EmbeddingUsage {
+   |        -------------- fields in this struct
+37 |     prompt_tokens: u32,
+   |     ^^^^^^^^^^^^^
+38 |     total_tokens: u32,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `EmbeddingUsage` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+|        ----------------- fields in this struct
+24 |     data: Vec<EmbeddingData>,
+25 |     model: Option<String>,
+   |     ^^^^^
+26 |     usage: Option<EmbeddingUsage>,
+   |     ^^^^^
+   |
+   = note: `EmbeddingResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `prompt_tokens` and `total_tokens` are never read
+  --> crates/llm/src/embeddings.rs:37:5
+   |
+36 | struct EmbeddingUsage {
+   |        -------------- fields in this struct
+37 |     prompt_tokens: u32,
+   |     ^^^^^^^^^^^^^
+38 |     total_tokens: u32,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `EmbeddingUsage` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `apex-llm` (lib) generated 2 warnings
+warning: `apex-llm` (lib) generated 2 warnings
+warning: value assigned to `param_idx` is never read
+   --> crates/store/src/postgres/battlecards.rs:125:13
+    |
+125 |             param_idx += 1;
+    |             ^^^^^^^^^^^^^^
+    |
+    = warning: value assigned to `param_idx` is never read
+   --> crates/store/src/postgres/battlecards.rs:125:13
+    |
+125 |             param_idx += 1;
+    |             ^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `feature_matrix`, `objection_handler`, `kill_shot`, and `win_loss` are never read
+  --> crates/insights/src/battlecards/mod.rs:46:5
+   |
+44 | pub struct BattlecardEngine {
+   |            ---------------- fields in this struct
+45 |warning: fields `feature_matrix`, `objection_handler`, `kill_shot`, and `win_loss` are never read
+  --> crates/insights/src/battlecards/mod.rs:46:5
+   |
+44 | pub struct BattlecardEngine {
+   |            ---------------- fields in this struct
+45 |     generator: BattlecardGenerator,
+46 |     feature_matrix: FeatureMatrixBuilder,
+   |     ^^^^^^^^^^^^^^
+47 |     objection_handler: ObjectionHandler,
+   |     ^^^^^^^^^^^^^^^^^
+48 |     kill_shot: KillShotAnalyzer,
+   |     ^^^^^^^^^
+49      generator: BattlecardGenerator,
+46 |     feature_matrix: FeatureMatrixBuilder,
+   |     ^^^^^^^^^^^^^^
+47 |     objection_handler: ObjectionHandler,
+   |     ^^^^^^^^^^^^^^^^^
+48 |     kill_shot: KillShotAnalyzer,
+   |     ^^^^^^^^^
+49 |     win_loss: WinLossAnalyzer,
+   |     ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+|     win_loss: WinLossAnalyzer,
+   |     ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `apex-store` (lib) generated 1 warning
+warning: `apex-insights` (lib) generated 1 warning
+warning: `apex-store` (lib) generated 1 warning
+warning: `apex-insights` (lib) generated 1 warning
+warning: field `config` is never read
+  --> crates/triage/src/semantic_dedup.rs:62:5
+   |
+60 | pub struct SemanticDedup {
+   |            ------------- field in this struct
+61 |     embedding_client: Option<EmbeddingClient>,
+warning: field `config` is never read
+  --> crates/triage/src/semantic_dedup.rs:62:5
+   |
+60 | pub struct SemanticDedup {
+   |            ------------- field in this struct
+61 |     embedding_client: Option<EmbeddingClient>,
+62 |     config: DedupConfig,
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+62 |     config: DedupConfig,
+   |     ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `apex-triage` (lib) generated 1 warning
+warning: `apex-triage` (lib) generated 1 warning
+    Checking apex-api v0.1.0 (/Users/sabelakhoua/IdeaProjects/ApexIntel/crates/api)
+    Checking apex-api v0.1.0 (/Users/sabelakhoua/IdeaProjects/ApexIntel/crates/api)
+warning: unused import: `anyhow::Result`
+  --> crates/api/src/alert_router.rs:12:5
+   |
+12 | use anyhow::Result;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `anyhow::Result`
+  --> crates/api/src/alert_router.rs:12:5
+   |
+12 | use anyhow::Result;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `DateTime` and `Utc`
+  --> crates/api/src/sse.rs:16:14
+   |
+16 | use chrono::{DateTime, Utc};
+   |              ^^^^^^^^  ^^^
+
+warning: unused imports: `DateTime` and `Utc`
+  --> crates/api/src/sse.rs:16:14
+   |
+16 | use chrono::{DateTime, Utc};
+   |              ^^^^^^^^  ^^^
+
+error[E0507]: cannot move out of a shared reference
+   --> crates/api/src/web/insights.rs:337:10
+    |
+337 | #[derive(Template)]
+    |          ^^^^^^^^error[E0507]: cannot move out of a shared reference
+   --> crates/api/src/web/insights.rs:337:10
+    |
+337 | #[derive(Template)]
+    |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+    |
+    = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+    |
+    = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/battlecards.rs:56:10
+   |
+56 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/battlecards.rs:56:10
+   |
+56 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/battlecards.rs:71:10
+   |
+71 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/battlecards.rs:71:10
+   |
+71 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/triage.rs:41:10
+   |
+41 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/triage.rs:41:10
+   |
+41 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/triage.rs:56:10
+   |
+56 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/triage.rs:56:10
+   |
+56 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/triage.rs:71:10
+   |
+71 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/web/triage.rs:71:10
+   |
+71 | #[derive(Template)]
+   |          ^^^^^^^^ move occurs because value has type `std::string::String`, which does not implement the `Copy` trait
+   |
+   = note: this error originates in the derive macro `Template` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+
+For more information about this error, try `rustc --explain E0507`.
+For more information about this error, try `rustc --explain E0507`.
+warning: `apex-api` (lib) generated 2 warnings
+warning: `apex-api` (lib) generated 2 warnings
+error: could not compile `apex-api` (lib) due to 6 previous errors; 2 warnings emitted
+error: could not compile `apex-api` (lib) due to 6 previous errors; 2 warnings emitted

@@ -2,15 +2,15 @@
 
 <div id="person-peers-tab">
   {% if !peers.is_empty() %}
-  <div class="divide-y divide-border">
+  <div class="divide-y divide-rams-line">
     {% for p in peers %}
-    <a href="/persons/{{ p.id }}" class="block px-4 py-3 hover:bg-muted/30 transition-colors">
+    <a href="/persons/{{ p.id }}" class="block px-4 py-3 hover:bg-rams-panel">
       <span class="text-sm font-semibold">{{ p.name }}</span>
-      <span class="ml-2 text-[11px] text-muted-foreground">{{ p.role }} at {{ p.shared_company }}</span>
+      <span class="ml-2 text-[11px] text-rams-muted">{{ p.role }} at {{ p.shared_company }}</span>
     </a>
     {% endfor %}
   </div>
   {% else %}
-  <p class="px-4 py-6 text-center text-sm text-muted-foreground">No peers identified</p>
+  <p class="px-4 py-6 text-center text-sm text-rams-muted">No peers identified</p>
   {% endif %}
 </div>

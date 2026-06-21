@@ -1,0 +1,412 @@
+/* ╔══════════════════════════════════════════════════════════════════════════════╗
+   ║  ApexIntel Sensei-Rams — Enhanced UI/UX Stylesheet                          ║
+   ║  Consumes Rams tokens only (--rams-*). No hard-coded hex.                   ║
+   ║  No glassmorphism, no gradients, no pills, no decorative motion.             ║
+   ╚══════════════════════════════════════════════════════════════════════════════╝ */
+
+/* ─── Skeleton Loading (opacity pulse only — no shimmer gradient) ──────────────── */
+@keyframes apex-skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.apex-skeleton {
+  background: var(--rams-panel);
+  border-radius: var(--radius-sm, 2px);
+  animation: apex-skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+.apex-skeleton-text {
+  height: 1rem;
+  margin-bottom: 0.5rem;
+  width: 100%;
+}
+.apex-skeleton-text:last-child { width: 60%; }
+.apex-skeleton-text-sm { height: 0.75rem; width: 80%; }
+.apex-skeleton-text-lg { height: 1.5rem; width: 40%; }
+.apex-skeleton-avatar { width: 3rem; height: 3rem; border-radius: var(--radius-sm, 2px); }
+.apex-skeleton-card {
+  height: 12rem;
+  border-radius: var(--radius-md, 4px);
+  padding: 1rem;
+}
+.apex-skeleton-card .apex-skeleton-text { margin-top: 0.5rem; }
+
+/* ─── Spinner Component ────────────────────────────────────────────────────── */
+.apex-spinner {
+  display: inline-block;
+  border: 2px solid var(--rams-line);
+  border-top-color: var(--rams-orange);
+  border-radius: 50%;
+  animation: apex-spin 0.6s linear infinite;
+}
+.apex-spinner-sm {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+.apex-spinner-md {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+.apex-spinner-lg {
+  width: 4rem;
+  height: 4rem;
+}
+
+@keyframes apex-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Loading Overlay (no backdrop-filter, no glassmorphism) ────────────────── */
+.apex-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--rams-module) 80%, transparent);
+  z-index: 10;
+}
+
+/* ─── Toast Notifications (border-defined, micro radius, no floating shadow) ─── */
+.apex-toast-container {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.5rem;
+  max-width: 24rem;
+}
+
+.apex-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm, 2px);
+  border: 1px solid var(--rams-line);
+  background: var(--rams-module);
+  color: var(--rams-foreground);
+  cursor: pointer;
+}
+
+.apex-toast-success { border-color: var(--rams-green); }
+.apex-toast-error   { border-color: var(--rams-red); }
+.apex-toast-warning { border-color: var(--rams-orange); }
+.apex-toast-info    { border-color: var(--rams-steel); }
+
+.apex-toast-icon { width: 1.25rem; height: 1.25rem; flex-shrink: 0; margin-top: 0.125rem; }
+.apex-toast-body { flex: 1; min-width: 0; }
+.apex-toast-title { font-weight: 600; font-size: 0.875rem; line-height: 1.25rem; }
+.apex-toast-message { font-size: 0.8125rem; line-height: 1.25rem; margin-top: 0.125rem; opacity: 0.85; }
+.apex-toast-close { flex-shrink: 0; width: 1.25rem; height: 1.25rem; opacity: 0.5; }
+.apex-toast-close:hover { opacity: 1; }
+
+/* ─── Empty States (structured: icon + heading + context + action) ──────────── */
+.apex-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 1.5rem;
+  text-align: center;
+  color: var(--rams-muted);
+}
+.apex-empty-state-icon {
+  width: 4rem;
+  height: 4rem;
+  margin-bottom: 1rem;
+  opacity: 0.4;
+}
+.apex-empty-state-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--rams-foreground);
+  margin-bottom: 0.25rem;
+}
+.apex-empty-state-description {
+  font-size: 0.875rem;
+  max-width: 24rem;
+  line-height: 1.5;
+}
+
+/* ─── Error States ─────────────────────────────────────────────────────────── */
+.apex-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: var(--radius-sm, 2px);
+  background: color-mix(in srgb, var(--rams-red) 8%, var(--rams-module));
+  border: 1px solid var(--rams-red);
+  color: var(--rams-red);
+  margin-bottom: 1rem;
+}
+.apex-error-banner-icon { width: 1.25rem; height: 1.25rem; flex-shrink: 0; margin-top: 0.125rem; }
+.apex-error-banner-title { font-weight: 600; font-size: 0.875rem; }
+.apex-error-banner-message { font-size: 0.8125rem; margin-top: 0.125rem; }
+.apex-error-banner button {
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm, 2px);
+  border: 1px solid var(--rams-red);
+  background: color-mix(in srgb, var(--rams-red) 15%, transparent);
+  color: var(--rams-red);
+  cursor: pointer;
+}
+
+.apex-error-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  text-align: center;
+  padding: 2rem;
+}
+.apex-error-page-code {
+  font-size: 5rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--rams-line);
+  margin-bottom: 0.5rem;
+}
+.apex-error-page-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--rams-foreground);
+  margin-bottom: 0.5rem;
+}
+.apex-error-page-message {
+  color: var(--rams-muted);
+  margin-bottom: 1.5rem;
+  max-width: 28rem;
+}
+
+/* ─── Form Validation ──────────────────────────────────────────────────────── */
+.apex-form-group { margin-bottom: 1rem; }
+.apex-form-label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--rams-foreground);
+  margin-bottom: 0.25rem;
+}
+.apex-form-required::after { content: " *"; color: var(--rams-red); }
+
+.apex-form-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  border: 1px solid var(--rams-line);
+  border-radius: var(--radius-sm, 2px);
+  background: var(--rams-panel);
+  color: var(--rams-foreground);
+}
+.apex-form-input:focus {
+  outline: none;
+  border-color: var(--rams-orange);
+  box-shadow: 0 0 0 2px var(--rams-chassis), 0 0 0 4px var(--rams-orange);
+}
+.apex-form-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.apex-form-input.apex-form-error {
+  border-color: var(--rams-red);
+}
+.apex-form-input.apex-form-success {
+  border-color: var(--rams-green);
+}
+
+.apex-form-error-text {
+  font-size: 0.75rem;
+  color: var(--rams-red);
+  margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.apex-form-hint {
+  font-size: 0.75rem;
+  color: var(--rams-muted);
+  margin-top: 0.25rem;
+}
+
+/* ─── Focus Management & Accessibility ─────────────────────────────────────── */
+*:focus-visible {
+  outline: 2px solid var(--rams-orange);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.apex-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Skip to main content link */
+.apex-skip-link {
+  position: absolute;
+  top: -100%;
+  left: 0.5rem;
+  z-index: 10000;
+  padding: 0.5rem 1rem;
+  background: var(--rams-foreground);
+  color: var(--rams-module);
+  font-weight: 600;
+  border-radius: var(--radius-sm, 2px);
+}
+.apex-skip-link:focus { top: 0.5rem; }
+
+/* ─── Responsive Breakpoints ───────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .apex-hide-mobile { display: none !important; }
+  .apex-toast-container { left: 0.5rem; right: 0.5rem; bottom: 0.5rem; max-width: none; }
+  .apex-toast { max-width: none; }
+  .apex-error-page-code { font-size: 3rem; }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .apex-hide-tablet { display: none !important; }
+}
+
+@media (min-width: 1025px) {
+  .apex-hide-desktop { display: none !important; }
+}
+
+/* ─── Mobile Navigation ────────────────────────────────────────────────────── */
+.apex-mobile-nav-toggle {
+  display: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm, 2px);
+  border: 1px solid var(--rams-line);
+  background: transparent;
+  cursor: pointer;
+}
+.apex-mobile-nav-toggle:hover { background: var(--rams-panel); }
+.apex-mobile-nav-toggle svg { width: 1.25rem; height: 1.25rem; }
+
+@media (max-width: 1024px) {
+  .apex-mobile-nav-toggle { display: flex; }
+}
+
+/* ─── Page Transitions (utilitarian: ≤200ms, ease-out) ──────────────────────── */
+@keyframes apex-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.apex-page-enter {
+  animation: apex-fade-in 200ms ease-out;
+}
+
+/* ─── Button Variants (consume Rams tokens — no hard-coded hex) ──────────── */
+.apex-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  border-radius: var(--radius-sm, 2px);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.apex-btn:focus-visible { outline: 2px solid var(--rams-orange); outline-offset: 2px; }
+.apex-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.apex-btn-primary {
+  background: var(--rams-orange);
+  color: #FFFFFF;
+  border-color: var(--rams-orange);
+}
+.apex-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rams-orange) 85%, black);
+  border-color: color-mix(in srgb, var(--rams-orange) 85%, black);
+}
+
+.apex-btn-secondary {
+  background: var(--rams-panel);
+  color: var(--rams-foreground);
+  border-color: var(--rams-line);
+}
+.apex-btn-secondary:hover:not(:disabled) {
+  background: var(--rams-module);
+  border-color: var(--rams-line-strong);
+}
+
+.apex-btn-danger {
+  background: var(--rams-red);
+  color: #FFFFFF;
+  border-color: var(--rams-red);
+}
+.apex-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rams-red) 85%, black);
+}
+
+.apex-btn-ghost {
+  background: transparent;
+  color: var(--rams-foreground);
+  border-color: transparent;
+}
+.apex-btn-ghost:hover:not(:disabled) {
+  background: var(--rams-panel);
+}
+
+/* ─── Tooltip ──────────────────────────────────────────────────────────────── */
+.apex-tooltip {
+  position: relative;
+}
+.apex-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--rams-module);
+  background: var(--rams-foreground);
+  border-radius: var(--radius-sm, 2px);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+}
+.apex-tooltip:hover::after,
+.apex-tooltip:focus-visible::after { opacity: 1; }
+
+/* ─── Legacy Badge (kept for backward compat, but deprecated in favor of .apex-badge in globals.css) ─── */
+.apex-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+  border-radius: var(--radius-sm, 2px);
+  background: var(--rams-panel);
+  color: var(--rams-foreground);
+}
+.apex-badge-success { background: color-mix(in srgb, var(--rams-green) 15%, var(--rams-module)); color: var(--rams-green); }
+.apex-badge-error   { background: color-mix(in srgb, var(--rams-red) 15%, var(--rams-module)); color: var(--rams-red); }
+.apex-badge-warning { background: color-mix(in srgb, var(--rams-orange) 15%, var(--rams-module)); color: var(--rams-orange); }
+.apex-badge-info    { background: color-mix(in srgb, var(--rams-steel) 15%, var(--rams-module)); color: var(--rams-steel); }
+.apex-badge-neutral { background: var(--rams-panel); color: var(--rams-muted); }

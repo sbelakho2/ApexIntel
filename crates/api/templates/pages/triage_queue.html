@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
 {% block breadcrumb %}
-<nav class="border-b border-border py-2.5" aria-label="Breadcrumb">
-  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
-    <li><a href="/" class="hover:text-foreground transition-colors">Home</a></li>
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
     <li aria-hidden="true">/</li>
-    <li class="text-foreground" aria-current="page">Triage Queue</li>
+    <li class="text-rams-foreground" aria-current="page">Triage Queue</li>
   </ol>
 </nav>
 {% endblock %}
@@ -14,22 +14,22 @@
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="metric-rail-slate"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Total</div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Total</div>
     <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.total }}</div>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="metric-rail-red"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Critical</div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Critical</div>
     <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.critical_count }}</div>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="metric-rail-amber"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">High / Medium</div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">High / Medium</div>
     <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.high_count + stats.medium_count }}</div>
   </div>
   <div class="apex-card p-4 relative overflow-hidden">
     <div class="metric-rail-green"></div>
-    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">Resolved</div>
+    <div class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Resolved</div>
     <div class="mt-1 text-2xl font-black tabular-nums">{{ stats.resolved }}</div>
   </div>
 </div>
@@ -64,13 +64,13 @@
 <div id="triage-list">
   {% if items.is_empty() %}
     <div class="apex-card p-8 text-center">
-      <p class="text-sm text-muted-foreground">No triage items found.</p>
+      <p class="text-sm text-rams-muted">No triage items found.</p>
     </div>
   {% else %}
     <div class="apex-card overflow-hidden mb-4">
       <div class="overflow-x-auto">
         <table class="min-w-full text-left text-xs" data-dense-table data-table-name="triage">
-          <thead class="bg-secondary/40 text-[10px] font-black uppercase tracking-[0.12em] text-muted-foreground">
+          <thead class="bg-rams-panel text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
             <tr>
               <th class="px-4 py-3">Score</th>
               <th class="px-4 py-3">Title</th>
@@ -82,30 +82,30 @@
           </thead>
           <tbody>
             {% for item in items %}
-            <tr class="cursor-pointer border-t border-border/70 hover:bg-muted/30 focus-within:bg-muted/30"
+            <tr class="cursor-pointer border-t border-rams-line/70 hover:bg-rams-panel focus-within:bg-rams-panel"
                 tabindex="0" data-row-link="/triage/{{ item.id }}">
               <td class="px-4 py-3">
-                <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider"
+                <span class="inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[10px] font-black uppercase tracking-wider"
                       style="background-color: {{ item.score_band_color }}15; color: {{ item.score_band_color }}">
                   {{ item.score_band }}
                 </span>
               </td>
               <td class="px-4 py-3 font-medium max-w-[240px] truncate">{{ item.title }}</td>
-              <td class="px-4 py-3 text-muted-foreground">{{ item.item_type.as_str() }}</td>
+              <td class="px-4 py-3 text-rams-muted">{{ item.item_type.as_str() }}</td>
               <td class="px-4 py-3">
-                <span class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-black uppercase tracking-wider
-                  {% if item.status.as_str() == "resolved" %}border-green-600/30 text-green-600
-                  {% else if item.status.as_str() == "dismissed" %}border-muted-foreground/30 text-muted-foreground
-                  {% else if item.status.as_str() == "acknowledged" %}border-blue-600/30 text-blue-600
-                  {% else if item.status.as_str() == "triaged" %}border-amber-600/30 text-amber-600
-                  {% else %}border-red-600/30 text-red-600{% endif %}">
+                <span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-wider
+                  {% if item.status.as_str() == "resolved" %}border-rams-green/30 text-rams-green
+                  {% else if item.status.as_str() == "dismissed" %}border-rams-muted/30 text-rams-muted
+                  {% else if item.status.as_str() == "acknowledged" %}border-rams-steel/30 text-rams-steel
+                  {% else if item.status.as_str() == "triaged" %}border-rams-orange/30 text-rams-orange
+                  {% else %}border-rams-red/30 text-rams-red{% endif %}">
                   {{ item.status.as_str() }}
                 </span>
               </td>
-              <td class="px-4 py-3 text-muted-foreground max-w-[160px] truncate">
+              <td class="px-4 py-3 text-rams-muted max-w-[160px] truncate">
                 {{ item.entity_name.as_deref().unwrap_or("-") }}
               </td>
-              <td class="px-4 py-3 text-muted-foreground whitespace-nowrap">
+              <td class="px-4 py-3 text-rams-muted whitespace-nowrap">
                 {{ item.created_at.format("%Y-%m-%d %H:%M") }}
               </td>
             </tr>
@@ -124,7 +124,7 @@
            hx-get="/triage?page={{ page - 1 }}&status={{ current_status }}"
            hx-target="#triage-list" hx-push-url="true">← Prev</a>
         {% endif %}
-        <span class="px-3 py-1.5 text-xs text-muted-foreground">
+        <span class="px-3 py-1.5 text-xs text-rams-muted">
           Page {{ page }} of {{ total_pages }}
         </span>
         {% if page < total_pages %}

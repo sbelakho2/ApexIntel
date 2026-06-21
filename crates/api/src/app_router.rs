@@ -71,6 +71,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             post(insights_handlers::analyze_insight),
         )
         .route(
+            "/api/insights/:id/investigate",
+            post(insights_handlers::investigate_insight),
+        )
+        .route(
             "/api/insights/:id/pdf",
             get(exports_handlers::export_insight_pdf),
         )
@@ -116,6 +120,19 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route(
             "/api/persons/:id/engagement",
             get(dossiers_handlers::get_person_engagement),
+        )
+        // ─── Psychological profiling (canonical psych tables) ───────────────
+        .route(
+            "/api/persons/:id/psych",
+            get(psych_handlers::get_person_psych),
+        )
+        .route(
+            "/api/persons/:id/behavioral-patterns",
+            get(psych_handlers::get_person_behavioral_patterns),
+        )
+        .route(
+            "/api/persons/:id/engagement-profile",
+            get(psych_handlers::get_person_engagement_profile),
         )
         .route(
             "/api/persons/:id/role-history",
@@ -360,6 +377,30 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route(
             "/api/activity-feed",
             get(collaboration_handlers::get_activity_feed).post(collaboration_handlers::record_activity),
+        )
+
+        // ─── Standalone Activity Feed API ──────────────────────────────────
+        .route(
+            "/api/activity",
+            get(activity_handlers::get_activity_feed).post(activity_handlers::create_activity_event),
+        )
+
+        // ─── Supply Chain Risk API ────────────────────────────────────────
+        .route(
+            "/api/supply-risk",
+            get(supply_risk_handlers::get_supply_risks),
+        )
+
+        // ─── Threat Intelligence API ──────────────────────────────────────
+        .route(
+            "/api/threat-intel",
+            get(threat_intel_handlers::get_threat_intel),
+        )
+
+        // ─── Psychological Profiles API ──────────────────────────────────
+        .route(
+            "/api/psych-profiles",
+            get(psych_profiles_handlers::get_psych_profiles),
         )
 
         // ─── Phase 4.3: Daily Priority Queue ─────────────────────────────

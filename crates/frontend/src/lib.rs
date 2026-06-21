@@ -1,4 +1,5 @@
 pub mod api;
+pub mod api_config;
 pub mod app;
 pub mod components;
 pub mod routes;
