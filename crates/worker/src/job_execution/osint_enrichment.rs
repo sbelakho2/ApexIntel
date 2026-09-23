@@ -21,9 +21,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use sqlx::Row;
-use tracing;
-
 use crate::{JobKind, JobRun, PgStore};
 
 /// Maximum number of companies to enrich per invocation.
@@ -146,15 +143,14 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
 
         // ── 3c. SEC EDGAR filings (if US public company) ───────────────────
         // Look up the ticker from company metadata if available.
-        let ticker: Option<String> = sqlx::query_scalar(
-            r#"SELECT metadata->>'sec_ticker' FROM companies WHERE id = $1"#,
-        )
-        .bind(company.id)
-        .fetch_optional(&store.pool)
-        .await
-        .ok()
-        .flatten()
-        .filter(|t: &String| !t.trim().is_empty());
+        let ticker: Option<String> =
+            sqlx::query_scalar(r#"SELECT metadata->>'sec_ticker' FROM companies WHERE id = $1"#)
+                .bind(company.id)
+                .fetch_optional(&store.pool)
+                .await
+                .ok()
+                .flatten()
+                .filter(|t: &String| !t.trim().is_empty());
 
         if let Some(ref ticker) = ticker {
             let edgar_client = apex_crawl::sec_edgar::SecEdgarClient::new();

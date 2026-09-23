@@ -84,7 +84,8 @@ impl WinLossAnalyzer {
     }
 
     fn aggregate_loss_reasons(deals: &[ClosedDeal]) -> Vec<LossReason> {
-        let mut reason_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut reason_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let lost_deals: Vec<&ClosedDeal> = deals.iter().filter(|d| !d.won).collect();
         let total_lost = lost_deals.len() as f64;
 
@@ -109,7 +110,7 @@ impl WinLossAnalyzer {
             })
             .collect();
 
-        reasons.sort_by(|a, b| b.count.cmp(&a.count));
+        reasons.sort_by_key(|a| std::cmp::Reverse(a.count));
         reasons.truncate(5);
         reasons
     }
@@ -119,7 +120,11 @@ impl WinLossAnalyzer {
             std::collections::BTreeMap::new();
 
         for deal in deals {
-            let period = format!("{}-Q{}", deal.closed_at.year(), ((deal.closed_at.month() - 1) / 3) + 1);
+            let period = format!(
+                "{}-Q{}",
+                deal.closed_at.year(),
+                ((deal.closed_at.month() - 1) / 3) + 1
+            );
             period_map.entry(period).or_default().push(deal);
         }
 
@@ -148,14 +153,22 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn make_deal(name: &str, value: f64, won: bool, loss_reason: Option<&str>, date: (i32, u32, u32)) -> ClosedDeal {
+    fn make_deal(
+        name: &str,
+        value: f64,
+        won: bool,
+        loss_reason: Option<&str>,
+        date: (i32, u32, u32),
+    ) -> ClosedDeal {
         ClosedDeal {
             deal_name: name.to_string(),
             value,
             won,
             loss_reason: loss_reason.map(|s| s.to_string()),
             competitor_name: "RivalCorp".to_string(),
-            closed_at: Utc.with_ymd_and_hms(date.0, date.1, date.2, 0, 0, 0).unwrap(),
+            closed_at: Utc
+                .with_ymd_and_hms(date.0, date.1, date.2, 0, 0, 0)
+                .unwrap(),
         }
     }
 

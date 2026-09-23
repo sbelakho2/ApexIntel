@@ -94,11 +94,15 @@ impl EvidenceType {
             EvidenceType::SupplyChainChange
         } else if lower.contains("web") || lower.contains("site") {
             EvidenceType::WebChange
-        } else if lower.contains("social") || lower.contains("twitter") || lower.contains("linkedin") {
+        } else if lower.contains("social")
+            || lower.contains("twitter")
+            || lower.contains("linkedin")
+        {
             EvidenceType::SocialMediaActivity
         } else if lower.contains("dark") || lower.contains("tor") {
             EvidenceType::DarkWebIndicator
-        } else if lower.contains("dns") || lower.contains("certificate") || lower.contains("whois") {
+        } else if lower.contains("dns") || lower.contains("certificate") || lower.contains("whois")
+        {
             EvidenceType::TechnicalSignal
         } else if lower.contains("geopolitical") || lower.contains("political") {
             EvidenceType::GeopoliticalSignal
@@ -401,7 +405,10 @@ impl HypothesisGenerator {
         let mut evidence_counts: HashMap<EvidenceType, Vec<&SignalEvidence>> = HashMap::new();
         for signal in signals {
             let evidence_type = EvidenceType::from_signal_type(&signal.signal_type);
-            evidence_counts.entry(evidence_type).or_default().push(signal);
+            evidence_counts
+                .entry(evidence_type)
+                .or_default()
+                .push(signal);
         }
 
         // Generate standard hypotheses
@@ -409,11 +416,7 @@ impl HypothesisGenerator {
             let supporting_types = hypothesis_type.supporting_evidence();
             let supporting_signals: Vec<SignalEvidence> = supporting_types
                 .iter()
-                .flat_map(|et| {
-                    evidence_counts
-                        .get(et).cloned()
-                        .unwrap_or_default()
-                })
+                .flat_map(|et| evidence_counts.get(et).cloned().unwrap_or_default())
                 .cloned()
                 .collect();
 
@@ -442,11 +445,16 @@ impl HypothesisGenerator {
     }
 
     /// Update hypotheses with new evidence using Bayesian fusion.
-    pub fn update_with_evidence(&self, hypotheses: &mut [Hypothesis], new_evidence: &SignalEvidence) {
+    pub fn update_with_evidence(
+        &self,
+        hypotheses: &mut [Hypothesis],
+        new_evidence: &SignalEvidence,
+    ) {
         let evidence_type = EvidenceType::from_signal_type(&new_evidence.signal_type);
 
         // First pass: compute total for normalization
-        let totals: Vec<f64> = hypotheses.iter()
+        let totals: Vec<f64> = hypotheses
+            .iter()
             .map(|h| {
                 let supports = h.supporting_evidence.contains(&evidence_type);
                 let base_likelihood = if supports { 0.8 } else { 0.3 };
@@ -489,7 +497,9 @@ impl HypothesisGenerator {
         let mut counterfactuals = Vec::new();
 
         // Generate hypothesis-specific counterfactual data
-        let (counterfactual_text, required_conditions, evidence_needed) = match hypothesis.hypothesis_type {
+        let (counterfactual_text, required_conditions, evidence_needed) = match hypothesis
+            .hypothesis_type
+        {
             HypothesisType::Expanding => (
                 "What if this entity were actually contracting instead?",
                 vec![
@@ -521,10 +531,13 @@ impl HypothesisGenerator {
             HypothesisType::Pivoting => (
                 "What if this entity were maintaining its current direction?",
                 vec![
-                    "Analyze whether new initiatives are experimental vs. strategic shifts".to_string(),
+                    "Analyze whether new initiatives are experimental vs. strategic shifts"
+                        .to_string(),
                     "Check if leadership changes signal evolution vs. transformation".to_string(),
-                    "Compare current capability investments against historical patterns".to_string(),
-                    "Assess if pivot signals are defensive reactions to market pressure".to_string(),
+                    "Compare current capability investments against historical patterns"
+                        .to_string(),
+                    "Assess if pivot signals are defensive reactions to market pressure"
+                        .to_string(),
                 ],
                 vec![
                     "Historical strategy documents and investor presentations".to_string(),
@@ -536,7 +549,8 @@ impl HypothesisGenerator {
                 "What if this entity had no financial issues?",
                 vec![
                     "Audit cash flow statements and burn rate projections".to_string(),
-                    "Verify if cost-cutting measures are strategic rather than distress-driven".to_string(),
+                    "Verify if cost-cutting measures are strategic rather than distress-driven"
+                        .to_string(),
                     "Check for insider selling patterns versus normal trading".to_string(),
                     "Assess debt covenant compliance and refinancing options".to_string(),
                 ],
@@ -692,12 +706,13 @@ impl HypothesisGenerator {
     }
 
     /// Calculate investigation priority based on hypothesis scores and gaps.
-    pub fn calculate_priority(&self, hypotheses: &[Hypothesis], gaps: &GapAnalysis) -> InvestigationPriority {
+    pub fn calculate_priority(
+        &self,
+        hypotheses: &[Hypothesis],
+        gaps: &GapAnalysis,
+    ) -> InvestigationPriority {
         // Factor in the leading hypothesis posterior
-        let top_posterior = hypotheses
-            .first()
-            .map(|h| h.posterior)
-            .unwrap_or(0.5);
+        let top_posterior = hypotheses.first().map(|h| h.posterior).unwrap_or(0.5);
 
         // Factor in information completeness
         let information_factor = 1.0 - gaps.completeness_score;
@@ -710,8 +725,7 @@ impl HypothesisGenerator {
 }
 
 /// Profile of what data exists for an entity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EntityDataProfile {
     pub has_financial_reports: bool,
     pub has_revenue_data: bool,
@@ -725,7 +739,6 @@ pub struct EntityDataProfile {
     pub has_certifications: bool,
     pub has_regulatory_filings: bool,
 }
-
 
 impl EntityDataProfile {
     /// Build an enriched data profile from signal evidence items.
@@ -775,9 +788,7 @@ impl EntityDataProfile {
             }
 
             // Sector data
-            if etype.contains("sector")
-                || etype.contains("industry")
-                || etype.contains("vertical")
+            if etype.contains("sector") || etype.contains("industry") || etype.contains("vertical")
             {
                 if let Some(sector) = signal.raw_data.get("sector").and_then(|v| v.as_str()) {
                     known_sectors.push(sector.to_string());
@@ -845,10 +856,7 @@ impl EntityDataProfile {
             }
 
             // Certification / compliance
-            if etype.contains("certif")
-                || etype.contains("iso")
-                || etype.contains("compliance")
-            {
+            if etype.contains("certif") || etype.contains("iso") || etype.contains("compliance") {
                 profile.has_certifications = true;
             }
         }
@@ -900,7 +908,7 @@ mod tests {
         ];
 
         let hypotheses = generator.generate_hypotheses("ent1", "Test Corp", &signals);
-        
+
         // Should generate Expanding hypothesis given job postings and patents
         assert!(!hypotheses.is_empty());
     }
@@ -908,7 +916,7 @@ mod tests {
     #[test]
     fn test_priority_calculation() {
         let generator = HypothesisGenerator::new();
-        
+
         let mut hypothesis = Hypothesis::new(HypothesisType::Expanding, 7);
         hypothesis.posterior = 0.8;
 
@@ -926,6 +934,11 @@ mod tests {
         let priority = generator.calculate_priority(&[hypothesis], &gaps);
         // With 0.8 posterior and 0.3 information gap (1 - 0.7), urgency = 0.8*0.6 + 0.3*0.4 = 0.6
         // This should result in Medium priority (>= 0.5 but < 0.7)
-        assert!(matches!(priority, InvestigationPriority::Medium | InvestigationPriority::High | InvestigationPriority::Critical));
+        assert!(matches!(
+            priority,
+            InvestigationPriority::Medium
+                | InvestigationPriority::High
+                | InvestigationPriority::Critical
+        ));
     }
 }

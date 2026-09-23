@@ -120,14 +120,13 @@ impl SupplierRiskScore {
 
     /// Calculate weighted overall score.
     pub fn calculate_overall(&mut self) {
-        self.overall_score = (
-            self.financial_risk * 0.20
+        self.overall_score = (self.financial_risk * 0.20
             + self.operational_risk * 0.20
             + self.geopolitical_risk * 0.25
             + self.cyber_risk * 0.15
             + self.concentration_risk * 0.10
-            + self.dependency_score * 0.10
-        ).min(1.0);
+            + self.dependency_score * 0.10)
+            .min(1.0);
     }
 }
 
@@ -167,7 +166,12 @@ pub struct Supplier {
 }
 
 impl Supplier {
-    pub fn new(name: impl Into<String>, country_code: impl Into<String>, tier: SupplierTier, capacity: SupplierCapacity) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        country_code: impl Into<String>,
+        tier: SupplierTier,
+        capacity: SupplierCapacity,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -617,10 +621,7 @@ impl SupplyChainThreatModel {
 
     /// Get all suppliers by tier.
     pub fn get_suppliers_by_tier(&self, tier: SupplierTier) -> Vec<&Supplier> {
-        self.suppliers
-            .values()
-            .filter(|s| s.tier == tier)
-            .collect()
+        self.suppliers.values().filter(|s| s.tier == tier).collect()
     }
 
     /// Get all suppliers in a region.
@@ -653,7 +654,9 @@ impl SupplyChainThreatModel {
             }
 
             // By country
-            let entry = country_map.entry(supplier.country_code.clone()).or_insert((0, 0, 0.0));
+            let entry = country_map
+                .entry(supplier.country_code.clone())
+                .or_insert((0, 0, 0.0));
             entry.0 += 1;
             entry.2 += supplier.criticality_score;
         }
@@ -677,9 +680,11 @@ impl SupplyChainThreatModel {
                 component_count: 0,
                 revenue_exposure_percent: concentration * 100.0,
                 risk_score,
-                contributing_factors: vec![
-                    format!("{} suppliers in region ({}% of total)", count, (concentration * 100.0) as u32)
-                ],
+                contributing_factors: vec![format!(
+                    "{} suppliers in region ({}% of total)",
+                    count,
+                    (concentration * 100.0) as u32
+                )],
                 mitigation_options: vec![
                     "Diversify supplier base across regions".to_string(),
                     "Establish backup suppliers in other regions".to_string(),
@@ -688,7 +693,11 @@ impl SupplyChainThreatModel {
         }
 
         // Sort by risk score descending
-        risks.sort_by(|a, b| b.risk_score.partial_cmp(&a.risk_score).unwrap_or(std::cmp::Ordering::Equal));
+        risks.sort_by(|a, b| {
+            b.risk_score
+                .partial_cmp(&a.risk_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         risks
     }
 
@@ -773,44 +782,53 @@ impl SupplyChainThreatModel {
         }
 
         // Geographic diversity
-        let unique_regions: std::collections::HashSet<_> = self.suppliers
+        let unique_regions: std::collections::HashSet<_> = self
+            .suppliers
             .values()
             .filter_map(|s| s.region.clone())
             .collect();
         let geographic_diversity_score = (unique_regions.len() as f64 / 6.0).min(1.0); // 6 major regions
 
         // Supplier diversity (by tier and category)
-        let unique_tiers: std::collections::HashSet<_> = self.suppliers
-            .values()
-            .map(|s| s.tier)
-            .collect();
-        let unique_categories: std::collections::HashSet<_> = self.suppliers
+        let unique_tiers: std::collections::HashSet<_> =
+            self.suppliers.values().map(|s| s.tier).collect();
+        let unique_categories: std::collections::HashSet<_> = self
+            .suppliers
             .values()
             .map(|s| s.category.clone())
             .collect();
         let supplier_diversity_score = ((unique_tiers.len() as f64 / 5.0) * 0.5
-            + (unique_categories.len().min(20) as f64 / 20.0) * 0.5).min(1.0);
+            + (unique_categories.len().min(20) as f64 / 20.0) * 0.5)
+            .min(1.0);
 
         // Inventory depth (based on substitutes available)
         let avg_substitutes = if self.components.is_empty() {
             0.5
         } else {
-            self.components.values()
+            self.components
+                .values()
                 .map(|c| c.substitutes.len() as f64)
-                .sum::<f64>() / self.components.len() as f64
+                .sum::<f64>()
+                / self.components.len() as f64
         };
         let inventory_depth_score = (avg_substitutes / 5.0).min(1.0);
 
         // Visibility (based on contact information completeness)
-        let avg_contacts = self.suppliers.values()
+        let avg_contacts = self
+            .suppliers
+            .values()
             .map(|s| s.contacts.len() as f64)
-            .sum::<f64>() / total_suppliers as f64;
+            .sum::<f64>()
+            / total_suppliers as f64;
         let visibility_score = (avg_contacts / 3.0).min(1.0);
 
         // Flexibility (based on capacity)
-        let avg_flex = self.suppliers.values()
+        let avg_flex = self
+            .suppliers
+            .values()
             .map(|s| s.capacity.flex_capacity_percent)
-            .sum::<f64>() / total_suppliers as f64;
+            .sum::<f64>()
+            / total_suppliers as f64;
         let flexibility_score = (avg_flex / 0.5).min(1.0);
 
         // Calculate overall
@@ -818,7 +836,8 @@ impl SupplyChainThreatModel {
             + supplier_diversity_score * 0.25
             + inventory_depth_score * 0.2
             + visibility_score * 0.15
-            + flexibility_score * 0.2).min(1.0);
+            + flexibility_score * 0.2)
+            .min(1.0);
 
         // Identify bottlenecks
         let mut bottlenecks = Vec::new();
@@ -866,9 +885,12 @@ impl SupplyChainThreatModel {
         let mut recommendations = Vec::new();
 
         if score < 0.4 {
-            recommendations.push("Critical: Supply chain resilience is low. Immediate action required.".to_string());
+            recommendations.push(
+                "Critical: Supply chain resilience is low. Immediate action required.".to_string(),
+            );
         } else if score < 0.6 {
-            recommendations.push("Moderate resilience. Address identified bottlenecks.".to_string());
+            recommendations
+                .push("Moderate resilience. Address identified bottlenecks.".to_string());
         }
 
         for bottleneck in bottlenecks {
@@ -892,7 +914,8 @@ impl SupplyChainThreatModel {
         }
 
         if recommendations.is_empty() {
-            recommendations.push("Supply chain appears resilient. Continue monitoring.".to_string());
+            recommendations
+                .push("Supply chain appears resilient. Continue monitoring.".to_string());
         }
 
         recommendations
@@ -915,31 +938,37 @@ impl SupplyChainThreatModel {
                     0.8,
                 )
                 .with_recovery("Activate alternate manufacturers from Korea/Japan", 72),
-
-            DisruptionScenario::new("South China Sea Tensions", ScenarioType::PoliticalInstability)
-                .with_probability(0.25)
-                .with_impact(Severity::High)
-                .with_regions(vec![GeoRegion::EastAsia, GeoRegion::SoutheastAsia])
-                .with_duration(180)
-                .with_mitigation(
-                    "Diversify assembly to Vietnam/Malaysia facilities",
-                    10_000_000,
-                    18,
-                    0.9,
-                ),
-
-            DisruptionScenario::new("Semiconductor Capacity Shortage", ScenarioType::CapacityShortage)
-                .with_probability(0.35)
-                .with_impact(Severity::High)
-                .with_categories(vec!["Semiconductors".to_string(), "Electronics".to_string()])
-                .with_duration(120)
-                .with_mitigation(
-                    "Long-term supply agreements with buffer allocation",
-                    2_000_000,
-                    6,
-                    0.7,
-                ),
-
+            DisruptionScenario::new(
+                "South China Sea Tensions",
+                ScenarioType::PoliticalInstability,
+            )
+            .with_probability(0.25)
+            .with_impact(Severity::High)
+            .with_regions(vec![GeoRegion::EastAsia, GeoRegion::SoutheastAsia])
+            .with_duration(180)
+            .with_mitigation(
+                "Diversify assembly to Vietnam/Malaysia facilities",
+                10_000_000,
+                18,
+                0.9,
+            ),
+            DisruptionScenario::new(
+                "Semiconductor Capacity Shortage",
+                ScenarioType::CapacityShortage,
+            )
+            .with_probability(0.35)
+            .with_impact(Severity::High)
+            .with_categories(vec![
+                "Semiconductors".to_string(),
+                "Electronics".to_string(),
+            ])
+            .with_duration(120)
+            .with_mitigation(
+                "Long-term supply agreements with buffer allocation",
+                2_000_000,
+                6,
+                0.7,
+            ),
             DisruptionScenario::new("Cyber Attack on Tier-1 Supplier", ScenarioType::CyberAttack)
                 .with_probability(0.20)
                 .with_impact(Severity::Critical)
@@ -951,7 +980,6 @@ impl SupplyChainThreatModel {
                     3,
                     0.6,
                 ),
-
             DisruptionScenario::new("Supplier Bankruptcy", ScenarioType::SupplierBankruptcy)
                 .with_probability(0.15)
                 .with_impact(Severity::High)
@@ -1119,15 +1147,20 @@ impl Default for SupplyChainRiskSummary {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_supplier_creation() {
-        let supplier = Supplier::new("Acme Corp", "US", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_category("Electronics")
-            .with_criticality(0.8);
+        let supplier = Supplier::new(
+            "Acme Corp",
+            "US",
+            SupplierTier::Tier1,
+            SupplierCapacity::default(),
+        )
+        .with_category("Electronics")
+        .with_criticality(0.8);
 
         assert_eq!(supplier.name, "Acme Corp");
         assert_eq!(supplier.country_code, "US");
@@ -1158,12 +1191,33 @@ mod tests {
         let mut model = SupplyChainThreatModel::new();
 
         // Add suppliers from different regions
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("China Supplier 1", "CN", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::EastAsia));
-        model.add_supplier(Supplier::new("China Supplier 2", "CN", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::EastAsia));
+        model.add_supplier(
+            Supplier::new(
+                "US Supplier",
+                "US",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::NorthAmerica),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "China Supplier 1",
+                "CN",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::EastAsia),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "China Supplier 2",
+                "CN",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::EastAsia),
+        );
 
         let risks = model.calculate_geo_concentration();
         // China/East Asia should have higher concentration (2/3 = 66%)
@@ -1174,13 +1228,16 @@ mod tests {
     fn test_single_manufacturer_identification() {
         let mut model = SupplyChainThreatModel::new();
 
-        let _supplier_id = model.add_supplier(
-            Supplier::new("Primary Manufacturer", "CN", SupplierTier::Tier2, SupplierCapacity::default())
-        );
+        let _supplier_id = model.add_supplier(Supplier::new(
+            "Primary Manufacturer",
+            "CN",
+            SupplierTier::Tier2,
+            SupplierCapacity::default(),
+        ));
 
         model.add_component(
             Component::new("PART-001", "Critical Chip")
-                .with_risk_level(ComponentRiskLevel::Critical)
+                .with_risk_level(ComponentRiskLevel::Critical),
         );
 
         let risks = model.identify_single_manufacturer();
@@ -1192,12 +1249,33 @@ mod tests {
         let mut model = SupplyChainThreatModel::new();
 
         // Add diverse suppliers from different regions
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("EU Supplier", "DE", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::Europe));
-        model.add_supplier(Supplier::new("APAC Supplier", "JP", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::AsiaPacific));
+        model.add_supplier(
+            Supplier::new(
+                "US Supplier",
+                "US",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::NorthAmerica),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "EU Supplier",
+                "DE",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::Europe),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "APAC Supplier",
+                "JP",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::AsiaPacific),
+        );
 
         let resilience = model.calculate_resilience();
         assert!(resilience.geographic_diversity_score > 0.0);
@@ -1210,7 +1288,7 @@ mod tests {
         model.generate_standard_scenarios();
 
         assert!(!model.scenarios.is_empty());
-        
+
         let natural_disasters = model.get_scenarios_by_type(ScenarioType::NaturalDisaster);
         assert!(!natural_disasters.is_empty());
     }
@@ -1219,9 +1297,24 @@ mod tests {
     fn test_tier_filtering() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("Tier 1 Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default()));
-        model.add_supplier(Supplier::new("Tier 2 Supplier", "CN", SupplierTier::Tier2, SupplierCapacity::default()));
-        model.add_supplier(Supplier::new("Another Tier 1", "DE", SupplierTier::Tier1, SupplierCapacity::default()));
+        model.add_supplier(Supplier::new(
+            "Tier 1 Supplier",
+            "US",
+            SupplierTier::Tier1,
+            SupplierCapacity::default(),
+        ));
+        model.add_supplier(Supplier::new(
+            "Tier 2 Supplier",
+            "CN",
+            SupplierTier::Tier2,
+            SupplierCapacity::default(),
+        ));
+        model.add_supplier(Supplier::new(
+            "Another Tier 1",
+            "DE",
+            SupplierTier::Tier1,
+            SupplierCapacity::default(),
+        ));
 
         let tier1 = model.get_suppliers_by_tier(SupplierTier::Tier1);
         assert_eq!(tier1.len(), 2);
@@ -1260,16 +1353,21 @@ mod tests {
 
         // Add high-risk supplier
         let supplier_id = model.add_supplier(
-            Supplier::new("Single Source Supplier", "TW", SupplierTier::Tier1, SupplierCapacity::default())
-                .with_criticality(1.0)
-                .with_region(GeoRegion::EastAsia)
+            Supplier::new(
+                "Single Source Supplier",
+                "TW",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_criticality(1.0)
+            .with_region(GeoRegion::EastAsia),
         );
 
         // Add a component that depends on this supplier with no alternates
         model.add_component(
             Component::new("PART-001", "Critical Chip")
                 .with_risk_level(ComponentRiskLevel::Critical)
-                .with_manufacturer(supplier_id)
+                .with_manufacturer(supplier_id),
         );
 
         let resilience = model.calculate_resilience();

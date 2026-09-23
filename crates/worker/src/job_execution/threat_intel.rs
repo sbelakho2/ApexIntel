@@ -6,8 +6,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use uuid::Uuid;
-
 use crate::*;
 
 #[cfg(feature = "llm")]
@@ -58,8 +56,7 @@ pub(super) async fn run_threat_intel_refresh(kind: &JobKind, store: &Arc<PgStore
             })
             .items;
 
-    let activity_logger =
-        apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+    let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
 
     for company in &companies {
         // Assess supply chain risk heuristically from observations
@@ -72,7 +69,11 @@ pub(super) async fn run_threat_intel_refresh(kind: &JobKind, store: &Arc<PgStore
                 .log_threat_detected(
                     "supply_chain_heuristic",
                     &company.name,
-                    if heuristic_risk >= 5 { "high" } else { "medium" },
+                    if heuristic_risk >= 5 {
+                        "high"
+                    } else {
+                        "medium"
+                    },
                     Some(&company.id.to_string()),
                     Some("company"),
                 )
@@ -166,14 +167,14 @@ async fn assess_supply_chain_heuristic(
             "supply_heuristic",
             &format!("{}|{}", company.id, disruption_count),
         );
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let value = serde_json::json!({
             "company_name": company.name,
             "risk_type": "supply_chain_heuristic",
             "disruption_signals": disruption_count,
             "assessment_method": "heuristic",
         });
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let provenance = serde_json::json!({
             "source": "worker_threat_intel_refresh_heuristic",
         });
@@ -194,7 +195,10 @@ async fn assess_supply_chain_heuristic(
         .await;
 
         if disruption_count >= 3 {
-            let title = format!("Supply Chain Risk: {} — {} disruption signals", company.name, disruption_count);
+            let title = format!(
+                "Supply Chain Risk: {} — {} disruption signals",
+                company.name, disruption_count
+            );
             let description = format!(
                 "{} shows {} supply chain disruption signals in the last 30 days. Review recommended.",
                 company.name, disruption_count
@@ -204,7 +208,11 @@ async fn assess_supply_chain_heuristic(
                     "supply_chain",
                     &title,
                     Some(&description),
-                    if disruption_count >= 5 { "high" } else { "medium" },
+                    if disruption_count >= 5 {
+                        "high"
+                    } else {
+                        "medium"
+                    },
                     company.region.as_deref(),
                     None,
                     None,
@@ -216,7 +224,6 @@ async fn assess_supply_chain_heuristic(
     }
     disruption_count
 }
-
 
 /// Collect the industry sectors a company operates in from its stored
 /// `industry_tags` plus any `industry` / `sector` / `industry_tags` entries in
@@ -433,7 +440,7 @@ async fn assess_threat_actor_matches(
         let primary_sector = target_sectors.first().copied().unwrap_or("company's");
         let sector_match = reasons.iter().any(|r| r.starts_with("sector:"));
 
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let value = serde_json::json!({
             "company_name": company.name.as_str(),
             "threat_actor": threat_actor_label.clone(),
@@ -445,7 +452,7 @@ async fn assess_threat_actor_matches(
             "sophistication_level": actor.sophistication_level,
             "assessment_method": "database_match",
         });
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let provenance = serde_json::json!({
             "source": "worker_threat_intel_refresh",
         });

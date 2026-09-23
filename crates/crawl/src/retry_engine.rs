@@ -79,7 +79,8 @@ impl DomainCircuitBreaker {
             CircuitState::Closed => true,
             CircuitState::Open => {
                 if let Some(last_failure) = self.last_failure {
-                    last_failure.elapsed() >= Duration::from_millis(CIRCUIT_BREAKER_RECOVERY_TIMEOUT_MS)
+                    last_failure.elapsed()
+                        >= Duration::from_millis(CIRCUIT_BREAKER_RECOVERY_TIMEOUT_MS)
                 } else {
                     true
                 }
@@ -375,7 +376,10 @@ impl RetryEngine {
         Self {
             config,
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            cache: Arc::new(RwLock::new(ContentCache::new(10_000, Duration::from_secs(3600)))),
+            cache: Arc::new(RwLock::new(ContentCache::new(
+                10_000,
+                Duration::from_secs(3600),
+            ))),
         }
     }
 
@@ -392,7 +396,8 @@ impl RetryEngine {
         let jitter_seed = ((attempt as f64 * 17.31).sin() * 1000.0) % 1.0;
         let jitter = exponential_delay * self.config.jitter_factor * jitter_seed.abs();
 
-        let total_delay_ms = (exponential_delay + jitter).min(self.config.max_delay.as_millis() as f64);
+        let total_delay_ms =
+            (exponential_delay + jitter).min(self.config.max_delay.as_millis() as f64);
         Duration::from_millis(total_delay_ms as u64)
     }
 
@@ -410,7 +415,10 @@ impl RetryEngine {
 
         // Check if error is retryable
         if !error.is_retryable() {
-            return RetryDecision::stop(attempt, format!("non-retryable error: {:?}", error.category()));
+            return RetryDecision::stop(
+                attempt,
+                format!("non-retryable error: {:?}", error.category()),
+            );
         }
 
         // Check max retries
@@ -438,14 +446,18 @@ impl RetryEngine {
     /// Record a successful request
     pub async fn record_success(&self, domain: &str) {
         let mut breakers = self.circuit_breakers.write().await;
-        let cb = breakers.entry(domain.to_string()).or_insert_with(|| DomainCircuitBreaker::new(domain.to_string()));
+        let cb = breakers
+            .entry(domain.to_string())
+            .or_insert_with(|| DomainCircuitBreaker::new(domain.to_string()));
         cb.record_success();
     }
 
     /// Record a failed request
     pub async fn record_failure(&self, domain: &str) {
         let mut breakers = self.circuit_breakers.write().await;
-        let cb = breakers.entry(domain.to_string()).or_insert_with(|| DomainCircuitBreaker::new(domain.to_string()));
+        let cb = breakers
+            .entry(domain.to_string())
+            .or_insert_with(|| DomainCircuitBreaker::new(domain.to_string()));
         cb.record_failure();
     }
 
@@ -467,7 +479,7 @@ impl RetryEngine {
             let cache = self.cache.read().await;
             cache.default_max_age
         };
-        
+
         let cached = CachedContent {
             url: url.clone(),
             content,
@@ -476,7 +488,7 @@ impl RetryEngine {
             max_age: max_age.unwrap_or(default_max_age),
             status,
         };
-        
+
         self.cache.write().await.put(&url, cached);
     }
 
@@ -533,7 +545,11 @@ impl RetryEngine {
 
     /// Perform retry with automatic circuit breaker management
     /// Returns the result directly or a wrapped retry error
-    pub async fn execute_with_retry<F, Fut>(&self, domain: &str, operation: F) -> Result<String, RetryEngineError>
+    pub async fn execute_with_retry<F, Fut>(
+        &self,
+        domain: &str,
+        operation: F,
+    ) -> Result<String, RetryEngineError>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<String, CrawlError>>,
@@ -554,30 +570,29 @@ impl RetryEngine {
                 warn!(
                     domain = %domain,
                     retry_after_s = %retry_after.as_secs(),
-                    "retry_engine: circuit breaker open, waiting"
+                    "retry_engine: circuit breaker open, failing fast"
                 );
 
-                sleep(retry_after).await;
-                if !self.is_domain_available(domain).await {
-                    // Try to use cached content as fallback
-                    if let Some(cached) = self.get_cached(domain).await {
-                        if cached.is_fresh() {
-                            return Err(RetryEngineError::CircuitBreakerFallback {
-                                url: cached.url.clone(),
-                                message: format!(
-                                    "circuit open, using cached content from {:.1}s ago",
-                                    cached.age().as_secs_f64()
-                                ),
-                                cached_content: cached.content,
-                                cached_status: cached.status,
-                            });
-                        }
+                // Fail fast instead of blocking the caller for the whole
+                // recovery window (up to 5 minutes). The caller/scheduler can
+                // retry after the breaker half-opens.
+                if let Some(cached) = self.get_cached(domain).await {
+                    if cached.is_fresh() {
+                        return Err(RetryEngineError::CircuitBreakerFallback {
+                            url: cached.url.clone(),
+                            message: format!(
+                                "circuit open, using cached content from {:.1}s ago",
+                                cached.age().as_secs_f64()
+                            ),
+                            cached_content: cached.content,
+                            cached_status: cached.status,
+                        });
                     }
-                    return Err(RetryEngineError::CircuitBreakerOpen {
-                        domain: domain.to_string(),
-                        retry_after_secs: retry_after.as_secs(),
-                    });
                 }
+                return Err(RetryEngineError::CircuitBreakerOpen {
+                    domain: domain.to_string(),
+                    retry_after_secs: retry_after.as_secs(),
+                });
             }
 
             match operation().await {
@@ -649,7 +664,7 @@ pub struct CircuitStats {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

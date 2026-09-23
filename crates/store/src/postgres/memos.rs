@@ -144,7 +144,7 @@ impl PgStore {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{normalize_memo_window, weekly_memo_from_parts};
     use chrono::{NaiveDate, Utc};

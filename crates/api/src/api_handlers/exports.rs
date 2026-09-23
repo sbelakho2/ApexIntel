@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::*;
 
@@ -12,9 +12,7 @@ fn csv_escape(value: &str) -> String {
     // B318: neutralize spreadsheet formula injection. Crawled company/person
     // names can start with =, +, -, or @; without the leading apostrophe,
     // Excel/Sheets executes them as formulas when the export is opened.
-    let needs_guard = value
-        .strip_prefix(['=', '+', '-', '@'])
-        .is_some();
+    let needs_guard = value.strip_prefix(['=', '+', '-', '@']).is_some();
     let guarded = if needs_guard {
         format!("'{value}")
     } else {
@@ -358,18 +356,34 @@ pub(crate) async fn export_insight_pdf(
     let uid = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(error_response::<()>(ApiError::bad_request("invalid insight id")))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response::<()>(ApiError::bad_request(
+                    "invalid insight id",
+                ))),
+            )
+                .into_response();
         }
     };
 
     let insight = match state.store.get_insight(uid).await {
         Ok(Some(row)) => row,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(error_response::<()>(ApiError::not_found("insight", &id)))).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response::<()>(ApiError::not_found("insight", &id))),
+            )
+                .into_response();
         }
         Err(e) => {
             tracing::error!(%e, "db error fetching insight for pdf export");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("failed to fetch insight")))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response::<()>(ApiError::internal(
+                    "failed to fetch insight",
+                ))),
+            )
+                .into_response();
         }
     };
 
@@ -396,7 +410,13 @@ pub(crate) async fn export_insight_pdf(
         Ok(bytes) => bytes,
         Err(e) => {
             tracing::error!(%e, "pdf generation failed for insight {id}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("pdf generation failed")))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response::<()>(ApiError::internal(
+                    "pdf generation failed",
+                ))),
+            )
+                .into_response();
         }
     };
 
@@ -424,23 +444,45 @@ pub(crate) async fn export_company_dossier_pdf(
     let uid = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(error_response::<()>(ApiError::bad_request("invalid company id")))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response::<()>(ApiError::bad_request(
+                    "invalid company id",
+                ))),
+            )
+                .into_response();
         }
     };
 
     let dossier = match state.store.get_company_dossier(uid).await {
         Ok(Some(d)) => d,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(error_response::<()>(ApiError::not_found("company dossier", &id)))).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response::<()>(ApiError::not_found(
+                    "company dossier",
+                    &id,
+                ))),
+            )
+                .into_response();
         }
         Err(e) => {
             tracing::error!(%e, "db error fetching company dossier for pdf export");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("failed to fetch dossier")))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response::<()>(ApiError::internal(
+                    "failed to fetch dossier",
+                ))),
+            )
+                .into_response();
         }
     };
 
     let title = format!("Dossier: {}", dossier.company.name);
-    let mut report = apex_insights::pdf_report::PdfReport::new(&title, apex_insights::pdf_report::ReportType::EntityDossier);
+    let mut report = apex_insights::pdf_report::PdfReport::new(
+        &title,
+        apex_insights::pdf_report::ReportType::EntityDossier,
+    );
     report.metadata.entity_id = Some(dossier.company.id.to_string());
     report.metadata.entity_name = Some(dossier.company.name.clone());
     {
@@ -460,7 +502,10 @@ pub(crate) async fn export_company_dossier_pdf(
         let mut section = apex_insights::pdf_report::ReportSection::new("Overview");
         section.body = format!(
             "Capabilities: {}\nCertifications: {}\nSites: {}\nEdges (relationships): {}",
-            cap_count, cert_count, site_count, dossier.edges.len(),
+            cap_count,
+            cert_count,
+            site_count,
+            dossier.edges.len(),
         );
         report.add_section(section);
     }
@@ -469,7 +514,13 @@ pub(crate) async fn export_company_dossier_pdf(
         Ok(bytes) => bytes,
         Err(e) => {
             tracing::error!(%e, "pdf generation failed for company dossier {id}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("pdf generation failed")))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response::<()>(ApiError::internal(
+                    "pdf generation failed",
+                ))),
+            )
+                .into_response();
         }
     };
 
@@ -497,23 +548,45 @@ pub(crate) async fn export_person_dossier_pdf(
     let uid = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(error_response::<()>(ApiError::bad_request("invalid person id")))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response::<()>(ApiError::bad_request(
+                    "invalid person id",
+                ))),
+            )
+                .into_response();
         }
     };
 
     let dossier = match state.store.get_person_dossier(uid).await {
         Ok(Some(d)) => d,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(error_response::<()>(ApiError::not_found("person dossier", &id)))).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response::<()>(ApiError::not_found(
+                    "person dossier",
+                    &id,
+                ))),
+            )
+                .into_response();
         }
         Err(e) => {
             tracing::error!(%e, "db error fetching person dossier for pdf export");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("failed to fetch dossier")))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response::<()>(ApiError::internal(
+                    "failed to fetch dossier",
+                ))),
+            )
+                .into_response();
         }
     };
 
     let title = format!("POI Dossier: {}", dossier.person.name);
-    let mut report = apex_insights::pdf_report::PdfReport::new(&title, apex_insights::pdf_report::ReportType::EntityDossier);
+    let mut report = apex_insights::pdf_report::PdfReport::new(
+        &title,
+        apex_insights::pdf_report::ReportType::EntityDossier,
+    );
     report.metadata.entity_id = Some(dossier.person.id.to_string());
     report.metadata.entity_name = Some(dossier.person.name.clone());
     {
@@ -532,7 +605,10 @@ pub(crate) async fn export_person_dossier_pdf(
         let mut section = apex_insights::pdf_report::ReportSection::new("Overview");
         section.body = format!(
             "Artifacts: {}\nObservations: {}\nRole history entries: {}\nRelationships: {}",
-            art_count, obs_count, role_count, dossier.edges.len(),
+            art_count,
+            obs_count,
+            role_count,
+            dossier.edges.len(),
         );
         report.add_section(section);
     }
@@ -541,7 +617,13 @@ pub(crate) async fn export_person_dossier_pdf(
         Ok(bytes) => bytes,
         Err(e) => {
             tracing::error!(%e, "pdf generation failed for person dossier {id}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response::<()>(ApiError::internal("pdf generation failed")))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response::<()>(ApiError::internal(
+                    "pdf generation failed",
+                ))),
+            )
+                .into_response();
         }
     };
 

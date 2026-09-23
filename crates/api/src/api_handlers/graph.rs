@@ -1,14 +1,14 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use axum::extract::Query;
 
+use crate::*;
 use apex_api::routes::graph::{
     parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode, NeighborhoodQuery,
     NeighborhoodResponse, PathQuery, PathResponse, PathStep,
 };
-use crate::*;
 
 #[derive(sqlx::FromRow)]
 struct GraphLabelRow {

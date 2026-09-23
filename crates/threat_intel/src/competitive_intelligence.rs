@@ -801,7 +801,8 @@ impl CompetitiveIntelligenceEngine {
     pub fn get_top_competitors(&self, limit: usize) -> Vec<&Competitor> {
         let mut sorted: Vec<_> = self.competitors.values().collect();
         sorted.sort_by(|a, b| {
-            b.market_position.market_share_percent
+            b.market_position
+                .market_share_percent
                 .partial_cmp(&a.market_position.market_share_percent)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
@@ -811,16 +812,18 @@ impl CompetitiveIntelligenceEngine {
     /// Get most threatening competitors.
     pub fn get_most_threatening(&self, limit: usize) -> Vec<&Competitor> {
         let mut competitors: Vec<_> = self.competitors.values().collect();
-        
+
         // Sort by combined threat score (growth + innovation + market position)
         competitors.sort_by(|a, b| {
-            let threat_a = a.market_position.growth_rate 
-                + a.market_position.innovation_index 
+            let threat_a = a.market_position.growth_rate
+                + a.market_position.innovation_index
                 + a.market_position.relative_strength;
-            let threat_b = b.market_position.growth_rate 
-                + b.market_position.innovation_index 
+            let threat_b = b.market_position.growth_rate
+                + b.market_position.innovation_index
                 + b.market_position.relative_strength;
-            threat_b.partial_cmp(&threat_a).unwrap_or(std::cmp::Ordering::Equal)
+            threat_b
+                .partial_cmp(&threat_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         competitors.into_iter().take(limit).collect()
@@ -832,10 +835,7 @@ impl CompetitiveIntelligenceEngine {
     }
 
     /// Get market share for a competitor over time.
-    pub fn get_market_share_history(
-        &self,
-        competitor_id: Uuid,
-    ) -> Vec<&MarketShareData> {
+    pub fn get_market_share_history(&self, competitor_id: Uuid) -> Vec<&MarketShareData> {
         self.market_data
             .iter()
             .filter(|d| d.competitor_id == competitor_id)
@@ -849,9 +849,7 @@ impl CompetitiveIntelligenceEngine {
             return None;
         }
 
-        let shares: Vec<f64> = history.iter()
-            .map(|d| d.share_percent)
-            .collect();
+        let shares: Vec<f64> = history.iter().map(|d| d.share_percent).collect();
 
         let first = shares.first()?;
         let last = shares.last()?;
@@ -875,13 +873,18 @@ impl CompetitiveIntelligenceEngine {
     pub fn get_pricing(&self, product_name: &str) -> Vec<&PricingIntelligence> {
         self.pricing_data
             .iter()
-            .filter(|p| p.product_name.to_lowercase().contains(&product_name.to_lowercase()))
+            .filter(|p| {
+                p.product_name
+                    .to_lowercase()
+                    .contains(&product_name.to_lowercase())
+            })
             .collect()
     }
 
     /// Get average price for a product.
     pub fn get_average_price(&self, product_name: &str) -> Option<f64> {
-        let prices: Vec<f64> = self.get_pricing(product_name)
+        let prices: Vec<f64> = self
+            .get_pricing(product_name)
             .iter()
             .map(|p| p.price)
             .collect();
@@ -901,7 +904,10 @@ impl CompetitiveIntelligenceEngine {
     }
 
     /// Get predictions by type.
-    pub fn get_predictions_by_type(&self, prediction_type: PredictionType) -> Vec<&StrategicPrediction> {
+    pub fn get_predictions_by_type(
+        &self,
+        prediction_type: PredictionType,
+    ) -> Vec<&StrategicPrediction> {
         self.predictions
             .iter()
             .filter(|p| p.prediction_type == prediction_type)
@@ -923,10 +929,10 @@ impl CompetitiveIntelligenceEngine {
         // Add competitor summaries
         for competitor in self.get_all_competitors() {
             let threat_level = self.calculate_threat_level(competitor);
-            
+
             // Identify primary weakness from financial health and market position
             let primary_weakness = self.identify_primary_weakness(competitor);
-            
+
             assessment.competitors.push(CompetitorSummary {
                 competitor_id: competitor.id,
                 name: competitor.name.clone(),
@@ -941,7 +947,9 @@ impl CompetitiveIntelligenceEngine {
         // Add key threats based on indicators
         for competitor in self.competitors.values() {
             for indicator in &competitor.threat_indicators {
-                if indicator.severity == ThreatLevel::High || indicator.severity == ThreatLevel::Severe {
+                if indicator.severity == ThreatLevel::High
+                    || indicator.severity == ThreatLevel::Severe
+                {
                     assessment.key_threats.push(KeyThreat {
                         threat_id: indicator.id,
                         threat_type: indicator.indicator_type.as_str().to_string(),
@@ -971,8 +979,7 @@ impl CompetitiveIntelligenceEngine {
     }
 
     fn calculate_threat_level(&self, competitor: &Competitor) -> ThreatLevel {
-        let threat_score = 
-            competitor.market_position.market_share_percent * 0.3
+        let threat_score = competitor.market_position.market_share_percent * 0.3
             + (competitor.market_position.growth_rate.max(0.0) / 0.5) * 0.3 // Normalized growth
             + competitor.market_position.relative_strength * 0.2
             + competitor.market_position.innovation_index * 0.2;
@@ -1036,16 +1043,24 @@ impl CompetitiveIntelligenceEngine {
         // Check financial health indicators
         if let Some(financial) = &competitor.financial_health {
             if financial.profitability_status == ProfitabilityStatus::Distressed {
-                return Some("Distressed financial position - high burn rate or insolvency risk".to_string());
+                return Some(
+                    "Distressed financial position - high burn rate or insolvency risk".to_string(),
+                );
             }
             if financial.profitability_status == ProfitabilityStatus::CashBurn {
                 return Some("High cash burn rate without sustainable revenue".to_string());
             }
             if financial.revenue_growth_yoy < -0.1 {
-                return Some(format!("Declining revenue ({}% YoY decline)", (financial.revenue_growth_yoy * 100.0) as i32));
+                return Some(format!(
+                    "Declining revenue ({}% YoY decline)",
+                    (financial.revenue_growth_yoy * 100.0) as i32
+                ));
             }
             if financial.profit_margin < 0.0 {
-                return Some(format!("Negative profit margins ({:.1}%)", financial.profit_margin * 100.0));
+                return Some(format!(
+                    "Negative profit margins ({:.1}%)",
+                    financial.profit_margin * 100.0
+                ));
             }
             if let Some(de) = financial.debt_to_equity {
                 if de > 2.0 {
@@ -1059,7 +1074,10 @@ impl CompetitiveIntelligenceEngine {
             return Some("Very low market share - limited competitive presence".to_string());
         }
         if competitor.market_position.growth_rate < -0.05 {
-            return Some(format!("Negative growth rate ({:.1}%)", competitor.market_position.growth_rate * 100.0));
+            return Some(format!(
+                "Negative growth rate ({:.1}%)",
+                competitor.market_position.growth_rate * 100.0
+            ));
         }
         if competitor.market_position.relative_strength < 0.3 {
             return Some("Weak relative competitive position".to_string());
@@ -1084,10 +1102,14 @@ impl CompetitiveIntelligenceEngine {
             let relative_strength = competitor.market_position.relative_strength;
             let innovation = competitor.market_position.innovation_index;
             let has_financial_data = competitor.financial_health.is_some();
-            let is_financially_healthy = competitor.financial_health.as_ref()
+            let is_financially_healthy = competitor
+                .financial_health
+                .as_ref()
                 .map(|f| f.profitability_status == ProfitabilityStatus::Profitable)
                 .unwrap_or(false);
-            let revenue_growth = competitor.financial_health.as_ref()
+            let revenue_growth = competitor
+                .financial_health
+                .as_ref()
                 .map(|f| f.revenue_growth_yoy)
                 .unwrap_or(0.0);
 
@@ -1095,7 +1117,7 @@ impl CompetitiveIntelligenceEngine {
             let data_points = competitor.strategic_moves.len()
                 + if has_financial_data { 1 } else { 0 }
                 + if market_share > 0.0 { 1 } else { 0 };
-            
+
             if data_points < 2 {
                 // Insufficient data to make predictions
                 continue;
@@ -1139,7 +1161,10 @@ impl CompetitiveIntelligenceEngine {
             }
 
             // Rule 3: Strong financial health + low market rank → likely Acquisition/Partnership
-            if is_financially_healthy && competitor.market_position.market_rank > 3 && market_share < 10.0 {
+            if is_financially_healthy
+                && competitor.market_position.market_rank > 3
+                && market_share < 10.0
+            {
                 predictions.push(MovePrediction {
                     competitor_id: competitor.id,
                     competitor_name: competitor.name.clone(),
@@ -1154,7 +1179,13 @@ impl CompetitiveIntelligenceEngine {
             }
 
             // Rule 4: Negative growth + financial stress → likely Divestiture/Restructuring
-            if growth < -0.05 || competitor.financial_health.as_ref().map(|f| f.profit_margin < 0.0).unwrap_or(false) {
+            if growth < -0.05
+                || competitor
+                    .financial_health
+                    .as_ref()
+                    .map(|f| f.profit_margin < 0.0)
+                    .unwrap_or(false)
+            {
                 predictions.push(MovePrediction {
                     competitor_id: competitor.id,
                     competitor_name: competitor.name.clone(),
@@ -1184,7 +1215,9 @@ impl CompetitiveIntelligenceEngine {
             }
 
             // Rule 6: Recent history of talent/executive changes → further ExecutiveChange likely
-            let recent_exec_changes = competitor.strategic_moves.iter()
+            let recent_exec_changes = competitor
+                .strategic_moves
+                .iter()
                 .filter(|m| matches!(m.move_type, StrategicMoveType::ExecutiveChange))
                 .count();
             if recent_exec_changes > 0 {
@@ -1192,12 +1225,17 @@ impl CompetitiveIntelligenceEngine {
                     competitor_id: competitor.id,
                     competitor_name: competitor.name.clone(),
                     predicted_move: StrategicMoveType::ExecutiveChange,
-                    confidence: if recent_exec_changes > 2 { ConfidenceLevel::High } else { ConfidenceLevel::Low },
+                    confidence: if recent_exec_changes > 2 {
+                        ConfidenceLevel::High
+                    } else {
+                        ConfidenceLevel::Low
+                    },
                     reasoning: format!(
                         "Recent executive changes ({}) signal ongoing organizational restructuring",
                         recent_exec_changes
                     ),
-                    recommended_response: "Monitor leadership changes and assess impact on strategy".to_string(),
+                    recommended_response:
+                        "Monitor leadership changes and assess impact on strategy".to_string(),
                 });
             }
 
@@ -1279,14 +1317,14 @@ impl StrategicPrediction {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_competitor_creation() {
-        let competitor = Competitor::new("Test Corp", IndustrySector::Technology)
-            .with_market_share(15.5);
+        let competitor =
+            Competitor::new("Test Corp", IndustrySector::Technology).with_market_share(15.5);
 
         assert_eq!(competitor.name, "Test Corp");
         assert_eq!(competitor.industry, IndustrySector::Technology);
@@ -1329,17 +1367,22 @@ mod tests {
 
     #[test]
     fn test_threat_indicator_creation() {
-        let indicator = ThreatIndicator::new(ThreatIndicatorType::MarketShareGain, "Market Share Increase");
-        assert_eq!(indicator.indicator_type, ThreatIndicatorType::MarketShareGain);
+        let indicator = ThreatIndicator::new(
+            ThreatIndicatorType::MarketShareGain,
+            "Market Share Increase",
+        );
+        assert_eq!(
+            indicator.indicator_type,
+            ThreatIndicatorType::MarketShareGain
+        );
     }
 
     #[test]
     fn test_engine_add_competitor() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         let id = engine.add_competitor(
-            Competitor::new("Competitor A", IndustrySector::Electronics)
-                .with_market_share(20.0)
+            Competitor::new("Competitor A", IndustrySector::Electronics).with_market_share(20.0),
         );
 
         assert!(engine.get_competitor(id).is_some());
@@ -1348,18 +1391,15 @@ mod tests {
     #[test]
     fn test_top_competitors() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         engine.add_competitor(
-            Competitor::new("Small Player", IndustrySector::Technology)
-                .with_market_share(5.0)
+            Competitor::new("Small Player", IndustrySector::Technology).with_market_share(5.0),
         );
         engine.add_competitor(
-            Competitor::new("Large Player", IndustrySector::Technology)
-                .with_market_share(30.0)
+            Competitor::new("Large Player", IndustrySector::Technology).with_market_share(30.0),
         );
         engine.add_competitor(
-            Competitor::new("Medium Player", IndustrySector::Technology)
-                .with_market_share(15.0)
+            Competitor::new("Medium Player", IndustrySector::Technology).with_market_share(15.0),
         );
 
         let top = engine.get_top_competitors(2);
@@ -1371,7 +1411,7 @@ mod tests {
     #[test]
     fn test_pricing_intelligence() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         engine.add_pricing_intelligence(PricingIntelligence {
             product_id: None,
             product_name: "Widget A".to_string(),
@@ -1397,23 +1437,27 @@ mod tests {
     #[test]
     fn test_threat_level_calculation() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         let id = engine.add_competitor(
             Competitor::new("Aggressive Competitor", IndustrySector::Technology)
-                .with_market_share(25.0)
+                .with_market_share(25.0),
         );
 
         let competitor = engine.get_competitor(id).unwrap();
         let threat_level = engine.calculate_threat_level(competitor);
-        
+
         // High market share and assumed good metrics should result in higher threat
-        assert!(matches!(threat_level, ThreatLevel::High | ThreatLevel::Severe | ThreatLevel::Moderate));
+        assert!(matches!(
+            threat_level,
+            ThreatLevel::High | ThreatLevel::Severe | ThreatLevel::Moderate
+        ));
     }
 
     #[test]
     fn test_prediction_creation() {
-        let prediction = StrategicPrediction::new(PredictionType::MarketEntry, "Competitor X entering market")
-            .with_probability(0.75);
+        let prediction =
+            StrategicPrediction::new(PredictionType::MarketEntry, "Competitor X entering market")
+                .with_probability(0.75);
 
         assert_eq!(prediction.prediction_type, PredictionType::MarketEntry);
         assert!((prediction.probability - 0.75).abs() < 0.01);
@@ -1428,34 +1472,32 @@ mod tests {
     #[test]
     fn test_threat_assessment_generation() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         engine.add_competitor(
             Competitor::new("Threat Competitor", IndustrySector::Technology)
-                .with_market_share(30.0)
+                .with_market_share(30.0),
         );
 
         let assessment = engine.generate_threat_assessment(Uuid::new_v4());
-        
+
         assert!(!assessment.competitors.is_empty());
     }
 
     #[test]
     fn test_technology_positioning() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         let mut competitor = Competitor::new("Tech Leader", IndustrySector::Technology);
         competitor.technologies.push(TechnologyStack {
             category: TechnologyCategory::AI_ML,
-            technologies: vec![
-                TechnologyItem {
-                    name: "Advanced AI".to_string(),
-                    version: None,
-                    vendor: None,
-                    adoption_status: AdoptionStatus::Core,
-                    integration_depth: IntegrationDepth::Critical,
-                    strategic_importance: StrategicImportance::Critical,
-                }
-            ],
+            technologies: vec![TechnologyItem {
+                name: "Advanced AI".to_string(),
+                version: None,
+                vendor: None,
+                adoption_status: AdoptionStatus::Core,
+                integration_depth: IntegrationDepth::Critical,
+                strategic_importance: StrategicImportance::Critical,
+            }],
             maturity_level: TechnologyMaturity::Growth,
             investment_level: InvestmentLevel::High,
         });

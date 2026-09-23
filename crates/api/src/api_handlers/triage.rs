@@ -3,7 +3,7 @@
 //! These handlers provide programmatic access to the triage queue, including
 //! listing, scoring overrides, status changes, and aggregate statistics.
 
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -187,7 +187,9 @@ pub(crate) async fn list_triage(
 
     let status_filter = parse_status(params.status.as_deref());
 
-    let items = queue.list(status_filter.clone(), per_page as usize, offset).await;
+    let items = queue
+        .list(status_filter.clone(), per_page as usize, offset)
+        .await;
     let total = queue.count(status_filter).await.unwrap_or(0);
 
     match items {
@@ -197,8 +199,10 @@ pub(crate) async fn list_triage(
                 .map(|item| {
                     let mut resp = item_to_response(item);
                     let score = resp.composite_score.unwrap_or(0.0);
-                    resp.score_band = apex_core::triage::score_to_band(score, &threshold).to_string();
-                    resp.score_band_color = apex_core::triage::score_band_color(score, &threshold).to_string();
+                    resp.score_band =
+                        apex_core::triage::score_to_band(score, &threshold).to_string();
+                    resp.score_band_color =
+                        apex_core::triage::score_band_color(score, &threshold).to_string();
                     resp
                 })
                 .collect();
@@ -247,7 +251,10 @@ pub(crate) async fn get_triage_item(
         Ok(Some(item)) => (StatusCode::OK, Json(success(item_to_response(item)))),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(error_response(ApiError::not_found("triage", &id.to_string()))),
+            Json(error_response(ApiError::not_found(
+                "triage",
+                &id.to_string(),
+            ))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

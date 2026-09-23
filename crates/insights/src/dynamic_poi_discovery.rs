@@ -481,9 +481,21 @@ impl Default for EntityPatternExtractor {
                 },
             ],
             person_patterns: vec![
-                "CEO", "CFO", "CTO", "COO", "CMO", "CIO", "President",
-                "Vice President", "VP", "Director", "Manager", "Founder",
-                "Co-Founder", "Chairman", "Board Member",
+                "CEO",
+                "CFO",
+                "CTO",
+                "COO",
+                "CMO",
+                "CIO",
+                "President",
+                "Vice President",
+                "VP",
+                "Director",
+                "Manager",
+                "Founder",
+                "Co-Founder",
+                "Chairman",
+                "Board Member",
             ],
             known_entities: HashSet::new(),
         }
@@ -800,10 +812,7 @@ impl DynamicPoiDiscovery {
     ///
     /// This is O(n * m) where n = observations and m = average entity mentions per
     /// observation. For large batches (>10K), consider chunking.
-    pub fn discover_emerging_entities(
-        &self,
-        observations: &[String],
-    ) -> Vec<EntitySignal> {
+    pub fn discover_emerging_entities(&self, observations: &[String]) -> Vec<EntitySignal> {
         if observations.is_empty() {
             return Vec::new();
         }
@@ -864,8 +873,7 @@ impl DynamicPoiDiscovery {
                     // 2σ → 0.0, 5σ+ → 1.0
                     let signal_strength = ((sigma - 2.0) / 3.0).clamp(0.0, 1.0);
 
-                    let observation_count =
-                        (velocity * time_window_days).round() as u32;
+                    let observation_count = (velocity * time_window_days).round() as u32;
 
                     Some(EntitySignal {
                         entity_name: entity.clone(),
@@ -924,9 +932,7 @@ impl DynamicPoiDiscovery {
         let mut co_occurrence_count = 0;
         for tracked_name in registry.entity_names() {
             let tracked_lower = tracked_name.to_lowercase();
-            if entity_lower.contains(&tracked_lower)
-                || tracked_lower.contains(&entity_lower)
-            {
+            if entity_lower.contains(&tracked_lower) || tracked_lower.contains(&entity_lower) {
                 proximity_score += 0.25;
                 co_occurrence_count += 1;
             }
@@ -947,15 +953,14 @@ impl DynamicPoiDiscovery {
 
         // Factor 4: Entity name characteristics
         // Capitalized multi-word names are more likely to be companies
-        let name_quality_score = if entity.chars().any(|c| c.is_uppercase())
-            && entity.split_whitespace().count() > 1
-        {
-            0.15
-        } else if entity.chars().any(|c| c.is_uppercase()) {
-            0.1
-        } else {
-            0.0
-        };
+        let name_quality_score =
+            if entity.chars().any(|c| c.is_uppercase()) && entity.split_whitespace().count() > 1 {
+                0.15
+            } else if entity.chars().any(|c| c.is_uppercase()) {
+                0.1
+            } else {
+                0.0
+            };
 
         let total_score = proximity_score + correlation_score + name_quality_score;
 
@@ -1224,7 +1229,8 @@ pub fn suggest_sources(discovered: &[DiscoveredEntity]) -> Vec<SourceRecommendat
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::manual_range_contains,
         clippy::needless_borrows_for_generic_args,
@@ -1598,7 +1604,10 @@ mod tests {
         let discovery = DynamicPoiDiscovery::new(known);
 
         let signals = discovery.discover_emerging_entities(&[]);
-        assert!(signals.is_empty(), "Empty observations should yield no signals");
+        assert!(
+            signals.is_empty(),
+            "Empty observations should yield no signals"
+        );
     }
 
     #[test]
@@ -1628,7 +1637,9 @@ mod tests {
         assert!(!signals.is_empty(), "Should detect emerging entities");
 
         // ChipUpStart should have the highest signal strength
-        let chipup = signals.iter().find(|s| s.entity_name.contains("chipupstart"));
+        let chipup = signals
+            .iter()
+            .find(|s| s.entity_name.contains("chipupstart"));
         assert!(chipup.is_some(), "ChipUpStart should be emerging");
         if let Some(signal) = chipup {
             assert!(
@@ -1685,10 +1696,7 @@ mod tests {
 
         let signals = discovery.discover_emerging_entities(&observations);
         // Need at least 3 entities for std dev to be meaningful
-        assert!(
-            signals.is_empty(),
-            "Should not flag with only 1 entity"
-        );
+        assert!(signals.is_empty(), "Should not flag with only 1 entity");
     }
 
     #[test]
@@ -1708,11 +1716,14 @@ mod tests {
 
     #[test]
     fn test_extract_entity_mentions_capitalized_sequences() {
-        let text = "Advanced Micro Devices announced new products. Samsung Electronics is expanding.";
+        let text =
+            "Advanced Micro Devices announced new products. Samsung Electronics is expanding.";
         let mentions = extract_entity_mentions(text);
 
         assert!(
-            mentions.iter().any(|m| m.contains("Advanced Micro Devices")),
+            mentions
+                .iter()
+                .any(|m| m.contains("Advanced Micro Devices")),
             "Should find capitalized multi-word entities"
         );
     }
@@ -1734,7 +1745,10 @@ mod tests {
 
         // Check various casing
         let result = DynamicPoiDiscovery::should_track("Jabil Inc.", &registry);
-        assert!(!result, "Known entity Jabil Inc. should not be tracked again");
+        assert!(
+            !result,
+            "Known entity Jabil Inc. should not be tracked again"
+        );
     }
 
     #[test]

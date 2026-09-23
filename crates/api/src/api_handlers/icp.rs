@@ -12,7 +12,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use apex_insights::icp_scorer::{IcpDefinition, IcpInput, IcpScorer};
-use apex_store::postgres::{CompanyListFilters, CompanyRow, PgStore};
+use apex_store::postgres::{CompanyListFilters, CompanyRow};
 
 #[derive(Debug, Serialize)]
 pub struct IcpTargetItem {
@@ -52,7 +52,7 @@ pub(crate) async fn list_icp_targets(
 ) -> (StatusCode, Json<ApiResponse<Vec<IcpTargetItem>>>) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
-    let limit = params.limit.unwrap_or(25).clamp(1, 200) as i64;
+    let limit = params.limit.unwrap_or(25).clamp(1, 200);
 
     // Prefer pre-scored rows (from the nightly ICP job); fall back to live scoring.
     match state.store.list_icp_top_targets(limit).await {
@@ -60,11 +60,11 @@ pub(crate) async fn list_icp_targets(
             let items: Vec<IcpTargetItem> = rows
                 .into_iter()
                 .map(|r| {
-                    let components: Vec<apex_insights::icp_scorer::ScoreComponent> =
-                        r.icp_breakdown
-                            .as_ref()
-                            .and_then(|v| serde_json::from_value(v.clone()).ok())
-                            .unwrap_or_default();
+                    let components: Vec<apex_insights::icp_scorer::ScoreComponent> = r
+                        .icp_breakdown
+                        .as_ref()
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
                     IcpTargetItem {
                         id: r.id.to_string(),
                         name: r.name,
@@ -74,8 +74,8 @@ pub(crate) async fn list_icp_targets(
                         industry_tags: r.industry_tags.unwrap_or_default(),
                         employee_estimate: r.employee_estimate,
                         revenue_estimate_usd: r.revenue_estimate_usd,
-                        icp_fit_score: r.icp_fit_score as f64,
-                        intent_signal_score: r.intent_signal_score as f64,
+                        icp_fit_score: r.icp_fit_score,
+                        intent_signal_score: r.intent_signal_score,
                         components,
                     }
                 })
@@ -113,7 +113,9 @@ pub(crate) async fn list_icp_targets(
                     tracing::error!(request_id = %request_id, "list_icp_targets: companies load failed: {err:#}");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(error_response(ApiError::internal("Failed to load companies"))),
+                        Json(error_response(ApiError::internal(
+                            "Failed to load companies",
+                        ))),
                     );
                 }
             };
@@ -126,7 +128,11 @@ pub(crate) async fn list_icp_targets(
                     to_item(c, &score)
                 })
                 .collect();
-            items.sort_by(|a, b| b.icp_fit_score.partial_cmp(&a.icp_fit_score).unwrap_or(std::cmp::Ordering::Equal));
+            items.sort_by(|a, b| {
+                b.icp_fit_score
+                    .partial_cmp(&a.icp_fit_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             items.truncate(limit as usize);
             let duration_ms = start.elapsed().as_millis() as u64;
             log_latency("list_icp_targets_live", duration_ms);
@@ -144,7 +150,9 @@ pub(crate) async fn list_icp_targets(
             tracing::error!(request_id = %request_id, "list_icp_targets failed: {err:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to fetch ICP targets"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch ICP targets",
+                ))),
             )
         }
     }
@@ -194,9 +202,9 @@ pub(crate) async fn score_company_icp(
     if let Err(e) = state
         .store
         .update_company_icp_score(
-                uid,
-                score.icp_fit_score,
-                score.intent_signal_score,
+            uid,
+            score.icp_fit_score,
+            score.intent_signal_score,
             &breakdown,
             None,
             None,

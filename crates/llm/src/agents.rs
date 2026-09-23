@@ -16,8 +16,7 @@ use std::collections::HashMap;
 use tracing::{debug, info};
 
 use crate::advanced_prompting::{
-    AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence,
-    ConfidenceLevel,
+    AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence, ConfidenceLevel,
 };
 use crate::quality_control::{BiasCheck, HallucinationCheck, QualityControlEngine};
 use crate::rag::KnowledgeBase;
@@ -164,7 +163,11 @@ impl AgentConfig {
         self
     }
 
-    pub fn with_multi_perspective(mut self, enabled: bool, perspectives: Vec<AnalysisPerspective>) -> Self {
+    pub fn with_multi_perspective(
+        mut self,
+        enabled: bool,
+        perspectives: Vec<AnalysisPerspective>,
+    ) -> Self {
         self.multi_perspective = enabled;
         self.custom_perspectives = Some(perspectives);
         self
@@ -370,7 +373,7 @@ impl MultiAgentCoordinator {
         let Some(config) = self.agents.get(&agent_type) else {
             return agent_type.system_prompt().to_string();
         };
-        
+
         if let Some(ref custom) = config.system_prompt {
             return custom.clone();
         }
@@ -413,7 +416,10 @@ impl MultiAgentCoordinator {
     ) -> Result<AgentResult> {
         let start = std::time::Instant::now();
         let Some(config) = self.agents.get(&agent_type) else {
-            return Err(anyhow::anyhow!("Agent type {:?} not registered", agent_type));
+            return Err(anyhow::anyhow!(
+                "Agent type {:?} not registered",
+                agent_type
+            ));
         };
 
         // Build prompts
@@ -540,7 +546,7 @@ impl MultiAgentCoordinator {
 
         for line in lines {
             let trimmed = line.trim();
-            
+
             // Look for finding indicators
             if trimmed.starts_with("# ") || trimmed.starts_with("**") && trimmed.ends_with(":**") {
                 // Save previous finding
@@ -549,7 +555,7 @@ impl MultiAgentCoordinator {
                         findings.push(Finding::new(&title, &desc));
                     }
                 }
-                
+
                 let title = trimmed
                     .trim_start_matches('#')
                     .trim_start_matches("**")
@@ -590,7 +596,7 @@ impl MultiAgentCoordinator {
             r"(?i)source:\s*([^\n]+)",
             r"(?i)cited:\s*([^\n]+)",
             r"(?i)according to\s+([^\n,]+)",
-            r"\[([^\]]+)\]",  // Bracketed references
+            r"\[([^\]]+)\]", // Bracketed references
         ];
 
         for pattern in &source_patterns {
@@ -1012,7 +1018,8 @@ impl FinancialAnalystAgent {
             Fraud Risk Level: [Low/Medium/High/Critical]\n\n\
             /no_think",
             company,
-            indicators.iter()
+            indicators
+                .iter()
                 .enumerate()
                 .map(|(i, ind)| format!("{}. {}", i + 1, ind))
                 .collect::<Vec<_>>()
@@ -1160,12 +1167,12 @@ mod tests {
     #[test]
     fn agent_state_tracking() {
         let mut state = AgentState::new(AgentType::ThreatAnalyst);
-        
+
         state.add_finding(Finding::new("Risk 1", "Description"));
         state.add_source("Reuters".to_string());
         state.flag_issue("Unverified claim".to_string());
         state.update_confidence(0.75);
-        
+
         assert_eq!(state.findings.len(), 1);
         assert_eq!(state.sources_used.len(), 1);
         assert_eq!(state.issues_flagged.len(), 1);
@@ -1219,7 +1226,7 @@ mod tests {
     fn multi_agent_coordinator_registration() {
         let coordinator = MultiAgentCoordinator::new();
         let agents = coordinator.registered_agents();
-        
+
         assert!(agents.contains(&AgentType::Investigator));
         assert!(agents.contains(&AgentType::CrossReference));
         assert!(agents.contains(&AgentType::ThreatAnalyst));
@@ -1229,14 +1236,12 @@ mod tests {
 
     #[test]
     fn finding_confidence_bounds() {
-        let finding = Finding::new("Test", "Description")
-            .with_confidence(1.5); // Over 1.0
-        
+        let finding = Finding::new("Test", "Description").with_confidence(1.5); // Over 1.0
+
         assert!(finding.confidence <= 1.0);
-        
-        let finding2 = Finding::new("Test", "Description")
-            .with_confidence(-0.5); // Under 0.0
-        
+
+        let finding2 = Finding::new("Test", "Description").with_confidence(-0.5); // Under 0.0
+
         assert!(finding2.confidence >= 0.0);
     }
 

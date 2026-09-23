@@ -15,3 +15,6 @@ tracing = { workspace = true }
 apex-stats = { path = "../stats" }
 apex-llm = { path = "../llm" }
 tokio = { workspace = true }
+
+[lints]
+workspace = true

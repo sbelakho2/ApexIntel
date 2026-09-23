@@ -5,9 +5,8 @@
 //! risk summarization, and the intelligence analyzer.
 
 use apex_insights::{
-    Insight, InsightSeverity, IntelligenceAnalyzer,
-    PatternData, PatternDetector, PatternDetectorConfig, RiskSummarizer,
-    TrendAnalyzer,
+    Insight, InsightSeverity, IntelligenceAnalyzer, PatternData, PatternDetector,
+    PatternDetectorConfig, RiskSummarizer, TrendAnalyzer,
 };
 
 #[cfg(test)]
@@ -73,7 +72,7 @@ mod pattern_tests {
 
 #[cfg(test)]
 mod trend_tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use apex_insights::trend_analyzer::TimeSeriesPoint;
 
@@ -93,7 +92,9 @@ mod trend_tests {
         let result = analyzer.analyze(&series);
 
         assert!(!result.trends.is_empty());
-        assert!(result.trends[0].direction == apex_insights::trend_analyzer::TrendDirection::Increasing);
+        assert!(
+            result.trends[0].direction == apex_insights::trend_analyzer::TrendDirection::Increasing
+        );
         assert!(result.trends[0].magnitude > 50.0);
     }
 
@@ -113,7 +114,10 @@ mod trend_tests {
         let result = analyzer.analyze(&series);
 
         if !result.trends.is_empty() {
-            assert!(result.trends[0].direction == apex_insights::trend_analyzer::TrendDirection::Decreasing);
+            assert!(
+                result.trends[0].direction
+                    == apex_insights::trend_analyzer::TrendDirection::Decreasing
+            );
         }
     }
 
@@ -202,10 +206,7 @@ mod analyzer_tests {
                     "Company A".to_string(),
                 ],
                 high_risk_countries: vec!["Russia".to_string()],
-                entities_in_sanctioned: vec![(
-                    "Entity X".to_string(),
-                    "Russia".to_string(),
-                )],
+                entities_in_sanctioned: vec![("Entity X".to_string(), "Russia".to_string())],
                 ..Default::default()
             },
             time_series: {
@@ -283,10 +284,7 @@ mod end_to_end_tests {
                 "Foxconn".to_string(),
             ],
             high_risk_countries: vec!["Vietnam".to_string(), "India".to_string()],
-            entities_in_sanctioned: vec![(
-                "Supplier X".to_string(),
-                "Vietnam".to_string(),
-            )],
+            entities_in_sanctioned: vec![("Supplier X".to_string(), "Vietnam".to_string())],
             ..Default::default()
         };
 
@@ -325,7 +323,10 @@ mod end_to_end_tests {
         println!("Full pipeline test completed");
         println!("Patterns detected: {}", patterns.len());
         println!("Insights generated: {}", insights.len());
-        println!("Overall risk score: {:.0}%", risk_summary.overall_score * 100.0);
+        println!(
+            "Overall risk score: {:.0}%",
+            risk_summary.overall_score * 100.0
+        );
     }
 
     #[test]

@@ -264,7 +264,6 @@ pub enum FeasibilityLevel {
     Difficult,
 }
 
-
 impl WeaknessType {
     pub fn description(&self) -> &'static str {
         match self {
@@ -829,7 +828,10 @@ impl MarketOpportunityWorkflow {
     }
 
     /// Identify strategic entry points
-    fn identify_strategic_entry_points(&self, report: &MarketOpportunityReport) -> Vec<StrategicEntryPoint> {
+    fn identify_strategic_entry_points(
+        &self,
+        report: &MarketOpportunityReport,
+    ) -> Vec<StrategicEntryPoint> {
         let mut entry_points = Vec::new();
         let mut rank = 1;
 
@@ -863,11 +865,15 @@ impl MarketOpportunityWorkflow {
                     target: weakness.competitor_name.clone(),
                     description: format!(
                         "Target {} customers affected by {}",
-                        weakness.competitor_name, weakness.weakness_type.description()
+                        weakness.competitor_name,
+                        weakness.weakness_type.description()
                     ),
                     investment_requirement: None,
                     expected_return: None,
-                    risk_level: if matches!(weakness.severity, WeaknessSeverity::Critical | WeaknessSeverity::High) {
+                    risk_level: if matches!(
+                        weakness.severity,
+                        WeaknessSeverity::Critical | WeaknessSeverity::High
+                    ) {
                         RiskLevel::Low
                     } else {
                         RiskLevel::Medium
@@ -897,7 +903,11 @@ impl MarketOpportunityWorkflow {
             });
         }
 
-        entry_points.sort_by(|a, b| b.strategic_fit.partial_cmp(&a.strategic_fit).unwrap_or(std::cmp::Ordering::Equal));
+        entry_points.sort_by(|a, b| {
+            b.strategic_fit
+                .partial_cmp(&a.strategic_fit)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         for (i, point) in entry_points.iter_mut().enumerate() {
             point.recommendation_rank = (i + 1) as i32;
         }
@@ -986,7 +996,12 @@ impl MarketOpportunityWorkflow {
         let critical_weaknesses: Vec<_> = report
             .competitor_weaknesses
             .iter()
-            .filter(|w| matches!(w.severity, WeaknessSeverity::Critical | WeaknessSeverity::High))
+            .filter(|w| {
+                matches!(
+                    w.severity,
+                    WeaknessSeverity::Critical | WeaknessSeverity::High
+                )
+            })
             .collect();
         if !critical_weaknesses.is_empty() {
             opportunities.push(format!(
@@ -1027,9 +1042,8 @@ impl MarketOpportunityWorkflow {
             .filter(|p| matches!(p.competition_level, CompetitionLevel::Low))
             .collect();
         if !urgent_procurement.is_empty() {
-            recommendations.push(
-                "Priority: Low-competition procurement opportunities available".to_string(),
-            );
+            recommendations
+                .push("Priority: Low-competition procurement opportunities available".to_string());
         }
 
         // Competitor recommendations
@@ -1040,19 +1054,17 @@ impl MarketOpportunityWorkflow {
             .collect();
         if !urgent_weaknesses.is_empty() {
             recommendations.push(
-                "Immediate action: Target customers affected by urgent competitor issues".to_string(),
+                "Immediate action: Target customers affected by urgent competitor issues"
+                    .to_string(),
             );
         }
 
         // Timing recommendations
         if report.market_timing.overall_timing_score > 0.6 {
-            recommendations.push(
-                "Timing is favorable - accelerate market entry plans".to_string(),
-            );
+            recommendations.push("Timing is favorable - accelerate market entry plans".to_string());
         } else {
-            recommendations.push(
-                "Timing is challenging - focus on preparation and positioning".to_string(),
-            );
+            recommendations
+                .push("Timing is challenging - focus on preparation and positioning".to_string());
         }
 
         // Entry point recommendations
@@ -1080,7 +1092,9 @@ impl MarketOpportunityWorkflow {
             .collect();
 
         if !urgent_procurement.is_empty() {
-            action_plan.push("This week: Review and prepare bids for top procurement opportunities".to_string());
+            action_plan.push(
+                "This week: Review and prepare bids for top procurement opportunities".to_string(),
+            );
         }
 
         let urgent_weaknesses: Vec<_> = report
@@ -1091,17 +1105,22 @@ impl MarketOpportunityWorkflow {
             .collect();
 
         if !urgent_weaknesses.is_empty() {
-            action_plan.push("This week: Develop customer acquisition campaign targeting competitor gaps".to_string());
+            action_plan.push(
+                "This week: Develop customer acquisition campaign targeting competitor gaps"
+                    .to_string(),
+            );
         }
 
         // Short-term actions (this month)
         if !report.strategic_entry_points.is_empty() {
-            action_plan.push("This month: Initiate contact with top strategic entry targets".to_string());
+            action_plan
+                .push("This month: Initiate contact with top strategic entry targets".to_string());
         }
 
         // Medium-term actions (next quarter)
         if report.market_timing.overall_timing_score > 0.6 {
-            action_plan.push("Next quarter: Scale market presence based on favorable timing".to_string());
+            action_plan
+                .push("Next quarter: Scale market presence based on favorable timing".to_string());
         }
 
         // Add monitoring actions
@@ -1111,7 +1130,11 @@ impl MarketOpportunityWorkflow {
     }
 
     /// Identify data gaps
-    fn identify_data_gaps(&self, report: &MarketOpportunityReport, signals: &[EvidenceItem]) -> Vec<String> {
+    fn identify_data_gaps(
+        &self,
+        report: &MarketOpportunityReport,
+        signals: &[EvidenceItem],
+    ) -> Vec<String> {
         let mut gaps = Vec::new();
 
         if report.procurement_signals.is_empty() {
@@ -1146,7 +1169,7 @@ impl Default for MarketOpportunityWorkflow {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -1276,25 +1299,26 @@ mod tests {
 
         let report = workflow.run("Test Market", signals);
         assert!(!report.competitor_weaknesses.is_empty());
-        assert!(report.competitor_weaknesses.iter().any(|w| matches!(w.severity, WeaknessSeverity::Critical)));
+        assert!(report
+            .competitor_weaknesses
+            .iter()
+            .any(|w| matches!(w.severity, WeaknessSeverity::Critical)));
     }
 
     #[test]
     fn test_market_timing_analysis() {
         let workflow = MarketOpportunityWorkflow::new();
-        let signals = vec![
-            EvidenceItem {
-                id: "sig1".to_string(),
-                entity_id: "Market".to_string(),
-                entity_type: "market".to_string(),
-                evidence_type: "market_growth".to_string(),
-                description: "Industry showing strong growth".to_string(),
-                source: "Industry Report".to_string(),
-                confidence: 0.85,
-                timestamp: Utc::now(),
-                raw_data: serde_json::json!({}),
-            },
-        ];
+        let signals = vec![EvidenceItem {
+            id: "sig1".to_string(),
+            entity_id: "Market".to_string(),
+            entity_type: "market".to_string(),
+            evidence_type: "market_growth".to_string(),
+            description: "Industry showing strong growth".to_string(),
+            source: "Industry Report".to_string(),
+            confidence: 0.85,
+            timestamp: Utc::now(),
+            raw_data: serde_json::json!({}),
+        }];
 
         let report = workflow.run("Test Market", signals);
         assert!(report.market_timing.overall_timing_score > 0.5);
@@ -1331,7 +1355,14 @@ mod tests {
 
         let report = workflow.run("Test Market", signals);
         assert!(!report.strategic_entry_points.is_empty());
-        assert!(report.strategic_entry_points[0].recommendation_rank <= report.strategic_entry_points.last().map(|e| e.recommendation_rank).unwrap_or(1));
+        assert!(
+            report.strategic_entry_points[0].recommendation_rank
+                <= report
+                    .strategic_entry_points
+                    .last()
+                    .map(|e| e.recommendation_rank)
+                    .unwrap_or(1)
+        );
     }
 
     #[test]

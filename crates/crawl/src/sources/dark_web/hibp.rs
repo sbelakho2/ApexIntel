@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use sha1::{Sha1, Digest};
+use sha1::{Digest, Sha1};
 use std::time::Duration;
 use tracing::debug;
 
@@ -48,16 +48,16 @@ pub struct HibpBreach {
 impl HibpBreach {
     /// Whether this breach contains password data.
     pub fn has_passwords(&self) -> bool {
-        self.data_classes.iter().any(|c| {
-            c.to_lowercase().contains("password")
-        })
+        self.data_classes
+            .iter()
+            .any(|c| c.to_lowercase().contains("password"))
     }
 
     /// Whether this breach contains email addresses.
     pub fn has_emails(&self) -> bool {
-        self.data_classes.iter().any(|c| {
-            c.to_lowercase().contains("email")
-        })
+        self.data_classes
+            .iter()
+            .any(|c| c.to_lowercase().contains("email"))
     }
 
     /// Severity score based on data types and pwn count.
@@ -65,10 +65,19 @@ impl HibpBreach {
         let mut score = 0.0;
         for dc in &self.data_classes {
             let lower = dc.to_lowercase();
-            score += if lower.contains("password") { 5.0 }
-                else if lower.contains("credit card") || lower.contains("bank") || lower.contains("ssn") || lower.contains("national id") { 4.0 }
-                else if lower.contains("email") || lower.contains("phone") { 2.0 }
-                else { 1.0 };
+            score += if lower.contains("password") {
+                5.0
+            } else if lower.contains("credit card")
+                || lower.contains("bank")
+                || lower.contains("ssn")
+                || lower.contains("national id")
+            {
+                4.0
+            } else if lower.contains("email") || lower.contains("phone") {
+                2.0
+            } else {
+                1.0
+            };
         }
         score * (1.0 + (self.pwn_count as f32 / 1_000_000.0).min(5.0))
     }
@@ -160,7 +169,11 @@ impl HibpMonitor {
             urlencoding::encode(prefix)
         );
 
-        let resp = self.client.get(&url).send().await
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .context("HIBP k-Anonymous API request")?;
 
         if !resp.status().is_success() {
@@ -203,14 +216,21 @@ impl HibpMonitor {
 
     /// Get all breaches (full API).
     pub async fn all_breaches(&self) -> Result<Vec<HibpBreach>> {
-        let api_key = self.config.api_key.as_ref()
+        let api_key = self
+            .config
+            .api_key
+            .as_ref()
             .context("HIBP full API requires an API key")?;
 
         let url = "https://haveibeenpwned.com/api/v3/all breaches";
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .header("hibp-api-key", api_key)
             .header("user-agent", "ApexIntel/1.0")
-            .send().await.context("HIBP all breaches request")?;
+            .send()
+            .await
+            .context("HIBP all breaches request")?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "HIBP all breaches returned non-success");
@@ -237,42 +257,52 @@ impl HibpMonitor {
         }
 
         let breaches: Vec<HibpApiBreach> = resp.json().await.unwrap_or_default();
-        Ok(breaches.into_iter().map(|b| HibpBreach {
-            name: b.name,
-            title: b.title,
-            domain: b.domain,
-            breach_date: chrono::DateTime::parse_from_rfc3339(&b.breach_date)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            added_date: chrono::DateTime::parse_from_rfc3339(&b.added_date)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            modified_date: Utc::now(),
-            pwn_count: b.pwn_count,
-            description: b.description,
-            data_classes: b.data_classes,
-            is_verified: b.is_verified,
-            is_fabricated: b.is_fabricated,
-            is_sensitive: b.is_sensitive,
-            is_retired: b.is_retired,
-            is_spam_list: b.is_spam_list,
-            logo_path: None,
-        }).collect())
+        Ok(breaches
+            .into_iter()
+            .map(|b| HibpBreach {
+                name: b.name,
+                title: b.title,
+                domain: b.domain,
+                breach_date: chrono::DateTime::parse_from_rfc3339(&b.breach_date)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                added_date: chrono::DateTime::parse_from_rfc3339(&b.added_date)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                modified_date: Utc::now(),
+                pwn_count: b.pwn_count,
+                description: b.description,
+                data_classes: b.data_classes,
+                is_verified: b.is_verified,
+                is_fabricated: b.is_fabricated,
+                is_sensitive: b.is_sensitive,
+                is_retired: b.is_retired,
+                is_spam_list: b.is_spam_list,
+                logo_path: None,
+            })
+            .collect())
     }
 
     /// Check for pastes associated with an email (full API).
     pub async fn check_pastes(&self, email: &str) -> Result<Vec<HibpPaste>> {
-        let api_key = self.config.api_key.as_ref()
+        let api_key = self
+            .config
+            .api_key
+            .as_ref()
             .context("HIBP paste check requires an API key")?;
 
         let url = format!(
             "https://haveibeenpwned.com/api/v3/pasteaccount/{}",
             urlencoding::encode(email)
         );
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("hibp-api-key", api_key)
             .header("user-agent", "ApexIntel/1.0")
-            .send().await.context("HIBP paste request")?;
+            .send()
+            .await
+            .context("HIBP paste request")?;
 
         if !resp.status().is_success() {
             return Ok(Vec::new());
@@ -290,35 +320,37 @@ impl HibpMonitor {
         }
 
         let pastes: Vec<HibpApiPaste> = resp.json().await.unwrap_or_default();
-        Ok(pastes.into_iter().map(|p| {
-            let source_lower = p.source.to_lowercase();
-            let id = p.id.clone();
-            HibpPaste {
-                source: p.source,
-                id,
-                title: p.title,
-                date: chrono::DateTime::parse_from_rfc3339(&p.date)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                email_count: p.email_count,
-                url: Some(format!("https://{}.com/{}", source_lower, p.id)),
-            }
-        }).collect())
+        Ok(pastes
+            .into_iter()
+            .map(|p| {
+                let source_lower = p.source.to_lowercase();
+                let id = p.id.clone();
+                HibpPaste {
+                    source: p.source,
+                    id,
+                    title: p.title,
+                    date: chrono::DateTime::parse_from_rfc3339(&p.date)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    email_count: p.email_count,
+                    url: Some(format!("https://{}.com/{}", source_lower, p.id)),
+                }
+            })
+            .collect())
     }
 
     /// Aggregate breach results for an email.
     pub async fn full_check(&self, email: &str) -> HibpCheckResult {
         let breaches = self.check_breaches(email).await.unwrap_or_default();
-        let paste_count = self.check_pastes(email).await
-            .map(|p| p.len())
-            .unwrap_or(0);
+        let paste_count = self.check_pastes(email).await.map(|p| p.len()).unwrap_or(0);
 
         HibpCheckResult {
             email: email.to_string(),
             breach_count: breaches.len(),
             paste_count,
             total_affected: breaches.iter().map(|b| b.pwn_count).sum(),
-            highest_severity: breaches.iter()
+            highest_severity: breaches
+                .iter()
                 .max_by(|a, b| a.pwn_count.cmp(&b.pwn_count))
                 .map(|b| b.title.clone()),
             breaches,

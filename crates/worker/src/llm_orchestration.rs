@@ -598,20 +598,20 @@ pub(super) fn has_counterfactual(text: &str) -> bool {
 pub(super) fn has_confidence_boilerplate(text: &str) -> bool {
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower.split_whitespace().collect();
-    
+
     // Heuristic 1: Check for percentage confidence mentions
     let has_percentage_confidence = words.windows(2).any(|w| {
         (w[0].parse::<f64>().is_ok() && (w[1] == "%" || w[1].starts_with('%')))
             || (w[1] == "confidence" && w[0].parse::<f64>().is_ok())
             || (w[0] == "confidence" && w[1].parse::<f64>().is_ok())
-    }) || words.windows(3).any(|w| {
-        w[0].parse::<f64>().is_ok() && w[1] == "%" && w[2] == "confidence"
-    });
-    
+    }) || words
+        .windows(3)
+        .any(|w| w[0].parse::<f64>().is_ok() && w[1] == "%" && w[2] == "confidence");
+
     if has_percentage_confidence {
         return true;
     }
-    
+
     // Heuristic 2: Source enumeration patterns
     CONFIDENCE_BOILERPLATE_PATTERNS
         .iter()

@@ -4,16 +4,13 @@
 //! and a list of per-entity alert overrides loaded from the store.
 
 use askama::Template;
-use axum::{
-    extract::Extension,
-    response::Response,
-};
+use axum::{extract::Extension, response::Response};
 use std::sync::Arc;
 
 use apex_core::alert_config::{AlertChannel, EntityAlertConfig};
 use apex_store::postgres::PgStore;
 
-use super::{PageContext, render_template};
+use super::{render_template, PageContext};
 use crate::middleware::session::WebSession;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,10 +68,7 @@ pub async fn alert_settings_page(
         .unwrap_or_default();
 
     // Load entity overrides
-    let entity_configs = store
-        .list_entity_alert_configs()
-        .await
-        .unwrap_or_default();
+    let entity_configs = store.list_entity_alert_configs().await.unwrap_or_default();
 
     let entity_count = entity_configs.len();
 
@@ -89,10 +83,18 @@ pub async fn alert_settings_page(
         global_min_severity: global_defaults.min_severity.as_str().to_string(),
         global_cooldown: global_defaults.cooldown_minutes,
         global_max_daily: global_defaults.max_daily_alerts,
-        global_channels_in_app: global_defaults.enabled_channels.contains(&AlertChannel::InApp),
-        global_channels_email: global_defaults.enabled_channels.contains(&AlertChannel::Email),
-        global_channels_slack: global_defaults.enabled_channels.contains(&AlertChannel::Slack),
-        global_channels_webhook: global_defaults.enabled_channels.contains(&AlertChannel::Webhook),
+        global_channels_in_app: global_defaults
+            .enabled_channels
+            .contains(&AlertChannel::InApp),
+        global_channels_email: global_defaults
+            .enabled_channels
+            .contains(&AlertChannel::Email),
+        global_channels_slack: global_defaults
+            .enabled_channels
+            .contains(&AlertChannel::Slack),
+        global_channels_webhook: global_defaults
+            .enabled_channels
+            .contains(&AlertChannel::Webhook),
 
         entity_configs,
         entity_count,

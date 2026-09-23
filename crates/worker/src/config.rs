@@ -154,8 +154,9 @@ pub static PATTERN_MINING_MAX_OBSERVATIONS: LazyLock<i64> = LazyLock::new(|| {
 /// Maximum number of ranked, statistically-robust candidates carried forward to
 /// LLM hypothesis generation per run. Override with
 /// `PATTERN_MINING_MAX_CANDIDATES`.
-pub static PATTERN_MINING_MAX_CANDIDATES: LazyLock<usize> =
-    LazyLock::new(|| parse_env_with_warning("PATTERN_MINING_MAX_CANDIDATES", 12usize).clamp(1, 200));
+pub static PATTERN_MINING_MAX_CANDIDATES: LazyLock<usize> = LazyLock::new(|| {
+    parse_env_with_warning("PATTERN_MINING_MAX_CANDIDATES", 12usize).clamp(1, 200)
+});
 
 /// Benjamini-Hochberg false-discovery-rate q-value ceiling for mined candidates.
 /// Candidates with q above this are discarded to control multiple-comparison
@@ -177,9 +178,8 @@ pub static PATTERN_MINING_MAX_Q: LazyLock<f64> =
 
 /// Maximum causal lag, in calendar days, evaluated by the miner's lag sweep.
 /// Default `90`. Override with `PATTERN_MINING_MAX_LAG_DAYS`.
-pub static PATTERN_MINING_MAX_LAG_DAYS: LazyLock<i64> = LazyLock::new(|| {
-    parse_env_with_warning("PATTERN_MINING_MAX_LAG_DAYS", 90i64).clamp(1, 365)
-});
+pub static PATTERN_MINING_MAX_LAG_DAYS: LazyLock<i64> =
+    LazyLock::new(|| parse_env_with_warning("PATTERN_MINING_MAX_LAG_DAYS", 90i64).clamp(1, 365));
 
 /// Minimum odds-ratio (effect size) a candidate must clear. Default `1.5`.
 /// Must exceed `1.0` (an effect at or below baseline is no effect). Override
@@ -200,9 +200,8 @@ pub static PATTERN_MINING_MIN_STABILITY: LazyLock<f64> =
 /// Number of chronological splits used to measure stability. Default `4`.
 /// At least `2` are required for cross-validation. Override with
 /// `PATTERN_MINING_TIME_SPLITS`.
-pub static PATTERN_MINING_TIME_SPLITS: LazyLock<usize> = LazyLock::new(|| {
-    parse_env_with_warning("PATTERN_MINING_TIME_SPLITS", 4usize).clamp(2, 52)
-});
+pub static PATTERN_MINING_TIME_SPLITS: LazyLock<usize> =
+    LazyLock::new(|| parse_env_with_warning("PATTERN_MINING_TIME_SPLITS", 4usize).clamp(2, 52));
 
 /// Minimum distinct-entity count required for a valid contingency table.
 /// Default `5`. Override with `PATTERN_MINING_ENTITY_MIN_COUNT`.

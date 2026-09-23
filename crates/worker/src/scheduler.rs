@@ -1288,10 +1288,7 @@ pub fn default_scheduler() -> Scheduler {
     s.register(
         JobDef::new(
             JobKind::TrendAggregation,
-            Schedule::DailyAt {
-                hour: 1,
-                minute: 0,
-            },
+            Schedule::DailyAt { hour: 1, minute: 0 },
         )
         .with_jitter(0)
         .with_timeout(3600), // 1 h — database aggregation queries
@@ -1431,16 +1428,22 @@ pub fn default_scheduler() -> Scheduler {
     // Buying-center derivation: rebuild the committee per account from roles.
     // Runs every 6h so newly discovered/classified persons appear in committees.
     s.register(
-        JobDef::new(JobKind::BuyingCenterDerivation, Schedule::IntervalSecs(21600))
-            .with_jitter(600)
-            .with_timeout(1800),
+        JobDef::new(
+            JobKind::BuyingCenterDerivation,
+            Schedule::IntervalSecs(21600),
+        )
+        .with_jitter(600)
+        .with_timeout(1800),
     );
     // PersonMention materialization: turn observed-people (OpenAlex/news) into
     // real persons rows. Runs hourly so the person corpus grows continuously.
     s.register(
-        JobDef::new(JobKind::PersonMentionMaterialization, Schedule::IntervalSecs(3600))
-            .with_jitter(300)
-            .with_timeout(1800),
+        JobDef::new(
+            JobKind::PersonMentionMaterialization,
+            Schedule::IntervalSecs(3600),
+        )
+        .with_jitter(300)
+        .with_timeout(1800),
     );
 
     s
@@ -1453,7 +1456,8 @@ pub fn default_scheduler() -> Scheduler {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::absurd_extreme_comparisons
     )]

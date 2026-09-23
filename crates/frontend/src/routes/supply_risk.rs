@@ -24,9 +24,11 @@ pub fn SupplyRiskPage() -> impl IntoView {
 
     let filtered_risks = move || {
         let f = filter.get();
-        risks.get().into_iter().filter(move |r| {
-            f == "all" || r.risk_level.to_lowercase() == f
-        }).collect::<Vec<_>>()
+        risks
+            .get()
+            .into_iter()
+            .filter(move |r| f == "all" || r.risk_level.to_lowercase() == f)
+            .collect::<Vec<_>>()
     };
 
     let filter_options: Vec<(&str, &str)> = vec![
@@ -48,7 +50,7 @@ pub fn SupplyRiskPage() -> impl IntoView {
                 {filter_options.iter().map(|(level_val, label)| {
                     let level_val = level_val.to_string();
                     let label = label.to_string();
-                    let f = filter.clone();
+                    let f = filter;
                     let lv = level_val.clone();
                     view! {
                         <button

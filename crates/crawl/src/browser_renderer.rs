@@ -79,12 +79,14 @@ impl BrowserRendererConfig {
             .unwrap_or_else(|_| PathBuf::from("google-chrome"));
 
         let max_concurrency = std::env::var(HEADLESS_BROWSER_MAX_CONCURRENCY_ENV)
-            .ok().and_then(|v| v.parse::<usize>().ok())
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(2)
             .max(1);
 
         let timeout_secs = std::env::var(HEADLESS_BROWSER_TIMEOUT_SECS_ENV)
-            .ok().and_then(|v| v.parse::<u64>().ok())
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(30)
             .max(10);
 
@@ -110,7 +112,10 @@ impl BrowserRendererConfig {
         // Only check Chrome binary exists if we're not in a test environment
         // or if HEADLESS_BROWSER_BIN is explicitly set
         if std::env::var("SKIP_CHROME_CHECK").is_err() && !self.chrome_binary.exists() {
-            errors.push(format!("Chrome binary not found at {:?}", self.chrome_binary));
+            errors.push(format!(
+                "Chrome binary not found at {:?}",
+                self.chrome_binary
+            ));
         }
         if self.max_concurrency == 0 {
             errors.push("max_concurrency must be > 0".into());
@@ -379,16 +384,15 @@ impl EnhancedBrowserRenderer {
             return Err(anyhow!("browser render failed: {}", stderr));
         }
 
-        let html = String::from_utf8(output.stdout)
-            .context("decoding rendered DOM as UTF-8")?;
+        let html = String::from_utf8(output.stdout).context("decoding rendered DOM as UTF-8")?;
 
         let render_time_ms = start_time.elapsed().as_millis() as u64;
         let content_length = html.len();
 
         // Analyze for lazy loading
         let mut lazy_detector = LazyLoadingDetector::new();
-        let lazy_loading_detected = self.config.enable_lazy_loading_detection
-            && lazy_detector.analyze(&html);
+        let lazy_loading_detected =
+            self.config.enable_lazy_loading_detection && lazy_detector.analyze(&html);
 
         // Check for dynamic content indicators
         let dynamic_content_detected = self.detect_dynamic_content(&html);
@@ -468,9 +472,12 @@ impl EnhancedBrowserRenderer {
 
         // For now, we just wait the configured timeout
         // A more sophisticated implementation would monitor network requests
-        timeout(self.config.dynamic_content_timeout, tokio::time::sleep(Duration::from_secs(2)))
-            .await
-            .is_ok()
+        timeout(
+            self.config.dynamic_content_timeout,
+            tokio::time::sleep(Duration::from_secs(2)),
+        )
+        .await
+        .is_ok()
     }
 
     /// Detect if the page likely has dynamic content
@@ -484,7 +491,7 @@ impl EnhancedBrowserRenderer {
             "Vue",
             "Angular",
             "Svelte",
-            "data-v-",  // Vue
+            "data-v-",     // Vue
             "_ngcontent-", // Angular
             "hydrate",
             "ssr",
@@ -518,11 +525,14 @@ impl EnhancedBrowserRenderer {
 
     /// Validate URL for browser command-line safety
     fn validate_browser_url(url: &str) -> Result<String> {
-        let dangerous_chars = ['|', ';', '&', '$', '`', '\n', '\r', '>', '<', '\\', '\'', '"'];
+        let dangerous_chars = [
+            '|', ';', '&', '$', '`', '\n', '\r', '>', '<', '\\', '\'', '"',
+        ];
         if let Some(bad) = url.chars().find(|c| dangerous_chars.contains(c)) {
             return Err(anyhow!(
                 "URL contains dangerous character {:?}: {:.50}",
-                bad, url
+                bad,
+                url
             ));
         }
 
@@ -530,7 +540,10 @@ impl EnhancedBrowserRenderer {
             return Err(anyhow!("URL exceeds maximum length (8192): {:.50}", url));
         }
 
-        if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("file://") {
+        if !url.starts_with("http://")
+            && !url.starts_with("https://")
+            && !url.starts_with("file://")
+        {
             return Err(anyhow!(
                 "URL must start with http://, https://, or file://: {:.50}",
                 url
@@ -604,7 +617,7 @@ impl EnhancedBrowserRenderer {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -625,7 +638,11 @@ mod tests {
     #[test]
     fn test_dynamic_content_detection() {
         // Skip if Chrome is not available
-        if BrowserRendererConfig::default().validate().iter().any(|e| e.contains("Chrome binary")) {
+        if BrowserRendererConfig::default()
+            .validate()
+            .iter()
+            .any(|e| e.contains("Chrome binary"))
+        {
             return;
         }
         let config = BrowserRendererConfig::default();
@@ -707,7 +724,8 @@ mod tests {
 
     #[test]
     fn test_url_validation_accepts_valid() {
-        let result = EnhancedBrowserRenderer::validate_browser_url("https://example.com/page?q=test");
+        let result =
+            EnhancedBrowserRenderer::validate_browser_url("https://example.com/page?q=test");
         assert!(result.is_ok());
     }
 
@@ -720,15 +738,25 @@ mod tests {
 
     #[test]
     fn test_supports_url() {
-        assert!(EnhancedBrowserRenderer::supports_url("https://www.linkedin.com/company/test"));
-        assert!(EnhancedBrowserRenderer::supports_url("https://twitter.com/test"));
-        assert!(!EnhancedBrowserRenderer::supports_url("https://example.com/news"));
+        assert!(EnhancedBrowserRenderer::supports_url(
+            "https://www.linkedin.com/company/test"
+        ));
+        assert!(EnhancedBrowserRenderer::supports_url(
+            "https://twitter.com/test"
+        ));
+        assert!(!EnhancedBrowserRenderer::supports_url(
+            "https://example.com/news"
+        ));
     }
 
     #[tokio::test]
     async fn test_cache_operations() {
         // Skip if Chrome is not available
-        if BrowserRendererConfig::default().validate().iter().any(|e| e.contains("Chrome binary")) {
+        if BrowserRendererConfig::default()
+            .validate()
+            .iter()
+            .any(|e| e.contains("Chrome binary"))
+        {
             return;
         }
         let config = BrowserRendererConfig::default();
@@ -746,7 +774,11 @@ mod tests {
             warnings: Vec::new(),
         };
 
-        renderer.render_cache.write().await.insert(result.url.clone(), result.clone());
+        renderer
+            .render_cache
+            .write()
+            .await
+            .insert(result.url.clone(), result.clone());
 
         let cached = renderer.get_cached("https://example.com").await;
         assert!(cached.is_some());
@@ -759,7 +791,11 @@ mod tests {
     #[tokio::test]
     async fn test_cache_stats() {
         // Skip if Chrome is not available
-        if BrowserRendererConfig::default().validate().iter().any(|e| e.contains("Chrome binary")) {
+        if BrowserRendererConfig::default()
+            .validate()
+            .iter()
+            .any(|e| e.contains("Chrome binary"))
+        {
             return;
         }
         let config = BrowserRendererConfig::default();
@@ -791,7 +827,11 @@ mod tests {
     #[test]
     fn test_warnings_generation() {
         // Skip if Chrome is not available
-        if BrowserRendererConfig::default().validate().iter().any(|e| e.contains("Chrome binary")) {
+        if BrowserRendererConfig::default()
+            .validate()
+            .iter()
+            .any(|e| e.contains("Chrome binary"))
+        {
             return;
         }
         let config = BrowserRendererConfig::default();

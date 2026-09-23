@@ -76,7 +76,7 @@ pub enum EngagementTrend {
 }
 
 /// Compute an engagement summary from individual records.
-pub fn compute_summary(records: &[EngagementRecord], now: DateTime<Utc>) -> EngagementSummary {
+pub fn compute_summary(records: &[EngagementRecord], _now: DateTime<Utc>) -> EngagementSummary {
     let total = records.len();
     let mut positive = 0;
     let mut neutral = 0;
@@ -280,15 +280,13 @@ mod tests {
             country_code: "US".into(),
             public_bio: String::new(),
             public_email: None,
-            artifacts: vec![
-                PoiArtifact {
-                    artifact_type: "article".into(),
-                    title: "Recent news".into(),
-                    content_summary: "Coverage".into(),
-                    source_url: Some("https://example.com".into()),
-                    ts_utc: now.timestamp() - 86400 * 10,
-                },
-            ],
+            artifacts: vec![PoiArtifact {
+                artifact_type: "article".into(),
+                title: "Recent news".into(),
+                content_summary: "Coverage".into(),
+                source_url: Some("https://example.com".into()),
+                ts_utc: now.timestamp() - 86400 * 10,
+            }],
             priority_vector: PriorityVector::zero(),
             psychological: PsychProfile::default_profile(),
             influence: InfluenceProfile {

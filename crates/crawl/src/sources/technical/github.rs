@@ -158,11 +158,13 @@ impl Default for GithubMonitorConfig {
 
 impl GithubMonitorConfig {
     pub fn add_org(mut self, org: impl Into<String>) -> Self {
-        self.monitored_orgs.push(org.into()); self
+        self.monitored_orgs.push(org.into());
+        self
     }
 
     pub fn add_user(mut self, user: impl Into<String>) -> Self {
-        self.monitored_users.push(user.into()); self
+        self.monitored_users.push(user.into());
+        self
     }
 }
 
@@ -185,8 +187,7 @@ impl GithubMonitor {
     }
 
     fn auth_header(&self) -> Option<String> {
-        self.config.token.as_ref()
-            .map(|t| format!("Bearer {}", t))
+        self.config.token.as_ref().map(|t| format!("Bearer {}", t))
     }
 
     /// List repositories for an organization.
@@ -195,7 +196,9 @@ impl GithubMonitor {
             "https://api.github.com/orgs/{}/repos",
             urlencoding::encode(org)
         );
-        let mut req = self.client.get(&url)
+        let mut req = self
+            .client
+            .get(&url)
             .header("Accept", "application/vnd.github.v3+json")
             .query(&[("per_page", &self.config.max_results.to_string())]);
 
@@ -236,44 +239,56 @@ impl GithubMonitor {
 
         let repos: Vec<GithubApiRepo> = resp.json().await.context("parse GitHub repos response")?;
         let now = Utc::now();
-        Ok(repos.into_iter().map(|r| GithubRepo {
-            repo_id: r.id,
-            name: r.name,
-            full_name: r.full_name,
-            description: r.description,
-            html_url: r.html_url,
-            clone_url: r.clone_url,
-            homepage: r.homepage,
-            language: r.language,
-            stargazers_count: r.stargazers_count,
-            watchers_count: r.watchers_count,
-            forks_count: r.forks_count,
-            open_issues_count: r.open_issues_count,
-            license: r.license.as_ref().and_then(|l| l.get("name")).and_then(|n| n.as_str()).map(|s| s.to_string()),
-            topics: r.topics.unwrap_or_default(),
-            default_branch: r.default_branch,
-            visibility: match r.visibility.as_deref() {
-                Some("private") => RepoVisibility::Private,
-                Some("internal") => RepoVisibility::Internal,
-                _ => RepoVisibility::Public,
-            },
-            created_at: DateTime::parse_from_rfc3339(&r.created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or(now),
-            updated_at: DateTime::parse_from_rfc3339(&r.updated_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or(now),
-            pushed_at: r.pushed_at.and_then(|p| {
-                DateTime::parse_from_rfc3339(&p).map(|dt| dt.with_timezone(&Utc)).ok()
-            }),
-            fetched_at: now,
-        }).collect())
+        Ok(repos
+            .into_iter()
+            .map(|r| GithubRepo {
+                repo_id: r.id,
+                name: r.name,
+                full_name: r.full_name,
+                description: r.description,
+                html_url: r.html_url,
+                clone_url: r.clone_url,
+                homepage: r.homepage,
+                language: r.language,
+                stargazers_count: r.stargazers_count,
+                watchers_count: r.watchers_count,
+                forks_count: r.forks_count,
+                open_issues_count: r.open_issues_count,
+                license: r
+                    .license
+                    .as_ref()
+                    .and_then(|l| l.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string()),
+                topics: r.topics.unwrap_or_default(),
+                default_branch: r.default_branch,
+                visibility: match r.visibility.as_deref() {
+                    Some("private") => RepoVisibility::Private,
+                    Some("internal") => RepoVisibility::Internal,
+                    _ => RepoVisibility::Public,
+                },
+                created_at: DateTime::parse_from_rfc3339(&r.created_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or(now),
+                updated_at: DateTime::parse_from_rfc3339(&r.updated_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or(now),
+                pushed_at: r.pushed_at.and_then(|p| {
+                    DateTime::parse_from_rfc3339(&p)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .ok()
+                }),
+                fetched_at: now,
+            })
+            .collect())
     }
 
     /// Search code by keyword.
     pub async fn search_code(&self, query: &str) -> Result<Vec<GithubCodeResult>> {
         let url = "https://api.github.com/search/code";
-        let mut req = self.client.get(url)
+        let mut req = self
+            .client
+            .get(url)
             .header("Accept", "application/vnd.github.v3+json")
             .query(&[("q", query)])
             .query(&[("per_page", &self.config.max_results.to_string())]);
@@ -291,7 +306,9 @@ impl GithubMonitor {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct GithubCodeSearch { items: Option<Vec<GithubCodeItem>> }
+        struct GithubCodeSearch {
+            items: Option<Vec<GithubCodeItem>>,
+        }
         #[derive(Deserialize)]
         #[allow(dead_code)]
         struct GithubCodeItem {
@@ -302,14 +319,25 @@ impl GithubMonitor {
             repository: Option<serde_json::Value>,
         }
 
-        let code_resp: GithubCodeSearch = resp.json().await.unwrap_or(GithubCodeSearch { items: None });
-        let results = code_resp.items.unwrap_or_default().into_iter()
+        let code_resp: GithubCodeSearch = resp
+            .json()
+            .await
+            .unwrap_or(GithubCodeSearch { items: None });
+        let results = code_resp
+            .items
+            .unwrap_or_default()
+            .into_iter()
             .map(|item| GithubCodeResult {
                 file_name: item.name,
                 file_path: item.path,
                 sha: item.sha,
                 url: item.url,
-                repo_name: item.repository.as_ref().and_then(|r| r.get("full_name")).and_then(|n| n.as_str()).map(|s| s.to_string()),
+                repo_name: item
+                    .repository
+                    .as_ref()
+                    .and_then(|r| r.get("full_name"))
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string()),
                 matched_keywords: vec![query.to_string()],
                 fetched_at: Utc::now(),
             })
@@ -321,7 +349,9 @@ impl GithubMonitor {
     /// Search commits by keyword.
     pub async fn search_commits(&self, query: &str) -> Result<Vec<GithubCommit>> {
         let url = "https://api.github.com/search/commits";
-        let mut req = self.client.get(url)
+        let mut req = self
+            .client
+            .get(url)
             .header("Accept", "application/vnd.github.v3+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .query(&[("q", query)])
@@ -339,11 +369,17 @@ impl GithubMonitor {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct GithubCommitSearch { items: Option<Vec<serde_json::Value>> }
+        struct GithubCommitSearch {
+            items: Option<Vec<serde_json::Value>>,
+        }
 
-        let commit_resp: GithubCommitSearch = resp.json().await.unwrap_or(GithubCommitSearch { items: None });
+        let commit_resp: GithubCommitSearch = resp
+            .json()
+            .await
+            .unwrap_or(GithubCommitSearch { items: None });
         let commit_items = commit_resp.items.unwrap_or_default();
-        let commits: Vec<GithubCommit> = commit_items.into_iter()
+        let commits: Vec<GithubCommit> = commit_items
+            .into_iter()
             .filter_map(|item| {
                 let sha = item.get("sha")?.as_str()?.to_string();
                 let commit = item.get("commit")?;
@@ -352,12 +388,16 @@ impl GithubMonitor {
                 let author_name = author.get("name")?.as_str()?.to_string();
                 let author_email = author.get("email")?.as_str()?.to_string();
 
-                let matched: Vec<String> = self.config.keywords.iter()
+                let matched: Vec<String> = self
+                    .config
+                    .keywords
+                    .iter()
                     .filter(|kw| message.to_lowercase().contains(&kw.to_lowercase()))
                     .cloned()
                     .collect();
 
-                let committed_at = author.get("date")
+                let committed_at = author
+                    .get("date")
                     .and_then(|d| d.as_str())
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc))
@@ -368,7 +408,11 @@ impl GithubMonitor {
                     message,
                     author_name: author_name.clone(),
                     author_email: author_email.clone(),
-                    author_login: item.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).map(String::from),
+                    author_login: item
+                        .get("author")
+                        .and_then(|a| a.get("login"))
+                        .and_then(|l| l.as_str())
+                        .map(String::from),
                     committer_name: author_name,
                     committer_email: author_email,
                     committed_at,

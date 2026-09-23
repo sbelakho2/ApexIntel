@@ -289,7 +289,7 @@ impl TwitterScraper {
                 }
 
                 post.language = t.lang;
-                post.post_url = format!("https://twitter.com/i/web/status/{}", &t.id);
+                post.post_url = format!("https://twitter.com/i/web/status/{}", t.id);
 
                 post
             })

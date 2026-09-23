@@ -148,9 +148,7 @@ pub(crate) async fn create_activity_event(
     Json(payload): Json<CreateActivityRequest>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let request_id = Uuid::new_v4().to_string();
-    let details = payload
-        .details
-        .unwrap_or(serde_json::json!({}));
+    let details = payload.details.unwrap_or(serde_json::json!({}));
 
     let result = sqlx::query(
         r#"
@@ -186,7 +184,9 @@ pub(crate) async fn create_activity_event(
             tracing::error!(request_id = %request_id, "create_activity_event failed: {err:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to create activity event"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to create activity event",
+                ))),
             )
         }
     }

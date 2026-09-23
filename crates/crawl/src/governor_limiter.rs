@@ -120,7 +120,7 @@ mod tests {
         assert!(gov.try_acquire("domain2.com"));
     }
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn test_wait_for_slot() {
         let gov = CrawlGovernor::with_limits(10, 100);

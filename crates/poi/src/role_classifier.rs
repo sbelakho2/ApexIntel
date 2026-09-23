@@ -88,8 +88,11 @@ pub fn classify_role(title: &str) -> RoleFamily {
     }
 
     // ── 4b. Logistics / Port / Transport (specialized — before Operations) ──
-    if t.contains("logistics") || t.contains("shipping") || t.contains("freight")
-        || t.contains("transport") || t.contains("port operations")
+    if t.contains("logistics")
+        || t.contains("shipping")
+        || t.contains("freight")
+        || t.contains("transport")
+        || t.contains("port operations")
     {
         return RoleFamily::PortLogistics;
     }
@@ -149,14 +152,17 @@ pub fn classify_role(title: &str) -> RoleFamily {
     }
 
     // ── 13. Industry / Trade Associations ──
-    if t.contains("trade association") || t.contains("industry association")
+    if t.contains("trade association")
+        || t.contains("industry association")
         || t.contains("chamber of commerce")
     {
         return RoleFamily::IndustryAssociation;
     }
 
     // ── 14. Distributor / Reseller ──
-    if t.contains("distributor") || t.contains("reseller") || t.contains("wholesale")
+    if t.contains("distributor")
+        || t.contains("reseller")
+        || t.contains("wholesale")
         || t.contains("dealer")
     {
         return RoleFamily::Distributor;
@@ -176,9 +182,20 @@ pub fn classify_role(title: &str) -> RoleFamily {
 /// domain.
 fn is_c_suite(t: &str) -> bool {
     // Exact CxO matches
-    if t == "ceo" || t == "cto" || t == "cfo" || t == "coo" || t == "cio"
-        || t == "ciso" || t == "cmo" || t == "cpo" || t == "cro" || t == "cso"
-        || t == "chro" || t == "cao" || t == "cdo" || t == "cco"
+    if t == "ceo"
+        || t == "cto"
+        || t == "cfo"
+        || t == "coo"
+        || t == "cio"
+        || t == "ciso"
+        || t == "cmo"
+        || t == "cpo"
+        || t == "cro"
+        || t == "cso"
+        || t == "chro"
+        || t == "cao"
+        || t == "cdo"
+        || t == "cco"
     {
         return true;
     }
@@ -189,14 +206,19 @@ fn is_c_suite(t: &str) -> bool {
     // "president" — but NOT "vice president" or "senior vice president"
     // (those are VP-level, handled by is_executive, not C-suite)
     if (t == "president" || t.starts_with("president ") || t.ends_with(" president"))
-        && !t.contains("vice president") && !t.contains("svp") && !t.contains("evp")
+        && !t.contains("vice president")
+        && !t.contains("svp")
+        && !t.contains("evp")
     {
         return true;
     }
     // Chairman/Chairwoman/Chairperson and Managing/Executive Director
     let c_suite_keywords = [
-        "chairman", "chairwoman", "chairperson",
-        "managing director", "executive director",
+        "chairman",
+        "chairwoman",
+        "chairperson",
+        "managing director",
+        "executive director",
     ];
     for kw in &c_suite_keywords {
         if t.contains(kw) {
@@ -208,38 +230,70 @@ fn is_c_suite(t: &str) -> bool {
 
 fn is_executive(t: &str) -> bool {
     // Exact C-level matches
-    if t == "ceo" || t == "cto" || t == "cfo" || t == "coo" || t == "cio"
-        || t == "ciso" || t == "cmo" || t == "cpo" || t == "cro" || t == "cso"
-        || t == "chro" || t == "cao" || t == "cdo" || t == "cco"
+    if t == "ceo"
+        || t == "cto"
+        || t == "cfo"
+        || t == "coo"
+        || t == "cio"
+        || t == "ciso"
+        || t == "cmo"
+        || t == "cpo"
+        || t == "cro"
+        || t == "cso"
+        || t == "chro"
+        || t == "cao"
+        || t == "cdo"
+        || t == "cco"
     {
         return true;
     }
     // Pattern matches for C-level with whitespace/punctuation
     let c_level_patterns = [
-        "ceo ", " ceo", ".ceo", "/ceo",
-        "cto ", " cto", ".cto", "/cto",
-        "cfo ", " cfo", ".cfo", "/cfo",
-        "coo ", " coo", ".coo", "/coo",
-        "cio ", " cio", ".cio", "/cio",
-        "ciso", "cmo ", " cmo", "cpo ", " cpo",
-        "cro ", " cro", "cso ", " cso",
+        "ceo ", " ceo", ".ceo", "/ceo", "cto ", " cto", ".cto", "/cto", "cfo ", " cfo", ".cfo",
+        "/cfo", "coo ", " coo", ".coo", "/coo", "cio ", " cio", ".cio", "/cio", "ciso", "cmo ",
+        " cmo", "cpo ", " cpo", "cro ", " cro", "cso ", " cso",
     ];
     for pat in &c_level_patterns {
-        if t.contains(pat) { return true; }
+        if t.contains(pat) {
+            return true;
+        }
     }
 
     // Executive title keywords
     let exec_keywords = [
-        "chief ", "president", "chairman", "chairwoman", "chairperson",
-        "managing director", "executive director", "board director",
-        "vice president", "vp ", ".vp", "/vp", "senior vice president",
-        "svp ", ".svp", "/svp", "executive vice president", "evp ",
-        "owner", "founder", "co-founder", "managing partner", "partner",
-        "general manager", "site director", "plant director",
-        "division president", "group president",
+        "chief ",
+        "president",
+        "chairman",
+        "chairwoman",
+        "chairperson",
+        "managing director",
+        "executive director",
+        "board director",
+        "vice president",
+        "vp ",
+        ".vp",
+        "/vp",
+        "senior vice president",
+        "svp ",
+        ".svp",
+        "/svp",
+        "executive vice president",
+        "evp ",
+        "owner",
+        "founder",
+        "co-founder",
+        "managing partner",
+        "partner",
+        "general manager",
+        "site director",
+        "plant director",
+        "division president",
+        "group president",
     ];
     for kw in &exec_keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
 
     false
@@ -247,138 +301,264 @@ fn is_executive(t: &str) -> bool {
 
 fn is_procurement(t: &str) -> bool {
     let keywords = [
-        "procurement", "sourcing", "purchasing", "buyer", "supply chain",
-        "supplier", "vendor", "category manager", "commodity manager",
-        "contract manager", "tender", "strategic sourcing",
-        "global sourcing", "direct procurement", "indirect procurement",
-        "supplier quality engineer", "supplier development",
-        "purchasing manager", "procurement director",
+        "procurement",
+        "sourcing",
+        "purchasing",
+        "buyer",
+        "supply chain",
+        "supplier",
+        "vendor",
+        "category manager",
+        "commodity manager",
+        "contract manager",
+        "tender",
+        "strategic sourcing",
+        "global sourcing",
+        "direct procurement",
+        "indirect procurement",
+        "supplier quality engineer",
+        "supplier development",
+        "purchasing manager",
+        "procurement director",
         // "acquisition" is deliberately excluded — it matches "Talent Acquisition"
         // (HR) and "M&A Acquisition" (Strategy). Only compound forms like
         // "acquisition specialist" in a procurement context are procurement.
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_quality(t: &str) -> bool {
     let keywords = [
-        "quality", "qa engineer", "qc inspector", "testing", "inspection",
-        "compliance", "audit", "regulatory", "iso ", "safety",
-        "environmental", "sustainability", "esg",
-        "quality assurance", "quality control", "quality management",
-        "six sigma", "lean ", "continuous improvement",
-        "hse ", "ehs ", "health safety environment",
+        "quality",
+        "qa engineer",
+        "qc inspector",
+        "testing",
+        "inspection",
+        "compliance",
+        "audit",
+        "regulatory",
+        "iso ",
+        "safety",
+        "environmental",
+        "sustainability",
+        "esg",
+        "quality assurance",
+        "quality control",
+        "quality management",
+        "six sigma",
+        "lean ",
+        "continuous improvement",
+        "hse ",
+        "ehs ",
+        "health safety environment",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_security(t: &str) -> bool {
     let keywords = [
-        "security", "cyber", "infosec", "privacy", "data protection",
-        "threat", "vulnerability", "penetration test", "red team",
-        "blue team", "soc ", "security operations",
-        "information security", "network security",
+        "security",
+        "cyber",
+        "infosec",
+        "privacy",
+        "data protection",
+        "threat",
+        "vulnerability",
+        "penetration test",
+        "red team",
+        "blue team",
+        "soc ",
+        "security operations",
+        "information security",
+        "network security",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_engineering(t: &str) -> bool {
     let keywords = [
-        "engineer", "developer", "architect", "scientist", "programmer",
-        "technical lead", "r&d", "research and development",
-        "software", "hardware", "firmware", "embedded",
-        "design engineer", "process engineer", "industrial engineer",
-        "manufacturing engineer", "test engineer", "systems engineer",
+        "engineer",
+        "developer",
+        "architect",
+        "scientist",
+        "programmer",
+        "technical lead",
+        "r&d",
+        "research and development",
+        "software",
+        "hardware",
+        "firmware",
+        "embedded",
+        "design engineer",
+        "process engineer",
+        "industrial engineer",
+        "manufacturing engineer",
+        "test engineer",
+        "systems engineer",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_operations(t: &str) -> bool {
     let keywords = [
-        "operations", "manufacturing", "production",
-        "warehouse", "distribution",
-        "plant manager", "factory", "facilities", "maintenance",
-        "production manager", "operations director",
-        "shop floor", "assembly", "fabrication",
-        "shift supervisor", "line manager",
+        "operations",
+        "manufacturing",
+        "production",
+        "warehouse",
+        "distribution",
+        "plant manager",
+        "factory",
+        "facilities",
+        "maintenance",
+        "production manager",
+        "operations director",
+        "shop floor",
+        "assembly",
+        "fabrication",
+        "shift supervisor",
+        "line manager",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_finance(t: &str) -> bool {
     let keywords = [
-        "finance", "accounting", "treasury", "controller", "bookkeeper",
-        "tax", "auditor", "financial", "investment", "portfolio",
-        "risk manager", "actuary",
+        "finance",
+        "accounting",
+        "treasury",
+        "controller",
+        "bookkeeper",
+        "tax",
+        "auditor",
+        "financial",
+        "investment",
+        "portfolio",
+        "risk manager",
+        "actuary",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_sales(t: &str) -> bool {
     let keywords = [
-        "sales", "marketing", "business development", "account manager",
-        "customer", "commercial", "revenue", "brand", "product manager",
-        "growth", "market", "channel", "partnership",
+        "sales",
+        "marketing",
+        "business development",
+        "account manager",
+        "customer",
+        "commercial",
+        "revenue",
+        "brand",
+        "product manager",
+        "growth",
+        "market",
+        "channel",
+        "partnership",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_legal(t: &str) -> bool {
     let keywords = [
-        "legal", "counsel", "attorney", "lawyer", "paralegal",
-        "intellectual property", "patent", "trademark", "litigation",
-        "contract", "general counsel",
+        "legal",
+        "counsel",
+        "attorney",
+        "lawyer",
+        "paralegal",
+        "intellectual property",
+        "patent",
+        "trademark",
+        "litigation",
+        "contract",
+        "general counsel",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_hr(t: &str) -> bool {
     let keywords = [
-        "hr ", "human resources", "talent", "recruiting", "people",
-        "payroll", "compensation", "benefits", "learning and development",
+        "hr ",
+        "human resources",
+        "talent",
+        "recruiting",
+        "people",
+        "payroll",
+        "compensation",
+        "benefits",
+        "learning and development",
         "organizational development",
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
 
 fn is_government(t: &str) -> bool {
     let keywords = [
-        "government", "minister", "ambassador", "regulatory",
-        "public policy", "authority", "agency",
-        "defense", "military", "intelligence", "diplomat",
-        "civil service", "public sector", "administration",
+        "government",
+        "minister",
+        "ambassador",
+        "regulatory",
+        "public policy",
+        "authority",
+        "agency",
+        "defense",
+        "military",
+        "intelligence",
+        "diplomat",
+        "civil service",
+        "public sector",
+        "administration",
         // NOTE: "free zone" is NOT here — it has a dedicated FreeZoneAuthority
         // classification checked before this function.
     ];
     for kw in &keywords {
-        if t.contains(kw) { return true; }
+        if t.contains(kw) {
+            return true;
+        }
     }
     false
 }
@@ -394,7 +574,10 @@ mod tests {
     // ── Executive (pure rank, no functional qualifier) ──
     #[test]
     fn test_classify_ceo() {
-        assert_eq!(classify_role("Chief Executive Officer"), RoleFamily::Executive);
+        assert_eq!(
+            classify_role("Chief Executive Officer"),
+            RoleFamily::Executive
+        );
         assert_eq!(classify_role("CEO"), RoleFamily::Executive);
         assert_eq!(classify_role("CEO & Founder"), RoleFamily::Executive);
     }
@@ -402,7 +585,10 @@ mod tests {
     #[test]
     fn test_classify_cto_cfo_coo() {
         assert_eq!(classify_role("CTO"), RoleFamily::Executive);
-        assert_eq!(classify_role("Chief Financial Officer"), RoleFamily::Executive);
+        assert_eq!(
+            classify_role("Chief Financial Officer"),
+            RoleFamily::Executive
+        );
         assert_eq!(classify_role("COO"), RoleFamily::Executive);
     }
 
@@ -411,9 +597,15 @@ mod tests {
         // "Vice President of Engineering" — "engineering" matches functional domain first → Engineering
         // But "vice president" in is_executive matches, and engineering is checked before executive.
         // Actually: is_engineering contains "engineer" which matches "engineering" → Engineering
-        assert_eq!(classify_role("Vice President of Engineering"), RoleFamily::Engineering);
+        assert_eq!(
+            classify_role("Vice President of Engineering"),
+            RoleFamily::Engineering
+        );
         // "SVP Marketing" — "marketing" matches sales → Sales/Marketing
-        assert_eq!(classify_role("SVP Marketing"), RoleFamily::Other("Sales/Marketing".to_string()));
+        assert_eq!(
+            classify_role("SVP Marketing"),
+            RoleFamily::Other("Sales/Marketing".to_string())
+        );
         // "President" alone → Executive
         assert_eq!(classify_role("President"), RoleFamily::Executive);
     }
@@ -430,22 +622,34 @@ mod tests {
         // VP Procurement → Procurement (NOT Executive)
         assert_eq!(classify_role("VP Procurement"), RoleFamily::Procurement);
         // Director of Supply Chain → Procurement
-        assert_eq!(classify_role("Director of Supply Chain"), RoleFamily::Procurement);
+        assert_eq!(
+            classify_role("Director of Supply Chain"),
+            RoleFamily::Procurement
+        );
         // VP Operations → Operations (ops keywords match before executive check)
         assert_eq!(classify_role("VP Operations"), RoleFamily::Operations);
         // VP of Finance → Finance
         assert_eq!(classify_role("VP of Finance"), RoleFamily::Finance);
         // SVP of Sales → Sales/Marketing
-        assert_eq!(classify_role("SVP of Sales"), RoleFamily::Other("Sales/Marketing".to_string()));
+        assert_eq!(
+            classify_role("SVP of Sales"),
+            RoleFamily::Other("Sales/Marketing".to_string())
+        );
         // Chief Procurement Officer → Procurement (procurement keyword before exec check)
-        assert_eq!(classify_role("Chief Procurement Officer"), RoleFamily::Procurement);
+        assert_eq!(
+            classify_role("Chief Procurement Officer"),
+            RoleFamily::Procurement
+        );
     }
 
     // ── Procurement ──
     #[test]
     fn test_classify_procurement() {
         assert_eq!(classify_role("VP Procurement"), RoleFamily::Procurement);
-        assert_eq!(classify_role("Head of Supply Chain"), RoleFamily::Procurement);
+        assert_eq!(
+            classify_role("Head of Supply Chain"),
+            RoleFamily::Procurement
+        );
         assert_eq!(classify_role("Purchasing Manager"), RoleFamily::Procurement);
         assert_eq!(classify_role("Sourcing Director"), RoleFamily::Procurement);
         assert_eq!(classify_role("Category Manager"), RoleFamily::Procurement);
@@ -454,15 +658,24 @@ mod tests {
     #[test]
     fn test_classify_buyer() {
         assert_eq!(classify_role("Senior Buyer"), RoleFamily::Procurement);
-        assert_eq!(classify_role("Strategic Sourcing Lead"), RoleFamily::Procurement);
+        assert_eq!(
+            classify_role("Strategic Sourcing Lead"),
+            RoleFamily::Procurement
+        );
     }
 
     // ── Quality ──
     #[test]
     fn test_classify_quality() {
-        assert_eq!(classify_role("Director of Quality Assurance"), RoleFamily::SupplierQuality);
+        assert_eq!(
+            classify_role("Director of Quality Assurance"),
+            RoleFamily::SupplierQuality
+        );
         assert_eq!(classify_role("QA Engineer"), RoleFamily::SupplierQuality);
-        assert_eq!(classify_role("Compliance Officer"), RoleFamily::SupplierQuality);
+        assert_eq!(
+            classify_role("Compliance Officer"),
+            RoleFamily::SupplierQuality
+        );
         assert_eq!(classify_role("ISO Auditor"), RoleFamily::SupplierQuality);
     }
 
@@ -471,7 +684,10 @@ mod tests {
     fn test_classify_security() {
         assert_eq!(classify_role("CISO"), RoleFamily::Executive); // Exec takes priority
         assert_eq!(classify_role("Security Engineer"), RoleFamily::Security);
-        assert_eq!(classify_role("Cyber Security Analyst"), RoleFamily::Security);
+        assert_eq!(
+            classify_role("Cyber Security Analyst"),
+            RoleFamily::Security
+        );
     }
 
     // ── Engineering ──
@@ -488,7 +704,10 @@ mod tests {
         // VP Operations → Operations (functional domain "operations" takes priority)
         assert_eq!(classify_role("VP Operations"), RoleFamily::Operations);
         assert_eq!(classify_role("Plant Manager"), RoleFamily::Operations);
-        assert_eq!(classify_role("Production Supervisor"), RoleFamily::Operations);
+        assert_eq!(
+            classify_role("Production Supervisor"),
+            RoleFamily::Operations
+        );
         assert_eq!(classify_role("Warehouse Manager"), RoleFamily::Operations);
     }
 
@@ -503,28 +722,46 @@ mod tests {
     // ── Sales ──
     #[test]
     fn test_classify_sales() {
-        assert_eq!(classify_role("Sales Director"), RoleFamily::Other("Sales/Marketing".to_string()));
-        assert_eq!(classify_role("Marketing Manager"), RoleFamily::Other("Sales/Marketing".to_string()));
+        assert_eq!(
+            classify_role("Sales Director"),
+            RoleFamily::Other("Sales/Marketing".to_string())
+        );
+        assert_eq!(
+            classify_role("Marketing Manager"),
+            RoleFamily::Other("Sales/Marketing".to_string())
+        );
     }
 
     // ── Legal ──
     #[test]
     fn test_classify_legal() {
         assert_eq!(classify_role("General Counsel"), RoleFamily::Legal);
-        assert_eq!(classify_role("Intellectual Property Attorney"), RoleFamily::Legal);
+        assert_eq!(
+            classify_role("Intellectual Property Attorney"),
+            RoleFamily::Legal
+        );
     }
 
     // ── HR ──
     #[test]
     fn test_classify_hr() {
-        assert_eq!(classify_role("HR Director"), RoleFamily::Other("Human Resources".to_string()));
-        assert_eq!(classify_role("Talent Acquisition Manager"), RoleFamily::Other("Human Resources".to_string()));
+        assert_eq!(
+            classify_role("HR Director"),
+            RoleFamily::Other("Human Resources".to_string())
+        );
+        assert_eq!(
+            classify_role("Talent Acquisition Manager"),
+            RoleFamily::Other("Human Resources".to_string())
+        );
     }
 
     // ── Government ──
     #[test]
     fn test_classify_government() {
-        assert_eq!(classify_role("Government Relations Director"), RoleFamily::Government);
+        assert_eq!(
+            classify_role("Government Relations Director"),
+            RoleFamily::Government
+        );
         assert_eq!(classify_role("Minister of Trade"), RoleFamily::Government);
         assert_eq!(classify_role("Defense Attaché"), RoleFamily::Government);
     }
@@ -532,19 +769,31 @@ mod tests {
     // ── Specialized ──
     #[test]
     fn test_classify_logistics() {
-        assert_eq!(classify_role("Logistics Manager"), RoleFamily::PortLogistics);
-        assert_eq!(classify_role("Shipping Coordinator"), RoleFamily::PortLogistics);
+        assert_eq!(
+            classify_role("Logistics Manager"),
+            RoleFamily::PortLogistics
+        );
+        assert_eq!(
+            classify_role("Shipping Coordinator"),
+            RoleFamily::PortLogistics
+        );
     }
 
     #[test]
     fn test_classify_free_zone() {
-        assert_eq!(classify_role("Free Zone Authority Director"), RoleFamily::FreeZoneAuthority);
+        assert_eq!(
+            classify_role("Free Zone Authority Director"),
+            RoleFamily::FreeZoneAuthority
+        );
     }
 
     #[test]
     fn test_classify_certification() {
         assert_eq!(classify_role("Lead Auditor"), RoleFamily::SupplierQuality); // quality first
-        assert_eq!(classify_role("Certification Inspector"), RoleFamily::CertificationBody);
+        assert_eq!(
+            classify_role("Certification Inspector"),
+            RoleFamily::CertificationBody
+        );
     }
 
     // ── Edge cases ──
@@ -582,7 +831,11 @@ mod tests {
         for title in titles {
             let first = classify_role(title);
             let second = classify_role(title);
-            assert_eq!(first, second, "classify_role must be deterministic for '{}'", title);
+            assert_eq!(
+                first, second,
+                "classify_role must be deterministic for '{}'",
+                title
+            );
         }
     }
 }

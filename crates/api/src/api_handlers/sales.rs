@@ -14,8 +14,6 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use uuid::Uuid;
 
-use apex_store::postgres::PgStore;
-
 // ─── Contact methods ────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -37,7 +35,12 @@ pub(crate) async fn list_person_contacts(
     let request_id = Uuid::new_v4().to_string();
     let uid = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid person ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid person ID"))),
+            )
+        }
     };
     match state.store.list_contact_methods(uid).await {
         Ok(rows) => {
@@ -47,7 +50,7 @@ pub(crate) async fn list_person_contacts(
                     id: r.id.to_string(),
                     contact_type: r.contact_type,
                     value: r.value,
-                    confidence: r.confidence as f64,
+                    confidence: r.confidence,
                     verification_status: r.verification_status,
                     source: r.source,
                     is_primary: r.is_primary,
@@ -56,12 +59,20 @@ pub(crate) async fn list_person_contacts(
                 .collect();
             (
                 StatusCode::OK,
-                Json(success_with_meta(items, ResponseMeta::now().with_request_id(request_id))),
+                Json(success_with_meta(
+                    items,
+                    ResponseMeta::now().with_request_id(request_id),
+                )),
             )
         }
         Err(err) => {
             tracing::error!(request_id = %request_id, "list_person_contacts failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to fetch contacts"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch contacts",
+                ))),
+            )
         }
     }
 }
@@ -73,7 +84,7 @@ pub struct RecordEngagementRequest {
     pub channel: String,
     pub direction: Option<String>,
     pub outcome: String,
-    pub outcome_weight: Option<f32>,
+    pub outcome_weight: Option<f64>,
     pub subject: Option<String>,
     pub opportunity_id: Option<String>,
     pub cadence_step: Option<i32>,
@@ -108,24 +119,38 @@ pub(crate) async fn record_engagement(
     let request_id = Uuid::new_v4().to_string();
     let person_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid person ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid person ID"))),
+            )
+        }
     };
 
     // Map the outcome enum to a real weight if not supplied, mirroring
     // poi::engagement_tracker::EngagementOutcome weights.
-    let weight = payload.outcome_weight.unwrap_or_else(|| match payload.outcome.as_str() {
-        "positive" | "meeting_booked" => 1.0,
-        "reply" => 0.7,
-        "neutral" => 0.0,
-        "no_response" => -0.3,
-        "negative" | "bounce" => -1.0,
-        _ => 0.0,
-    });
+    let weight = payload
+        .outcome_weight
+        .unwrap_or_else(|| match payload.outcome.as_str() {
+            "positive" | "meeting_booked" => 1.0,
+            "reply" => 0.7,
+            "neutral" => 0.0,
+            "no_response" => -0.3,
+            "negative" | "bounce" => -1.0,
+            _ => 0.0,
+        });
 
     let opportunity_id = match &payload.opportunity_id {
         Some(o) => Some(match Uuid::parse_str(o) {
             Ok(u) => u,
-            Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid opportunity_id")))),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(error_response(ApiError::bad_request(
+                        "Invalid opportunity_id",
+                    ))),
+                )
+            }
         }),
         None => None,
     };
@@ -155,7 +180,12 @@ pub(crate) async fn record_engagement(
         ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "record_engagement failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to record engagement"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to record engagement",
+                ))),
+            )
         }
     }
 }
@@ -168,7 +198,12 @@ pub(crate) async fn list_person_engagement(
     let start = Instant::now();
     let person_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid person ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid person ID"))),
+            )
+        }
     };
 
     let events = match state.store.list_engagement_events(person_id, 100).await {
@@ -177,7 +212,9 @@ pub(crate) async fn list_person_engagement(
             tracing::error!(request_id = %request_id, "list_person_engagement failed: {err:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to fetch engagement history"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch engagement history",
+                ))),
             );
         }
     };
@@ -200,7 +237,7 @@ pub(crate) async fn list_person_engagement(
             channel: e.channel,
             direction: e.direction,
             outcome: e.outcome,
-            outcome_weight: e.outcome_weight as f64,
+            outcome_weight: e.outcome_weight,
             subject: e.subject,
             occurred_at: e.occurred_at.to_rfc3339(),
         })
@@ -253,7 +290,12 @@ pub(crate) async fn list_company_buying_center(
     let request_id = Uuid::new_v4().to_string();
     let company_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid company ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid company ID"))),
+            )
+        }
     };
 
     let centers = match state.store.list_buying_centers(company_id).await {
@@ -262,23 +304,29 @@ pub(crate) async fn list_company_buying_center(
             tracing::error!(request_id = %request_id, "list_company_buying_center failed: {err:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to fetch buying centers"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch buying centers",
+                ))),
             );
         }
     };
 
     let mut views: Vec<BuyingCenterView> = Vec::with_capacity(centers.len());
     for c in centers {
-        let members = state.store.list_buying_center_members(c.id).await.unwrap_or_default();
+        let members = state
+            .store
+            .list_buying_center_members(c.id)
+            .await
+            .unwrap_or_default();
         let member_views: Vec<BuyingCenterMemberView> = members
             .into_iter()
             .map(|m| BuyingCenterMemberView {
                 id: m.id.to_string(),
                 person_id: m.person_id.to_string(),
                 role: m.role,
-                influence_score: m.influence_score as f64,
+                influence_score: m.influence_score,
                 budget_authority: m.budget_authority,
-                need_signal: m.need_signal as f64,
+                need_signal: m.need_signal,
             })
             .collect();
         views.push(BuyingCenterView {
@@ -292,7 +340,10 @@ pub(crate) async fn list_company_buying_center(
 
     (
         StatusCode::OK,
-        Json(success_with_meta(views, ResponseMeta::now().with_request_id(request_id))),
+        Json(success_with_meta(
+            views,
+            ResponseMeta::now().with_request_id(request_id),
+        )),
     )
 }
 
@@ -300,9 +351,9 @@ pub(crate) async fn list_company_buying_center(
 pub struct AddBuyingMemberRequest {
     pub person_id: String,
     pub role: String,
-    pub influence_score: Option<f32>,
+    pub influence_score: Option<f64>,
     pub budget_authority: Option<bool>,
-    pub need_signal: Option<f32>,
+    pub need_signal: Option<f64>,
     pub timeline_horizon: Option<String>,
     pub notes: Option<String>,
     pub opportunity_id: Option<String>,
@@ -316,29 +367,56 @@ pub(crate) async fn add_buying_member(
     let request_id = Uuid::new_v4().to_string();
     let company_id = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid company ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid company ID"))),
+            )
+        }
     };
     let person_id = match Uuid::parse_str(&payload.person_id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid person_id")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request("Invalid person_id"))),
+            )
+        }
     };
     let opportunity_id = match &payload.opportunity_id {
         Some(o) => Some(match Uuid::parse_str(o) {
             Ok(u) => u,
-            Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid opportunity_id")))),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(error_response(ApiError::bad_request(
+                        "Invalid opportunity_id",
+                    ))),
+                )
+            }
         }),
         None => None,
     };
 
     let bc_id = match state
         .store
-        .upsert_buying_center(company_id, opportunity_id, &format!("{} Buying Center", id), None)
+        .upsert_buying_center(
+            company_id,
+            opportunity_id,
+            &format!("{} Buying Center", id),
+            None,
+        )
         .await
     {
         Ok(id) => id,
         Err(err) => {
             tracing::error!(request_id = %request_id, "add_buying_member: upsert center failed: {err:#}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to get/create buying center"))));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to get/create buying center",
+                ))),
+            );
         }
     };
 
@@ -364,7 +442,12 @@ pub(crate) async fn add_buying_member(
         ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "add_buying_member failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to add buying member"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to add buying member",
+                ))),
+            )
         }
     }
 }

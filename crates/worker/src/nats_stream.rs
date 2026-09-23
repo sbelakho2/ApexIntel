@@ -145,7 +145,9 @@ impl NatsPublisher {
         let cfg = Config {
             name: "alerts".to_string(),
             subjects: vec!["alerts.>".to_string()],
-            max_age: chrono::Duration::days(7).to_std().unwrap_or(std::time::Duration::from_secs(604800)),
+            max_age: chrono::Duration::days(7)
+                .to_std()
+                .unwrap_or(std::time::Duration::from_secs(604800)),
             storage: async_nats::jetstream::stream::StorageType::File,
             retention: async_nats::jetstream::stream::RetentionPolicy::Interest,
             ..Config::default()
@@ -178,13 +180,15 @@ impl NatsPublisher {
         };
 
         let subject = alert.subject();
-        let payload = serde_json::to_vec(alert)
-            .context("failed to serialize AlertEvent to JSON")?;
+        let payload =
+            serde_json::to_vec(alert).context("failed to serialize AlertEvent to JSON")?;
 
         jetstream
             .publish(subject.clone(), payload.into())
             .await
-            .context(format!("failed to publish alert to NATS subject '{subject}'"))?;
+            .context(format!(
+                "failed to publish alert to NATS subject '{subject}'"
+            ))?;
 
         info!(
             alert_id = %alert.id,
@@ -237,8 +241,14 @@ mod tests {
         assert_eq!(AlertEventType::NewInsight.as_str(), "new_insight");
         assert_eq!(AlertEventType::NewWarning.as_str(), "new_warning");
         assert_eq!(AlertEventType::RecipeMatch.as_str(), "recipe_match");
-        assert_eq!(AlertEventType::CompetitorChange.as_str(), "competitor_change");
-        assert_eq!(AlertEventType::SupplyChainRisk.as_str(), "supply_chain_risk");
+        assert_eq!(
+            AlertEventType::CompetitorChange.as_str(),
+            "competitor_change"
+        );
+        assert_eq!(
+            AlertEventType::SupplyChainRisk.as_str(),
+            "supply_chain_risk"
+        );
         assert_eq!(AlertEventType::SystemAlert.as_str(), "system_alert");
     }
 

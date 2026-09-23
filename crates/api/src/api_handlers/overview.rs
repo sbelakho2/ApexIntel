@@ -380,7 +380,7 @@ pub(crate) async fn suggest(
     let suggestions = state
         .autocomplete_index
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .suggest(&query, limit);
 
     let items: Vec<SuggestItem> = suggestions

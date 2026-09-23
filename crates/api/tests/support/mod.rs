@@ -1,4 +1,4 @@
-#![allow(dead_code, clippy::disallowed_methods)]
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
 use apex_api::auth::ApiRole;

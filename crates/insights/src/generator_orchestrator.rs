@@ -27,9 +27,7 @@
 use crate::company_discovery::DiscoverySource;
 use crate::discovery_pipeline::{DiscoveryPipeline, DiscoveryResult};
 use crate::entity_relevance::EntityRegistry;
-use crate::insight_feedback::{
-    FeedbackController, FeedbackEntry, FeedbackSignal, InsightRecord,
-};
+use crate::insight_feedback::{FeedbackController, FeedbackEntry, FeedbackSignal, InsightRecord};
 use crate::title_diversity::{TitleGenerator, TitleStrategy};
 
 /// Orchestrates insight generation using feedback signals and entity data.
@@ -336,8 +334,8 @@ impl GeneratorOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::comparison::{find_analogous_entity, infer_category};
     use crate::company_discovery::DiscoverySource;
+    use crate::comparison::{find_analogous_entity, infer_category};
     use crate::discovery_pipeline::{DiscoveryConfig, DiscoveryPipeline};
     use crate::entity_relevance::{EntityCategory, EntityProfile};
     use crate::predictive::build_patterns;
@@ -356,13 +354,9 @@ mod tests {
 
     fn test_registry() -> EntityRegistry {
         let mut reg = EntityRegistry::empty();
-        reg.register(
-            EntityProfile::new("NVIDIA").with_category(EntityCategory::Semiconductor),
-        );
+        reg.register(EntityProfile::new("NVIDIA").with_category(EntityCategory::Semiconductor));
         reg.register(EntityProfile::new("AMD").with_category(EntityCategory::Semiconductor));
-        reg.register(
-            EntityProfile::new("Intel").with_category(EntityCategory::Semiconductor),
-        );
+        reg.register(EntityProfile::new("Intel").with_category(EntityCategory::Semiconductor));
         reg.register(EntityProfile::new("Foxconn").with_category(EntityCategory::Ems));
         reg
     }
@@ -401,7 +395,10 @@ mod tests {
         let entity = orch.select_next_entity(&[], &insights);
 
         // Should pick something — any entity
-        assert!(!entity.is_empty(), "Should select an entity even without signals");
+        assert!(
+            !entity.is_empty(),
+            "Should select an entity even without signals"
+        );
         assert_ne!(entity, "Unknown", "Should not fall back to Unknown");
     }
 
@@ -416,9 +413,7 @@ mod tests {
             make_insight("nvidia", "demand", "NVIDIA demand boom amid AI growth", 3),
         ];
 
-        let signals = orch
-            .feedback_controller_mut()
-            .analyze(&[], &repetitive);
+        let signals = orch.feedback_controller_mut().analyze(&[], &repetitive);
 
         let category = orch.select_category("nvidia", &signals);
 
@@ -430,19 +425,17 @@ mod tests {
     fn test_orchestrator_title_strategy_avoids_suppressed_categories() {
         let orch = GeneratorOrchestrator::new(test_registry(), TitleGenerator::new());
 
-        let signals = vec![
-            crate::insight_feedback::FeedbackSignal {
-                signal_type: crate::insight_feedback::FeedbackSignalType::CategoryRepetition {
-                    title_similarity: 0.8,
-                    recent_count: 5,
-                },
-                entity: None,
-                intensity: 0.7,
-                category: Some("demand".to_string()),
-                reason: "test".to_string(),
-                generated_at: Utc::now(),
+        let signals = vec![crate::insight_feedback::FeedbackSignal {
+            signal_type: crate::insight_feedback::FeedbackSignalType::CategoryRepetition {
+                title_similarity: 0.8,
+                recent_count: 5,
             },
-        ];
+            entity: None,
+            intensity: 0.7,
+            category: Some("demand".to_string()),
+            reason: "test".to_string(),
+            generated_at: Utc::now(),
+        }];
 
         let strategy = orch.get_title_strategy(&[], &signals);
 
@@ -460,7 +453,10 @@ mod tests {
     fn test_orchestrator_empty_registry_fallback() {
         let mut orch = GeneratorOrchestrator::new(EntityRegistry::empty(), TitleGenerator::new());
         let entity = orch.select_next_entity(&[], &[]);
-        assert_eq!(entity, "Unknown", "Empty registry should fall back to Unknown");
+        assert_eq!(
+            entity, "Unknown",
+            "Empty registry should fall back to Unknown"
+        );
     }
 
     #[test]
@@ -547,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_ingest_observations_flow_through_orchestrator() {
         // Pipeline with seed entities disabled (no pre-loaded entities)
         let config = DiscoveryConfig {
@@ -562,14 +558,17 @@ mod tests {
         );
 
         // Ingest observations containing a known ticker pattern
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let observations = vec![serde_json::json!({
             "text": "Quantum Computing Inc announced breakthrough. NASDAQ:QCI."
         })];
         let result = orch.ingest_observations(&observations, DiscoverySource::NewsArticle);
 
         // The pipeline should have processed the observation
-        assert!(result.is_some(), "ingest_observations should return a result");
+        assert!(
+            result.is_some(),
+            "ingest_observations should return a result"
+        );
         let result = result.unwrap();
         assert!(
             result.candidates_found > 0 || result.pending_verification > 0,
@@ -580,7 +579,10 @@ mod tests {
 
         // After ingest, select_next_entity should still return something
         let entity = orch.select_next_entity(&[], &[]);
-        assert!(!entity.is_empty(), "Should select an entity even after ingest");
+        assert!(
+            !entity.is_empty(),
+            "Should select an entity even after ingest"
+        );
     }
 
     #[test]
@@ -653,8 +655,11 @@ mod tests {
         );
 
         // A new EMS-like company
-        let ems_profile = EntityProfile::new("NewEMS Ltd")
-            .with_industry(vec!["electronics", "manufacturing", "assembly"]);
+        let ems_profile = EntityProfile::new("NewEMS Ltd").with_industry(vec![
+            "electronics",
+            "manufacturing",
+            "assembly",
+        ]);
 
         let analogous = find_analogous_entity(&ems_profile, &reg);
         assert!(
@@ -700,10 +705,7 @@ mod tests {
         );
 
         // Also add a seed-like entity that has had insights
-        reg.register(
-            EntityProfile::new("KnownCorp")
-                .with_category(EntityCategory::Semiconductor),
-        );
+        reg.register(EntityProfile::new("KnownCorp").with_category(EntityCategory::Semiconductor));
 
         let mut controller = crate::insight_feedback::FeedbackController::new();
 
@@ -715,7 +717,12 @@ mod tests {
         let signals = controller.signals();
         let discovery_signals: Vec<_> = signals
             .iter()
-            .filter(|s| matches!(s.signal_type, crate::insight_feedback::FeedbackSignalType::DiscoveryUrgency { .. }))
+            .filter(|s| {
+                matches!(
+                    s.signal_type,
+                    crate::insight_feedback::FeedbackSignalType::DiscoveryUrgency { .. }
+                )
+            })
             .collect();
 
         assert_eq!(
@@ -768,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_empty_registry_to_dynamic_discovery_flow() {
         // Pipeline and orchestrator both start empty
         let config = DiscoveryConfig {
@@ -784,7 +791,10 @@ mod tests {
 
         // Initially, orchestrator falls back to Unknown
         let entity = orch.select_next_entity(&[], &[]);
-        assert_eq!(entity, "Unknown", "Empty registry should fall back to Unknown");
+        assert_eq!(
+            entity, "Unknown",
+            "Empty registry should fall back to Unknown"
+        );
 
         // Register a discovered entity on the pipeline's registry
         let mut metadata = HashMap::new();
@@ -877,7 +887,10 @@ mod tests {
         let reg = EntityRegistry::empty();
         let patterns = build_patterns("NewDynamicEntity", &[], &reg);
 
-        assert!(!patterns.is_empty(), "Should return at least fallback pattern");
+        assert!(
+            !patterns.is_empty(),
+            "Should return at least fallback pattern"
+        );
         let fallback = &patterns[0];
         assert_eq!(
             fallback.name, "general",

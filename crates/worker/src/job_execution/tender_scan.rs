@@ -31,7 +31,7 @@ use crate::{JobKind, JobRun, PgStore};
 /// works — it just must not collide with `Uuid::NAMESPACE_DNS` etc. that other
 /// code might use for the same source strings. Derived deterministically so the
 /// same source string always maps to the same observation id.
-const TENDER_ID_NAMESPACE: Uuid = Uuid::from_u128(0xb248ec9d_3471_b10b_5144_2bc2_f5f5_4ad9);
+const TENDER_ID_NAMESPACE: Uuid = Uuid::from_u128(0xb248_ec9d_3471_b10b_5144_2bc2_f5f5_4ad9);
 
 /// MENA procurement portal definitions. `search_url` is a query template where
 /// `{q}` is replaced with a URL-encoded keyword; portals that expose no
@@ -203,10 +203,7 @@ struct RawPosting {
 /// Crawl a single portal: build keyword search URLs, fetch, and parse out
 /// posting entries. Falls back to the listings URL when no search endpoint is
 /// available. Robust to fetch failures (returns whatever it could collect).
-async fn crawl_portal(
-    client: &reqwest::Client,
-    portal: &TenderPortal,
-) -> Vec<RawPosting> {
+async fn crawl_portal(client: &reqwest::Client, portal: &TenderPortal) -> Vec<RawPosting> {
     let mut postings = Vec::new();
 
     // Try the keyword search endpoint first (most precise), then the fallback
@@ -217,7 +214,9 @@ async fn crawl_portal(
     };
 
     for query in &queries {
-        let template = portal.search_url.expect("search_url present when queries non-empty");
+        let template = portal
+            .search_url
+            .expect("search_url present when queries non-empty");
         let url = template.replace("{q}", &simple_url_encode(query));
         if let Some(found) = fetch_and_parse(client, &url, portal).await {
             postings.extend(found);
@@ -620,17 +619,22 @@ fn simple_url_encode(input: &str) -> String {
 
 /// Coarse buyer extraction: "Buyer: X" / "Awarded to: X" patterns.
 fn extract_buyer_from_text(text: &str) -> Option<String> {
-    let lower_prefixes = ["buyer:", "contracting authority:", "awarded to:", "maître d'ouvrage:"];
+    let lower_prefixes = [
+        "buyer:",
+        "contracting authority:",
+        "awarded to:",
+        "maître d'ouvrage:",
+    ];
     for line in text.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_lowercase();
         for prefix in &lower_prefixes {
-            if let Some(rest) = lower.strip_prefix(prefix) {
+            if lower.starts_with(prefix) {
                 // B334: char-safe suffix — subtracting the byte length of the
                 // *lowercased* remainder from the original can underflow or
                 // land mid-character (e.g. `İ` changes byte length when
-                // lowercased).
-                let value = strip_prefix_chars(trimmed, rest.trim());
+                // lowercased). Strip the prefix itself, not the remainder.
+                let value = strip_prefix_chars(trimmed, prefix);
                 let cleaned = normalise_ws(value);
                 if cleaned.chars().count() >= 3 {
                     return Some(cleaned.to_string());
@@ -683,7 +687,9 @@ fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
 
 /// Coarse reference-number extraction: "Ref: X" / "N° X" patterns.
 fn extract_reference_from_text(text: &str) -> Option<String> {
-    let re = regex::Regex::new(r"(?i)(?:ref(?:erence)?|n°|numéro)[:\s]*([\p{L}\p{N}][\p{L}\p{N}_\-/]+)").ok()?;
+    let re =
+        regex::Regex::new(r"(?i)(?:ref(?:erence)?|n°|numéro)[:\s]*([\p{L}\p{N}][\p{L}\p{N}_\-/]+)")
+            .ok()?;
     re.captures(text)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
         .filter(|s| s.len() >= 3)
@@ -692,6 +698,19 @@ fn extract_reference_from_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_buyer_strips_prefix_not_body() {
+        assert_eq!(
+            extract_buyer_from_text("Buyer: Acme Corp"),
+            Some("Acme Corp".to_string())
+        );
+        assert_eq!(
+            extract_buyer_from_text("Contracting Authority: Tunisian Ministry of Energy"),
+            Some("Tunisian Ministry of Energy".to_string())
+        );
+        assert_eq!(extract_buyer_from_text("no buyer here"), None);
+    }
 
     #[test]
     fn relevance_gate_accepts_bess_and_ems_terms() {
@@ -707,7 +726,10 @@ mod tests {
             "Office Furniture Supply",
             "Desks and chairs for ministry."
         ));
-        assert!(!is_relevant_tender("Consulting Services", "Strategy advisory."));
+        assert!(!is_relevant_tender(
+            "Consulting Services",
+            "Strategy advisory."
+        ));
     }
 
     #[test]
@@ -760,8 +782,14 @@ mod tests {
 
     #[test]
     fn detect_sector_prefers_bess() {
-        assert_eq!(detect_sector("Battery Pack", "energy storage"), Some("bess".into()));
-        assert_eq!(detect_sector("EMS", "automotive electronics"), Some("automotive".into()));
+        assert_eq!(
+            detect_sector("Battery Pack", "energy storage"),
+            Some("bess".into())
+        );
+        assert_eq!(
+            detect_sector("EMS", "automotive electronics"),
+            Some("automotive".into())
+        );
         assert_eq!(detect_sector("hello", "world"), None);
     }
 
@@ -785,9 +813,18 @@ mod tests {
             resolve_url("https://tuneps.tn", "https://other.com/a"),
             "https://other.com/a"
         );
-        assert_eq!(resolve_url("https://tuneps.tn", "/notice/1"), "https://tuneps.tn/notice/1");
-        assert_eq!(resolve_url("https://tuneps.tn", "notice/1"), "https://tuneps.tn/notice/1");
-        assert_eq!(resolve_url("https://tuneps.tn", "//cdn.tn/x"), "https://cdn.tn/x");
+        assert_eq!(
+            resolve_url("https://tuneps.tn", "/notice/1"),
+            "https://tuneps.tn/notice/1"
+        );
+        assert_eq!(
+            resolve_url("https://tuneps.tn", "notice/1"),
+            "https://tuneps.tn/notice/1"
+        );
+        assert_eq!(
+            resolve_url("https://tuneps.tn", "//cdn.tn/x"),
+            "https://cdn.tn/x"
+        );
         assert_eq!(resolve_url("https://tuneps.tn", ""), "");
     }
 

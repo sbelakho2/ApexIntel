@@ -2,7 +2,8 @@ use leptos::*;
 
 #[component]
 pub fn BattlecardsPage() -> impl IntoView {
-    let (battlecards, set_battlecards) = create_signal::<Vec<crate::api::BattlecardSummary>>(vec![]);
+    let (battlecards, set_battlecards) =
+        create_signal::<Vec<crate::api::BattlecardSummary>>(vec![]);
     let (loading, set_loading) = create_signal(true);
     let (error, set_error) = create_signal::<Option<String>>(None);
 

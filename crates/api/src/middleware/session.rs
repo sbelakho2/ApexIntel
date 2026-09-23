@@ -24,7 +24,9 @@ static SESSION_SECRET: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| std::env::var("SESSION_SECRET").unwrap_or_default());
 const CSRF_HEADER_NAME: &str = "x-csrf-token";
 const CSRF_FORM_FIELD: &str = "csrf_token";
-const MAX_CSRF_FORM_BYTES: usize = 16 * 1024;
+// Must match the router's DefaultBodyLimit (64 KiB) so a legitimately large
+// form is rejected as over-limit rather than a misleading CSRF 403.
+const MAX_CSRF_FORM_BYTES: usize = 64 * 1024;
 
 /// Session data extracted from the cookie and injected into request extensions.
 #[derive(Clone, Debug)]
@@ -91,6 +93,15 @@ fn extract_cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a st
         .filter(|value| !value.is_empty())
 }
 
+/// `; Secure` when the deployment opts in via `COOKIE_SECURE=1` (required
+/// behind HTTPS). Defaults off so local HTTP development keeps working.
+pub(crate) fn cookie_secure_suffix() -> &'static str {
+    match std::env::var("COOKIE_SECURE") {
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => "; Secure",
+        _ => "",
+    }
+}
+
 fn issue_csrf_cookie(response: &mut Response, existing: Option<&str>) {
     let generated_token;
     let token = match existing {
@@ -100,7 +111,10 @@ fn issue_csrf_cookie(response: &mut Response, existing: Option<&str>) {
             &generated_token
         }
     };
-    let cookie = format!("{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax; Max-Age=86400");
+    let cookie = format!(
+        "{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax; Max-Age=86400{}",
+        cookie_secure_suffix()
+    );
     if let Ok(header_value) = HeaderValue::from_str(&cookie) {
         response
             .headers_mut()
@@ -114,7 +128,7 @@ fn requires_csrf(method: &Method) -> bool {
 
 /// The process-wide session secret (empty string when `SESSION_SECRET` is unset).
 pub fn current_session_secret() -> &'static str {
-    &*SESSION_SECRET
+    &SESSION_SECRET
 }
 
 /// Double-submit CSRF check for cookie-authenticated `/api/*` requests.
@@ -135,7 +149,11 @@ pub fn api_session_csrf_ok(headers: &HeaderMap, method: &Method) -> bool {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     !header_token.is_empty()
-        && cookie_token.as_bytes().ct_eq(header_token.as_bytes()).unwrap_u8() == 1
+        && cookie_token
+            .as_bytes()
+            .ct_eq(header_token.as_bytes())
+            .unwrap_u8()
+            == 1
 }
 
 fn extract_form_csrf_token(body: &[u8]) -> Option<String> {

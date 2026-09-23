@@ -107,8 +107,11 @@ impl ZeroNetMonitor {
             }
         }
 
-        all_signals.sort_by(|a, b| b.observed_at.cmp(&a.observed_at));
-        info!(total = all_signals.len(), "ZeroNet monitoring scan complete");
+        all_signals.sort_by_key(|a| std::cmp::Reverse(a.observed_at));
+        info!(
+            total = all_signals.len(),
+            "ZeroNet monitoring scan complete"
+        );
         all_signals
     }
 

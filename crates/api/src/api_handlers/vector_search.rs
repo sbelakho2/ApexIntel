@@ -16,15 +16,13 @@ use axum::{
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
-use apex_api::responses::{
-    error_response, success_with_meta, ApiError, ApiResponse, ResponseMeta,
-};
+use crate::AppState;
+use apex_api::responses::{error_response, success_with_meta, ApiError, ApiResponse, ResponseMeta};
 use apex_api::routes::vector_search::{
     ReindexQuery, ReindexResponse, SimilarEntitiesPath, SimilarEntitiesQuery,
     SimilarEntitiesResponse, SimilarEntityHit, VectorSearchHit, VectorSearchQuery,
     VectorSearchResponse,
 };
-use crate::AppState;
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
@@ -53,7 +51,8 @@ pub(crate) async fn vector_search(
         Err(e) => {
             let err = ApiError::internal(format!("failed to generate embedding: {e}"));
             return (
-                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 Json(error_response(err)),
             );
         }
@@ -76,7 +75,8 @@ pub(crate) async fn vector_search(
         Err(e) => {
             let err = ApiError::internal(format!("vector search query failed: {e}"));
             return (
-                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 Json(error_response(err)),
             );
         }
@@ -146,7 +146,8 @@ pub(crate) async fn similar_entities(
         Err(e) => {
             let err = ApiError::internal(format!("failed to fetch embedding: {e}"));
             return (
-                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 Json(error_response(err)),
             );
         }
@@ -159,7 +160,8 @@ pub(crate) async fn similar_entities(
         Err(e) => {
             let err = ApiError::internal(format!("similarity search failed: {e}"));
             return (
-                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 Json(error_response(err)),
             );
         }
@@ -169,9 +171,7 @@ pub(crate) async fn similar_entities(
     let min_score = params.min_score.unwrap_or(0.0);
     let filtered: Vec<SimilarEntityHit> = results
         .into_iter()
-        .filter(|h| {
-            h.entity_id != path.entity_id && h.similarity >= min_score
-        })
+        .filter(|h| h.entity_id != path.entity_id && h.similarity >= min_score)
         .map(|h| SimilarEntityHit {
             entity_id: h.entity_id,
             chunk_index: h.chunk_index,
@@ -213,7 +213,7 @@ pub(crate) async fn reindex_embeddings(
     let is_full = params.full.unwrap_or(false);
 
     // Enqueue the embedding_reindex job via worker trigger queue
-    let (job_id, chunks_indexed, status, message) = match state
+    let (_job_id, chunks_indexed, status, message) = match state
         .store
         .queue_job_trigger("embedding_reindex")
         .await
@@ -264,10 +264,7 @@ pub(crate) async fn reindex_embeddings(
         .with_duration(duration_ms);
 
     log_latency_vec("reindex_embeddings", duration_ms);
-    (
-        StatusCode::ACCEPTED,
-        Json(success_with_meta(payload, meta)),
-    )
+    (StatusCode::ACCEPTED, Json(success_with_meta(payload, meta)))
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -277,10 +274,9 @@ pub(crate) async fn reindex_embeddings(
 async fn generate_embedding(state: &AppState, text: &str) -> Result<Vec<f64>, String> {
     #[cfg(feature = "llm")]
     {
-        let llm = state
-            .llm
-            .as_ref()
-            .ok_or_else(|| "LLM not configured; enable the `llm` feature and set LLM_BASE_URL".to_string())?;
+        let llm = state.llm.as_ref().ok_or_else(|| {
+            "LLM not configured; enable the `llm` feature and set LLM_BASE_URL".to_string()
+        })?;
 
         let client = apex_llm::embeddings::EmbeddingClient::from_config(&llm.primary);
         client

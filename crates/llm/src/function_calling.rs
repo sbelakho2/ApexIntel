@@ -338,7 +338,10 @@ impl ToolRegistry {
 
     /// The OpenAI `tools` array for all registered tools.
     pub fn tool_specs_json(&self) -> Vec<serde_json::Value> {
-        self.tools.values().map(|t| t.spec().to_tool_json()).collect()
+        self.tools
+            .values()
+            .map(|t| t.spec().to_tool_json())
+            .collect()
     }
 
     /// Look up a tool by name.
@@ -354,7 +357,9 @@ impl ToolRegistry {
         let tool = match self.get(&call.name) {
             Some(t) => t.clone(),
             None => {
-                return Err(ToolError::UnknownTool { name: call.name.clone() });
+                return Err(ToolError::UnknownTool {
+                    name: call.name.clone(),
+                });
             }
         };
         let spec = tool.spec();
@@ -444,7 +449,9 @@ pub async fn run_agent_loop(
         }
         iterations += 1;
 
-        let response = client.complete_with_config(messages.clone(), &config).await?;
+        let response = client
+            .complete_with_config(messages.clone(), &config)
+            .await?;
         let text = response.text;
 
         // Parse any tool_calls embedded in the response. The model may emit them
@@ -468,7 +475,10 @@ pub async fn run_agent_loop(
             let outcome = registry.execute_call(call).await;
             let (result_json, ok) = match outcome {
                 Ok(v) => (v, true),
-                Err(e) => (serde_json::to_value(&e).unwrap_or(serde_json::json!(null)), false),
+                Err(e) => (
+                    serde_json::to_value(&e).unwrap_or(serde_json::json!(null)),
+                    false,
+                ),
             };
             trace.push(ToolTraceEntry {
                 name: call.name.clone(),
@@ -510,10 +520,7 @@ fn parse_tool_calls(text: &str) -> Vec<FunctionCall> {
 
     // Convention 1: array under tool_calls.
     if let Some(arr) = value.get("tool_calls").and_then(|v| v.as_array()) {
-        return arr
-            .iter()
-            .filter_map(|c| parse_one_call(c))
-            .collect();
+        return arr.iter().filter_map(|c| parse_one_call(c)).collect();
     }
     // Convention 2: a single call at the top level.
     if let Some(call) = parse_one_call(&value) {
@@ -736,7 +743,10 @@ mod tests {
     #[test]
     fn extract_first_json_finds_balanced_object() {
         let s = "prefix {\"a\":1, \"b\":{\"c\":2}} suffix";
-        assert_eq!(extract_first_json(s).as_deref(), Some(r#"{"a":1, "b":{"c":2}}"#));
+        assert_eq!(
+            extract_first_json(s).as_deref(),
+            Some(r#"{"a":1, "b":{"c":2}}"#)
+        );
     }
 
     #[test]
@@ -752,7 +762,9 @@ mod tests {
 
     #[test]
     fn parse_tool_calls_single_object() {
-        let calls = parse_tool_calls(r#"I'll look that up. {"name":"get_entity","arguments":{"entity_id":"123"}}"#);
+        let calls = parse_tool_calls(
+            r#"I'll look that up. {"name":"get_entity","arguments":{"entity_id":"123"}}"#,
+        );
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "get_entity");
         assert_eq!(calls[0].arguments["entity_id"], "123");
@@ -760,7 +772,9 @@ mod tests {
 
     #[test]
     fn parse_tool_calls_array_form() {
-        let calls = parse_tool_calls(r#"{"tool_calls":[{"name":"a","arguments":{}},{"name":"b","arguments":{"k":1}}]}"#);
+        let calls = parse_tool_calls(
+            r#"{"tool_calls":[{"name":"a","arguments":{}},{"name":"b","arguments":{"k":1}}]}"#,
+        );
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1].name, "b");
     }
@@ -799,7 +813,9 @@ mod tests {
             }
         }
         async fn execute(&self, args: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
-            Ok(serde_json::json!({"echoed": args.get("msg").cloned().unwrap_or(serde_json::Value::Null)}))
+            Ok(
+                serde_json::json!({"echoed": args.get("msg").cloned().unwrap_or(serde_json::Value::Null)}),
+            )
         }
     }
 

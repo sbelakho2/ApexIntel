@@ -11,8 +11,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tracing::info;
 
 /// A parsed WHOIS record.
@@ -43,22 +43,29 @@ pub struct WhoisRecord {
 impl WhoisRecord {
     /// Whether the domain is expired.
     pub fn is_expired(&self) -> bool {
-        self.expiration_date.map(|d| d < Utc::now().date_naive()).unwrap_or(false)
+        self.expiration_date
+            .map(|d| d < Utc::now().date_naive())
+            .unwrap_or(false)
     }
 
     /// Days until expiration.
     pub fn days_until_expiry(&self) -> Option<i64> {
-        self.expiration_date.map(|d| (d - Utc::now().date_naive()).num_days())
+        self.expiration_date
+            .map(|d| (d - Utc::now().date_naive()).num_days())
     }
 
     /// Domain age in days.
     pub fn domain_age_days(&self) -> Option<i64> {
-        self.registration_date.map(|r| (Utc::now().date_naive() - r).num_days())
+        self.registration_date
+            .map(|r| (Utc::now().date_naive() - r).num_days())
     }
 
     /// Whether DNSSEC is enabled.
     pub fn has_dnssec(&self) -> bool {
-        self.dnssec.as_ref().map(|d| !d.is_empty() && d != "unsigned").unwrap_or(false)
+        self.dnssec
+            .as_ref()
+            .map(|d| !d.is_empty() && d != "unsigned")
+            .unwrap_or(false)
     }
 }
 
@@ -95,7 +102,9 @@ pub struct WhoisClient {
 impl WhoisClient {
     /// Create with default config.
     pub fn new() -> Self {
-        Self { config: WhoisConfig::default() }
+        Self {
+            config: WhoisConfig::default(),
+        }
     }
 
     /// Create with custom config.
@@ -105,7 +114,9 @@ impl WhoisClient {
 
     /// Lookup a domain.
     pub async fn lookup(&self, domain: &str) -> Result<WhoisRecord> {
-        let whois_server = self.config.whois_server
+        let whois_server = self
+            .config
+            .whois_server
             .clone()
             .or_else(|| self.guess_whois_server(domain))
             .unwrap_or_else(|| "whois.verisign-grs.com".to_string());
@@ -118,12 +129,15 @@ impl WhoisClient {
     async fn query_whois(&self, domain: &str, server: &str) -> Result<String> {
         // Connect to WHOIS server
         let addr = format!("{}:{}", server, self.config.port);
-        let mut stream = TcpStream::connect(&addr).await
+        let mut stream = TcpStream::connect(&addr)
+            .await
             .context("WHOIS TCP connection")?;
 
         // Send query
         let query = format!("{}\r\n", domain);
-        stream.write_all(query.as_bytes()).await
+        stream
+            .write_all(query.as_bytes())
+            .await
             .context("WHOIS query send")?;
 
         // Read response
@@ -132,7 +146,9 @@ impl WhoisClient {
         let timeout_secs = self.config.timeout_secs;
         let deadline = tokio::time::Instant::now()
             .checked_add(tokio::time::Duration::from_secs(timeout_secs))
-            .unwrap_or_else(|| tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs));
+            .unwrap_or_else(|| {
+                tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs)
+            });
 
         let _ = tokio::time::timeout_at(deadline, async {
             loop {
@@ -142,7 +158,8 @@ impl WhoisClient {
                     Err(_) => break,
                 }
             }
-        }).await;
+        })
+        .await;
 
         Ok(String::from_utf8_lossy(&response).into_owned())
     }
@@ -168,7 +185,8 @@ impl WhoisClient {
         };
 
         let parse_date = |s: &str| -> Option<NaiveDate> {
-            NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()
+            NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+                .ok()
                 .or_else(|| NaiveDate::parse_from_str(s.trim(), "%d-%b-%Y").ok())
         };
 
@@ -223,11 +241,13 @@ impl WhoisClient {
 }
 
 impl Default for WhoisClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -283,7 +303,9 @@ mod tests {
             raw_text: "".to_string(),
             fetched_at: Utc::now(),
         };
-        assert!(record.domain_age_days().is_some_and(|d| (d - 365).abs() <= 1));
+        assert!(record
+            .domain_age_days()
+            .is_some_and(|d| (d - 365).abs() <= 1));
     }
 
     #[test]
@@ -297,8 +319,17 @@ mod tests {
     #[test]
     fn whois_client_tld_servers() {
         let client = WhoisClient::new();
-        assert_eq!(client.guess_whois_server("example.org").unwrap(), "whois.pir.org");
-        assert_eq!(client.guess_whois_server("example.io").unwrap(), "whois.nic.io");
-        assert_eq!(client.guess_whois_server("example.co").unwrap(), "whois.nic.co");
+        assert_eq!(
+            client.guess_whois_server("example.org").unwrap(),
+            "whois.pir.org"
+        );
+        assert_eq!(
+            client.guess_whois_server("example.io").unwrap(),
+            "whois.nic.io"
+        );
+        assert_eq!(
+            client.guess_whois_server("example.co").unwrap(),
+            "whois.nic.co"
+        );
     }
 }

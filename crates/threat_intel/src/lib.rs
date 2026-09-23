@@ -9,14 +9,14 @@
 //! - [`supply_chain_threats`]: Supplier risk scoring, geographic concentration, disruption planning
 //! - [`competitive_intelligence`]: Market analysis, technology positioning, pricing intelligence
 
-pub mod threat_actor_database;
 pub mod attack_surface;
-pub mod supply_chain_threats;
 pub mod competitive_intelligence;
+pub mod supply_chain_threats;
+pub mod threat_actor_database;
 
 pub mod error;
-pub mod models;
 pub mod mitre_attck;
+pub mod models;
 
 pub use error::{Result, ThreatIntelError};
 pub use models::*;

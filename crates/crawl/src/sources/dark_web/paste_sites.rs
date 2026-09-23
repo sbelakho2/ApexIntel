@@ -127,14 +127,22 @@ impl PasteMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io) Paste Monitor")
             .build()
             .context("building Paste monitor HTTP client")?;
-        Ok(Self { client, config, entries: Vec::new() })
+        Ok(Self {
+            client,
+            config,
+            entries: Vec::new(),
+        })
     }
 
     /// Scan Pastebin for keyword matches.
     pub async fn scan_pastebin(&mut self) -> Result<Vec<PasteSiteEntry>> {
         // Pastebin API scrapes (simple monitoring via RSS-like scraping)
         let url = "https://scrape.pastebin.com/api_scrape_item.php?i=recent";
-        let resp = self.client.get(url).send().await
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
             .context("Pastebin scrape request")?;
 
         if !resp.status().is_success() {
@@ -164,8 +172,8 @@ impl PasteMonitor {
             views: Option<String>,
         }
 
-        let pastes: Vec<PastebinPaste> = serde_json::from_str(text)
-            .context("parse Pastebin JSON")?;
+        let pastes: Vec<PastebinPaste> =
+            serde_json::from_str(text).context("parse Pastebin JSON")?;
 
         let mut entries = Vec::new();
         for p in pastes {
@@ -188,15 +196,27 @@ impl PasteMonitor {
                 String::new()
             };
 
-            let matched: Vec<String> = self.config.alert_keywords.iter()
-                .filter(|kw| content.to_lowercase().contains(&kw.to_lowercase())
-                         || title.as_ref().map(|t| t.to_lowercase().contains(&kw.to_lowercase())).unwrap_or(false))
+            let matched: Vec<String> = self
+                .config
+                .alert_keywords
+                .iter()
+                .filter(|kw| {
+                    content.to_lowercase().contains(&kw.to_lowercase())
+                        || title
+                            .as_ref()
+                            .map(|t| t.to_lowercase().contains(&kw.to_lowercase()))
+                            .unwrap_or(false)
+                })
                 .cloned()
                 .collect();
 
-            if !matched.is_empty() || self.config.tracked_entities.iter().any(|e| {
-                content.to_lowercase().contains(&e.to_lowercase())
-            }) {
+            if !matched.is_empty()
+                || self
+                    .config
+                    .tracked_entities
+                    .iter()
+                    .any(|e| content.to_lowercase().contains(&e.to_lowercase()))
+            {
                 let timestamp: i64 = p.date.and_then(|d| d.parse().ok()).unwrap_or(0);
                 let created = if timestamp > 0 {
                     chrono::DateTime::from_timestamp(timestamp, 0)
@@ -214,7 +234,10 @@ impl PasteMonitor {
                     created_at: created.map(|dt| dt.with_timezone(&Utc)),
                     exposure: PasteExposure::Public,
                     contains_keywords: matched.clone(),
-                    matched_entities: self.config.tracked_entities.iter()
+                    matched_entities: self
+                        .config
+                        .tracked_entities
+                        .iter()
                         .filter(|e| content.to_lowercase().contains(&e.to_lowercase()))
                         .cloned()
                         .collect(),
@@ -225,14 +248,26 @@ impl PasteMonitor {
             }
         }
 
-        info!(source = "pastebin", count = entries.len(), "Pastebin scan complete");
+        info!(
+            source = "pastebin",
+            count = entries.len(),
+            "Pastebin scan complete"
+        );
         Ok(entries)
     }
 
     #[allow(dead_code)]
     async fn fetch_pastebin_content(&self, paste_key: &str) -> Result<String> {
-        let url = format!("https://scrape.pastebin.com/api_scrape_item.php?i={}", paste_key);
-        let resp = self.client.get(&url).send().await.context("Pastebin content fetch")?;
+        let url = format!(
+            "https://scrape.pastebin.com/api_scrape_item.php?i={}",
+            paste_key
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Pastebin content fetch")?;
         if !resp.status().is_success() {
             return Ok(String::new());
         }
@@ -242,7 +277,11 @@ impl PasteMonitor {
     /// Scan Ghostbin for keyword matches.
     pub async fn scan_ghostbin(&mut self) -> Result<Vec<PasteSiteEntry>> {
         let url = "https://ghostbin.com/paste/new";
-        let resp = self.client.get(url).send().await
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
             .context("Ghostbin request")?;
 
         if !resp.status().is_success() {
@@ -260,7 +299,10 @@ impl PasteMonitor {
 
     /// Get entries containing credentials.
     pub fn credential_entries(&self) -> Vec<&PasteSiteEntry> {
-        self.entries.iter().filter(|e| e.has_credentials()).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.has_credentials())
+            .collect()
     }
 
     /// Return total entry count.
@@ -291,7 +333,7 @@ fn has_credential_pattern(text: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -353,7 +395,9 @@ mod tests {
     fn credential_pattern_detection() {
         assert!(has_credential_pattern("password=supersecret123"));
         assert!(has_credential_pattern("API_KEY=abc123xyz"));
-        assert!(has_credential_pattern("bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+        assert!(has_credential_pattern(
+            "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        ));
         assert!(!has_credential_pattern("Hello world, how are you today?"));
     }
 }

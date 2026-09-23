@@ -118,7 +118,8 @@ impl Default for EdgarMonitorConfig {
 
 impl EdgarMonitorConfig {
     pub fn add_ticker(mut self, ticker: impl Into<String>) -> Self {
-        self.tickers.push(ticker.into()); self
+        self.tickers.push(ticker.into());
+        self
     }
 }
 
@@ -141,7 +142,10 @@ impl EdgarMonitor {
 
     /// Search filings for a ticker.
     pub async fn search_filings(&self, ticker: &str) -> Result<Vec<EdgarFiling>> {
-        let filter = self.config.filing_types.iter()
+        let filter = self
+            .config
+            .filing_types
+            .iter()
             .map(|t| t.filter_string())
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -159,7 +163,12 @@ impl EdgarMonitor {
             if filter.is_empty() { String::new() } else { format!("&forms={}", filter) }
         );
 
-        let resp = self.client.get(&url).send().await.context("EDGAR search request")?;
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("EDGAR search request")?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), ticker = %ticker, "EDGAR returned non-success");
@@ -208,8 +217,8 @@ impl EdgarMonitor {
             description: Option<String>,
         }
 
-        let search_resp: EdgarSearchResponse = serde_json::from_str(json)
-            .context("parse EDGAR JSON response")?;
+        let search_resp: EdgarSearchResponse =
+            serde_json::from_str(json).context("parse EDGAR JSON response")?;
 
         let hits = search_resp.hits;
         let items = match hits {
@@ -273,7 +282,10 @@ impl EdgarMonitor {
 
     /// Get insider transactions (Form 4) from filings.
     pub fn insider_transactions(filings: &[EdgarFiling]) -> Vec<&EdgarFiling> {
-        filings.iter().filter(|f| f.is_insider_transaction()).collect()
+        filings
+            .iter()
+            .filter(|f| f.is_insider_transaction())
+            .collect()
     }
 }
 

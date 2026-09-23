@@ -43,20 +43,19 @@ use uuid::Uuid;
 pub enum IntelligenceError {
     #[error("Entity not found: {0}")]
     EntityNotFound(String),
-    
+
     #[error("Invalid relationship: {0}")]
     InvalidRelationship(String),
-    
+
     #[error("Graph operation failed: {0}")]
     GraphError(String),
-    
+
     #[error("Insufficient data: {0}")]
     InsufficientData(String),
-    
+
     #[error("Analysis error: {0}")]
     AnalysisError(String),
 }
-
 
 // ============================================================================
 // 2.2.1 Relationship Discovery
@@ -307,13 +306,20 @@ impl RelationshipDiscovery {
     }
 
     /// Register a relationship
-    pub fn register_relationship(&mut self, relationship: Relationship) -> Result<(), IntelligenceError> {
+    pub fn register_relationship(
+        &mut self,
+        relationship: Relationship,
+    ) -> Result<(), IntelligenceError> {
         // Validate entities exist
         if !self.entities.contains_key(&relationship.source_id) {
-            return Err(IntelligenceError::EntityNotFound(relationship.source_id.clone()));
+            return Err(IntelligenceError::EntityNotFound(
+                relationship.source_id.clone(),
+            ));
         }
         if !self.entities.contains_key(&relationship.target_id) {
-            return Err(IntelligenceError::EntityNotFound(relationship.target_id.clone()));
+            return Err(IntelligenceError::EntityNotFound(
+                relationship.target_id.clone(),
+            ));
         }
 
         self.relationships.push(relationship);
@@ -331,7 +337,7 @@ impl RelationshipDiscovery {
     /// Resolve entity by name or alias
     pub fn resolve_entity(&self, name: &str) -> Option<&Entity> {
         let normalized = name.to_lowercase();
-        
+
         // Direct lookup by normalized name
         for entity in self.entities.values() {
             if entity.normalized_name == normalized {
@@ -523,13 +529,11 @@ impl RelationshipDiscovery {
             });
         }
 
-        timeline.events.sort_by(|a, b| {
-            match (a.date, b.date) {
-                (Some(d1), Some(d2)) => d1.cmp(&d2),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
+        timeline.events.sort_by(|a, b| match (a.date, b.date) {
+            (Some(d1), Some(d2)) => d1.cmp(&d2),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         });
 
         timeline
@@ -694,7 +698,14 @@ impl NetworkAnalyzer {
         let mut visited: HashSet<String> = HashSet::new();
         let mut risk_score = 0.0;
 
-        self.collect_suppliers(company_id, &mut suppliers, &mut visited, 0, max_depth, &mut risk_score);
+        self.collect_suppliers(
+            company_id,
+            &mut suppliers,
+            &mut visited,
+            0,
+            max_depth,
+            &mut risk_score,
+        );
 
         SupplyChainAnalysis {
             company_id: company_id.to_string(),
@@ -702,7 +713,11 @@ impl NetworkAnalyzer {
             total_supplier_count: suppliers.len(),
             max_depth_reached: suppliers.iter().map(|s| s.depth).max().unwrap_or(0),
             risk_score,
-            critical_suppliers: suppliers.iter().filter(|s| s.is_critical).cloned().collect(),
+            critical_suppliers: suppliers
+                .iter()
+                .filter(|s| s.is_critical)
+                .cloned()
+                .collect(),
             geographic_diversity: self.calculate_supplier_diversity(&suppliers),
         }
     }
@@ -755,7 +770,11 @@ impl NetworkAnalyzer {
 
         // Simplified diversity calculation
         // In production, would consider actual country codes
-        let unique_suppliers = suppliers.iter().map(|s| &s.supplier_id).collect::<HashSet<_>>().len();
+        let unique_suppliers = suppliers
+            .iter()
+            .map(|s| &s.supplier_id)
+            .collect::<HashSet<_>>()
+            .len();
         (unique_suppliers as f64 / suppliers.len() as f64).min(1.0)
     }
 
@@ -817,7 +836,8 @@ impl NetworkAnalyzer {
             shared_person_count,
             total_connections,
             network_density: if !company_ids.is_empty() {
-                (total_connections as f64) / (company_ids.len() as f64 * (company_ids.len() - 1) as f64 / 2.0)
+                (total_connections as f64)
+                    / (company_ids.len() as f64 * (company_ids.len() - 1) as f64 / 2.0)
             } else {
                 0.0
             },
@@ -836,20 +856,24 @@ impl NetworkAnalyzer {
 
         for fr in &self.financials {
             // Add investor node
-            nodes.entry(fr.investor_id.clone()).or_insert_with(|| FinancialNode {
-                entity_id: fr.investor_id.clone(),
-                node_type: FinancialNodeType::Investor,
-                total_investments: 0.0,
-                total_investees: 0,
-            });
+            nodes
+                .entry(fr.investor_id.clone())
+                .or_insert_with(|| FinancialNode {
+                    entity_id: fr.investor_id.clone(),
+                    node_type: FinancialNodeType::Investor,
+                    total_investments: 0.0,
+                    total_investees: 0,
+                });
 
             // Add investee node
-            nodes.entry(fr.investee_id.clone()).or_insert_with(|| FinancialNode {
-                entity_id: fr.investee_id.clone(),
-                node_type: FinancialNodeType::Investee,
-                total_investments: 0.0,
-                total_investees: 0,
-            });
+            nodes
+                .entry(fr.investee_id.clone())
+                .or_insert_with(|| FinancialNode {
+                    entity_id: fr.investee_id.clone(),
+                    node_type: FinancialNodeType::Investee,
+                    total_investments: 0.0,
+                    total_investees: 0,
+                });
 
             // Add edge
             if let Some(amount) = fr.amount {
@@ -905,10 +929,7 @@ impl NetworkAnalyzer {
 
         CrossBorderAnalysis {
             total_clusters: relevant_clusters.len(),
-            clusters_by_type: by_type
-                .into_iter()
-                .map(|(k, v)| (k, v.len()))
-                .collect(),
+            clusters_by_type: by_type.into_iter().map(|(k, v)| (k, v.len())).collect(),
             highest_strength: relevant_clusters
                 .iter()
                 .map(|c| c.strength)
@@ -1096,10 +1117,7 @@ impl CorrelationEngine {
     /// Add time series data point
     pub fn add_time_series_point(&mut self, point: TimeSeriesPoint) {
         let key = format!("{}:{}", point.entity_id, point.metric_type);
-        self.time_series
-            .entry(key)
-            .or_default()
-            .push(point);
+        self.time_series.entry(key).or_default().push(point);
     }
 
     /// Perform time-series correlation between entities
@@ -1188,7 +1206,8 @@ impl CorrelationEngine {
             if corr > 0.0 {
                 "Very strong positive correlation - entities move together tightly".to_string()
             } else {
-                "Very strong negative correlation - entities move in opposite directions".to_string()
+                "Very strong negative correlation - entities move in opposite directions"
+                    .to_string()
             }
         } else if abs_corr > 0.7 {
             if corr > 0.0 {
@@ -1215,7 +1234,8 @@ impl CorrelationEngine {
 
     /// Add geographic location
     pub fn add_geo_location(&mut self, location: GeoLocation) {
-        self.geo_locations.insert(location.entity_id.clone(), location);
+        self.geo_locations
+            .insert(location.entity_id.clone(), location);
     }
 
     /// Perform geographic clustering
@@ -1605,12 +1625,8 @@ impl IntelligenceSynthesizer {
             let clusters = self.network_analyzer.find_entity_clusters(entity_id);
             let anomalies = self.correlation_engine.detect_anomalies(entity_id, 30);
 
-            let narrative = self.build_entity_narrative(
-                entity_id,
-                &relationships,
-                &clusters,
-                &anomalies,
-            );
+            let narrative =
+                self.build_entity_narrative(entity_id, &relationships, &clusters, &anomalies);
             narratives.push(narrative);
         }
 
@@ -1659,7 +1675,12 @@ impl IntelligenceSynthesizer {
         // Summarize risks from anomalies
         let critical_anomalies = anomalies
             .iter()
-            .filter(|a| matches!(a.severity, AnomalySeverity::High | AnomalySeverity::Critical))
+            .filter(|a| {
+                matches!(
+                    a.severity,
+                    AnomalySeverity::High | AnomalySeverity::Critical
+                )
+            })
             .count();
 
         narrative.risk_summary = if anomalies.is_empty() {
@@ -1682,11 +1703,15 @@ impl IntelligenceSynthesizer {
         }
 
         if relationships.len() > 5 {
-            narrative.derived_insights.push("Entity has extensive network of relationships".to_string());
+            narrative
+                .derived_insights
+                .push("Entity has extensive network of relationships".to_string());
         }
 
         if critical_anomalies > 0 {
-            narrative.derived_insights.push("Entity exhibits anomalous behavior patterns".to_string());
+            narrative
+                .derived_insights
+                .push("Entity exhibits anomalous behavior patterns".to_string());
         }
 
         narrative.summary = format!(
@@ -1708,14 +1733,22 @@ impl IntelligenceSynthesizer {
             return "No entities to analyze".to_string();
         }
 
-        let total_relationships: usize = narratives.iter().map(|n| {
-            let parts: Vec<&str> = n.relationship_summary.split(", ")
-                .filter(|s| s.contains(':'))
-                .collect();
-            parts.len()
-        }).sum();
+        let total_relationships: usize = narratives
+            .iter()
+            .map(|n| {
+                let parts: Vec<&str> = n
+                    .relationship_summary
+                    .split(", ")
+                    .filter(|s| s.contains(':'))
+                    .collect();
+                parts.len()
+            })
+            .sum();
 
-        let total_anomalies = narratives.iter().filter(|n| n.risk_summary.contains("critical")).count();
+        let total_anomalies = narratives
+            .iter()
+            .filter(|n| n.risk_summary.contains("critical"))
+            .count();
 
         format!(
             "Analysis of {} entities reveals {} total relationship connections and {} critical anomalies requiring investigation.",
@@ -1734,26 +1767,42 @@ impl IntelligenceSynthesizer {
         let mut propagation_chain: Vec<PropagatedRisk> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
 
-        self.propagate_risk(source_entity_id, risk_type, &mut visited, &mut propagation_chain, 0, 3);
+        self.propagate_risk(
+            source_entity_id,
+            risk_type,
+            &mut visited,
+            &mut propagation_chain,
+            0,
+            3,
+        );
 
-        let affected_entities: Vec<String> = propagation_chain.iter().map(|r| r.entity_id.clone()).collect();
-        let max_severity = propagation_chain.iter()
-            .map(|r| r.severity)
-            .fold(RiskLevel::Low, |acc, s| {
-                let acc_val = match acc {
-                    RiskLevel::Low => 0,
-                    RiskLevel::Medium => 1,
-                    RiskLevel::High => 2,
-                    RiskLevel::Critical => 3,
-                };
-                let s_val = match s {
-                    RiskLevel::Low => 0,
-                    RiskLevel::Medium => 1,
-                    RiskLevel::High => 2,
-                    RiskLevel::Critical => 3,
-                };
-                if s_val > acc_val { s } else { acc }
-            });
+        let affected_entities: Vec<String> = propagation_chain
+            .iter()
+            .map(|r| r.entity_id.clone())
+            .collect();
+        let max_severity =
+            propagation_chain
+                .iter()
+                .map(|r| r.severity)
+                .fold(RiskLevel::Low, |acc, s| {
+                    let acc_val = match acc {
+                        RiskLevel::Low => 0,
+                        RiskLevel::Medium => 1,
+                        RiskLevel::High => 2,
+                        RiskLevel::Critical => 3,
+                    };
+                    let s_val = match s {
+                        RiskLevel::Low => 0,
+                        RiskLevel::Medium => 1,
+                        RiskLevel::High => 2,
+                        RiskLevel::Critical => 3,
+                    };
+                    if s_val > acc_val {
+                        s
+                    } else {
+                        acc
+                    }
+                });
 
         RiskPropagationResult {
             source_entity: source_entity_id.to_string(),
@@ -1780,7 +1829,7 @@ impl IntelligenceSynthesizer {
         visited.insert(entity_id.to_string());
 
         let relationships = self.relationship_discovery.get_relationships(entity_id);
-        
+
         for rel in relationships {
             let next_entity = if rel.source_id == entity_id {
                 rel.target_id.clone()
@@ -1837,14 +1886,14 @@ impl IntelligenceSynthesizer {
 
         for entity_id in entity_ids {
             let relationships = self.relationship_discovery.get_relationships(entity_id);
-            
+
             // Look for partnership opportunities
-            let has_supplier = relationships.iter().any(|r| 
-                matches!(r.kind, RelationshipKind::Supplier) && r.temporal.is_current
-            );
-            let has_customer = relationships.iter().any(|r| 
-                matches!(r.kind, RelationshipKind::Customer) && r.temporal.is_current
-            );
+            let has_supplier = relationships
+                .iter()
+                .any(|r| matches!(r.kind, RelationshipKind::Supplier) && r.temporal.is_current);
+            let has_customer = relationships
+                .iter()
+                .any(|r| matches!(r.kind, RelationshipKind::Customer) && r.temporal.is_current);
 
             if has_supplier && has_customer {
                 opportunities.push(Opportunity {
@@ -1888,7 +1937,10 @@ impl IntelligenceSynthesizer {
     }
 
     /// Attribute threat actors
-    pub fn attribute_threat_actors(&self, incident_patterns: &[IncidentPattern]) -> Vec<ThreatActor> {
+    pub fn attribute_threat_actors(
+        &self,
+        incident_patterns: &[IncidentPattern],
+    ) -> Vec<ThreatActor> {
         let mut attributed: Vec<ThreatActor> = Vec::new();
 
         // Pattern-based attribution (simplified)
@@ -1925,34 +1977,49 @@ impl IntelligenceSynthesizer {
 
         match pattern.incident_type.to_lowercase().as_str() {
             t if t.contains("cyber") || t.contains("apt") => Some(ThreatActorType::NationState),
-            t if t.contains("ransomware") || t.contains("financial") => Some(ThreatActorType::CyberCriminal),
-            t if t.contains("hacktivist") || t.contains("protest") => Some(ThreatActorType::Hacktivist),
+            t if t.contains("ransomware") || t.contains("financial") => {
+                Some(ThreatActorType::CyberCriminal)
+            }
+            t if t.contains("hacktivist") || t.contains("protest") => {
+                Some(ThreatActorType::Hacktivist)
+            }
             t if t.contains("insider") || t.contains("employee") => Some(ThreatActorType::Insider),
-            t if t.contains("competitive") || t.contains("corporate") => Some(ThreatActorType::Competitor),
+            t if t.contains("competitive") || t.contains("corporate") => {
+                Some(ThreatActorType::Competitor)
+            }
             _ => None,
         }
     }
 
     fn infer_motivation(&self, actor_type: &ThreatActorType) -> String {
         match actor_type {
-            ThreatActorType::NationState => "Strategic intelligence gathering, disruption".to_string(),
+            ThreatActorType::NationState => {
+                "Strategic intelligence gathering, disruption".to_string()
+            }
             ThreatActorType::CyberCriminal => "Financial gain".to_string(),
             ThreatActorType::Hacktivist => "Ideological activism, publicity".to_string(),
-            ThreatActorType::Insider => "Personal grievance, financial incentive, coercion".to_string(),
+            ThreatActorType::Insider => {
+                "Personal grievance, financial incentive, coercion".to_string()
+            }
             ThreatActorType::Competitor => "Market advantage, competitive intelligence".to_string(),
             ThreatActorType::Unknown => "Unknown motivation".to_string(),
         }
     }
 
     /// Generate comprehensive intelligence report
-    pub fn generate_report(&self, entity_ids: &[String]) -> Result<IntelligenceReport, IntelligenceError> {
+    pub fn generate_report(
+        &self,
+        entity_ids: &[String],
+    ) -> Result<IntelligenceReport, IntelligenceError> {
         if entity_ids.is_empty() {
-            return Err(IntelligenceError::InsufficientData("No entities provided".to_string()));
+            return Err(IntelligenceError::InsufficientData(
+                "No entities provided".to_string(),
+            ));
         }
 
         let narrative_result = self.generate_narrative(entity_ids);
         let opportunities = self.identify_opportunities(entity_ids);
-        
+
         // Build risk assessment
         let mut all_anomalies: Vec<AnomalyResult> = Vec::new();
         for entity_id in entity_ids {
@@ -1960,8 +2027,14 @@ impl IntelligenceSynthesizer {
             all_anomalies.extend(anomalies);
         }
 
-        let critical_count = all_anomalies.iter()
-            .filter(|a| matches!(a.severity, AnomalySeverity::High | AnomalySeverity::Critical))
+        let critical_count = all_anomalies
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.severity,
+                    AnomalySeverity::High | AnomalySeverity::Critical
+                )
+            })
             .count();
 
         let overall_risk = if critical_count > 5 {
@@ -1976,7 +2049,12 @@ impl IntelligenceSynthesizer {
 
         let risk_factors: Vec<RiskFactor> = all_anomalies
             .iter()
-            .filter(|a| matches!(a.severity, AnomalySeverity::High | AnomalySeverity::Critical))
+            .filter(|a| {
+                matches!(
+                    a.severity,
+                    AnomalySeverity::High | AnomalySeverity::Critical
+                )
+            })
             .map(|a| RiskFactor {
                 factor_type: match a.anomaly_type {
                     AnomalyType::Spike | AnomalyType::Drop => RiskFactorType::OperationalRisk,
@@ -1998,7 +2076,8 @@ impl IntelligenceSynthesizer {
         let risk_score = (critical_count as f64 * 0.2).min(1.0);
 
         // Build key findings
-        let key_findings: Vec<KeyFinding> = narrative_result.narratives
+        let key_findings: Vec<KeyFinding> = narrative_result
+            .narratives
             .iter()
             .enumerate()
             .map(|(i, n)| KeyFinding {
@@ -2018,7 +2097,10 @@ impl IntelligenceSynthesizer {
                     action_id: "ACT-001".to_string(),
                     action: "Investigate detected anomalies".to_string(),
                     priority: ActionPriority::Critical,
-                    rationale: format!("{} critical anomalies require immediate attention", critical_count),
+                    rationale: format!(
+                        "{} critical anomalies require immediate attention",
+                        critical_count
+                    ),
                     estimated_impact: Some("High".to_string()),
                     related_findings: vec!["FINDING-001".to_string()],
                 },
@@ -2044,7 +2126,10 @@ impl IntelligenceSynthesizer {
 
         Ok(IntelligenceReport {
             id: Uuid::new_v4().to_string(),
-            title: format!("Cross-Entity Intelligence Report - {} Entities", entity_ids.len()),
+            title: format!(
+                "Cross-Entity Intelligence Report - {} Entities",
+                entity_ids.len()
+            ),
             summary: narrative_result.cross_entity_summary.clone(),
             key_findings,
             risk_assessment: RiskAssessment {
@@ -2115,7 +2200,7 @@ pub struct IncidentPattern {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -2129,13 +2214,13 @@ mod tests {
     #[test]
     fn test_relationship_discovery_registration() {
         let mut discovery = RelationshipDiscovery::new();
-        
+
         let person = Entity::person("p-001", "John Smith");
         let company = Entity::company("c-001", "Acme Corp");
-        
+
         discovery.register_entity(person);
         discovery.register_entity(company);
-        
+
         let evidence = vec![RelationshipEvidence {
             source: "LinkedIn".to_string(),
             source_type: EvidenceSourceType::LinkedIn,
@@ -2144,7 +2229,7 @@ mod tests {
             timestamp: Utc::now(),
             weight: 0.9,
         }];
-        
+
         let result = discovery.link_person_company(
             "p-001",
             "c-001",
@@ -2152,9 +2237,9 @@ mod tests {
             evidence,
             TemporalInfo::current(),
         );
-        
+
         assert!(result.is_ok());
-        
+
         let relationships = discovery.get_relationships("p-001");
         assert_eq!(relationships.len(), 1);
         assert_eq!(relationships[0].kind, RelationshipKind::Executive);
@@ -2163,13 +2248,13 @@ mod tests {
     #[test]
     fn test_relationship_discovery_invalid_role() {
         let mut discovery = RelationshipDiscovery::new();
-        
+
         let person = Entity::person("p-001", "John Smith");
         let company = Entity::company("c-001", "Acme Corp");
-        
+
         discovery.register_entity(person);
         discovery.register_entity(company);
-        
+
         let result = discovery.link_person_company(
             "p-001",
             "c-001",
@@ -2177,29 +2262,31 @@ mod tests {
             vec![],
             TemporalInfo::current(),
         );
-        
+
         assert!(result.is_err());
     }
 
     #[test]
     fn test_temporal_timeline() {
         let mut discovery = RelationshipDiscovery::new();
-        
+
         let company = Entity::company("c-001", "Acme Corp");
         let company2 = Entity::company("c-002", "Partner Corp");
-        
+
         discovery.register_entity(company.clone());
         discovery.register_entity(company2.clone());
-        
+
         // Add current relationship
-        discovery.link_company_company(
-            "c-001",
-            "c-002",
-            RelationshipKind::Supplier,
-            vec![],
-            TemporalInfo::current(),
-        ).unwrap();
-        
+        discovery
+            .link_company_company(
+                "c-001",
+                "c-002",
+                RelationshipKind::Supplier,
+                vec![],
+                TemporalInfo::current(),
+            )
+            .unwrap();
+
         let timeline = discovery.get_temporal_timeline("c-001");
         assert!(!timeline.events.is_empty());
     }
@@ -2207,7 +2294,7 @@ mod tests {
     #[test]
     fn test_network_analyzer_supply_chain() {
         let mut analyzer = NetworkAnalyzer::new();
-        
+
         analyzer.add_supply_chain_link(SupplyChainLink {
             supplier_id: "s-001".to_string(),
             customer_id: "c-001".to_string(),
@@ -2217,7 +2304,7 @@ mod tests {
             contract_type: ContractType::LongTerm,
             risk_level: RiskLevel::High,
         });
-        
+
         let analysis = analyzer.analyze_supply_chain_depth("c-001", 3);
         assert_eq!(analysis.direct_supplier_count, 1);
         assert!(analysis.risk_score > 0.0);
@@ -2226,7 +2313,7 @@ mod tests {
     #[test]
     fn test_network_analyzer_leadership_network() {
         let mut analyzer = NetworkAnalyzer::new();
-        
+
         analyzer.add_leadership_position(LeadershipPosition {
             person_id: "p-001".to_string(),
             company_id: "c-001".to_string(),
@@ -2236,7 +2323,7 @@ mod tests {
             compensation: None,
             tenure_start: None,
         });
-        
+
         analyzer.add_leadership_position(LeadershipPosition {
             person_id: "p-001".to_string(),
             company_id: "c-002".to_string(),
@@ -2246,7 +2333,7 @@ mod tests {
             compensation: None,
             tenure_start: None,
         });
-        
+
         let network = analyzer.map_leadership_network(&["c-001".to_string(), "c-002".to_string()]);
         assert_eq!(network.shared_person_count, 1);
     }
@@ -2254,7 +2341,7 @@ mod tests {
     #[test]
     fn test_correlation_engine_time_series() {
         let mut engine = CorrelationEngine::new();
-        
+
         let now = Utc::now();
         for i in 0..10 {
             engine.add_time_series_point(TimeSeriesPoint {
@@ -2263,7 +2350,7 @@ mod tests {
                 entity_id: "e-001".to_string(),
                 metric_type: "revenue".to_string(),
             });
-            
+
             engine.add_time_series_point(TimeSeriesPoint {
                 timestamp: now + chrono::Duration::hours(i),
                 value: 50.0 + i as f64 * 5.0,
@@ -2271,7 +2358,7 @@ mod tests {
                 metric_type: "revenue".to_string(),
             });
         }
-        
+
         let result = engine.correlate_time_series("e-001", "e-002", "revenue");
         assert!(result.is_significant);
         assert!(result.correlation > 0.9);
@@ -2280,7 +2367,7 @@ mod tests {
     #[test]
     fn test_correlation_engine_geographic_clustering() {
         let mut engine = CorrelationEngine::new();
-        
+
         engine.add_geo_location(GeoLocation {
             entity_id: "e-001".to_string(),
             country_code: "US".to_string(),
@@ -2289,7 +2376,7 @@ mod tests {
             latitude: None,
             longitude: None,
         });
-        
+
         engine.add_geo_location(GeoLocation {
             entity_id: "e-002".to_string(),
             country_code: "US".to_string(),
@@ -2298,7 +2385,7 @@ mod tests {
             latitude: None,
             longitude: None,
         });
-        
+
         engine.add_geo_location(GeoLocation {
             entity_id: "e-003".to_string(),
             country_code: "DE".to_string(),
@@ -2307,7 +2394,7 @@ mod tests {
             latitude: None,
             longitude: None,
         });
-        
+
         let clusters = engine.cluster_by_geography(2);
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].country_code, "US");
@@ -2316,7 +2403,7 @@ mod tests {
     #[test]
     fn test_correlation_engine_anomaly_detection() {
         let mut engine = CorrelationEngine::new();
-        
+
         let now = Utc::now();
         // Normal values around 100
         for i in 0..10 {
@@ -2334,7 +2421,7 @@ mod tests {
             entity_id: "e-001".to_string(),
             metric_type: "price".to_string(),
         });
-        
+
         let anomalies = engine.detect_anomalies("e-001", 30);
         assert!(!anomalies.is_empty());
         assert_eq!(anomalies[0].anomaly_type, AnomalyType::Spike);
@@ -2343,7 +2430,7 @@ mod tests {
     #[test]
     fn test_intelligence_synthesizer_narrative_generation() {
         let synthesizer = IntelligenceSynthesizer::new();
-        
+
         let narratives = synthesizer.generate_narrative(&["e-001".to_string()]);
         assert_eq!(narratives.narratives.len(), 1);
     }
@@ -2351,30 +2438,44 @@ mod tests {
     #[test]
     fn test_intelligence_synthesizer_opportunity_identification() {
         let mut synthesizer = IntelligenceSynthesizer::new();
-        
+
         // Add supplier and customer relationships
         let company1 = Entity::company("c-001", "Manufacturer");
         let company2 = Entity::company("c-002", "Supplier");
         let company3 = Entity::company("c-003", "Customer");
-        
-        synthesizer.relationship_discovery.register_entity(company1.clone());
-        synthesizer.relationship_discovery.register_entity(company2.clone());
-        synthesizer.relationship_discovery.register_entity(company3.clone());
-        
-        synthesizer.relationship_discovery.link_company_company(
-            "c-002", "c-001",
-            RelationshipKind::Supplier,
-            vec![],
-            TemporalInfo::current(),
-        ).unwrap();
-        
-        synthesizer.relationship_discovery.link_company_company(
-            "c-001", "c-003",
-            RelationshipKind::Customer,
-            vec![],
-            TemporalInfo::current(),
-        ).unwrap();
-        
+
+        synthesizer
+            .relationship_discovery
+            .register_entity(company1.clone());
+        synthesizer
+            .relationship_discovery
+            .register_entity(company2.clone());
+        synthesizer
+            .relationship_discovery
+            .register_entity(company3.clone());
+
+        synthesizer
+            .relationship_discovery
+            .link_company_company(
+                "c-002",
+                "c-001",
+                RelationshipKind::Supplier,
+                vec![],
+                TemporalInfo::current(),
+            )
+            .unwrap();
+
+        synthesizer
+            .relationship_discovery
+            .link_company_company(
+                "c-001",
+                "c-003",
+                RelationshipKind::Customer,
+                vec![],
+                TemporalInfo::current(),
+            )
+            .unwrap();
+
         let opportunities = synthesizer.identify_opportunities(&["c-001".to_string()]);
         assert!(!opportunities.is_empty());
     }
@@ -2382,7 +2483,7 @@ mod tests {
     #[test]
     fn test_intelligence_synthesizer_threat_attribution() {
         let synthesizer = IntelligenceSynthesizer::new();
-        
+
         let patterns = vec![
             IncidentPattern {
                 incident_id: "INC-001".to_string(),
@@ -2401,7 +2502,7 @@ mod tests {
                 confidence: 0.7,
             },
         ];
-        
+
         let actors = synthesizer.attribute_threat_actors(&patterns);
         assert_eq!(actors.len(), 2);
     }
@@ -2409,10 +2510,10 @@ mod tests {
     #[test]
     fn test_intelligence_synthesizer_report_generation() {
         let synthesizer = IntelligenceSynthesizer::new();
-        
+
         let report = synthesizer.generate_report(&["e-001".to_string()]);
         assert!(report.is_ok());
-        
+
         let report = report.unwrap();
         assert!(!report.title.is_empty());
         assert!(!report.key_findings.is_empty());
@@ -2421,35 +2522,41 @@ mod tests {
     #[test]
     fn test_risk_propagation() {
         let mut synthesizer = IntelligenceSynthesizer::new();
-        
+
         // Set up a simple network
         let c1 = Entity::company("c-001", "Main Corp");
         let c2 = Entity::company("c-002", "Supplier");
         let c3 = Entity::company("c-003", "Sub-supplier");
-        
+
         synthesizer.relationship_discovery.register_entity(c1);
         synthesizer.relationship_discovery.register_entity(c2);
         synthesizer.relationship_discovery.register_entity(c3);
-        
-        synthesizer.relationship_discovery.link_company_company(
-            "c-002", "c-001",
-            RelationshipKind::Supplier,
-            vec![],
-            TemporalInfo::current(),
-        ).unwrap();
-        
-        synthesizer.relationship_discovery.link_company_company(
-            "c-003", "c-002",
-            RelationshipKind::Supplier,
-            vec![],
-            TemporalInfo::current(),
-        ).unwrap();
-        
-        let result = synthesizer.model_risk_propagation(
-            "c-001",
-            RiskFactorType::SupplyChainDisruption,
-        );
-        
+
+        synthesizer
+            .relationship_discovery
+            .link_company_company(
+                "c-002",
+                "c-001",
+                RelationshipKind::Supplier,
+                vec![],
+                TemporalInfo::current(),
+            )
+            .unwrap();
+
+        synthesizer
+            .relationship_discovery
+            .link_company_company(
+                "c-003",
+                "c-002",
+                RelationshipKind::Supplier,
+                vec![],
+                TemporalInfo::current(),
+            )
+            .unwrap();
+
+        let result =
+            synthesizer.model_risk_propagation("c-001", RiskFactorType::SupplyChainDisruption);
+
         assert_eq!(result.source_entity, "c-001");
         assert!(result.total_affected >= 1);
     }
@@ -2459,7 +2566,7 @@ mod tests {
         let current = TemporalInfo::current();
         assert!(current.is_current);
         assert!(current.start_date.is_none());
-        
+
         let historical = TemporalInfo::historical(
             NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
             NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(),
@@ -2472,15 +2579,19 @@ mod tests {
     #[test]
     fn test_border_cluster_analysis() {
         let mut analyzer = NetworkAnalyzer::new();
-        
+
         analyzer.add_border_cluster(BorderCluster {
             cluster_id: "cl-001".to_string(),
             countries: vec!["US".to_string(), "DE".to_string(), "JP".to_string()],
-            entities: vec!["e-001".to_string(), "e-002".to_string(), "e-003".to_string()],
+            entities: vec![
+                "e-001".to_string(),
+                "e-002".to_string(),
+                "e-003".to_string(),
+            ],
             cluster_type: ClusterType::SupplyChain,
             strength: 0.9,
         });
-        
+
         let analysis = analyzer.analyze_cross_border_clusters(2);
         assert_eq!(analysis.total_clusters, 1);
     }
@@ -2488,7 +2599,7 @@ mod tests {
     #[test]
     fn test_financial_graph_extraction() {
         let mut analyzer = NetworkAnalyzer::new();
-        
+
         analyzer.add_financial_relationship(FinancialRelationship {
             investor_id: "inv-001".to_string(),
             investee_id: "co-001".to_string(),
@@ -2500,7 +2611,7 @@ mod tests {
             ownership_percentage: Some(20.0),
             date: Some(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()),
         });
-        
+
         let graph = analyzer.extract_financial_graph();
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 1);
@@ -2509,7 +2620,7 @@ mod tests {
     #[test]
     fn test_industry_grouping() {
         let mut engine = CorrelationEngine::new();
-        
+
         engine.add_industry_classification(IndustryClassification {
             entity_id: "e-001".to_string(),
             industry_code: "TECH".to_string(),
@@ -2517,7 +2628,7 @@ mod tests {
             level: 1,
             is_primary: true,
         });
-        
+
         engine.add_industry_classification(IndustryClassification {
             entity_id: "e-002".to_string(),
             industry_code: "TECH".to_string(),
@@ -2525,7 +2636,7 @@ mod tests {
             level: 1,
             is_primary: true,
         });
-        
+
         engine.add_industry_classification(IndustryClassification {
             entity_id: "e-001".to_string(),
             industry_code: "SEMI".to_string(),
@@ -2533,10 +2644,10 @@ mod tests {
             level: 2,
             is_primary: false,
         });
-        
+
         let groups = engine.group_by_industry();
         assert!(groups.contains_key("TECH"));
-        
+
         let tech_group = groups.get("TECH").unwrap();
         assert_eq!(tech_group.entities.len(), 2);
         assert_eq!(tech_group.primary_entity_count, 2);

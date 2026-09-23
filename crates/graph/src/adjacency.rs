@@ -558,8 +558,7 @@ impl AdjacencyGraph {
             week_start,
             edges: self.typed_edges.clone(),
         });
-        self.snapshots
-            .sort_by_key(|left| left.week_start);
+        self.snapshots.sort_by_key(|left| left.week_start);
     }
 
     pub fn weekly_snapshots(&self) -> &[GraphSnapshot] {

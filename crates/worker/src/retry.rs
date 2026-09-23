@@ -8,8 +8,8 @@
 //! Works with the worker trigger queue from migration 20260621 and
 //! the existing dead_letter module for notification payloads.
 
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tracing::{info, warn};
 
 // ─── Configuration ──────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ pub fn compute_backoff(policy: &RetryPolicy, attempt: usize) -> Duration {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos() as u64;
-    let jittered = ((now_ns.wrapping_mul(6364136223846793005).wrapping_add(1)) % (capped + 1));
+    let jittered = (now_ns.wrapping_mul(6364136223846793005).wrapping_add(1)) % (capped + 1);
     Duration::from_millis(jittered)
 }
 
@@ -201,11 +201,7 @@ pub enum RetryOutcome {
 }
 
 /// Determine the retry outcome for a failed job.
-pub fn evaluate_retry(
-    state: &mut RetryState,
-    error: &str,
-    policy: &RetryPolicy,
-) -> RetryOutcome {
+pub fn evaluate_retry(state: &mut RetryState, error: &str, policy: &RetryPolicy) -> RetryOutcome {
     if let Some(delay) = state.record_failure(error, policy) {
         RetryOutcome::Retry {
             delay,
@@ -299,7 +295,9 @@ mod tests {
 
         evaluate_retry(&mut state, "error", &policy);
         let outcome = evaluate_retry(&mut state, "error", &policy);
-        assert!(matches!(outcome, RetryOutcome::PermanentFailure { route_to_dlq, .. } if !route_to_dlq));
+        assert!(
+            matches!(outcome, RetryOutcome::PermanentFailure { route_to_dlq, .. } if !route_to_dlq)
+        );
     }
 
     #[test]

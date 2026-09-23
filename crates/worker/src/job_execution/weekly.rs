@@ -6,7 +6,7 @@ use crate::*;
 const WEEKLY_STAGE_TIMEOUT: Duration = Duration::from_secs(45);
 const WEEKLY_STAGE_ATTEMPTS: usize = 3;
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
@@ -38,10 +38,7 @@ pub(super) async fn run_weekly_recipe_job(kind: &JobKind, store: &Arc<PgStore>) 
         WEEKLY_STAGE_TIMEOUT,
         WEEKLY_STAGE_ATTEMPTS,
         |_| async {
-            let adjustments = ctx
-                .store
-                .auto_calibrate_recipe_thresholds()
-                .await?;
+            let adjustments = ctx.store.auto_calibrate_recipe_thresholds().await?;
             if !adjustments.is_empty() {
                 tracing::info!(
                     "auto-calibrated {} recipe(s) with high FP rate",
@@ -370,7 +367,9 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                     // Surface the generated memo in the activity feed.
                     let memo_logger =
                         apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
-                    memo_logger.log_memo_generated(&title, card_count as u32).await;
+                    memo_logger
+                        .log_memo_generated(&title, card_count as u32)
+                        .await;
                 }
                 run.succeed(
                     section_count as u64,

@@ -125,7 +125,7 @@ pub async fn list_memos_partial(
         })
         .await
         .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/memos", unack);
+    let _ctx = PageContext::from_session(&session, "/memos", unack);
 
     let (memo_rows, total) = store.list_weekly_memos(50, 0).await.unwrap_or_else(|e| {
         tracing::error!("Failed to list weekly memos: {e}");

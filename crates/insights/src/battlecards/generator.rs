@@ -12,11 +12,11 @@
 
 use crate::battlecards::kill_shot::{KillShot, KillShotAnalyzer};
 use crate::battlecards::objection_handler::{ObjectionHandler, ObjectionHandlerPair};
+use crate::battlecards::{ClosedDeal, WinLossAnalyzer};
 use crate::battlecards::{
     FeatureCategory, FeatureComparisonData, FeatureMatrixSection, NewsItem, PositioningSection,
     PricingSection, StrengthItem, WeaknessItem, WinLossSection,
 };
-use crate::battlecards::{ClosedDeal, WinLossAnalyzer};
 use crate::entity_relevance::EntityProfile;
 use crate::Insight;
 
@@ -120,7 +120,11 @@ impl BattlecardGenerator {
             .reduce(|acc, v| acc.max(v));
 
         // Dominant pricing model + positioning by observation count.
-        let models: Vec<&str> = ctx.pricing.iter().map(|p| p.pricing_model.as_str()).collect();
+        let models: Vec<&str> = ctx
+            .pricing
+            .iter()
+            .map(|p| p.pricing_model.as_str())
+            .collect();
         let positions: Vec<&str> = ctx
             .pricing
             .iter()
@@ -187,13 +191,13 @@ impl BattlecardGenerator {
 
         let mut features = Vec::new();
         for kw in all_keywords {
-            let competitor_support = support_level(
-                &competitor.product_keywords,
-                &competitor.topic_keywords,
+            let competitor_support =
+                support_level(&competitor.product_keywords, &competitor.topic_keywords, kw);
+            let our_support = support_level(
+                &our_company.product_keywords,
+                &our_company.topic_keywords,
                 kw,
             );
-            let our_support =
-                support_level(&our_company.product_keywords, &our_company.topic_keywords, kw);
             let advantage = match (rank(our_support), rank(competitor_support)) {
                 (ours, theirs) if ours > theirs => "Us",
                 (ours, theirs) if theirs > ours => "Them",
@@ -287,8 +291,11 @@ impl BattlecardGenerator {
         let mut weaknesses = Vec::new();
 
         // Identify areas where competitor has product keywords we don't
-        let our_products: std::collections::HashSet<&str> =
-            our_company.product_keywords.iter().map(String::as_str).collect();
+        let our_products: std::collections::HashSet<&str> = our_company
+            .product_keywords
+            .iter()
+            .map(String::as_str)
+            .collect();
         for kw in &competitor.product_keywords {
             if !our_products.contains(kw.as_str()) {
                 weaknesses.push(WeaknessItem {
@@ -427,15 +434,11 @@ fn weighted_max(values: &[(f64, f64)]) -> f64 {
 }
 
 fn most_frequent<'a>(items: &[&'a str]) -> Option<&'a str> {
-    let mut counts: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for it in items {
         *counts.entry(it).or_insert(0) += 1;
     }
-    counts
-        .into_iter()
-        .max_by_key(|(_, c)| *c)
-        .map(|(k, _)| k)
+    counts.into_iter().max_by_key(|(_, c)| *c).map(|(k, _)| k)
 }
 
 fn humanize_discounting(raw: &str) -> String {
@@ -471,14 +474,15 @@ fn derive_market_position(competitor: &EntityProfile) -> String {
     format!(
         "Competes primarily in {} with focus on {}.",
         competitor.industry_keywords.join(", "),
-        competitor.topic_keywords.first().map(String::as_str).unwrap_or("general")
+        competitor
+            .topic_keywords
+            .first()
+            .map(String::as_str)
+            .unwrap_or("general")
     )
 }
 
-fn derive_value_proposition(
-    competitor: &EntityProfile,
-    our_company: &EntityProfile,
-) -> String {
+fn derive_value_proposition(competitor: &EntityProfile, our_company: &EntityProfile) -> String {
     let our_products = our_company.product_keywords.join(", ");
     let their_products = competitor.product_keypoints().join(", ");
 
@@ -488,8 +492,16 @@ fn derive_value_proposition(
 
     format!(
         "We offer {} versus their {}. Our differentiators include {}.",
-        if our_products.is_empty() { "comparable solutions" } else { &our_products },
-        if their_products.is_empty() { "similar offerings" } else { &their_products },
+        if our_products.is_empty() {
+            "comparable solutions"
+        } else {
+            &our_products
+        },
+        if their_products.is_empty() {
+            "similar offerings"
+        } else {
+            &their_products
+        },
         our_company
             .topic_keywords
             .first()
@@ -498,14 +510,17 @@ fn derive_value_proposition(
     )
 }
 
-fn extract_differentiators(
-    competitor: &EntityProfile,
-    our_company: &EntityProfile,
-) -> Vec<String> {
-    let our_set: std::collections::HashSet<&str> =
-        our_company.topic_keywords.iter().map(String::as_str).collect();
-    let their_set: std::collections::HashSet<&str> =
-        competitor.topic_keywords.iter().map(String::as_str).collect();
+fn extract_differentiators(competitor: &EntityProfile, our_company: &EntityProfile) -> Vec<String> {
+    let our_set: std::collections::HashSet<&str> = our_company
+        .topic_keywords
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let their_set: std::collections::HashSet<&str> = competitor
+        .topic_keywords
+        .iter()
+        .map(String::as_str)
+        .collect();
 
     let mut diff = Vec::new();
     for kw in our_set.difference(&their_set) {
@@ -525,10 +540,6 @@ trait EntityProfileExt {
 
 impl EntityProfileExt for EntityProfile {
     fn product_keypoints(&self) -> Vec<String> {
-        self.product_keywords
-            .iter()
-            .take(5)
-            .cloned()
-            .collect()
+        self.product_keywords.iter().take(5).cloned().collect()
     }
 }

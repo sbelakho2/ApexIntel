@@ -165,7 +165,7 @@ impl PgStore {
         let obs_rows: Vec<ObservationRow> = rows
             .into_iter()
             .map(|r| {
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let value = serde_json::json!({
                     "domain": r.domain,
                     "has_spf": r.has_spf,
@@ -174,7 +174,7 @@ impl PgStore {
                     "dmarc_policy": r.dmarc_policy,
                     "posture_score": r.posture_score,
                 });
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let provenance = serde_json::json!({
                     "source": "dns_posture_entries_table",
                     "content_hash": format!("dns_{}", r.domain),
@@ -223,7 +223,10 @@ impl PgStore {
     /// Query lookalike domains directly from the dedicated `lookalike_domains` table,
     /// converting each row into an ObservationRow-compatible format.
     /// This ensures we always have results even if observations are pruned by retention.
-    pub async fn get_lookalike_domains_from_table(&self, limit: i64) -> Result<Vec<ObservationRow>> {
+    pub async fn get_lookalike_domains_from_table(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ObservationRow>> {
         #[derive(Debug, Clone, sqlx::FromRow)]
         struct LookalikeDomainRow {
             id: Uuid,
@@ -249,7 +252,7 @@ impl PgStore {
         let obs_rows: Vec<ObservationRow> = rows
             .into_iter()
             .map(|r| {
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let value = serde_json::json!({
                     "original_domain": r.original_domain,
                     "domain": r.lookalike_domain,
@@ -257,7 +260,7 @@ impl PgStore {
                     "threat_type": r.threat_type,
                     "active": r.active,
                 });
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let provenance = serde_json::json!({
                     "source": "lookalike_domains_table",
                     "content_hash": format!("la_{}_{}", r.original_domain, r.lookalike_domain),
@@ -335,7 +338,7 @@ impl PgStore {
             .map(|r| {
                 let date_added_str = r.date_added.map(|d| d.to_string()).unwrap_or_default();
                 let due_date_str = r.due_date.map(|d| d.to_string()).unwrap_or_default();
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let value = serde_json::json!({
                     "cve_id": r.cve_id,
                     "vulnerability_name": r.vulnerability_name,
@@ -347,7 +350,7 @@ impl PgStore {
                     "relevance_score": r.relevance_score,
                     "notes": r.notes,
                 });
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let provenance = serde_json::json!({
                     "source": "kev_observations_table",
                     "content_hash": format!("kev_{}", r.cve_id),

@@ -575,7 +575,7 @@ impl PgStore {
         risk_factors: &[String],
         recommendations: &[String],
         confidence: f64,
-        created_at: DateTime<Utc>,
+        _created_at: DateTime<Utc>,
     ) -> Result<()> {
         let metadata = serde_json::json!({
             "company_name": company_name,

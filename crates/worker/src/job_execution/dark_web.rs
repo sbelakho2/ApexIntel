@@ -7,8 +7,6 @@
 
 use std::sync::Arc;
 
-use uuid::Uuid;
-
 use crate::*;
 
 /// Run a dark web forum scan cycle.
@@ -88,17 +86,14 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
         return run;
     }
 
-    tracing::info!(
-        count = total_posts,
-        "dark_web_scan: found matching posts"
-    );
+    tracing::info!(count = total_posts, "dark_web_scan: found matching posts");
 
     let pool = &store.pool;
     let _now = chrono::Utc::now();
 
     for post in &posts {
         // Build observation value
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let value = serde_json::json!({
             "forum_name": post.forum_name,
             "thread_title": post.thread_title,
@@ -111,7 +106,7 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
             "entities_mentioned": post.entities_mentioned,
         });
 
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let provenance = serde_json::json!({
             "source": "worker_dark_web_scan",
             "forum": post.forum_name,

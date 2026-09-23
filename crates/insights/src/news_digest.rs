@@ -367,7 +367,8 @@ pub fn digest_summary_prompt(region: &str, stories_json: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::manual_range_contains,
         clippy::needless_borrows_for_generic_args,

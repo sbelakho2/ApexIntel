@@ -450,7 +450,7 @@ pub fn single_fold_evaluate(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 

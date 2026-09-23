@@ -216,7 +216,11 @@ impl Default for GlobalAlertDefaults {
     fn default() -> Self {
         Self {
             min_severity: AlertSeverity::High,
-            enabled_channels: vec![AlertChannel::InApp, AlertChannel::Email, AlertChannel::Slack],
+            enabled_channels: vec![
+                AlertChannel::InApp,
+                AlertChannel::Email,
+                AlertChannel::Slack,
+            ],
             cooldown_minutes: 30,
             max_daily_alerts: 100,
         }

@@ -2,27 +2,29 @@
 //!
 //! Comprehensive tests for the Threat Intelligence Module (Phase 3.2).
 
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use apex_threat_intel::{
+    attack_surface::{
+        AttackSurfaceAnalyzer, ExposureType, Misconfiguration, MisconfigurationType, ShadowITAsset,
+        ShadowITType, Vulnerability,
+    },
+    competitive_intelligence::{
+        CompetitiveIntelligenceEngine, Competitor, FinancialHealth, PredictionType,
+        ProfitabilityStatus, StrategicMove, StrategicMoveType, StrategicPrediction,
+    },
     error::ThreatIntelError,
-    models::{ConfidenceLevel, GeoRegion, IndustrySector, PaginationParams, RiskScore, SeverityLevel},
+    mitre_attck::{AttackTactic, AttackTechnique, AttckMatrix},
+    models::{
+        ConfidenceLevel, GeoRegion, IndustrySector, PaginationParams, RiskScore, SeverityLevel,
+    },
     supply_chain_threats::{
-        Component, ComponentRiskLevel, DisruptionScenario, ScenarioType,
-        Severity, Supplier, SupplierCapacity, SupplierRiskScore, SupplierTier, SupplyChainThreatModel,
+        Component, ComponentRiskLevel, DisruptionScenario, ScenarioType, Severity, Supplier,
+        SupplierCapacity, SupplierRiskScore, SupplierTier, SupplyChainThreatModel,
     },
     threat_actor_database::{
         ActorMotivation, ActorStatus, AttackPattern, Campaign, ThreatActor, ThreatActorDatabase,
     },
-    attack_surface::{
-        AttackSurfaceAnalyzer, ExposureType, Misconfiguration, MisconfigurationType,
-        ShadowITAsset, ShadowITType, Vulnerability,
-    },
-    competitive_intelligence::{
-        Competitor, CompetitiveIntelligenceEngine, FinancialHealth, ProfitabilityStatus,
-        StrategicMove, StrategicMoveType, StrategicPrediction, PredictionType,
-    },
-    mitre_attck::{AttackTactic, AttackTechnique, AttckMatrix},
 };
 
 mod threat_actor_tests {
@@ -38,12 +40,16 @@ mod threat_actor_tests {
 
     #[test]
     fn test_actor_builder_pattern() {
-        let actor = ThreatActor::new("APT-BUILDER", ActorMotivation::Financial, ActorStatus::Active)
-            .with_name("Builder Test Actor")
-            .with_aliases(vec!["BT1".to_string(), "BT2".to_string()])
-            .with_attributed_country("US")
-            .with_target_sectors(vec![IndustrySector::Technology, IndustrySector::Healthcare])
-            .with_sophistication(8);
+        let actor = ThreatActor::new(
+            "APT-BUILDER",
+            ActorMotivation::Financial,
+            ActorStatus::Active,
+        )
+        .with_name("Builder Test Actor")
+        .with_aliases(vec!["BT1".to_string(), "BT2".to_string()])
+        .with_attributed_country("US")
+        .with_target_sectors(vec![IndustrySector::Technology, IndustrySector::Healthcare])
+        .with_sophistication(8);
 
         assert_eq!(actor.name, Some("Builder Test Actor".to_string()));
         assert_eq!(actor.aliases, vec!["BT1", "BT2"]);
@@ -54,8 +60,12 @@ mod threat_actor_tests {
 
     #[test]
     fn test_actor_sector_targeting() {
-        let actor = ThreatActor::new("SECTOR-TEST", ActorMotivation::Financial, ActorStatus::Active)
-            .with_target_sectors(vec![IndustrySector::Technology]);
+        let actor = ThreatActor::new(
+            "SECTOR-TEST",
+            ActorMotivation::Financial,
+            ActorStatus::Active,
+        )
+        .with_target_sectors(vec![IndustrySector::Technology]);
 
         assert!(actor.targets_sector(&IndustrySector::Technology));
         assert!(!actor.targets_sector(&IndustrySector::Automotive));
@@ -64,7 +74,7 @@ mod threat_actor_tests {
     #[test]
     fn test_actor_has_technique() {
         let actor = ThreatActor::new("TECH-TEST", ActorMotivation::Financial, ActorStatus::Active);
-        
+
         assert!(!actor.has_technique("T1195"));
     }
 
@@ -86,14 +96,23 @@ mod threat_actor_tests {
     #[test]
     fn test_database_with_known_actors() {
         let db = ThreatActorDatabase::with_known_actors();
-        assert!(!db.list_actors(PaginationParams::default_page()).items.is_empty());
+        assert!(!db
+            .list_actors(PaginationParams::default_page())
+            .items
+            .is_empty());
     }
 
     #[test]
     fn test_database_add_actor() {
         let mut db = ThreatActorDatabase::new();
-        let id = db.add_actor(ThreatActor::new("NEW-ACTOR", ActorMotivation::Financial, ActorStatus::Active)).unwrap();
-        
+        let id = db
+            .add_actor(ThreatActor::new(
+                "NEW-ACTOR",
+                ActorMotivation::Financial,
+                ActorStatus::Active,
+            ))
+            .unwrap();
+
         assert!(db.get_actor(id).is_some());
         assert!(db.get_actor_by_alias("NEW-ACTOR").is_some());
     }
@@ -101,17 +120,34 @@ mod threat_actor_tests {
     #[test]
     fn test_database_duplicate_alias() {
         let mut db = ThreatActorDatabase::new();
-        db.add_actor(ThreatActor::new("DUP-TEST", ActorMotivation::Financial, ActorStatus::Active)).unwrap();
-        
-        let result = db.add_actor(ThreatActor::new("DUP-TEST", ActorMotivation::Espionage, ActorStatus::Active));
+        db.add_actor(ThreatActor::new(
+            "DUP-TEST",
+            ActorMotivation::Financial,
+            ActorStatus::Active,
+        ))
+        .unwrap();
+
+        let result = db.add_actor(ThreatActor::new(
+            "DUP-TEST",
+            ActorMotivation::Espionage,
+            ActorStatus::Active,
+        ));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_database_search_actors() {
         let mut db = ThreatActorDatabase::new();
-        let _ = db.add_actor(ThreatActor::new("APT-ALPHA", ActorMotivation::Espionage, ActorStatus::Active));
-        let _ = db.add_actor(ThreatActor::new("FIN-BETA", ActorMotivation::Financial, ActorStatus::Active));
+        let _ = db.add_actor(ThreatActor::new(
+            "APT-ALPHA",
+            ActorMotivation::Espionage,
+            ActorStatus::Active,
+        ));
+        let _ = db.add_actor(ThreatActor::new(
+            "FIN-BETA",
+            ActorMotivation::Financial,
+            ActorStatus::Active,
+        ));
 
         let results = db.search_actors("APT");
         assert_eq!(results.len(), 1);
@@ -122,12 +158,20 @@ mod threat_actor_tests {
     fn test_database_sector_filtering() {
         let mut db = ThreatActorDatabase::new();
         let _ = db.add_actor(
-            ThreatActor::new("TECH-ACTOR", ActorMotivation::Financial, ActorStatus::Active)
-                .with_target_sectors(vec![IndustrySector::Technology])
+            ThreatActor::new(
+                "TECH-ACTOR",
+                ActorMotivation::Financial,
+                ActorStatus::Active,
+            )
+            .with_target_sectors(vec![IndustrySector::Technology]),
         );
         let _ = db.add_actor(
-            ThreatActor::new("AUTO-ACTOR", ActorMotivation::Financial, ActorStatus::Active)
-                .with_target_sectors(vec![IndustrySector::Automotive])
+            ThreatActor::new(
+                "AUTO-ACTOR",
+                ActorMotivation::Financial,
+                ActorStatus::Active,
+            )
+            .with_target_sectors(vec![IndustrySector::Automotive]),
         );
 
         let tech_actors = db.get_actors_by_sector(&IndustrySector::Technology);
@@ -137,8 +181,16 @@ mod threat_actor_tests {
     #[test]
     fn test_database_status_filtering() {
         let mut db = ThreatActorDatabase::new();
-        let _ = db.add_actor(ThreatActor::new("ACTIVE-1", ActorMotivation::Financial, ActorStatus::Active));
-        let _ = db.add_actor(ThreatActor::new("DORMANT-1", ActorMotivation::Financial, ActorStatus::Dormant));
+        let _ = db.add_actor(ThreatActor::new(
+            "ACTIVE-1",
+            ActorMotivation::Financial,
+            ActorStatus::Active,
+        ));
+        let _ = db.add_actor(ThreatActor::new(
+            "DORMANT-1",
+            ActorMotivation::Financial,
+            ActorStatus::Dormant,
+        ));
 
         let active = db.get_actors_by_status(ActorStatus::Active);
         assert_eq!(active.len(), 1);
@@ -159,7 +211,10 @@ mod threat_actor_tests {
 
     #[test]
     fn test_campaign() {
-        let campaign = Campaign::new("Test Campaign", chrono::NaiveDate::from_ymd_opt(2023, 1, 1).unwrap());
+        let campaign = Campaign::new(
+            "Test Campaign",
+            chrono::NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+        );
         assert!(campaign.duration_days().is_none()); // No end date
 
         let campaign = campaign.with_end_date(chrono::NaiveDate::from_ymd_opt(2023, 6, 1).unwrap());
@@ -213,8 +268,7 @@ mod attack_surface_tests {
 
     #[test]
     fn test_vulnerability_cvss_severity() {
-        let vuln = Vulnerability::new("Critical CVE")
-            .with_cvss(9.5);
+        let vuln = Vulnerability::new("Critical CVE").with_cvss(9.5);
 
         assert_eq!(vuln.severity, SeverityLevel::Critical);
         assert_eq!(vuln.cvss_score, Some(9.5));
@@ -236,7 +290,10 @@ mod attack_surface_tests {
             "Missing MFA on admin portal",
         );
 
-        assert_eq!(misconfig.misconfiguration_type, MisconfigurationType::WeakAuthentication);
+        assert_eq!(
+            misconfig.misconfiguration_type,
+            MisconfigurationType::WeakAuthentication
+        );
         assert_eq!(misconfig.severity, SeverityLevel::Critical); // Default for this type
     }
 
@@ -246,7 +303,10 @@ mod attack_surface_tests {
             .with_sensitivity(apex_threat_intel::attack_surface::DataSensitivity::Confidential);
 
         assert_eq!(asset.asset_type, ShadowITType::CloudStorage);
-        assert_eq!(asset.data_sensitivity, apex_threat_intel::attack_surface::DataSensitivity::Confidential);
+        assert_eq!(
+            asset.data_sensitivity,
+            apex_threat_intel::attack_surface::DataSensitivity::Confidential
+        );
     }
 
     #[test]
@@ -263,8 +323,7 @@ mod attack_surface_tests {
         let org_id = uuid::Uuid::new_v4();
         let assessment_id = analyzer.create_assessment(org_id);
 
-        let vuln = Vulnerability::new("Test Vulnerability")
-            .with_cvss(8.5);
+        let vuln = Vulnerability::new("Test Vulnerability").with_cvss(8.5);
         analyzer.add_vulnerability(assessment_id, vuln).unwrap();
 
         let assessment = analyzer.get_assessment(assessment_id).unwrap();
@@ -277,8 +336,7 @@ mod attack_surface_tests {
         let org_id = uuid::Uuid::new_v4();
         let assessment_id = analyzer.create_assessment(org_id);
 
-        let vuln = Vulnerability::new("Critical CVE")
-            .with_cvss(9.8);
+        let vuln = Vulnerability::new("Critical CVE").with_cvss(9.8);
         analyzer.add_vulnerability(assessment_id, vuln).unwrap();
 
         let critical = analyzer.get_all_critical_findings();
@@ -307,9 +365,14 @@ mod supply_chain_tests {
 
     #[test]
     fn test_supplier_creation() {
-        let supplier = Supplier::new("Test Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_category("Electronics")
-            .with_criticality(0.8);
+        let supplier = Supplier::new(
+            "Test Supplier",
+            "US",
+            SupplierTier::Tier1,
+            SupplierCapacity::default(),
+        )
+        .with_category("Electronics")
+        .with_criticality(0.8);
 
         assert_eq!(supplier.name, "Test Supplier");
         assert_eq!(supplier.country_code, "US");
@@ -353,12 +416,33 @@ mod supply_chain_tests {
     fn test_geo_concentration_risk() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("CN Supplier 1", "CN", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::EastAsia));
-        model.add_supplier(Supplier::new("CN Supplier 2", "CN", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::EastAsia));
+        model.add_supplier(
+            Supplier::new(
+                "US Supplier",
+                "US",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::NorthAmerica),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "CN Supplier 1",
+                "CN",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::EastAsia),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "CN Supplier 2",
+                "CN",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::EastAsia),
+        );
 
         let risks = model.calculate_geo_concentration();
         assert!(!risks.is_empty());
@@ -371,8 +455,13 @@ mod supply_chain_tests {
     #[test]
     fn test_single_manufacturer_identification() {
         let mut model = SupplyChainThreatModel::new();
-        
-        model.add_supplier(Supplier::new("Primary Mfr", "CN", SupplierTier::Tier2, SupplierCapacity::default()));
+
+        model.add_supplier(Supplier::new(
+            "Primary Mfr",
+            "CN",
+            SupplierTier::Tier2,
+            SupplierCapacity::default(),
+        ));
         model.add_component(Component::new("PART-001", "Single Source Part"));
 
         let risks = model.identify_single_manufacturer();
@@ -383,12 +472,33 @@ mod supply_chain_tests {
     fn test_resilience_calculation() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("EU Supplier", "DE", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::Europe));
-        model.add_supplier(Supplier::new("APAC Supplier", "JP", SupplierTier::Tier1, SupplierCapacity::default())
-            .with_region(GeoRegion::AsiaPacific));
+        model.add_supplier(
+            Supplier::new(
+                "US Supplier",
+                "US",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::NorthAmerica),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "EU Supplier",
+                "DE",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::Europe),
+        );
+        model.add_supplier(
+            Supplier::new(
+                "APAC Supplier",
+                "JP",
+                SupplierTier::Tier1,
+                SupplierCapacity::default(),
+            )
+            .with_region(GeoRegion::AsiaPacific),
+        );
 
         let resilience = model.calculate_resilience();
         assert!(resilience.overall_score >= 0.0);
@@ -410,8 +520,18 @@ mod supply_chain_tests {
     fn test_tier_filtering() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("T1 Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default()));
-        model.add_supplier(Supplier::new("T2 Supplier", "CN", SupplierTier::Tier2, SupplierCapacity::default()));
+        model.add_supplier(Supplier::new(
+            "T1 Supplier",
+            "US",
+            SupplierTier::Tier1,
+            SupplierCapacity::default(),
+        ));
+        model.add_supplier(Supplier::new(
+            "T2 Supplier",
+            "CN",
+            SupplierTier::Tier2,
+            SupplierCapacity::default(),
+        ));
 
         let tier1 = model.get_suppliers_by_tier(SupplierTier::Tier1);
         assert_eq!(tier1.len(), 1);
@@ -461,8 +581,9 @@ mod competitive_intelligence_tests {
 
     #[test]
     fn test_strategic_prediction() {
-        let prediction = StrategicPrediction::new(PredictionType::MarketEntry, "Competitor X enters market")
-            .with_probability(0.75);
+        let prediction =
+            StrategicPrediction::new(PredictionType::MarketEntry, "Competitor X enters market")
+                .with_probability(0.75);
 
         assert_eq!(prediction.prediction_type, PredictionType::MarketEntry);
         assert!((prediction.probability - 0.75).abs() < 0.01);
@@ -488,10 +609,9 @@ mod competitive_intelligence_tests {
     #[test]
     fn test_engine_add_competitor() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         let id = engine.add_competitor(
-            Competitor::new("Competitor A", IndustrySector::Electronics)
-                .with_market_share(20.0)
+            Competitor::new("Competitor A", IndustrySector::Electronics).with_market_share(20.0),
         );
 
         assert!(engine.get_competitor(id).is_some());
@@ -500,15 +620,15 @@ mod competitive_intelligence_tests {
     #[test]
     fn test_top_competitors() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         engine.add_competitor(
-            Competitor::new("Small", IndustrySector::Technology).with_market_share(5.0)
+            Competitor::new("Small", IndustrySector::Technology).with_market_share(5.0),
         );
         engine.add_competitor(
-            Competitor::new("Large", IndustrySector::Technology).with_market_share(30.0)
+            Competitor::new("Large", IndustrySector::Technology).with_market_share(30.0),
         );
         engine.add_competitor(
-            Competitor::new("Medium", IndustrySector::Technology).with_market_share(15.0)
+            Competitor::new("Medium", IndustrySector::Technology).with_market_share(15.0),
         );
 
         let top = engine.get_top_competitors(2);
@@ -519,12 +639,12 @@ mod competitive_intelligence_tests {
     #[test]
     fn test_most_threatening_competitors() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         engine.add_competitor(
-            Competitor::new("Low Threat", IndustrySector::Technology).with_market_share(10.0)
+            Competitor::new("Low Threat", IndustrySector::Technology).with_market_share(10.0),
         );
         engine.add_competitor(
-            Competitor::new("High Threat", IndustrySector::Technology).with_market_share(25.0)
+            Competitor::new("High Threat", IndustrySector::Technology).with_market_share(25.0),
         );
 
         let threatening = engine.get_most_threatening(2);
@@ -534,23 +654,25 @@ mod competitive_intelligence_tests {
     #[test]
     fn test_pricing_intelligence() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
-        engine.add_pricing_intelligence(apex_threat_intel::competitive_intelligence::PricingIntelligence {
-            product_id: None,
-            product_name: "Widget A".to_string(),
-            competitor_id: None,
-            competitor_name: Some("Competitor X".to_string()),
-            price: 99.99,
-            currency: "USD".to_string(),
-            unit: "unit".to_string(),
-            effective_date: chrono::Utc::now(),
-            price_type: apex_threat_intel::competitive_intelligence::PriceType::List,
-            region: None,
-            discount_available: Some(10.0),
-            volume_tier_pricing: None,
-            confidence: ConfidenceLevel::High,
-            source: "Web scraping".to_string(),
-        });
+
+        engine.add_pricing_intelligence(
+            apex_threat_intel::competitive_intelligence::PricingIntelligence {
+                product_id: None,
+                product_name: "Widget A".to_string(),
+                competitor_id: None,
+                competitor_name: Some("Competitor X".to_string()),
+                price: 99.99,
+                currency: "USD".to_string(),
+                unit: "unit".to_string(),
+                effective_date: chrono::Utc::now(),
+                price_type: apex_threat_intel::competitive_intelligence::PriceType::List,
+                region: None,
+                discount_available: Some(10.0),
+                volume_tier_pricing: None,
+                confidence: ConfidenceLevel::High,
+                source: "Web scraping".to_string(),
+            },
+        );
 
         let avg = engine.get_average_price("Widget A");
         assert!(avg.is_some());
@@ -559,21 +681,21 @@ mod competitive_intelligence_tests {
     #[test]
     fn test_threat_assessment_generation() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         engine.add_competitor(
             Competitor::new("Threat Competitor", IndustrySector::Technology)
-                .with_market_share(30.0)
+                .with_market_share(30.0),
         );
 
         let assessment = engine.generate_threat_assessment(uuid::Uuid::new_v4());
-        
+
         assert!(!assessment.competitors.is_empty());
     }
 
     #[test]
     fn test_technology_positioning() {
         let mut engine = CompetitiveIntelligenceEngine::new();
-        
+
         let mut competitor = Competitor::new("Tech Leader", IndustrySector::Technology);
         competitor.technologies.push(apex_threat_intel::competitive_intelligence::TechnologyStack {
             category: apex_threat_intel::competitive_intelligence::TechnologyCategory::AI_ML,
@@ -658,10 +780,22 @@ mod model_tests {
 
     #[test]
     fn test_industry_sector_parsing() {
-        assert_eq!(IndustrySector::from_str("automotive"), IndustrySector::Automotive);
-        assert_eq!(IndustrySector::from_str("Automotive"), IndustrySector::Automotive);
-        assert_eq!(IndustrySector::from_str("pharma"), IndustrySector::Pharmaceuticals);
-        assert_eq!(IndustrySector::from_str("custom"), IndustrySector::Other("custom".to_string()));
+        assert_eq!(
+            IndustrySector::from_str("automotive"),
+            IndustrySector::Automotive
+        );
+        assert_eq!(
+            IndustrySector::from_str("Automotive"),
+            IndustrySector::Automotive
+        );
+        assert_eq!(
+            IndustrySector::from_str("pharma"),
+            IndustrySector::Pharmaceuticals
+        );
+        assert_eq!(
+            IndustrySector::from_str("custom"),
+            IndustrySector::Other("custom".to_string())
+        );
     }
 
     #[test]
@@ -704,10 +838,10 @@ mod model_tests {
     #[test]
     fn test_paginated_response() {
         use apex_threat_intel::models::PaginatedResponse;
-        
+
         let items = vec![1, 2, 3, 4, 5];
         let response = PaginatedResponse::new(items, 100, 0, 10);
-        
+
         assert_eq!(response.items.len(), 5);
         assert_eq!(response.total, 100);
         assert!(response.has_more);

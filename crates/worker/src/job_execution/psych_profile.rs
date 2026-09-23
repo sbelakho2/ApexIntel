@@ -254,8 +254,14 @@ mod tests {
     #[cfg(feature = "llm")]
     #[test]
     fn test_extract_domain_handles_port_and_bare_host() {
-        assert_eq!(extract_domain("https://api.example.com:8443"), Some("api.example.com".to_string()));
-        assert_eq!(extract_domain("example.com"), Some("example.com".to_string()));
+        assert_eq!(
+            extract_domain("https://api.example.com:8443"),
+            Some("api.example.com".to_string())
+        );
+        assert_eq!(
+            extract_domain("example.com"),
+            Some("example.com".to_string())
+        );
     }
 
     #[cfg(feature = "llm")]

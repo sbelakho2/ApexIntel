@@ -138,9 +138,7 @@ impl CveClient {
 
         let cves: Vec<CveVulnerability> = vulnerabilities
             .iter()
-            .filter_map(|entry| {
-                entry.get("cve").map(|cve| Self::parse_cve(cve))
-            })
+            .filter_map(|entry| entry.get("cve").map(Self::parse_cve))
             .collect();
 
         Ok(cves)
@@ -190,7 +188,11 @@ impl CveClient {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|r| r.get("url").and_then(|v| v.as_str()).map(ToString::to_string))
+                    .filter_map(|r| {
+                        r.get("url")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -337,15 +339,24 @@ mod tests {
     #[test]
     fn parses_sample_nvd_cve() {
         let value: serde_json::Value = serde_json::from_str(SAMPLE_NVD).unwrap();
-        let vulns = value.get("vulnerabilities").and_then(|v| v.as_array()).unwrap();
+        let vulns = value
+            .get("vulnerabilities")
+            .and_then(|v| v.as_array())
+            .unwrap();
         let cve = CveClient::parse_cve(&vulns[0]["cve"]);
 
         assert_eq!(cve.cve_id, "CVE-2024-99999");
-        assert_eq!(cve.description, "A critical buffer overflow in the demo component.");
+        assert_eq!(
+            cve.description,
+            "A critical buffer overflow in the demo component."
+        );
         assert_eq!(cve.cvss_score, Some(9.8));
         assert_eq!(cve.cvss_severity.as_deref(), Some("CRITICAL"));
         assert_eq!(cve.published.as_deref(), Some("2024-06-01T12:34:56.000"));
-        assert_eq!(cve.last_modified.as_deref(), Some("2024-06-02T09:00:00.000"));
+        assert_eq!(
+            cve.last_modified.as_deref(),
+            Some("2024-06-02T09:00:00.000")
+        );
         // Duplicate CPE must be deduplicated.
         assert_eq!(cve.affected_products.len(), 1);
         assert_eq!(
@@ -406,12 +417,11 @@ mod tests {
             obs.provenance.get("source").and_then(|v| v.as_str()),
             Some("nvd")
         );
-        assert!(
-            obs.provenance
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap()
-                .ends_with("CVE-2024-99999")
-        );
+        assert!(obs
+            .provenance
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .ends_with("CVE-2024-99999"));
     }
 }

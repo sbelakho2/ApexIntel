@@ -26,3 +26,5 @@ web-sys = { version = "0.3", features = ["RequestCredentials", "Window", "Locati
 
 [dev-dependencies]
 tokio = { workspace = true }
+[lints]
+workspace = true

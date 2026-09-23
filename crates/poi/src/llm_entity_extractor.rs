@@ -13,7 +13,7 @@
 //! - Source evidence is always preferred over inference
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::model::RoleFamily;
 
@@ -97,28 +97,73 @@ struct LlmEntityResponse {
 
 /// Extraction patterns for org names from artifact text.
 const ORG_PATTERNS: &[(&str, &[&str])] = &[
-    ("prefix", &[
-        "joins ", "now at ", "moves to ", "joins firm ", "appointed at ",
-        "has joined ", "will join ", "started at ", "began working at ",
-        "takes role at ", "assumes position at ", "joining ", "hired by ",
-        "recruited by ", "brought on at ",
-        "rejoint ", "nommé chez ", "embauché par ",
-        "appointed at ",
-    ]),
-    ("suffix", &[
-        " Ltd", " Inc", " Corp", " LLC", " PLC", " AG", " SA", " GmbH",
-        " S.A.", " Group", " Technologies", " Systems", " Industries",
-        " Solutions", " Manufacturing", " Electronics",
-    ]),
+    (
+        "prefix",
+        &[
+            "joins ",
+            "now at ",
+            "moves to ",
+            "joins firm ",
+            "appointed at ",
+            "has joined ",
+            "will join ",
+            "started at ",
+            "began working at ",
+            "takes role at ",
+            "assumes position at ",
+            "joining ",
+            "hired by ",
+            "recruited by ",
+            "brought on at ",
+            "rejoint ",
+            "nommé chez ",
+            "embauché par ",
+            "appointed at ",
+        ],
+    ),
+    (
+        "suffix",
+        &[
+            " Ltd",
+            " Inc",
+            " Corp",
+            " LLC",
+            " PLC",
+            " AG",
+            " SA",
+            " GmbH",
+            " S.A.",
+            " Group",
+            " Technologies",
+            " Systems",
+            " Industries",
+            " Solutions",
+            " Manufacturing",
+            " Electronics",
+        ],
+    ),
 ];
 
 /// Extraction patterns for job titles from artifact text.
 const TITLE_PATTERNS: &[&str] = &[
-    " as ", " named ", " promoted to ", " appointed as ", " becomes ",
-    " will serve as ", " takes over as ", " assumes role of ",
-    " serving as ", " in the role of ", " position as ", " new ",
-    " en tant que ", " nommé ", " promu ", " devient ",
-    " as the new ", " will be ",
+    " as ",
+    " named ",
+    " promoted to ",
+    " appointed as ",
+    " becomes ",
+    " will serve as ",
+    " takes over as ",
+    " assumes role of ",
+    " serving as ",
+    " in the role of ",
+    " position as ",
+    " new ",
+    " en tant que ",
+    " nommé ",
+    " promu ",
+    " devient ",
+    " as the new ",
+    " will be ",
 ];
 
 /// Advanced multi-strategy org extraction from text.
@@ -131,7 +176,7 @@ pub fn extract_org_heuristic(text: &str) -> (Option<String>, f64) {
             if let Some(pos) = text_lower.find(&pat_lower) {
                 let rest = &text[pos + pat.len()..].trim();
                 let end = rest
-                    .find(|c: char| c == '.' || c == ',' || c == ';' || c == '\n' || c == '(')
+                    .find(['.', ',', ';', '\n', '('])
                     .unwrap_or(rest.len().min(100));
                 let candidate = rest[..end].trim().to_string();
                 if candidate.len() > 2 && candidate.len() < 100 {
@@ -165,7 +210,11 @@ pub fn extract_org_heuristic(text: &str) -> (Option<String>, f64) {
     let mut i = 0;
     while i < words.len() {
         if let Some(word) = words.get(i) {
-            if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+            if word
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
                 && word.len() > 2
                 && !is_common_word(word)
             {
@@ -177,20 +226,30 @@ pub fn extract_org_heuristic(text: &str) -> (Option<String>, f64) {
                             phrase.push(' ');
                             phrase.push_str(next);
                             j += 1;
-                        } else { break; }
-                    } else { break; }
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
                 if is_plausible_org(&phrase) && phrase.len() > 5 {
                     candidates.push((clean_org_name(&phrase), 0.25));
                 }
                 i = j;
-            } else { i += 1; }
-        } else { i += 1; }
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
     }
 
     candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     if let Some((org, conf)) = candidates.into_iter().next() {
-        if is_plausible_org(&org) { return (Some(org), conf); }
+        if is_plausible_org(&org) {
+            return (Some(org), conf);
+        }
     }
     (None, 0.0)
 }
@@ -225,7 +284,7 @@ pub fn extract_title_heuristic_near(
         if let Some(pos) = text_lower.find(&pat_lower) {
             let rest = &text[pos + pat.len()..].trim();
             let end = rest
-                .find(|c: char| c == '.' || c == ',' || c == ';' || c == '\n')
+                .find(['.', ',', ';', '\n'])
                 .unwrap_or(rest.len().min(150));
             let candidate = rest[..end].trim().to_string();
             if is_plausible_title(&candidate) {
@@ -246,25 +305,52 @@ pub fn extract_title_heuristic_near(
     }
 
     let known_titles = [
-        "CEO", "CTO", "CFO", "COO", "CIO", "CISO",
-        "VP", "Vice President", "Director", "Senior Director",
-        "Executive Director", "Managing Director", "Head of",
-        "Chief", "President", "General Manager", "Manager",
-        "Senior Manager", "Lead", "Principal", "Partner",
-        "Associate", "Analyst", "Engineer", "Architect",
-        "Consultant", "Advisor", "Procurement", "Sourcing",
-        "Supply Chain", "Quality", "Compliance", "Operations",
+        "CEO",
+        "CTO",
+        "CFO",
+        "COO",
+        "CIO",
+        "CISO",
+        "VP",
+        "Vice President",
+        "Director",
+        "Senior Director",
+        "Executive Director",
+        "Managing Director",
+        "Head of",
+        "Chief",
+        "President",
+        "General Manager",
+        "Manager",
+        "Senior Manager",
+        "Lead",
+        "Principal",
+        "Partner",
+        "Associate",
+        "Analyst",
+        "Engineer",
+        "Architect",
+        "Consultant",
+        "Advisor",
+        "Procurement",
+        "Sourcing",
+        "Supply Chain",
+        "Quality",
+        "Compliance",
+        "Operations",
         "Manufacturing",
     ];
 
     for title_prefix in &known_titles {
         if let Some(pos) = text_lower.find(&title_prefix.to_lowercase()) {
             let start = text[..pos]
-                .rfind(|c: char| c == '.' || c == ',' || c == ';')
-                .map(|p| p + 1).unwrap_or(0);
+                .rfind(['.', ',', ';'])
+                .map(|p| p + 1)
+                .unwrap_or(0);
             let end = text[pos..]
-                .find(|c: char| c == '.' || c == ',' || c == ';')
-                .map(|p| pos + p).unwrap_or(text.len().min(pos + 80));
+                .find(['.', ',', ';'])
+                .map(|p| pos + p)
+                .unwrap_or(text.len().min(pos + 80));
             let candidate = text[start..end].trim().to_string();
             if is_plausible_title(&candidate) {
                 // Check name proximity when available
@@ -301,7 +387,8 @@ pub async fn extract_entities_llm(
         match extract_via_llm(client, artifact_text, person_name).await {
             Ok(llm_result) => {
                 let (heuristic_org, org_conf) = extract_org_heuristic(artifact_text);
-                let (heuristic_title, title_conf) = extract_title_heuristic_near(artifact_text, Some(person_name));
+                let (heuristic_title, title_conf) =
+                    extract_title_heuristic_near(artifact_text, Some(person_name));
 
                 // Clone before move to use in reasoning and checks
                 let llm_org_clone = llm_result.organization.clone();
@@ -315,13 +402,16 @@ pub async fn extract_entities_llm(
                 let heur_has_org = heuristic_org.is_some();
                 let heur_has_title = heuristic_title.is_some();
 
-                let agreement_bonus = if (llm_has_org == heur_has_org) && (llm_has_title == heur_has_title) {
-                    0.15
-                } else {
-                    0.0
-                };
+                let agreement_bonus =
+                    if (llm_has_org == heur_has_org) && (llm_has_title == heur_has_title) {
+                        0.15
+                    } else {
+                        0.0
+                    };
 
-                let confidence = ((llm_result.confidence + org_conf + title_conf) / 3.0 + agreement_bonus).min(1.0);
+                let confidence = ((llm_result.confidence + org_conf + title_conf) / 3.0
+                    + agreement_bonus)
+                    .min(1.0);
 
                 let reasoning = format!(
                     "LLM extraction: org={:?}, title={:?} | Heuristic: org={:?} (conf={:.2}), title={:?} (conf={:.2}) | Agreement bonus: {:.2}",
@@ -334,15 +424,25 @@ pub async fn extract_entities_llm(
                 let is_org_change = org.is_some();
                 let role_family = title.as_ref().map(|t| infer_role_family_advanced(t));
                 let extraction_source = if llm_has_org || llm_has_title {
-                    if heur_has_org || heur_has_title { "llm+heuristic" } else { "llm" }
+                    if heur_has_org || heur_has_title {
+                        "llm+heuristic"
+                    } else {
+                        "llm"
+                    }
                 } else {
                     "heuristic"
                 };
 
                 let mut result = EntityExtraction {
-                    organization: org, job_title: title, role_family,
-                    is_role_change, is_org_change, confidence, reasoning,
-                    artifact_ts, extraction_source: extraction_source.to_string(),
+                    organization: org,
+                    job_title: title,
+                    role_family,
+                    is_role_change,
+                    is_org_change,
+                    confidence,
+                    reasoning,
+                    artifact_ts,
+                    extraction_source: extraction_source.to_string(),
                 };
 
                 // ─── Anti-Hallucination Validation ───
@@ -363,8 +463,10 @@ pub async fn extract_entities_llm(
     let confidence = (org_conf + title_conf) / 2.0;
 
     let reasoning = if org.is_some() || title.is_some() {
-        format!("Multi-strategy heuristic extraction: org={:?} (conf={:.2}), title={:?} (conf={:.2})",
-            org, org_conf, title, title_conf)
+        format!(
+            "Multi-strategy heuristic extraction: org={:?} (conf={:.2}), title={:?} (conf={:.2})",
+            org, org_conf, title, title_conf
+        )
     } else {
         String::new()
     };
@@ -374,9 +476,15 @@ pub async fn extract_entities_llm(
     let role_family = title.as_ref().map(|t| infer_role_family_advanced(t));
 
     let mut result = EntityExtraction {
-        organization: org, job_title: title, role_family,
-        is_role_change, is_org_change, confidence, reasoning,
-        artifact_ts, extraction_source: "heuristic".to_string(),
+        organization: org,
+        job_title: title,
+        role_family,
+        is_role_change,
+        is_org_change,
+        confidence,
+        reasoning,
+        artifact_ts,
+        extraction_source: "heuristic".to_string(),
     };
 
     // ─── Anti-Hallucination Validation ───
@@ -410,7 +518,11 @@ fn validate_extraction(extraction: &mut EntityExtraction, person_name: &str, art
     };
 
     if clear_org {
-        if extraction.organization.is_some() && !is_plausible_org(extraction.organization.as_ref().unwrap()) {
+        let org_implausible = extraction
+            .organization
+            .as_ref()
+            .is_some_and(|org| !is_plausible_org(org));
+        if org_implausible {
             extraction.confidence *= 0.7;
         } else {
             extraction.confidence *= 0.5;
@@ -446,7 +558,7 @@ fn validate_extraction(extraction: &mut EntityExtraction, person_name: &str, art
             || text_lower.contains("engineering");
         if has_role_keyword {
             extraction.reasoning.push_str(
-                " (text contains role keywords but no title extracted — confidence reduced)"
+                " (text contains role keywords but no title extracted — confidence reduced)",
             );
         }
     }
@@ -489,25 +601,33 @@ Respond ONLY with valid JSON:
         artifact_text = apex_llm::truncate_utf8(artifact_text, 2000),
     );
 
-    let response = client.extract_json::<LlmEntityResponse>(system, user).await?;
+    let response = client
+        .extract_json::<LlmEntityResponse>(system, user)
+        .await?;
     let mut result = response;
     result.confidence = result.confidence.clamp(0.0, 1.0);
 
     // Anti-hallucination: clear low-confidence fields
     if result.confidence < 0.3 {
         if let Some(ref org) = result.organization {
-            if org.trim().is_empty() || org.len() < 2
+            if org.trim().is_empty()
+                || org.len() < 2
                 || org.eq_ignore_ascii_case("null")
                 || org.eq_ignore_ascii_case("unknown")
                 || org.eq_ignore_ascii_case("n/a")
-            { result.organization = None; }
+            {
+                result.organization = None;
+            }
         }
         if let Some(ref title) = result.job_title {
-            if title.trim().is_empty() || title.len() < 3
+            if title.trim().is_empty()
+                || title.len() < 3
                 || title.eq_ignore_ascii_case("null")
                 || title.eq_ignore_ascii_case("unknown")
                 || title.eq_ignore_ascii_case("n/a")
-            { result.job_title = None; }
+            {
+                result.job_title = None;
+            }
         }
     }
     Ok(result)
@@ -517,35 +637,88 @@ Respond ONLY with valid JSON:
 
 fn is_plausible_org(s: &str) -> bool {
     let s = s.trim();
-    if s.len() < 2 || s.len() > 100 { return false; }
+    if s.len() < 2 || s.len() > 100 {
+        return false;
+    }
     let reject = [
-        "the","and","for","from","with","that","this","into","their","have",
-        "will","after","before","also","just","only","more","most","very",
-        "said","says","year","years","reported","announced",
+        "the",
+        "and",
+        "for",
+        "from",
+        "with",
+        "that",
+        "this",
+        "into",
+        "their",
+        "have",
+        "will",
+        "after",
+        "before",
+        "also",
+        "just",
+        "only",
+        "more",
+        "most",
+        "very",
+        "said",
+        "says",
+        "year",
+        "years",
+        "reported",
+        "announced",
     ];
-    if reject.contains(&s.to_lowercase().as_str()) { return false; }
+    if reject.contains(&s.to_lowercase().as_str()) {
+        return false;
+    }
     s.chars().any(|c| c.is_uppercase()) || s.contains(' ')
 }
 
 fn is_plausible_title(s: &str) -> bool {
     let s = s.trim();
-    if s.len() < 2 || s.len() > 120 { return false; }
+    if s.len() < 2 || s.len() > 120 {
+        return false;
+    }
     let reject = [
-        "the","and","for","from","with","that","this","into","their","have",
-        "will","after","before","also","just","only","more","most","very",
-        "said","says","year","years","reported","announced",
-        "the company","a statement","a press",
+        "the",
+        "and",
+        "for",
+        "from",
+        "with",
+        "that",
+        "this",
+        "into",
+        "their",
+        "have",
+        "will",
+        "after",
+        "before",
+        "also",
+        "just",
+        "only",
+        "more",
+        "most",
+        "very",
+        "said",
+        "says",
+        "year",
+        "years",
+        "reported",
+        "announced",
+        "the company",
+        "a statement",
+        "a press",
     ];
-    if reject.contains(&s.to_lowercase().as_str()) { return false; }
+    if reject.contains(&s.to_lowercase().as_str()) {
+        return false;
+    }
     s.len() > 5
 }
 
 fn is_common_word(word: &str) -> bool {
     let common = [
-        "the","and","for","with","from","that","this","into","their","have",
-        "will","after","before","also","just","only","more","most","very",
-        "said","says","has","been","was","were","are","now","new","its","not",
-        "but","our","his","her",
+        "the", "and", "for", "with", "from", "that", "this", "into", "their", "have", "will",
+        "after", "before", "also", "just", "only", "more", "most", "very", "said", "says", "has",
+        "been", "was", "were", "are", "now", "new", "its", "not", "but", "our", "his", "her",
     ];
     common.contains(&word.to_lowercase().as_str())
 }
@@ -553,16 +726,23 @@ fn is_common_word(word: &str) -> bool {
 fn clean_org_name(name: &str) -> String {
     name.trim()
         .trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')')
-        .trim_end_matches(" at").trim_end_matches(" in")
-        .trim_end_matches(" as").trim_end_matches(" the")
-        .trim_end_matches(',').trim().to_string()
+        .trim_end_matches(" at")
+        .trim_end_matches(" in")
+        .trim_end_matches(" as")
+        .trim_end_matches(" the")
+        .trim_end_matches(',')
+        .trim()
+        .to_string()
 }
 
 fn clean_title(title: &str) -> String {
-    title.trim()
+    title
+        .trim()
         .trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')')
-        .trim_end_matches(',').trim_end_matches(" and")
-        .trim().to_string()
+        .trim_end_matches(',')
+        .trim_end_matches(" and")
+        .trim()
+        .to_string()
 }
 
 // ─── Role Family Inference ───
@@ -571,68 +751,159 @@ fn clean_title(title: &str) -> String {
 pub fn infer_role_family_advanced(title: &str) -> RoleFamily {
     let t = title.to_lowercase();
 
-    if t.contains("quality") || t.contains("qa engineer") || t.contains("qc inspector")
-        || t.contains("testing") || t.contains("inspection") || t.contains("compliance")
-        || t.contains("audit") || t.contains("regulatory") || t.contains("iso ")
-        || t.contains("safety") || t.contains("environmental") || t.contains("sustainability")
+    if t.contains("quality")
+        || t.contains("qa engineer")
+        || t.contains("qc inspector")
+        || t.contains("testing")
+        || t.contains("inspection")
+        || t.contains("compliance")
+        || t.contains("audit")
+        || t.contains("regulatory")
+        || t.contains("iso ")
+        || t.contains("safety")
+        || t.contains("environmental")
+        || t.contains("sustainability")
         || t.contains("esg")
-    { return RoleFamily::SupplierQuality; }
+    {
+        return RoleFamily::SupplierQuality;
+    }
 
-    if t.contains("procurement") || t.contains("sourcing") || t.contains("purchasing")
-        || t.contains("buyer") || t.contains("supply chain") || t.contains("supplier")
-        || t.contains("vendor") || t.contains("category manager") || t.contains("commodity")
-        || t.contains("contract manager") || t.contains("tender")
-    { return RoleFamily::Procurement; }
+    if t.contains("procurement")
+        || t.contains("sourcing")
+        || t.contains("purchasing")
+        || t.contains("buyer")
+        || t.contains("supply chain")
+        || t.contains("supplier")
+        || t.contains("vendor")
+        || t.contains("category manager")
+        || t.contains("commodity")
+        || t.contains("contract manager")
+        || t.contains("tender")
+    {
+        return RoleFamily::Procurement;
+    }
 
-    if t.contains("security") || t.contains("cyber") || t.contains("infosec")
-        || t.contains("privacy") || t.contains("data protection") || t.contains("threat")
+    if t.contains("security")
+        || t.contains("cyber")
+        || t.contains("infosec")
+        || t.contains("privacy")
+        || t.contains("data protection")
+        || t.contains("threat")
         || t.contains("vulnerability")
-    { return RoleFamily::Security; }
+    {
+        return RoleFamily::Security;
+    }
 
-    if t.contains("engineer") || t.contains("developer") || t.contains("architect")
-        || t.contains("scientist") || t.contains("programmer") || t.contains("technical lead")
+    if t.contains("engineer")
+        || t.contains("developer")
+        || t.contains("architect")
+        || t.contains("scientist")
+        || t.contains("programmer")
+        || t.contains("technical lead")
         || t.contains("r&d")
-    { return RoleFamily::Engineering; }
+    {
+        return RoleFamily::Engineering;
+    }
 
-    if t.contains("operations") || t.contains("manufacturing") || t.contains("production")
-        || t.contains("logistics") || t.contains("warehouse") || t.contains("distribution")
-        || t.contains("plant manager") || t.contains("factory") || t.contains("facilities")
+    if t.contains("operations")
+        || t.contains("manufacturing")
+        || t.contains("production")
+        || t.contains("logistics")
+        || t.contains("warehouse")
+        || t.contains("distribution")
+        || t.contains("plant manager")
+        || t.contains("factory")
+        || t.contains("facilities")
         || t.contains("maintenance")
-    { return RoleFamily::Operations; }
+    {
+        return RoleFamily::Operations;
+    }
 
-    if t.contains("chief") || t == "ceo" || t.contains("ceo ") || t.contains(" ceo") || t.ends_with("ceo")
-        || t == "cto" || t.contains("cto ") || t.contains(" cto") || t.ends_with("cto")
-        || t == "cfo" || t.contains("cfo ") || t.ends_with("cfo")
-        || t == "coo" || t.contains("coo ") || t.ends_with("coo")
-        || t.contains("cio ") || t.contains(" cio") || t.contains("ciso")
-        || t.contains("president") || t.contains("chairman")
-        || t.contains("managing director") || t.contains("general manager")
-        || t.contains("executive director") || t.contains("board director")
-        || t.contains("vice president") || t.contains("owner")
-        || t.contains("founder") || t.contains("co-founder") || t.contains("managing partner")
-    { return RoleFamily::Executive; }
+    if t.contains("chief")
+        || t == "ceo"
+        || t.contains("ceo ")
+        || t.contains(" ceo")
+        || t.ends_with("ceo")
+        || t == "cto"
+        || t.contains("cto ")
+        || t.contains(" cto")
+        || t.ends_with("cto")
+        || t == "cfo"
+        || t.contains("cfo ")
+        || t.ends_with("cfo")
+        || t == "coo"
+        || t.contains("coo ")
+        || t.ends_with("coo")
+        || t.contains("cio ")
+        || t.contains(" cio")
+        || t.contains("ciso")
+        || t.contains("president")
+        || t.contains("chairman")
+        || t.contains("managing director")
+        || t.contains("general manager")
+        || t.contains("executive director")
+        || t.contains("board director")
+        || t.contains("vice president")
+        || t.contains("owner")
+        || t.contains("founder")
+        || t.contains("co-founder")
+        || t.contains("managing partner")
+    {
+        return RoleFamily::Executive;
+    }
 
-    if t.contains("sales") || t.contains("marketing") || t.contains("business development")
-        || t.contains("account manager") || t.contains("customer")
-        || t.contains("commercial") || t.contains("revenue")
-    { return RoleFamily::Other("Sales/Marketing".to_string()); }
+    if t.contains("sales")
+        || t.contains("marketing")
+        || t.contains("business development")
+        || t.contains("account manager")
+        || t.contains("customer")
+        || t.contains("commercial")
+        || t.contains("revenue")
+    {
+        return RoleFamily::Other("Sales/Marketing".to_string());
+    }
 
-    if t.contains("finance") || t.contains("accounting") || t.contains("treasury")
-        || t.contains("controller") || t.contains("bookkeeper") || t.contains("tax")
-    { return RoleFamily::Other("Finance".to_string()); }
+    if t.contains("finance")
+        || t.contains("accounting")
+        || t.contains("treasury")
+        || t.contains("controller")
+        || t.contains("bookkeeper")
+        || t.contains("tax")
+    {
+        return RoleFamily::Other("Finance".to_string());
+    }
 
-    if t.contains("hr") || t.contains("human resources") || t.contains("talent")
-        || t.contains("recruiting") || t.contains("people") || t.contains("payroll")
-    { return RoleFamily::Other("Human Resources".to_string()); }
+    if t.contains("hr")
+        || t.contains("human resources")
+        || t.contains("talent")
+        || t.contains("recruiting")
+        || t.contains("people")
+        || t.contains("payroll")
+    {
+        return RoleFamily::Other("Human Resources".to_string());
+    }
 
-    if t.contains("government") || t.contains("minister") || t.contains("ambassador")
-        || t.contains("regulatory") || t.contains("public policy")
-        || t.contains("free zone") || t.contains("authority") || t.contains("agency")
-    { return RoleFamily::Government; }
+    if t.contains("government")
+        || t.contains("minister")
+        || t.contains("ambassador")
+        || t.contains("regulatory")
+        || t.contains("public policy")
+        || t.contains("free zone")
+        || t.contains("authority")
+        || t.contains("agency")
+    {
+        return RoleFamily::Government;
+    }
 
-    if t.contains("legal") || t.contains("counsel") || t.contains("attorney")
-        || t.contains("lawyer") || t.contains("paralegal") || t.contains("intellectual property")
-    { return RoleFamily::Other("Legal".to_string()); }
+    if t.contains("legal")
+        || t.contains("counsel")
+        || t.contains("attorney")
+        || t.contains("lawyer")
+        || t.contains("paralegal")
+        || t.contains("intellectual property")
+    {
+        return RoleFamily::Other("Legal".to_string());
+    }
 
     RoleFamily::Other(t)
 }
@@ -645,12 +916,18 @@ pub fn validate_org_against_entities(
     known_entities: &[(String, Vec<String>)],
 ) -> Option<String> {
     let normalized = extracted_org.trim().to_lowercase();
-    if normalized.is_empty() || normalized.len() < 3 { return None; }
+    if normalized.is_empty() || normalized.len() < 3 {
+        return None;
+    }
 
     for (canonical, aliases) in known_entities {
-        if normalized == canonical.to_lowercase() { return Some(canonical.clone()); }
+        if normalized == canonical.to_lowercase() {
+            return Some(canonical.clone());
+        }
         for alias in aliases {
-            if normalized == alias.to_lowercase() { return Some(canonical.clone()); }
+            if normalized == alias.to_lowercase() {
+                return Some(canonical.clone());
+            }
         }
     }
     for (canonical, aliases) in known_entities {
@@ -676,10 +953,16 @@ pub fn title_consistent_with_history(
     let title_lower = extracted_title.to_lowercase();
     let inferred_family = infer_role_family_advanced(extracted_title);
 
-    if role_history.is_empty() { return true; }
+    if role_history.is_empty() {
+        return true;
+    }
 
-    let recent_families: Vec<&RoleFamily> = role_history.iter().rev().take(3)
-        .map(|entry| &entry.role_family).collect();
+    let recent_families: Vec<&RoleFamily> = role_history
+        .iter()
+        .rev()
+        .take(3)
+        .map(|entry| &entry.role_family)
+        .collect();
 
     for family in &recent_families {
         if std::mem::discriminant(*family) == std::mem::discriminant(&inferred_family) {
@@ -691,7 +974,12 @@ pub fn title_consistent_with_history(
         let hist_title = entry.title.to_lowercase();
         let title_words: Vec<&str> = title_lower.split_whitespace().collect();
         let hist_words: Vec<&str> = hist_title.split_whitespace().collect();
-        if title_words.iter().filter(|w| hist_words.contains(w)).count() >= 2 {
+        if title_words
+            .iter()
+            .filter(|w| hist_words.contains(w))
+            .count()
+            >= 2
+        {
             return true;
         }
     }
@@ -716,14 +1004,16 @@ mod tests {
 
     #[test]
     fn test_extract_org_suffix_detection() {
-        let (org, conf) = extract_org_heuristic("Previously worked at Foxconn Technology Group in Taiwan");
+        let (org, conf) =
+            extract_org_heuristic("Previously worked at Foxconn Technology Group in Taiwan");
         assert!(org.is_some());
         assert!(conf >= 0.0);
     }
 
     #[test]
     fn test_extract_title_pattern() {
-        let (title, conf) = extract_title_heuristic("appointed as Chief Technology Officer at the firm");
+        let (title, conf) =
+            extract_title_heuristic("appointed as Chief Technology Officer at the firm");
         assert!(title.is_some());
         assert!(title.unwrap().contains("Chief"));
         assert!(conf > 0.0);
@@ -745,38 +1035,71 @@ mod tests {
 
     #[test]
     fn test_infer_role_family_executive() {
-        assert_eq!(infer_role_family_advanced("Chief Executive Officer"), RoleFamily::Executive);
+        assert_eq!(
+            infer_role_family_advanced("Chief Executive Officer"),
+            RoleFamily::Executive
+        );
         assert_eq!(infer_role_family_advanced("CTO"), RoleFamily::Executive);
-        assert_eq!(infer_role_family_advanced("Managing Director"), RoleFamily::Executive);
+        assert_eq!(
+            infer_role_family_advanced("Managing Director"),
+            RoleFamily::Executive
+        );
     }
 
     #[test]
     fn test_infer_role_family_procurement() {
-        assert_eq!(infer_role_family_advanced("VP Procurement"), RoleFamily::Procurement);
-        assert_eq!(infer_role_family_advanced("Head of Supply Chain"), RoleFamily::Procurement);
+        assert_eq!(
+            infer_role_family_advanced("VP Procurement"),
+            RoleFamily::Procurement
+        );
+        assert_eq!(
+            infer_role_family_advanced("Head of Supply Chain"),
+            RoleFamily::Procurement
+        );
     }
 
     #[test]
     fn test_infer_role_family_quality() {
-        assert_eq!(infer_role_family_advanced("Director of Quality Assurance"), RoleFamily::SupplierQuality);
-        assert_eq!(infer_role_family_advanced("Compliance Officer"), RoleFamily::SupplierQuality);
+        assert_eq!(
+            infer_role_family_advanced("Director of Quality Assurance"),
+            RoleFamily::SupplierQuality
+        );
+        assert_eq!(
+            infer_role_family_advanced("Compliance Officer"),
+            RoleFamily::SupplierQuality
+        );
     }
 
     #[test]
     fn test_infer_role_family_operations() {
-        assert_eq!(infer_role_family_advanced("VP Operations"), RoleFamily::Operations);
-        assert_eq!(infer_role_family_advanced("Plant Manager"), RoleFamily::Operations);
+        assert_eq!(
+            infer_role_family_advanced("VP Operations"),
+            RoleFamily::Operations
+        );
+        assert_eq!(
+            infer_role_family_advanced("Plant Manager"),
+            RoleFamily::Operations
+        );
     }
 
     #[test]
     fn test_title_consistent_with_history() {
         use crate::model::RoleHistoryEntry;
         let history = vec![RoleHistoryEntry {
-            org: "Acme Corp".into(), title: "VP Procurement".into(),
-            role_family: RoleFamily::Procurement, start_ts: 1500000000, end_ts: None,
+            org: "Acme Corp".into(),
+            title: "VP Procurement".into(),
+            role_family: RoleFamily::Procurement,
+            start_ts: 1500000000,
+            end_ts: None,
         }];
-        assert!(title_consistent_with_history("Director of Supply Chain", &history));
-        assert!(!title_consistent_with_history("Chief Medical Officer", &history));
+        assert!(title_consistent_with_history(
+            "Director of Supply Chain",
+            &history
+        ));
+        assert!(!title_consistent_with_history(
+            "Chief Medical Officer",
+            &history
+        ));
     }
 
     #[test]
@@ -798,19 +1121,28 @@ mod tests {
     #[test]
     fn test_validate_org_against_entities_exact_match() {
         let known = vec![
-            ("Foxconn Tunisia".to_string(), vec!["Foxconn TN".to_string()]),
+            (
+                "Foxconn Tunisia".to_string(),
+                vec!["Foxconn TN".to_string()],
+            ),
             ("Samsung Korea".to_string(), vec!["Samsung".to_string()]),
         ];
-        assert_eq!(validate_org_against_entities("Foxconn Tunisia", &known),
-            Some("Foxconn Tunisia".to_string()));
+        assert_eq!(
+            validate_org_against_entities("Foxconn Tunisia", &known),
+            Some("Foxconn Tunisia".to_string())
+        );
     }
 
     #[test]
     fn test_validate_org_against_entities_alias_match() {
-        let known = vec![("Foxconn Technology Group".to_string(),
-            vec!["Foxconn".to_string(), "Foxconn TN".to_string()])];
-        assert_eq!(validate_org_against_entities("foxconn", &known),
-            Some("Foxconn Technology Group".to_string()));
+        let known = vec![(
+            "Foxconn Technology Group".to_string(),
+            vec!["Foxconn".to_string(), "Foxconn TN".to_string()],
+        )];
+        assert_eq!(
+            validate_org_against_entities("foxconn", &known),
+            Some("Foxconn Technology Group".to_string())
+        );
     }
 
     #[test]

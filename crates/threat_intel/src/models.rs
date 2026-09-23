@@ -379,9 +379,18 @@ mod tests {
 
     #[test]
     fn test_industry_sector_parsing() {
-        assert_eq!(IndustrySector::from_str("automotive"), IndustrySector::Automotive);
-        assert_eq!(IndustrySector::from_str("Automotive"), IndustrySector::Automotive);
-        assert_eq!(IndustrySector::from_str("pharma"), IndustrySector::Pharmaceuticals);
+        assert_eq!(
+            IndustrySector::from_str("automotive"),
+            IndustrySector::Automotive
+        );
+        assert_eq!(
+            IndustrySector::from_str("Automotive"),
+            IndustrySector::Automotive
+        );
+        assert_eq!(
+            IndustrySector::from_str("pharma"),
+            IndustrySector::Pharmaceuticals
+        );
         assert_eq!(
             IndustrySector::from_str("custom_sector"),
             IndustrySector::Other("custom_sector".to_string())
@@ -389,7 +398,10 @@ mod tests {
 
         // Battery / BESS pivot taxonomy (aliases collapse to the canonical variant).
         for alias in ["energy_storage", "energy storage", "BESS", "Storage"] {
-            assert_eq!(IndustrySector::from_str(alias), IndustrySector::EnergyStorage);
+            assert_eq!(
+                IndustrySector::from_str(alias),
+                IndustrySector::EnergyStorage
+            );
         }
         for alias in ["battery", "Batteries", "battery_manufacturing"] {
             assert_eq!(IndustrySector::from_str(alias), IndustrySector::Battery);

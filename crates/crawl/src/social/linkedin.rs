@@ -617,7 +617,7 @@ mod tests {
         let _ = jobs;
     }
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn recorded_browser_fixture_parses_dynamic_company_page() {
         let url = "https://www.linkedin.com/company/apexintel/";

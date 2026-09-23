@@ -35,13 +35,21 @@ pub struct LinkedInCompany {
 impl LinkedInCompany {
     /// Whether this is a large company (1000+ employees).
     pub fn is_large_company(&self) -> bool {
-        self.company_size.as_ref().map(|s| {
-            // Extract all digits from the string
-            let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-            // Parse first 1-4 digits as a number
-            let first_num: u64 = digits.chars().take(4).collect::<String>().parse().unwrap_or(0);
-            first_num >= 1000
-        }).unwrap_or(false)
+        self.company_size
+            .as_ref()
+            .map(|s| {
+                // Extract all digits from the string
+                let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+                // Parse first 1-4 digits as a number
+                let first_num: u64 = digits
+                    .chars()
+                    .take(4)
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
+                first_num >= 1000
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -111,12 +119,14 @@ impl Default for LinkedInMonitorConfig {
 
 impl LinkedInMonitorConfig {
     pub fn add_company(mut self, id: impl Into<String>) -> Self {
-        self.company_ids.push(id.into()); self
+        self.company_ids.push(id.into());
+        self
     }
 
     /// Set the OAuth2 access token used for LinkedIn API authentication.
     pub fn with_access_token(mut self, token: impl Into<String>) -> Self {
-        self.access_token = Some(token.into()); self
+        self.access_token = Some(token.into());
+        self
     }
 }
 
@@ -131,7 +141,9 @@ impl LinkedInMonitor {
     pub fn new(config: LinkedInMonitorConfig) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("Mozilla/5.0 (compatible; ApexIntel/1.0; +https://apexintel.io) LinkedIn Monitor")
+            .user_agent(
+                "Mozilla/5.0 (compatible; ApexIntel/1.0; +https://apexintel.io) LinkedIn Monitor",
+            )
             .build()
             .context("building LinkedIn HTTP client")?;
         Ok(Self { client, config })
@@ -158,8 +170,7 @@ impl LinkedInMonitor {
         } else {
             warn!(company_id = %company_id, "LinkedIn fetch_company called without access token — request will be unauthenticated");
         }
-        let resp = req.send().await
-            .context("LinkedIn company request")?;
+        let resp = req.send().await.context("LinkedIn company request")?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), company_id = %company_id, "LinkedIn company returned non-success");
@@ -191,7 +202,15 @@ impl LinkedInMonitor {
             founded_on: Option<i64>,
         }
 
-        let liq: LiqCompany = resp.json().await.unwrap_or(LiqCompany { name: None, headline: None, description: None, website_url: None, industries: None, company_type: None, founded_on: None });
+        let liq: LiqCompany = resp.json().await.unwrap_or(LiqCompany {
+            name: None,
+            headline: None,
+            description: None,
+            website_url: None,
+            industries: None,
+            company_type: None,
+            founded_on: None,
+        });
         Ok(LinkedInCompany {
             company_id: company_id.to_string(),
             name: liq.name.unwrap_or_else(|| "Unknown".to_string()),
@@ -219,8 +238,7 @@ impl LinkedInMonitor {
         } else {
             warn!(company = %company_name, "LinkedIn search_employees called without access token — request will be unauthenticated");
         }
-        let resp = req.send().await
-            .context("LinkedIn employee search")?;
+        let resp = req.send().await.context("LinkedIn employee search")?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), company = %company_name, "LinkedIn employee search returned non-success");
@@ -244,8 +262,7 @@ impl LinkedInMonitor {
         } else {
             warn!("LinkedIn search_jobs called without access token — request will be unauthenticated");
         }
-        let resp = req.send().await
-            .context("LinkedIn job search")?;
+        let resp = req.send().await.context("LinkedIn job search")?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "LinkedIn job search returned non-success");
@@ -264,7 +281,10 @@ impl LinkedInMonitor {
                 Err(e) => warn!(company_id = %id, error = %e, "LinkedIn company fetch failed"),
             }
         }
-        info!(total = companies.len(), "LinkedIn company monitoring complete");
+        info!(
+            total = companies.len(),
+            "LinkedIn company monitoring complete"
+        );
         companies
     }
 }
@@ -307,8 +327,7 @@ mod tests {
 
     #[test]
     fn linkedin_config_with_access_token() {
-        let cfg = LinkedInMonitorConfig::default()
-            .with_access_token("test-oauth-token-123");
+        let cfg = LinkedInMonitorConfig::default().with_access_token("test-oauth-token-123");
         assert!(cfg.access_token.is_some());
         assert_eq!(cfg.access_token.as_deref(), Some("test-oauth-token-123"));
 

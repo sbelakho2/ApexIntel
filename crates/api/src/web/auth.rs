@@ -3,7 +3,7 @@
 use askama::Template;
 use axum::{
     extract::Form,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use hmac::{Hmac, Mac};
@@ -106,8 +106,9 @@ pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
 
     // Set cookie and redirect
     let cookie = format!(
-        "apex_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400",
-        token
+        "apex_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{}",
+        token,
+        crate::middleware::session::cookie_secure_suffix()
     );
 
     (
@@ -122,14 +123,14 @@ pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
 
 /// POST /logout — clear cookie, redirect to login.
 pub async fn logout() -> impl IntoResponse {
-    (
-        StatusCode::SEE_OTHER,
-        [
-            (header::LOCATION, "/login"),
-            (
-                header::SET_COOKIE,
-                "apex_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
-            ),
-        ],
-    )
+    let cookie = format!(
+        "apex_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{}",
+        crate::middleware::session::cookie_secure_suffix()
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(header::LOCATION, HeaderValue::from_static("/login"));
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        headers.append(header::SET_COOKIE, value);
+    }
+    (StatusCode::SEE_OTHER, headers).into_response()
 }

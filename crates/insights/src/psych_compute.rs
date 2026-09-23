@@ -99,64 +99,163 @@ pub struct EngagementResult {
 
 /// Keywords indicating an authoritative communication style.
 const AUTHORITATIVE_KEYWORDS: &[&str] = &[
-    "must", "require", "mandate", "directive", "order", "decree",
-    "instruct", "command", "shall", "comply", "enforce", "demand",
+    "must",
+    "require",
+    "mandate",
+    "directive",
+    "order",
+    "decree",
+    "instruct",
+    "command",
+    "shall",
+    "comply",
+    "enforce",
+    "demand",
 ];
 
 /// Keywords indicating a collaborative communication style.
 const COLLABORATIVE_KEYWORDS: &[&str] = &[
-    "together", "collaborate", "partner", "team", "joint", "shared",
-    "co-create", "alignment", "consensus", "stakeholder", "workshop",
-    "roundtable", "input", "feedback", "coordinate",
+    "together",
+    "collaborate",
+    "partner",
+    "team",
+    "joint",
+    "shared",
+    "co-create",
+    "alignment",
+    "consensus",
+    "stakeholder",
+    "workshop",
+    "roundtable",
+    "input",
+    "feedback",
+    "coordinate",
 ];
 
 /// Keywords indicating an analytical communication style.
 const ANALYTICAL_KEYWORDS: &[&str] = &[
-    "data", "analysis", "metric", "trend", "forecast", "model",
-    "statistical", "evidence", "empirical", "quantitative", "regression",
-    "benchmark", "kpi", "dashboard", "insight", "analytics",
+    "data",
+    "analysis",
+    "metric",
+    "trend",
+    "forecast",
+    "model",
+    "statistical",
+    "evidence",
+    "empirical",
+    "quantitative",
+    "regression",
+    "benchmark",
+    "kpi",
+    "dashboard",
+    "insight",
+    "analytics",
 ];
 
 /// Keywords indicating a data-driven communication style.
 const DATA_DRIVEN_KEYWORDS: &[&str] = &[
-    "evidence-based", "data-driven", "measure", "track", "monitor",
-    "report", "analytics", "dashboard", "roi", "conversion",
-    "funnel", "cohort", "a/b test", "experiment",
+    "evidence-based",
+    "data-driven",
+    "measure",
+    "track",
+    "monitor",
+    "report",
+    "analytics",
+    "dashboard",
+    "roi",
+    "conversion",
+    "funnel",
+    "cohort",
+    "a/b test",
+    "experiment",
 ];
 
 /// Keywords indicating positive sentiment.
 const POSITIVE_KEYWORDS: &[&str] = &[
-    "growth", "expansion", "opportunity", "success", "innovation",
-    "partnership", "launch", "achievement", "breakthrough", "record",
-    "award", "recognition", "milestone", "momentum", "optimistic",
+    "growth",
+    "expansion",
+    "opportunity",
+    "success",
+    "innovation",
+    "partnership",
+    "launch",
+    "achievement",
+    "breakthrough",
+    "record",
+    "award",
+    "recognition",
+    "milestone",
+    "momentum",
+    "optimistic",
 ];
 
 /// Keywords indicating negative sentiment.
 const NEGATIVE_KEYWORDS: &[&str] = &[
-    "crisis", "failure", "loss", "decline", "risk", "threat",
-    "disruption", "shortage", "delay", "cancellation", "lawsuit",
-    "penalty", "violation", "warning", "downgrade", "layoff",
-    "bankruptcy", "recall", "scandal", "investigation",
+    "crisis",
+    "failure",
+    "loss",
+    "decline",
+    "risk",
+    "threat",
+    "disruption",
+    "shortage",
+    "delay",
+    "cancellation",
+    "lawsuit",
+    "penalty",
+    "violation",
+    "warning",
+    "downgrade",
+    "layoff",
+    "bankruptcy",
+    "recall",
+    "scandal",
+    "investigation",
 ];
 
 /// Keywords indicating urgency / high pain index.
 const URGENCY_KEYWORDS: &[&str] = &[
-    "urgent", "immediate", "critical", "deadline", "asap",
-    "emergency", "crisis", "priority", "time-sensitive", "rush",
-    "expedite", "accelerate", "fast-track",
+    "urgent",
+    "immediate",
+    "critical",
+    "deadline",
+    "asap",
+    "emergency",
+    "crisis",
+    "priority",
+    "time-sensitive",
+    "rush",
+    "expedite",
+    "accelerate",
+    "fast-track",
 ];
 
 /// Keywords indicating openness to change.
 const CHANGE_OPEN_KEYWORDS: &[&str] = &[
-    "transformation", "modernization", "digitization", "optimization",
-    "restructuring", "pivot", "agile", "innovation", "disruption",
-    "new approach", "rethink", "reimagine",
+    "transformation",
+    "modernization",
+    "digitization",
+    "optimization",
+    "restructuring",
+    "pivot",
+    "agile",
+    "innovation",
+    "disruption",
+    "new approach",
+    "rethink",
+    "reimagine",
 ];
 
 /// Topics to avoid in engagement (sensitive areas).
 const SENSITIVE_TOPICS: &[&str] = &[
-    "layoff", "downsizing", "lawsuit", "litigation", "scandal",
-    "bankruptcy", "acquisition rumor", "merger rumor",
+    "layoff",
+    "downsizing",
+    "lawsuit",
+    "litigation",
+    "scandal",
+    "bankruptcy",
+    "acquisition rumor",
+    "merger rumor",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -212,10 +311,8 @@ impl PsychComputeEngine {
             .collect();
 
         // Stage 7: Enrichment quality
-        let enrichment_quality = compute_enrichment_quality(
-            snapshot.observations.len(),
-            &evidence_sources,
-        );
+        let enrichment_quality =
+            compute_enrichment_quality(snapshot.observations.len(), &evidence_sources);
 
         // Stage 8: Behavioral patterns
         let behavioral_patterns = detect_patterns(snapshot);
@@ -231,10 +328,8 @@ impl PsychComputeEngine {
         // Persist via psych_store
         let db_decision = super::psych_store::decision_style_to_db(&decision_style);
         let db_appetite = super::psych_store::change_appetite_to_db(&change_appetite);
-        let preferred_proof_strings: Vec<String> = preferred_proof
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let preferred_proof_strings: Vec<String> =
+            preferred_proof.iter().map(|s| s.to_string()).collect();
 
         let metadata = json!({
             "person_name": snapshot.person_name,
@@ -437,12 +532,28 @@ fn compute_risk_tolerance(corpus: &[&str], role_family: &str) -> f64 {
     }
 
     let risk_keywords = [
-        "risk", "uncertainty", "volatile", "speculative", "experimental",
-        "pilot", "venture", "startup", "disruptive", "aggressive",
+        "risk",
+        "uncertainty",
+        "volatile",
+        "speculative",
+        "experimental",
+        "pilot",
+        "venture",
+        "startup",
+        "disruptive",
+        "aggressive",
     ];
     let caution_keywords = [
-        "safe", "stable", "proven", "reliable", "conservative",
-        "mitigate", "hedge", "compliance", "regulation", "audit",
+        "safe",
+        "stable",
+        "proven",
+        "reliable",
+        "conservative",
+        "mitigate",
+        "hedge",
+        "compliance",
+        "regulation",
+        "audit",
     ];
 
     let risk_count = count_keywords(&combined, &risk_keywords);
@@ -637,35 +748,29 @@ fn generate_engagement(
                 "Present quantified value proposition with specific metrics for {}",
                 person_name
             ));
-            talking_points.push(
-                "Include comparative benchmarks and case study data".to_string(),
-            );
+            talking_points.push("Include comparative benchmarks and case study data".to_string());
         }
         "Authoritative" => {
             talking_points.push(format!(
                 "Present top-down strategic alignment for {}",
                 person_name
             ));
-            talking_points.push(
-                "Emphasize industry leadership and market position".to_string(),
-            );
+            talking_points.push("Emphasize industry leadership and market position".to_string());
         }
         "Collaborative" => {
             talking_points.push(format!(
                 "Frame discussion as joint exploration of mutual opportunities with {}",
                 person_name
             ));
-            talking_points.push(
-                "Highlight partnership models and co-innovation potential".to_string(),
-            );
+            talking_points
+                .push("Highlight partnership models and co-innovation potential".to_string());
         }
         _ => {
             talking_points.push(format!(
                 "Present clear value proposition tailored to {}'s role",
                 person_name
             ));
-            talking_points
-                .push("Include relevant industry context and evidence".to_string());
+            talking_points.push("Include relevant industry context and evidence".to_string());
         }
     }
 
@@ -681,8 +786,7 @@ fn generate_engagement(
         }
         "supplierquality" => {
             talking_points.push(
-                "Focus on quality metrics, compliance, and certification requirements"
-                    .to_string(),
+                "Focus on quality metrics, compliance, and certification requirements".to_string(),
             );
             opening_topics.push("Quality standards and certifications".to_string());
             opening_topics.push("Continuous improvement initiatives".to_string());
@@ -825,8 +929,8 @@ mod tests {
         ];
         let appetite = compute_change_appetite(
             &corpus,
-            Some(8.0),  // 8 years
-            Some(5),    // 5 job changes = high mobility
+            Some(8.0), // 8 years
+            Some(5),   // 5 job changes = high mobility
         );
         assert_eq!(appetite, "High");
     }
@@ -936,7 +1040,10 @@ mod tests {
     fn test_generate_engagement() {
         let eng = generate_engagement("Analytical", "High", "Jane Smith", "procurement");
         assert!(!eng.talking_points.is_empty());
-        assert!(eng.talking_points.iter().any(|tp| tp.contains("Jane Smith")));
+        assert!(eng
+            .talking_points
+            .iter()
+            .any(|tp| tp.contains("Jane Smith")));
         assert_eq!(eng.best_channel, "video_call");
         assert!(eng.best_timing.is_some());
     }
@@ -945,8 +1052,8 @@ mod tests {
     fn test_count_keywords() {
         // The compute pipeline lowercases text before keyword matching, so mirror
         // that here. Matches: "data", "kpi" (inside "kpis"), and "forecast".
-        let text = "We need to analyze the data and measure the KPIs for our forecast."
-            .to_lowercase();
+        let text =
+            "We need to analyze the data and measure the KPIs for our forecast.".to_lowercase();
         assert_eq!(count_keywords(&text, ANALYTICAL_KEYWORDS), 3);
     }
 
@@ -979,7 +1086,11 @@ mod tests {
         }
 
         let change_cases: Vec<(Vec<&str>, Option<f64>, Option<u32>)> = vec![
-            (vec!["digital transformation modernization agile pivot"], Some(8.0), Some(5)),
+            (
+                vec!["digital transformation modernization agile pivot"],
+                Some(8.0),
+                Some(5),
+            ),
             (vec!["stable operations maintained"], Some(20.0), Some(1)),
             (vec![], None, None),
         ];

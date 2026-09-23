@@ -72,21 +72,29 @@ impl MaDealType {
 
     pub fn from_headline(headline: &str) -> Self {
         let lower = headline.to_lowercase();
-        if lower.contains("acquires") || lower.contains("acquisition") || lower.contains("acquire") {
+        if lower.contains("acquires") || lower.contains("acquisition") || lower.contains("acquire")
+        {
             Self::Acquisition
         } else if lower.contains("merger") || lower.contains("merges") || lower.contains("merged") {
             Self::Merger
         } else if lower.contains("joint venture") || lower.contains("jv") {
             Self::JointVenture
-        } else if lower.contains("invests") || lower.contains("minority") || lower.contains("stake") {
+        } else if lower.contains("invests") || lower.contains("minority") || lower.contains("stake")
+        {
             Self::MinorityInvestment
-        } else if lower.contains("divest") || lower.contains("spins off") || lower.contains("spinoff") {
+        } else if lower.contains("divest")
+            || lower.contains("spins off")
+            || lower.contains("spinoff")
+        {
             Self::Divestiture
         } else if lower.contains("spin off") {
             Self::SpinOff
         } else if lower.contains("lbo") || lower.contains("leveraged buyout") {
             Self::LBO
-        } else if lower.contains("ipo") || lower.contains("going public") || lower.contains("listing") {
+        } else if lower.contains("ipo")
+            || lower.contains("going public")
+            || lower.contains("listing")
+        {
             Self::IPO
         } else {
             Self::Unknown
@@ -169,10 +177,14 @@ impl Default for MaMonitorConfig {
         Self {
             tickers: Vec::new(),
             keywords: vec![
-                "acquires".to_string(), "acquisition".to_string(),
-                "merger".to_string(), "merges".to_string(),
-                "invests".to_string(), "stake".to_string(),
-                "buyout".to_string(), "takeover".to_string(),
+                "acquires".to_string(),
+                "acquisition".to_string(),
+                "merger".to_string(),
+                "merges".to_string(),
+                "invests".to_string(),
+                "stake".to_string(),
+                "buyout".to_string(),
+                "takeover".to_string(),
             ],
             sources: vec![MaSource::SecEdgar, MaSource::Crunchbase, MaSource::PrNews],
             min_deal_value: None,
@@ -184,11 +196,13 @@ impl Default for MaMonitorConfig {
 
 impl MaMonitorConfig {
     pub fn add_ticker(mut self, ticker: impl Into<String>) -> Self {
-        self.tickers.push(ticker.into()); self
+        self.tickers.push(ticker.into());
+        self
     }
 
     pub fn add_keyword(mut self, kw: impl Into<String>) -> Self {
-        self.keywords.push(kw.into()); self
+        self.keywords.push(kw.into());
+        self
     }
 }
 
@@ -208,13 +222,22 @@ impl MaMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io) M&A Monitor")
             .build()
             .context("building M&A monitor HTTP client")?;
-        Ok(Self { client, config, events: Vec::new() })
+        Ok(Self {
+            client,
+            config,
+            events: Vec::new(),
+        })
     }
 
     /// Scan Crunchbase news for M&A mentions.
     pub async fn scan_crunchbase(&self, keywords: &[String]) -> Result<Vec<MaEvent>> {
         let url = "https://news.crunchbase.com/feed/";
-        let resp = self.client.get(url).send().await.context("Crunchbase news request")?;
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .context("Crunchbase news request")?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "Crunchbase returned non-success");
@@ -224,47 +247,61 @@ impl MaMonitor {
         let body = resp.text().await.context("read Crunchbase feed")?;
         let items = crate::rss::parse_feed(&body).unwrap_or_default();
 
-        let events: Vec<MaEvent> = items.iter().filter_map(|item| {
-            let combined = format!("{} {}", item.title, item.description);
-            let lower = combined.to_lowercase();
+        let events: Vec<MaEvent> = items
+            .iter()
+            .filter_map(|item| {
+                let combined = format!("{} {}", item.title, item.description);
+                let lower = combined.to_lowercase();
 
-            let matched: Vec<String> = keywords.iter()
-                .filter(|kw| lower.contains(&kw.to_lowercase()))
-                .cloned()
-                .collect();
+                let matched: Vec<String> = keywords
+                    .iter()
+                    .filter(|kw| lower.contains(&kw.to_lowercase()))
+                    .cloned()
+                    .collect();
 
-            if matched.is_empty() {
-                return None;
-            }
+                if matched.is_empty() {
+                    return None;
+                }
 
-            let deal_type = MaDealType::from_headline(&item.title);
-            let deal_id = format!("cb-{}-{}", item.guid.chars().take(12).collect::<String>(), Utc::now().timestamp());
+                let deal_type = MaDealType::from_headline(&item.title);
+                let deal_id = format!(
+                    "cb-{}-{}",
+                    item.guid.chars().take(12).collect::<String>(),
+                    Utc::now().timestamp()
+                );
 
-            Some(MaEvent {
-                deal_id,
-                deal_type,
-                target_name: item.title.split("acquires").nth(1)
-                    .or_else(|| item.title.split("merges with").nth(1))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|| item.title.clone()),
-                target_ticker: None,
-                target_cik: None,
-                acquirer_name: item.title.split("acquires").nth(0)
-                    .or_else(|| item.title.split("merges with").nth(0))
-                    .map(|s| s.trim().to_string()),
-                acquirer_ticker: None,
-                announcement_date: item.published.map(|dt| dt.date_naive()),
-                estimated_value: None,
-                currency: None,
-                status: MaStatus::Announced,
-                source: "crunchbase".to_string(),
-                source_url: Some(item.link.clone()),
-                headline: item.title.clone(),
-                description: Some(item.description.clone()),
-                detected_at: Utc::now(),
-                confidence: MaConfidence::Medium,
+                Some(MaEvent {
+                    deal_id,
+                    deal_type,
+                    target_name: item
+                        .title
+                        .split("acquires")
+                        .nth(1)
+                        .or_else(|| item.title.split("merges with").nth(1))
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_else(|| item.title.clone()),
+                    target_ticker: None,
+                    target_cik: None,
+                    acquirer_name: item
+                        .title
+                        .split("acquires")
+                        .nth(0)
+                        .or_else(|| item.title.split("merges with").nth(0))
+                        .map(|s| s.trim().to_string()),
+                    acquirer_ticker: None,
+                    announcement_date: item.published.map(|dt| dt.date_naive()),
+                    estimated_value: None,
+                    currency: None,
+                    status: MaStatus::Announced,
+                    source: "crunchbase".to_string(),
+                    source_url: Some(item.link.clone()),
+                    headline: item.title.clone(),
+                    description: Some(item.description.clone()),
+                    detected_at: Utc::now(),
+                    confidence: MaConfidence::Medium,
+                })
             })
-        }).collect();
+            .collect();
 
         debug!(count = events.len(), "Crunchbase M&A scan complete");
         Ok(events)
@@ -310,7 +347,10 @@ impl MaMonitor {
 
     /// Return events by deal type.
     pub fn events_by_type(&self, deal_type: MaDealType) -> Vec<&MaEvent> {
-        self.events.iter().filter(|e| e.deal_type == deal_type).collect()
+        self.events
+            .iter()
+            .filter(|e| e.deal_type == deal_type)
+            .collect()
     }
 
     /// Return events by status.
@@ -320,15 +360,24 @@ impl MaMonitor {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn ma_deal_type_from_headline() {
-        assert_eq!(MaDealType::from_headline("Company A acquires Company B"), MaDealType::Acquisition);
-        assert_eq!(MaDealType::from_headline("ABC merges with XYZ"), MaDealType::Merger);
-        assert_eq!(MaDealType::from_headline("Firm invests in startup"), MaDealType::MinorityInvestment);
+        assert_eq!(
+            MaDealType::from_headline("Company A acquires Company B"),
+            MaDealType::Acquisition
+        );
+        assert_eq!(
+            MaDealType::from_headline("ABC merges with XYZ"),
+            MaDealType::Merger
+        );
+        assert_eq!(
+            MaDealType::from_headline("Firm invests in startup"),
+            MaDealType::MinorityInvestment
+        );
     }
 
     #[test]

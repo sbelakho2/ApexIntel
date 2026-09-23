@@ -182,7 +182,7 @@ impl BoundedBrowserRunner {
 mod tests {
     use super::*;
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn recorded_browser_fixture_returns_rendered_html() {
         let runner = BoundedBrowserRunner::from_recorded_pages(HashMap::from([(

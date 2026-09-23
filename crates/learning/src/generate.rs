@@ -184,7 +184,7 @@ pub async fn generate_hypotheses_batch(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use anyhow::Result;
     use async_trait::async_trait;

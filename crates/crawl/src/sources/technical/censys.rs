@@ -27,7 +27,11 @@ impl CensysConfig {
     pub fn from_env() -> Option<Self> {
         let api_id = std::env::var("CENSYS_API_ID").ok()?;
         let api_secret = std::env::var("CENSYS_API_SECRET").ok()?;
-        Some(Self { api_id, api_secret, timeout_secs: 30 })
+        Some(Self {
+            api_id,
+            api_secret,
+            timeout_secs: 30,
+        })
     }
 }
 
@@ -53,7 +57,7 @@ pub struct CensysService {
     pub transport_protocol: String,
 }
 
-#[derive(Debug, Clone, Serialize,Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CensysLocation {
     pub city: Option<String>,
     pub country: Option<String>,
@@ -116,11 +120,14 @@ impl CensysClient {
     /// Search for certificates by domain.
     pub async fn search_certificates(&self, query: &str) -> Result<Vec<CensysCertificate>> {
         let url = "https://search.censys.io/api/v1/search/certificates";
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .header("Authorization", self.auth_header())
             .query(&[("q", query)])
             .query(&[("per_page", "100")])
-            .send().await
+            .send()
+            .await
             .context("Censys certificate search")?;
 
         if !resp.status().is_success() {
@@ -130,50 +137,112 @@ impl CensysClient {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct CensysCertResponse { results: Option<Vec<serde_json::Value>> }
+        struct CensysCertResponse {
+            results: Option<Vec<serde_json::Value>>,
+        }
 
-        let cert_resp: CensysCertResponse = resp.json().await.unwrap_or(CensysCertResponse { results: None });
-        let certs: Vec<CensysCertificate> = cert_resp.results
+        let cert_resp: CensysCertResponse = resp
+            .json()
+            .await
+            .unwrap_or(CensysCertResponse { results: None });
+        let certs: Vec<CensysCertificate> = cert_resp
+            .results
             .unwrap_or_default()
             .into_iter()
             .filter_map(|r| {
                 Some(CensysCertificate {
                     fingerprint_sha256: r.get("parsed.fingerprint_sha256")?.as_str()?.to_string(),
-                    common_name: r.get("parsed.subject.common_name").map(|v| {
-                        v.as_array().map(|a| {
-                            a.iter().filter_map(|s| s.as_str().map(String::from)).collect()
-                        }).unwrap_or_default()
-                    }).unwrap_or_default(),
-                    subject_alt_names: r.get("parsed.subject_alt_name").map(|v| {
-                        v.as_array().map(|a| {
-                            a.iter().filter_map(|s| s.as_str().map(String::from)).collect()
-                        }).unwrap_or_default()
-                    }).unwrap_or_default(),
-                    issuer_common_name: r.get("parsed.issuer.common_name").map(|v| {
-                        v.as_array().map(|a| {
-                            a.iter().filter_map(|s| s.as_str().map(String::from)).collect()
-                        }).unwrap_or_default()
-                    }).unwrap_or_default(),
-                    issuer_organization: r.get("parsed.issuer.organization").map(|v| {
-                        v.as_array().map(|a| {
-                            a.iter().filter_map(|s| s.as_str().map(String::from)).collect()
-                        }).unwrap_or_default()
-                    }).unwrap_or_default(),
-                    not_before: r.get("parsed.validity.start").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    not_after: r.get("parsed.validity.end").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    signature_algorithm: r.get("parsed.signature_algorithm").and_then(|v| v.as_str())
-                        .unwrap_or("").to_string(),
-                    subject_organization: r.get("parsed.subject.organization").map(|v| {
-                        v.as_array().map(|a| {
-                            a.iter().filter_map(|s| s.as_str().map(String::from)).collect()
-                        }).unwrap_or_default()
-                    }).unwrap_or_default(),
-                    subject_country: r.get("parsed.subject.country").map(|v| {
-                        v.as_array().map(|a| {
-                            a.iter().filter_map(|s| s.as_str().map(String::from)).collect()
-                        }).unwrap_or_default()
-                    }).unwrap_or_default(),
-                    validation_level: r.get("parsed.validation_level").and_then(|v| v.as_str()).map(String::from),
+                    common_name: r
+                        .get("parsed.subject.common_name")
+                        .map(|v| {
+                            v.as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    subject_alt_names: r
+                        .get("parsed.subject_alt_name")
+                        .map(|v| {
+                            v.as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    issuer_common_name: r
+                        .get("parsed.issuer.common_name")
+                        .map(|v| {
+                            v.as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    issuer_organization: r
+                        .get("parsed.issuer.organization")
+                        .map(|v| {
+                            v.as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    not_before: r
+                        .get("parsed.validity.start")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    not_after: r
+                        .get("parsed.validity.end")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    signature_algorithm: r
+                        .get("parsed.signature_algorithm")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    subject_organization: r
+                        .get("parsed.subject.organization")
+                        .map(|v| {
+                            v.as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    subject_country: r
+                        .get("parsed.subject.country")
+                        .map(|v| {
+                            v.as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    validation_level: r
+                        .get("parsed.validation_level")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
                     fetched_at: Utc::now(),
                 })
             })
@@ -186,11 +255,14 @@ impl CensysClient {
     /// Search for hosts by query.
     pub async fn search_hosts(&self, query: &str) -> Result<Vec<CensysHost>> {
         let url = "https://search.censys.io/api/v1/search/hosts";
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .header("Authorization", self.auth_header())
             .query(&[("q", query)])
             .query(&[("per_page", "100")])
-            .send().await
+            .send()
+            .await
             .context("Censys host search")?;
 
         if !resp.status().is_success() {
@@ -200,32 +272,60 @@ impl CensysClient {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct CensysHostResponse { results: Option<Vec<serde_json::Value>> }
+        struct CensysHostResponse {
+            results: Option<Vec<serde_json::Value>>,
+        }
 
-        let host_resp: CensysHostResponse = resp.json().await.unwrap_or(CensysHostResponse { results: None });
-        let hosts: Vec<CensysHost> = host_resp.results
+        let host_resp: CensysHostResponse = resp
+            .json()
+            .await
+            .unwrap_or(CensysHostResponse { results: None });
+        let hosts: Vec<CensysHost> = host_resp
+            .results
             .unwrap_or_default()
             .into_iter()
             .filter_map(|r| {
                 let ip = r.get("ip")?.as_str()?.to_string();
-                let ports: Vec<u16> = r.get("ports").and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|p| p.as_u64()).map(|p| p as u16).collect())
+                let ports: Vec<u16> = r
+                    .get("ports")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|p| p.as_u64())
+                            .map(|p| p as u16)
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let protocols: Vec<String> = r.get("protocols").and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|p| p.as_str().map(String::from)).collect())
+                let protocols: Vec<String> = r
+                    .get("protocols")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|p| p.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 Some(CensysHost {
                     ip,
                     ports,
-                    protocols: protocols.iter().map(|p| {
-                        let parts: Vec<&str> = p.split('/').collect();
-                        parts.first().map(|s| s.to_string()).unwrap_or_else(|| p.clone())
-                    }).collect(),
+                    protocols: protocols
+                        .iter()
+                        .map(|p| {
+                            let parts: Vec<&str> = p.split('/').collect();
+                            parts
+                                .first()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| p.clone())
+                        })
+                        .collect(),
                     services: vec![],
                     location: CensysLocation {
                         city: None,
-                        country: r.get("location.country").and_then(|v| v.as_str()).map(String::from),
+                        country: r
+                            .get("location.country")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                         continent: None,
                         latitude: None,
                         longitude: None,
@@ -250,16 +350,16 @@ fn simple_base64_encode(input: &[u8]) -> String {
         let b0 = input[i] as u32;
         let b1 = input.get(i + 1).copied().unwrap_or(0) as u32;
         let b2 = input.get(i + 2).copied().unwrap_or(0) as u32;
-        
+
         result.push(ALPHABET[(b0 >> 2) as usize] as char);
         result.push(ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-        
+
         if i + 1 < input.len() {
             result.push(ALPHABET[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char);
         } else {
             result.push('=');
         }
-        
+
         if i + 2 < input.len() {
             result.push(ALPHABET[(b2 & 0x3F) as usize] as char);
         } else {
@@ -271,7 +371,7 @@ fn simple_base64_encode(input: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -302,5 +402,4 @@ mod tests {
         assert_eq!(cert.common_name.len(), 1);
         assert_eq!(cert.issuer_common_name[0], "DigiCert");
     }
-
 }

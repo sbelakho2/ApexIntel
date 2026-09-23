@@ -3,12 +3,12 @@
 //! Takes InsightCandidate data (recipe template, evidence slots, entity context)
 //! and produces human-readable insight cards with narratives, actions, and citations.
 
+use crate::entity_relevance::EntityRegistry;
+use crate::title_diversity::TitleGenerator;
 use apex_core::validation::normalize_url;
 use apex_stats::mutual_info;
 use chrono::{DateTime, Utc};
 use regex::Regex;
-use crate::entity_relevance::EntityRegistry;
-use crate::title_diversity::TitleGenerator;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -547,27 +547,26 @@ static RE_CITATION_REF: LazyLock<Regex> = LazyLock::new(|| {
 /// These patterns strip robotic boilerplate from the narrative when
 /// the template path is used (LLM unavailable).
 static RE_CONFIDENCE_BOILERPLATE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        concat!(
-            r"(?is)",  // case-insensitive, dot-matches-newline
-            r"(?:",
-            // "The current read is likely at roughly 52% confidence because..."
-            r"The current read is likely at roughly \d+% confidence because[^.]+\.\s*",
-            r"|",
-            // "Reported by N independent sources; Includes N non-social reporting sources"
-            r"Reported by \d+ independent sources;? Includes? \d+ non-social reporting sources\.?\s*",
-            r"|",
-            // "Coverage from ... is being compared for corroboration"
-            r"Coverage from .+? is being compared for corroboration\.?\s*",
-            r"|",
-            // "The recurring reported themes involve ..."
-            r"The recurring reported themes involve[^.]+\.\s*",
-            r"|",
-            // "The current read is likely at roughly X% confidence"
-            r"The current read is likely at roughly \d+% confidence\.?\s*",
-            r")",
-        )
-    ).unwrap_or_else(|error| panic!("valid confidence boilerplate regex: {error}"))
+    Regex::new(concat!(
+        r"(?is)", // case-insensitive, dot-matches-newline
+        r"(?:",
+        // "The current read is likely at roughly 52% confidence because..."
+        r"The current read is likely at roughly \d+% confidence because[^.]+\.\s*",
+        r"|",
+        // "Reported by N independent sources; Includes N non-social reporting sources"
+        r"Reported by \d+ independent sources;? Includes? \d+ non-social reporting sources\.?\s*",
+        r"|",
+        // "Coverage from ... is being compared for corroboration"
+        r"Coverage from .+? is being compared for corroboration\.?\s*",
+        r"|",
+        // "The recurring reported themes involve ..."
+        r"The recurring reported themes involve[^.]+\.\s*",
+        r"|",
+        // "The current read is likely at roughly X% confidence"
+        r"The current read is likely at roughly \d+% confidence\.?\s*",
+        r")",
+    ))
+    .unwrap_or_else(|error| panic!("valid confidence boilerplate regex: {error}"))
 });
 
 /// Parse action template into a list of actions.
@@ -1086,7 +1085,8 @@ fn tokenize_signal(value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::manual_range_contains,
         clippy::needless_borrows_for_generic_args,

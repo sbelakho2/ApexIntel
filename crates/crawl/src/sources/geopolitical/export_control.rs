@@ -84,14 +84,23 @@ impl ExportControlMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io) Export Control Monitor")
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { client, entity_list_entries: Vec::new(), denied_persons: Vec::new() }
+        Self {
+            client,
+            entity_list_entries: Vec::new(),
+            denied_persons: Vec::new(),
+        }
     }
 
     /// Load BIS Entity List from remote CSV.
     pub async fn load_entity_list(&mut self) -> Result<usize> {
         info!("Loading BIS Entity List");
         let url = ExportControlList::BisEntityList.download_url();
-        let resp = self.client.get(url).send().await.context("BIS Entity List download")?;
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .context("BIS Entity List download")?;
         if !resp.status().is_success() {
             anyhow::bail!("BIS Entity List returned {}", resp.status());
         }
@@ -119,8 +128,14 @@ impl ExportControlMonitor {
                     entity_name: parts.first().unwrap_or(&"").trim().to_string(),
                     address: parts.get(1).map(|s| s.trim().to_string()),
                     country: parts.get(2).unwrap_or(&"Unknown").trim().to_string(),
-                    license_requirement: parts.get(3).map(|s| s.trim().to_string()).unwrap_or_default(),
-                    license_review_policy: parts.get(4).map(|s| s.trim().to_string()).unwrap_or_default(),
+                    license_requirement: parts
+                        .get(3)
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default(),
+                    license_review_policy: parts
+                        .get(4)
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default(),
                     entities_list_section: "Supplement No. 4".to_string(),
                     source_url: Some("https://www.bis.doc.gov".to_string()),
                     listed_date: None,
@@ -140,7 +155,12 @@ impl ExportControlMonitor {
     pub async fn load_denied_persons(&mut self) -> Result<usize> {
         info!("Loading BIS Denied Persons List");
         let url = ExportControlList::BisDeniedPersons.download_url();
-        let resp = self.client.get(url).send().await.context("BIS Denied Persons download")?;
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .context("BIS Denied Persons download")?;
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "BIS Denied Persons returned non-success");
             return Ok(0);
@@ -197,7 +217,9 @@ impl ExportControlMonitor {
 }
 
 impl Default for ExportControlMonitor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -206,8 +228,13 @@ mod tests {
 
     #[test]
     fn export_control_list_urls() {
-        assert!(ExportControlList::BisEntityList.download_url().contains("bis.doc.gov"));
-        assert_eq!(ExportControlList::BisDeniedPersons.as_str(), "BIS_Denied_Persons");
+        assert!(ExportControlList::BisEntityList
+            .download_url()
+            .contains("bis.doc.gov"));
+        assert_eq!(
+            ExportControlList::BisDeniedPersons.as_str(),
+            "BIS_Denied_Persons"
+        );
     }
 
     #[test]

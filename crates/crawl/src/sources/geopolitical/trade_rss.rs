@@ -25,30 +25,50 @@ pub struct TradeFeedSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TradeRegion {
-    Global, NorthAmerica, Europe, MiddleEast, AsiaPacific, Russia, Africa,
+    Global,
+    NorthAmerica,
+    Europe,
+    MiddleEast,
+    AsiaPacific,
+    Russia,
+    Africa,
 }
 
 impl TradeRegion {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Global => "global", Self::NorthAmerica => "north_america",
-            Self::Europe => "europe", Self::MiddleEast => "middle_east",
-            Self::AsiaPacific => "asia_pacific", Self::Russia => "russia", Self::Africa => "africa",
+            Self::Global => "global",
+            Self::NorthAmerica => "north_america",
+            Self::Europe => "europe",
+            Self::MiddleEast => "middle_east",
+            Self::AsiaPacific => "asia_pacific",
+            Self::Russia => "russia",
+            Self::Africa => "africa",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TradeCategory {
-    Defense, Trade, Geopolitics, SupplyChain, Finance, Technology, Energy,
+    Defense,
+    Trade,
+    Geopolitics,
+    SupplyChain,
+    Finance,
+    Technology,
+    Energy,
 }
 
 impl TradeCategory {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Defense => "defense", Self::Trade => "trade", Self::Geopolitics => "geopolitics",
-            Self::SupplyChain => "supply_chain", Self::Finance => "finance",
-            Self::Technology => "technology", Self::Energy => "energy",
+            Self::Defense => "defense",
+            Self::Trade => "trade",
+            Self::Geopolitics => "geopolitics",
+            Self::SupplyChain => "supply_chain",
+            Self::Finance => "finance",
+            Self::Technology => "technology",
+            Self::Energy => "energy",
         }
     }
 }
@@ -67,26 +87,51 @@ impl TradeRssMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io) Trade Monitor")
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { client, sources: Self::default_sources() }
+        Self {
+            client,
+            sources: Self::default_sources(),
+        }
     }
 
     fn default_sources() -> Vec<TradeFeedSource> {
         vec![
-            TradeFeedSource { feed_id: "breaking_defense".into(), name: "Breaking Defense".into(),
+            TradeFeedSource {
+                feed_id: "breaking_defense".into(),
+                name: "Breaking Defense".into(),
                 feed_url: "https://breakingdefense.com/feed/".into(),
-                region: TradeRegion::NorthAmerica, category: TradeCategory::Defense,
+                region: TradeRegion::NorthAmerica,
+                category: TradeCategory::Defense,
                 topics: vec!["defense".into(), "military".into(), "procurement".into()],
-                enabled: true, last_fetched: None, last_item_count: 0 },
-            TradeFeedSource { feed_id: "defense_news".into(), name: "Defense News".into(),
+                enabled: true,
+                last_fetched: None,
+                last_item_count: 0,
+            },
+            TradeFeedSource {
+                feed_id: "defense_news".into(),
+                name: "Defense News".into(),
                 feed_url: "https://www.defensenews.com/arc/outboundfeeds/rss/".into(),
-                region: TradeRegion::Global, category: TradeCategory::Defense,
+                region: TradeRegion::Global,
+                category: TradeCategory::Defense,
                 topics: vec!["defense".into(), "industry".into()],
-                enabled: true, last_fetched: None, last_item_count: 0 },
-            TradeFeedSource { feed_id: "supply_chain_dive".into(), name: "Supply Chain Dive".into(),
+                enabled: true,
+                last_fetched: None,
+                last_item_count: 0,
+            },
+            TradeFeedSource {
+                feed_id: "supply_chain_dive".into(),
+                name: "Supply Chain Dive".into(),
                 feed_url: "https://www.supplychaindive.com/feeds/news/".into(),
-                region: TradeRegion::Global, category: TradeCategory::SupplyChain,
-                topics: vec!["supply chain".into(), "logistics".into(), "semiconductors".into()],
-                enabled: true, last_fetched: None, last_item_count: 0 },
+                region: TradeRegion::Global,
+                category: TradeCategory::SupplyChain,
+                topics: vec![
+                    "supply chain".into(),
+                    "logistics".into(),
+                    "semiconductors".into(),
+                ],
+                enabled: true,
+                last_fetched: None,
+                last_item_count: 0,
+            },
         ]
     }
 
@@ -99,9 +144,13 @@ impl TradeRssMonitor {
                 Ok(items) => {
                     debug!(source = %source.feed_id, count = items.len(), "Trade feed fetched");
                     for item in items {
-                        let keywords: Vec<String> = source.topics.iter()
-                            .filter(|t| item.title.to_lowercase().contains(&t.to_lowercase())
-                                     || item.description.to_lowercase().contains(&t.to_lowercase()))
+                        let keywords: Vec<String> = source
+                            .topics
+                            .iter()
+                            .filter(|t| {
+                                item.title.to_lowercase().contains(&t.to_lowercase())
+                                    || item.description.to_lowercase().contains(&t.to_lowercase())
+                            })
                             .cloned()
                             .collect();
                         all_items.push(TradeFeedItem {
@@ -131,14 +180,16 @@ impl TradeRssMonitor {
 
     async fn fetch_feed(&self, url: &str) -> Result<Vec<RssItem>> {
         let resp = self.client.get(url).send().await?;
-        if !resp.status().is_success() { return Ok(Vec::new()); }
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
         let body = resp.text().await?;
         self.parse_rss(&body)
     }
 
     fn parse_rss(&self, xml: &str) -> Result<Vec<RssItem>> {
-        use quick_xml::Reader;
         use quick_xml::events::Event;
+        use quick_xml::Reader;
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
         let mut items = Vec::new();
@@ -155,8 +206,11 @@ impl TradeRssMonitor {
             match reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if tag_name == "item" { in_item = true; }
-                    else if in_item { current_tag = tag_name; }
+                    if tag_name == "item" {
+                        in_item = true;
+                    } else if in_item {
+                        current_tag = tag_name;
+                    }
                 }
                 Ok(Event::End(e)) => {
                     let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
@@ -165,13 +219,21 @@ impl TradeRssMonitor {
                             title: title.clone(),
                             description: description.clone(),
                             link: link.clone(),
-                            guid: if guid.is_empty() { link.clone() } else { guid.clone() },
+                            guid: if guid.is_empty() {
+                                link.clone()
+                            } else {
+                                guid.clone()
+                            },
                             published: chrono::Utc::now(),
                             author: author.clone(),
                         });
-                        title.clear(); description.clear(); link.clear(); 
-                        pub_date.clear(); author = None;
-                        guid.clear(); in_item = false;
+                        title.clear();
+                        description.clear();
+                        link.clear();
+                        pub_date.clear();
+                        author = None;
+                        guid.clear();
+                        in_item = false;
                     }
                 }
                 Ok(Event::Text(e)) => {
@@ -201,14 +263,21 @@ impl TradeRssMonitor {
     }
 
     pub fn feeds_by_category(&self, category: TradeCategory) -> Vec<&TradeFeedSource> {
-        self.sources.iter().filter(|s| s.category == category).collect()
+        self.sources
+            .iter()
+            .filter(|s| s.category == category)
+            .collect()
     }
 
-    pub fn feed_count(&self) -> usize { self.sources.len() }
+    pub fn feed_count(&self) -> usize {
+        self.sources.len()
+    }
 }
 
 impl Default for TradeRssMonitor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct RssItem {

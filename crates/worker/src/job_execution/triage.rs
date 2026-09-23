@@ -68,7 +68,7 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
         // Persist scores (composite_score is computed internally by batch_update_scores)
         match queue.batch_update_scores(score_entries).await {
             Ok(count) => {
-                run.succeed(count as u64, &format!("scored {} items", unscored.len()));
+                run.succeed(count, &format!("scored {} items", unscored.len()));
             }
             Err(e) => {
                 run.fail(&format!("failed to persist scores: {e}"));

@@ -474,7 +474,12 @@ pub async fn create_recipe_form(
     });
 
     match store
-        .upsert_recipe_definition(&code, definition["name"].as_str().unwrap_or("Recipe"), "staging", &definition)
+        .upsert_recipe_definition(
+            &code,
+            definition["name"].as_str().unwrap_or("Recipe"),
+            "staging",
+            &definition,
+        )
         .await
     {
         Ok(()) => axum::response::Redirect::to("/recipes?created=1").into_response(),

@@ -272,17 +272,14 @@ impl SourceCredibilityScorer {
         result.most_recent = most_recent;
 
         // Calculate authority score (0-1 from 0-3 tier)
-        result.authority_score = (authority_sum as f64 / (evidence.len() as f64 * 3.0))
-            .clamp(0.0, 1.0);
+        result.authority_score =
+            (authority_sum as f64 / (evidence.len() as f64 * 3.0)).clamp(0.0, 1.0);
 
         // Calculate recency score
         let now = Utc::now();
-        let oldest = evidence.iter()
-            .map(|e| e.observed_at)
-            .min()
-            .unwrap_or(now);
+        let oldest = evidence.iter().map(|e| e.observed_at).min().unwrap_or(now);
         let age_days = (now - oldest).num_days() as f64;
-        
+
         if age_days <= 1.0 {
             result.recency_score = 1.0;
         } else if age_days <= 7.0 {
@@ -307,17 +304,14 @@ impl SourceCredibilityScorer {
         };
 
         // Calculate completeness score
-        let total_completeness: f64 = evidence.iter()
-            .map(|e| e.completeness)
-            .sum();
+        let total_completeness: f64 = evidence.iter().map(|e| e.completeness).sum();
         result.completeness_score = total_completeness / evidence.len() as f64;
 
         // Calculate overall score
-        result.overall = 
-            result.authority_score * self.config.authority_weight +
-            result.recency_score * self.config.recency_weight +
-            result.corroboration_score * self.config.corroboration_weight +
-            result.completeness_score * self.config.completeness_weight;
+        result.overall = result.authority_score * self.config.authority_weight
+            + result.recency_score * self.config.recency_weight
+            + result.corroboration_score * self.config.corroboration_weight
+            + result.completeness_score * self.config.completeness_weight;
 
         // Apply flags
         self.apply_flags(evidence, &unique_domains, age_days as u32, &mut result);
@@ -480,28 +474,43 @@ impl ValidationResult {
 
     /// Calculate overall quality score.
     pub fn calculate_quality_score(&mut self) {
-        self.quality_score =
-            self.accuracy_score * 0.30 +
-            self.consistency_score * 0.25 +
-            self.plausibility_score * 0.25 +
-            self.actionability_score * 0.20;
+        self.quality_score = self.accuracy_score * 0.30
+            + self.consistency_score * 0.25
+            + self.plausibility_score * 0.25
+            + self.actionability_score * 0.20;
 
         // Add errors for low scores
         if self.accuracy_score < 0.5 {
-            let msg = format!("Factual accuracy score ({:.2}) is below threshold", self.accuracy_score);
-            self.errors.push(ValidationError::new("Low accuracy score", &msg));
+            let msg = format!(
+                "Factual accuracy score ({:.2}) is below threshold",
+                self.accuracy_score
+            );
+            self.errors
+                .push(ValidationError::new("Low accuracy score", &msg));
         }
         if self.consistency_score < 0.5 {
-            let msg = format!("Internal consistency score ({:.2}) is below threshold", self.consistency_score);
-            self.errors.push(ValidationError::new("Low consistency score", &msg));
+            let msg = format!(
+                "Internal consistency score ({:.2}) is below threshold",
+                self.consistency_score
+            );
+            self.errors
+                .push(ValidationError::new("Low consistency score", &msg));
         }
         if self.plausibility_score < 0.5 {
-            let msg = format!("Plausibility score ({:.2}) is below threshold", self.plausibility_score);
-            self.errors.push(ValidationError::new("Low plausibility score", &msg));
+            let msg = format!(
+                "Plausibility score ({:.2}) is below threshold",
+                self.plausibility_score
+            );
+            self.errors
+                .push(ValidationError::new("Low plausibility score", &msg));
         }
         if self.actionability_score < 0.3 {
-            let msg = format!("Actionability score ({:.2}) is below threshold", self.actionability_score);
-            self.errors.push(ValidationError::new("Low actionability score", &msg));
+            let msg = format!(
+                "Actionability score ({:.2}) is below threshold",
+                self.actionability_score
+            );
+            self.errors
+                .push(ValidationError::new("Low actionability score", &msg));
         }
 
         // Set status based on quality score and errors
@@ -693,14 +702,15 @@ impl OutputValidator {
         for claim in &content.claims {
             let claim_lower = claim.to_lowercase();
             let narrative_lower = content.narrative.to_lowercase();
-            
+
             // Check for key claim terms in narrative
             let words: Vec<&str> = claim_lower.split_whitespace().collect();
             let word_count = words.len();
-            let found_count = words.iter()
+            let found_count = words
+                .iter()
                 .filter(|w| narrative_lower.contains(*w))
                 .count();
-            
+
             let coverage = if word_count > 0 {
                 found_count as f64 / word_count as f64
             } else {
@@ -739,12 +749,13 @@ impl OutputValidator {
                 .split_whitespace()
                 .filter(|w| w.len() > 4)
                 .collect();
-            
+
             // Check if key terms appear in narrative
-            let matched = title_terms.iter()
+            let matched = title_terms
+                .iter()
                 .filter(|t| narrative_lower.contains(*t))
                 .count();
-            
+
             if title_terms.len() > 2 && matched < title_terms.len() / 2 {
                 score -= 0.2;
             }
@@ -768,7 +779,7 @@ impl OutputValidator {
                 let sentences: Vec<&str> = narrative_lower.split('.').collect();
                 let pos_sentences = sentences.iter().filter(|s| s.contains(pos)).count();
                 let neg_sentences = sentences.iter().filter(|s| s.contains(neg)).count();
-                
+
                 if pos_sentences > 0 && neg_sentences > 0 {
                     has_contradiction = true;
                     break;
@@ -798,7 +809,15 @@ impl OutputValidator {
         let narrative_lower = content.narrative.to_lowercase();
 
         // Check for always/never patterns (strong claims without evidence)
-        let strong_claims = ["always", "never", "definitely", "certainly", "absolutely", "100% certainty", "no exceptions"];
+        let strong_claims = [
+            "always",
+            "never",
+            "definitely",
+            "certainly",
+            "absolutely",
+            "100% certainty",
+            "no exceptions",
+        ];
         for claim in strong_claims {
             if narrative_lower.contains(claim) {
                 if content.sources.is_empty() {
@@ -828,10 +847,7 @@ impl OutputValidator {
         }
 
         // Check for reasonable magnitude claims
-        let unreasonable = [
-            ("increased by 10000%", 0.1),
-            ("decreased by 5000%", 0.1),
-        ];
+        let unreasonable = [("increased by 10000%", 0.1), ("decreased by 5000%", 0.1)];
 
         for (pattern, _) in &unreasonable {
             if narrative_lower.contains(pattern) {
@@ -855,16 +871,18 @@ impl OutputValidator {
         if !content.recommendations.is_empty() {
             let rec_count = content.recommendations.len() as f64;
             let rec_score = (rec_count.min(5.0) / 5.0 * 0.5) + 0.5; // 0.5-1.0 based on count
-            
+
             // Check recommendation quality
-            let has_action_verbs = content.recommendations.iter()
-                .any(|r| {
-                    let lower = r.to_lowercase();
-                    lower.contains("implement") || lower.contains("review") || 
-                    lower.contains("contact") || lower.contains("investigate") ||
-                    lower.contains("monitor") || lower.contains("assess")
-                });
-            
+            let has_action_verbs = content.recommendations.iter().any(|r| {
+                let lower = r.to_lowercase();
+                lower.contains("implement")
+                    || lower.contains("review")
+                    || lower.contains("contact")
+                    || lower.contains("investigate")
+                    || lower.contains("monitor")
+                    || lower.contains("assess")
+            });
+
             if has_action_verbs {
                 return rec_score.max(0.8);
             }
@@ -873,12 +891,19 @@ impl OutputValidator {
 
         // If no explicit recommendations, check for implicit actionability
         let mut implicit_score: f64 = 0.3;
-        
+
         // Check for action indicators in narrative
         let narrative_lower = content.narrative.to_lowercase();
         let action_indicators = [
-            "should", "recommend", "consider", "requires", "needs",
-            "action", "next step", "immediately", "urgent"
+            "should",
+            "recommend",
+            "consider",
+            "requires",
+            "needs",
+            "action",
+            "next step",
+            "immediately",
+            "urgent",
         ];
 
         for indicator in &action_indicators {
@@ -982,14 +1007,14 @@ impl BiasReport {
     /// Calculate overall risk score.
     pub fn calculate_risk(&mut self) {
         let mut score = 0.0;
-        
+
         score += self.confirmation_bias.severity * 0.35;
         score += self.availability_bias.severity * 0.25;
-        
+
         if let Some(ref geo) = self.geographic_bias {
             score += geo.severity * 0.20;
         }
-        
+
         if let Some(ref conflict) = self.interest_conflict {
             score += conflict.severity * 0.20;
         }
@@ -1003,29 +1028,26 @@ impl BiasReport {
     /// Add mitigation recommendations.
     fn add_recommendations(&mut self) {
         if self.confirmation_bias.severity > 0.5 {
-            self.recommendations.push(
-                "Seek disconfirming evidence to counter confirmation bias".to_string()
-            );
+            self.recommendations
+                .push("Seek disconfirming evidence to counter confirmation bias".to_string());
         }
 
         if self.availability_bias.severity > 0.5 {
-            self.recommendations.push(
-                "Expand source diversity to counter availability heuristic".to_string()
-            );
+            self.recommendations
+                .push("Expand source diversity to counter availability heuristic".to_string());
         }
 
         if let Some(ref geo) = self.geographic_bias {
             if geo.severity > 0.5 {
-                self.recommendations.push(
-                    "Include sources from multiple geographic regions".to_string()
-                );
+                self.recommendations
+                    .push("Include sources from multiple geographic regions".to_string());
             }
         }
 
         if let Some(ref conflict) = self.interest_conflict {
             if conflict.severity > 0.5 {
                 self.recommendations.push(
-                    "Review for potential conflicts of interest in source selection".to_string()
+                    "Review for potential conflicts of interest in source selection".to_string(),
                 );
             }
         }
@@ -1102,14 +1124,22 @@ impl BiasType {
     /// Get description.
     pub fn description(&self) -> &'static str {
         match self {
-            Self::ConfirmationBias => "Tendency to search for, interpret, and recall information \
-                that confirms pre-existing beliefs or values.",
-            Self::AvailabilityBias => "Tendency to overestimate the importance of information \
-                that is readily available, especially recent or emotionally vivid events.",
-            Self::GeographicBias => "Tendency to favor perspectives from certain geographic \
-                regions or cultural backgrounds, overlooking alternatives.",
-            Self::InterestConflict => "Analysis potentially influenced by undisclosed \
-                financial, professional, or personal interests.",
+            Self::ConfirmationBias => {
+                "Tendency to search for, interpret, and recall information \
+                that confirms pre-existing beliefs or values."
+            }
+            Self::AvailabilityBias => {
+                "Tendency to overestimate the importance of information \
+                that is readily available, especially recent or emotionally vivid events."
+            }
+            Self::GeographicBias => {
+                "Tendency to favor perspectives from certain geographic \
+                regions or cultural backgrounds, overlooking alternatives."
+            }
+            Self::InterestConflict => {
+                "Analysis potentially influenced by undisclosed \
+                financial, professional, or personal interests."
+            }
         }
     }
 }
@@ -1231,19 +1261,24 @@ impl BiasDetector {
         }
 
         // Check source diversity for confirmation signals
-        let unique_domains: Vec<String> = content.sources.iter()
+        let unique_domains: Vec<String> = content
+            .sources
+            .iter()
             .filter_map(|s| {
                 // Extract domain from URL
                 s.split('/').nth(2).map(|d| d.to_lowercase())
             })
             .collect();
-        let unique_domain_count = unique_domains.iter().collect::<std::collections::HashSet<_>>().len();
+        let unique_domain_count = unique_domains
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
 
         // All sources from same domain or perspective suggests confirmation bias
         if unique_domain_count <= 1 && !content.sources.is_empty() {
             indicator.add_instance(BiasInstance::new(
                 "Single source domain - may indicate selective sourcing",
-                "sources"
+                "sources",
             ));
             indicator.add_evidence(&format!(
                 "All {} sources from same domain(s): {:?}",
@@ -1298,7 +1333,7 @@ impl BiasDetector {
             if age_hours < 24 {
                 indicator.add_instance(BiasInstance::new(
                     "Analysis based on very recent data (<24h)",
-                    "published_date"
+                    "published_date",
                 ));
             }
         }
@@ -1318,41 +1353,43 @@ impl BiasDetector {
         if region_count <= 1 && !content.geographic_references.is_empty() {
             indicator.add_instance(BiasInstance::new(
                 "Single geographic region referenced",
-                "narrative"
+                "narrative",
             ));
         }
 
         // Check source geographic distribution
-        let source_domains: Vec<&str> = content.sources.iter()
+        let source_domains: Vec<&str> = content
+            .sources
+            .iter()
             .filter_map(|s| s.split('/').nth(2))
             .collect();
 
         // Check if all sources are from similar TLDs
-        let tlds: HashSet<&str> = source_domains.iter()
+        let tlds: HashSet<&str> = source_domains
+            .iter()
             .filter_map(|d| d.rsplit('.').next())
             .collect();
 
         if tlds.len() <= 1 && !source_domains.is_empty() {
             indicator.add_instance(BiasInstance::new(
                 "Sources concentrated in single geographic TLD",
-                "sources"
+                "sources",
             ));
-            indicator.add_evidence(&format!(
-                "Source TLDs: {:?}",
-                tlds
-            ));
+            indicator.add_evidence(&format!("Source TLDs: {:?}", tlds));
         }
 
         // Check for primary region bias if configured
         if let Some(ref primary) = self.config.primary_region {
-            let primary_refs = content.geographic_references.iter()
+            let primary_refs = content
+                .geographic_references
+                .iter()
                 .filter(|r| r.to_lowercase().contains(&primary.to_lowercase()))
                 .count();
-            
+
             if primary_refs > content.geographic_references.len() / 2 && region_count > 2 {
                 indicator.add_instance(BiasInstance::new(
                     "Heavy focus on primary region despite multiple regions",
-                    "narrative"
+                    "narrative",
                 ));
             }
         }
@@ -1405,7 +1442,7 @@ impl BiasDetector {
                 if source.to_lowercase().contains(promo) {
                     indicator.add_instance(BiasInstance::new(
                         "Source may be entity's own communications",
-                        "sources"
+                        "sources",
                     ));
                     indicator.add_evidence(source);
                 }
@@ -1657,7 +1694,9 @@ impl QualityImprovementEngine {
 
     /// Record quality for a category.
     pub fn record_category_quality(&mut self, category: &str, quality: f64) {
-        let scores = self.category_performance.entry(category.to_string())
+        let scores = self
+            .category_performance
+            .entry(category.to_string())
             .or_default();
         scores.push(quality);
 
@@ -1680,7 +1719,9 @@ impl QualityImprovementEngine {
             // Calculate trend
             if self.quality_history.len() >= 10 {
                 let recent: Vec<f64> = self.quality_history.iter().rev().take(5).cloned().collect();
-                let older: Vec<f64> = self.quality_history.iter()
+                let older: Vec<f64> = self
+                    .quality_history
+                    .iter()
                     .rev()
                     .skip(5)
                     .take(5)
@@ -1709,7 +1750,7 @@ impl QualityImprovementEngine {
 
         // Sort for top and bottom
         category_avgs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        
+
         analysis.top_categories = category_avgs.iter().take(3).cloned().collect();
         analysis.bottom_categories = category_avgs.iter().rev().take(3).cloned().collect();
 
@@ -1728,7 +1769,7 @@ impl QualityImprovementEngine {
                 // Low performance - suggest refinement
                 if avg < self.config.human_review_threshold {
                     let mut refinement = RecipeRefinement::new(cat);
-                    
+
                     if avg < 0.4 {
                         refinement.expected_improvement = 0.2;
                         refinement.needs_human_review = true;
@@ -1748,7 +1789,8 @@ impl QualityImprovementEngine {
 
         // Sort by expected improvement (highest first)
         refinements.sort_by(|a, b| {
-            b.expected_improvement.partial_cmp(&a.expected_improvement)
+            b.expected_improvement
+                .partial_cmp(&a.expected_improvement)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -1763,9 +1805,11 @@ impl QualityImprovementEngine {
         let mut category_fp_rates: HashMap<String, (u32, u32)> = HashMap::new(); // (FP, total)
 
         for feedback in &self.feedback_history {
-            let entry = category_fp_rates.entry(feedback.insight_id.to_string()).or_insert((0, 0));
+            let entry = category_fp_rates
+                .entry(feedback.insight_id.to_string())
+                .or_insert((0, 0));
             entry.1 += 1;
-            
+
             if feedback.feedback_type == QualityFeedbackType::FalsePositive {
                 entry.0 += 1;
             }
@@ -1793,7 +1837,8 @@ impl QualityImprovementEngine {
                         target: target.clone(),
                         current: 0.1,
                         recommended: 0.05,
-                        reason: "Very low false positive rate suggests threshold may be too high.".to_string(),
+                        reason: "Very low false positive rate suggests threshold may be too high."
+                            .to_string(),
                     });
                 }
             }
@@ -1805,28 +1850,51 @@ impl QualityImprovementEngine {
     /// Check if human review is needed.
     pub fn needs_human_review(&self, quality_score: f64) -> bool {
         quality_score < self.config.human_review_threshold
-            || self.feedback_history.iter()
+            || self
+                .feedback_history
+                .iter()
                 .filter(|f| f.feedback_type == QualityFeedbackType::FalsePositive)
-                .count() >= 3
+                .count()
+                >= 3
     }
 
     /// Get feedback statistics.
     pub fn get_stats(&self) -> QualityStats {
         let total = self.feedback_history.len() as u32;
-        let positive = self.feedback_history.iter()
-            .filter(|f| matches!(f.feedback_type, 
-                QualityFeedbackType::Useful | QualityFeedbackType::Bookmarked | QualityFeedbackType::ActedUpon))
+        let positive = self
+            .feedback_history
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.feedback_type,
+                    QualityFeedbackType::Useful
+                        | QualityFeedbackType::Bookmarked
+                        | QualityFeedbackType::ActedUpon
+                )
+            })
             .count() as f64;
-        let negative = self.feedback_history.iter()
-            .filter(|f| matches!(f.feedback_type,
-                QualityFeedbackType::NotUseful | QualityFeedbackType::FalsePositive | QualityFeedbackType::Dismissed))
+        let negative = self
+            .feedback_history
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.feedback_type,
+                    QualityFeedbackType::NotUseful
+                        | QualityFeedbackType::FalsePositive
+                        | QualityFeedbackType::Dismissed
+                )
+            })
             .count() as f64;
 
         QualityStats {
             total_feedback: total,
             positive_count: positive as u32,
             negative_count: negative as u32,
-            positive_rate: if total > 0 { positive / total as f64 } else { 0.5 },
+            positive_rate: if total > 0 {
+                positive / total as f64
+            } else {
+                0.5
+            },
             avg_rating: if self.quality_history.is_empty() {
                 0.0
             } else {
@@ -1861,7 +1929,8 @@ pub struct QualityStats {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::manual_range_contains,
         clippy::needless_borrows_for_generic_args,
@@ -1875,7 +1944,7 @@ mod tests {
     #[test]
     fn test_credibility_scorer_high_authority() {
         let scorer = SourceCredibilityScorer::new();
-        
+
         let evidence = vec![
             ScoredEvidence::from_domain("sec.gov", Utc::now()),
             ScoredEvidence::from_domain("treasury.gov", Utc::now()),
@@ -1883,22 +1952,29 @@ mod tests {
         ];
 
         let score = scorer.score(&evidence);
-        
-        assert!(score.overall > 0.7, "High authority sources should score well");
-        assert!(score.highest_authority >= 3, "Should detect government source");
-        assert!(score.authority_score > 0.8, "Authority score should be high");
+
+        assert!(
+            score.overall > 0.7,
+            "High authority sources should score well"
+        );
+        assert!(
+            score.highest_authority >= 3,
+            "Should detect government source"
+        );
+        assert!(
+            score.authority_score > 0.8,
+            "Authority score should be high"
+        );
     }
 
     #[test]
     fn test_credibility_scorer_single_source() {
         let scorer = SourceCredibilityScorer::new();
-        
-        let evidence = vec![
-            ScoredEvidence::from_domain("twitter.com", Utc::now()),
-        ];
+
+        let evidence = vec![ScoredEvidence::from_domain("twitter.com", Utc::now())];
 
         let score = scorer.score(&evidence);
-        
+
         assert!(score.flags.contains(&CredibilityFlag::SingleSource));
         assert!(score.overall < 0.5, "Single social source should score low");
     }
@@ -1906,7 +1982,7 @@ mod tests {
     #[test]
     fn test_credibility_scorer_stale_evidence() {
         let scorer = SourceCredibilityScorer::new();
-        
+
         let old_date = Utc::now() - chrono::Duration::days(60);
         let evidence = vec![
             ScoredEvidence::from_domain("reuters.com", old_date),
@@ -1914,9 +1990,12 @@ mod tests {
         ];
 
         let score = scorer.score(&evidence);
-        
+
         assert!(score.flags.contains(&CredibilityFlag::StaleEvidence));
-        assert!(score.recency_score < 0.4, "Stale evidence should have low recency score");
+        assert!(
+            score.recency_score < 0.4,
+            "Stale evidence should have low recency score"
+        );
     }
 
     // ─── Output Validator Tests ─────────────────────────────────────────────
@@ -1924,7 +2003,7 @@ mod tests {
     #[test]
     fn test_validator_passes_clean_content() {
         let validator = OutputValidator::new();
-        
+
         let content = ValidationContent {
             title: "NVIDIA Supply Chain Update".to_string(),
             narrative: "Analysis of recent supply chain developments indicates potential disruption. Multiple sources confirm the trend.".to_string(),
@@ -1941,7 +2020,7 @@ mod tests {
         };
 
         let result = validator.validate(&content);
-        
+
         assert!(result.accuracy_score > 0.6);
         assert!(result.consistency_score > 0.7);
         assert!(result.passed() || result.status == ValidationStatus::PassedWithWarnings);
@@ -1950,7 +2029,7 @@ mod tests {
     #[test]
     fn test_validator_fails_empty_narrative() {
         let validator = OutputValidator::new();
-        
+
         let content = ValidationContent {
             title: "Test".to_string(),
             narrative: String::new(),
@@ -1961,7 +2040,7 @@ mod tests {
         };
 
         let result = validator.validate(&content);
-        
+
         assert_eq!(result.accuracy_score, 0.0);
         assert!(!result.errors.is_empty());
     }
@@ -1969,7 +2048,7 @@ mod tests {
     #[test]
     fn test_validator_detects_contradiction() {
         let validator = OutputValidator::new();
-        
+
         let content = ValidationContent {
             title: "Market Analysis".to_string(),
             narrative: "The company shows strong growth in Q3. However, revenue has decreased significantly.".to_string(),
@@ -1980,14 +2059,17 @@ mod tests {
         };
 
         let result = validator.validate(&content);
-        
-        assert!(result.consistency_score < 0.8, "Should detect contradiction");
+
+        assert!(
+            result.consistency_score < 0.8,
+            "Should detect contradiction"
+        );
     }
 
     #[test]
     fn test_validator_detects_implausible_claims() {
         let validator = OutputValidator::new();
-        
+
         let content = ValidationContent {
             title: "Prediction".to_string(),
             narrative: "This always happens with 100% certainty and no exceptions.".to_string(),
@@ -1998,14 +2080,17 @@ mod tests {
         };
 
         let result = validator.validate(&content);
-        
-        assert!(result.plausibility_score < 0.8, "Should detect implausibility");
+
+        assert!(
+            result.plausibility_score < 0.8,
+            "Should detect implausibility"
+        );
     }
 
     #[test]
     fn test_validator_actionability() {
         let validator = OutputValidator::new();
-        
+
         // With recommendations
         let with_rec = ValidationContent {
             recommendations: vec![
@@ -2031,7 +2116,7 @@ mod tests {
     #[test]
     fn test_bias_detector_confirmation_bias() {
         let detector = BiasDetector::new();
-        
+
         let content = BiasContent {
             title: "Company Analysis".to_string(),
             narrative: "The data clearly proves our theory. This obviously confirms our hypothesis. The facts demonstrate that we were right all along.".to_string(),
@@ -2042,15 +2127,18 @@ mod tests {
         };
 
         let report = detector.analyze(&content);
-        
-        assert!(report.confirmation_bias.severity > 0.2, "Should detect confirmation bias");
+
+        assert!(
+            report.confirmation_bias.severity > 0.2,
+            "Should detect confirmation bias"
+        );
         assert!(report.risk_score > 0.0);
     }
 
     #[test]
     fn test_bias_detector_availability_bias() {
         let detector = BiasDetector::new();
-        
+
         let content = BiasContent {
             title: "Breaking News".to_string(),
             narrative: "Recently, shocking developments have just been announced. This is a devastating and terrifying situation.".to_string(),
@@ -2061,14 +2149,17 @@ mod tests {
         };
 
         let report = detector.analyze(&content);
-        
-        assert!(report.availability_bias.severity > 0.0, "Should detect availability bias");
+
+        assert!(
+            report.availability_bias.severity > 0.0,
+            "Should detect availability bias"
+        );
     }
 
     #[test]
     fn test_bias_detector_geographic_bias() {
         let detector = BiasDetector::new();
-        
+
         let content = BiasContent {
             title: "Analysis".to_string(),
             narrative: "Analysis focused on US markets and US regulations.".to_string(),
@@ -2083,7 +2174,7 @@ mod tests {
         };
 
         let report = detector.analyze(&content);
-        
+
         if let Some(ref geo) = report.geographic_bias {
             assert!(geo.severity > 0.0, "Should detect geographic bias");
         }
@@ -2092,7 +2183,7 @@ mod tests {
     #[test]
     fn test_bias_detector_interest_conflict() {
         let detector = BiasDetector::new();
-        
+
         let content = BiasContent {
             title: "Stock Analysis".to_string(),
             narrative: "Analyst estimates target price with buy rating. This leading innovative company has revolutionary technology.".to_string(),
@@ -2103,7 +2194,7 @@ mod tests {
         };
 
         let report = detector.analyze(&content);
-        
+
         if let Some(ref conflict) = report.interest_conflict {
             assert!(conflict.severity > 0.0, "Should detect interest conflict");
         }
@@ -2114,19 +2205,17 @@ mod tests {
     #[test]
     fn test_improvement_engine_feedback_recording() {
         let mut engine = QualityImprovementEngine::new();
-        
+
         engine.record_feedback(
-            QualityFeedback::new(Uuid::new_v4(), QualityFeedbackType::Useful)
-                .with_rating(0.9)
+            QualityFeedback::new(Uuid::new_v4(), QualityFeedbackType::Useful).with_rating(0.9),
         );
-        
+
         engine.record_feedback(
-            QualityFeedback::new(Uuid::new_v4(), QualityFeedbackType::NotUseful)
-                .with_rating(0.3)
+            QualityFeedback::new(Uuid::new_v4(), QualityFeedbackType::NotUseful).with_rating(0.3),
         );
 
         let stats = engine.get_stats();
-        
+
         assert_eq!(stats.total_feedback, 2);
         assert_eq!(stats.positive_count, 1);
         assert_eq!(stats.negative_count, 1);
@@ -2135,36 +2224,35 @@ mod tests {
     #[test]
     fn test_improvement_engine_category_tracking() {
         let mut engine = QualityImprovementEngine::new();
-        
+
         engine.record_category_quality("supply_chain", 0.8);
         engine.record_category_quality("supply_chain", 0.7);
         engine.record_category_quality("supply_chain", 0.6);
         engine.record_category_quality("demand", 0.9);
 
         let analysis = engine.analyze_pattern_of_life(30);
-        
+
         assert!(analysis.top_categories.iter().any(|(c, _)| c == "demand"));
     }
 
     #[test]
     fn test_improvement_engine_recipe_refinement() {
         let mut engine = QualityImprovementEngine::new();
-        
+
         // Add low-performing category
         for _ in 0..10 {
             engine.record_category_quality("low_perf", 0.3);
         }
-        
+
         // Add high-performing category
         for _ in 0..5 {
             engine.record_category_quality("high_perf", 0.9);
         }
 
         let refinements = engine.generate_recipe_refinements();
-        
+
         assert!(!refinements.is_empty());
-        let low_refinement = refinements.iter()
-            .find(|r| r.recipe_code == "low_perf");
+        let low_refinement = refinements.iter().find(|r| r.recipe_code == "low_perf");
         assert!(low_refinement.is_some());
         assert!(low_refinement.unwrap().needs_human_review);
     }
@@ -2178,16 +2266,18 @@ mod tests {
 
         // Add false positive feedback for the same insight
         for _ in 0..4 {
-            engine.record_feedback(
-                QualityFeedback::new(insight_id, QualityFeedbackType::FalsePositive)
-            );
+            engine.record_feedback(QualityFeedback::new(
+                insight_id,
+                QualityFeedbackType::FalsePositive,
+            ));
         }
 
         // Add positive feedback for the same insight
         for _ in 0..2 {
-            engine.record_feedback(
-                QualityFeedback::new(insight_id, QualityFeedbackType::Useful)
-            );
+            engine.record_feedback(QualityFeedback::new(
+                insight_id,
+                QualityFeedbackType::Useful,
+            ));
         }
 
         // Total: 6 feedback, 4 FP = 66.7% FP rate (>30%)
@@ -2195,16 +2285,19 @@ mod tests {
         let adjustments = engine.calculate_threshold_adjustments();
 
         // With >30% FP rate (4/6 = 66.7%), should recommend threshold increase
-        assert!(!adjustments.is_empty(), "Should have threshold adjustments with >30% FP rate");
+        assert!(
+            !adjustments.is_empty(),
+            "Should have threshold adjustments with >30% FP rate"
+        );
     }
-        
+
     #[test]
     fn test_improvement_engine_needs_human_review() {
         let engine = QualityImprovementEngine::new();
-        
+
         // Low quality score needs review
         assert!(engine.needs_human_review(0.3));
-        
+
         // High quality score doesn't need review
         assert!(!engine.needs_human_review(0.8));
     }
@@ -2245,15 +2338,15 @@ mod tests {
     #[test]
     fn test_bias_report_risk_calculation() {
         let mut report = BiasReport::new();
-        
+
         report.confirmation_bias.severity = 0.6;
         report.availability_bias.severity = 0.4;
-        
+
         let geo_indicator = BiasIndicator::new(BiasType::GeographicBias);
         report.add_bias(geo_indicator);
-        
+
         report.calculate_risk();
-        
+
         // 0.6*0.35 + 0.4*0.25 + 0*0.20 + 0*0.20 = 0.21 + 0.1 = 0.31
         assert!(report.risk_score > 0.3);
         assert!(!report.recommendations.is_empty());
@@ -2264,16 +2357,16 @@ mod tests {
     #[test]
     fn test_credibility_score_quality_level() {
         let mut score = CredibilityScore::new();
-        
+
         score.overall = 0.9;
         assert_eq!(score.quality_level(), "Excellent");
-        
+
         score.overall = 0.7;
         assert_eq!(score.quality_level(), "Good");
-        
+
         score.overall = 0.5;
         assert_eq!(score.quality_level(), "Fair");
-        
+
         score.overall = 0.3;
         assert_eq!(score.quality_level(), "Poor");
     }

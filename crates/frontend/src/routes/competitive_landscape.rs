@@ -1,14 +1,14 @@
 use leptos::*;
-use serde_json::Value;
 
 use crate::api;
 use crate::components::cards::{PageHeader, SurfaceCard};
 
 #[component]
 pub fn CompetitiveLandscapePage() -> impl IntoView {
-    let landscape_resource = create_resource(|| (), |_| async {
-        api::fetch_competitive_landscape().await
-    });
+    let landscape_resource = create_resource(
+        || (),
+        |_| async { api::fetch_competitive_landscape().await },
+    );
 
     view! {
         <div class="page">

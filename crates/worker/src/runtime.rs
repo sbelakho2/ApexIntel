@@ -204,9 +204,7 @@ pub(crate) async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStor
                 // vanishing (which previously left no history record).
                 match tokio::time::timeout(
                     timeout,
-                    tokio::spawn(async move {
-                        execute_job(&run_kind, &store).await
-                    }),
+                    tokio::spawn(async move { execute_job(&run_kind, &store).await }),
                 )
                 .await
                 {

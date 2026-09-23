@@ -61,9 +61,15 @@ impl ContactEnricher {
             });
         Self {
             client,
-            apollo_key: std::env::var("APOLLO_API_KEY").ok().filter(|s| !s.is_empty()),
-            hunter_key: std::env::var("HUNTER_API_KEY").ok().filter(|s| !s.is_empty()),
-            clearbit_key: std::env::var("CLEARBIT_API_KEY").ok().filter(|s| !s.is_empty()),
+            apollo_key: std::env::var("APOLLO_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            hunter_key: std::env::var("HUNTER_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            clearbit_key: std::env::var("CLEARBIT_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
@@ -108,7 +114,11 @@ impl ContactEnricher {
             if let Some(key) = &self.clearbit_key {
                 match self.clearbit_lookup(key, full_name, company_domain).await {
                     Ok(contacts) if !contacts.is_empty() => {
-                        debug!(name = full_name, n = contacts.len(), "contact: clearbit hit");
+                        debug!(
+                            name = full_name,
+                            n = contacts.len(),
+                            "contact: clearbit hit"
+                        );
                         all.extend(contacts);
                     }
                     Ok(_) => debug!(name = full_name, "contact: clearbit miss"),
@@ -170,7 +180,12 @@ impl ContactEnricher {
                 contact_type: "email".into(),
                 value: email.to_string(),
                 confidence: if verified { 0.95 } else { 0.7 },
-                verification_status: if verified { "smtp_verified" } else { "syntax_valid" }.into(),
+                verification_status: if verified {
+                    "smtp_verified"
+                } else {
+                    "syntax_valid"
+                }
+                .into(),
                 source: "apollo".into(),
             });
         }
@@ -213,7 +228,12 @@ impl ContactEnricher {
             urlencoding::encode(&first),
             urlencoding::encode(&last),
         );
-        let resp = self.client.get(&url).header("X-Api-Key", key).send().await?;
+        let resp = self
+            .client
+            .get(&url)
+            .header("X-Api-Key", key)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             tracing::warn!(status = %resp.status(), "hunter_lookup: request failed (check API key/quota)");
             return Ok(Vec::new());
@@ -283,11 +303,7 @@ impl ContactEnricher {
 
     // ── Website scrape fallback (always available) ──────────────────────────
 
-    async fn website_scrape(
-        &self,
-        full_name: &str,
-        domain: &str,
-    ) -> Result<Vec<EnrichedContact>> {
+    async fn website_scrape(&self, full_name: &str, domain: &str) -> Result<Vec<EnrichedContact>> {
         let domain = domain.trim().trim_start_matches("www.");
         // Try common contact/about pages.
         let candidates = [
@@ -333,7 +349,7 @@ impl ContactEnricher {
                             source: "website_scrape".into(),
                         });
                     }
-                    if let Some(phone) = extract_phone(&line) {
+                    if let Some(phone) = extract_phone(line) {
                         let _ = first;
                         out.push(EnrichedContact {
                             contact_type: "phone".into(),
@@ -365,7 +381,8 @@ fn split_name(full: &str) -> (String, String) {
 fn extract_mailto(lower_line: &str) -> Option<String> {
     let idx = lower_line.find("mailto:")?;
     let rest = &lower_line[idx + 7..];
-    let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>');
+    let end =
+        rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>');
     let email = &rest[..end.unwrap_or(rest.len())];
     if email.contains('@') && email.contains('.') {
         Some(email.to_string())

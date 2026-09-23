@@ -128,9 +128,10 @@ impl SocialMention {
             .filter(|s| !s.is_empty())
             .collect(),
             matched_keywords: vec![movement.source.clone()],
-            published_at: movement
-                .announcement_date
-                .and_then(|d| d.and_hms_opt(0, 0, 0).map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))),
+            published_at: movement.announcement_date.and_then(|d| {
+                d.and_hms_opt(0, 0, 0)
+                    .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+            }),
             fetched_at: movement.detected_at,
         }
     }
@@ -169,11 +170,7 @@ impl SocialIntelReport {
         let lower = entity.to_lowercase();
         self.mentions
             .iter()
-            .filter(|m| {
-                m.matched_entities
-                    .iter()
-                    .any(|e| e.to_lowercase() == lower)
-            })
+            .filter(|m| m.matched_entities.iter().any(|e| e.to_lowercase() == lower))
             .collect()
     }
 }
@@ -261,7 +258,11 @@ impl SocialIntelMonitor {
             if count > 0 {
                 platform_counts.insert("twitter".to_string(), count);
             }
-            info!(platform = "twitter", mentions = count, "SocialIntel scan complete");
+            info!(
+                platform = "twitter",
+                mentions = count,
+                "SocialIntel scan complete"
+            );
         }
 
         // ── LinkedIn scan ─────────────────────────────────────────────
@@ -272,7 +273,11 @@ impl SocialIntelMonitor {
             if count > 0 {
                 platform_counts.insert("linkedin".to_string(), count);
             }
-            info!(platform = "linkedin", companies = count, "SocialIntel scan complete");
+            info!(
+                platform = "linkedin",
+                companies = count,
+                "SocialIntel scan complete"
+            );
         }
 
         // ── Forum mentions (pre-collected) ────────────────────────────
@@ -310,10 +315,7 @@ impl SocialIntelMonitor {
                         source_url: exec.linkedin_url.clone(),
                         headline: format!(
                             "{} moved from {} to {} at {}",
-                            exec.full_name,
-                            prev_title,
-                            curr_title,
-                            exec.company
+                            exec.full_name, prev_title, curr_title, exec.company
                         ),
                         description: None,
                         confidence:
@@ -357,7 +359,7 @@ impl Default for SocialIntelMonitor {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

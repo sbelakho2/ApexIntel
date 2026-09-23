@@ -1,5 +1,5 @@
 //! API crate — request/response types, auth, pagination, filtering, route definitions.
-#![cfg_attr(test, allow(clippy::disallowed_methods))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 //!
 //! All route handler types, query parameter validation, pagination logic,
 //! auth token verification, and API response enveloping live here.
@@ -13,13 +13,13 @@ pub mod destructive_actions;
 pub mod filters;
 pub mod middleware;
 pub mod pagination;
+pub mod pdf_writer;
 pub mod phase01;
 pub mod rate_limit;
 pub mod responses;
 pub mod routes;
 pub mod sse;
 pub mod validation;
-pub mod pdf_writer;
 pub mod web;
 
 pub const API_LLM_FEATURE_ENABLED: bool = cfg!(feature = "llm");

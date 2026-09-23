@@ -1008,7 +1008,7 @@ impl GeopoliticalRiskWorkflow {
             .filter(|s| s.entity_type == "country" || s.entity_type == "region")
             .map(|s| s.entity_id.clone())
             .collect();
-        
+
         // Deduplicate
         countries.sort();
         countries.dedup();
@@ -1021,10 +1021,8 @@ impl GeopoliticalRiskWorkflow {
         const REPUTATIONAL_WEIGHT: f64 = 0.15;
 
         for country in &countries {
-            let country_signals: Vec<_> = signals
-                .iter()
-                .filter(|s| &s.entity_id == country)
-                .collect();
+            let country_signals: Vec<_> =
+                signals.iter().filter(|s| &s.entity_id == country).collect();
 
             let risk_sum: f64 = country_signals.iter().map(|s| s.confidence).sum();
             let avg_risk = if country_signals.is_empty() {
@@ -1043,30 +1041,51 @@ impl GeopoliticalRiskWorkflow {
             for s in &country_signals {
                 match s.evidence_type.as_str() {
                     // Political: instability, government change, policy change, expropriation
-                    t if t.contains("political") || t.contains("government")
-                        || t.contains("expropriation") || t.contains("instability") =>
-                        political_signals.push(s.confidence),
+                    t if t.contains("political")
+                        || t.contains("government")
+                        || t.contains("expropriation")
+                        || t.contains("instability") =>
+                    {
+                        political_signals.push(s.confidence)
+                    }
                     // Economic: tariff, trade, sanctions exposure
-                    t if t.contains("tariff") || t.contains("trade") || t.contains("sanction") =>
-                        economic_signals.push(s.confidence),
+                    t if t.contains("tariff") || t.contains("trade") || t.contains("sanction") => {
+                        economic_signals.push(s.confidence)
+                    }
                     // Operational: supply chain, logistics, disruption
-                    t if t.contains("supply_chain") || t.contains("logistics")
-                        || t.contains("disruption") || t.contains("operational") =>
-                        operational_signals.push(s.confidence),
+                    t if t.contains("supply_chain")
+                        || t.contains("logistics")
+                        || t.contains("disruption")
+                        || t.contains("operational") =>
+                    {
+                        operational_signals.push(s.confidence)
+                    }
                     // Legal/regulatory: regulatory flag, compliance, export control
-                    t if t.contains("regulatory") || t.contains("compliance")
-                        || t.contains("export_control") || t.contains("legal") =>
-                        legal_signals.push(s.confidence),
+                    t if t.contains("regulatory")
+                        || t.contains("compliance")
+                        || t.contains("export_control")
+                        || t.contains("legal") =>
+                    {
+                        legal_signals.push(s.confidence)
+                    }
                     // Reputational: social unrest, corruption, human rights
-                    t if t.contains("social") || t.contains("corruption")
-                        || t.contains("human_rights") || t.contains("reputational") =>
-                        reputational_signals.push(s.confidence),
+                    t if t.contains("social")
+                        || t.contains("corruption")
+                        || t.contains("human_rights")
+                        || t.contains("reputational") =>
+                    {
+                        reputational_signals.push(s.confidence)
+                    }
                     _ => {} // unmatched signals contribute to the fallback average only
                 }
             }
 
             let dim_score = |sigs: &[f64]| -> f64 {
-                if sigs.is_empty() { avg_risk } else { sigs.iter().sum::<f64>() / sigs.len() as f64 }
+                if sigs.is_empty() {
+                    avg_risk
+                } else {
+                    sigs.iter().sum::<f64>() / sigs.len() as f64
+                }
             };
 
             let political_score = dim_score(&political_signals);
@@ -1110,16 +1129,40 @@ impl GeopoliticalRiskWorkflow {
         };
 
         let distribution = RiskDistribution {
-            low_risk_countries: country_scores.iter().filter(|c| c.overall_score < 0.3).count() as i32,
-            medium_risk_countries: country_scores.iter().filter(|c| c.overall_score >= 0.3 && c.overall_score < 0.6).count() as i32,
-            high_risk_countries: country_scores.iter().filter(|c| c.overall_score >= 0.6 && c.overall_score < 0.8).count() as i32,
-            critical_risk_countries: country_scores.iter().filter(|c| c.overall_score >= 0.8).count() as i32,
+            low_risk_countries: country_scores
+                .iter()
+                .filter(|c| c.overall_score < 0.3)
+                .count() as i32,
+            medium_risk_countries: country_scores
+                .iter()
+                .filter(|c| c.overall_score >= 0.3 && c.overall_score < 0.6)
+                .count() as i32,
+            high_risk_countries: country_scores
+                .iter()
+                .filter(|c| c.overall_score >= 0.6 && c.overall_score < 0.8)
+                .count() as i32,
+            critical_risk_countries: country_scores
+                .iter()
+                .filter(|c| c.overall_score >= 0.8)
+                .count() as i32,
             distribution_chart: format!(
                 "Low: {}, Medium: {}, High: {}, Critical: {}",
-                country_scores.iter().filter(|c| c.overall_score < 0.3).count(),
-                country_scores.iter().filter(|c| c.overall_score >= 0.3 && c.overall_score < 0.6).count(),
-                country_scores.iter().filter(|c| c.overall_score >= 0.6 && c.overall_score < 0.8).count(),
-                country_scores.iter().filter(|c| c.overall_score >= 0.8).count()
+                country_scores
+                    .iter()
+                    .filter(|c| c.overall_score < 0.3)
+                    .count(),
+                country_scores
+                    .iter()
+                    .filter(|c| c.overall_score >= 0.3 && c.overall_score < 0.6)
+                    .count(),
+                country_scores
+                    .iter()
+                    .filter(|c| c.overall_score >= 0.6 && c.overall_score < 0.8)
+                    .count(),
+                country_scores
+                    .iter()
+                    .filter(|c| c.overall_score >= 0.8)
+                    .count()
             ),
         };
 
@@ -1135,7 +1178,10 @@ impl GeopoliticalRiskWorkflow {
 
     /// Generate executive summary
     fn generate_executive_summary(&self, report: &GeopoliticalRiskReport) -> String {
-        let mut summary = format!("Geopolitical Risk Assessment for {}\n\n", report.target_region);
+        let mut summary = format!(
+            "Geopolitical Risk Assessment for {}\n\n",
+            report.target_region
+        );
 
         summary.push_str(&format!(
             "Overall Risk Score: {:.0}%\n\n",
@@ -1189,7 +1235,12 @@ impl GeopoliticalRiskWorkflow {
             risk_factors.push("Political instability increases operational risk".to_string());
         }
 
-        if report.political_stability.conflict_indicators.overall_conflict_risk > 0.4 {
+        if report
+            .political_stability
+            .conflict_indicators
+            .overall_conflict_risk
+            > 0.4
+        {
             risk_factors.push("Active conflicts affect regional operations".to_string());
         }
 
@@ -1201,7 +1252,12 @@ impl GeopoliticalRiskWorkflow {
             risk_factors.push("Multiple trade restrictions active in region".to_string());
         }
 
-        if report.regional_risk_score.risk_distribution.critical_risk_countries > 0 {
+        if report
+            .regional_risk_score
+            .risk_distribution
+            .critical_risk_countries
+            > 0
+        {
             risk_factors.push("Critical risk countries identified in region".to_string());
         }
 
@@ -1227,16 +1283,29 @@ impl GeopoliticalRiskWorkflow {
             }
         }
 
-        for conflict in &report.political_stability.conflict_indicators.active_conflicts {
-            if matches!(conflict.intensity, ConflictIntensity::High | ConflictIntensity::Critical) {
+        for conflict in &report
+            .political_stability
+            .conflict_indicators
+            .active_conflicts
+        {
+            if matches!(
+                conflict.intensity,
+                ConflictIntensity::High | ConflictIntensity::Critical
+            ) {
                 concerns.push(format!(
                     "Critical conflict: {} in {}",
-                    conflict.conflict_type.description(), conflict.location
+                    conflict.conflict_type.description(),
+                    conflict.location
                 ));
             }
         }
 
-        if report.political_stability.government_stability.stability_score < 0.3 {
+        if report
+            .political_stability
+            .government_stability
+            .stability_score
+            < 0.3
+        {
             concerns.push("Severe government instability detected".to_string());
         }
 
@@ -1278,7 +1347,12 @@ impl GeopoliticalRiskWorkflow {
         }
 
         // Conflict-related actions
-        if !report.political_stability.conflict_indicators.active_conflicts.is_empty() {
+        if !report
+            .political_stability
+            .conflict_indicators
+            .active_conflicts
+            .is_empty()
+        {
             actions.push("Implement travel security protocols".to_string());
             actions.push("Review business continuity plans".to_string());
         }
@@ -1296,39 +1370,72 @@ impl GeopoliticalRiskWorkflow {
         let mut indicators = Vec::new();
 
         // Sanctions monitoring — only if there is exposure
-        if !report.sanctions_exposure.direct_sanctions.is_empty() || !report.sanctions_exposure.indirect_exposure.is_empty() {
+        if !report.sanctions_exposure.direct_sanctions.is_empty()
+            || !report.sanctions_exposure.indirect_exposure.is_empty()
+        {
             indicators.push("Monitor sanctions list updates for listed entities".to_string());
-            indicators.push("Track regulatory announcements related to identified exposures".to_string());
+            indicators
+                .push("Track regulatory announcements related to identified exposures".to_string());
         }
         if !report.sanctions_exposure.compliance_risks.is_empty() {
             indicators.push("Track compliance incidents and deadlines".to_string());
         }
 
         // Political monitoring — only if stability data was populated
-        if report.political_stability.government_stability.stability_score > 0.0 {
+        if report
+            .political_stability
+            .government_stability
+            .stability_score
+            > 0.0
+        {
             indicators.push("Monitor government stability indicators".to_string());
         }
-        if !report.political_stability.policy_risk.key_policy_risks.is_empty() {
-            indicators.push("Track policy change announcements for identified risk areas".to_string());
+        if !report
+            .political_stability
+            .policy_risk
+            .key_policy_risks
+            .is_empty()
+        {
+            indicators
+                .push("Track policy change announcements for identified risk areas".to_string());
         }
         if report.political_stability.social_indicators.protest_risk > 0.0 {
             indicators.push("Monitor social media and news for unrest signals".to_string());
         }
-        if !report.political_stability.conflict_indicators.active_conflicts.is_empty() {
+        if !report
+            .political_stability
+            .conflict_indicators
+            .active_conflicts
+            .is_empty()
+        {
             indicators.push("Track conflict escalation indicators".to_string());
         }
 
         // Trade monitoring — only if there is tariff or trade data
-        if !report.trade_policy_impact.tariff_exposure.current_tariff_rates.is_empty() {
-            indicators.push("Monitor tariff rate changes for affected product categories".to_string());
+        if !report
+            .trade_policy_impact
+            .tariff_exposure
+            .current_tariff_rates
+            .is_empty()
+        {
+            indicators
+                .push("Monitor tariff rate changes for affected product categories".to_string());
         }
-        if !report.trade_policy_impact.current_trade_agreements.is_empty() {
+        if !report
+            .trade_policy_impact
+            .current_trade_agreements
+            .is_empty()
+        {
             indicators.push("Track trade agreement developments".to_string());
         }
         if !report.trade_policy_impact.trade_restrictions.is_empty() {
             indicators.push("Monitor trade restriction announcements".to_string());
         }
-        if !report.trade_policy_impact.supply_chain_considerations.is_empty() {
+        if !report
+            .trade_policy_impact
+            .supply_chain_considerations
+            .is_empty()
+        {
             indicators.push("Monitor supply chain disruption early warnings".to_string());
         }
 
@@ -1339,14 +1446,20 @@ impl GeopoliticalRiskWorkflow {
 
         // Always add a generic monitoring indicator if none were generated
         if indicators.is_empty() {
-            indicators.push("No specific monitoring indicators — insufficient data in report".to_string());
+            indicators.push(
+                "No specific monitoring indicators — insufficient data in report".to_string(),
+            );
         }
 
         indicators
     }
 
     /// Identify data gaps
-    fn identify_data_gaps(&self, report: &GeopoliticalRiskReport, signals: &[EvidenceItem]) -> Vec<String> {
+    fn identify_data_gaps(
+        &self,
+        report: &GeopoliticalRiskReport,
+        signals: &[EvidenceItem],
+    ) -> Vec<String> {
         let mut gaps = Vec::new();
 
         if report.sanctions_exposure.direct_sanctions.is_empty()
@@ -1355,11 +1468,21 @@ impl GeopoliticalRiskWorkflow {
             gaps.push("Limited sanctions screening data".to_string());
         }
 
-        if report.political_stability.government_stability.stability_score == 0.0 {
-            gaps.push("No political stability data available - region-specific data needed".to_string());
+        if report
+            .political_stability
+            .government_stability
+            .stability_score
+            == 0.0
+        {
+            gaps.push(
+                "No political stability data available - region-specific data needed".to_string(),
+            );
         }
 
-        if report.trade_policy_impact.current_trade_agreements.is_empty()
+        if report
+            .trade_policy_impact
+            .current_trade_agreements
+            .is_empty()
             && report.trade_policy_impact.trade_restrictions.is_empty()
         {
             gaps.push("Limited trade policy data available".to_string());
@@ -1385,7 +1508,7 @@ impl Default for GeopoliticalRiskWorkflow {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -1505,7 +1628,11 @@ mod tests {
 
         let report = workflow.run("Test Region", signals);
         assert!(report.political_stability.overall_stability_score < 0.6);
-        assert!(!report.political_stability.conflict_indicators.active_conflicts.is_empty());
+        assert!(!report
+            .political_stability
+            .conflict_indicators
+            .active_conflicts
+            .is_empty());
     }
 
     #[test]
@@ -1537,7 +1664,11 @@ mod tests {
         ];
 
         let report = workflow.run("Test Region", signals);
-        assert!(!report.trade_policy_impact.tariff_exposure.current_tariff_rates.is_empty());
+        assert!(!report
+            .trade_policy_impact
+            .tariff_exposure
+            .current_tariff_rates
+            .is_empty());
         assert!(!report.trade_policy_impact.trade_restrictions.is_empty());
     }
 
@@ -1642,25 +1773,26 @@ mod tests {
     #[test]
     fn test_monitoring_indicators_generation() {
         let workflow = GeopoliticalRiskWorkflow::new();
-        let signals = vec![
-            EvidenceItem {
-                id: "sig1".to_string(),
-                entity_id: "Region".to_string(),
-                entity_type: "region".to_string(),
-                evidence_type: "political_instability".to_string(),
-                description: "Political risk".to_string(),
-                source: "Analysis".to_string(),
-                confidence: 0.7,
-                timestamp: Utc::now(),
-                raw_data: serde_json::json!({}),
-            },
-        ];
+        let signals = vec![EvidenceItem {
+            id: "sig1".to_string(),
+            entity_id: "Region".to_string(),
+            entity_type: "region".to_string(),
+            evidence_type: "political_instability".to_string(),
+            description: "Political risk".to_string(),
+            source: "Analysis".to_string(),
+            confidence: 0.7,
+            timestamp: Utc::now(),
+            raw_data: serde_json::json!({}),
+        }];
 
         let report = workflow.run("Test Region", signals);
         // Monitoring indicators are now generated from report content, not static lists.
         // With only a political_instability signal, we expect political monitoring indicators.
         assert!(!report.monitoring_indicators.is_empty());
-        assert!(report.monitoring_indicators.iter().any(|i| i.contains("stability") || i.contains("political")));
+        assert!(report
+            .monitoring_indicators
+            .iter()
+            .any(|i| i.contains("stability") || i.contains("political")));
     }
 
     #[test]

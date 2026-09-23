@@ -131,9 +131,7 @@ pub async fn search_page(
     // B303: accept both singular (`company`) and plural (`companies`) facet
     // slugs — the templates used to emit plurals while the index stores
     // singular entity types, so every facet filter matched zero documents.
-    let active_type = normalize_entity_type(
-        params.entity_type.as_deref().unwrap_or("all"),
-    );
+    let active_type = normalize_entity_type(params.entity_type.as_deref().unwrap_or("all"));
 
     let start = std::time::Instant::now();
 

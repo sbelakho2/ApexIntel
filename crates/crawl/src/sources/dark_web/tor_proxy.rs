@@ -67,7 +67,10 @@ pub struct TorProxy {
 impl TorProxy {
     /// Create a new Tor proxy manager.
     pub fn new(config: TorConfig) -> Self {
-        Self { config, circuit_count: 0 }
+        Self {
+            config,
+            circuit_count: 0,
+        }
     }
 
     /// Create with default configuration.
@@ -104,9 +107,6 @@ impl TorProxy {
 
     /// Get a reqwest client configured to route through Tor.
     pub fn create_tor_client(&self) -> Result<reqwest::Client> {
-        
-        
-
         // Try connecting to check Tor is running
         let addr = format!("{}:{}", self.config.socks_host, self.config.socks_port);
         if let Ok(socket_addr) = addr.parse::<std::net::SocketAddr>() {
@@ -126,7 +126,10 @@ impl TorProxy {
     /// Resolve a .onion address via Tor.
     pub async fn resolve_onion(&self, onion_url: &str) -> Result<String> {
         let client = self.create_tor_client()?;
-        let resp = client.get(onion_url).send().await
+        let resp = client
+            .get(onion_url)
+            .send()
+            .await
             .context("onion address request")?;
 
         if resp.status().is_success() || resp.status().as_u16() == 404 {
@@ -138,7 +141,9 @@ impl TorProxy {
 }
 
 impl Default for TorProxy {
-    fn default() -> Self { Self::with_defaults() }
+    fn default() -> Self {
+        Self::with_defaults()
+    }
 }
 
 /// A Tor circuit with metadata.

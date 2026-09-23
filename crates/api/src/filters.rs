@@ -384,7 +384,7 @@ pub fn validate_search_text(input: &str, max_len: usize) -> Result<Option<String
 
 /// Check if a minimum value filter is in a valid range.
 pub fn validate_min_value(val: Option<f64>, min: f64, max: f64) -> Option<f64> {
-    val.and_then(|v| if v >= min && v <= max { Some(v) } else { None })
+    val.filter(|&v| v >= min && v <= max)
 }
 
 // ────────────────────────────────────────────

@@ -354,7 +354,7 @@ impl PgStore {
 
         // Persist every adjustment to the audit trail
         for adj in &adjustments {
-            #[allow(clippy::disallowed_methods)]
+            #[allow(clippy::unwrap_used, clippy::expect_used)]
             let detail = serde_json::json!({
                 "recipe_code": adj.recipe_code,
                 "current_precision": adj.current_precision,
@@ -365,14 +365,12 @@ impl PgStore {
                     adj.avg_fp_rate_4w
                 ),
             });
-            sqlx::query(
-                "INSERT INTO audit_log (event_type, actor, detail) VALUES ($1, $2, $3)",
-            )
-            .bind("recipe_threshold_auto_calibrated")
-            .bind("system")
-            .bind(&detail)
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("INSERT INTO audit_log (event_type, actor, detail) VALUES ($1, $2, $3)")
+                .bind("recipe_threshold_auto_calibrated")
+                .bind("system")
+                .bind(&detail)
+                .execute(&self.pool)
+                .await?;
         }
 
         let result: Vec<CalibrationAdjustment> = adjustments

@@ -210,12 +210,7 @@ impl SlackMessage {
         description: impl Into<String>,
     ) -> Self {
         let severity: SlackMessageSeverity = severity.into();
-        Self::new(
-            severity,
-            AlertType::General,
-            title,
-            description,
-        )
+        Self::new(severity, AlertType::General, title, description)
     }
 
     /// Set the entity name associated with this message.
@@ -277,16 +272,14 @@ impl SlackMessage {
 
         // ── Header block ──────────────────────────────────────────────
         let header_text = format!("{} {} — {}", emoji, severity_upper, self.title);
-        let mut blocks: Vec<serde_json::Value> = vec![
-            serde_json::json!({
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": header_text,
-                    "emoji": true
-                }
-            }),
-        ];
+        let mut blocks: Vec<serde_json::Value> = vec![serde_json::json!({
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": header_text,
+                "emoji": true
+            }
+        })];
 
         // ── Entity / context section ──────────────────────────────────
         let mut context_fields: Vec<serde_json::Value> = Vec::new();
@@ -426,7 +419,8 @@ impl SlackMessage {
 
     /// Serialize the message to a JSON string suitable for the Slack Webhook API.
     pub fn to_json_string(&self) -> Result<String> {
-        serde_json::to_string(&self.to_blocks()).context("failed to serialize Slack message to JSON")
+        serde_json::to_string(&self.to_blocks())
+            .context("failed to serialize Slack message to JSON")
     }
 }
 
@@ -518,11 +512,7 @@ impl SlackWebhook {
         let payload = message.to_json_string()?;
 
         // Collect all target URLs: channel-specific first, then defaults.
-        let mut targets = self
-            .urls
-            .get(channel_name)
-            .cloned()
-            .unwrap_or_default();
+        let mut targets = self.urls.get(channel_name).cloned().unwrap_or_default();
         targets.extend(self.default_urls.clone());
 
         if targets.is_empty() {
@@ -588,9 +578,8 @@ impl SlackWebhook {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!("Slack webhook delivery failed after 3 retries")
-        }))
+        Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("Slack webhook delivery failed after 3 retries")))
     }
 
     /// Single HTTP POST attempt to a Slack webhook URL.
@@ -690,10 +679,7 @@ impl SlackConfig {
         ] {
             let env_key = format!("SLACK_WEBHOOK_{}_URL", channel.to_uppercase());
             if let Ok(url) = std::env::var(&env_key) {
-                webhooks
-                    .entry(channel.to_string())
-                    .or_default()
-                    .push(url);
+                webhooks.entry(channel.to_string()).or_default().push(url);
             }
         }
 
@@ -863,7 +849,10 @@ mod tests {
 
         // Verify structure
         assert!(blocks.get("text").is_some(), "should have fallback text");
-        assert!(blocks.get("attachments").is_some(), "should have attachments");
+        assert!(
+            blocks.get("attachments").is_some(),
+            "should have attachments"
+        );
 
         let attachments = blocks["attachments"].as_array().unwrap();
         assert_eq!(attachments.len(), 1, "should have one attachment");
@@ -894,9 +883,9 @@ mod tests {
         );
 
         // Should have actions
-        let has_actions = inner_blocks.iter().any(|b| {
-            b.get("type").and_then(|t| t.as_str()) == Some("actions")
-        });
+        let has_actions = inner_blocks
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("actions"));
         assert!(has_actions, "should have actions block");
     }
 
@@ -964,8 +953,7 @@ mod tests {
         .with_region("MA");
 
         let json = msg.to_json_string().expect("should serialize");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
         assert!(parsed.is_object());
     }
 
@@ -1011,9 +999,9 @@ mod tests {
         let attachments = blocks["attachments"].as_array().unwrap();
         let inner_blocks = attachments[0]["blocks"].as_array().unwrap();
 
-        let has_actions = inner_blocks.iter().any(|b| {
-            b.get("type").and_then(|t| t.as_str()) == Some("actions")
-        });
+        let has_actions = inner_blocks
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("actions"));
         assert!(!has_actions, "should not have actions block");
     }
 
@@ -1043,8 +1031,14 @@ mod tests {
             .expect("should have description section");
 
         let text = desc_section["text"]["text"].as_str().unwrap();
-        assert!(text.len() <= 2904, "description should be truncated to 2900 chars + ellipsis");
-        assert!(text.ends_with('…'), "truncated description should end with ellipsis");
+        assert!(
+            text.len() <= 2904,
+            "description should be truncated to 2900 chars + ellipsis"
+        );
+        assert!(
+            text.ends_with('…'),
+            "truncated description should end with ellipsis"
+        );
     }
 
     // ── Config tests ──────────────────────────────────────────────────
@@ -1180,7 +1174,10 @@ mod tests {
         let inner_blocks = attachments[0]["blocks"].as_array().unwrap();
         let context = inner_blocks.last().unwrap();
         let text = context["elements"][0]["text"].as_str().unwrap();
-        assert!(text.contains("security"), "context should mention alert type");
+        assert!(
+            text.contains("security"),
+            "context should mention alert type"
+        );
     }
 
     #[test]

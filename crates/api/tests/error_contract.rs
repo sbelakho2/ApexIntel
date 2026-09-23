@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use apex_api::responses::{error_response, ErrorCode};
 use apex_api::validation::{internal_error, parse_country_code_filter, parse_optional_uuid_filter};

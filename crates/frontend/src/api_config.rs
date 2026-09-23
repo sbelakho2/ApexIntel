@@ -53,7 +53,7 @@ pub fn api_url(path: &str) -> String {
         if path.starts_with("/api/") {
             format!("{}{}", base, path)
         } else if path.starts_with('/') {
-            format!("{}", path)
+            path.to_string()
         } else {
             format!("{}/api/{}", base, path)
         }
@@ -205,7 +205,7 @@ mod tests {
     fn test_api_url_empty_base() {
         // When API_BASE_URL is empty (same-origin deployment)
         // We test the path-joining logic directly.
-        let result = format!("/api/insights");
+        let result = "/api/insights".to_string();
         assert_eq!(result, "/api/insights");
     }
 }

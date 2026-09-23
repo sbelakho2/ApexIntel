@@ -69,6 +69,11 @@ impl Clone for AutocompleteIndex {
 
 impl AutocompleteIndex {
     /// Create an empty index (no entries).
+    ///
+    /// Building an empty FST from constant inputs cannot fail; the final
+    /// `unwrap_or_else` is a defensive fallback for a byte layout that is
+    /// always valid.
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     pub fn new() -> Self {
         Self {
             map: Map::new(vec![]).unwrap_or_else(|_| {
@@ -212,7 +217,7 @@ impl AutocompleteIndex {
         }
 
         // Sort by score descending
-        results.sort_by(|a, b| b.0.cmp(&a.0));
+        results.sort_by_key(|a| std::cmp::Reverse(a.0));
 
         // Take top N
         results
@@ -248,9 +253,7 @@ impl Default for AutocompleteIndex {
 /// Reads from companies, persons, and insights tables to create
 /// a comprehensive autocomplete index. This is the production path
 /// for seeding/rebuilding the index.
-pub async fn build_from_database(
-    store: &crate::postgres::PgStore,
-) -> Result<AutocompleteIndex> {
+pub async fn build_from_database(store: &crate::postgres::PgStore) -> Result<AutocompleteIndex> {
     let mut entries: Vec<AutocompleteEntry> = Vec::new();
 
     // 1. Company names
@@ -330,11 +333,7 @@ pub async fn build_from_database(
 
     // 3. Insight titles
     if let Ok(insights) = store
-        .list_insights(
-            &crate::postgres::InsightListFilters::default(),
-            10_000,
-            0,
-        )
+        .list_insights(&crate::postgres::InsightListFilters::default(), 10_000, 0)
         .await
     {
         for insight in &insights {
@@ -352,10 +351,7 @@ pub async fn build_from_database(
     }
 
     // 4. Competitor names from competitive intelligence engine
-    if let Ok(competitors) = store
-        .list_competitors(10_000, 0)
-        .await
-    {
+    if let Ok(competitors) = store.list_competitors(10_000, 0).await {
         for competitor in &competitors {
             let score = competitor.threat_score.unwrap_or(5.0).clamp(0.0, 10.0);
             entries.push(AutocompleteEntry {

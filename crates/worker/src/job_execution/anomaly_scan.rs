@@ -25,7 +25,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{Duration, Utc};
-use tracing;
 
 use crate::{JobKind, JobRun, PgStore};
 
@@ -122,11 +121,7 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
             let deviation = (latest - prior_mean).abs() / prior_mean;
 
             if deviation >= VOLUME_ANOMALY_THRESHOLD {
-                let direction = if latest > prior_mean {
-                    "spike"
-                } else {
-                    "drop"
-                };
+                let direction = if latest > prior_mean { "spike" } else { "drop" };
                 let pct_change = ((latest - prior_mean) / prior_mean * 100.0).round() as i64;
 
                 // Generate a warning for this anomaly
@@ -141,7 +136,7 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                      Investigate the underlying cause and assess operational impact."
                 );
 
-                let warning_id = uuid::Uuid::new_v4();
+                let _warning_id = uuid::Uuid::new_v4();
                 match store
                     .insert_warning(
                         "volume_anomaly",
@@ -213,8 +208,7 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            let title =
-                format!("New signal types for {entity_name}: {types_str}");
+            let title = format!("New signal types for {entity_name}: {types_str}");
             let description = format!(
                 "{entity_name} has started generating new observation types ({types_str}) \
                  that weren't present in the previous 27 days. This may indicate a \
@@ -261,7 +255,7 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
         obs_count_30d: i64,
     }
 
-    let source_counts: Vec<SourceCount> = match sqlx::query_as::<_, SourceCount>(
+    let source_counts: Vec<SourceCount> = sqlx::query_as::<_, SourceCount>(
         r#"SELECT
                COALESCE(provenance->>'source_id', provenance->>'source', 'unknown') as source_id,
                MAX(ts_utc) as last_obs,
@@ -274,49 +268,53 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
     )
     .fetch_all(&store.pool)
     .await
-    {
-        Ok(rows) => rows,
-        Err(_) => Vec::new(),
-    };
+    .unwrap_or_default();
 
     for sc in &source_counts {
-        if sc.obs_count_30d > 10 && sc.last_obs.is_some() {
-            let days_silent = (Utc::now() - sc.last_obs.unwrap()).num_days();
-            if days_silent >= 3 {
-                let title = format!("Source '{}' has been silent for {} days", sc.source_id, days_silent);
-                let description = format!(
-                    "Data source '{}' has not produced any observations in {} days. \
+        let Some(last_obs) = sc.last_obs else {
+            continue;
+        };
+        if sc.obs_count_30d <= 10 {
+            continue;
+        }
+        let days_silent = (Utc::now() - last_obs).num_days();
+        if days_silent >= 3 {
+            let title = format!(
+                "Source '{}' has been silent for {} days",
+                sc.source_id, days_silent
+            );
+            let description = format!(
+                "Data source '{}' has not produced any observations in {} days. \
                      It previously generated {} observations in the last 30 days. \
                      This may indicate a source outage, feed disruption, or blocking. \
                      Verify source connectivity and restore data flow.",
-                    sc.source_id, days_silent, sc.obs_count_30d
-                );
+                sc.source_id, days_silent, sc.obs_count_30d
+            );
 
-                match store
-                    .insert_warning(
-                        "source_outage",
-                        &title,
-                        Some(&description),
-                        "high",
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(0.80),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        warnings_generated += 1;
-                        tracing::info!(
-                            source = %sc.source_id,
-                            days_silent,
-                            "anomaly_scan: source outage warning generated"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "anomaly_scan: failed to insert source outage warning");
-                    }
+            match store
+                .insert_warning(
+                    "source_outage",
+                    &title,
+                    Some(&description),
+                    "high",
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(0.80),
+                )
+                .await
+            {
+                Ok(_) => {
+                    warnings_generated += 1;
+                    tracing::info!(
+                        source = %sc.source_id,
+                        days_silent,
+                        "anomaly_scan: source outage warning generated"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "anomaly_scan: failed to insert source outage warning");
                 }
             }
         }

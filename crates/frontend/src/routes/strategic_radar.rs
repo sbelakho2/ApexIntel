@@ -6,9 +6,7 @@ use crate::components::cards::{PageHeader, SurfaceCard};
 
 #[component]
 pub fn StrategicRadarPage() -> impl IntoView {
-    let radar_resource = create_resource(|| (), |_| async {
-        api::fetch_strategic_radar().await
-    });
+    let radar_resource = create_resource(|| (), |_| async { api::fetch_strategic_radar().await });
 
     view! {
         <div class="page">

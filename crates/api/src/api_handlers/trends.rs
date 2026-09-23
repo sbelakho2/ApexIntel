@@ -72,12 +72,8 @@ pub async fn query_trends(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<TrendsQueryParams>,
 ) -> Result<Json<Vec<TrendDataPoint>>, ApiError> {
-    let metric = params
-        .metric
-        .unwrap_or_else(|| "warnings".to_string());
-    let bucket = params
-        .bucket
-        .unwrap_or_else(|| "monthly".to_string());
+    let metric = params.metric.unwrap_or_else(|| "warnings".to_string());
+    let bucket = params.bucket.unwrap_or_else(|| "monthly".to_string());
 
     // Validate bucket type
     if BucketType::from_str(&bucket).is_none() {
@@ -133,23 +129,25 @@ pub async fn trend_comparison(
     Extension(store): Extension<Arc<PgStore>>,
     Query(params): Query<ComparisonQueryParams>,
 ) -> Result<Json<TrendComparison>, ApiError> {
-    let metric = params
-        .metric
-        .unwrap_or_else(|| "warnings".to_string());
+    let metric = params.metric.unwrap_or_else(|| "warnings".to_string());
 
     let current_start = params
         .current_start
         .as_deref()
         .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        .ok_or_else(|| ApiError::bad_request("Missing or invalid 'current_start' parameter (YYYY-MM-DD)"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request("Missing or invalid 'current_start' parameter (YYYY-MM-DD)")
+        })?;
 
     let previous_start = params
         .previous_start
         .as_deref()
         .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        .ok_or_else(|| ApiError::bad_request("Missing or invalid 'previous_start' parameter (YYYY-MM-DD)"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request("Missing or invalid 'previous_start' parameter (YYYY-MM-DD)")
+        })?;
 
-    let period_duration_days = params.days.unwrap_or(30).max(1).min(3650);
+    let period_duration_days = params.days.unwrap_or(30).clamp(1, 3650);
 
     let query = TrendComparisonQuery {
         metric_name: metric,
@@ -189,12 +187,8 @@ pub async fn entity_trends(
     let entity_id = params
         .entity_id
         .ok_or_else(|| ApiError::bad_request("Missing required 'entity_id' parameter"))?;
-    let metric = params
-        .metric
-        .unwrap_or_else(|| "observations".to_string());
-    let bucket = params
-        .bucket
-        .unwrap_or_else(|| "monthly".to_string());
+    let metric = params.metric.unwrap_or_else(|| "observations".to_string());
+    let bucket = params.bucket.unwrap_or_else(|| "monthly".to_string());
 
     if BucketType::from_str(&bucket).is_none() {
         return Err(ApiError::bad_request(format!(

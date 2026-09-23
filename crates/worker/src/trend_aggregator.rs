@@ -48,7 +48,7 @@ pub async fn run_trend_aggregation(kind: &JobKind, store: &Arc<PgStore>) -> JobR
                 )
             };
 
-            run.succeed(summary.total_metrics as u64, &notes);
+            run.succeed(summary.total_metrics, &notes);
         }
         Err(e) => {
             tracing::error!(error = %e, "trend_aggregation_failed");

@@ -155,23 +155,43 @@ fn has_concrete_evidence(signals: &[EvidenceSignal]) -> bool {
     }
 
     let concrete_normalized: &[&str] = &[
-        "tendernotice", "tender",
-        "regulatoryfiling", "regulatory",
-        "contractaward", "contract",
-        "securityincident", "security", "breach",
-        "personmove", "person", "leadershipchange", "hire",
-        "socialmention", "social", "socialpost",
-        "newsarticle", "news",
-        "deal", "partnership", "investment",
-        "governmentpolicy", "government", "policy",
-        "tradeaction", "trade", "sanction",
+        "tendernotice",
+        "tender",
+        "regulatoryfiling",
+        "regulatory",
+        "contractaward",
+        "contract",
+        "securityincident",
+        "security",
+        "breach",
+        "personmove",
+        "person",
+        "leadershipchange",
+        "hire",
+        "socialmention",
+        "social",
+        "socialpost",
+        "newsarticle",
+        "news",
+        "deal",
+        "partnership",
+        "investment",
+        "governmentpolicy",
+        "government",
+        "policy",
+        "tradeaction",
+        "trade",
+        "sanction",
         "certification",
         // Commercial demand & BESS/battery signals: new product lines, capacity
         // expansions, hiring ramps, and import-volume shifts are concrete,
         // verifiable business activity for the battery line of business.
-        "productlaunch", "product",
-        "expansion", "capacityexpansion",
-        "importdata", "import",
+        "productlaunch",
+        "product",
+        "expansion",
+        "capacityexpansion",
+        "importdata",
+        "import",
         "commodity",
         "jobpost",
     ];
@@ -814,7 +834,7 @@ async fn notify_slack_high_severity(
     }
 }
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
@@ -1614,11 +1634,28 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     *fm.entry(k.to_string()).or_default() += c;
                 }
             }
-            "bloomberg_global" | "ft_global" | "nyt_us" | "axios_us" | "politico_us"
-            | "the_hill" | "afp_global" | "bbc_world" | "nyt_world" | "nyt_business"
-            | "dw_en" | "euronews" | "guardian_world" | "marketwatch" | "economist_finance"
-            | "energy_storage_news" | "electrek" | "pv_magazine" | "oilprice" | "gcaptain"
-            | "techcrunch" | "theverge" => {
+            "bloomberg_global"
+            | "ft_global"
+            | "nyt_us"
+            | "axios_us"
+            | "politico_us"
+            | "the_hill"
+            | "afp_global"
+            | "bbc_world"
+            | "nyt_world"
+            | "nyt_business"
+            | "dw_en"
+            | "euronews"
+            | "guardian_world"
+            | "marketwatch"
+            | "economist_finance"
+            | "energy_storage_news"
+            | "electrek"
+            | "pv_magazine"
+            | "oilprice"
+            | "gcaptain"
+            | "techcrunch"
+            | "theverge" => {
                 for k in &[
                     "News.count",
                     "News.any",
@@ -2559,25 +2596,24 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
     #[cfg(feature = "llm")]
     type EntityGeo = HashMap<String, (Option<String>, Option<String>, Option<String>, bool)>;
     #[cfg(feature = "llm")]
-    let entity_geo: EntityGeo =
-        match store.get_company_geo_by_ids(&all_entity_uuids).await {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|(id, country_code, region, company_type, is_competitor)| {
-                    (
-                        id.to_string(),
-                        (country_code, region, company_type, is_competitor),
-                    )
-                })
-                .collect(),
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "recipe_fire: failed to load company geo for market targeting"
-                );
-                HashMap::new()
-            }
-        };
+    let entity_geo: EntityGeo = match store.get_company_geo_by_ids(&all_entity_uuids).await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|(id, country_code, region, company_type, is_competitor)| {
+                (
+                    id.to_string(),
+                    (country_code, region, company_type, is_competitor),
+                )
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "recipe_fire: failed to load company geo for market targeting"
+            );
+            HashMap::new()
+        }
+    };
 
     #[cfg(feature = "llm")]
     {
@@ -2802,7 +2838,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                                 .to_string();
                             if !excerpt.is_empty() {
                                 let evt_line = crate::truncate_text(
-                                    &format!("{}: {}", o.observation_type, &excerpt),
+                                    &format!("{}: {}", o.observation_type, excerpt),
                                     200,
                                 )
                                 .to_string();
@@ -3313,40 +3349,49 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         for entity_uuid in all_entity_uuids.iter() {
             let entity_id_str = entity_uuid.to_string();
             // Find related entities (companies linked via graph_edges)
-            let related: Vec<(Uuid, String)> = if let Ok(edges) = store.get_graph_edge_evidence(*entity_uuid).await {
-                edges
-                    .iter()
-                    .filter(|(edge_type, _, _, _, _)| {
-                        matches!(edge_type.as_str(),
-                            "CompanyCompany" | "SupplierOf" | "CustomerOf" |
-                            "CompetesWith" | "SubsidiaryOf" | "PartnerOf")
-                    })
-                    .filter_map(|(_, target_type, target_name, _, _)| {
-                        // Resolve target name back to a UUID
-                        if target_type == "company" {
-                            company_names
-                                .iter()
-                                .find(|(_, (name, _, _))| name == target_name)
-                                .and_then(|(id, (name, _, _))| {
-                                    Uuid::parse_str(id).ok().map(|u| (u, name.clone()))
-                                })
-                        } else {
-                            None
-                        }
-                    })
-                    .take(3)
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            let related: Vec<(Uuid, String)> =
+                if let Ok(edges) = store.get_graph_edge_evidence(*entity_uuid).await {
+                    edges
+                        .iter()
+                        .filter(|(edge_type, _, _, _, _)| {
+                            matches!(
+                                edge_type.as_str(),
+                                "CompanyCompany"
+                                    | "SupplierOf"
+                                    | "CustomerOf"
+                                    | "CompetesWith"
+                                    | "SubsidiaryOf"
+                                    | "PartnerOf"
+                            )
+                        })
+                        .filter_map(|(_, target_type, target_name, _, _)| {
+                            // Resolve target name back to a UUID
+                            if target_type == "company" {
+                                company_names
+                                    .iter()
+                                    .find(|(_, (name, _, _))| name == target_name)
+                                    .and_then(|(id, (name, _, _))| {
+                                        Uuid::parse_str(id).ok().map(|u| (u, name.clone()))
+                                    })
+                            } else {
+                                None
+                            }
+                        })
+                        .take(3)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
             for (related_uuid, related_name) in &related {
                 // Pull the 2 most recent observations from the related entity
                 if let Ok(rel_obs) = store.get_observations_by_entity(*related_uuid, 2).await {
                     for obs in &rel_obs {
                         // Skip low-signal types that add noise
-                        if matches!(obs.observation_type.as_str(),
-                            "WebChange" | "TyposquatDomain" | "DnsRecord" | "SslExpiry") {
+                        if matches!(
+                            obs.observation_type.as_str(),
+                            "WebChange" | "TyposquatDomain" | "DnsRecord" | "SslExpiry"
+                        ) {
                             continue;
                         }
                         let excerpt = obs
@@ -3363,7 +3408,8 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                         let sig = EvidenceSignal {
                             title: format!(
                                 "Cross-entity: {} ({}) — {}",
-                                related_name, obs.observation_type,
+                                related_name,
+                                obs.observation_type,
                                 crate::truncate_text(&excerpt, 60)
                             ),
                             description: format!(
@@ -3485,8 +3531,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let mut entity_run_count: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
 
-    let activity_logger =
-        apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+    let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
 
     for (idx, c) in candidates.iter().enumerate() {
         if !deduped_idxs.contains(&idx) {
@@ -4216,11 +4261,8 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 );
                 continue;
             }
-            let diversified_title = super::template_variation::diversify_title(
-                &title,
-                &c.recipe_code,
-                &c.entity_id,
-            );
+            let diversified_title =
+                super::template_variation::diversify_title(&title, &c.recipe_code, &c.entity_id);
             let diversified_action = super::template_variation::diversify_action(
                 &warning_action,
                 &c.recipe_code,
@@ -4268,11 +4310,8 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             effective_candidate_confidence,
             c.impact,
         ) {
-            let diversified_title = super::template_variation::diversify_title(
-                &title,
-                &c.recipe_code,
-                &c.entity_id,
-            );
+            let diversified_title =
+                super::template_variation::diversify_title(&title, &c.recipe_code, &c.entity_id);
             let diversified_action = super::template_variation::diversify_action(
                 &warning_action,
                 &c.recipe_code,
@@ -4543,29 +4582,28 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .collect();
 
             type CompetitorDataItem = (String, String, f64, f64, Vec<(String, String, bool)>);
-            let competitor_data: Vec<CompetitorDataItem> =
-                company_names
-                    .iter()
-                    .filter(|(eid, _)| *eid != &starz_eid)
-                    .take(10)
-                    .map(|(eid, (name, region, _))| {
-                        let caps: Vec<(String, String, bool)> = cap_feats
-                            .iter()
-                            .filter(|(e, _, _)| e.to_string() == *eid)
-                            .map(|(_, cap, count)| (cap.clone(), "claimed".to_string(), *count > 0))
-                            .collect();
-                        let ctx = entity_contexts.get(eid);
-                        let threat = ctx.and_then(|c| c.threat_score).unwrap_or(0.5);
-                        let overlap = ctx.and_then(|c| c.overlap_score).unwrap_or(0.3);
-                        (
-                            name.clone(),
-                            region.clone().unwrap_or_default(),
-                            threat,
-                            overlap,
-                            caps,
-                        )
-                    })
-                    .collect();
+            let competitor_data: Vec<CompetitorDataItem> = company_names
+                .iter()
+                .filter(|(eid, _)| *eid != &starz_eid)
+                .take(10)
+                .map(|(eid, (name, region, _))| {
+                    let caps: Vec<(String, String, bool)> = cap_feats
+                        .iter()
+                        .filter(|(e, _, _)| e.to_string() == *eid)
+                        .map(|(_, cap, count)| (cap.clone(), "claimed".to_string(), *count > 0))
+                        .collect();
+                    let ctx = entity_contexts.get(eid);
+                    let threat = ctx.and_then(|c| c.threat_score).unwrap_or(0.5);
+                    let overlap = ctx.and_then(|c| c.overlap_score).unwrap_or(0.3);
+                    (
+                        name.clone(),
+                        region.clone().unwrap_or_default(),
+                        threat,
+                        overlap,
+                        caps,
+                    )
+                })
+                .collect();
 
             if !starz_caps.is_empty() && !competitor_data.is_empty() {
                 let matrix = build_comparison_matrix(&starz_caps, &competitor_data);
@@ -4656,7 +4694,11 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::field_reassign_with_default
+    )]
 
     use super::recipe_warning_severity;
 

@@ -8,7 +8,9 @@
 use chrono::Utc;
 
 use apex_core::triage::{TriageDimensions, TriageItemType, TriageStatus};
-use apex_insights::insight_feedback::{InsightFeedback, InsightFeedbackRecord, InsightFeedbackTracker};
+use apex_insights::insight_feedback::{
+    InsightFeedback, InsightFeedbackRecord, InsightFeedbackTracker,
+};
 
 /// Translates triage actions into feedback signals for the insight feedback loop.
 pub struct FeedbackIntegration {
@@ -215,7 +217,9 @@ mod tests {
         let mut integration = FeedbackIntegration::new(tracker);
 
         // First record a firing to set up recipe performance tracking
-        integration.tracker_mut().record_firing("Acme Corp", "recipe-1", "insight-1");
+        integration
+            .tracker_mut()
+            .record_firing("Acme Corp", "recipe-1", "insight-1");
 
         integration.record_dismissed(
             &TriageItemType::Insight,

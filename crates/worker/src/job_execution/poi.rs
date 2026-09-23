@@ -318,7 +318,8 @@ fn org_discovery_candidates_from_observation(
     // Extract patent applicant (organization)
     let patent = extract_patent(&combined_text, title, &source_url, "unknown");
     if classify_patent_relevance(&patent) > 0.3
-        && !patent.applicant.is_empty() && is_discoverable_company_name(&patent.applicant)
+        && !patent.applicant.is_empty()
+        && is_discoverable_company_name(&patent.applicant)
     {
         candidates.push(OrgDiscoveryCandidate {
             name: patent.applicant.clone(),
@@ -394,25 +395,41 @@ fn org_discovery_candidates_from_observation(
 }
 
 #[cfg(feature = "llm")]
+#[allow(clippy::if_same_then_else)] // explicit per-role-family mapping kept readable
 fn infer_decision_style_heuristic(role: &str, family: &str) -> String {
     let role_lower = role.to_lowercase();
     let family_lower = family;
 
-    if family_lower.contains("executive") || family_lower.contains("government") || family_lower.contains("military") {
+    if family_lower.contains("executive")
+        || family_lower.contains("government")
+        || family_lower.contains("military")
+    {
         "Decisive".to_string()
-    } else if family_lower.contains("procurement") || family_lower.contains("supply") || family_lower.contains("chain") {
+    } else if family_lower.contains("procurement")
+        || family_lower.contains("supply")
+        || family_lower.contains("chain")
+    {
         "Analytical".to_string()
     } else if family_lower.contains("engineering") || family_lower.contains("technical") {
         "Analytical".to_string()
-    } else if family_lower.contains("quality") || family_lower.contains("compliance") || family_lower.contains("audit") {
+    } else if family_lower.contains("quality")
+        || family_lower.contains("compliance")
+        || family_lower.contains("audit")
+    {
         "Analytical".to_string()
     } else if family_lower.contains("finance") || family_lower.contains("legal") {
         "Analytical".to_string()
     } else if family_lower.contains("operations") || family_lower.contains("logistics") {
         "Decisive".to_string()
-    } else if role_lower.contains("ceo") || role_lower.contains("president") || role_lower.contains("director") {
+    } else if role_lower.contains("ceo")
+        || role_lower.contains("president")
+        || role_lower.contains("director")
+    {
         "Decisive".to_string()
-    } else if role_lower.contains("vp") || role_lower.contains("head") || role_lower.contains("chief") {
+    } else if role_lower.contains("vp")
+        || role_lower.contains("head")
+        || role_lower.contains("chief")
+    {
         "Decisive".to_string()
     } else if role_lower.contains("manager") || role_lower.contains("lead") {
         "Collaborative".to_string()
@@ -422,10 +439,14 @@ fn infer_decision_style_heuristic(role: &str, family: &str) -> String {
 }
 
 #[cfg(feature = "llm")]
-fn infer_communication_style_heuristic(role: &str, family: &str) -> String {
+#[allow(clippy::if_same_then_else)] // explicit per-role-family mapping kept readable
+fn infer_communication_style_heuristic(_role: &str, family: &str) -> String {
     let family_lower = family;
 
-    if family_lower.contains("executive") || family_lower.contains("government") || family_lower.contains("military") {
+    if family_lower.contains("executive")
+        || family_lower.contains("government")
+        || family_lower.contains("military")
+    {
         "Direct".to_string()
     } else if family_lower.contains("procurement") || family_lower.contains("supply") {
         "Data-driven".to_string()
@@ -443,16 +464,26 @@ fn infer_communication_style_heuristic(role: &str, family: &str) -> String {
 }
 
 #[cfg(feature = "llm")]
+#[allow(clippy::if_same_then_else)] // explicit per-role-family mapping kept readable
 fn infer_risk_tolerance_heuristic(role: &str, family: &str) -> String {
     let role_lower = role.to_lowercase();
     let family_lower = family;
 
-    if family_lower.contains("government") || family_lower.contains("military") || family_lower.contains("defense") {
+    if family_lower.contains("government")
+        || family_lower.contains("military")
+        || family_lower.contains("defense")
+    {
         "Risk-averse".to_string()
-    } else if family_lower.contains("compliance") || family_lower.contains("legal") || family_lower.contains("audit") {
+    } else if family_lower.contains("compliance")
+        || family_lower.contains("legal")
+        || family_lower.contains("audit")
+    {
         "Risk-averse".to_string()
     } else if family_lower.contains("executive") {
-        if role_lower.contains("ceo") || role_lower.contains("founder") || role_lower.contains("president") {
+        if role_lower.contains("ceo")
+            || role_lower.contains("founder")
+            || role_lower.contains("president")
+        {
             "Risk-tolerant".to_string()
         } else {
             "Moderate".to_string()
@@ -465,17 +496,29 @@ fn infer_risk_tolerance_heuristic(role: &str, family: &str) -> String {
 }
 
 #[cfg(feature = "llm")]
+#[allow(clippy::if_same_then_else)] // explicit per-role-family mapping kept readable
 fn infer_change_appetite_heuristic(role: &str, family: &str) -> String {
     let role_lower = role.to_lowercase();
     let family_lower = family;
 
-    if family_lower.contains("government") || family_lower.contains("military") || family_lower.contains("defense") {
+    if family_lower.contains("government")
+        || family_lower.contains("military")
+        || family_lower.contains("defense")
+    {
         "Conservative".to_string()
-    } else if family_lower.contains("compliance") || family_lower.contains("legal") || family_lower.contains("audit") {
+    } else if family_lower.contains("compliance")
+        || family_lower.contains("legal")
+        || family_lower.contains("audit")
+    {
         "Conservative".to_string()
-    } else if role_lower.contains("founder") || role_lower.contains("innovation") || role_lower.contains("transformation") {
+    } else if role_lower.contains("founder")
+        || role_lower.contains("innovation")
+        || role_lower.contains("transformation")
+    {
         "Aggressive".to_string()
-    } else if family_lower.contains("executive") && (role_lower.contains("ceo") || role_lower.contains("strategy")) {
+    } else if family_lower.contains("executive")
+        && (role_lower.contains("ceo") || role_lower.contains("strategy"))
+    {
         "Aggressive".to_string()
     } else {
         "Moderate".to_string()
@@ -1307,7 +1350,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
         let now_utc = Utc::now().timestamp();
         let mut refreshed: u64 = 0;
-        let mut unchanged: u64 = 0;
+        let unchanged: u64 = 0;
         let mut enriched_pois: u64 = 0;
         let mut role_history_backfilled: u64 = 0;
 
@@ -1315,34 +1358,33 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         // LLM entity-extraction path (extract_entities_llm / PoiLlmEnricher) is
         // actually switched ON. Previously this refresh passed `None`, leaving
         // the real LLM extraction code dead. Degrades to None if unreachable.
-        let refresh_llm_client: Option<InferenceLlmClient> =
-            match std::env::var("LLM_BASE_URL") {
-                Ok(base_url) if !base_url.trim().is_empty() => {
-                    let api_key = std::env::var("LLM_API_KEY").ok();
-                    let cfg = apex_llm::inference::InferenceConfig {
-                        model: std::env::var("LLM_MODEL")
-                            .unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into()),
-                        max_tokens: 900,
-                        temperature: 0.35,
-                        json_mode: true,
-                        suppress_thinking: false,
-                        timeout: std::time::Duration::from_secs(90),
-                        ..Default::default()
-                    };
-                    let client = InferenceLlmClient::new(base_url, api_key, cfg);
-                    if client.health_check().await {
-                        tracing::info!("poi_refresh: LLM client reachable — entity extraction enabled");
-                        Some(client)
-                    } else {
-                        tracing::warn!("poi_refresh: LLM client unreachable — falling back to heuristic extraction");
-                        None
-                    }
-                }
-                _ => {
-                    tracing::debug!("poi_refresh: LLM_BASE_URL not set — heuristic-only extraction");
+        let refresh_llm_client: Option<InferenceLlmClient> = match std::env::var("LLM_BASE_URL") {
+            Ok(base_url) if !base_url.trim().is_empty() => {
+                let api_key = std::env::var("LLM_API_KEY").ok();
+                let cfg = apex_llm::inference::InferenceConfig {
+                    model: std::env::var("LLM_MODEL")
+                        .unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into()),
+                    max_tokens: 900,
+                    temperature: 0.35,
+                    json_mode: true,
+                    suppress_thinking: false,
+                    timeout: std::time::Duration::from_secs(90),
+                    ..Default::default()
+                };
+                let client = InferenceLlmClient::new(base_url, api_key, cfg);
+                if client.health_check().await {
+                    tracing::info!("poi_refresh: LLM client reachable — entity extraction enabled");
+                    Some(client)
+                } else {
+                    tracing::warn!("poi_refresh: LLM client unreachable — falling back to heuristic extraction");
                     None
                 }
-            };
+            }
+            _ => {
+                tracing::debug!("poi_refresh: LLM_BASE_URL not set — heuristic-only extraction");
+                None
+            }
+        };
 
         for row in &persons {
             let mut profile = PoiProfile {
@@ -1373,7 +1415,12 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 profile_completeness: 0.0,
             };
 
-            apex_poi::updater::update_profile_with_llm(&mut profile, vec![], None, refresh_llm_client.as_ref());
+            apex_poi::updater::update_profile_with_llm(
+                &mut profile,
+                vec![],
+                None,
+                refresh_llm_client.as_ref(),
+            );
             refreshed += 1;
             tracing::debug!(
                 person = %row.name,
@@ -1491,16 +1538,8 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
             Ok(needy) => {
                 let mut psych_enriched: u64 = 0;
                 for person in &needy {
-                    let role_text =
-                        person
-                            .current_role
-                            .as_deref()
-                            .unwrap_or("");
-                    let family = person
-                        .role_family
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase();
+                    let role_text = person.current_role.as_deref().unwrap_or("");
+                    let family = person.role_family.as_deref().unwrap_or("").to_lowercase();
 
                     let decision_style = infer_decision_style_heuristic(role_text, &family);
                     let communication_style =
@@ -1589,16 +1628,16 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 InferenceLlmClient::new(base_url, api_key, cfg)
             };
 
-            let total_llm_candidates = thin_persons.len();
-            let mut batch_idx: usize = 0;
+            let _total_llm_candidates = thin_persons.len();
+            let batch_idx: usize = 0;
             for batch in thin_persons.chunks(batch_size) {
                 if batch_idx > 0 {
                     // Small delay between batches to avoid overwhelming the LLM
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 for thin in batch {
-                // Build a prompt that demands source-attributed output and rejects hallucination.
-                let prompt = format!(
+                    // Build a prompt that demands source-attributed output and rejects hallucination.
+                    let prompt = format!(
                     "You are given a person record derived from OSINT crawling: NAME={name}, ROLE={role}, ORG={org}.\n\
 \n\
 IMPORTANT RULES (anti-hallucination):\n\
@@ -1620,8 +1659,8 @@ Return ONLY valid JSON (no markdown, no code fences) with these exact keys:\n\
                     role = thin.current_role,
                     org = thin.org,
                 );
-                use apex_llm::inference::{ChatMessage, InferenceConfig};
-                let messages = vec![
+                    use apex_llm::inference::{ChatMessage, InferenceConfig};
+                    let messages = vec![
                     ChatMessage::system(
                         "You are an OSINT analyst assistant. Your task is to produce structured intelligence profiles \
 from crawled public data. YOU MUST NOT FABRICATE OR HALLUCINATE ANY INFORMATION. \
@@ -1633,76 +1672,76 @@ Set hallucination_risk to \"high\" if the profile contains any fabricated detail
                     ),
                     ChatMessage::user(&prompt),
                 ];
-                let enrich_config = InferenceConfig {
-                    max_tokens: 900,
-                    temperature: 0.35,
-                    json_mode: true,
-                    suppress_thinking: false,
-                    timeout: std::time::Duration::from_secs(90),
-                    ..Default::default()
-                };
-                match poi_llm_client
-                    .complete_with_config(messages, &enrich_config)
-                    .await
-                {
-                    Ok(resp) => {
-                        #[derive(serde::Deserialize)]
-                        struct PoiEnrichResp {
-                            bio: Option<String>,
-                            decision_style: Option<String>,
-                            communication_style: Option<String>,
-                            risk_tolerance: Option<String>,
-                            change_appetite: Option<String>,
-                            preferred_proof_type: Option<String>,
-                            #[serde(default)]
-                            trigger_topics: Vec<String>,
-                        }
-                        match resp.parse_json::<PoiEnrichResp>() {
-                            Ok(data) => {
-                                let bio = data.bio.as_deref().unwrap_or_default();
-                                if !bio.is_empty() {
-                                    match store
-                                        .update_person_llm_enrichment(
-                                            thin.id,
-                                            bio,
-                                            data.decision_style.as_deref(),
-                                            data.communication_style.as_deref(),
-                                            data.risk_tolerance.as_deref(),
-                                            data.change_appetite.as_deref(),
-                                            data.preferred_proof_type.as_deref(),
-                                            &data.trigger_topics,
-                                        )
-                                        .await
-                                    {
-                                        Ok(()) => {
-                                            tracing::info!(
+                    let enrich_config = InferenceConfig {
+                        max_tokens: 900,
+                        temperature: 0.35,
+                        json_mode: true,
+                        suppress_thinking: false,
+                        timeout: std::time::Duration::from_secs(90),
+                        ..Default::default()
+                    };
+                    match poi_llm_client
+                        .complete_with_config(messages, &enrich_config)
+                        .await
+                    {
+                        Ok(resp) => {
+                            #[derive(serde::Deserialize)]
+                            struct PoiEnrichResp {
+                                bio: Option<String>,
+                                decision_style: Option<String>,
+                                communication_style: Option<String>,
+                                risk_tolerance: Option<String>,
+                                change_appetite: Option<String>,
+                                preferred_proof_type: Option<String>,
+                                #[serde(default)]
+                                trigger_topics: Vec<String>,
+                            }
+                            match resp.parse_json::<PoiEnrichResp>() {
+                                Ok(data) => {
+                                    let bio = data.bio.as_deref().unwrap_or_default();
+                                    if !bio.is_empty() {
+                                        match store
+                                            .update_person_llm_enrichment(
+                                                thin.id,
+                                                bio,
+                                                data.decision_style.as_deref(),
+                                                data.communication_style.as_deref(),
+                                                data.risk_tolerance.as_deref(),
+                                                data.change_appetite.as_deref(),
+                                                data.preferred_proof_type.as_deref(),
+                                                &data.trigger_topics,
+                                            )
+                                            .await
+                                        {
+                                            Ok(()) => {
+                                                tracing::info!(
+                                                    person = %thin.name,
+                                                    bio_len = bio.len(),
+                                                    "poi_refresh: LLM profile enrichment applied"
+                                                );
+                                                enriched_pois += 1;
+                                            }
+                                            Err(e) => tracing::warn!(
                                                 person = %thin.name,
-                                                bio_len = bio.len(),
-                                                "poi_refresh: LLM profile enrichment applied"
-                                            );
-                                            enriched_pois += 1;
+                                                error = %e,
+                                                "poi_refresh: failed to write LLM enrichment"
+                                            ),
                                         }
-                                        Err(e) => tracing::warn!(
-                                            person = %thin.name,
-                                            error = %e,
-                                            "poi_refresh: failed to write LLM enrichment"
-                                        ),
                                     }
                                 }
+                                Err(e) => tracing::warn!(
+                                    person = %thin.name,
+                                    error = %e,
+                                    "poi_refresh: LLM enrichment JSON parse failed"
+                                ),
                             }
-                            Err(e) => tracing::warn!(
-                                person = %thin.name,
-                                error = %e,
-                                "poi_refresh: LLM enrichment JSON parse failed"
-                            ),
                         }
+                        Err(e) => tracing::warn!(
+                            person = %thin.name,
+                            error = %e,
+                            "poi_refresh: LLM enrichment call failed"
+                        ),
                     }
-                    Err(e) => tracing::warn!(
-                        person = %thin.name,
-                        error = %e,
-                        "poi_refresh: LLM enrichment call failed"
-                    ),
-                }
                 }
             }
         }
@@ -2366,7 +2405,6 @@ pub(super) async fn run_poi_role_reclassify(kind: &JobKind, store: &Arc<PgStore>
 
     #[cfg(feature = "llm")]
     {
-        use sqlx::Row;
         let start = std::time::Instant::now();
 
         // Load all persons with a non-null current_role.

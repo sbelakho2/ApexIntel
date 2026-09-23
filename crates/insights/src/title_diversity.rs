@@ -226,7 +226,9 @@ impl TitleGenerator {
             }
             TitleStrategy::TrendAnalysis => self.generate_trend_analysis(context, entity_name),
             TitleStrategy::DataDiscovery => self.generate_data_discovery(context, entity_name),
-            TitleStrategy::ImpactAssessment => self.generate_impact_assessment(context, entity_name),
+            TitleStrategy::ImpactAssessment => {
+                self.generate_impact_assessment(context, entity_name)
+            }
             TitleStrategy::NarrativeArc => {
                 self.generate_narrative_arc(context, entity_name, registry)
             }
@@ -322,7 +324,10 @@ impl TitleGenerator {
                 .take(1)
                 .cloned()
                 .collect();
-            names.first().cloned().unwrap_or_else(|| "Competitor".to_string())
+            names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Competitor".to_string())
         } else {
             "Competitor".to_string()
         };
@@ -341,7 +346,9 @@ impl TitleGenerator {
     fn generate_trend_analysis(&self, context: &SignalContext, entity_name: &str) -> String {
         let trend = match context.category.as_deref() {
             Some("demand") => pick_random(DEMAND_TRENDS).unwrap_or(&"Demand growth"),
-            Some("supply_chain") => pick_random(SUPPLY_CHAIN_TRENDS).unwrap_or(&"Supply chain shift"),
+            Some("supply_chain") => {
+                pick_random(SUPPLY_CHAIN_TRENDS).unwrap_or(&"Supply chain shift")
+            }
             Some("commodity") => pick_random(COMMODITY_TRENDS).unwrap_or(&"Commodity trend"),
             Some("security") => pick_random(SECURITY_TRENDS).unwrap_or(&"Security trend"),
             Some("regulatory") => pick_random(REGULATORY_TRENDS).unwrap_or(&"Regulatory shift"),
@@ -355,10 +362,7 @@ impl TitleGenerator {
     fn generate_data_discovery(&self, _context: &SignalContext, entity_name: &str) -> String {
         let data_type = pick_random(DATA_TYPES).unwrap_or(&"regulatory filing");
         let insight = pick_random(DISCOVERY_INSIGHTS).unwrap_or(&"strategic plans");
-        format!(
-            "New {} reveals {}'s {}",
-            data_type, entity_name, insight
-        )
+        format!("New {} reveals {}'s {}", data_type, entity_name, insight)
     }
 
     /// ImpactAssessment: "What [event] means for [entity/stakeholder]"
@@ -445,10 +449,6 @@ impl Default for TitleGenerator {
         Self::new()
     }
 }
-
-// Safety: TitleGenerator contains only Send + Sync types (Vec, HashMap, u64)
-unsafe impl Send for TitleGenerator {}
-unsafe impl Sync for TitleGenerator {}
 
 // ────────────────────────────────────────────
 // Semantic diversity scoring
@@ -611,14 +611,39 @@ fn entity_fallback(context: &SignalContext) -> String {
 // ────────────────────────────────────────────
 
 const VERBS: &[&str] = &[
-    "expands", "reduces", "shifts", "launches", "acquires", "partners", "invests", "divests",
-    "restructures", "delays", "accelerates", "scales", "consolidates", "diversifies", "relocates",
+    "expands",
+    "reduces",
+    "shifts",
+    "launches",
+    "acquires",
+    "partners",
+    "invests",
+    "divests",
+    "restructures",
+    "delays",
+    "accelerates",
+    "scales",
+    "consolidates",
+    "diversifies",
+    "relocates",
 ];
 
 const NOUNS: &[&str] = &[
-    "capacity", "operations", "production", "procurement", "workforce", "supply chain",
-    "manufacturing", "R&D", "distribution", "logistics", "footprint", "investment", "partnership",
-    "portfolio", "headcount",
+    "capacity",
+    "operations",
+    "production",
+    "procurement",
+    "workforce",
+    "supply chain",
+    "manufacturing",
+    "R&D",
+    "distribution",
+    "logistics",
+    "footprint",
+    "investment",
+    "partnership",
+    "portfolio",
+    "headcount",
 ];
 
 const SUPPLY_CHAIN_RISKS: &[&str] = &[
@@ -666,14 +691,29 @@ const GENERIC_RISKS: &[&str] = &[
 ];
 
 const METRICS: &[&str] = &[
-    "revenue growth", "market share", "gross margin", "R&D spend", "capex intensity",
-    "capacity utilization", "inventory turnover", "operating margin", "employee productivity",
+    "revenue growth",
+    "market share",
+    "gross margin",
+    "R&D spend",
+    "capex intensity",
+    "capacity utilization",
+    "inventory turnover",
+    "operating margin",
+    "employee productivity",
     "patent portfolio",
 ];
 
 const COMPARISONS: &[&str] = &[
-    "outpaces", "lags", "matches", "surpasses", "undercuts", "trails", "exceeds", "approaches",
-    "narrows gap with", "widens lead over",
+    "outpaces",
+    "lags",
+    "matches",
+    "surpasses",
+    "undercuts",
+    "trails",
+    "exceeds",
+    "approaches",
+    "narrows gap with",
+    "widens lead over",
 ];
 
 const DEMAND_TRENDS: &[&str] = &[
@@ -725,9 +765,16 @@ const GENERIC_TRENDS: &[&str] = &[
 ];
 
 const DATA_TYPES: &[&str] = &[
-    "regulatory filing", "patent application", "job posting data", "supplier registration",
-    "certification record", "trade data", "earnings transcript", "press release analysis",
-    "web change detection", "social sentiment analysis",
+    "regulatory filing",
+    "patent application",
+    "job posting data",
+    "supplier registration",
+    "certification record",
+    "trade data",
+    "earnings transcript",
+    "press release analysis",
+    "web change detection",
+    "social sentiment analysis",
 ];
 
 const DISCOVERY_INSIGHTS: &[&str] = &[
@@ -890,7 +937,7 @@ mod tests {
     fn test_diversity_boost_penalizes_recent_entity() {
         // Entity with very recent insight → low boost
         let recent_boost = diversity_boost(Some(Duration::from_secs(60))); // 1 minute ago
-        // Entity with old insight → higher boost
+                                                                           // Entity with old insight → higher boost
         let old_boost = diversity_boost(Some(Duration::from_secs(86400 * 2))); // 2 days ago
 
         assert!(
@@ -1007,7 +1054,10 @@ mod tests {
         };
         let registry = sample_registry();
         let result = gen.generate(&context, Some(&registry));
-        assert!(!result.title.is_empty(), "Event-driven title should not be empty");
+        assert!(
+            !result.title.is_empty(),
+            "Event-driven title should not be empty"
+        );
         assert!(
             result.entities.iter().any(|e| e == "TSMC"),
             "Entities should include TSMC: {:?}",
@@ -1026,7 +1076,13 @@ mod tests {
             timestamp: 1_700_000_000,
         };
         let entities: Vec<String> = vec!["Foxconn".to_string()];
-        let title = gen.generate_with_strategy(TitleStrategy::RiskExposure, &context, None, "Foxconn", &entities);
+        let title = gen.generate_with_strategy(
+            TitleStrategy::RiskExposure,
+            &context,
+            None,
+            "Foxconn",
+            &entities,
+        );
         assert!(!title.is_empty());
         // Risk exposure titles follow "{entity}'s exposure to {topic}" pattern
         assert!(
@@ -1093,20 +1149,25 @@ mod tests {
 
     #[test]
     fn test_jaccard_similarity_identical() {
-        let set_a: HashSet<String> =
-            ["nvidia", "expands", "capacity"].iter().map(|s| s.to_string()).collect();
-        let set_b: HashSet<String> =
-            ["nvidia", "expands", "capacity"].iter().map(|s| s.to_string()).collect();
+        let set_a: HashSet<String> = ["nvidia", "expands", "capacity"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let set_b: HashSet<String> = ["nvidia", "expands", "capacity"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let sim = jaccard_similarity(&set_a, &set_b);
         assert!((sim - 1.0).abs() < 0.01, "Identical sets should have J=1.0");
     }
 
     #[test]
     fn test_jaccard_similarity_disjoint() {
-        let set_a: HashSet<String> =
-            ["nvidia", "expands"].iter().map(|s| s.to_string()).collect();
-        let set_b: HashSet<String> =
-            ["tsmc", "reports"].iter().map(|s| s.to_string()).collect();
+        let set_a: HashSet<String> = ["nvidia", "expands"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let set_b: HashSet<String> = ["tsmc", "reports"].iter().map(|s| s.to_string()).collect();
         let sim = jaccard_similarity(&set_a, &set_b);
         assert!((sim - 0.0).abs() < 0.01, "Disjoint sets should have J=0.0");
     }
@@ -1156,7 +1217,10 @@ mod tests {
         for _ in 0..20 {
             let result = gen.generate(&context, None);
             // Titles should not be empty
-            assert!(!result.title.is_empty(), "Generated title should not be empty");
+            assert!(
+                !result.title.is_empty(),
+                "Generated title should not be empty"
+            );
             // Titles should not exceed reasonable length (256 chars)
             assert!(
                 result.title.len() <= 256,

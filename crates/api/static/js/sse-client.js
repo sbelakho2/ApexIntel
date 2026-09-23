@@ -76,10 +76,10 @@ class ApexIntelSSE {
       this.dispatch('message', event.data);
     };
 
-    // Register a catch-all for named events
-    const self = this;
-    const originalAddEventListener = this.eventSource.addEventListener.bind(this.eventSource);
-    // We handle event types via our own dispatch system
+    // Re-attach every registered named handler to this EventSource. `on()`
+    // attaches handlers to the *current* source; without this, all named
+    // subscriptions are silently lost after a reconnect.
+    this.attachAllHandlers();
   }
 
   /**
@@ -120,20 +120,39 @@ class ApexIntelSSE {
       this.eventHandlers[eventType] = [];
     }
     this.eventHandlers[eventType].push(handler);
-
-    // Register the event listener on the EventSource
-    if (this.eventSource) {
-      this.eventSource.addEventListener(eventType, (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          handler(data);
-        } catch (e) {
-          console.warn(`ApexIntelSSE: Failed to parse event data for '${eventType}':`, e);
-        }
-      });
-    }
+    this.attachHandler(eventType, handler);
 
     return this;
+  }
+
+  /**
+   * Attach a single handler to the current EventSource.
+   * @private
+   */
+  attachHandler(eventType, handler) {
+    if (!this.eventSource) {
+      return;
+    }
+    this.eventSource.addEventListener(eventType, (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handler(data);
+      } catch (e) {
+        console.warn(`ApexIntelSSE: Failed to parse event data for '${eventType}':`, e);
+      }
+    });
+  }
+
+  /**
+   * Re-attach every stored handler to the current EventSource.
+   * @private
+   */
+  attachAllHandlers() {
+    Object.keys(this.eventHandlers).forEach((eventType) => {
+      this.eventHandlers[eventType].forEach((handler) => {
+        this.attachHandler(eventType, handler);
+      });
+    });
   }
 
   /**
@@ -231,7 +250,7 @@ class ApexIntelSSE {
     const title = alert.title || 'ApexIntel Alert';
     const options = {
       body: alert.description || '',
-      icon: '/static/icons/favicon.png',
+      icon: '/static/icons/icon-192.svg',
       tag: `apex-alert-${alert.id || Date.now()}`,
     };
 

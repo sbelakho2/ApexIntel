@@ -431,7 +431,11 @@ impl SupplyChainThreatWorkflow {
     }
 
     /// Run the complete supply chain threat assessment workflow
-    pub fn run(&self, target_organization: &str, signals: Vec<EvidenceItem>) -> SupplyChainThreatReport {
+    pub fn run(
+        &self,
+        target_organization: &str,
+        signals: Vec<EvidenceItem>,
+    ) -> SupplyChainThreatReport {
         let mut report = SupplyChainThreatReport {
             report_id: Uuid::new_v4().to_string(),
             workflow_id: self.workflow_id.clone(),
@@ -542,12 +546,11 @@ impl SupplyChainThreatWorkflow {
         risk_components.push(report.financial_stability.overall_stability_score);
         risk_components.push(report.concentration_risk.overall_concentration_score);
 
-        report.overall_risk_score =
-            if risk_components.is_empty() {
-                0.5
-            } else {
-                risk_components.iter().sum::<f64>() / risk_components.len() as f64
-            };
+        report.overall_risk_score = if risk_components.is_empty() {
+            0.5
+        } else {
+            risk_components.iter().sum::<f64>() / risk_components.len() as f64
+        };
 
         // Generate executive summary
         report.executive_summary = self.generate_executive_summary(&report);
@@ -847,9 +850,9 @@ impl SupplyChainThreatWorkflow {
         // Use SupplyChainThreatModel to get real concentration data
         let geo_concentration = self.supply_chain_model.calculate_geo_concentration();
         let single_manufacturer_risks = self.supply_chain_model.identify_single_manufacturer();
-        let tier1_suppliers = self.supply_chain_model.get_suppliers_by_tier(
-            apex_threat_intel::supply_chain_threats::SupplierTier::Tier1,
-        );
+        let tier1_suppliers = self
+            .supply_chain_model
+            .get_suppliers_by_tier(apex_threat_intel::supply_chain_threats::SupplierTier::Tier1);
 
         let total_supplier_count = tier1_suppliers.len() as i32;
         let critical_count = single_manufacturer_risks.len() as i32;
@@ -875,9 +878,8 @@ impl SupplyChainThreatWorkflow {
                 .flat_map(|gcr| gcr.mitigation_options.clone()),
         );
         if !single_manufacturer_risks.is_empty() {
-            diversification_recommendations.push(
-                "Qualify alternate manufacturers for single-source components".to_string(),
-            );
+            diversification_recommendations
+                .push("Qualify alternate manufacturers for single-source components".to_string());
         }
 
         let supplier_concentration = SupplierConcentration {
@@ -890,18 +892,23 @@ impl SupplyChainThreatWorkflow {
         };
 
         // Build geographic concentration from real engine data
-        let region_distribution: Vec<RegionDistribution> = geo_concentration.iter().map(|gcr| {
-            RegionDistribution {
+        let region_distribution: Vec<RegionDistribution> = geo_concentration
+            .iter()
+            .map(|gcr| RegionDistribution {
                 region: format!("{:?}", gcr.region),
                 percentage: gcr.revenue_exposure_percent / 100.0,
                 trend: TrendDirection::Unknown,
-            }
-        }).collect();
+            })
+            .collect();
 
         let high_risk_region_exposure = if geo_concentration.is_empty() {
             0.0
         } else {
-            geo_concentration.iter().map(|gcr| gcr.risk_score).sum::<f64>() / geo_concentration.len() as f64
+            geo_concentration
+                .iter()
+                .map(|gcr| gcr.risk_score)
+                .sum::<f64>()
+                / geo_concentration.len() as f64
         };
 
         let geo_concentration_score = if geo_concentration.is_empty() {
@@ -914,19 +921,23 @@ impl SupplyChainThreatWorkflow {
             region_distribution,
             high_risk_region_exposure,
             concentration_score: geo_concentration_score,
-            geographic_recommendations: geo_concentration.iter().flat_map(|gcr| gcr.mitigation_options.clone()).collect(),
+            geographic_recommendations: geo_concentration
+                .iter()
+                .flat_map(|gcr| gcr.mitigation_options.clone())
+                .collect(),
         };
 
         // Build component concentration from real engine data
-        let critical_components: Vec<CriticalComponent> = single_manufacturer_risks.iter().map(|smr| {
-            CriticalComponent {
+        let critical_components: Vec<CriticalComponent> = single_manufacturer_risks
+            .iter()
+            .map(|smr| CriticalComponent {
                 component_id: smr.part_number.clone(),
                 component_name: smr.part_number.clone(),
                 sole_source_suppliers: vec![smr.manufacturer_name.clone()],
                 replacement_lead_time_weeks: 0,
                 criticality_level: ImpactLevel::High,
-            }
-        }).collect();
+            })
+            .collect();
 
         let component_conc_score = if critical_components.is_empty() {
             0.0
@@ -937,7 +948,10 @@ impl SupplyChainThreatWorkflow {
         let component_concentration = ComponentConcentration {
             critical_components,
             concentration_score: component_conc_score,
-            component_recommendations: single_manufacturer_risks.iter().map(|smr| smr.recommendation.clone()).collect(),
+            component_recommendations: single_manufacturer_risks
+                .iter()
+                .map(|smr| smr.recommendation.clone())
+                .collect(),
         };
 
         let customer_concentration = CustomerConcentration {
@@ -1039,7 +1053,10 @@ impl SupplyChainThreatWorkflow {
 
     /// Generate executive summary
     fn generate_executive_summary(&self, report: &SupplyChainThreatReport) -> String {
-        let mut summary = format!("Supply Chain Threat Assessment for {}\n\n", report.target_organization);
+        let mut summary = format!(
+            "Supply Chain Threat Assessment for {}\n\n",
+            report.target_organization
+        );
 
         summary.push_str(&format!(
             "Overall Risk Score: {:.0}%\n\n",
@@ -1110,7 +1127,12 @@ impl SupplyChainThreatWorkflow {
         }
 
         // Concentration
-        if report.concentration_risk.supplier_concentration.concentration_score > 0.7 {
+        if report
+            .concentration_risk
+            .supplier_concentration
+            .concentration_score
+            > 0.7
+        {
             findings.push("High supplier concentration risk identified".to_string());
         }
 
@@ -1122,7 +1144,12 @@ impl SupplyChainThreatWorkflow {
         let mut vulnerabilities = Vec::new();
 
         for spof in &report.single_points_of_failure {
-            if spof.risk_score > 0.7 || matches!(spof.impact_assessment.operational_impact, ImpactLevel::Critical) {
+            if spof.risk_score > 0.7
+                || matches!(
+                    spof.impact_assessment.operational_impact,
+                    ImpactLevel::Critical
+                )
+            {
                 vulnerabilities.push(format!(
                     "Critical: {} - {} risk score",
                     spof.component_name,
@@ -1141,7 +1168,12 @@ impl SupplyChainThreatWorkflow {
             }
         }
 
-        if report.concentration_risk.component_concentration.concentration_score > 0.7 {
+        if report
+            .concentration_risk
+            .component_concentration
+            .concentration_score
+            > 0.7
+        {
             vulnerabilities.push("Critical component concentration risk".to_string());
         }
 
@@ -1156,7 +1188,10 @@ impl SupplyChainThreatWorkflow {
         for spof in &report.single_points_of_failure {
             if spof.risk_score > 0.5 {
                 for mitigation in &spof.mitigation_options {
-                    if matches!(mitigation.feasibility, FeasibilityLevel::High | FeasibilityLevel::Medium) {
+                    if matches!(
+                        mitigation.feasibility,
+                        FeasibilityLevel::High | FeasibilityLevel::Medium
+                    ) {
                         recommendations.push(format!(
                             "{}: {} ({} months, {} cost)",
                             spof.component_name,
@@ -1172,16 +1207,24 @@ impl SupplyChainThreatWorkflow {
         // Geographic recommendations
         for geo in &report.geographic_risks {
             if geo.overall_risk_score > 0.5 {
-                recommendations.extend(geo.recommended_actions.iter().map(|a| {
-                    format!("{}: {}", geo.region, a)
-                }));
+                recommendations.extend(
+                    geo.recommended_actions
+                        .iter()
+                        .map(|a| format!("{}: {}", geo.region, a)),
+                );
             }
         }
 
         // Concentration recommendations
-        if report.concentration_risk.supplier_concentration.concentration_score > 0.6 {
+        if report
+            .concentration_risk
+            .supplier_concentration
+            .concentration_score
+            > 0.6
+        {
             recommendations.extend(
-                report.concentration_risk
+                report
+                    .concentration_risk
                     .supplier_concentration
                     .diversification_recommendations
                     .iter()
@@ -1193,7 +1236,11 @@ impl SupplyChainThreatWorkflow {
     }
 
     /// Identify data gaps
-    fn identify_data_gaps(&self, report: &SupplyChainThreatReport, signals: &[EvidenceItem]) -> Vec<String> {
+    fn identify_data_gaps(
+        &self,
+        report: &SupplyChainThreatReport,
+        signals: &[EvidenceItem],
+    ) -> Vec<String> {
         let mut gaps = Vec::new();
 
         if report.single_points_of_failure.is_empty() {
@@ -1204,7 +1251,11 @@ impl SupplyChainThreatWorkflow {
             gaps.push("Limited geographic risk data".to_string());
         }
 
-        if report.financial_stability.supplier_financial_health.is_empty() {
+        if report
+            .financial_stability
+            .supplier_financial_health
+            .is_empty()
+        {
             gaps.push("Limited supplier financial data".to_string());
         }
 
@@ -1228,7 +1279,7 @@ impl Default for SupplyChainThreatWorkflow {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -1356,40 +1407,39 @@ mod tests {
     #[test]
     fn test_financial_stability_analysis() {
         let workflow = SupplyChainThreatWorkflow::new();
-        let signals = vec![
-            EvidenceItem {
-                id: "sig1".to_string(),
-                entity_id: "Supplier A".to_string(),
-                entity_type: "supplier".to_string(),
-                evidence_type: "supplier_bankruptcy_risk".to_string(),
-                description: "Declining revenue".to_string(),
-                source: "Financial Reports".to_string(),
-                confidence: 0.8,
-                timestamp: Utc::now(),
-                raw_data: serde_json::json!({}),
-            },
-        ];
+        let signals = vec![EvidenceItem {
+            id: "sig1".to_string(),
+            entity_id: "Supplier A".to_string(),
+            entity_type: "supplier".to_string(),
+            evidence_type: "supplier_bankruptcy_risk".to_string(),
+            description: "Declining revenue".to_string(),
+            source: "Financial Reports".to_string(),
+            confidence: 0.8,
+            timestamp: Utc::now(),
+            raw_data: serde_json::json!({}),
+        }];
 
         let report = workflow.run("Test Corp", signals);
-        assert!(!report.financial_stability.supplier_financial_health.is_empty());
+        assert!(!report
+            .financial_stability
+            .supplier_financial_health
+            .is_empty());
     }
 
     #[test]
     fn test_alternative_supplier_discovery() {
         let workflow = SupplyChainThreatWorkflow::new();
-        let signals = vec![
-            EvidenceItem {
-                id: "sig1".to_string(),
-                entity_id: "New Supplier A".to_string(),
-                entity_type: "supplier".to_string(),
-                evidence_type: "alternative_supplier".to_string(),
-                description: "Viable alternative found".to_string(),
-                source: "Europe".to_string(),
-                confidence: 0.85,
-                timestamp: Utc::now(),
-                raw_data: serde_json::json!({}),
-            },
-        ];
+        let signals = vec![EvidenceItem {
+            id: "sig1".to_string(),
+            entity_id: "New Supplier A".to_string(),
+            entity_type: "supplier".to_string(),
+            evidence_type: "alternative_supplier".to_string(),
+            description: "Viable alternative found".to_string(),
+            source: "Europe".to_string(),
+            confidence: 0.85,
+            timestamp: Utc::now(),
+            raw_data: serde_json::json!({}),
+        }];
 
         let report = workflow.run("Test Corp", signals);
         assert!(!report.alternative_suppliers.is_empty());
@@ -1442,19 +1492,17 @@ mod tests {
     #[test]
     fn test_critical_vulnerabilities_identification() {
         let workflow = SupplyChainThreatWorkflow::new();
-        let signals = vec![
-            EvidenceItem {
-                id: "sig1".to_string(),
-                entity_id: "Critical Component".to_string(),
-                entity_type: "component".to_string(),
-                evidence_type: "sole_source".to_string(),
-                description: "High risk sole source".to_string(),
-                source: "Supplier A".to_string(),
-                confidence: 0.95,
-                timestamp: Utc::now(),
-                raw_data: serde_json::json!({}),
-            },
-        ];
+        let signals = vec![EvidenceItem {
+            id: "sig1".to_string(),
+            entity_id: "Critical Component".to_string(),
+            entity_type: "component".to_string(),
+            evidence_type: "sole_source".to_string(),
+            description: "High risk sole source".to_string(),
+            source: "Supplier A".to_string(),
+            confidence: 0.95,
+            timestamp: Utc::now(),
+            raw_data: serde_json::json!({}),
+        }];
 
         let report = workflow.run("Test Corp", signals);
         assert!(!report.critical_vulnerabilities.is_empty());
@@ -1463,19 +1511,17 @@ mod tests {
     #[test]
     fn test_recommendations_generation() {
         let workflow = SupplyChainThreatWorkflow::new();
-        let signals = vec![
-            EvidenceItem {
-                id: "sig1".to_string(),
-                entity_id: "Component A".to_string(),
-                entity_type: "component".to_string(),
-                evidence_type: "sole_source".to_string(),
-                description: "Sole source".to_string(),
-                source: "Supplier X".to_string(),
-                confidence: 0.85,
-                timestamp: Utc::now(),
-                raw_data: serde_json::json!({}),
-            },
-        ];
+        let signals = vec![EvidenceItem {
+            id: "sig1".to_string(),
+            entity_id: "Component A".to_string(),
+            entity_type: "component".to_string(),
+            evidence_type: "sole_source".to_string(),
+            description: "Sole source".to_string(),
+            source: "Supplier X".to_string(),
+            confidence: 0.85,
+            timestamp: Utc::now(),
+            raw_data: serde_json::json!({}),
+        }];
 
         let report = workflow.run("Test Corp", signals);
         assert!(!report.actionable_recommendations.is_empty());

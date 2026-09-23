@@ -245,7 +245,7 @@ pub(super) async fn run_sanctions_screen(kind: &JobKind, store: &Arc<PgStore>) -
     run
 }
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
@@ -298,7 +298,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
 
     for record in enforcer.approaching_sla(&records, reminder_ahead_seconds) {
         let delivery_key = format!("sla-reminder:{}", record.id);
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let detail = serde_json::json!({
             "warning_id": record.id,
             "severity": record.severity,
@@ -327,7 +327,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
     for alert in enforcer.check_sla_violations(&records) {
         let warning_id = alert.source_id.trim_start_matches("sla-breach:");
         let delivery_key = format!("notify:{}", alert.source_id);
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let detail = serde_json::json!({
             "warning_id": warning_id,
             "severity": alert.severity.as_str(),
@@ -360,7 +360,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
             } else {
                 "failed"
             };
-            #[allow(clippy::disallowed_methods)]
+            #[allow(clippy::unwrap_used, clippy::expect_used)]
             let payload = serde_json::json!({
                 "alert_id": notification.alert.source_id,
                 "subject": notification.subject,
@@ -409,13 +409,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
 async fn dig_lookup(domain: &str, rtype: &str, timeout_secs: u64) -> String {
     let result = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         tokio::process::Command::new("dig")
-            .args([
-                "+short",
-                "+time=3",
-                "+tries=1",
-                rtype,
-                domain,
-            ])
+            .args(["+short", "+time=3", "+tries=1", rtype, domain])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .output()
@@ -446,7 +440,13 @@ async fn check_spf(domain: &str) -> (bool, Option<String>) {
 /// Check common DKIM selectors.
 async fn check_dkim(domain: &str) -> bool {
     let selectors = [
-        "default", "google", "selector1", "selector2", "k1", "mail", "dkim",
+        "default",
+        "google",
+        "selector1",
+        "selector2",
+        "k1",
+        "mail",
+        "dkim",
     ];
     for sel in &selectors {
         let dkim_domain = format!("{}._domainkey.{}", sel, domain);
@@ -515,7 +515,9 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
     let mut dns_issues: Vec<DnsIssueResult> = Vec::new();
 
     for company in &companies {
-        let Some(domain) = &company.domain else { continue; };
+        let Some(domain) = &company.domain else {
+            continue;
+        };
         if domain.is_empty() {
             continue;
         }
@@ -552,7 +554,7 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
         let pool = &store.pool;
         let obs_id = Uuid::new_v4();
         let now = chrono::Utc::now();
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let value = serde_json::json!({
             "domain": domain,
             "company_name": company.name,
@@ -562,7 +564,7 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
             "dmarc_policy": dmarc_policy,
             "posture_score": posture_score,
         });
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let provenance = serde_json::json!({
             "source": "worker_dns_posture_scan",
             "content_hash": format!("dns_{}_{}", domain, now.format("%Y%m%d")),
@@ -619,14 +621,28 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
     }
 
     // Generate security warnings for the worst DNS offenders (top 10 by worst score)
-    dns_issues.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+    dns_issues.sort_by(|a, b| {
+        a.score
+            .partial_cmp(&b.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     for result in dns_issues.iter().take(10) {
         let mut missing = Vec::new();
-        if !result.has_spf { missing.push("SPF"); }
-        if !result.has_dkim { missing.push("DKIM"); }
-        if !result.has_dmarc { missing.push("DMARC"); }
+        if !result.has_spf {
+            missing.push("SPF");
+        }
+        if !result.has_dkim {
+            missing.push("DKIM");
+        }
+        if !result.has_dmarc {
+            missing.push("DMARC");
+        }
 
-        let title = format!("DNS posture: {} — missing {}", result.company_name, missing.join(", "));
+        let title = format!(
+            "DNS posture: {} — missing {}",
+            result.company_name,
+            missing.join(", ")
+        );
         let description = format!(
             "{} is missing {} email authentication record{} (posture score: {:.0}%). \
              This may increase email spoofing risk for this domain.",
@@ -657,7 +673,9 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
         checked,
         &format!(
             "dns_posture_scan: checked {} domains ({} with issues, {} warnings generated)",
-            checked, dns_issues.len(), warning_count,
+            checked,
+            dns_issues.len(),
+            warning_count,
         ),
     );
     run
@@ -733,7 +751,10 @@ pub(super) async fn run_kev_catalog_fetch(kind: &JobKind, store: &Arc<PgStore>) 
     match body {
         Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(catalog) => {
-                let vulnerabilities = catalog["vulnerabilities"].as_array().cloned().unwrap_or_default();
+                let vulnerabilities = catalog["vulnerabilities"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
                 let count = vulnerabilities.len();
                 // B328: the downloaded catalog was previously parsed, counted,
                 // and discarded — no KEV observation was ever produced, yet
@@ -872,7 +893,7 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
 
                 let obs_id = Uuid::new_v4();
                 let now = chrono::Utc::now();
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let value = serde_json::json!({
                     "original_domain": domain,
                     "domain": variant,
@@ -881,7 +902,7 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
                     "active": true,
                     "dns_verified": true,
                 });
-                #[allow(clippy::disallowed_methods)]
+                #[allow(clippy::unwrap_used, clippy::expect_used)]
                 let provenance = serde_json::json!({
                     "source": "worker_lookalike_scan",
                     "content_hash": format!("la_{}_{}", domain, variant),

@@ -883,7 +883,7 @@ LIMIT 25
     /// Run all scrapers concurrently and return combined artifacts.
     ///
     /// This is the high-level entry point. Results are deduplicated by title.
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     pub async fn aggregate(&self, name: &str, company: &str) -> Vec<RawPersonArtifact> {
         // Launch Wikipedia, Wikidata, OpenCorporates, GDELT in parallel
         let (wiki, wikidata, opencorp, gdelt, scholar, social_mentions) = tokio::join!(

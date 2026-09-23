@@ -66,7 +66,10 @@ pub enum CrawlError {
     #[error("parse error for {url}: {message}")]
     Parse { url: String, message: String },
     #[error("circuit breaker open for {domain}, retry after {retry_after_secs}s")]
-    CircuitBreakerOpen { domain: String, retry_after_secs: u64 },
+    CircuitBreakerOpen {
+        domain: String,
+        retry_after_secs: u64,
+    },
     #[error("circuit breaker fallback: {url} - {message}")]
     CircuitBreakerFallback {
         url: String,
@@ -118,8 +121,7 @@ impl CrawlError {
                 ..
             } => Some(Duration::from_secs(*secs)),
             Self::CircuitBreakerOpen {
-                retry_after_secs,
-                ..
+                retry_after_secs, ..
             } => Some(Duration::from_secs(*retry_after_secs)),
             _ => None,
         }
@@ -162,7 +164,10 @@ impl CrawlError {
             CrawlFailureCategory::Network | CrawlFailureCategory::Timeout
         ) || matches!(
             self,
-            CrawlError::HttpStatus { status: 500..=599, .. }
+            CrawlError::HttpStatus {
+                status: 500..=599,
+                ..
+            }
         )
     }
 }

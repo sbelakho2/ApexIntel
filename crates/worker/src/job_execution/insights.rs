@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{Duration, Utc};
-use tracing;
 
 use crate::{JobKind, JobRun, PgStore};
 
@@ -25,7 +24,6 @@ use crate::{JobKind, JobRun, PgStore};
 use {
     crate::{EntityContext, EvidenceSignal, InferenceLlmClient},
     apex_llm::inference::InferenceConfig,
-    apex_poi::{buying_center, model::PoiProfile},
     apex_poi::model::RoleFamily as PoiRoleFamily,
 };
 /// How far back to look for observations to generate insights from.
@@ -71,7 +69,9 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
         let company_observations = match load_recent_observations_by_company(store, since).await {
             Ok(data) => data,
             Err(e) => {
-                run.fail(&format!("insight_generation: failed to load observations: {e}"));
+                run.fail(&format!(
+                    "insight_generation: failed to load observations: {e}"
+                ));
                 return run;
             }
         };
@@ -91,7 +91,7 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
 
         // 3. Process companies (limit to MAX_COMPANIES_PER_RUN, prioritize by observation count)
         let mut sorted: Vec<_> = company_observations.iter().collect();
-        sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        sorted.sort_by_key(|a| std::cmp::Reverse(a.1.len()));
         sorted.truncate(*MAX_COMPANIES_PER_RUN);
 
         let mut total_insights_generated: u64 = 0;
@@ -219,10 +219,12 @@ async fn load_recent_observations_by_company(
 
     let mut map: HashMap<uuid::Uuid, Vec<ObservationText>> = HashMap::new();
     for row in rows {
-        map.entry(row.company_id).or_default().push(ObservationText {
-            text: row.content,
-            url: row.url.filter(|u| u.starts_with("http")),
-        });
+        map.entry(row.company_id)
+            .or_default()
+            .push(ObservationText {
+                text: row.content,
+                url: row.url.filter(|u| u.starts_with("http")),
+            });
     }
     Ok(map)
 }
@@ -239,10 +241,7 @@ struct CompanyPoiRef {
 }
 
 #[cfg(feature = "llm")]
-async fn load_company_pois(
-    store: &PgStore,
-    company_id: &uuid::Uuid,
-) -> Vec<CompanyPoiRef> {
+async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<CompanyPoiRef> {
     let rows = sqlx::query(
         r#"SELECT
                p.name,
@@ -293,7 +292,6 @@ async fn load_company_pois(
         .collect()
 }
 
-
 /// Build a buying-center-aware contact recommendation block from the POIs
 /// attached to a company. Uses `role_classifier::classify_role` to determine
 /// each POI's true functional role family (NOT the seeded 'C-Suite' default),
@@ -314,19 +312,23 @@ fn build_buying_center_recommendation(
 
     // Classify each POI's real role family from their title (bypassing any
     // stale seeded role_family) and map to a buying-center role.
-    let mut ranked: Vec<(usize, &CompanyPoiRef, PoiRoleFamily, apex_poi::BuyingCenterRole)> =
-        company_pois
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, poi)| {
-                if !poi.is_buyer_relevant {
-                    return None;
-                }
-                let family = apex_poi::role_classifier::classify_role(&poi.role);
-                let bc = apex_poi::role_to_buying_center(&family);
-                Some((idx, poi, family, bc))
-            })
-            .collect();
+    let mut ranked: Vec<(
+        usize,
+        &CompanyPoiRef,
+        PoiRoleFamily,
+        apex_poi::BuyingCenterRole,
+    )> = company_pois
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, poi)| {
+            if !poi.is_buyer_relevant {
+                return None;
+            }
+            let family = apex_poi::role_classifier::classify_role(&poi.role);
+            let bc = apex_poi::role_to_buying_center(&family);
+            Some((idx, poi, family, bc))
+        })
+        .collect();
 
     // Sort by buying-center priority (Buyer=1 first, Decider=5 last).
     ranked.sort_by_key(|(_, _, _, bc)| bc.priority());
@@ -401,8 +403,7 @@ async fn generate_insights_for_company(
     use sqlx::Row;
 
     // Plain-text view of the corpus (existing keyword logic unchanged).
-    let observation_texts: Vec<String> =
-        observations.iter().map(|o| o.text.clone()).collect();
+    let observation_texts: Vec<String> = observations.iter().map(|o| o.text.clone()).collect();
 
     // ── 1. Build the LLM client (same construction as RecipeFire) ──────────
     let llm_client = {
@@ -513,7 +514,11 @@ async fn generate_insights_for_company(
         .take(MAX_EVIDENCE_SIGNALS)
         .enumerate()
         .map(|(i, obs)| EvidenceSignal {
-            title: format!("Observation {}: {}", i + 1, truncate_for_title(&obs.text, 120)),
+            title: format!(
+                "Observation {}: {}",
+                i + 1,
+                truncate_for_title(&obs.text, 120)
+            ),
             description: obs.text.clone(),
             // B336: real provenance URL when available — insights previously
             // shipped citation markers with zero sources.
@@ -574,8 +579,12 @@ async fn generate_insights_for_company(
     // Verify that the generated narrative's claims are grounded in the
     // evidence signals. Build a SourceGroundingValidator from the evidence
     // and check that cited entities appear in the source material.
-    let grounding_ratio =
-        validate_grounding_with_entity(&narrative, &recommendation, &evidence_signals, company_name);
+    let grounding_ratio = validate_grounding_with_entity(
+        &narrative,
+        &recommendation,
+        &evidence_signals,
+        company_name,
+    );
     if grounding_ratio < 0.3 {
         tracing::warn!(
             company = %company_name,
@@ -713,33 +722,86 @@ fn infer_best_category(observations: &[String]) -> String {
     // / governance text and must NOT trigger procurement/supply categories.
     scores.push((
         "supply_chain_risk",
-        score(&["supply chain", "shortage", "lead time", "supplier disruption", "sourcing risk", "procurement delay"]),
+        score(&[
+            "supply chain",
+            "shortage",
+            "lead time",
+            "supplier disruption",
+            "sourcing risk",
+            "procurement delay",
+        ]),
     ));
     scores.push((
         "demand_procurement",
-        score(&["contract award", "rfp", "tender", "purchase order", "procurement signal", "rfq", "bidding"]),
+        score(&[
+            "contract award",
+            "rfp",
+            "tender",
+            "purchase order",
+            "procurement signal",
+            "rfq",
+            "bidding",
+        ]),
     ));
     scores.push((
         "competitor_market",
-        score(&["competitor", "market share", "product launch", "win loss", "competitive landscape"]),
+        score(&[
+            "competitor",
+            "market share",
+            "product launch",
+            "win loss",
+            "competitive landscape",
+        ]),
     ));
     scores.push((
         "security_compliance",
-        score(&["data breach", "cyber", "vulnerab", "compliance", "audit", "certif", "iso ", "security incident"]),
+        score(&[
+            "data breach",
+            "cyber",
+            "vulnerab",
+            "compliance",
+            "audit",
+            "certif",
+            "iso ",
+            "security incident",
+        ]),
     ));
     scores.push((
         "geopolitical_analysis",
-        score(&["sanction", "tariff", "export control", "geopolitical", "embargo", "trade war", "government", "ministry", "policy", "regime", "institutional", "governance", "neoliberal", "urban", "sovereign"]),
+        score(&[
+            "sanction",
+            "tariff",
+            "export control",
+            "geopolitical",
+            "embargo",
+            "trade war",
+            "government",
+            "ministry",
+            "policy",
+            "regime",
+            "institutional",
+            "governance",
+            "neoliberal",
+            "urban",
+            "sovereign",
+        ]),
     ));
     scores.push((
         "regulatory_policy",
-        score(&["regulation", "directive", "mandate", "restriction", "legislation", "compliance framework"]),
+        score(&[
+            "regulation",
+            "directive",
+            "mandate",
+            "restriction",
+            "legislation",
+            "compliance framework",
+        ]),
     ));
 
-    scores.sort_by(|a, b| b.1.cmp(&a.1));
+    scores.sort_by_key(|a| std::cmp::Reverse(a.1));
     if scores.first().map(|(_, s)| *s).unwrap_or(0) == 0 {
         "competitor_market".to_string() // neutral default — avoids forcing
-            // academic/institutional content into procurement
+                                        // academic/institutional content into procurement
     } else {
         scores[0].0.to_string()
     }
@@ -915,32 +977,190 @@ fn extract_proper_noun_phrases(text: &str) -> Vec<String> {
     let mut phrases = Vec::new();
     let mut current_phrase: Vec<String> = Vec::new();
     let common_words: HashSet<&str> = HashSet::from([
-        "The", "A", "An", "This", "That", "These", "Those", "Because", "If",
-        "When", "While", "For", "With", "Without", "However", "Therefore",
-        "Additionally", "Moreover", "Furthermore", "Meanwhile", "Although",
-        "Since", "Unless", "Until", "Where", "Which", "Who", "What", "Why",
-        "How", "Each", "Every", "Some", "Any", "All", "No", "Not", "But",
-        "And", "Or", "In", "On", "At", "By", "To", "Of", "As", "Is", "Are",
-        "Was", "Were", "Be", "Been", "Being", "Has", "Have", "Had", "Do",
-        "Does", "Did", "Will", "Would", "Could", "Should", "May", "Might",
-        "Can", "Must", "Shall", "It", "We", "They", "He", "She", "Our",
-        "Their", "His", "Her", "Its", "Your", "About", "Into", "Through",
-        "From", "Over", "Under", "After", "Before", "During", "Between",
-        "Starz", "Recommend", "Contact", "Approach", "Initiate", "Begin",
-        "Conduct", "Identify", "Assess", "Review", "Establish", "Develop",
+        "The",
+        "A",
+        "An",
+        "This",
+        "That",
+        "These",
+        "Those",
+        "Because",
+        "If",
+        "When",
+        "While",
+        "For",
+        "With",
+        "Without",
+        "However",
+        "Therefore",
+        "Additionally",
+        "Moreover",
+        "Furthermore",
+        "Meanwhile",
+        "Although",
+        "Since",
+        "Unless",
+        "Until",
+        "Where",
+        "Which",
+        "Who",
+        "What",
+        "Why",
+        "How",
+        "Each",
+        "Every",
+        "Some",
+        "Any",
+        "All",
+        "No",
+        "Not",
+        "But",
+        "And",
+        "Or",
+        "In",
+        "On",
+        "At",
+        "By",
+        "To",
+        "Of",
+        "As",
+        "Is",
+        "Are",
+        "Was",
+        "Were",
+        "Be",
+        "Been",
+        "Being",
+        "Has",
+        "Have",
+        "Had",
+        "Do",
+        "Does",
+        "Did",
+        "Will",
+        "Would",
+        "Could",
+        "Should",
+        "May",
+        "Might",
+        "Can",
+        "Must",
+        "Shall",
+        "It",
+        "We",
+        "They",
+        "He",
+        "She",
+        "Our",
+        "Their",
+        "His",
+        "Her",
+        "Its",
+        "Your",
+        "About",
+        "Into",
+        "Through",
+        "From",
+        "Over",
+        "Under",
+        "After",
+        "Before",
+        "During",
+        "Between",
+        "Starz",
+        "Recommend",
+        "Contact",
+        "Approach",
+        "Initiate",
+        "Begin",
+        "Conduct",
+        "Identify",
+        "Assess",
+        "Review",
+        "Establish",
+        "Develop",
         // Sentence-initial common words that get capitalized mid-output
-        "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
-        "One", "Two", "First", "Second", "Third", "Both", "Several", "Many",
-        "Few", "Most", "Other", "Another", "Such", "Same", "New", "Old",
-        "Given", "Based", "According", "Following", "Despite", "Given",
-        "Insufficient", "Evidence", "No", "Yes", "True", "False",
-        "Source", "Sources", "Note", "Note:", "Based",
-        "Tier", "Tier-2", "Tier-3", "Tier-1", "PCBA", "EMS", "BMS",
-        "BESS", "OEM", "OEMs", "RFQ", "RFQs", "BOM", "BOMs", "ISO",
-        "CEO", "CFO", "CTO", "VP", "PR", "IR", "EU", "US", "UK",
-        "North", "South", "East", "West", "Central",
-        "Open", "Close", "High", "Low", "Medium",
-        "Recent", "Current", "Previous", "Prior", "Next", "Last",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+        "One",
+        "Two",
+        "First",
+        "Second",
+        "Third",
+        "Both",
+        "Several",
+        "Many",
+        "Few",
+        "Most",
+        "Other",
+        "Another",
+        "Such",
+        "Same",
+        "New",
+        "Old",
+        "Given",
+        "Based",
+        "According",
+        "Following",
+        "Despite",
+        "Given",
+        "Insufficient",
+        "Evidence",
+        "No",
+        "Yes",
+        "True",
+        "False",
+        "Source",
+        "Sources",
+        "Note",
+        "Note:",
+        "Based",
+        "Tier",
+        "Tier-2",
+        "Tier-3",
+        "Tier-1",
+        "PCBA",
+        "EMS",
+        "BMS",
+        "BESS",
+        "OEM",
+        "OEMs",
+        "RFQ",
+        "RFQs",
+        "BOM",
+        "BOMs",
+        "ISO",
+        "CEO",
+        "CFO",
+        "CTO",
+        "VP",
+        "PR",
+        "IR",
+        "EU",
+        "US",
+        "UK",
+        "North",
+        "South",
+        "East",
+        "West",
+        "Central",
+        "Open",
+        "Close",
+        "High",
+        "Low",
+        "Medium",
+        "Recent",
+        "Current",
+        "Previous",
+        "Prior",
+        "Next",
+        "Last",
     ]);
 
     for token in text.split_whitespace() {
@@ -973,7 +1193,9 @@ fn extract_proper_noun_phrases(text: &str) -> Vec<String> {
                 let has_part_number = joined.chars().any(|c| c.is_ascii_digit())
                     && joined.chars().any(|c| c.is_ascii_alphabetic());
                 let is_meaningful = joined.len() >= 4
-                    && (has_part_number || word_count >= 2 || (word_count == 1 && joined.len() >= 5));
+                    && (has_part_number
+                        || word_count >= 2
+                        || (word_count == 1 && joined.len() >= 5));
                 if is_meaningful {
                     phrases.push(joined.to_lowercase());
                 }
@@ -984,8 +1206,8 @@ fn extract_proper_noun_phrases(text: &str) -> Vec<String> {
     if !current_phrase.is_empty() {
         let joined = current_phrase.join(" ");
         let word_count = joined.split_whitespace().count();
-        let is_meaningful = joined.len() >= 4
-            && (word_count >= 2 || (word_count == 1 && joined.len() >= 5));
+        let is_meaningful =
+            joined.len() >= 4 && (word_count >= 2 || (word_count == 1 && joined.len() >= 5));
         if is_meaningful {
             phrases.push(joined.to_lowercase());
         }

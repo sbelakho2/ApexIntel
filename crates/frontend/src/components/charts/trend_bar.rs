@@ -80,11 +80,7 @@ impl TrendBarChart {
         let plot_h = h - pad_top - pad_bottom;
 
         let n_series = self.bars.len();
-        let n_groups = self
-            .bars
-            .first()
-            .map(|b| b.values.len())
-            .unwrap_or(0);
+        let n_groups = self.bars.first().map(|b| b.values.len()).unwrap_or(0);
 
         // ── Handle empty data ────────────────────────────────────────
         if n_groups == 0 || n_series == 0 {
@@ -133,7 +129,7 @@ impl TrendBarChart {
             .max(1.0);
 
         // ── Grid lines (horizontal, 3 levels) ────────────────────────
-        let grid_lines = [
+        let _grid_lines = [
             (0.0, "0"),
             (max_val * 0.5, format!("{:.0}", max_val * 0.5).leak()),
             (max_val, format!("{:.0}", max_val).leak()),
@@ -143,7 +139,8 @@ impl TrendBarChart {
         let group_width = plot_w / n_groups as f64;
         let bar_gap = 2.0;
         let bar_group_width = group_width - 4.0;
-        let bar_width = (bar_group_width - bar_gap * (series_count as f64 - 1.0)) / series_count as f64;
+        let bar_width =
+            (bar_group_width - bar_gap * (series_count as f64 - 1.0)) / series_count as f64;
         let bar_width = bar_width.max(2.0);
 
         // ── Single data point special case ──────────────────────────
@@ -155,7 +152,15 @@ impl TrendBarChart {
                 let bar_h = (val / max_val) * plot_h;
                 let x = group_x + si as f64 * (bar_width + bar_gap);
                 let y = pad_top + plot_h - bar_h;
-                rects.push((x, y, bar_width, bar_h, series.color, val, series.label.clone()));
+                rects.push((
+                    x,
+                    y,
+                    bar_width,
+                    bar_h,
+                    series.color,
+                    val,
+                    series.label.clone(),
+                ));
             }
 
             return view! {
@@ -205,7 +210,7 @@ impl TrendBarChart {
                         }
                     }).collect_view()}
                     {if show_labels {
-                        rects.first().map(|(_, _, _, _, _, val, label)| {
+                        rects.first().map(|(_, _, _, _, _, _val, label)| {
                             view! {
                                 <text
                                     x=pad_left + plot_w / 2.0
@@ -313,7 +318,7 @@ impl TrendBarChart {
                     View::default()
                 }}
                 // Bars
-                {groups.iter().enumerate().flat_map(|(_gi, bars_in_group)| {
+                {groups.iter().flat_map(|bars_in_group| {
                     bars_in_group.iter().map(move |(x, y, bw, bh, color, val)| {
                         view! {
                             <rect
@@ -331,7 +336,7 @@ impl TrendBarChart {
                 {if show_labels {
                     let empty: Vec<f64> = Vec::new();
                     let first_series = self.bars.first().map(|b| &b.values).unwrap_or(&empty);
-                    let labels: Vec<&str> = first_series.iter().enumerate().map(|(i, _)| {
+                    let _labels: Vec<&str> = first_series.iter().map(|_| {
                         self.bars.first().map(|b| b.label.as_str()).unwrap_or("")
                     }).collect();
                     // Use generic x-group labels if we don't have meaningful labels per bar

@@ -1,11 +1,6 @@
 use chrono::{DateTime, Utc};
 use leptos::*;
 
-#[cfg(feature = "csr")]
-use leptos::ev::mouseover;
-#[cfg(feature = "csr")]
-use leptos::ev::mouseout;
-
 /// A data point with utility methods for SVG scaling.
 #[derive(Clone, Debug)]
 struct MappedPoint {
@@ -199,7 +194,10 @@ impl EntityActivityChart {
             .copied()
             .fold(f64::NEG_INFINITY, |a, v| a.max(v))
             .max(1.0);
-        let min_val = all_values.iter().copied().fold(f64::INFINITY, |a, v| a.min(v));
+        let min_val = all_values
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, |a, v| a.min(v));
         let value_range = (max_val - min_val).max(1e-9);
 
         // ── Scale functions ────────────────────────────────────────
@@ -243,7 +241,7 @@ impl EntityActivityChart {
         }
 
         // ── Grid lines (horizontal, 4 levels) ──────────────────────
-        let grid_values = [
+        let _grid_values = [
             (0.0, "0"),
             (max_val * 0.25, "25%"),
             (max_val * 0.5, "50%"),
@@ -252,7 +250,7 @@ impl EntityActivityChart {
         ];
 
         // ── X-axis labels (show ~5 evenly spaced) ──────────────────
-        let x_label_count = max_points.min(5).max(2);
+        let x_label_count = max_points.clamp(2, 5);
 
         view! {
             <svg
@@ -347,7 +345,7 @@ impl EntityActivityChart {
                 >{format!("{:.0}", max_val)}</text>
 
                 // Series lines
-                {rendered_series.iter().map(|(label, color, mapped, polyline_pts)| {
+                {rendered_series.iter().map(|(label, color, _mapped, polyline_pts)| {
                     view! {
                         <polyline
                             points=polyline_pts
@@ -507,7 +505,10 @@ mod tests {
     #[test]
     fn test_entity_activity_chart_render_multi() {
         let dates = make_dates(20, 1);
-        let obs: Vec<_> = dates.iter().map(|d| (*d, (dates.len() as u32) * 2)).collect();
+        let obs: Vec<_> = dates
+            .iter()
+            .map(|d| (*d, (dates.len() as u32) * 2))
+            .collect();
         let chart = EntityActivityChart::new()
             .with_observations(obs)
             .with_insights(vec![])

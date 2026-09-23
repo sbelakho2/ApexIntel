@@ -8,7 +8,7 @@
 //! ## Core Components
 //!
 //! ### Investigation Engine (`investigations`)
- //! The main orchestration layer that manages the complete investigation lifecycle:
+//! The main orchestration layer that manages the complete investigation lifecycle:
 //! - Creates and manages investigations
 //! - Orchestrates all analysis components
 //! - Returns comprehensive investigation results
@@ -204,27 +204,52 @@ pub use reasoning::{
     ReasoningType, TemporalPattern, TemporalPatternType,
 };
 pub use threats::{
-    AdversaryCapability, AttackSurfaceAssessment, DisruptionScenario, ExposureType,
-    RiskVector, ScenarioSimulation, ScenarioType, SupplyChainThreatModel, ThreatActor,
-    ThreatActorType, ThreatModeling,
+    AdversaryCapability, AttackSurfaceAssessment, DisruptionScenario, ExposureType, RiskVector,
+    ScenarioSimulation, ScenarioType, SupplyChainThreatModel, ThreatActor, ThreatActorType,
+    ThreatModeling,
 };
 
 // Re-export workflow types
 pub use workflows::{
-    // Company Intelligence
-    CompanyIntelligenceReport, CompanyIntelligenceWorkflow, CompetitorAnalysis,
-    FinancialHealthAssessment, LeadershipAnalysis, StrategicOpportunity, SupplyChainRisk,
-    ThreatAssessment, WorkflowResult,
-    // Person Deep-Dive
-    EngagementStrategy, NetworkMapping, PersonDeepDiveReport, PersonDeepDiveWorkflow,
-    ProfessionalHistory, PsychologicalProfile, RiskIndicatorReport, TriggerEvent,
     // Supply Chain Threat
-    AlternativeSupplier, ConcentrationRisk, FinancialStability, GeographicRisk,
-    SinglePointOfFailure, SupplyChainThreatReport, SupplyChainThreatWorkflow,
+    AlternativeSupplier,
+    // Company Intelligence
+    CompanyIntelligenceReport,
+    CompanyIntelligenceWorkflow,
+    CompetitorAnalysis,
     // Market Opportunity
-    CompetitorWeakness, MarketOpportunityReport, MarketOpportunityWorkflow,
-    MarketTiming, ProcurementSignal, StrategicEntryPoint,
+    CompetitorWeakness,
+    ConcentrationRisk,
+    // Person Deep-Dive
+    EngagementStrategy,
+    FinancialHealthAssessment,
+    FinancialStability,
+    GeographicRisk,
     // Geopolitical Risk
-    GeopoliticalRiskReport, GeopoliticalRiskWorkflow, PoliticalStability,
-    RegionalRiskScore, SanctionsExposure, TradePolicyImpact,
+    GeopoliticalRiskReport,
+    GeopoliticalRiskWorkflow,
+    LeadershipAnalysis,
+    MarketOpportunityReport,
+    MarketOpportunityWorkflow,
+    MarketTiming,
+    NetworkMapping,
+    PersonDeepDiveReport,
+    PersonDeepDiveWorkflow,
+    PoliticalStability,
+    ProcurementSignal,
+    ProfessionalHistory,
+    PsychologicalProfile,
+    RegionalRiskScore,
+    RiskIndicatorReport,
+    SanctionsExposure,
+    SinglePointOfFailure,
+    StrategicEntryPoint,
+    StrategicOpportunity,
+    SupplyChainRisk,
+    SupplyChainThreatReport,
+    SupplyChainThreatWorkflow,
+    ThreatAssessment,
+    TradePolicyImpact,
+    TriggerEvent,
+    WorkflowResult,
 };

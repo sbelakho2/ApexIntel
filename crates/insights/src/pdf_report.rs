@@ -291,15 +291,14 @@ impl PdfReport {
 
                 // Add evidence items from the insight's metadata
                 for ev in &insight.evidence {
-                    section.add_evidence(EvidenceItem::new(&ev.label, &ev.value)
-                        .with_confidence(ev.confidence));
+                    section.add_evidence(
+                        EvidenceItem::new(&ev.label, &ev.value).with_confidence(ev.confidence),
+                    );
                 }
 
                 // Add source references
                 for src in &insight.sources {
-                    let domain = src.url.split('/').nth(2)
-                        .unwrap_or(&src.url)
-                        .to_string();
+                    let domain = src.url.split('/').nth(2).unwrap_or(&src.url).to_string();
                     let domain_clone = domain.clone();
                     section.add_source(SourceRef {
                         title: src.title.clone(),
@@ -327,7 +326,8 @@ impl PdfReport {
 
         report.metadata.source_count = source_count;
         report.metadata.aggregate_confidence = aggregate_confidence;
-        report.metadata.tags = insights.iter()
+        report.metadata.tags = insights
+            .iter()
             .flat_map(|i| i.tags.iter().cloned())
             .collect();
 
@@ -349,8 +349,12 @@ impl PdfReport {
             profile.country,
             profile.region,
             profile.industry_tags.join(", "),
-            profile.employee_estimate.map_or("Unknown".to_string(), |e| e.to_string()),
-            profile.revenue_estimate_usd.map_or("Unknown".to_string(), |r| format!("${}", r)),
+            profile
+                .employee_estimate
+                .map_or("Unknown".to_string(), |e| e.to_string()),
+            profile
+                .revenue_estimate_usd
+                .map_or("Unknown".to_string(), |r| format!("${}", r)),
         );
         report.add_section(profile_section);
 
@@ -366,7 +370,10 @@ impl PdfReport {
         for tc in &cap.top_capabilities {
             cap_section.add_evidence(EvidenceItem::new(
                 &tc.capability,
-                &format!("Grade: {} | Evidence: {}", tc.proof_grade, tc.evidence_count),
+                &format!(
+                    "Grade: {} | Evidence: {}",
+                    tc.proof_grade, tc.evidence_count
+                ),
             ));
         }
         report.add_section(cap_section);
@@ -388,8 +395,8 @@ impl PdfReport {
 
         // Risk assessment
         let risk = &dossier.risk_assessment;
-        let mut risk_section = ReportSection::new("Risk Assessment")
-            .with_severity(if risk.overall_risk >= 0.7 {
+        let mut risk_section =
+            ReportSection::new("Risk Assessment").with_severity(if risk.overall_risk >= 0.7 {
                 crate::InsightSeverity::Critical
             } else if risk.overall_risk >= 0.4 {
                 crate::InsightSeverity::High
@@ -478,8 +485,11 @@ impl PdfReport {
         let mut inf_section = ReportSection::new("Influence Assessment");
         inf_section.body = format!(
             "Score: {:.2} ({})\nPain index: {:.2}\nRole drift: {:.2}\nChange risk: {:.2}",
-            inf.influence_score, inf.influence_label,
-            inf.pain_index, inf.role_drift, inf.change_risk,
+            inf.influence_score,
+            inf.influence_label,
+            inf.pain_index,
+            inf.role_drift,
+            inf.change_risk,
         );
         for topic in &inf.trigger_topics {
             inf_section.add_evidence(EvidenceItem::new("Trigger Topic", topic));
@@ -740,7 +750,12 @@ impl Default for PdfExportConfig {
 mod tests {
     use super::*;
 
-    fn sample_insight_row(id: &str, title: &str, severity: &str, confidence: f64) -> InsightReportRow {
+    fn sample_insight_row(
+        id: &str,
+        title: &str,
+        severity: &str,
+        confidence: f64,
+    ) -> InsightReportRow {
         let sev = match severity {
             "critical" => InsightSeverity::Critical,
             "high" => InsightSeverity::High,
@@ -762,12 +777,10 @@ mod tests {
                 EvidenceItem::new("source_b", "New supplier relationship established")
                     .with_confidence(0.72),
             ],
-            sources: vec![
-                ReportSourceRef {
-                    title: "Industry_Report_Q1".to_string(),
-                    url: "https://example.com/report".to_string(),
-                },
-            ],
+            sources: vec![ReportSourceRef {
+                title: "Industry_Report_Q1".to_string(),
+                url: "https://example.com/report".to_string(),
+            }],
             tags: vec!["supply_chain".to_string(), "procurement".to_string()],
             generated_at: Some(Utc::now()),
         }
@@ -851,10 +864,9 @@ mod tests {
     #[test]
     fn test_to_html_with_evidence() {
         let mut report = PdfReport::new("Evidence Test", ReportType::InsightSummary);
-        let mut section = ReportSection::new("Section with Evidence")
-            .with_body("Body text");
-        section.add_evidence(EvidenceItem::new("Detection", "Signal detected")
-            .with_confidence(0.92));
+        let mut section = ReportSection::new("Section with Evidence").with_body("Body text");
+        section
+            .add_evidence(EvidenceItem::new("Detection", "Signal detected").with_confidence(0.92));
         section.add_source(SourceRef {
             title: "Example Source".to_string(),
             url: "https://example.com/src".to_string(),
@@ -878,9 +890,15 @@ mod tests {
         report.add_section(section);
 
         let html = report.to_html();
-        assert!(html.contains("&lt;test&gt;"), "title should be HTML-escaped");
+        assert!(
+            html.contains("&lt;test&gt;"),
+            "title should be HTML-escaped"
+        );
         assert!(html.contains("&amp;"));
-        assert!(html.contains("&lt;script&gt;"), "body script tag should be HTML-escaped");
+        assert!(
+            html.contains("&lt;script&gt;"),
+            "body script tag should be HTML-escaped"
+        );
         assert!(!html.contains("<script>"));
     }
 
@@ -894,14 +912,23 @@ mod tests {
     fn test_report_type_display() {
         assert_eq!(ReportType::InsightSummary.as_str(), "Insight Summary");
         assert_eq!(ReportType::EntityDossier.as_str(), "Entity Dossier");
-        assert_eq!(ReportType::CompetitiveAnalysis.as_str(), "Competitive Analysis");
-        assert_eq!(ReportType::WeeklyDigest.as_str(), "Weekly Intelligence Digest");
+        assert_eq!(
+            ReportType::CompetitiveAnalysis.as_str(),
+            "Competitive Analysis"
+        );
+        assert_eq!(
+            ReportType::WeeklyDigest.as_str(),
+            "Weekly Intelligence Digest"
+        );
     }
 
     #[test]
     fn test_report_type_classification() {
         assert_eq!(ReportType::InsightSummary.classification(), "CONFIDENTIAL");
-        assert_eq!(ReportType::CompetitiveAnalysis.classification(), "SENSITIVE");
+        assert_eq!(
+            ReportType::CompetitiveAnalysis.classification(),
+            "SENSITIVE"
+        );
     }
 
     #[test]

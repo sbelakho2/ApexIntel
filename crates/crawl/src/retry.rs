@@ -11,11 +11,11 @@
 //! 3. **RetryPolicy** — classifies errors as transient (retryable) or permanent
 //! 4. **CircuitBreaker** — stops requests to failing domains after N consecutive failures
 
+use rand::Rng;
+use reqwest::{Client, StatusCode};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use rand::Rng;
-use reqwest::{Client, StatusCode};
 use tracing::{debug, info, warn};
 
 // ─── Configuration ──────────────────────────────────────────────────────────
@@ -109,10 +109,7 @@ pub struct RetryResult {
 #[derive(Debug, thiserror::Error)]
 pub enum RetryError {
     #[error("all {attempts} retry attempts exhausted, last error: {last_error}")]
-    Exhausted {
-        attempts: usize,
-        last_error: String,
-    },
+    Exhausted { attempts: usize, last_error: String },
     #[error("permanent error: {0}")]
     Permanent(String),
     #[error("circuit breaker open for domain {domain}")]
@@ -141,11 +138,10 @@ fn classify_reqwest_error(error: &reqwest::Error) -> ErrorCategory {
 
 /// Classify an HTTP status code for retryability.
 fn classify_http_status(status: StatusCode, retryable: &[StatusCode]) -> ErrorCategory {
-    if retryable.contains(&status) {
-        ErrorCategory::Transient
-    } else if status.is_server_error() {
-        ErrorCategory::Transient
-    } else if status == StatusCode::TOO_MANY_REQUESTS {
+    if retryable.contains(&status)
+        || status.is_server_error()
+        || status == StatusCode::TOO_MANY_REQUESTS
+    {
         ErrorCategory::Transient
     } else {
         ErrorCategory::Permanent
@@ -348,7 +344,11 @@ pub async fn retry_with_backoff(
                 // Non-success status — classify and possibly retry
                 let category = classify_http_status(status, &config.retryable_status_codes);
                 let body_text = response.text().await.unwrap_or_default();
-                last_error = Some(format!("HTTP {}: {}", status.as_u16(), truncate(&body_text, 200)));
+                last_error = Some(format!(
+                    "HTTP {}: {}",
+                    status.as_u16(),
+                    truncate(&body_text, 200)
+                ));
 
                 match category {
                     ErrorCategory::Transient => {
@@ -487,7 +487,10 @@ mod tests {
     #[test]
     fn test_extract_domain() {
         assert_eq!(extract_domain("https://example.com/path"), "example.com");
-        assert_eq!(extract_domain("http://sub.example.co.uk:8080/path"), "sub.example.co.uk");
+        assert_eq!(
+            extract_domain("http://sub.example.co.uk:8080/path"),
+            "sub.example.co.uk"
+        );
         assert_eq!(extract_domain("https://foxconn.com"), "foxconn.com");
     }
 

@@ -1,4 +1,4 @@
-#![cfg_attr(test, allow(clippy::disallowed_methods))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod alert_config;
 pub mod analysis;

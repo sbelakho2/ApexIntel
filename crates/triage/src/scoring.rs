@@ -32,7 +32,8 @@ Scoring guidelines:
 - confidence: How certain are you in this assessment? 1.0 = "clear evidence"
 
 Be conservative. Default to 0.3-0.5 range unless you have strong signals.
-/no_think"#.to_string()
+/no_think"#
+        .to_string()
 }
 
 /// LLM-based triage scorer.
@@ -60,7 +61,10 @@ impl TriageScorer {
 
         let user_prompt = format!(
             "Title: {}\nDescription: {}\nType: {}{}\n\nScore this item.",
-            item.title, item.description, item.item_type.as_str(), entity_context,
+            item.title,
+            item.description,
+            item.item_type.as_str(),
+            entity_context,
         );
 
         let response = self
@@ -70,18 +74,15 @@ impl TriageScorer {
 
         // Attempt to parse the response as TriageDimensions
         // The LLM may include a "reasoning" field which we ignore
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response).context("Failed to parse triage LLM response as JSON")?;
+        let parsed: serde_json::Value = serde_json::from_str(&response)
+            .context("Failed to parse triage LLM response as JSON")?;
 
         let mut dims = TriageDimensions {
             urgency: parsed
                 .get("urgency")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.5),
-            impact: parsed
-                .get("impact")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5),
+            impact: parsed.get("impact").and_then(|v| v.as_f64()).unwrap_or(0.5),
             actionability: parsed
                 .get("actionability")
                 .and_then(|v| v.as_f64())
@@ -133,8 +134,8 @@ impl TriageScorer {
 
         match response {
             Ok(resp) => {
-                let parsed: Vec<serde_json::Value> = serde_json::from_str(&resp)
-                    .context("Failed to parse batch triage response")?;
+                let parsed: Vec<serde_json::Value> =
+                    serde_json::from_str(&resp).context("Failed to parse batch triage response")?;
 
                 let scores: Vec<TriageDimensions> = parsed
                     .into_iter()
@@ -176,10 +177,7 @@ impl TriageScorer {
     }
 
     /// Calculate composite scores for a slice of dimensions.
-    pub fn calculate_composite_scores(
-        &self,
-        dimensions: &[TriageDimensions],
-    ) -> Vec<f64> {
+    pub fn calculate_composite_scores(&self, dimensions: &[TriageDimensions]) -> Vec<f64> {
         dimensions
             .iter()
             .map(|d| composite_score(d, &self.config.weights))
@@ -311,15 +309,13 @@ mod tests {
             }),
             TriageConfig::default(),
         );
-        let dims = vec![
-            TriageDimensions {
-                urgency: 1.0,
-                impact: 1.0,
-                actionability: 1.0,
-                novelty: 1.0,
-                confidence: 1.0,
-            },
-        ];
+        let dims = vec![TriageDimensions {
+            urgency: 1.0,
+            impact: 1.0,
+            actionability: 1.0,
+            novelty: 1.0,
+            confidence: 1.0,
+        }];
         let scores = scorer.calculate_composite_scores(&dims);
         assert_eq!(scores.len(), 1);
         // With default weights: 0.30 + 0.35 + 0.15 + 0.10 + 0.10 = 1.0

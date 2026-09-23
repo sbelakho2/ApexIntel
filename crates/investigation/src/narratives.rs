@@ -306,8 +306,14 @@ impl InvestigativeReport {
         lines.push(format!("# {}", self.title));
         lines.push(String::new());
         lines.push(format!("**Type:** {}", self.report_type.label()));
-        lines.push(format!("**Generated:** {}", self.generated_at.format("%Y-%m-%d %H:%M UTC")));
-        lines.push(format!("**Confidence:** {:.0}%", self.overall_confidence * 100.0));
+        lines.push(format!(
+            "**Generated:** {}",
+            self.generated_at.format("%Y-%m-%d %H:%M UTC")
+        ));
+        lines.push(format!(
+            "**Confidence:** {:.0}%",
+            self.overall_confidence * 100.0
+        ));
         lines.push(String::new());
 
         // Executive Summary
@@ -358,10 +364,7 @@ impl InvestigativeReport {
         // Attribution
         if let Some(attr) = &self.attribution {
             lines.push("## Actor Attribution".to_string());
-            lines.push(format!(
-                "Confidence: {:.0}%",
-                attr.confidence * 100.0
-            ));
+            lines.push(format!("Confidence: {:.0}%", attr.confidence * 100.0));
             lines.push(String::new());
             if !attr.attributed_to.is_empty() {
                 lines.push("**Attributed to:**".to_string());
@@ -381,11 +384,7 @@ impl InvestigativeReport {
         if !self.recommendations.is_empty() {
             lines.push("## Recommendations".to_string());
             for rec in &self.recommendations {
-                lines.push(format!(
-                    "### {} [{}]",
-                    rec.title,
-                    rec.priority.label()
-                ));
+                lines.push(format!("### {} [{}]", rec.title, rec.priority.label()));
                 lines.push(rec.description.to_string());
                 lines.push(format!("**Impact:** {}", rec.expected_impact));
                 lines.push(format!("**Effort:** {}", rec.effort.label()));
@@ -537,18 +536,12 @@ impl NarrativeSynthesizer {
 
         // Add primary conclusion if available
         if let Some(conclusion) = &context.primary_conclusion {
-            summary.push_str(&format!(
-                "\n\n**Primary Conclusion:** {}",
-                conclusion
-            ));
+            summary.push_str(&format!("\n\n**Primary Conclusion:** {}", conclusion));
         }
 
         // Add risk assessment if available
         if let Some(risk_level) = &context.risk_level {
-            summary.push_str(&format!(
-                "\n\n**Risk Assessment:** {}",
-                risk_level
-            ));
+            summary.push_str(&format!("\n\n**Risk Assessment:** {}", risk_level));
         }
 
         summary
@@ -701,7 +694,10 @@ impl NarrativeSynthesizer {
             for rel in &context.relationships {
                 content.push_str(&format!(
                     "- **{}** {} **{}** (confidence: {:.0}%)\n",
-                    rel.entity_a, rel.relationship_type, rel.entity_b, rel.confidence * 100.0
+                    rel.entity_a,
+                    rel.relationship_type,
+                    rel.entity_b,
+                    rel.confidence * 100.0
                 ));
             }
         }
@@ -710,7 +706,7 @@ impl NarrativeSynthesizer {
     }
 
     /// Reconstruct timeline from events.
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn reconstruct_timeline(&self, context: &SynthesisContext) -> TimelineReconstruction {
         let mut events: Vec<TimelineEvent> = context
             .events
@@ -758,7 +754,10 @@ impl NarrativeSynthesizer {
             (Utc::now(), Utc::now())
         } else {
             // SAFETY: events is non-empty in this branch
-            (events.first().unwrap().timestamp, events.last().unwrap().timestamp)
+            (
+                events.first().unwrap().timestamp,
+                events.last().unwrap().timestamp,
+            )
         };
 
         TimelineReconstruction {
@@ -791,16 +790,17 @@ impl NarrativeSynthesizer {
 
         // Compute dynamic confidence based on evidence quantity and source diversity
         let evidence_quantity_factor = (attribution_signals.len() as f64 / 10.0).min(1.0);
-        
+
         // Source diversity: count unique sources among attribution signals
         let mut unique_sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for s in &attribution_signals {
             unique_sources.insert(s.source.as_str());
         }
         let source_diversity_factor = (unique_sources.len() as f64 / 5.0).min(1.0);
-        
+
         // Combined confidence: base 0.3 + evidence boost + diversity boost, capped at 0.95
-        let confidence = (0.3 + evidence_quantity_factor * 0.35 + source_diversity_factor * 0.30).min(0.95);
+        let confidence =
+            (0.3 + evidence_quantity_factor * 0.35 + source_diversity_factor * 0.30).min(0.95);
 
         Some(ActorAttribution {
             entity_id: context.entities.first().cloned().unwrap_or_default(),
@@ -831,7 +831,10 @@ impl NarrativeSynthesizer {
         for finding in context.findings.iter().take(3) {
             recommendations.push(Recommendation {
                 id: Uuid::new_v4().to_string(),
-                title: format!("Investigate: {}", finding.chars().take(50).collect::<String>()),
+                title: format!(
+                    "Investigate: {}",
+                    finding.chars().take(50).collect::<String>()
+                ),
                 description: finding.clone(),
                 priority: RecommendationPriority::High,
                 expected_impact: "Improved understanding of entity behavior".to_string(),
@@ -849,7 +852,8 @@ impl NarrativeSynthesizer {
                 recommendations.push(Recommendation {
                     id: Uuid::new_v4().to_string(),
                     title: "Implement monitoring for high-risk entity".to_string(),
-                    description: "Establish continuous monitoring for this high-risk entity".to_string(),
+                    description: "Establish continuous monitoring for this high-risk entity"
+                        .to_string(),
                     priority: RecommendationPriority::Critical,
                     expected_impact: "Early warning of risk events".to_string(),
                     effort: ImplementationEffort::Low,
@@ -891,7 +895,11 @@ impl NarrativeSynthesizer {
             (context.findings.len() as f64 / 5.0).min(1.0) * 0.3
         };
         // Entity factor: at least 3 entities for strong event-based confidence, weighted 0.3
-        let entity_factor = if context.entities.len() >= 3 { 0.3 } else { 0.1 };
+        let entity_factor = if context.entities.len() >= 3 {
+            0.3
+        } else {
+            0.1
+        };
 
         (signal_factor + finding_factor + entity_factor).clamp(0.0, 1.0)
     }
@@ -947,21 +955,20 @@ impl NarrativeSynthesizer {
         // Threat / risk analysis
         if context.risk_level.is_some() || context.threat_summary.is_some() {
             techniques.push(
-                "**Risk assessment** with automated threat scoring and confidence propagation".to_string()
+                "**Risk assessment** with automated threat scoring and confidence propagation"
+                    .to_string(),
             );
         }
 
         // Fallback if nothing was performed
         if techniques.is_empty() {
+            techniques.push("**Multi-signal analysis** across diverse OSINT sources".to_string());
             techniques.push(
-                "**Multi-signal analysis** across diverse OSINT sources".to_string()
+                "**Bayesian hypothesis testing** using Analysis of Competing Hypotheses (ACH)"
+                    .to_string(),
             );
-            techniques.push(
-                "**Bayesian hypothesis testing** using Analysis of Competing Hypotheses (ACH)".to_string()
-            );
-            techniques.push(
-                "**Chain-of-thought reasoning** with confidence propagation".to_string()
-            );
+            techniques
+                .push("**Chain-of-thought reasoning** with confidence propagation".to_string());
         }
 
         let mut desc = String::from(
@@ -1050,14 +1057,12 @@ mod tests {
             report_type: ReportType::CompanyIntelligence,
             title: "Test Company Investigation".to_string(),
             entities: vec!["TestCorp".to_string()],
-            signals: vec![
-                SignalInfo {
-                    signal_type: "job_posting".to_string(),
-                    description: "Expansion hiring detected".to_string(),
-                    confidence: 0.9,
-                    source: "LinkedIn".to_string(),
-                },
-            ],
+            signals: vec![SignalInfo {
+                signal_type: "job_posting".to_string(),
+                description: "Expansion hiring detected".to_string(),
+                confidence: 0.9,
+                source: "LinkedIn".to_string(),
+            }],
             findings: vec!["Company is actively hiring".to_string()],
             primary_conclusion: Some("Company appears to be expanding".to_string()),
             risk_level: Some("Medium".to_string()),

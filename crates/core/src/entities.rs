@@ -657,7 +657,10 @@ impl Observation {
     /// upsert path actually deduplicate: identical key → identical UUID →
     /// conflict → skip.
     pub fn deterministic_id(namespace: &str, key: &str) -> Uuid {
-        Uuid::new_v5(&Uuid::NAMESPACE_URL, format!("{namespace}:{key}").as_bytes())
+        Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("{namespace}:{key}").as_bytes(),
+        )
     }
 
     /// Assign a deterministic ID from `(observation_type, provenance source,
@@ -703,7 +706,15 @@ fn canonical_value_key(value: &serde_json::Value) -> String {
                 .filter(|k| {
                     !matches!(
                         k.as_str(),
-                        "ts" | "ts_utc" | "fetched_at" | "crawled_at" | "observed_at" | "ingested_at"
+                        "ts" | "ts_utc"
+                            | "fetched_at"
+                            | "crawled_at"
+                            | "observed_at"
+                            | "ingested_at"
+                            // Engagement counters (points/upvotes/likes) change
+                            // between scans of unchanged content; excluding them
+                            // keeps content-derived IDs stable and idempotent.
+                            | "engagement"
                     )
                 })
                 .map(|k| format!("{}={}", k, canonical_value_key(&map[k])))
@@ -1082,6 +1093,39 @@ impl FeatureRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stabilize_id_ignores_volatile_engagement() {
+        // Same content and provenance must map to the same observation id even
+        // when the engagement counter changed between scans.
+        let mut first = Observation::new(
+            ObservationType::SocialPost,
+            Utc::now(),
+            serde_json::json!({"platform": "hn", "content": "same story", "engagement": 10}),
+            serde_json::json!({"source": "hn", "url": "https://example.test/story"}),
+        );
+        first.stabilize_id("social");
+
+        let mut second = Observation::new(
+            ObservationType::SocialPost,
+            Utc::now(),
+            serde_json::json!({"platform": "hn", "content": "same story", "engagement": 999}),
+            serde_json::json!({"source": "hn", "url": "https://example.test/story"}),
+        );
+        second.stabilize_id("social");
+
+        assert_eq!(first.id, second.id);
+
+        // Different content must still produce a different id.
+        let mut third = Observation::new(
+            ObservationType::SocialPost,
+            Utc::now(),
+            serde_json::json!({"platform": "hn", "content": "different story", "engagement": 10}),
+            serde_json::json!({"source": "hn", "url": "https://example.test/story"}),
+        );
+        third.stabilize_id("social");
+        assert_ne!(first.id, third.id);
+    }
 
     #[test]
     fn test_company_new() {

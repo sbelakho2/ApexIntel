@@ -1,4 +1,4 @@
-use apex_shared::{CalibrationCurve, CalibrationPoint};
+use apex_shared::CalibrationCurve;
 use leptos::*;
 
 use crate::api;

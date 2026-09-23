@@ -451,7 +451,11 @@ pub async fn insert_seed_recipes(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::field_reassign_with_default
+    )]
 
     use super::*;
 

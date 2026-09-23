@@ -1,4 +1,3 @@
-use apex_shared::{BandClass, ConfidenceInterval, GrangerCausalPair, PredictiveAlert, SurvivalPoint};
 use leptos::*;
 
 use crate::api;
@@ -10,8 +9,7 @@ use crate::components::{
 
 #[component]
 pub fn CausalityPage() -> impl IntoView {
-    let pairs_resource =
-        create_resource(|| (), |_| async { api::fetch_causal_pairs().await });
+    let pairs_resource = create_resource(|| (), |_| async { api::fetch_causal_pairs().await });
     let alerts_resource =
         create_resource(|| (), |_| async { api::fetch_predictive_alerts().await });
     let survival_resource =

@@ -52,7 +52,8 @@ impl CtCertificate {
 
     /// Whether this is an EV certificate.
     pub fn is_ev(&self) -> bool {
-        self.issuer_org.as_ref()
+        self.issuer_org
+            .as_ref()
             .map(|o| o.contains("Extended Validation") || o.contains("EV"))
             .unwrap_or(false)
     }
@@ -88,7 +89,10 @@ impl CtMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io) CT Monitor")
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { client, seen_hashes: HashSet::new() }
+        Self {
+            client,
+            seen_hashes: HashSet::new(),
+        }
     }
 
     /// Search crt.sh for certificates matching a domain.
@@ -98,9 +102,12 @@ impl CtMonitor {
             urlencoding::encode(domain)
         );
 
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("User-Agent", "ApexIntel/1.0 CT Monitor")
-            .send().await
+            .send()
+            .await
             .context("crt.sh API request")?;
 
         if !resp.status().is_success() {
@@ -112,7 +119,11 @@ impl CtMonitor {
         self.entries_to_certs(&entries, domain)
     }
 
-    fn entries_to_certs(&mut self, entries: &[CtLogEntry], domain: &str) -> Result<Vec<CtCertificate>> {
+    fn entries_to_certs(
+        &mut self,
+        entries: &[CtLogEntry],
+        domain: &str,
+    ) -> Result<Vec<CtCertificate>> {
         let mut certs = Vec::new();
         for entry in entries {
             if self.seen_hashes.contains(&entry.fingerprint) {
@@ -120,19 +131,23 @@ impl CtMonitor {
             }
             self.seen_hashes.insert(entry.fingerprint.clone());
 
-            let not_before = DateTime::parse_from_rfc3339(&format!("{}T00:00:00Z", entry.not_before))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+            let not_before =
+                DateTime::parse_from_rfc3339(&format!("{}T00:00:00Z", entry.not_before))
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
             let not_after = DateTime::parse_from_rfc3339(&format!("{}T23:59:59Z", entry.not_after))
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
-            let names: Vec<String> = entry.name_value.split('\n')
+            let names: Vec<String> = entry
+                .name_value
+                .split('\n')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
 
-            let matched = names.iter()
+            let matched = names
+                .iter()
                 .filter(|n| n.contains(domain))
                 .cloned()
                 .collect();
@@ -185,7 +200,8 @@ impl CtMonitor {
 
     /// Get all discovered subdomains from CT data.
     pub fn all_discovered_subdomains(&self) -> Vec<String> {
-        self.seen_hashes.iter()
+        self.seen_hashes
+            .iter()
             .filter_map(|h| {
                 let parts: Vec<&str> = h.split('.').collect();
                 parts.last().map(|s| s.to_string())
@@ -195,7 +211,9 @@ impl CtMonitor {
 }
 
 impl Default for CtMonitor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

@@ -25,8 +25,9 @@ use std::hash::{Hash, Hasher};
 fn variation_seed(recipe_code: &str, entity_id: &str) -> u64 {
     let now = chrono::Utc::now();
     let iso = now.iso_week();
-    let week_key: u64 =
-        (iso.year() as u64).wrapping_mul(1000).wrapping_add(iso.week() as u64);
+    let week_key: u64 = (iso.year() as u64)
+        .wrapping_mul(1000)
+        .wrapping_add(iso.week() as u64);
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     recipe_code.hash(&mut hasher);
@@ -62,27 +63,79 @@ impl SeededRng {
 static OPENING_VARIANTS: &[&[&str]] = &[
     &["detected", "identified", "observed", "found", "uncovered"],
     &["indicates", "suggests", "signals", "points to", "reveals"],
-    &["risk", "exposure", "vulnerability", "threat signal", "concern"],
+    &[
+        "risk",
+        "exposure",
+        "vulnerability",
+        "threat signal",
+        "concern",
+    ],
     &["alert", "notification", "advisory", "notice", "flag"],
 ];
 
 /// Domain-specific synonym banks for common terms in warning titles.
 static DOMAIN_SYNONYMS: &[(&str, &[&str])] = &[
-    ("procurement", &["sourcing", "purchasing", "acquisition", "supply procurement"]),
+    (
+        "procurement",
+        &[
+            "sourcing",
+            "purchasing",
+            "acquisition",
+            "supply procurement",
+        ],
+    ),
     ("supplier", &["vendor", "provider", "source partner"]),
-    ("certification", &["certificate", "accreditation", "qualification", "credential"]),
-    ("compliance", &["conformance", "adherence", "regulatory alignment"]),
-    ("security", &["cybersecurity", "info security", "defense posture"]),
-    ("breach", &["violation", "compromise", "security incident", "exposure"]),
+    (
+        "certification",
+        &[
+            "certificate",
+            "accreditation",
+            "qualification",
+            "credential",
+        ],
+    ),
+    (
+        "compliance",
+        &["conformance", "adherence", "regulatory alignment"],
+    ),
+    (
+        "security",
+        &["cybersecurity", "info security", "defense posture"],
+    ),
+    (
+        "breach",
+        &["violation", "compromise", "security incident", "exposure"],
+    ),
     ("vulnerability", &["weakness", "exposure gap", "deficiency"]),
-    ("shift", &["change", "transition", "realignment", "movement"]),
+    (
+        "shift",
+        &["change", "transition", "realignment", "movement"],
+    ),
     ("decline", &["drop", "downturn", "contraction", "weakening"]),
-    ("expansion", &["growth", "scale-up", "build-out", "augmentation"]),
-    ("reduction", &["cutback", "drawdown", "contraction", "trimming"]),
-    ("investment", &["capital deployment", "funding", "spend", "allocation"]),
-    ("partnership", &["alliance", "collaboration", "joint effort", "cooperative"]),
-    ("acquisition", &["takeover", "purchase", "buy-out", "consolidation"]),
-    ("restructuring", &["reorganization", "overhaul", "transformation", "reshaping"]),
+    (
+        "expansion",
+        &["growth", "scale-up", "build-out", "augmentation"],
+    ),
+    (
+        "reduction",
+        &["cutback", "drawdown", "contraction", "trimming"],
+    ),
+    (
+        "investment",
+        &["capital deployment", "funding", "spend", "allocation"],
+    ),
+    (
+        "partnership",
+        &["alliance", "collaboration", "joint effort", "cooperative"],
+    ),
+    (
+        "acquisition",
+        &["takeover", "purchase", "buy-out", "consolidation"],
+    ),
+    (
+        "restructuring",
+        &["reorganization", "overhaul", "transformation", "reshaping"],
+    ),
 ];
 
 /// Apply title-level diversity to a rendered warning title.
@@ -143,8 +196,20 @@ pub fn diversify_title(title: &str, recipe_code: &str, entity_id: &str) -> Strin
 static ACTION_VERBS: &[&[&str]] = &[
     &["monitor", "track", "watch", "review", "observe"],
     &["investigate", "examine", "assess", "evaluate", "analyze"],
-    &["engage", "contact", "reach out to", "connect with", "consult"],
-    &["verify", "validate", "confirm", "substantiate", "corroborate"],
+    &[
+        "engage",
+        "contact",
+        "reach out to",
+        "connect with",
+        "consult",
+    ],
+    &[
+        "verify",
+        "validate",
+        "confirm",
+        "substantiate",
+        "corroborate",
+    ],
     &["flag", "escalate", "raise", "highlight", "elevate"],
     &["mitigate", "address", "remediate", "counter", "respond to"],
     &["review", "audit", "inspect", "examine", "scrutinize"],

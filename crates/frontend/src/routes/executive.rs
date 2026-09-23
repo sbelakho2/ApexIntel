@@ -403,7 +403,7 @@ pub fn ExecutivePage() -> impl IntoView {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::api::ApiEnvelope;
@@ -428,7 +428,7 @@ mod tests {
             "status": "active",
             "due_date": "2024-06-30T00:00:00Z"
         }"#;
-        
+
         let opp: StrategicOpportunity = serde_json::from_str(json).unwrap();
         assert_eq!(opp.id, "opp-123");
         assert_eq!(opp.title, "Market Expansion Opportunity");
@@ -454,7 +454,7 @@ mod tests {
             "status": "active",
             "sla_deadline": "2024-03-15T00:00:00Z"
         }"#;
-        
+
         let threat: CriticalThreat = serde_json::from_str(json).unwrap();
         assert_eq!(threat.id, "threat-789");
         assert_eq!(threat.severity, "high");
@@ -520,7 +520,7 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let summary: ExecutiveSummary = serde_json::from_str(json).unwrap();
         assert_eq!(summary.top_opportunities.len(), 1);
         assert_eq!(summary.critical_threats.len(), 1);
@@ -540,7 +540,7 @@ mod tests {
             "related_entity_id": "company-789",
             "related_entity_type": "company"
         }"#;
-        
+
         let action: RecommendedAction = serde_json::from_str(json).unwrap();
         assert_eq!(action.priority, "critical");
         assert!(action.due_date.is_some());
@@ -567,7 +567,7 @@ mod tests {
             status: "active".to_string(),
             due_date: None,
         };
-        
+
         let priority_class = if opp.priority_score > 0.8 {
             "priority-high"
         } else if opp.priority_score > 0.5 {
@@ -575,7 +575,7 @@ mod tests {
         } else {
             "priority-low"
         };
-        
+
         assert_eq!(priority_class, "priority-high");
     }
 
@@ -597,7 +597,7 @@ mod tests {
             status: "active".to_string(),
             due_date: None,
         };
-        
+
         let priority_class = if opp.priority_score > 0.8 {
             "priority-high"
         } else if opp.priority_score > 0.5 {
@@ -605,7 +605,7 @@ mod tests {
         } else {
             "priority-low"
         };
-        
+
         assert_eq!(priority_class, "priority-medium");
     }
 
@@ -627,7 +627,7 @@ mod tests {
             status: "active".to_string(),
             due_date: None,
         };
-        
+
         let priority_class = if opp.priority_score > 0.8 {
             "priority-high"
         } else if opp.priority_score > 0.5 {
@@ -635,7 +635,7 @@ mod tests {
         } else {
             "priority-low"
         };
-        
+
         assert_eq!(priority_class, "priority-low");
     }
 
@@ -659,7 +659,7 @@ mod tests {
             status: "active".to_string(),
             sla_deadline: None,
         };
-        
+
         let severity_class = format!("severity-{}", threat.severity.to_lowercase());
         assert_eq!(severity_class, "severity-critical");
     }
@@ -683,7 +683,7 @@ mod tests {
                 "recommended_actions": []
             }
         }"#;
-        
+
         let envelope: ApiEnvelope<ExecutiveSummary> = serde_json::from_str(json).unwrap();
         assert!(envelope.success);
         assert!(envelope.data.is_some());
@@ -699,7 +699,7 @@ mod tests {
                 "message": "Resource not found"
             }
         }"#;
-        
+
         let envelope: ApiEnvelope<ExecutiveSummary> = serde_json::from_str(json).unwrap();
         assert!(!envelope.success);
         assert!(envelope.data.is_none());
@@ -717,7 +717,7 @@ mod tests {
             regions_affected: vec![],
             average_confidence: 0.0,
         };
-        
+
         assert_eq!(summary.average_confidence, 0.0);
         assert!(summary.regions_affected.is_empty());
     }
@@ -731,7 +731,7 @@ mod tests {
             regions_affected: vec!["NA".to_string(), "EMEA".to_string(), "APAC".to_string()],
             average_confidence: 1.0,
         };
-        
+
         assert_eq!(summary.average_confidence, 1.0);
         assert_eq!(summary.regions_affected.len(), 3);
     }

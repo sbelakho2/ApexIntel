@@ -30,9 +30,11 @@ pub fn ActivityPage() -> impl IntoView {
 
     let filtered_events = move || {
         let f = filter.get();
-        events.get().into_iter().filter(move |e| {
-            f == "all" || e.event_type.to_lowercase() == f
-        }).collect::<Vec<_>>()
+        events
+            .get()
+            .into_iter()
+            .filter(move |e| f == "all" || e.event_type.to_lowercase() == f)
+            .collect::<Vec<_>>()
     };
 
     let event_icon = |event_type: &str| -> &'static str {
@@ -72,13 +74,12 @@ pub fn ActivityPage() -> impl IntoView {
                 } else if duration.num_days() < 30 {
                     format!("{}w ago", duration.num_days() / 7)
                 } else {
-                    let dt_utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
+                    let dt_utc =
+                        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
                     dt_utc.format("%b %d, %Y").to_string()
                 }
             }
-            Err(_) => {
-                ts.chars().take(10).collect::<String>()
-            }
+            Err(_) => ts.chars().take(10).collect::<String>(),
         }
     };
 
@@ -115,7 +116,7 @@ pub fn ActivityPage() -> impl IntoView {
                 {filter_labels.iter().map(|(type_val, label)| {
                     let type_val = type_val.to_string();
                     let label = label.to_string();
-                    let f = filter.clone();
+                    let f = filter;
                     let type_val_clone = type_val.clone();
                     view! {
                         <button

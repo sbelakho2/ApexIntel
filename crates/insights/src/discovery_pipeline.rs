@@ -25,9 +25,7 @@
 //!                                        EntityProfile
 //! ```
 
-use crate::company_discovery::{
-    extract_company_mentions, CompanyCandidate, DiscoverySource,
-};
+use crate::company_discovery::{extract_company_mentions, CompanyCandidate, DiscoverySource};
 use crate::entity_relevance::EntityRegistry;
 use crate::entity_verifier::{EntityVerifier, VerificationResult};
 use chrono::{DateTime, Utc};
@@ -192,7 +190,7 @@ impl DiscoveryPipeline {
         }
 
         // Step 4: Verify pending candidates
-        let pending: Vec<CompanyCandidate> = self.candidates.drain(..).collect();
+        let pending: Vec<CompanyCandidate> = std::mem::take(&mut self.candidates);
         let _pending_count = pending.len();
 
         for candidate in pending {
@@ -232,9 +230,12 @@ impl DiscoveryPipeline {
         candidate: CompanyCandidate,
         verification: VerificationResult,
     ) -> String {
-        let entity_id = self
-            .registry
-            .register_company(&candidate.raw_name, &candidate.source, verification.metadata, candidate.extraction_confidence);
+        let entity_id = self.registry.register_company(
+            &candidate.raw_name,
+            &candidate.source,
+            verification.metadata,
+            candidate.extraction_confidence,
+        );
 
         // Record an observation for the new entity to establish baseline activity
         self.registry.record_observation(&candidate.raw_name);
@@ -253,7 +254,7 @@ impl DiscoveryPipeline {
         // Re-verify pending candidates (in a real system, this would check
         // entities that haven't been verified in > reverification_interval)
         let reverified_count = self.candidates.len();
-        let pending: Vec<CompanyCandidate> = self.candidates.drain(..).collect();
+        let pending: Vec<CompanyCandidate> = std::mem::take(&mut self.candidates);
         let mut re_verified: Vec<CompanyCandidate> = Vec::new();
 
         // First pass: verify all candidates (no mutable self borrow needed)
@@ -358,11 +359,7 @@ mod tests {
             ..Default::default()
         };
         let pipeline = DiscoveryPipeline::new(config);
-        assert_eq!(
-            pipeline.registry.total_entities(),
-            0,
-            "Should start empty"
-        );
+        assert_eq!(pipeline.registry.total_entities(), 0, "Should start empty");
     }
 
     #[test]
@@ -373,21 +370,17 @@ mod tests {
         };
         let mut pipeline = DiscoveryPipeline::new(config);
 
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let observations = vec![serde_json::json!({
             "text": "NVIDIA Corporation announced new H100 GPUs today. NASDAQ:NVDA."
         })];
 
-        let result = pipeline.process_observations(
-            &observations,
-            DiscoverySource::NewsArticle,
-            |v| v["text"].as_str().unwrap_or("").to_string(),
-        );
+        let result =
+            pipeline.process_observations(&observations, DiscoverySource::NewsArticle, |v| {
+                v["text"].as_str().unwrap_or("").to_string()
+            });
 
-        assert!(
-            result.candidates_found > 0,
-            "Should find candidates"
-        );
+        assert!(result.candidates_found > 0, "Should find candidates");
     }
 
     #[test]
@@ -408,16 +401,15 @@ mod tests {
             0.9,
         );
 
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let observations = vec![serde_json::json!({
             "text": "NVIDIA Corporation is doing great."
         })];
 
-        let result = pipeline.process_observations(
-            &observations,
-            DiscoverySource::NewsArticle,
-            |v| v["text"].as_str().unwrap_or("").to_string(),
-        );
+        let result =
+            pipeline.process_observations(&observations, DiscoverySource::NewsArticle, |v| {
+                v["text"].as_str().unwrap_or("").to_string()
+            });
 
         // NVIDIA should be recognized as already registered
         assert!(
@@ -443,7 +435,9 @@ mod tests {
         );
 
         assert!(!id.is_empty(), "Should generate an entity ID");
-        assert!(pipeline.registry.is_registered(&normalize_company_name("NewTestCorp Inc")));
+        assert!(pipeline
+            .registry
+            .is_registered(&normalize_company_name("NewTestCorp Inc")));
     }
 
     #[test]
@@ -484,16 +478,15 @@ mod tests {
         };
         let mut pipeline = DiscoveryPipeline::new(config);
 
-        #[allow(clippy::disallowed_methods)]
+        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let observations = vec![serde_json::json!({
             "text": "SomeUnknownStartupXYZ Inc announced funding."
         })];
 
-        let result = pipeline.process_observations(
-            &observations,
-            DiscoverySource::NewsArticle,
-            |v| v["text"].as_str().unwrap_or("").to_string(),
-        );
+        let result =
+            pipeline.process_observations(&observations, DiscoverySource::NewsArticle, |v| {
+                v["text"].as_str().unwrap_or("").to_string()
+            });
 
         // Some candidates may be pending if they didn't meet the high threshold
         // (or they may have been discarded if confidence < 0.1)

@@ -52,7 +52,7 @@ fn validate_section(section: &str) -> Result<()> {
 }
 
 fn clamp_page_per_page(page: u32, per_page: u32) -> (i64, i64) {
-    let limit = (per_page.max(1)).min(100) as i64;
+    let limit = per_page.clamp(1, 100) as i64;
     let offset = ((page.max(1) - 1) as i64).saturating_mul(limit);
     (limit, offset)
 }

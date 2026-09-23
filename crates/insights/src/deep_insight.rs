@@ -151,11 +151,17 @@ impl AuthorityTier {
     /// Determine tier from source domain patterns.
     pub fn from_domain(domain: &str) -> Self {
         let lower = domain.to_lowercase();
-        
+
         // Government domains
         let gov_patterns = [
-            ".gov", ".mil", ".gov.", "government", 
-            "federal", "court", " senate.", " congress",
+            ".gov",
+            ".mil",
+            ".gov.",
+            "government",
+            "federal",
+            "court",
+            " senate.",
+            " congress",
         ];
         for pattern in &gov_patterns {
             if lower.contains(pattern) {
@@ -165,9 +171,17 @@ impl AuthorityTier {
 
         // Social media patterns
         let social_patterns = [
-            "twitter", "x.com", "facebook", "instagram",
-            "tiktok", "reddit", "youtube", "telegram",
-            "discord", "mastodon", "threads",
+            "twitter",
+            "x.com",
+            "facebook",
+            "instagram",
+            "tiktok",
+            "reddit",
+            "youtube",
+            "telegram",
+            "discord",
+            "mastodon",
+            "threads",
         ];
         for pattern in &social_patterns {
             if lower.contains(pattern) {
@@ -177,10 +191,20 @@ impl AuthorityTier {
 
         // Commercial and professional domains
         let commercial_patterns = [
-            ".com", ".org", ".net", ".edu", 
-            "bloomberg", "reuters", "wsj", "ft.com",
-            "marketwatch", "seekingalpha", "linkedin",
-            "crunchbase", "pitchbook", "govt",
+            ".com",
+            ".org",
+            ".net",
+            ".edu",
+            "bloomberg",
+            "reuters",
+            "wsj",
+            "ft.com",
+            "marketwatch",
+            "seekingalpha",
+            "linkedin",
+            "crunchbase",
+            "pitchbook",
+            "govt",
         ];
         for pattern in &commercial_patterns {
             if lower.contains(pattern) {
@@ -226,9 +250,11 @@ impl FreshnessTier {
             Self::RealTime
         } else if age_hours <= 24 {
             Self::Within24Hours
-        } else if age_hours <= 168 { // 7 days
+        } else if age_hours <= 168 {
+            // 7 days
             Self::Within7Days
-        } else if age_hours <= 720 { // 30 days
+        } else if age_hours <= 720 {
+            // 30 days
             Self::Within30Days
         } else {
             Self::Unknown
@@ -536,7 +562,7 @@ impl DeepInsight {
     pub fn generate_summary(&mut self) {
         let max_summary_len = 300;
         let narrative = self.narrative.trim();
-        
+
         // Try to extract first sentence or paragraph
         let summary = if let Some(pos) = narrative.find('.') {
             let candidate = &narrative[..=pos];
@@ -548,7 +574,7 @@ impl DeepInsight {
         } else {
             truncate_string(narrative, max_summary_len)
         };
-        
+
         self.summary = summary;
     }
 
@@ -586,7 +612,7 @@ impl DeepInsight {
 
         // Apply corroboration bonus
         let corroboration_bonus = (self.corroboration_count as f64 * 0.05).min(0.2);
-        
+
         // Apply evidence count bonus
         let evidence_bonus = if self.evidence.len() >= config.min_evidence_count {
             0.1
@@ -595,9 +621,11 @@ impl DeepInsight {
         };
 
         self.confidence = (base_confidence + corroboration_bonus + evidence_bonus).clamp(0.0, 1.0);
-        
+
         // Calculate source credibility
-        let authority_sum: f64 = self.evidence.iter()
+        let authority_sum: f64 = self
+            .evidence
+            .iter()
             .map(|e| e.authority_tier.weight())
             .sum();
         self.source_credibility = if !self.evidence.is_empty() {
@@ -610,7 +638,7 @@ impl DeepInsight {
     /// Determine severity based on confidence and impact.
     pub fn determine_severity(&mut self) {
         let combined_score = self.confidence * 0.6 + self.impact * 0.4;
-        
+
         self.severity = if combined_score >= 0.8 {
             InsightSeverityLevel::Critical
         } else if combined_score >= 0.6 {
@@ -637,7 +665,11 @@ impl DeepInsight {
         let entity_str = entity.into();
         let entity_lower = entity_str.to_lowercase();
         // Case-insensitive deduplication
-        if !self.entities.iter().any(|e| e.to_lowercase() == entity_lower) {
+        if !self
+            .entities
+            .iter()
+            .any(|e| e.to_lowercase() == entity_lower)
+        {
             self.entities.push(entity_str);
         }
     }
@@ -712,13 +744,13 @@ impl DeepInsightGenerator {
     /// Generate a deep insight from evidence.
     pub fn generate(&self, title: &str, evidence: &[DeepEvidence]) -> DeepInsight {
         let mut insight = DeepInsight::new(title, "");
-        
+
         // Add evidence
         insight.evidence.extend(evidence.iter().cloned());
 
         // Calculate confidence
         insight.calculate_confidence(&self.config);
-        
+
         // Determine severity
         insight.determine_severity();
 
@@ -731,7 +763,7 @@ impl DeepInsightGenerator {
 
         // Generate narrative
         insight.narrative = self.build_narrative(&insight);
-        
+
         // Generate summary
         insight.generate_summary();
 
@@ -754,13 +786,17 @@ impl DeepInsightGenerator {
 
         // Opening context
         narrative.push_str("## Intelligence Assessment\n\n");
-        
+
         // Evidence summary
         narrative.push_str(&format!(
             "Based on {} pieces of evidence from {} independent source{}:\n\n",
             insight.evidence.len(),
             insight.corroboration_count,
-            if insight.corroboration_count == 1 { "" } else { "s" }
+            if insight.corroboration_count == 1 {
+                ""
+            } else {
+                "s"
+            }
         ));
 
         // Evidence compilation with citations
@@ -773,7 +809,7 @@ impl DeepInsightGenerator {
                 AuthorityTier::Social => "Social",
                 AuthorityTier::Unknown => "Unknown",
             };
-            
+
             narrative.push_str(&format!(
                 "[{}] {} [{}] {}\n",
                 i + 1,
@@ -781,7 +817,7 @@ impl DeepInsightGenerator {
                 freshness_label,
                 authority_label
             ));
-            
+
             if let Some(ref source) = ev.source {
                 narrative.push_str(&format!("    Source: {}\n", source));
             }
@@ -790,11 +826,11 @@ impl DeepInsightGenerator {
 
         // Analysis section
         narrative.push_str("### Analysis\n\n");
-        
+
         // Confidence assessment
         let confidence_pct = (insight.confidence * 100.0).round() as i32;
         let credibility_pct = (insight.source_credibility * 100.0).round() as i32;
-        
+
         narrative.push_str(&format!(
             "Overall confidence: {}% (source credibility: {}%)\n\n",
             confidence_pct, credibility_pct
@@ -825,7 +861,9 @@ impl DeepInsightGenerator {
     /// Identify risk factors from evidence.
     fn identify_risk_factors(&self, insight: &mut DeepInsight) {
         // Pre-collect evidence data to avoid borrow conflicts
-        let evidence_data: Vec<(Uuid, String)> = insight.evidence.iter()
+        let evidence_data: Vec<(Uuid, String)> = insight
+            .evidence
+            .iter()
             .map(|ev| (ev.id, ev.description.clone()))
             .collect();
 
@@ -836,41 +874,61 @@ impl DeepInsightGenerator {
             let desc_lower = desc.to_lowercase();
 
             // Financial risk patterns
-            if desc_lower.contains("debt") || desc_lower.contains("bankruptcy")
-                || desc_lower.contains("delinquency") || desc_lower.contains("default") {
-                risk_patterns.entry(RiskCategory::Financial)
+            if desc_lower.contains("debt")
+                || desc_lower.contains("bankruptcy")
+                || desc_lower.contains("delinquency")
+                || desc_lower.contains("default")
+            {
+                risk_patterns
+                    .entry(RiskCategory::Financial)
                     .or_default()
                     .push(desc.clone());
             }
 
             // Supply chain risk patterns
-            if desc_lower.contains("shortage") || desc_lower.contains("disruption")
-                || desc_lower.contains("delay") || desc_lower.contains("supplier") {
-                risk_patterns.entry(RiskCategory::SupplyChain)
+            if desc_lower.contains("shortage")
+                || desc_lower.contains("disruption")
+                || desc_lower.contains("delay")
+                || desc_lower.contains("supplier")
+            {
+                risk_patterns
+                    .entry(RiskCategory::SupplyChain)
                     .or_default()
                     .push(desc.clone());
             }
 
             // Regulatory risk patterns
-            if desc_lower.contains("sanction") || desc_lower.contains("violation")
-                || desc_lower.contains("penalty") || desc_lower.contains("investigation") {
-                risk_patterns.entry(RiskCategory::Regulatory)
+            if desc_lower.contains("sanction")
+                || desc_lower.contains("violation")
+                || desc_lower.contains("penalty")
+                || desc_lower.contains("investigation")
+            {
+                risk_patterns
+                    .entry(RiskCategory::Regulatory)
                     .or_default()
                     .push(desc.clone());
             }
 
             // Security risk patterns
-            if desc_lower.contains("breach") || desc_lower.contains("cyber")
-                || desc_lower.contains("attack") || desc_lower.contains("vulnerability") {
-                risk_patterns.entry(RiskCategory::Security)
+            if desc_lower.contains("breach")
+                || desc_lower.contains("cyber")
+                || desc_lower.contains("attack")
+                || desc_lower.contains("vulnerability")
+            {
+                risk_patterns
+                    .entry(RiskCategory::Security)
                     .or_default()
                     .push(desc.clone());
             }
 
             // Reputational risk patterns
-            if desc_lower.contains("scandal") || desc_lower.contains("fraud")
-                || desc_lower.contains("lawsuit") || desc_lower.contains("controversy") {
-                risk_patterns.entry(RiskCategory::Reputational)
+            if desc_lower.contains("scandal")
+                || desc_lower.contains("fraud")
+                || desc_lower.contains("lawsuit")
+                || desc_lower.contains("controversy")
+            {
+                risk_patterns
+                    .entry(RiskCategory::Reputational)
                     .or_default()
                     .push(desc.clone());
             }
@@ -878,13 +936,16 @@ impl DeepInsightGenerator {
 
         // Create risk factors - collect all risk factors first, then add them
         let mut risk_factors_to_add = Vec::new();
-        
+
         for (category, descriptions) in risk_patterns {
             if !descriptions.is_empty() {
                 let mut risk = RiskFactor::new(
                     category,
-                    format!("{} risk identified from {} indicator(s)",
-                        category.label(), descriptions.len())
+                    format!(
+                        "{} risk identified from {} indicator(s)",
+                        category.label(),
+                        descriptions.len()
+                    ),
                 );
                 risk = risk.with_severity(category.default_severity());
 
@@ -894,7 +955,7 @@ impl DeepInsightGenerator {
                         risk.add_evidence(*id);
                     }
                 }
-                
+
                 risk_factors_to_add.push(risk);
             }
         }
@@ -942,13 +1003,13 @@ impl DeepInsightGenerator {
                             insight.corroboration_count,
                             primary,
                             secondary
-                        )
+                        ),
                     )
                     .with_priority(ActionPriority::Critical)
                     .with_impact(0.9)
                     .add_stakeholder("Intelligence Team")
                     .add_stakeholder(primary)
-                    .add_stakeholder(secondary)
+                    .add_stakeholder(secondary),
                 );
 
                 // Use entity-specific stakeholders from evidence
@@ -959,7 +1020,7 @@ impl DeepInsightGenerator {
                             "Entities flagged by this insight: {}. {} to coordinate notification.",
                             insight.entities.join(", "),
                             primary
-                        )
+                        ),
                     )
                     .with_priority(ActionPriority::High)
                     .with_impact(0.7)
@@ -982,7 +1043,7 @@ impl DeepInsightGenerator {
                             risk.category.label(),
                             risk.supporting_evidence.len(),
                             owner
-                        )
+                        ),
                     )
                     .with_priority(ActionPriority::High)
                     .with_impact(risk.severity)
@@ -1006,11 +1067,11 @@ impl DeepInsightGenerator {
                             primary,
                             insight.confidence * 100.0,
                             insight.corroboration_count
-                        )
+                        ),
                     )
                     .with_priority(ActionPriority::Medium)
                     .with_impact(0.5)
-                    .add_stakeholder(primary)
+                    .add_stakeholder(primary),
                 );
             }
         }
@@ -1078,7 +1139,7 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
     }
-    
+
     // Find a good break point (space or punctuation)
     let truncated = &s[..max_len];
     if let Some(last_space) = truncated.rfind(|c: char| c.is_whitespace() || c == '.' || c == ',') {
@@ -1095,7 +1156,8 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::manual_range_contains,
         clippy::needless_borrows_for_generic_args,
@@ -1104,7 +1166,11 @@ mod tests {
 
     use super::*;
 
-    fn create_test_evidence(domain: &str, authority: AuthorityTier, confidence: f64) -> DeepEvidence {
+    fn create_test_evidence(
+        domain: &str,
+        authority: AuthorityTier,
+        confidence: f64,
+    ) -> DeepEvidence {
         let now = Utc::now();
         DeepEvidence::new(format!("Test evidence from {}", domain))
             .with_domain(domain)
@@ -1115,13 +1181,34 @@ mod tests {
 
     #[test]
     fn test_authority_tier_from_domain() {
-        assert_eq!(AuthorityTier::from_domain("irs.gov"), AuthorityTier::Government);
-        assert_eq!(AuthorityTier::from_domain("sec.gov"), AuthorityTier::Government);
-        assert_eq!(AuthorityTier::from_domain("treasury.gov"), AuthorityTier::Government);
-        assert_eq!(AuthorityTier::from_domain("reuters.com"), AuthorityTier::Commercial);
-        assert_eq!(AuthorityTier::from_domain("bloomberg.com"), AuthorityTier::Commercial);
-        assert_eq!(AuthorityTier::from_domain("twitter.com"), AuthorityTier::Social);
-        assert_eq!(AuthorityTier::from_domain("unknown.xyz"), AuthorityTier::Unknown);
+        assert_eq!(
+            AuthorityTier::from_domain("irs.gov"),
+            AuthorityTier::Government
+        );
+        assert_eq!(
+            AuthorityTier::from_domain("sec.gov"),
+            AuthorityTier::Government
+        );
+        assert_eq!(
+            AuthorityTier::from_domain("treasury.gov"),
+            AuthorityTier::Government
+        );
+        assert_eq!(
+            AuthorityTier::from_domain("reuters.com"),
+            AuthorityTier::Commercial
+        );
+        assert_eq!(
+            AuthorityTier::from_domain("bloomberg.com"),
+            AuthorityTier::Commercial
+        );
+        assert_eq!(
+            AuthorityTier::from_domain("twitter.com"),
+            AuthorityTier::Social
+        );
+        assert_eq!(
+            AuthorityTier::from_domain("unknown.xyz"),
+            AuthorityTier::Unknown
+        );
     }
 
     #[test]
@@ -1135,40 +1222,55 @@ mod tests {
     #[test]
     fn test_freshness_tier_from_datetime() {
         let now = Utc::now();
-        
+
         // Real-time (within 1 hour)
         let recent = now - chrono::Duration::minutes(30);
-        assert_eq!(FreshnessTier::from_datetime(recent, now), FreshnessTier::RealTime);
-        
+        assert_eq!(
+            FreshnessTier::from_datetime(recent, now),
+            FreshnessTier::RealTime
+        );
+
         // Within 24 hours
         let yesterday = now - chrono::Duration::hours(20);
-        assert_eq!(FreshnessTier::from_datetime(yesterday, now), FreshnessTier::Within24Hours);
-        
+        assert_eq!(
+            FreshnessTier::from_datetime(yesterday, now),
+            FreshnessTier::Within24Hours
+        );
+
         // Within 7 days
         let week_ago = now - chrono::Duration::days(5);
-        assert_eq!(FreshnessTier::from_datetime(week_ago, now), FreshnessTier::Within7Days);
-        
+        assert_eq!(
+            FreshnessTier::from_datetime(week_ago, now),
+            FreshnessTier::Within7Days
+        );
+
         // Within 30 days
         let month_ago = now - chrono::Duration::days(20);
-        assert_eq!(FreshnessTier::from_datetime(month_ago, now), FreshnessTier::Within30Days);
-        
+        assert_eq!(
+            FreshnessTier::from_datetime(month_ago, now),
+            FreshnessTier::Within30Days
+        );
+
         // Unknown (old)
         let old = now - chrono::Duration::days(60);
-        assert_eq!(FreshnessTier::from_datetime(old, now), FreshnessTier::Unknown);
+        assert_eq!(
+            FreshnessTier::from_datetime(old, now),
+            FreshnessTier::Unknown
+        );
     }
 
     #[test]
     fn test_deep_insight_generation() {
         let generator = DeepInsightGenerator::new();
-        
+
         let evidence = vec![
             create_test_evidence("reuters.com", AuthorityTier::Commercial, 0.85),
             create_test_evidence("sec.gov", AuthorityTier::Government, 0.9),
             create_test_evidence("bloomberg.com", AuthorityTier::Commercial, 0.80),
         ];
-        
+
         let insight = generator.generate("Test Insight", &evidence);
-        
+
         assert!(insight.narrative.contains("3 pieces of evidence"));
         assert!(insight.narrative.contains("3 independent source"));
         assert_eq!(insight.corroboration_count, 3);
@@ -1178,24 +1280,24 @@ mod tests {
     #[test]
     fn test_deep_insight_calculates_confidence() {
         let mut insight = DeepInsight::new("Test", "Test narrative");
-        
+
         insight.evidence.push(
             DeepEvidence::new("High confidence evidence")
                 .with_authority(AuthorityTier::Government)
                 .with_observed_at(Utc::now())
-                .with_confidence(0.9)
+                .with_confidence(0.9),
         );
-        
+
         insight.evidence.push(
             DeepEvidence::new("Another evidence")
                 .with_domain("reuters.com")
                 .with_authority(AuthorityTier::Commercial)
                 .with_observed_at(Utc::now())
-                .with_confidence(0.8)
+                .with_confidence(0.8),
         );
-        
+
         insight.calculate_confidence(&DeepInsightConfig::default());
-        
+
         assert!(insight.confidence > 0.7);
         assert_eq!(insight.corroboration_count, 1); // Only reuters.com (gov is unknown domain)
     }
@@ -1207,13 +1309,13 @@ mod tests {
         insight.impact = 0.8;
         insight.determine_severity();
         assert_eq!(insight.severity, InsightSeverityLevel::Critical);
-        
+
         let mut insight2 = DeepInsight::new("Test", "Test");
         insight2.confidence = 0.6;
         insight2.impact = 0.6;
         insight2.determine_severity();
         assert_eq!(insight2.severity, InsightSeverityLevel::High);
-        
+
         let mut insight3 = DeepInsight::new("Test", "Test");
         insight3.confidence = 0.4;
         insight3.impact = 0.4;
@@ -1224,25 +1326,24 @@ mod tests {
     #[test]
     fn test_risk_factor_identification() {
         let mut insight = DeepInsight::new("Financial Risk Test", "Test");
-        
+
         insight.evidence.push(
             DeepEvidence::new("Company has significant debt load")
                 .with_confidence(0.8)
-                .with_entity("Test Corp")
+                .with_entity("Test Corp"),
         );
-        
+
         insight.evidence.push(
             DeepEvidence::new("Supply chain disruption reported")
                 .with_confidence(0.75)
-                .with_entity("Test Corp")
+                .with_entity("Test Corp"),
         );
-        
+
         // Add risk factors manually
         insight.add_risk_factor(
-            RiskFactor::new(RiskCategory::Financial, "High debt load detected")
-                .with_severity(0.7)
+            RiskFactor::new(RiskCategory::Financial, "High debt load detected").with_severity(0.7),
         );
-        
+
         assert_eq!(insight.risk_factors.len(), 1);
         assert_eq!(insight.risk_factors[0].category, RiskCategory::Financial);
     }
@@ -1253,18 +1354,21 @@ mod tests {
         insight.confidence = 0.8;
         insight.severity = InsightSeverityLevel::High;
         insight.corroboration_count = 3;
-        
+
         insight.add_recommendation(
             ActionRecommendation::new(
                 "Immediate Action Required",
-                "Based on high confidence insight"
+                "Based on high confidence insight",
             )
             .with_priority(ActionPriority::Critical)
-            .with_impact(0.9)
+            .with_impact(0.9),
         );
-        
+
         assert_eq!(insight.recommendations.len(), 1);
-        assert_eq!(insight.recommendations[0].priority, ActionPriority::Critical);
+        assert_eq!(
+            insight.recommendations[0].priority,
+            ActionPriority::Critical
+        );
     }
 
     #[test]
@@ -1272,11 +1376,11 @@ mod tests {
         let mut insight = DeepInsight::new(
             "Test",
             "This is a longer narrative that contains multiple sentences. \
-            The first sentence provides key context about the subject matter."
+            The first sentence provides key context about the subject matter.",
         );
-        
+
         insight.generate_summary();
-        
+
         // Should contain the first sentence
         assert!(insight.summary.contains("multiple sentences"));
     }
@@ -1287,7 +1391,7 @@ mod tests {
         insight.add_entity("NVIDIA");
         insight.add_entity("Nvidia");
         insight.add_entity("nvidia");
-        
+
         // Should only have one entity (deduplicated)
         assert_eq!(insight.entities.len(), 1);
     }
@@ -1301,7 +1405,7 @@ mod tests {
             .with_observed_at(Utc::now())
             .with_confidence(0.85)
             .with_entity("Test Corp");
-        
+
         assert_eq!(evidence.description, "Test evidence");
         assert_eq!(evidence.source_domain, Some("example.com".to_string()));
         assert_eq!(evidence.authority_tier, AuthorityTier::Commercial);
@@ -1318,7 +1422,7 @@ mod tests {
             include_recommendations: true,
             action_confidence_threshold: 0.7,
         };
-        
+
         let generator = DeepInsightGenerator::with_config(config);
         assert_eq!(generator.config().min_evidence_count, 3);
         assert_eq!(generator.config().action_confidence_threshold, 0.7);

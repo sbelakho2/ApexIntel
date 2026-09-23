@@ -128,13 +128,7 @@ fn extract_deadline_text(text: &str) -> Option<String> {
             c.get(1)
                 .map(|m| normalizer::normalize_whitespace(m.as_str()))
         })
-        .and_then(|raw| {
-            if normalizer::is_valid_date_range(&raw) {
-                Some(raw)
-            } else {
-                None
-            }
-        })
+        .filter(|raw| normalizer::is_valid_date_range(raw))
 }
 
 fn detect_sector(text: &str) -> Option<String> {

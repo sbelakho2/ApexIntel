@@ -61,9 +61,8 @@ pub(crate) fn render_sparkline_svg(
     color: &str,
 ) -> String {
     if data.is_empty() {
-        return format!(
-            r#"<div class="apex-card p-4 text-center"><p class="text-xs font-semibold text-muted-foreground">No data</p></div>"#
-        );
+        return r#"<div class="apex-card p-4 text-center"><p class="text-xs font-semibold text-muted-foreground">No data</p></div>"#
+            .to_string();
     }
 
     let w = width.max(50) as f64;
@@ -78,7 +77,16 @@ pub(crate) fn render_sparkline_svg(
         let cy = h / 2.0;
         return format!(
             r#"<svg width="{}" height="{}" viewBox="0 0 {} {}" role="img" aria-label="Sparkline single point" class="w-full"><desc>Single data point</desc><circle cx="{:.1}" cy="{:.1}" r="4" fill="{}" stroke="white" stroke-width="2"/><text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="10" font-weight="700" fill="currentColor">{:.1}</text></svg>"#,
-            w, h, w, h, cx, cy, color, cx, cy - 10.0, data[0].value
+            w,
+            h,
+            w,
+            h,
+            cx,
+            cy,
+            color,
+            cx,
+            cy - 10.0,
+            data[0].value
         );
     }
 
@@ -111,7 +119,9 @@ pub(crate) fn render_sparkline_svg(
     let last_x = pad + plot_w;
     area_pts.push_str(&format!(" {:.1},{:.1} Z", last_x, pad + plot_h));
 
-    let last_pt = data.last().unwrap();
+    let Some(last_pt) = data.last() else {
+        return String::new();
+    };
     let last_px = pad + plot_w;
     let last_py = pad + plot_h - ((last_pt.value - min_val) / spread) * plot_h;
 
@@ -157,10 +167,6 @@ pub(crate) fn render_activity_chart_svg(
 
     let nf = (n - 1) as f64;
 
-    let series: Vec<(&[u32], &str, &str)> = vec![
-        (&response.observations, "var(--chart-series-blue)", "Observations"),
-        (&response.insights, "var(--chart-series-amber)", "Insights"),
-    ];
     let score_series: &[f64] = &response.scores;
 
     let mut svg = String::new();
@@ -190,7 +196,11 @@ pub(crate) fn render_activity_chart_svg(
     }
 
     // Y-axis labels
-    for (frac, label) in [(0.0, "0"), (0.5, &format!("{:.0}", max_val * 0.5)), (1.0, &format!("{:.0}", max_val))] {
+    for (frac, label) in [
+        (0.0, "0"),
+        (0.5, &format!("{:.0}", max_val * 0.5)),
+        (1.0, &format!("{:.0}", max_val)),
+    ] {
         let y = pad_top + plot_h * (1.0 - frac);
         svg.push_str(&format!(
             r#"<text x="{:.1}" y="{:.1}" text-anchor="end" dominant-baseline="middle" font-size="9" font-weight="600" fill="var(--chart-label)">{}</text>"#,
@@ -437,13 +447,14 @@ pub(crate) async fn get_entity_observation_chart(
     for (offset, cnt) in &entity_obs {
         let bucket_idx = (*offset / bucket_days) as usize;
         if bucket_idx < num_buckets {
-            bucket_counts[bucket_idx] = bucket_counts[bucket_idx].saturating_add((*cnt).max(0) as u64);
+            bucket_counts[bucket_idx] =
+                bucket_counts[bucket_idx].saturating_add((*cnt).max(0) as u64);
         }
     }
 
     let buckets: Vec<ObservationBucket> = bucket_labels
         .into_iter()
-        .zip(bucket_counts.into_iter())
+        .zip(bucket_counts)
         .map(|(label, count)| ObservationBucket { label, count })
         .collect();
 
@@ -538,12 +549,10 @@ mod tests {
     #[test]
     fn test_observation_chart_response_serializes() {
         let resp = ObservationChartResponse {
-            buckets: vec![
-                ObservationBucket {
-                    label: "2026-W01".into(),
-                    count: 10,
-                },
-            ],
+            buckets: vec![ObservationBucket {
+                label: "2026-W01".into(),
+                count: 10,
+            }],
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"buckets\""));

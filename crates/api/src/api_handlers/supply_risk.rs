@@ -3,7 +3,7 @@
 //! - `GET /api/supply-risk` — returns supply chain risk assessments
 
 use crate::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sqlx::Row;
 use std::time::Instant;
 use uuid::Uuid;
@@ -48,7 +48,9 @@ pub(crate) async fn get_supply_risks(
             tracing::error!(request_id = %request_id, "get_supply_risks query failed: {err:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to fetch supply chain risks"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch supply chain risks",
+                ))),
             );
         }
     };

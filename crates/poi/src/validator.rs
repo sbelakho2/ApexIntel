@@ -126,9 +126,7 @@ pub fn validate_profile(profile: &PoiProfile) -> ProfileValidation {
     fields.push(name_validation);
 
     let evidence_score = (total_confidence / field_count).clamp(0.0, 1.0);
-    let has_hallucinations = fields
-        .iter()
-        .any(|f| f.suspected_hallucination);
+    let has_hallucinations = fields.iter().any(|f| f.suspected_hallucination);
 
     let mut recommendations = Vec::new();
     if evidence_score < ProfileValidation::MIN_EVIDENCE_SCORE {
@@ -145,14 +143,12 @@ pub fn validate_profile(profile: &PoiProfile) -> ProfileValidation {
         ));
     }
     if has_hallucinations {
-        recommendations.push(
-            "Suspected hallucinated data detected. Review LLM-generated fields.".to_string(),
-        );
+        recommendations
+            .push("Suspected hallucinated data detected. Review LLM-generated fields.".to_string());
     }
     if profile.artifacts.len() < 3 {
-        recommendations.push(
-            "Very few artifacts available. Expand crawling to more sources.".to_string(),
-        );
+        recommendations
+            .push("Very few artifacts available. Expand crawling to more sources.".to_string());
     }
     if profile.psychological.pain_index == 0.0
         && profile.psychological.risk_tolerance == 0.0
@@ -186,10 +182,7 @@ fn validate_org_field(profile: &PoiProfile) -> FieldValidation {
 
     for artifact in &profile.artifacts {
         // Check if org name appears in artifact content
-        if artifact
-            .content_summary
-            .to_lowercase()
-            .contains(&org_lower)
+        if artifact.content_summary.to_lowercase().contains(&org_lower)
             || artifact.title.to_lowercase().contains(&org_lower)
         {
             found_in_content = true;
@@ -318,14 +311,14 @@ fn validate_email_field(profile: &PoiProfile) -> FieldValidation {
             let domain_lower = domain.to_lowercase();
             // Check if org name appears in email domain
             let org_words: Vec<&str> = profile.org.split_whitespace().collect();
-            org_words.iter().any(|w| {
-                domain_lower.contains(&w.to_lowercase())
-                    && w.len() >= 3
-            }) || profile
-                .org
-                .to_lowercase()
-                .replace(' ', "")
-                .contains(&domain_lower.replace('.', ""))
+            org_words
+                .iter()
+                .any(|w| domain_lower.contains(&w.to_lowercase()) && w.len() >= 3)
+                || profile
+                    .org
+                    .to_lowercase()
+                    .replace(' ', "")
+                    .contains(&domain_lower.replace('.', ""))
         } else {
             false
         }
@@ -462,7 +455,11 @@ fn validate_name_field(profile: &PoiProfile) -> FieldValidation {
     // Also check name variants
     for variant in &profile.name_variants {
         for artifact in &profile.artifacts {
-            if artifact.title.to_lowercase().contains(&variant.to_lowercase()) {
+            if artifact
+                .title
+                .to_lowercase()
+                .contains(&variant.to_lowercase())
+            {
                 let src = format!("variant_match: {}", artifact.title);
                 if !evidence_sources.contains(&src) {
                     evidence_sources.push(src);
@@ -481,7 +478,7 @@ fn validate_name_field(profile: &PoiProfile) -> FieldValidation {
     };
 
     let mut issues = Vec::new();
-    if !has_evidence && !profile.name.is_empty() && profile.artifacts.len() >= 1 {
+    if !has_evidence && !profile.name.is_empty() && !profile.artifacts.is_empty() {
         issues.push(format!(
             "Name '{}' not found in {} artifacts",
             profile.name,
@@ -570,10 +567,7 @@ pub fn sanity_check(profile: &PoiProfile) -> Vec<String> {
 
     for tell in &llm_tells {
         if profile.public_bio.contains(tell) {
-            issues.push(format!(
-                "HALLUCINATION: Bio contains LLM phrase '{}'",
-                tell
-            ));
+            issues.push(format!("HALLUCINATION: Bio contains LLM phrase '{}'", tell));
         }
         if profile.current_role.contains(tell) {
             issues.push(format!(
@@ -656,15 +650,15 @@ mod tests {
             country_code: "US".into(),
             public_bio: "20 years experience in procurement".into(),
             public_email: Some("jane@acme.com".into()),
-            artifacts: vec![
-                PoiArtifact {
-                    artifact_type: "press_release".into(),
-                    title: "Jane Smith appointed VP Procurement at Acme Corp".into(),
-                    content_summary: "Acme Corporation announced that Jane Smith has been appointed VP Procurement".into(),
-                    source_url: Some("https://acme.com/press/2024/jane-smith".into()),
-                    ts_utc: 1700000000,
-                },
-            ],
+            artifacts: vec![PoiArtifact {
+                artifact_type: "press_release".into(),
+                title: "Jane Smith appointed VP Procurement at Acme Corp".into(),
+                content_summary:
+                    "Acme Corporation announced that Jane Smith has been appointed VP Procurement"
+                        .into(),
+                source_url: Some("https://acme.com/press/2024/jane-smith".into()),
+                ts_utc: 1700000000,
+            }],
             priority_vector: PriorityVector {
                 cost: 0.4,
                 quality: 0.2,
@@ -732,7 +726,8 @@ mod tests {
     #[test]
     fn test_sanity_check_llm_tells() {
         let mut profile = make_test_profile();
-        profile.public_bio = "Based on the available information, this person appears to be...".into();
+        profile.public_bio =
+            "Based on the available information, this person appears to be...".into();
         let issues = sanity_check(&profile);
         assert!(issues.iter().any(|i| i.contains("HALLUCINATION")));
     }

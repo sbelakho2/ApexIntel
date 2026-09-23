@@ -579,9 +579,9 @@ impl AccuracySummary {
 // EVIDENCE-GROUNDED PATTERNS (replaces fabricated statistics)
 // ============================================================================
 
+use crate::entity_relevance::{EntityCategory, EntityRegistry};
 use apex_core::entities::Observation;
 use apex_core::entities::ObservationType;
-use crate::entity_relevance::{EntityCategory, EntityRegistry};
 
 /// Groups observations by pattern category to compute hit/miss ratios.
 #[derive(Debug, Clone)]
@@ -855,13 +855,13 @@ fn category_from_name(name: &str) -> &'static str {
 /// - Innovation patterns: lower base rate
 /// - General: uniform Beta(1,1) = no prior information
 const CATEGORY_PRIORS: &[(&str, f64, f64)] = &[
-    ("expansion", 3.0, 3.0),       // base rate ~0.50, moderate prior
-    ("risk", 2.0, 5.0),            // base rate ~0.29, risk events are less common
-    ("regulatory", 1.5, 8.0),      // base rate ~0.16, regulatory actions are rare
-    ("organizational", 2.0, 4.0),  // base rate ~0.33
-    ("logistics", 3.0, 4.0),       // base rate ~0.43
-    ("innovation", 1.5, 6.0),      // base rate ~0.20, innovation signals are noisy
-    ("general", 1.0, 1.0),         // base rate ~0.50, uniform prior (no information)
+    ("expansion", 3.0, 3.0),      // base rate ~0.50, moderate prior
+    ("risk", 2.0, 5.0),           // base rate ~0.29, risk events are less common
+    ("regulatory", 1.5, 8.0),     // base rate ~0.16, regulatory actions are rare
+    ("organizational", 2.0, 4.0), // base rate ~0.33
+    ("logistics", 3.0, 4.0),      // base rate ~0.43
+    ("innovation", 1.5, 6.0),     // base rate ~0.20, innovation signals are noisy
+    ("general", 1.0, 1.0),        // base rate ~0.50, uniform prior (no information)
 ];
 
 /// Estimate Beta prior parameters for a pattern based on its category.
@@ -963,10 +963,7 @@ pub fn compute_base_rate_from_history(
 /// Groups observations matching the given pattern category, computes the
 /// hit/miss ratio using observation confidence as a signal quality proxy,
 /// and returns an [`EvidencePattern`] with Bayesian confidence.
-pub fn pattern_from_observations(
-    pattern: &str,
-    observations: &[Observation],
-) -> EvidencePattern {
+pub fn pattern_from_observations(pattern: &str, observations: &[Observation]) -> EvidencePattern {
     let category = category_from_name(pattern);
     let (prior_alpha, prior_beta) = estimate_prior(pattern, category);
 
@@ -982,14 +979,8 @@ pub fn pattern_from_observations(
     let total = matching_obs.len();
 
     // Compute hits/misses using confidence threshold
-    let hits: usize = matching_obs
-        .iter()
-        .filter(|o| o.confidence >= 0.7)
-        .count();
-    let misses: usize = matching_obs
-        .iter()
-        .filter(|o| o.confidence < 0.7)
-        .count();
+    let hits: usize = matching_obs.iter().filter(|o| o.confidence >= 0.7).count();
+    let misses: usize = matching_obs.iter().filter(|o| o.confidence < 0.7).count();
 
     // Bayesian posterior
     let posterior_alpha = prior_alpha + hits as f64;
@@ -1094,8 +1085,8 @@ pub fn build_patterns(
         .map(|cat| {
             // Adjust prior strength based on entity category
             let prior_multiplier = match entity_category {
-                Some(EntityCategory::Ems) => 1.1,   // EMS: slightly higher base rates
-                Some(EntityCategory::Oem) => 0.95,  // OEM: slightly lower
+                Some(EntityCategory::Ems) => 1.1, // EMS: slightly higher base rates
+                Some(EntityCategory::Oem) => 0.95, // OEM: slightly lower
                 _ => 1.0,
             };
             let mut pattern = pattern_from_observations(&cat, observations);
@@ -1412,7 +1403,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_build_patterns_dynamic_based_on_data() {
         use apex_core::entities::ObservationType;
 
@@ -1595,9 +1586,18 @@ mod tests {
 
     #[test]
     fn test_prediction_horizon_from_days() {
-        assert_eq!(PredictionHorizon::from_days(15), PredictionHorizon::ShortTerm);
-        assert_eq!(PredictionHorizon::from_days(90), PredictionHorizon::MediumTerm);
-        assert_eq!(PredictionHorizon::from_days(365), PredictionHorizon::LongTerm);
+        assert_eq!(
+            PredictionHorizon::from_days(15),
+            PredictionHorizon::ShortTerm
+        );
+        assert_eq!(
+            PredictionHorizon::from_days(90),
+            PredictionHorizon::MediumTerm
+        );
+        assert_eq!(
+            PredictionHorizon::from_days(365),
+            PredictionHorizon::LongTerm
+        );
     }
 
     #[test]
@@ -1628,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_pattern_from_observations_all_high_confidence() {
         let observations: Vec<Observation> = (0..10)
             .map(|i| Observation {

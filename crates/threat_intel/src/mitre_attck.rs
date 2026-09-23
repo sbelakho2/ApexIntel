@@ -171,123 +171,161 @@ impl AttckMatrix {
                 .with_description("Exploiting vulnerabilities in internet-facing applications")
                 .with_detection("Web application firewall logs, IDS/IPS alerts")
                 .with_mitigation("Patch management, WAF deployment, input validation")
-                .with_data_sources(vec!["Web logs".to_string(), "Network traffic".to_string(), "IDS/IPS".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Web logs".to_string(),
+                    "Network traffic".to_string(),
+                    "IDS/IPS".to_string(),
+                ]),
             AttackTechnique::new("T1133", "External Remote Services")
                 .with_tactics(vec![AttackTactic::InitialAccess, AttackTactic::Persistence])
                 .with_description("Exploiting external remote services like VPN, RDP")
                 .with_detection("Authentication logs, VPN connection attempts")
                 .with_mitigation("Multi-factor authentication, network segmentation")
-                .with_data_sources(vec!["VPN logs".to_string(), "Authentication logs".to_string()]),
-            
+                .with_data_sources(vec![
+                    "VPN logs".to_string(),
+                    "Authentication logs".to_string(),
+                ]),
             AttackTechnique::new("T1566", "Phishing")
                 .with_tactics(vec![AttackTactic::InitialAccess])
                 .with_description("Social engineering via email or other communication")
                 .with_data_sources(vec!["Email logs".to_string(), "Proxy logs".to_string()]),
-            
             // Execution
             AttackTechnique::new("T1059", "Command and Scripting Interpreter")
                 .with_tactics(vec![AttackTactic::Execution])
                 .with_description("Execution through PowerShell, Python, Bash, etc.")
-                .with_data_sources(vec!["Process execution logs".to_string(), "PowerShell logs".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Process execution logs".to_string(),
+                    "PowerShell logs".to_string(),
+                ]),
             // Persistence
             AttackTechnique::new("T1547", "Boot or Logon Autostart Execution")
                 .with_tactics(vec![AttackTactic::Persistence])
                 .with_description("Registry keys, startup folders, services")
-                .with_data_sources(vec!["Registry monitoring".to_string(), "File monitoring".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Registry monitoring".to_string(),
+                    "File monitoring".to_string(),
+                ]),
             AttackTechnique::new("T1543", "Create/Modify System Process")
-                .with_tactics(vec![AttackTactic::Persistence, AttackTactic::PrivilegeEscalation])
+                .with_tactics(vec![
+                    AttackTactic::Persistence,
+                    AttackTactic::PrivilegeEscalation,
+                ])
                 .with_description("Creating or modifying system services")
-                .with_data_sources(vec!["Windows event logs".to_string(), "Process monitoring".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Windows event logs".to_string(),
+                    "Process monitoring".to_string(),
+                ]),
             // Privilege Escalation
             AttackTechnique::new("T1068", "Exploitation for Privilege Escalation")
                 .with_tactics(vec![AttackTactic::PrivilegeEscalation])
                 .with_description("Exploiting vulnerabilities to gain higher privileges")
-                .with_data_sources(vec!["Vulnerability scanner".to_string(), "Patch management".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Vulnerability scanner".to_string(),
+                    "Patch management".to_string(),
+                ]),
             // Defense Evasion
             AttackTechnique::new("T1027", "Obfuscated Files or Information")
                 .with_tactics(vec![AttackTactic::DefenseEvasion])
                 .with_description("Encoding, encryption, or compression of payloads")
-                .with_data_sources(vec!["File analysis".to_string(), "Network traffic analysis".to_string()]),
-            
+                .with_data_sources(vec![
+                    "File analysis".to_string(),
+                    "Network traffic analysis".to_string(),
+                ]),
             AttackTechnique::new("T1070", "Indicator Removal on Host")
                 .with_tactics(vec![AttackTactic::DefenseEvasion])
                 .with_description("Clearing logs, deleting files, modifying artifacts")
-                .with_data_sources(vec!["Log analysis".to_string(), "File integrity monitoring".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Log analysis".to_string(),
+                    "File integrity monitoring".to_string(),
+                ]),
             // Credential Access
             AttackTechnique::new("T1110", "Brute Force")
                 .with_tactics(vec![AttackTactic::CredentialAccess])
                 .with_description("Credential guessing, credential brute force")
                 .with_mitigation("Account lockout, MFA, password complexity")
-                .with_data_sources(vec!["Authentication logs".to_string(), "Network traffic".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Authentication logs".to_string(),
+                    "Network traffic".to_string(),
+                ]),
             AttackTechnique::new("T1003", "OS Credential Dumping")
                 .with_tactics(vec![AttackTactic::CredentialAccess])
                 .with_description("Extracting credentials from memory or storage")
-                .with_data_sources(vec!["LSASS access".to_string(), "Memory analysis".to_string()]),
-            
+                .with_data_sources(vec![
+                    "LSASS access".to_string(),
+                    "Memory analysis".to_string(),
+                ]),
             // Discovery
             AttackTechnique::new("T1087", "Account Discovery")
                 .with_tactics(vec![AttackTactic::Discovery])
                 .with_description("Identifying user accounts and groups")
-                .with_data_sources(vec!["Directory queries".to_string(), "Process monitoring".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Directory queries".to_string(),
+                    "Process monitoring".to_string(),
+                ]),
             AttackTechnique::new("T1046", "Network Service Discovery")
                 .with_tactics(vec![AttackTactic::Discovery])
                 .with_description("Scanning for services, ports, and hosts")
-                .with_data_sources(vec!["Network traffic".to_string(), "Firewall logs".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Network traffic".to_string(),
+                    "Firewall logs".to_string(),
+                ]),
             // Lateral Movement
             AttackTechnique::new("T1021", "Remote Services")
                 .with_tactics(vec![AttackTactic::LateralMovement])
                 .with_description("Using remote desktop, SSH, VNC, etc.")
-                .with_data_sources(vec!["Remote access logs".to_string(), "Authentication logs".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Remote access logs".to_string(),
+                    "Authentication logs".to_string(),
+                ]),
             // Collection
             AttackTechnique::new("T1005", "Data from Local System")
                 .with_tactics(vec![AttackTactic::Collection])
                 .with_description("Collecting data from local storage")
-                .with_data_sources(vec!["File access logs".to_string(), "DLP alerts".to_string()]),
-            
+                .with_data_sources(vec![
+                    "File access logs".to_string(),
+                    "DLP alerts".to_string(),
+                ]),
             // Command and Control
             AttackTechnique::new("T1071", "Application Layer Protocol")
                 .with_tactics(vec![AttackTactic::CommandAndControl])
                 .with_description("Using HTTP, HTTPS, DNS for C2 communication")
-                .with_data_sources(vec!["Network traffic".to_string(), "Proxy logs".to_string(), "DNS logs".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Network traffic".to_string(),
+                    "Proxy logs".to_string(),
+                    "DNS logs".to_string(),
+                ]),
             AttackTechnique::new("T1573", "Encrypted Channel")
                 .with_tactics(vec![AttackTactic::CommandAndControl])
                 .with_description("Using encryption to hide C2 traffic")
-                .with_data_sources(vec!["Network traffic analysis".to_string(), "TLS inspection".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Network traffic analysis".to_string(),
+                    "TLS inspection".to_string(),
+                ]),
             // Exfiltration
             AttackTechnique::new("T1041", "Exfiltration Over C2 Channel")
                 .with_tactics(vec![AttackTactic::Exfiltration])
                 .with_description("Data exfiltration via existing C2 channel")
-                .with_data_sources(vec!["Network traffic".to_string(), "DLP alerts".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Network traffic".to_string(),
+                    "DLP alerts".to_string(),
+                ]),
             AttackTechnique::new("T1567", "Exfiltration Over Web Service")
                 .with_tactics(vec![AttackTactic::Exfiltration])
                 .with_description("Using cloud storage or web services for exfil")
                 .with_data_sources(vec!["Cloud logs".to_string(), "Proxy logs".to_string()]),
-            
             // Impact
             AttackTechnique::new("T1486", "Data Encrypted for Impact")
                 .with_tactics(vec![AttackTactic::Impact])
                 .with_description("Ransomware encryption of data")
                 .with_mitigation("Backup strategy, EDR deployment")
-                .with_data_sources(vec!["File encryption events".to_string(), "Ransomware notes".to_string()]),
-            
+                .with_data_sources(vec![
+                    "File encryption events".to_string(),
+                    "Ransomware notes".to_string(),
+                ]),
             AttackTechnique::new("T1489", "Service Stop")
                 .with_tactics(vec![AttackTactic::Impact])
                 .with_description("Stopping services to enable impact or evasion")
                 .with_data_sources(vec!["Service control manager logs".to_string()]),
-            
             // Supply Chain specific techniques
             AttackTechnique::new("T1195", "Supply Chain Compromise")
                 .with_tactics(vec![
@@ -295,31 +333,46 @@ impl AttckMatrix {
                     AttackTactic::Execution,
                     AttackTactic::Persistence,
                 ])
-                .with_description("Compromising software dependencies, update mechanisms, or hardware")
+                .with_description(
+                    "Compromising software dependencies, update mechanisms, or hardware",
+                )
                 .with_detection("Software composition analysis, hash verification")
                 .with_mitigation("Code signing, SBOM analysis, vendor assessment")
-                .with_data_sources(vec!["Package manager logs".to_string(), "Software inventory".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Package manager logs".to_string(),
+                    "Software inventory".to_string(),
+                ]),
             AttackTechnique::new("T1195.001", "Software Development Tools Compromise")
                 .with_tactics(vec![AttackTactic::InitialAccess])
                 .with_description("Compromising development tools or build pipelines")
-                .with_data_sources(vec!["CI/CD logs".to_string(), "Build artifact analysis".to_string()]),
-            
+                .with_data_sources(vec![
+                    "CI/CD logs".to_string(),
+                    "Build artifact analysis".to_string(),
+                ]),
             AttackTechnique::new("T1195.002", "Software Supply Compromise")
                 .with_tactics(vec![AttackTactic::InitialAccess])
                 .with_description("Compromising software dependencies or libraries")
-                .with_data_sources(vec!["Dependency scanning".to_string(), "SBOM analysis".to_string()]),
-            
+                .with_data_sources(vec![
+                    "Dependency scanning".to_string(),
+                    "SBOM analysis".to_string(),
+                ]),
             // Reconnaissance for supply chain
             AttackTechnique::new("T1596", "Search Open Technical Databases")
                 .with_tactics(vec![AttackTactic::Reconnaissance])
                 .with_description("Using WHOIS, DNS, certificate transparency, Shodan")
-                .with_data_sources(vec!["DNS logs".to_string(), "Certificate logs".to_string(), "WHOIS data".to_string()]),
-            
+                .with_data_sources(vec![
+                    "DNS logs".to_string(),
+                    "Certificate logs".to_string(),
+                    "WHOIS data".to_string(),
+                ]),
             AttackTechnique::new("T1591", "Gather Victim Org Information")
                 .with_tactics(vec![AttackTactic::Reconnaissance])
                 .with_description("Gathering info about target organization structure")
-                .with_data_sources(vec!["OSINT".to_string(), "Social media".to_string(), "Public records".to_string()]),
+                .with_data_sources(vec![
+                    "OSINT".to_string(),
+                    "Social media".to_string(),
+                    "Public records".to_string(),
+                ]),
         ]
     }
 
@@ -375,7 +428,7 @@ pub struct ActorTechniqueMapping {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

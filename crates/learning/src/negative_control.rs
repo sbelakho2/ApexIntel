@@ -356,7 +356,7 @@ pub fn effect_ratio(observed: f64, permuted: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// Generate a genuine causal pattern: entity i's signal at day i*10,
@@ -851,8 +851,12 @@ mod tests {
             seed: 42,
         };
 
-        let filtered =
-            filter_by_negative_controls(std::slice::from_ref(&candidate), &outcomes, &signals, &config);
+        let filtered = filter_by_negative_controls(
+            std::slice::from_ref(&candidate),
+            &outcomes,
+            &signals,
+            &config,
+        );
         // If the candidate survived, verify its fields are intact
         for c in &filtered {
             assert_eq!(c.outcome, "my_outcome");

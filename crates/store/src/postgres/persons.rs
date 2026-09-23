@@ -639,35 +639,36 @@ impl PgStore {
         .await?;
 
         // If organization changed, create a role_history entry
-        if org_changed && company_id.is_some() {
-            let org_name: Option<String> = sqlx::query_scalar(
-                "SELECT name FROM companies WHERE id = $1",
-            )
-            .bind(company_id.unwrap())
-            .fetch_optional(&self.pool)
-            .await?
-            .flatten();
+        if org_changed {
+            if let Some(company_id) = company_id {
+                let org_name: Option<String> =
+                    sqlx::query_scalar("SELECT name FROM companies WHERE id = $1")
+                        .bind(company_id)
+                        .fetch_optional(&self.pool)
+                        .await?
+                        .flatten();
 
-            let role_text = current_role
-                .map(|r| r.to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            let family_text = role_family
-                .map(|r| r.to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            let org_name_text = org_name.unwrap_or_else(|| "Unknown".to_string());
+                let role_text = current_role
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                let family_text = role_family
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                let org_name_text = org_name.unwrap_or_else(|| "Unknown".to_string());
 
-            self.insert_role_history(
-                person_id,
-                company_id,
-                &org_name_text,
-                &role_text,
-                Some(&family_text),
-                Some(Utc::now()),
-                None,
-                None,
-                confidence.clamp(0.0, 1.0),
-            )
-            .await?;
+                self.insert_role_history(
+                    person_id,
+                    Some(company_id),
+                    &org_name_text,
+                    &role_text,
+                    Some(&family_text),
+                    Some(Utc::now()),
+                    None,
+                    None,
+                    confidence.clamp(0.0, 1.0),
+                )
+                .await?;
+            }
         }
         Ok(())
     }

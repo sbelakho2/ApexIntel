@@ -12,9 +12,8 @@
 //! 4. **CrossReferenceValidator** — checks generated facts against known dictionaries
 //! 5. **OutputSanitizer** — strips unsourced/unverifiable claims
 
-use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use std::collections::{HashMap, HashSet};
 
 // ─── Source Grounding ───────────────────────────────────────────────────────
 
@@ -24,7 +23,10 @@ pub enum MatchMethod {
     /// Exact string match in source text.
     Exact,
     /// Fuzzy/token-level match in source text.
-    Fuzzy { similarity: f64, matched_tokens: usize },
+    Fuzzy {
+        similarity: f64,
+        matched_tokens: usize,
+    },
     /// Matched against a known entity dictionary.
     Dictionary { dict_name: String },
     /// Matched against structured source field (e.g., page title, JSON-LD).
@@ -57,6 +59,12 @@ pub struct SourceGroundingValidator {
     pre_extracted: HashMap<String, Vec<String>>,
 }
 
+impl Default for SourceGroundingValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SourceGroundingValidator {
     pub fn new() -> Self {
         Self {
@@ -70,8 +78,7 @@ impl SourceGroundingValidator {
     /// Add a source text for validation.
     pub fn add_source(&mut self, text: &str, url: Option<&str>) {
         self.source_texts.push(text.to_string());
-        self.source_urls
-            .push(url.unwrap_or("unknown").to_string());
+        self.source_urls.push(url.unwrap_or("unknown").to_string());
     }
 
     /// Add a dictionary for cross-reference validation.
@@ -197,10 +204,7 @@ impl SourceGroundingValidator {
     }
 
     /// Validate all fields in a map and return grounding results.
-    pub fn validate_fields(
-        &self,
-        fields: &HashMap<String, String>,
-    ) -> Vec<SourceGrounding> {
+    pub fn validate_fields(&self, fields: &HashMap<String, String>) -> Vec<SourceGrounding> {
         fields
             .iter()
             .map(|(name, value)| self.validate_field(name, value))
@@ -353,6 +357,12 @@ pub struct CrossReferenceValidator {
     blacklist: HashSet<String>,
 }
 
+impl Default for CrossReferenceValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CrossReferenceValidator {
     pub fn new() -> Self {
         Self {
@@ -501,14 +511,15 @@ impl OutputSanitizer {
             let score = score_field_confidence(grounding, config);
             match score.status {
                 ConfidenceStatus::Clean => {
-                    clean.insert(grounding.field_name.clone(), grounding.generated_value.clone());
+                    clean.insert(
+                        grounding.field_name.clone(),
+                        grounding.generated_value.clone(),
+                    );
                 }
                 ConfidenceStatus::Flagged => {
                     flagged.push(format!(
                         "{}: '{}' (confidence: {:.2})",
-                        grounding.field_name,
-                        grounding.generated_value,
-                        score.confidence
+                        grounding.field_name, grounding.generated_value, score.confidence
                     ));
                     // Still include flagged fields but mark them
                     clean.insert(
@@ -519,9 +530,7 @@ impl OutputSanitizer {
                 ConfidenceStatus::Rejected => {
                     rejected.push(format!(
                         "{}: '{}' - REJECTED (confidence: {:.2})",
-                        grounding.field_name,
-                        grounding.generated_value,
-                        score.confidence
+                        grounding.field_name, grounding.generated_value, score.confidence
                     ));
                     // Replace with empty/unknown
                     clean.insert(grounding.field_name.clone(), String::new());
@@ -542,7 +551,10 @@ impl OutputSanitizer {
     /// Get a summary of grounding quality.
     pub fn grounding_summary(groundings: &[SourceGrounding]) -> GroundingSummary {
         let total = groundings.len();
-        let sourced = groundings.iter().filter(|g| SourceGroundingValidator::is_grounded(g)).count();
+        let sourced = groundings
+            .iter()
+            .filter(|g| SourceGroundingValidator::is_grounded(g))
+            .count();
         GroundingSummary {
             total_fields: total,
             sourced_fields: sourced,
@@ -573,7 +585,10 @@ mod tests {
     #[test]
     fn test_source_grounding_exact_match() {
         let mut validator = SourceGroundingValidator::new();
-        validator.add_source("John Smith is the Supply Chain Manager at Foxconn Technology Group.", Some("https://example.com"));
+        validator.add_source(
+            "John Smith is the Supply Chain Manager at Foxconn Technology Group.",
+            Some("https://example.com"),
+        );
 
         let result = validator.validate_field("title", "Supply Chain Manager");
         assert!(matches!(result.match_method, MatchMethod::Exact));
@@ -587,7 +602,10 @@ mod tests {
         validator.add_pre_extracted("title", vec!["VP Procurement".to_string()]);
 
         let result = validator.validate_field("title", "VP Procurement");
-        assert!(matches!(result.match_method, MatchMethod::PreExtracted { .. }));
+        assert!(matches!(
+            result.match_method,
+            MatchMethod::PreExtracted { .. }
+        ));
         assert!(SourceGroundingValidator::is_grounded(&result));
     }
 
@@ -607,7 +625,10 @@ mod tests {
         validator.add_dictionary("titles", dict);
 
         let result = validator.validate_field("title", "Supply Chain Manager");
-        assert!(matches!(result.match_method, MatchMethod::Dictionary { .. }));
+        assert!(matches!(
+            result.match_method,
+            MatchMethod::Dictionary { .. }
+        ));
         assert!(SourceGroundingValidator::is_grounded(&result));
     }
 
@@ -658,7 +679,10 @@ mod tests {
             "VP Procurement",
         ]);
 
-        assert_eq!(validator.validate_title("Supply Chain Manager"), TitleValidation::Known);
+        assert_eq!(
+            validator.validate_title("Supply Chain Manager"),
+            TitleValidation::Known
+        );
         // "CEO" doesn't keyword-match "Chief Executive Officer" (no shared token),
         // but it has uppercase chars so it's Unverified rather than Suspicious.
         assert_eq!(validator.validate_title("CEO"), TitleValidation::Unverified);
@@ -686,7 +710,7 @@ mod tests {
 
         let sanitizer = OutputSanitizer::new(0.5);
         let config = FieldConfidenceConfig::default();
-        let (clean, flagged, rejected) = sanitizer.sanitize(&groundings, &config);
+        let (clean, _flagged, rejected) = sanitizer.sanitize(&groundings, &config);
 
         assert!(clean.contains_key("title"));
         assert_eq!(clean.get("company").unwrap(), "");

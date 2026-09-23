@@ -14,11 +14,7 @@ pub mod social_media;
 pub mod technical;
 
 // Re-export types from sources_registry for convenience
-pub use crate::sources_registry::{Source, Category, Region};
+pub use crate::sources_registry::{Category, Region, Source};
 
 // Re-export helper functions used by worker
-pub use crate::sources_registry::{
-    all_sources,
-    filter_by_tier,
-    select_sources_for_crawl,
-};
+pub use crate::sources_registry::{all_sources, filter_by_tier, select_sources_for_crawl};

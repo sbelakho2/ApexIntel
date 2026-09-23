@@ -102,7 +102,7 @@ pub struct GraphPage {
 // ─── Handler ────────────────────────────────────────────────────────────────
 
 /// GET /graph — entity relationship graph page.
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub async fn graph_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
@@ -758,7 +758,6 @@ pub async fn graph_page(
         })
         .collect();
 
-
     // Serialize for client
     let graph_json = serde_json::json!({
         "nodes": render_nodes.iter().map(|n| serde_json::json!({
@@ -834,24 +833,28 @@ fn short_id(value: &str) -> String {
 /// were shown verbatim.
 fn normalize_edge_type(raw: &str) -> String {
     match raw.to_lowercase().as_str() {
-        "companyperson" | "company_person" | "leads" | "led_by" | "manages"
-        | "affiliated_with" | "affiliated" => "associated_with".to_string(),
+        "companyperson" | "company_person" | "leads" | "led_by" | "manages" | "affiliated_with"
+        | "affiliated" => "associated_with".to_string(),
         "companycompany" | "company_company" | "competes_with" | "competitor" => {
             "competes_with".to_string()
         }
         "supplier_of" | "supplier" | "supplies" | "customer_of" | "customer" => {
             "supplier_of".to_string()
         }
-        "subsidiary_of" | "subsidiary" | "parent_of" | "owned_by" => {
-            "subsidiary_of".to_string()
-        }
+        "subsidiary_of" | "subsidiary" | "parent_of" | "owned_by" => "subsidiary_of".to_string(),
         "regulates" | "regulated_by" | "governs" => "associated_with".to_string(),
         "related_to" | "related" => "related_to".to_string(),
         "" => "related_to".to_string(),
         other => {
             // Pass through already-canonical types; unknown types default to related_to.
-            if ["related_to", "supplier_of", "competes_with", "subsidiary_of", "associated_with"]
-                .contains(&other)
+            if [
+                "related_to",
+                "supplier_of",
+                "competes_with",
+                "subsidiary_of",
+                "associated_with",
+            ]
+            .contains(&other)
             {
                 other.to_string()
             } else {

@@ -383,7 +383,10 @@ impl NotificationDispatcher {
             event_type,
             severity: alert.severity,
             title: alert.title.clone(),
-            description: alert.llm_narrative.clone().unwrap_or_else(|| alert.body.clone()),
+            description: alert
+                .llm_narrative
+                .clone()
+                .unwrap_or_else(|| alert.body.clone()),
             entity_id: None, // PendingAlert uses String IDs; we'd need conversion
             entity_name: Some(alert.entity_name.clone()),
             user_ids: vec![],
@@ -518,7 +521,7 @@ impl NotificationDispatcher {
 
     // ── Formatters ────────────────────────────────────────────────────────────
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn format_slack_message(&self, alert: &PendingAlert) -> String {
         let emoji = match alert.severity {
             AlertSeverity::Critical => "🚨",
@@ -622,9 +625,7 @@ pub async fn send_slack_alert(alert: &PendingAlert) -> anyhow::Result<()> {
 
     let alert_type = match alert.category.as_str() {
         "security" | "security_breach" | "cyber" => crate::slack::AlertType::Security,
-        "insight" | "competitive_intel" | "market_intelligence" => {
-            crate::slack::AlertType::Insight
-        }
+        "insight" | "competitive_intel" | "market_intelligence" => crate::slack::AlertType::Insight,
         "recipe_match" | "opportunity" | "demand_procurement" => {
             crate::slack::AlertType::RecipeMatch
         }
@@ -646,9 +647,10 @@ pub async fn send_slack_alert(alert: &PendingAlert) -> anyhow::Result<()> {
     msg = msg.with_field("Priority Score", format!("{:.2}", alert.priority_score));
     msg = msg.with_field("Source ID", &alert.source_id);
 
-    webhook.send(&msg).await.map_err(|e| {
-        anyhow::anyhow!("Slack alert delivery failed for {}: {e}", alert.source_id)
-    })
+    webhook
+        .send(&msg)
+        .await
+        .map_err(|e| anyhow::anyhow!("Slack alert delivery failed for {}: {e}", alert.source_id))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -856,7 +858,11 @@ impl SlaEnforcer {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::field_reassign_with_default
+    )]
 
     use super::*;
 

@@ -11,7 +11,7 @@
 use chrono::Utc;
 use serde_json::{json, Value};
 use sqlx::PgPool;
-use tracing::{error, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 /// A lightweight activity logger that writes system-generated events to the
@@ -178,9 +178,7 @@ impl ActivityLogger {
         signal_type: &str,
         company_id: Option<&str>,
     ) {
-        let mut fields: Vec<(&str, Value)> = vec![
-            ("signal_type", json!(signal_type)),
-        ];
+        let mut fields: Vec<(&str, Value)> = vec![("signal_type", json!(signal_type))];
         if let Some(r) = region {
             fields.push(("region", json!(r)));
         }
@@ -235,9 +233,7 @@ impl ActivityLogger {
         profile_quality: f64,
         person_id: Option<&str>,
     ) {
-        let details = Self::make_details(&[
-            ("profile_quality", json!(profile_quality)),
-        ]);
+        let details = Self::make_details(&[("profile_quality", json!(profile_quality))]);
         self.insert(
             "system",
             "Psych Profiler",
@@ -260,9 +256,7 @@ impl ActivityLogger {
         competitor_name: &str,
         entity_id: Option<&str>,
     ) {
-        let details = Self::make_details(&[
-            ("competitor", json!(competitor_name)),
-        ]);
+        let details = Self::make_details(&[("competitor", json!(competitor_name))]);
         self.insert(
             "system",
             "Battlecard Generator",
@@ -279,11 +273,7 @@ impl ActivityLogger {
     }
 
     /// Log that a weekly memo was generated.
-    pub async fn log_memo_generated(
-        &self,
-        memo_title: &str,
-        entity_count: u32,
-    ) {
+    pub async fn log_memo_generated(&self, memo_title: &str, entity_count: u32) {
         let details = Self::make_details(&[
             ("title", json!(memo_title)),
             ("entity_count", json!(entity_count)),
@@ -304,11 +294,7 @@ impl ActivityLogger {
     }
 
     /// Log that a recipe was promoted from seed to active.
-    pub async fn log_recipe_promoted(
-        &self,
-        recipe_code: &str,
-        category: &str,
-    ) {
+    pub async fn log_recipe_promoted(&self, recipe_code: &str, category: &str) {
         let details = Self::make_details(&[
             ("recipe_code", json!(recipe_code)),
             ("category", json!(category)),

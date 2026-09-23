@@ -371,8 +371,6 @@ fn fmt_opt_f64(v: &Option<f64>) -> String {
     }
 }
 
-
-
 // ─── Handlers — Workspaces ─────────────────────────────────────────────
 
 /// GET /workspaces — list all investigation workspaces.
@@ -526,22 +524,14 @@ pub async fn get_workspace(
     let workspace_id = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                "Invalid workspace ID",
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, "Invalid workspace ID").into_response();
         }
     };
 
     let workspace = match store.get_investigation_workspace(workspace_id).await {
         Ok(Some(w)) => w,
         _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                "Workspace not found",
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, "Workspace not found").into_response();
         }
     };
 
@@ -676,8 +666,10 @@ pub async fn share_workspace(
         let expires_at = form.expires_at.and_then(|s| {
             chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
                 .ok()
-                .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-                .map(|dt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc))
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|dt| {
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc)
+                })
         });
         let _ = store
             .create_investigation_share(
@@ -976,9 +968,9 @@ pub async fn create_pipeline_opportunity(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreatePipelineForm>,
 ) -> impl IntoResponse {
-    let expected_close = form.expected_close.and_then(|s| {
-        chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()
-    });
+    let expected_close = form
+        .expected_close
+        .and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
 
     let _ = store
         .create_pipeline_opportunity(

@@ -80,11 +80,29 @@ pub struct CompanyCandidate {
 // ─────────────────────────────────────────────────────────────────────────────
 
 static COMPANY_SUFFIXES: &[&str] = &[
-    "Corporation", "Incorporated", "Limited",
-    "Corp.", "Corp", "Inc.", "Inc", "Ltd.", "Ltd",
-    "LLC.", "LLC", "PLC.", "PLC",
-    "GmbH", "SARL", "S.A.R.L.", "S.A.", "N.V.",
-    "Co.", "Co", "AG", "KG", "Company",
+    "Corporation",
+    "Incorporated",
+    "Limited",
+    "Corp.",
+    "Corp",
+    "Inc.",
+    "Inc",
+    "Ltd.",
+    "Ltd",
+    "LLC.",
+    "LLC",
+    "PLC.",
+    "PLC",
+    "GmbH",
+    "SARL",
+    "S.A.R.L.",
+    "S.A.",
+    "N.V.",
+    "Co.",
+    "Co",
+    "AG",
+    "KG",
+    "Company",
 ];
 
 fn suffix_pattern() -> Regex {
@@ -309,10 +327,29 @@ pub fn normalize_company_name(name: &str) -> String {
 
     // Strip common legal suffixes
     let suffixes = [
-        " inc.", " inc", " incorporated", " corp.", " corp", " corporation",
-        " ltd.", " ltd", " limited", " llc", " plc", " plc.",
-        " gmbh", " sarl", " s.a.r.l.", " s.a.", " n.v.", " ag",
-        " co.", " co", " kg", " pty ltd", " pty. ltd.",
+        " inc.",
+        " inc",
+        " incorporated",
+        " corp.",
+        " corp",
+        " corporation",
+        " ltd.",
+        " ltd",
+        " limited",
+        " llc",
+        " plc",
+        " plc.",
+        " gmbh",
+        " sarl",
+        " s.a.r.l.",
+        " s.a.",
+        " n.v.",
+        " ag",
+        " co.",
+        " co",
+        " kg",
+        " pty ltd",
+        " pty. ltd.",
     ];
     for suffix in &suffixes {
         if result.ends_with(suffix) {
@@ -345,8 +382,8 @@ pub fn extract_metadata(text: &str, _candidate_name: &str) -> HashMap<String, St
     }
 
     // Website URLs
-    let url_re = Regex::new(r"https?://[^\s,;)]+")
-        .unwrap_or_else(|e| panic!("valid url regex: {e}"));
+    let url_re =
+        Regex::new(r"https?://[^\s,;)]+").unwrap_or_else(|e| panic!("valid url regex: {e}"));
     if let Some(url) = url_re.find(text) {
         metadata.insert("website".to_string(), url.as_str().to_string());
     }
@@ -379,7 +416,10 @@ pub fn extract_metadata(text: &str, _candidate_name: &str) -> HashMap<String, St
     let loc_re = Regex::new(r"(?i)(?:based in|headquartered in|located in|operates in)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)")
         .unwrap_or_else(|e| panic!("valid location regex: {e}"));
     if let Some(loc) = loc_re.find(text) {
-        metadata.insert("headquarters_mentioned".to_string(), loc.as_str().to_string());
+        metadata.insert(
+            "headquarters_mentioned".to_string(),
+            loc.as_str().to_string(),
+        );
     }
 
     metadata
@@ -446,14 +486,12 @@ fn domain_name_to_company_name(domain: &str) -> String {
 /// Common words that are unlikely to be company names.
 fn has_stopwords(name: &str) -> bool {
     let stopwords = [
-        "the", "this", "that", "these", "those", "what", "which", "where",
-        "when", "why", "how", "who", "whom", "with", "without", "about",
-        "between", "through", "during", "before", "after", "above", "below",
-        "from", "they", "them", "their", "there", "here", "where", "which",
-        "would", "could", "should", "have", "has", "had", "been", "being",
-        "some", "any", "each", "every", "both", "few", "more", "most",
-        "other", "into", "over", "such", "only", "own", "same", "than",
-        "very", "just", "also", "can", "will", "may",
+        "the", "this", "that", "these", "those", "what", "which", "where", "when", "why", "how",
+        "who", "whom", "with", "without", "about", "between", "through", "during", "before",
+        "after", "above", "below", "from", "they", "them", "their", "there", "here", "where",
+        "which", "would", "could", "should", "have", "has", "had", "been", "being", "some", "any",
+        "each", "every", "both", "few", "more", "most", "other", "into", "over", "such", "only",
+        "own", "same", "than", "very", "just", "also", "can", "will", "may",
     ];
     let lower = name.to_lowercase();
     let words: Vec<&str> = lower.split_whitespace().collect();
@@ -486,7 +524,10 @@ mod tests {
 
     #[test]
     fn test_normalize_lowercases_and_collapses() {
-        assert_eq!(normalize_company_name("  Advanced Micro Devices  "), "advanced micro devices");
+        assert_eq!(
+            normalize_company_name("  Advanced Micro Devices  "),
+            "advanced micro devices"
+        );
     }
 
     #[test]
@@ -539,7 +580,10 @@ mod tests {
         let text = "NVIDIA Corporation announced new GPUs. Apple Inc. is hiring.";
         let candidates = extract_company_mentions(text, DiscoverySource::NewsArticle);
         let names: Vec<&str> = candidates.iter().map(|c| c.raw_name.as_str()).collect();
-        assert!(names.contains(&"NVIDIA Corporation"), "Should find NVIDIA Corporation");
+        assert!(
+            names.contains(&"NVIDIA Corporation"),
+            "Should find NVIDIA Corporation"
+        );
         assert!(names.contains(&"Apple Inc."), "Should find Apple Inc.");
     }
 
@@ -562,7 +606,10 @@ mod tests {
         let candidates = extract_company_mentions(text, DiscoverySource::NewsArticle);
         let names: Vec<&str> = candidates.iter().map(|c| c.raw_name.as_str()).collect();
         // "Advanced Micro Devices" is 3 capitalized words
-        assert!(names.contains(&"Advanced Micro Devices") || names.iter().any(|n| n.contains("Advanced Micro Devices")));
+        assert!(
+            names.contains(&"Advanced Micro Devices")
+                || names.iter().any(|n| n.contains("Advanced Micro Devices"))
+        );
     }
 
     #[test]
@@ -570,7 +617,9 @@ mod tests {
         let text = "NVIDIA Corporation (NASDAQ:NVDA) has 26,000 employees worldwide.";
         let candidates = extract_company_mentions(text, DiscoverySource::NewsArticle);
         // Some candidate should have employee metadata
-        let has_emp = candidates.iter().any(|c| c.metadata.contains_key("employees_mentioned"));
+        let has_emp = candidates
+            .iter()
+            .any(|c| c.metadata.contains_key("employees_mentioned"));
         assert!(has_emp, "Should extract employee count metadata");
     }
 
@@ -651,6 +700,9 @@ mod tests {
     #[test]
     fn test_normalize_handles_plc() {
         assert_eq!(normalize_company_name("BAE Systems PLC"), "bae systems");
-        assert_eq!(normalize_company_name("Rolls-Royce Holdings plc"), "rolls-royce holdings");
+        assert_eq!(
+            normalize_company_name("Rolls-Royce Holdings plc"),
+            "rolls-royce holdings"
+        );
     }
 }

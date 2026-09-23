@@ -281,7 +281,11 @@ fn normalize_email(email: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::assertions_on_constants)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::assertions_on_constants
+    )]
 
     use super::*;
 

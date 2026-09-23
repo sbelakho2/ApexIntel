@@ -124,9 +124,9 @@ pub fn check_signal(spec: &SignalSpec, features: &FeatureMap) -> Option<f64> {
 pub fn check_all_signals(recipe: &Recipe, features: &FeatureMap) -> Option<Vec<f64>> {
     let mut values = Vec::new();
     for signal in &recipe.signals {
-        match check_signal(signal, features) {
-            Some(v) => values.push(v),
-            None => return None,
+        {
+            let v = check_signal(signal, features)?;
+            values.push(v)
         }
     }
     Some(values)
@@ -548,7 +548,7 @@ impl RecipeEngine {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 

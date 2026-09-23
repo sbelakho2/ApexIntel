@@ -17,12 +17,10 @@
 //!
 //! Runs every 2 hours — high velocity, not daily like most other jobs.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::Utc;
-use tracing;
 
 use crate::{JobKind, JobRun, PgStore};
 
@@ -43,12 +41,7 @@ const MONITORED_SUBREDDITS: &[&str] = &[
 ];
 
 /// Telegram channels for open-source intelligence (public, no auth needed).
-const MONITORED_TELEGRAM_CHANNELS: &[&str] = &[
-    "IntelSlavaZ",
-    "ryaborig",
-    "livemap",
-    "nexaborig",
-];
+const MONITORED_TELEGRAM_CHANNELS: &[&str] = &["IntelSlavaZ", "ryaborig", "livemap", "nexaborig"];
 
 /// Search queries for Hacker News (company names are added dynamically).
 const HN_SEARCH_TERMS: &[&str] = &[
@@ -105,7 +98,10 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
             }
         }
     }
-    tracing::info!(count = telegram_posts.len(), "social_scan: Telegram ingested");
+    tracing::info!(
+        count = telegram_posts.len(),
+        "social_scan: Telegram ingested"
+    );
 
     // ── 3. Hacker News (via Algolia API — free, no key) ────────────────────
     let hn_posts = ingest_hackernews(&company_names).await;
@@ -135,14 +131,18 @@ pub(super) async fn run_social_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
             }
         }
     }
-    tracing::info!(count = twitter_posts.len(), "social_scan: Twitter/Nitter ingested");
+    tracing::info!(
+        count = twitter_posts.len(),
+        "social_scan: Twitter/Nitter ingested"
+    );
 
     // Log activity
     let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
     activity_logger
         .log_crawl_completed(
             "social_scan",
-            (MONITORED_SUBREDDITS.len() + MONITORED_TELEGRAM_CHANNELS.len() + HN_SEARCH_TERMS.len()) as u32,
+            (MONITORED_SUBREDDITS.len() + MONITORED_TELEGRAM_CHANNELS.len() + HN_SEARCH_TERMS.len())
+                as u32,
             total_posts as u32,
             start.elapsed().as_secs_f64(),
         )
@@ -191,14 +191,11 @@ async fn ingest_reddit(_company_names: &[(uuid::Uuid, String)]) -> Vec<IngestedP
                 if let Ok(xml) = resp.text().await {
                     // Parse RSS XML — extract <item> entries
                     for item_chunk in xml.split("<entry>").skip(1).take(5) {
-                        let title = extract_xml_tag(item_chunk, "title")
-                            .unwrap_or_default();
-                        let content = extract_xml_tag(item_chunk, "content")
-                            .unwrap_or_default();
+                        let title = extract_xml_tag(item_chunk, "title").unwrap_or_default();
+                        let content = extract_xml_tag(item_chunk, "content").unwrap_or_default();
                         let author = extract_xml_tag(item_chunk, "name")
                             .unwrap_or_else(|| "unknown".to_string());
-                        let link = extract_xml_tag(item_chunk, "id")
-                            .unwrap_or_default();
+                        let link = extract_xml_tag(item_chunk, "id").unwrap_or_default();
                         let published = extract_xml_tag(item_chunk, "published")
                             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
                             .map(|dt| dt.with_timezone(&Utc))
@@ -212,7 +209,10 @@ async fn ingest_reddit(_company_names: &[(uuid::Uuid, String)]) -> Vec<IngestedP
                         let text = if clean_content.trim().is_empty() {
                             title.clone()
                         } else {
-                            format!("{title}\n\n{}", clean_content.chars().take(2000).collect::<String>())
+                            format!(
+                                "{title}\n\n{}",
+                                clean_content.chars().take(2000).collect::<String>()
+                            )
                         };
 
                         posts.push(IngestedPost {
@@ -332,26 +332,15 @@ async fn ingest_hackernews(company_names: &[(uuid::Uuid, String)]) -> Vec<Ingest
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                     if let Some(hits) = json.get("hits").and_then(|h| h.as_array()) {
                         for hit in hits.iter().take(3) {
-                            let title = hit
-                                .get("title")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let url = hit
-                                .get("url")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let title = hit.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                            let url = hit.get("url").and_then(|v| v.as_str()).unwrap_or("");
                             let author = hit
                                 .get("author")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("unknown");
-                            let points = hit
-                                .get("points")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let object_id = hit
-                                .get("objectID")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let points = hit.get("points").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let object_id =
+                                hit.get("objectID").and_then(|v| v.as_str()).unwrap_or("");
                             let created = hit
                                 .get("created_at_i")
                                 .and_then(|v| v.as_i64())
@@ -481,7 +470,10 @@ async fn store_social_observation(
     // B326: stable ID per (platform, url, content) — posts that remain in a
     // feed across scans were previously re-inserted every 2h.
     obs.stabilize_id("social");
-    store.insert_observation(&obs).await.map_err(|e| sqlx::Error::Protocol(format!("{e}")))
+    store
+        .insert_observation(&obs)
+        .await
+        .map_err(|e| sqlx::Error::Protocol(format!("{e}")))
 }
 
 /// Link a post to a tracked company by name matching.
@@ -501,15 +493,12 @@ async fn link_post_to_entity(
 
 /// Load tracked company names for entity linking.
 async fn load_company_names(store: &PgStore) -> Vec<(uuid::Uuid, String)> {
-    match sqlx::query_as::<_, (uuid::Uuid, String)>(
+    sqlx::query_as::<_, (uuid::Uuid, String)>(
         "SELECT id, name FROM companies WHERE name IS NOT NULL AND TRIM(name) != '' ORDER BY name",
     )
     .fetch_all(&store.pool)
     .await
-    {
-        Ok(rows) => rows,
-        Err(_) => Vec::new(),
-    }
+    .unwrap_or_default()
 }
 
 /// Strip HTML tags from a string.

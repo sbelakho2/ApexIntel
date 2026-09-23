@@ -17,16 +17,24 @@ use std::sync::LazyLock;
 // Static regex patterns used across quality checks.
 // `expect` is allowed here because the patterns are compile-time constants and
 // are guaranteed to be valid — a failure would indicate a programming error.
-#[allow(clippy::disallowed_methods)]
-static RE_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+(?:\.\d+)?").expect("valid number regex"));
-#[allow(clippy::disallowed_methods)]
-static RE_SPECIFIC_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{4,}|[€$£]\d{3,}").expect("valid specific number regex"));
-#[allow(clippy::disallowed_methods)]
-static RE_VAGUE_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"recently|earlier this|in the past|last \w+|a while ago").expect("valid vague date regex"));
-#[allow(clippy::disallowed_methods)]
-static RE_SPECIFIC_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{1,2}/\d{1,2}/\d{2,4}").expect("valid specific date regex"));
-#[allow(clippy::disallowed_methods)]
-static RE_OVER_SPECIFIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{1,2}[,.:]\d{1,2}[,.:]\d{3,}").expect("valid over-specific regex"));
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+static RE_NUMBER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d+(?:\.\d+)?").expect("valid number regex"));
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+static RE_SPECIFIC_NUMBER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d{4,}|[€$£]\d{3,}").expect("valid specific number regex"));
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+static RE_VAGUE_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"recently|earlier this|in the past|last \w+|a while ago")
+        .expect("valid vague date regex")
+});
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+static RE_SPECIFIC_DATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d{1,2}/\d{1,2}/\d{2,4}").expect("valid specific date regex"));
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+static RE_OVER_SPECIFIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\d{1,2}[,.:]\d{1,2}[,.:]\d{3,}").expect("valid over-specific regex")
+});
 
 /// Configuration for quality control checks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,7 +364,9 @@ impl BiasType {
         match self {
             Self::ConfirmationBias => "Seek disconfirming evidence and alternative explanations.",
             Self::AvailabilityBias => "Consider historical base rates and long-term trends.",
-            Self::AnchoringBias => "Revisit initial assumptions and consider alternative scenarios.",
+            Self::AnchoringBias => {
+                "Revisit initial assumptions and consider alternative scenarios."
+            }
             Self::SelectionBias => "Ensure sample represents the full population of entities.",
             Self::SurvivorshipBias => "Include failed cases and non-success stories in analysis.",
             Self::HaloEffect => "Evaluate each element independently from overall impression.",
@@ -431,7 +441,7 @@ impl QualityControlEngine {
         let passed = overall_score >= self.config.min_coherence_score
             && hallucination.risk_score <= self.config.max_hallucination_risk;
         let recommendations = self.generate_recommendations(&coherence, &hallucination, &bias);
-        
+
         QualityCheckResult {
             overall_score,
             coherence,
@@ -450,7 +460,8 @@ impl QualityControlEngine {
         let structural_score = self.calculate_structural_coherence(&sentences);
         let inconsistencies = self.detect_inconsistencies(&sentences);
 
-        let score = (semantic_score * 0.4 + logical_score * 0.35 + structural_score * 0.25).clamp(0.0, 1.0);
+        let score =
+            (semantic_score * 0.4 + logical_score * 0.35 + structural_score * 0.25).clamp(0.0, 1.0);
 
         CoherenceScore {
             score,
@@ -509,7 +520,10 @@ impl QualityControlEngine {
                     claim: line.to_string(),
                     risk_level: RiskLevel::High,
                     reason: "Absolute claim without evidence or qualifier".to_string(),
-                    verification_needed: vec!["Add source citation".to_string(), "Add confidence qualifier".to_string()],
+                    verification_needed: vec![
+                        "Add source citation".to_string(),
+                        "Add confidence qualifier".to_string(),
+                    ],
                 });
             }
         }
@@ -520,17 +534,22 @@ impl QualityControlEngine {
         } else {
             let hallucination_risk = hallucinations.iter().map(|h| h.severity).sum::<f64>()
                 / hallucinations.len().max(1) as f64;
-            let claim_risk = risky_claims.iter().map(|c| match c.risk_level {
-                RiskLevel::Low => 0.2,
-                RiskLevel::Medium => 0.4,
-                RiskLevel::High => 0.7,
-                RiskLevel::Critical => 0.9,
-            }).sum::<f64>() / risky_claims.len().max(1) as f64;
-            
+            let claim_risk = risky_claims
+                .iter()
+                .map(|c| match c.risk_level {
+                    RiskLevel::Low => 0.2,
+                    RiskLevel::Medium => 0.4,
+                    RiskLevel::High => 0.7,
+                    RiskLevel::Critical => 0.9,
+                })
+                .sum::<f64>()
+                / risky_claims.len().max(1) as f64;
+
             (hallucination_risk * 0.6 + claim_risk * 0.4).clamp(0.0, 1.0)
         };
 
-        let assessment = self.assess_hallucinations(hallucinations.len(), risky_claims.len(), risk_score);
+        let assessment =
+            self.assess_hallucinations(hallucinations.len(), risky_claims.len(), risk_score);
 
         HallucinationCheck {
             risk_score,
@@ -549,7 +568,8 @@ impl QualityControlEngine {
         if lower.contains("confirmed") && lower.contains("clearly") && !lower.contains("however") {
             biases.push(DetectedBias {
                 kind: BiasType::ConfirmationBias,
-                description: "Strong confirmation language without acknowledging uncertainty".to_string(),
+                description: "Strong confirmation language without acknowledging uncertainty"
+                    .to_string(),
                 severity: 0.5,
                 evidence: "Text contains strong confirmatory language".to_string(),
                 mitigation: BiasType::ConfirmationBias.mitigation().to_string(),
@@ -560,7 +580,8 @@ impl QualityControlEngine {
         if lower.contains("recent") && lower.contains("trend") {
             biases.push(DetectedBias {
                 kind: BiasType::AvailabilityBias,
-                description: "Emphasis on recent events may not represent long-term pattern".to_string(),
+                description: "Emphasis on recent events may not represent long-term pattern"
+                    .to_string(),
                 severity: 0.4,
                 evidence: "Recent trends heavily emphasized".to_string(),
                 mitigation: BiasType::AvailabilityBias.mitigation().to_string(),
@@ -570,7 +591,7 @@ impl QualityControlEngine {
         // Narrative bias detection
         let story_words = ["story", "narrative", "tale", "dramatic"];
         let has_narrative = story_words.iter().any(|w| lower.contains(w));
-        
+
         if has_narrative && !lower.contains("data") && !lower.contains("evidence") {
             biases.push(DetectedBias {
                 kind: BiasType::NarrativeBias,
@@ -611,8 +632,8 @@ impl QualityControlEngine {
             return 0.5;
         }
 
-        let dominant_topic_ratio = topics.values().map(|v| *v as f64).fold(0f64, f64::max)
-            / sentences.len() as f64;
+        let dominant_topic_ratio =
+            topics.values().map(|v| *v as f64).fold(0f64, f64::max) / sentences.len() as f64;
 
         dominant_topic_ratio.min(1.0)
     }
@@ -623,38 +644,58 @@ impl QualityControlEngine {
             .iter()
             .filter(|s| {
                 let lower = s.to_lowercase();
-                ["however", "therefore", "consequently", "furthermore", "additionally", "meanwhile"]
-                    .iter()
-                    .any(|t| lower.contains(t))
+                [
+                    "however",
+                    "therefore",
+                    "consequently",
+                    "furthermore",
+                    "additionally",
+                    "meanwhile",
+                ]
+                .iter()
+                .any(|t| lower.contains(t))
             })
             .count();
 
-        let transition_score = (transition_count as f64 / sentences.len().max(1) as f64 * 2.0).min(1.0);
-        
+        let transition_score =
+            (transition_count as f64 / sentences.len().max(1) as f64 * 2.0).min(1.0);
+
         // Check for contradictory indicators
         let has_contrary = sentences.iter().any(|s| {
             let lower = s.to_lowercase();
-            (lower.contains("however") && lower.contains("but")) ||
-            (lower.contains("on one hand") && lower.contains("on the other hand"))
+            (lower.contains("however") && lower.contains("but"))
+                || (lower.contains("on one hand") && lower.contains("on the other hand"))
         });
 
-        if has_contrary { 0.9 } else { transition_score }
+        if has_contrary {
+            0.9
+        } else {
+            transition_score
+        }
     }
 
     fn calculate_structural_coherence(&self, sentences: &[&str]) -> f64 {
         // Check sentence length consistency
-        let lengths: Vec<usize> = sentences.iter().map(|s| s.len()).filter(|l| *l > 0).collect();
-        
+        let lengths: Vec<usize> = sentences
+            .iter()
+            .map(|s| s.len())
+            .filter(|l| *l > 0)
+            .collect();
+
         if lengths.len() < 2 {
             return 1.0;
         }
 
         let avg_len = lengths.iter().sum::<usize>() as f64 / lengths.len() as f64;
-        let variance: f64 = lengths.iter().map(|l| {
-            let diff = *l as f64 - avg_len;
-            diff * diff
-        }).sum::<f64>() / lengths.len() as f64;
-        
+        let variance: f64 = lengths
+            .iter()
+            .map(|l| {
+                let diff = *l as f64 - avg_len;
+                diff * diff
+            })
+            .sum::<f64>()
+            / lengths.len() as f64;
+
         // Low variance = high structural coherence
         let cv = variance.sqrt() / avg_len;
         (1.0 - cv.min(1.0)).clamp(0.0, 1.0)
@@ -692,7 +733,11 @@ impl QualityControlEngine {
         inconsistencies
     }
 
-    fn detect_numerical_inconsistencies(&self, text: &str, inconsistencies: &mut Vec<Inconsistency>) {
+    fn detect_numerical_inconsistencies(
+        &self,
+        text: &str,
+        inconsistencies: &mut Vec<Inconsistency>,
+    ) {
         // Find all numbers in text
         let numbers: Vec<&str> = RE_NUMBER.find_iter(text).map(|m| m.as_str()).collect();
 
@@ -714,14 +759,29 @@ impl QualityControlEngine {
 
     fn extract_topics(&self, sentences: &[&str]) -> HashMap<String, usize> {
         let mut topics: HashMap<String, usize> = HashMap::new();
-        
+
         // Simple keyword-based topic extraction
         let topic_keywords = [
-            ("supply_chain", vec!["supply", "chain", "supplier", "logistics"]),
-            ("financial", vec!["revenue", "profit", "financial", "cost", "revenue"]),
-            ("competitive", vec!["competitor", "market", "competitive", "rival"]),
-            ("geopolitical", vec!["geopolitical", "political", "trade", "sanction"]),
-            ("operational", vec!["operation", "facility", "production", "manufacturing"]),
+            (
+                "supply_chain",
+                vec!["supply", "chain", "supplier", "logistics"],
+            ),
+            (
+                "financial",
+                vec!["revenue", "profit", "financial", "cost", "revenue"],
+            ),
+            (
+                "competitive",
+                vec!["competitor", "market", "competitive", "rival"],
+            ),
+            (
+                "geopolitical",
+                vec!["geopolitical", "political", "trade", "sanction"],
+            ),
+            (
+                "operational",
+                vec!["operation", "facility", "production", "manufacturing"],
+            ),
         ];
 
         for sentence in sentences {
@@ -741,42 +801,52 @@ impl QualityControlEngine {
     fn looks_like_fabricated_number(&self, text: &str) -> bool {
         // Check for suspiciously round or specific numbers
         let has_specific_number = RE_SPECIFIC_NUMBER.is_match(text);
-        
+
         let has_specific_percent = text.contains("%") && text.contains("exactly");
-        
+
         has_specific_number || has_specific_percent
     }
 
     fn looks_like_fabricated_date(&self, text: &str) -> bool {
         // Check for vague date references
         let has_vague_date = RE_VAGUE_DATE.is_match(&text.to_lowercase());
-        
+
         let has_specific_date = RE_SPECIFIC_DATE.is_match(text);
-        
+
         has_vague_date && !has_specific_date
     }
 
     fn looks_over_specific(&self, text: &str) -> bool {
         // Check for very specific details that seem implausible
         let very_specific = RE_OVER_SPECIFIC.is_match(text);
-        
+
         let multiple_decimals = text.matches('.').count() > 3;
-        
+
         very_specific || multiple_decimals
     }
 
     fn looks_like_unsupported_claim(&self, text: &str) -> bool {
         let lower = text.to_lowercase();
-        
+
         // Absolute claims without qualifiers
-        let has_absolute = ["all", "always", "never", "none", "every", "completely", "totally"]
-            .iter()
-            .any(|w| lower.contains(w));
-        
-        let has_qualifier = ["may", "might", "could", "possibly", "perhaps", "likely", "suggests"]
-            .iter()
-            .any(|w| lower.contains(w));
-        
+        let has_absolute = [
+            "all",
+            "always",
+            "never",
+            "none",
+            "every",
+            "completely",
+            "totally",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
+
+        let has_qualifier = [
+            "may", "might", "could", "possibly", "perhaps", "likely", "suggests",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
+
         has_absolute && !has_qualifier
     }
 
@@ -842,14 +912,16 @@ impl QualityControlEngine {
 
         // Coherence contributes positively
         let coherence_score = coherence.score;
-        
+
         // Hallucination contributes inversely (lower is better)
         let hallucination_score = 1.0 - hallucination.risk_score;
-        
+
         // Bias contributes inversely (lower is better)
         let bias_score = 1.0 - bias.bias_score;
 
-        (coherence_score * coherence_weight + hallucination_score * hallucination_weight + bias_score * bias_weight)
+        (coherence_score * coherence_weight
+            + hallucination_score * hallucination_weight
+            + bias_score * bias_weight)
             .clamp(0.0, 1.0)
     }
 
@@ -867,7 +939,10 @@ impl QualityControlEngine {
 
         for inconsistency in &coherence.inconsistencies {
             if inconsistency.severity > 0.5 {
-                recs.push(format!("Address {}: {}", inconsistency.kind, inconsistency.description));
+                recs.push(format!(
+                    "Address {}: {}",
+                    inconsistency.kind, inconsistency.description
+                ));
             }
         }
 
@@ -876,7 +951,10 @@ impl QualityControlEngine {
         }
 
         for hallucination in &hallucination.hallucinations {
-            recs.push(format!("Verify: {}", hallucination.content.chars().take(100).collect::<String>()));
+            recs.push(format!(
+                "Verify: {}",
+                hallucination.content.chars().take(100).collect::<String>()
+            ));
         }
 
         for bias in &bias.biases {
@@ -911,10 +989,11 @@ mod tests {
     #[test]
     fn coherence_check_works() {
         let engine = QualityControlEngine::with_default_config();
-        
-        let good_text = "Company X is expanding its operations. The expansion includes new facilities. \
+
+        let good_text =
+            "Company X is expanding its operations. The expansion includes new facilities. \
                         Furthermore, revenue is increasing. However, costs are also rising.";
-        
+
         let coherence = engine.check_coherence(good_text);
         assert!(coherence.score >= 0.5);
     }
@@ -922,9 +1001,10 @@ mod tests {
     #[test]
     fn hallucination_detection_finds_fabricated_numbers() {
         let engine = QualityControlEngine::with_default_config();
-        
-        let text = "The company announced exactly 15742 new employees were hired on March 3rd, 2023.";
-        
+
+        let text =
+            "The company announced exactly 15742 new employees were hired on March 3rd, 2023.";
+
         let result = engine.detect_hallucinations(text);
         assert!(!result.hallucinations.is_empty() || !result.risky_claims.is_empty());
     }
@@ -932,9 +1012,9 @@ mod tests {
     #[test]
     fn hallucination_detection_finds_absolute_claims() {
         let engine = QualityControlEngine::with_default_config();
-        
+
         let text = "This company never fails to deliver on time. All competitors are behind.";
-        
+
         let result = engine.detect_hallucinations(text);
         assert!(!result.risky_claims.is_empty());
     }
@@ -942,10 +1022,10 @@ mod tests {
     #[test]
     fn bias_detection_finds_confirmation_bias() {
         let engine = QualityControlEngine::with_default_config();
-        
+
         let text = "This is clearly a confirmed case. The evidence is obviously conclusive. \
                   The pattern is definitively established.";
-        
+
         let result = engine.detect_bias(text);
         assert!(result.bias_score > 0.3);
     }
@@ -953,10 +1033,10 @@ mod tests {
     #[test]
     fn quality_check_result_passes_good_output() {
         let engine = QualityControlEngine::with_default_config();
-        
+
         let good_text = "Company X is performing well. Revenue increased by 15% in Q3. \
                         The trend suggests continued growth. However, competition remains fierce.";
-        
+
         let result = engine.run_checks(good_text);
         // Note: exact threshold depends on implementation
         assert!(result.overall_score >= 0.0);
@@ -965,10 +1045,11 @@ mod tests {
     #[test]
     fn quality_check_result_fails_bad_output() {
         let engine = QualityControlEngine::with_default_config();
-        
-        let bad_text = "This company NEVER fails. ALL competitors are BEHIND. Exactly 15742 jobs created. \
+
+        let bad_text =
+            "This company NEVER fails. ALL competitors are BEHIND. Exactly 15742 jobs created. \
                        CONFIRMED 999999% growth. Clearly obviously definitively established.";
-        
+
         let result = engine.run_checks(bad_text);
         assert!(result.overall_score < 0.8); // Should score poorly
     }
@@ -983,17 +1064,26 @@ mod tests {
 
     #[test]
     fn assessment_verdict_from_risk() {
-        assert_eq!(AssessmentVerdict::from_risk_score(0.1), AssessmentVerdict::Approved);
-        assert_eq!(AssessmentVerdict::from_risk_score(0.4), AssessmentVerdict::NeedsReview);
-        assert_eq!(AssessmentVerdict::from_risk_score(0.8), AssessmentVerdict::Rejected);
+        assert_eq!(
+            AssessmentVerdict::from_risk_score(0.1),
+            AssessmentVerdict::Approved
+        );
+        assert_eq!(
+            AssessmentVerdict::from_risk_score(0.4),
+            AssessmentVerdict::NeedsReview
+        );
+        assert_eq!(
+            AssessmentVerdict::from_risk_score(0.8),
+            AssessmentVerdict::Rejected
+        );
     }
 
     #[test]
     fn inconsistency_type_severity() {
         let engine = QualityControlEngine::with_default_config();
-        
+
         let contradictory_text = "The company is increasing revenue but also decreasing revenue.";
-        
+
         let coherence = engine.check_coherence(contradictory_text);
         assert!(!coherence.inconsistencies.is_empty());
     }
@@ -1002,7 +1092,7 @@ mod tests {
     fn hallucination_assessment_summary() {
         let engine = QualityControlEngine::with_default_config();
         let text = "Some risky content here.";
-        
+
         let result = engine.detect_hallucinations(text);
         assert!(!result.assessment.summary.is_empty());
     }
@@ -1010,9 +1100,9 @@ mod tests {
     #[test]
     fn coherence_score_components() {
         let engine = QualityControlEngine::with_default_config();
-        
+
         let text = "First statement. Second statement. Third statement.";
-        
+
         let coherence = engine.check_coherence(text);
         assert!(coherence.semantic_score >= 0.0);
         assert!(coherence.logical_score >= 0.0);

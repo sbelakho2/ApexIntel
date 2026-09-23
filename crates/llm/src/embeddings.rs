@@ -61,6 +61,10 @@ impl EmbeddingClient {
     ///
     /// The config's `base_url` is used verbatim; the embedding endpoint is
     /// `<base_url>/v1/embeddings` (matching the OpenAI API shape).
+    ///
+    /// The client is built from infallible builder options, so construction
+    /// cannot fail.
+    #[allow(clippy::expect_used)]
     pub fn from_config(config: &ModelConfig) -> Self {
         let base_url = config.base_url.trim_end_matches('/').to_string();
         let model_name = config.model_name.clone();
@@ -100,9 +104,7 @@ impl EmbeddingClient {
         let status = raw.status();
         if !status.is_success() {
             let response_text = raw.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "embedding API returned HTTP {status}: {response_text}"
-            );
+            anyhow::bail!("embedding API returned HTTP {status}: {response_text}");
         }
 
         let resp: EmbeddingResponse = raw
@@ -150,9 +152,7 @@ impl EmbeddingClient {
         let status = raw.status();
         if !status.is_success() {
             let response_text = raw.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "batch embedding API returned HTTP {status}: {response_text}"
-            );
+            anyhow::bail!("batch embedding API returned HTTP {status}: {response_text}");
         }
 
         let resp: EmbeddingResponse = raw
@@ -212,7 +212,7 @@ pub fn chunk_text(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<S
 
             // Find the last sentence-ending punctuation within the search window
             let slice = &text[search_start..search_end];
-            if let Some(relative_pos) = slice.rfind(|c: char| c == '.' || c == '!' || c == '?') {
+            if let Some(relative_pos) = slice.rfind(['.', '!', '?']) {
                 // Include the punctuation character
                 search_start + relative_pos + 1
             } else {
@@ -265,7 +265,11 @@ mod tests {
 
         // Force small chunks so we cross the boundary
         let chunks = chunk_text(&text, 20, 2);
-        assert!(chunks.len() >= 2, "should produce at least 2 chunks: got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "should produce at least 2 chunks: got {}",
+            chunks.len()
+        );
     }
 
     #[test]

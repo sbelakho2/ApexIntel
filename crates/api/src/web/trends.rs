@@ -91,9 +91,9 @@ pub struct TrendComparisonView {
     pub previous_total: String,
     pub change_pct: String,
     pub change_abs: String,
-    pub direction: String, // "up", "down", "flat"
+    pub direction: String,       // "up", "down", "flat"
     pub direction_class: String, // "text-rams-green", "text-rams-red", "text-muted-foreground"
-    pub icon: String, // "trending-up", "trending-down", "minus"
+    pub icon: String,            // "trending-up", "trending-down", "minus"
 }
 
 /// A single row in the entity breakdown table.
@@ -214,17 +214,14 @@ pub async fn trends_page(
         limit: Some(500),
     };
 
-    let data_points = store
-        .query_trends(&trend_query)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to query trends: {e}");
-            vec![]
-        });
+    let data_points = store.query_trends(&trend_query).await.unwrap_or_else(|e| {
+        tracing::error!("Failed to query trends: {e}");
+        vec![]
+    });
 
     // Pre-compute bar chart geometry (Askama 0.12 cannot do `as` casts, .max(), .min())
     let bar_count = data_points.len() as i64;
-    let chart_w = (bar_count * 60).max(400).min(1200);
+    let chart_w = (bar_count * 60).clamp(400, 1200);
     let chart_h: i64 = 240;
     let pad: i64 = 40;
     let plot_w = chart_w - pad * 2;
@@ -276,9 +273,9 @@ pub async fn trends_page(
 
     // Compute MoM comparison (current month vs previous month)
     let today = to_date;
-    let current_month_start = today.with_day(1).unwrap();
+    let current_month_start = today.with_day(1).unwrap_or(today);
     let previous_month_end = current_month_start - chrono::Duration::days(1);
-    let previous_month_start = previous_month_end.with_day(1).unwrap();
+    let previous_month_start = previous_month_end.with_day(1).unwrap_or(previous_month_end);
     let mom_days = (today - current_month_start).num_days().max(1);
 
     let mom_query = TrendComparisonQuery {
@@ -290,32 +287,38 @@ pub async fn trends_page(
         entity_id: None,
     };
 
-    let mom_comparison = store
-        .get_trend_comparison(&mom_query)
-        .await
-        .ok()
-        .map(|c| TrendComparisonView {
-            label: "Month-over-Month".to_string(),
-            current_total: format_number(c.current_total),
-            previous_total: format_number(c.previous_total),
-            change_pct: format!("{:.1}%", c.percent_change),
-            change_abs: format_number(c.absolute_change.abs()),
-            direction: c.direction.clone(),
-            direction_class: match c.direction.as_str() {
-                "up" => "text-rams-green".to_string(),
-                "down" => "text-rams-red".to_string(),
-                _ => "text-muted-foreground".to_string(),
-            },
-            icon: match c.direction.as_str() {
-                "up" => "trending-up".to_string(),
-                "down" => "trending-down".to_string(),
-                _ => "minus".to_string(),
-            },
-        });
+    let mom_comparison =
+        store
+            .get_trend_comparison(&mom_query)
+            .await
+            .ok()
+            .map(|c| TrendComparisonView {
+                label: "Month-over-Month".to_string(),
+                current_total: format_number(c.current_total),
+                previous_total: format_number(c.previous_total),
+                change_pct: format!("{:.1}%", c.percent_change),
+                change_abs: format_number(c.absolute_change.abs()),
+                direction: c.direction.clone(),
+                direction_class: match c.direction.as_str() {
+                    "up" => "text-rams-green".to_string(),
+                    "down" => "text-rams-red".to_string(),
+                    _ => "text-muted-foreground".to_string(),
+                },
+                icon: match c.direction.as_str() {
+                    "up" => "trending-up".to_string(),
+                    "down" => "trending-down".to_string(),
+                    _ => "minus".to_string(),
+                },
+            });
 
     // Compute YoY comparison (current year vs previous year)
-    let current_year_start = today.with_month(1).and_then(|d| d.with_day(1)).unwrap();
-    let previous_year_start = current_year_start.with_year(today.year() - 1).unwrap();
+    let current_year_start = today
+        .with_month(1)
+        .and_then(|d| d.with_day(1))
+        .unwrap_or(today);
+    let previous_year_start = current_year_start
+        .with_year(today.year() - 1)
+        .unwrap_or(current_year_start);
     let yoy_days = (today - current_year_start).num_days().max(1);
 
     let yoy_query = TrendComparisonQuery {
@@ -327,33 +330,35 @@ pub async fn trends_page(
         entity_id: None,
     };
 
-    let yoy_comparison = store
-        .get_trend_comparison(&yoy_query)
-        .await
-        .ok()
-        .map(|c| TrendComparisonView {
-            label: "Year-over-Year".to_string(),
-            current_total: format_number(c.current_total),
-            previous_total: format_number(c.previous_total),
-            change_pct: format!("{:.1}%", c.percent_change),
-            change_abs: format_number(c.absolute_change.abs()),
-            direction: c.direction.clone(),
-            direction_class: match c.direction.as_str() {
-                "up" => "text-rams-green".to_string(),
-                "down" => "text-rams-red".to_string(),
-                _ => "text-muted-foreground".to_string(),
-            },
-            icon: match c.direction.as_str() {
-                "up" => "trending-up".to_string(),
-                "down" => "trending-down".to_string(),
-                _ => "minus".to_string(),
-            },
-        });
+    let yoy_comparison =
+        store
+            .get_trend_comparison(&yoy_query)
+            .await
+            .ok()
+            .map(|c| TrendComparisonView {
+                label: "Year-over-Year".to_string(),
+                current_total: format_number(c.current_total),
+                previous_total: format_number(c.previous_total),
+                change_pct: format!("{:.1}%", c.percent_change),
+                change_abs: format_number(c.absolute_change.abs()),
+                direction: c.direction.clone(),
+                direction_class: match c.direction.as_str() {
+                    "up" => "text-rams-green".to_string(),
+                    "down" => "text-rams-red".to_string(),
+                    _ => "text-muted-foreground".to_string(),
+                },
+                icon: match c.direction.as_str() {
+                    "up" => "trending-up".to_string(),
+                    "down" => "trending-down".to_string(),
+                    _ => "minus".to_string(),
+                },
+            });
 
     let metrics = available_metrics(&selected_metric);
 
     // Entity breakdown — top entities by metric
-    let entity_data = fetch_entity_breakdown(&store, &selected_metric, &bucket_type, from_date, to_date).await;
+    let entity_data =
+        fetch_entity_breakdown(&store, &selected_metric, &bucket_type, from_date, to_date).await;
 
     let page = TrendsPage {
         current_path: "/trends".to_string(),
@@ -398,11 +403,8 @@ async fn fetch_entity_breakdown(
         return vec![];
     }
 
-    let entity_type = if metric == "observations" {
-        "company"
-    } else {
-        "company"
-    };
+    // Entity breakdowns for both metrics are keyed by company.
+    let entity_type = "company";
 
     let query = TrendQuery {
         bucket_type: bucket_type.to_string(),

@@ -19,7 +19,6 @@
 //! appropriate role recommendations (e.g., "contact the procurement
 //! manager" instead of "contact the CEO").
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// A lightweight POI reference used for insight targeting.
@@ -204,11 +203,7 @@ pub fn score_poi_for_roles(poi: &PoiRef, preferred_roles: &[&str]) -> f64 {
 
 /// Find the best POI(s) to recommend for a given category and entity.
 /// Returns up to `max_count` POIs sorted by relevance.
-pub fn find_target_pois(
-    pois: &[PoiRef],
-    category: &str,
-    max_count: usize,
-) -> Vec<PoiRef> {
+pub fn find_target_pois(pois: &[PoiRef], category: &str, max_count: usize) -> Vec<PoiRef> {
     if pois.is_empty() {
         return Vec::new();
     }
@@ -287,7 +282,9 @@ pub fn generate_contact_recommendation(
             "This contact oversees supply chain operations."
         } else if category.to_lowercase().contains("quality") {
             "This contact manages quality and compliance."
-        } else if category.to_lowercase().contains("security") || category.to_lowercase().contains("threat") {
+        } else if category.to_lowercase().contains("security")
+            || category.to_lowercase().contains("threat")
+        {
             "This contact handles security matters."
         } else {
             "This is the most relevant contact for this insight category."
@@ -323,9 +320,7 @@ pub fn enhance_actions_with_poi_targeting(
                     || lower.contains("reach out to the ceo")
                     || lower.contains("reach out to management")
                     || lower.contains("contact leadership")
-                {
-                    format!("{} for {}.", fallback, entity_name)
-                } else if lower.contains("engage with the ceo")
+                    || lower.contains("engage with the ceo")
                     || lower.contains("engage with management")
                 {
                     format!("{} for {}.", fallback, entity_name)
@@ -469,7 +464,10 @@ mod tests {
         assert!(!recs.is_empty());
         // Should give role-appropriate generic, NOT CEO
         assert!(!recs[0].to_lowercase().contains("ceo"));
-        assert!(recs[0].to_lowercase().contains("procurement") || recs[0].to_lowercase().contains("sourcing"));
+        assert!(
+            recs[0].to_lowercase().contains("procurement")
+                || recs[0].to_lowercase().contains("sourcing")
+        );
     }
 
     #[test]
@@ -480,7 +478,8 @@ mod tests {
             "Monitor supplier portal for updates".to_string(),
         ];
         let pois = sample_pois();
-        let enhanced = enhance_actions_with_poi_targeting(&actions, "Foxconn Tunisia", "procurement", &pois);
+        let enhanced =
+            enhance_actions_with_poi_targeting(&actions, "Foxconn Tunisia", "procurement", &pois);
         // Should NOT contain "CEO" anymore
         assert!(!enhanced.iter().any(|a| a.to_lowercase().contains("ceo")));
         // Should contain specific POI recommendations
@@ -489,14 +488,16 @@ mod tests {
 
     #[test]
     fn test_enhance_actions_no_pois_uses_fallback() {
-        let actions = vec![
-            "Contact the CEO or director directly".to_string(),
-        ];
-        let enhanced = enhance_actions_with_poi_targeting(&actions, "Foxconn Tunisia", "procurement", &[]);
+        let actions = vec!["Contact the CEO or director directly".to_string()];
+        let enhanced =
+            enhance_actions_with_poi_targeting(&actions, "Foxconn Tunisia", "procurement", &[]);
         assert!(!enhanced.is_empty());
         // Should replace CEO with procurement-appropriate recommendation
         assert!(!enhanced[0].to_lowercase().contains("ceo"));
-        assert!(enhanced[0].to_lowercase().contains("procurement") || enhanced[0].to_lowercase().contains("sourcing"));
+        assert!(
+            enhanced[0].to_lowercase().contains("procurement")
+                || enhanced[0].to_lowercase().contains("sourcing")
+        );
     }
 
     #[test]

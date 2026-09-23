@@ -158,17 +158,24 @@ impl TrendAnalyzer {
         };
 
         // Confidence based on R² and data quality
-        let confidence = (strength * 0.7 + (points.len() as f64 / 20.0).min(1.0) * 0.3)
-            .clamp(0.0, 1.0);
+        let confidence =
+            (strength * 0.7 + (points.len() as f64 / 20.0).min(1.0) * 0.3).clamp(0.0, 1.0);
 
-        if confidence >= self.config.min_confidence && magnitude.abs() >= self.config.min_magnitude {
+        if confidence >= self.config.min_confidence && magnitude.abs() >= self.config.min_magnitude
+        {
             trends.push(Trend {
                 name: "Primary Trend".to_string(),
                 direction,
                 magnitude,
                 confidence,
-                start_date: points.first().map(|p| p.timestamp).unwrap_or_else(chrono::Utc::now),
-                end_date: points.last().map(|p| p.timestamp).unwrap_or_else(chrono::Utc::now),
+                start_date: points
+                    .first()
+                    .map(|p| p.timestamp)
+                    .unwrap_or_else(chrono::Utc::now),
+                end_date: points
+                    .last()
+                    .map(|p| p.timestamp)
+                    .unwrap_or_else(chrono::Utc::now),
                 data_points: points.len(),
                 strength,
             });
@@ -190,8 +197,8 @@ impl TrendAnalyzer {
             return 0.0;
         }
 
-        let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
-            / values.len() as f64;
+        let variance: f64 =
+            values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
 
         variance.sqrt() / mean.abs()
     }
@@ -228,11 +235,7 @@ impl TrendAnalyzer {
 
         let sum_x = (0..values.len()).sum::<usize>() as f64;
         let sum_y = values.iter().sum::<f64>();
-        let sum_xy: f64 = values
-            .iter()
-            .enumerate()
-            .map(|(i, y)| i as f64 * y)
-            .sum();
+        let sum_xy: f64 = values.iter().enumerate().map(|(i, y)| i as f64 * y).sum();
         let sum_xx: f64 = (0..values.len()).map(|i| (i * i) as f64).sum::<f64>();
 
         let denominator = n * sum_xx - sum_x * sum_x;
@@ -338,7 +341,7 @@ pub struct TrendForecast {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn create_test_series(values: &[f64]) -> Vec<TimeSeriesPoint> {

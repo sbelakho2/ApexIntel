@@ -94,15 +94,23 @@ impl Default for IcpDefinition {
             ],
             // MENA served market + expansion regions.
             target_regions: vec![
-                "TN".into(), "MA".into(), "EG".into(), "AE".into(), "SA".into(),
-                "IL".into(), "EU".into(), "US".into(), "ME".into(),
-                "Tunisia".into(), "Morocco".into(), "MENA".into(), "Europe".into(),
+                "TN".into(),
+                "MA".into(),
+                "EG".into(),
+                "AE".into(),
+                "SA".into(),
+                "IL".into(),
+                "EU".into(),
+                "US".into(),
+                "ME".into(),
+                "Tunisia".into(),
+                "Morocco".into(),
+                "MENA".into(),
+                "Europe".into(),
             ],
             target_employee_range: (50, 50_000),
             target_revenue_range: (5_000_000, 5_000_000_000),
-            target_technologies: vec![
-                "sap".into(), "oracle".into(), "salesforce".into(),
-            ],
+            target_technologies: vec!["sap".into(), "oracle".into(), "salesforce".into()],
             weight_firmographics: 0.35,
             weight_technographics: 0.15,
             weight_intent: 0.30,
@@ -128,16 +136,40 @@ impl IcpScorer {
             + def.weight_technographics
             + def.weight_intent
             + def.weight_strategic;
-        let total_weight = if total_weight <= 0.0 { 1.0 } else { total_weight };
+        let total_weight = if total_weight <= 0.0 {
+            1.0
+        } else {
+            total_weight
+        };
 
         let mut components = Vec::with_capacity(4);
         let mut acc = 0.0_f64;
 
         for (dim, raw, w, note) in [
-            ("firmographics", firm, def.weight_firmographics, Self::firmographic_note(input, def)),
-            ("technographics", tech, def.weight_technographics, Self::technographic_note(input)),
-            ("intent", intent, def.weight_intent, Self::intent_note(input)),
-            ("strategic", strategic, def.weight_strategic, Self::strategic_note(input)),
+            (
+                "firmographics",
+                firm,
+                def.weight_firmographics,
+                Self::firmographic_note(input, def),
+            ),
+            (
+                "technographics",
+                tech,
+                def.weight_technographics,
+                Self::technographic_note(input),
+            ),
+            (
+                "intent",
+                intent,
+                def.weight_intent,
+                Self::intent_note(input),
+            ),
+            (
+                "strategic",
+                strategic,
+                def.weight_strategic,
+                Self::strategic_note(input),
+            ),
         ] {
             let weighted = raw * (w / total_weight);
             acc += weighted;
@@ -169,7 +201,9 @@ impl IcpScorer {
                 .iter()
                 .filter(|tag| {
                     let t = tag.to_lowercase();
-                    def.target_industries.iter().any(|i| t.contains(&i.to_lowercase()))
+                    def.target_industries
+                        .iter()
+                        .any(|i| t.contains(&i.to_lowercase()))
                 })
                 .count();
             score += (matches as f64 / input.industry_tags.len() as f64).min(1.0);
@@ -181,7 +215,9 @@ impl IcpScorer {
             .filter_map(|r| r.as_ref().map(|s| s.to_string()))
             .any(|r| {
                 let rl = r.to_lowercase();
-                def.target_regions.iter().any(|t| rl.contains(&t.to_lowercase()))
+                def.target_regions
+                    .iter()
+                    .any(|t| rl.contains(&t.to_lowercase()))
             });
         parts += 1.0;
         score += if region_hits { 1.0 } else { 0.0 };
@@ -189,13 +225,21 @@ impl IcpScorer {
         // Employee band.
         if let Some(emp) = input.employee_estimate {
             parts += 1.0;
-            score += band_score(emp as f64, def.target_employee_range.0 as f64, def.target_employee_range.1 as f64);
+            score += band_score(
+                emp as f64,
+                def.target_employee_range.0 as f64,
+                def.target_employee_range.1 as f64,
+            );
         }
 
         // Revenue band.
         if let Some(rev) = input.revenue_estimate_usd {
             parts += 1.0;
-            score += band_score(rev as f64, def.target_revenue_range.0 as f64, def.target_revenue_range.1 as f64);
+            score += band_score(
+                rev as f64,
+                def.target_revenue_range.0 as f64,
+                def.target_revenue_range.1 as f64,
+            );
         }
 
         if parts > 0.0 {
@@ -214,10 +258,12 @@ impl IcpScorer {
             .iter()
             .filter(|t| {
                 let tl = t.to_lowercase();
-                def.target_technologies.iter().any(|tt| tl.contains(&tt.to_lowercase()))
+                def.target_technologies
+                    .iter()
+                    .any(|tt| tl.contains(&tt.to_lowercase()))
             })
             .count();
-        (hits as f64 / def.target_technologies.len().min(1) as f64).clamp(0.0, 1.0)
+        (hits as f64 / def.target_technologies.len().max(1) as f64).clamp(0.0, 1.0)
     }
 
     fn score_intent(input: &IcpInput) -> f64 {
@@ -241,7 +287,9 @@ impl IcpScorer {
             .iter()
             .filter(|tag| {
                 let t = tag.to_lowercase();
-                def.target_industries.iter().any(|i| t.contains(&i.to_lowercase()))
+                def.target_industries
+                    .iter()
+                    .any(|i| t.contains(&i.to_lowercase()))
             })
             .cloned()
             .collect::<Vec<_>>()
@@ -282,7 +330,7 @@ fn band_score(value: f64, min: f64, max: f64) -> f64 {
     if value < min {
         // Below floor: linear decay, full credit at 50% of floor.
         let half = (min / 2.0).max(1.0);
-        return ((value - half) / (min - half)).max(0.0).min(1.0);
+        return ((value - half) / (min - half)).clamp(0.0, 1.0);
     }
     // Above ceiling: slow decay (large accounts still somewhat relevant).
     let over = value - max;
@@ -298,7 +346,7 @@ mod tests {
             employee_estimate: Some(1500),
             revenue_estimate_usd: Some(200_000_000),
             industry_tags: vec!["Electronics".into(), "OEM".into()],
-            tech_stack: vec!["SAP".into()],
+            tech_stack: vec!["SAP".into(), "Oracle".into(), "Salesforce".into()],
             region: Some("TN".into()),
             country_code: Some("TN".into()),
             intent_signal_score: 0.8,
@@ -311,7 +359,11 @@ mod tests {
     #[test]
     fn ideal_account_scores_high() {
         let score = IcpScorer::score(&ideal_account(), &IcpDefinition::default());
-        assert!(score.icp_fit_score > 0.8, "expected >0.8, got {}", score.icp_fit_score);
+        assert!(
+            score.icp_fit_score > 0.8,
+            "expected >0.8, got {}",
+            score.icp_fit_score
+        );
         assert_eq!(score.components.len(), 4);
     }
 

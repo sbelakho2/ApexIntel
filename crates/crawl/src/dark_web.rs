@@ -252,46 +252,39 @@ const AGE_DECAY_PER_DAY: f64 = 0.05;
 // Entity extraction regexes
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Compile a regex from a compile-time-constant pattern.
+///
+/// Every caller passes a string literal, so a failure would be a programming
+/// error rather than a runtime condition.
+#[allow(clippy::expect_used)]
+fn compile_regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("valid regex literal")
+}
+
 lazy_static! {
     /// Email address pattern.
-    static ref RE_EMAIL: Regex = Regex::new(
-        r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
-    ).expect("valid email regex");
+    static ref RE_EMAIL: Regex = compile_regex(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}");
 
     /// Domain name pattern (simple).
-    static ref RE_DOMAIN: Regex = Regex::new(
-        r"(?:(?:https?://)?(?:www\.)?)[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?"
-    ).expect("valid domain regex");
+    static ref RE_DOMAIN: Regex = compile_regex(r"(?:(?:https?://)?(?:www\.)?)[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?");
 
     /// Bitcoin address (P2PKH, P2SH, Bech32).
-    static ref RE_BITCOIN: Regex = Regex::new(
-        r"\b(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,39}\b"
-    ).expect("valid BTC regex");
+    static ref RE_BITCOIN: Regex = compile_regex(r"\b(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,39}\b");
 
     /// Ethereum address (0x-prefixed hex).
-    static ref RE_ETHEREUM: Regex = Regex::new(
-        r"\b0x[a-fA-F0-9]{40}\b"
-    ).expect("valid ETH regex");
+    static ref RE_ETHEREUM: Regex = compile_regex(r"\b0x[a-fA-F0-9]{40}\b");
 
     /// IPv4 address.
-    static ref RE_IPV4: Regex = Regex::new(
-        r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"
-    ).expect("valid IPv4 regex");
+    static ref RE_IPV4: Regex = compile_regex(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b");
 
     /// Bitcoin (BTC) transaction hash.
-    static ref RE_TX_HASH: Regex = Regex::new(
-        r"\b[a-fA-F0-9]{64}\b"
-    ).expect("valid tx hash regex");
+    static ref RE_TX_HASH: Regex = compile_regex(r"\b[a-fA-F0-9]{64}\b");
 
     /// Telegram handle.
-    static ref RE_TELEGRAM: Regex = Regex::new(
-        r"\bt\.me/[a-zA-Z0-9_]{5,}\b"
-    ).expect("valid telegram regex");
+    static ref RE_TELEGRAM: Regex = compile_regex(r"\bt\.me/[a-zA-Z0-9_]{5,}\b");
 
     /// Potential company name pattern (capitalized words, 2+).
-    static ref RE_COMPANY: Regex = Regex::new(
-        r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b"
-    ).expect("valid company name regex");
+    static ref RE_COMPANY: Regex = compile_regex(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -440,9 +433,12 @@ impl DarkWebMonitor {
 
         // Generic forum scraper: fetch HTML, extract text, match keywords
         let url = forum.base_url.trim_end_matches('/').to_string();
-        let resp = self.http_client.get(&url).send().await.map_err(|e| {
-            anyhow::anyhow!("failed to fetch {}: {}", forum.base_url, e)
-        })?;
+        let resp = self
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to fetch {}: {}", forum.base_url, e))?;
 
         if !resp.status().is_success() {
             if resp.status() == StatusCode::FORBIDDEN || resp.status() == StatusCode::NOT_FOUND {
@@ -453,15 +449,15 @@ impl DarkWebMonitor {
                 );
                 return Ok(vec![]);
             }
-            anyhow::bail!(
-                "forum {} returned HTTP {}",
-                forum.base_url,
-                resp.status()
-            );
+            anyhow::bail!("forum {} returned HTTP {}", forum.base_url, resp.status());
         }
 
         let html = resp.text().await.map_err(|e| {
-            anyhow::anyhow!("failed to read response body from {}: {}", forum.base_url, e)
+            anyhow::anyhow!(
+                "failed to read response body from {}: {}",
+                forum.base_url,
+                e
+            )
         })?;
 
         if html.len() < 100 {
@@ -520,17 +516,13 @@ impl DarkWebMonitor {
             let relevance = Self::compute_relevance_score(
                 &matched_keywords,
                 &entities,
-                &candidate,
+                candidate,
                 now,
                 total_keywords,
             );
 
             let snippet = extract_snippet(candidate, &matched_keywords, 200);
-            let post_id = format!(
-                "{}-{}",
-                forum.name.to_lowercase().replace(' ', "_"),
-                i
-            );
+            let post_id = format!("{}-{}", forum.name.to_lowercase().replace(' ', "_"), i);
 
             posts.push(DarkWebPost {
                 id: post_id,
@@ -559,9 +551,12 @@ impl DarkWebMonitor {
     /// Scan a pastebin-like site (simple text API).
     async fn scan_pastebin_like(&self, forum: &DarkWebForum) -> anyhow::Result<Vec<DarkWebPost>> {
         let scrape_url = "https://scrape.pastebin.com/api_scraping.php?limit=25";
-        let resp = self.http_client.get(scrape_url).send().await.map_err(|e| {
-            anyhow::anyhow!("failed to fetch pastebin scrape list: {}", e)
-        })?;
+        let resp = self
+            .http_client
+            .get(scrape_url)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to fetch pastebin scrape list: {}", e))?;
 
         if !resp.status().is_success() {
             debug!(
@@ -641,21 +636,21 @@ impl DarkWebMonitor {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or(now);
 
-            let relevance = Self::compute_relevance_score(
-                &matched,
-                &entities,
-                &content,
-                now,
-                total_keywords,
-            );
+            let relevance =
+                Self::compute_relevance_score(&matched, &entities, &content, now, total_keywords);
 
-            let paste_url = paste
-                .full_url
-                .clone()
-                .unwrap_or_else(|| format!("https://pastebin.com/{}", paste.key.as_deref().unwrap_or("unknown")));
+            let paste_url = paste.full_url.clone().unwrap_or_else(|| {
+                format!(
+                    "https://pastebin.com/{}",
+                    paste.key.as_deref().unwrap_or("unknown")
+                )
+            });
 
             posts.push(DarkWebPost {
-                id: paste.key.clone().unwrap_or_else(|| Uuid::new_v4().to_string()),
+                id: paste
+                    .key
+                    .clone()
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
                 forum_name: forum.name.clone(),
                 thread_title: paste.title.clone().unwrap_or_else(|| "Untitled".into()),
                 author: "anonymous".into(),
@@ -739,10 +734,7 @@ impl DarkWebMonitor {
     /// Compute recency-adjusted score using post's actual `posted_at`.
     pub fn score_with_recency(posted_at: DateTime<Utc>, base_score: f64) -> f64 {
         let now = Utc::now();
-        let hours_ago = now
-            .signed_duration_since(posted_at)
-            .num_hours()
-            .max(0);
+        let hours_ago = now.signed_duration_since(posted_at).num_hours().max(0);
 
         let mut score = base_score;
 
@@ -785,10 +777,7 @@ impl DarkWebMonitor {
         // Domains (filter out very common false positives)
         for cap in RE_DOMAIN.find_iter(text) {
             let domain = cap.as_str().to_lowercase();
-            if domain.len() > 4
-                && !domain.contains("example.com")
-                && !entities.contains(&domain)
-            {
+            if domain.len() > 4 && !domain.contains("example.com") && !entities.contains(&domain) {
                 entities.push(domain);
             }
         }
@@ -812,7 +801,9 @@ impl DarkWebMonitor {
         // IPv4 addresses
         for cap in RE_IPV4.find_iter(text) {
             let ip = cap.as_str().to_string();
-            if !ip.starts_with("127.") && !ip.starts_with("10.") && !ip.starts_with("192.168.")
+            if !ip.starts_with("127.")
+                && !ip.starts_with("10.")
+                && !ip.starts_with("192.168.")
                 && !entities.contains(&ip)
             {
                 entities.push(ip);
@@ -953,15 +944,13 @@ fn strip_html_tags(html: &str) -> String {
         }
         if chars[i] == '<' {
             // Check for script/style tags to skip their content
-            if i + 7 < len
-                && chars[i..i + 7].iter().collect::<String>().to_lowercase() == "<script"
+            if i + 7 < len && chars[i..i + 7].iter().collect::<String>().to_lowercase() == "<script"
             {
                 in_script = true;
                 i += 1;
                 continue;
             }
-            if i + 6 < len
-                && chars[i..i + 6].iter().collect::<String>().to_lowercase() == "<style"
+            if i + 6 < len && chars[i..i + 6].iter().collect::<String>().to_lowercase() == "<style"
             {
                 in_style = true;
                 i += 1;
@@ -1169,13 +1158,8 @@ mod tests {
     #[test]
     fn relevance_score_with_all_keywords() {
         let matched: Vec<String> = (0..10).map(|i| format!("keyword_{}", i)).collect();
-        let score = DarkWebMonitor::compute_relevance_score(
-            &matched,
-            &[],
-            "text",
-            Utc::now(),
-            10.0,
-        );
+        let score =
+            DarkWebMonitor::compute_relevance_score(&matched, &[], "text", Utc::now(), 10.0);
         assert!(score >= 0.9, "score should be high: {score}");
     }
 
@@ -1183,13 +1167,8 @@ mod tests {
     fn relevance_score_boosted_by_high_priority_keywords() {
         let content = "Critical data breach and leak detected in supply chain";
         let matched = vec!["breach".to_string(), "leak".to_string()];
-        let score = DarkWebMonitor::compute_relevance_score(
-            &matched,
-            &[],
-            content,
-            Utc::now(),
-            10.0,
-        );
+        let score =
+            DarkWebMonitor::compute_relevance_score(&matched, &[], content, Utc::now(), 10.0);
         let score_no_boost = DarkWebMonitor::compute_relevance_score(
             &matched,
             &[],
@@ -1207,7 +1186,10 @@ mod tests {
     fn relevance_score_boosted_by_entities() {
         let score_with = DarkWebMonitor::compute_relevance_score(
             &["breach".to_string()],
-            &["attacker@example.com".to_string(), "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".to_string()],
+            &[
+                "attacker@example.com".to_string(),
+                "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".to_string(),
+            ],
             "breach",
             Utc::now(),
             10.0,
@@ -1250,10 +1232,7 @@ mod tests {
     fn score_with_recency_old_post() {
         let old = Utc::now() - chrono::Duration::days(30);
         let score = DarkWebMonitor::score_with_recency(old, 0.5);
-        assert!(
-            score < 0.5,
-            "old post should have decayed score: {score}"
-        );
+        assert!(score < 0.5, "old post should have decayed score: {score}");
     }
 
     #[test]
@@ -1341,7 +1320,10 @@ mod tests {
             .iter()
             .filter(|e| e.contains("example.com"))
             .count();
-        assert_eq!(count, 1, "duplicate emails should be deduplicated: {entities:?}");
+        assert_eq!(
+            count, 1,
+            "duplicate emails should be deduplicated: {entities:?}"
+        );
     }
 
     // ── Keyword matching ────────────────────────────────────────────────────

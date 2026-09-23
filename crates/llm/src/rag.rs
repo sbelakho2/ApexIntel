@@ -9,12 +9,12 @@
 //!
 //! Reduces hallucinations by grounding LLM responses in verified internal knowledge.
 
+use crate::LlmClient;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
-use crate::LlmClient;
 
 /// A knowledge base entry with source and credibility metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,10 +124,10 @@ impl KnowledgeSource {
     /// Calculate the effective credibility weight.
     pub fn credibility_weight(&self) -> f64 {
         let base = self.source_type.default_credibility();
-        
+
         // Cross-references boost credibility
         let cross_ref_boost = (self.cross_reference_count as f64 * 0.02).min(0.10);
-        
+
         // Recency boost for recent sources
         let recency_boost = if let Some(published) = self.published_at {
             let age_days = (chrono::Utc::now() - published).num_days();
@@ -188,8 +188,12 @@ impl KnowledgeBase {
     /// Query knowledge base by topic.
     pub fn query_by_topic(&self, topic: &str, limit: usize) -> Vec<&KnowledgeEntry> {
         let key = topic.to_lowercase();
-        let entry_ids = self.topic_index.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-        
+        let entry_ids = self
+            .topic_index
+            .get(&key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
         entry_ids
             .iter()
             .filter_map(|id| self.entries.get(id))
@@ -201,8 +205,12 @@ impl KnowledgeBase {
     /// Query knowledge base by entity name.
     pub fn query_by_entity(&self, entity: &str, limit: usize) -> Vec<&KnowledgeEntry> {
         let key = entity.to_lowercase();
-        let entry_ids = self.entity_index.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-        
+        let entry_ids = self
+            .entity_index
+            .get(&key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
         entry_ids
             .iter()
             .filter_map(|id| self.entries.get(id))
@@ -432,10 +440,7 @@ pub struct OptimizedContext {
 
 impl OptimizedContext {
     /// Convert ranked entries to a context string.
-    pub fn from_entries(
-        entries: &[RankedEntry],
-        config: &ContextWindowConfig,
-    ) -> Self {
+    pub fn from_entries(entries: &[RankedEntry], config: &ContextWindowConfig) -> Self {
         let available_tokens = config.max_tokens - config.response_token_reserve;
         let mut context_parts = Vec::new();
         let mut total_tokens = 0usize;
@@ -504,7 +509,11 @@ pub struct Citation {
 }
 
 impl Citation {
-    pub fn new(source: KnowledgeSource, quote: impl Into<String>, claim: impl Into<String>) -> Self {
+    pub fn new(
+        source: KnowledgeSource,
+        quote: impl Into<String>,
+        claim: impl Into<String>,
+    ) -> Self {
         let credibility = source.credibility_weight();
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -542,36 +551,30 @@ pub struct GroundedResponse {
 
 impl GroundedResponse {
     /// Create from LLM response and knowledge base.
-    pub fn from_response_and_kb(
-        response: &str,
-        kb: &KnowledgeBase,
-        query: &RagQuery,
-    ) -> Self {
+    pub fn from_response_and_kb(response: &str, kb: &KnowledgeBase, query: &RagQuery) -> Self {
         // Find relevant entries that could support claims
         let relevant = kb.query(query);
         let mut citations = Vec::new();
 
         // Simple claim detection (look for statements with specific entities)
         let response_lower = response.to_lowercase();
-        
+
         for entry in &relevant {
             // Check if entry content overlaps with response
             let entry_lower = entry.entry.content.to_lowercase();
-            let entry_words: std::collections::HashSet<_> = entry_lower
-                .split_whitespace()
-                .collect();
-            
-            let response_words: std::collections::HashSet<_> = response_lower
-                .split_whitespace()
-                .collect();
-            
-            let overlap: f64 = entry_words.intersection(&response_words).count() as f64 
+            let entry_words: std::collections::HashSet<_> =
+                entry_lower.split_whitespace().collect();
+
+            let response_words: std::collections::HashSet<_> =
+                response_lower.split_whitespace().collect();
+
+            let overlap: f64 = entry_words.intersection(&response_words).count() as f64
                 / entry_words.len().max(1) as f64;
-            
+
             if overlap > 0.1 {
                 // Extract a quote from the entry
                 let quote: String = entry.entry.content.chars().take(200).collect();
-                
+
                 citations.push(Citation::new(
                     entry.entry.source.clone(),
                     quote,
@@ -584,8 +587,8 @@ impl GroundedResponse {
         let grounding_quality = if citations.is_empty() {
             0.0
         } else {
-            let avg_cred = citations.iter().map(|c| c.credibility).sum::<f64>() 
-                / citations.len() as f64;
+            let avg_cred =
+                citations.iter().map(|c| c.credibility).sum::<f64>() / citations.len() as f64;
             let citation_rate = citations.len() as f64 / 5.0; // Assume ~5 claims
             (avg_cred * 0.6 + citation_rate.min(1.0) * 0.4).clamp(0.0, 1.0)
         };
@@ -606,18 +609,18 @@ impl GroundedResponse {
         let mut md = String::new();
         md.push_str(&self.response);
         md.push_str("\n\n---\n\n**Sources:**\n");
-        
+
         for citation in &self.citations {
             md.push_str(&citation.to_markdown());
         }
-        
+
         if self.ungrounded_claims > 0 {
             md.push_str(&format!(
                 "\n*Note: {} claims without verifiable citations.*\n",
                 self.ungrounded_claims
             ));
         }
-        
+
         md
     }
 }
@@ -652,7 +655,7 @@ impl RagEngine {
     ) -> Result<GroundedResponse> {
         // Get relevant context
         let context = self.query_and_format(query);
-        
+
         debug!(
             entries = %context.entries_included,
             tokens = %context.token_count,
@@ -674,7 +677,7 @@ impl RagEngine {
         let system_prompt = "You are an intelligence analyst. Use the provided context to ground \
                 your analysis in verified information. Cite specific sources when making claims. \
                 If information is uncertain, explicitly state your confidence level.";
-        
+
         let resp = llm
             .generate_text(system_prompt, &enhanced_user)
             .await
@@ -682,7 +685,7 @@ impl RagEngine {
 
         // Create grounded response
         let grounded = GroundedResponse::from_response_and_kb(&resp, &self.knowledge_base, query);
-        
+
         info!(
             grounding_quality = %grounded.grounding_quality,
             citations = %grounded.citations.len(),
@@ -736,7 +739,11 @@ fn calculate_relevance(entry: &KnowledgeEntry, keywords: &[String]) -> f64 {
     let topic_match = entry
         .topics
         .iter()
-        .filter(|t| keywords.iter().any(|k| t.to_lowercase().contains(&k.to_lowercase())))
+        .filter(|t| {
+            keywords
+                .iter()
+                .any(|k| t.to_lowercase().contains(&k.to_lowercase()))
+        })
         .count();
 
     let keyword_match = keywords
@@ -805,12 +812,9 @@ mod tests {
 
     #[test]
     fn rag_query_builder() {
-        let query = RagQuery::new(
-            vec!["supply_chain".to_string()],
-            vec!["Apple".to_string()],
-        )
-        .with_limit(5)
-        .with_min_credibility(0.6);
+        let query = RagQuery::new(vec!["supply_chain".to_string()], vec!["Apple".to_string()])
+            .with_limit(5)
+            .with_min_credibility(0.6);
 
         assert_eq!(query.topics.len(), 1);
         assert_eq!(query.limit, 5);
@@ -819,22 +823,20 @@ mod tests {
 
     #[test]
     fn context_optimization_limits_tokens() {
-        let entries = vec![
-            RankedEntry {
-                entry: KnowledgeEntry {
-                    id: "1".to_string(),
-                    content: "Test content ".repeat(100),
-                    source: KnowledgeSource::new(KnowledgeSourceType::News, "Test"),
-                    credibility_weight: 0.8,
-                    topics: vec![],
-                    timestamp: chrono::Utc::now(),
-                    expires_at: None,
-                },
-                relevance_score: 0.7,
-                credibility_score: 0.8,
-                combined_score: 0.75,
+        let entries = vec![RankedEntry {
+            entry: KnowledgeEntry {
+                id: "1".to_string(),
+                content: "Test content ".repeat(100),
+                source: KnowledgeSource::new(KnowledgeSourceType::News, "Test"),
+                credibility_weight: 0.8,
+                topics: vec![],
+                timestamp: chrono::Utc::now(),
+                expires_at: None,
             },
-        ];
+            relevance_score: 0.7,
+            credibility_score: 0.8,
+            combined_score: 0.75,
+        }];
 
         let config = ContextWindowConfig {
             max_tokens: 1000,
@@ -874,7 +876,7 @@ mod tests {
 
         let query = RagQuery::new(vec![], vec!["Foxconn".to_string()]);
         let response = "Foxconn is expanding in Vietnam.";
-        
+
         let grounded = GroundedResponse::from_response_and_kb(response, &kb, &query);
         assert!(!grounded.citations.is_empty() || grounded.grounding_quality == 0.0);
     }
@@ -937,7 +939,7 @@ mod tests {
     #[test]
     fn knowledge_base_removes_expired() {
         let mut kb = KnowledgeBase::new();
-        
+
         kb.add_entry(KnowledgeEntry {
             id: "fresh".to_string(),
             content: "Fresh content".to_string(),
@@ -947,7 +949,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             expires_at: None,
         });
-        
+
         kb.add_entry(KnowledgeEntry {
             id: "expired".to_string(),
             content: "Expired content".to_string(),

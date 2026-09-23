@@ -97,14 +97,25 @@ impl ConsensusSentiment {
 
         for r in ratings {
             let lower = r.rating.to_lowercase();
-            if lower.contains("strong buy") || lower.contains("outperform") || lower.contains("overweight")
-                || lower.contains("buy") || lower.contains("positive") {
+            if lower.contains("strong buy")
+                || lower.contains("outperform")
+                || lower.contains("overweight")
+                || lower.contains("buy")
+                || lower.contains("positive")
+            {
                 buy += 1;
-                if lower.contains("strong") { strong_buy += 1; }
-            } else if lower.contains("sell") || lower.contains("underweight") || lower.contains("negative")
-                || lower.contains("reduce") {
+                if lower.contains("strong") {
+                    strong_buy += 1;
+                }
+            } else if lower.contains("sell")
+                || lower.contains("underweight")
+                || lower.contains("negative")
+                || lower.contains("reduce")
+            {
                 sell += 1;
-                if lower.contains("strong") { strong_sell += 1; }
+                if lower.contains("strong") {
+                    strong_sell += 1;
+                }
             } else {
                 hold += 1;
             }
@@ -127,7 +138,8 @@ impl ConsensusSentiment {
             "Sell"
         } else {
             "Hold"
-        }.to_string();
+        }
+        .to_string();
 
         let avg_pt = if price_targets.is_empty() {
             None
@@ -136,7 +148,10 @@ impl ConsensusSentiment {
         };
 
         ConsensusSentiment {
-            ticker: ratings.first().map(|r| r.ticker.clone()).unwrap_or_default(),
+            ticker: ratings
+                .first()
+                .map(|r| r.ticker.clone())
+                .unwrap_or_default(),
             buy_count: buy,
             hold_count: hold,
             sell_count: sell,
@@ -144,8 +159,14 @@ impl ConsensusSentiment {
             strong_sell_count: strong_sell,
             total_count: total,
             average_price_target: avg_pt,
-            high_price_target: price_targets.iter().cloned().fold(None, |a, b| a.map_or(Some(b), |x| Some(x.max(b)))),
-            low_price_target: price_targets.iter().cloned().fold(None, |a, b| a.map_or(Some(b), |x| Some(x.min(b)))),
+            high_price_target: price_targets
+                .iter()
+                .cloned()
+                .fold(None, |a, b| a.map_or(Some(b), |x| Some(x.max(b)))),
+            low_price_target: price_targets
+                .iter()
+                .cloned()
+                .fold(None, |a, b| a.map_or(Some(b), |x| Some(x.min(b)))),
             consensus_rating,
             sentiment_score,
             as_of_date: Utc::now(),
@@ -170,13 +191,25 @@ impl AnalystCoverageMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io) Analyst Monitor")
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { client, ratings_cache: HashMap::new(), price_targets_cache: HashMap::new() }
+        Self {
+            client,
+            ratings_cache: HashMap::new(),
+            price_targets_cache: HashMap::new(),
+        }
     }
 
     /// Fetch analyst ratings from public feeds (e.g. Yahoo Finance).
     pub async fn fetch_ratings(&mut self, ticker: &str) -> Result<Vec<AnalystRating>> {
-        let url = format!("https://query1.finance.yahoo.com/v7/finance/analystEvents?symbols={}", ticker);
-        let resp = self.client.get(&url).send().await.context("analyst ratings request")?;
+        let url = format!(
+            "https://query1.finance.yahoo.com/v7/finance/analystEvents?symbols={}",
+            ticker
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("analyst ratings request")?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), ticker = %ticker, "Analyst ratings returned non-success");
@@ -185,11 +218,17 @@ impl AnalystCoverageMonitor {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct YahooAnalystResponse { events: Option<serde_json::Value> }
+        struct YahooAnalystResponse {
+            events: Option<serde_json::Value>,
+        }
 
-        let _yahoo_resp: YahooAnalystResponse = resp.json().await.unwrap_or(YahooAnalystResponse { events: None });
+        let _yahoo_resp: YahooAnalystResponse = resp
+            .json()
+            .await
+            .unwrap_or(YahooAnalystResponse { events: None });
         let ratings = Vec::new(); // Parsing would require full Yahoo Finance API response structure
-        self.ratings_cache.insert(ticker.to_string(), ratings.clone());
+        self.ratings_cache
+            .insert(ticker.to_string(), ratings.clone());
         Ok(ratings)
     }
 
@@ -199,7 +238,12 @@ impl AnalystCoverageMonitor {
             "https://query2.finance.yahoo.com/v8/finance/chart/{}",
             urlencoding::encode(ticker)
         );
-        let resp = self.client.get(&url).send().await.context("price target request")?;
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("price target request")?;
 
         if !resp.status().is_success() {
             return Ok(Vec::new());
@@ -207,35 +251,44 @@ impl AnalystCoverageMonitor {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct YahooChart { meta: Option<YahooMeta> }
+        struct YahooChart {
+            meta: Option<YahooMeta>,
+        }
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct YahooMeta { regular_market_price: Option<f64> }
+        struct YahooMeta {
+            regular_market_price: Option<f64>,
+        }
 
         let chart: YahooChart = resp.json().await.unwrap_or(YahooChart { meta: None });
         let current_price = chart.meta.and_then(|m| m.regular_market_price);
 
-        let targets = current_price.map(|cp| {
-            vec![PriceTarget {
-                ticker: ticker.to_string(),
-                brokerage: "market".to_string(),
-                analyst_name: None,
-                price_target: cp * 1.15, // Placeholder: estimate 15% upside
-                current_price: Some(cp),
-                upside_pct: Some(15.0),
-                rating: None,
-                effective_date: Utc::now().date_naive(),
-                fetched_at: Utc::now(),
-            }]
-        }).unwrap_or_default();
+        let targets = current_price
+            .map(|cp| {
+                vec![PriceTarget {
+                    ticker: ticker.to_string(),
+                    brokerage: "market".to_string(),
+                    analyst_name: None,
+                    price_target: cp * 1.15, // Placeholder: estimate 15% upside
+                    current_price: Some(cp),
+                    upside_pct: Some(15.0),
+                    rating: None,
+                    effective_date: Utc::now().date_naive(),
+                    fetched_at: Utc::now(),
+                }]
+            })
+            .unwrap_or_default();
 
-        self.price_targets_cache.insert(ticker.to_string(), targets.clone());
+        self.price_targets_cache
+            .insert(ticker.to_string(), targets.clone());
         Ok(targets)
     }
 
     /// Get consensus sentiment for a ticker.
     pub fn consensus(&self, ticker: &str) -> Option<ConsensusSentiment> {
-        self.ratings_cache.get(ticker).map(ConsensusSentiment::from_ratings)
+        self.ratings_cache
+            .get(ticker)
+            .map(ConsensusSentiment::from_ratings)
     }
 
     /// Return number of tracked tickers.
@@ -245,7 +298,9 @@ impl AnalystCoverageMonitor {
 }
 
 impl Default for AnalystCoverageMonitor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -255,14 +310,30 @@ mod tests {
     #[test]
     fn consensus_sentiment_buy() {
         let ratings = vec![
-            AnalystRating { ticker: "AAPL".to_string(), brokerage: "Goldman".to_string(),
-                analyst_name: None, rating: "Buy".to_string(), previous_rating: None,
-                price_target: Some(200.0), previous_price_target: None, action: RatingAction::Initiated,
-                effective_date: Utc::now().date_naive(), fetched_at: Utc::now() },
-            AnalystRating { ticker: "AAPL".to_string(), brokerage: "Morgan".to_string(),
-                analyst_name: None, rating: "Strong Buy".to_string(), previous_rating: None,
-                price_target: Some(210.0), previous_price_target: None, action: RatingAction::Initiated,
-                effective_date: Utc::now().date_naive(), fetched_at: Utc::now() },
+            AnalystRating {
+                ticker: "AAPL".to_string(),
+                brokerage: "Goldman".to_string(),
+                analyst_name: None,
+                rating: "Buy".to_string(),
+                previous_rating: None,
+                price_target: Some(200.0),
+                previous_price_target: None,
+                action: RatingAction::Initiated,
+                effective_date: Utc::now().date_naive(),
+                fetched_at: Utc::now(),
+            },
+            AnalystRating {
+                ticker: "AAPL".to_string(),
+                brokerage: "Morgan".to_string(),
+                analyst_name: None,
+                rating: "Strong Buy".to_string(),
+                previous_rating: None,
+                price_target: Some(210.0),
+                previous_price_target: None,
+                action: RatingAction::Initiated,
+                effective_date: Utc::now().date_naive(),
+                fetched_at: Utc::now(),
+            },
         ];
         let consensus = ConsensusSentiment::from_ratings(&ratings);
         assert_eq!(consensus.buy_count, 2);
@@ -273,14 +344,30 @@ mod tests {
     #[test]
     fn consensus_sentiment_sell() {
         let ratings = vec![
-            AnalystRating { ticker: "XYZ".to_string(), brokerage: "Goldman".to_string(),
-                analyst_name: None, rating: "Sell".to_string(), previous_rating: None,
-                price_target: None, previous_price_target: None, action: RatingAction::Downgraded,
-                effective_date: Utc::now().date_naive(), fetched_at: Utc::now() },
-            AnalystRating { ticker: "XYZ".to_string(), brokerage: "MS".to_string(),
-                analyst_name: None, rating: "Underweight".to_string(), previous_rating: None,
-                price_target: None, previous_price_target: None, action: RatingAction::Downgraded,
-                effective_date: Utc::now().date_naive(), fetched_at: Utc::now() },
+            AnalystRating {
+                ticker: "XYZ".to_string(),
+                brokerage: "Goldman".to_string(),
+                analyst_name: None,
+                rating: "Sell".to_string(),
+                previous_rating: None,
+                price_target: None,
+                previous_price_target: None,
+                action: RatingAction::Downgraded,
+                effective_date: Utc::now().date_naive(),
+                fetched_at: Utc::now(),
+            },
+            AnalystRating {
+                ticker: "XYZ".to_string(),
+                brokerage: "MS".to_string(),
+                analyst_name: None,
+                rating: "Underweight".to_string(),
+                previous_rating: None,
+                price_target: None,
+                previous_price_target: None,
+                action: RatingAction::Downgraded,
+                effective_date: Utc::now().date_naive(),
+                fetched_at: Utc::now(),
+            },
         ];
         let consensus = ConsensusSentiment::from_ratings(&ratings);
         assert_eq!(consensus.sell_count, 2);

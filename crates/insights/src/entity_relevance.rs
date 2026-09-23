@@ -206,19 +206,18 @@ impl EntityProfile {
                 // Try to infer from metadata
                 Self::infer_category_from_metadata(metadata)
             }
-            DiscoverySource::JobPosting | DiscoverySource::TradeShow => {
-                EntityCategory::Technology
-            }
+            DiscoverySource::JobPosting | DiscoverySource::TradeShow => EntityCategory::Technology,
             DiscoverySource::PatentFiling | DiscoverySource::AcademicPaper => {
                 EntityCategory::Semiconductor
             }
             DiscoverySource::RegulatoryFiling => EntityCategory::Ems,
             DiscoverySource::WebCrawl => Self::infer_category_from_metadata(metadata),
-            DiscoverySource::Other(_) => EntityCategory::Other("dynamically_discovered".to_string()),
+            DiscoverySource::Other(_) => {
+                EntityCategory::Other("dynamically_discovered".to_string())
+            }
         };
 
-        let mut profile = EntityProfile::new(name)
-            .with_category(inferred_category);
+        let mut profile = EntityProfile::new(name).with_category(inferred_category);
 
         // Transfer metadata
         if let Some(ticker) = metadata.get("ticker") {
@@ -235,7 +234,9 @@ impl EntityProfile {
         profile.is_dynamically_discovered = true;
         profile.verification_count = 1;
         profile.last_verified = Some(Utc::now());
-        profile.topic_keywords.push("dynamically_discovered".to_string());
+        profile
+            .topic_keywords
+            .push("dynamically_discovered".to_string());
         profile.industry_keywords.push(source.as_str().to_string());
 
         // Encode confidence into activity baseline
@@ -364,7 +365,8 @@ impl EntityProfile {
             if lower.contains("automotive") || lower.contains("auto") {
                 return EntityCategory::Automotive;
             }
-            if lower.contains("logistic") || lower.contains("shipping") || lower.contains("freight") {
+            if lower.contains("logistic") || lower.contains("shipping") || lower.contains("freight")
+            {
                 return EntityCategory::Logistics;
             }
         }
@@ -651,12 +653,7 @@ impl EntityRegistry {
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>(),
             )
-            .with_geography(
-                geo_keywords
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>(),
-            )
+            .with_geography(geo_keywords.iter().map(|s| s.as_str()).collect::<Vec<_>>())
             .with_country(country);
 
         if let Some(t) = ticker {
@@ -769,11 +766,7 @@ impl EntityRegistry {
             score += keyword_score * 0.5;
 
             // Activity score contribution
-            let activity = self
-                .activity_scores
-                .get(name)
-                .copied()
-                .unwrap_or(0.5);
+            let activity = self.activity_scores.get(name).copied().unwrap_or(0.5);
             score += activity * 0.3;
 
             // Recency penalty: entities with recent insights get discounted
@@ -858,10 +851,7 @@ impl EntityRegistry {
             .collect();
 
         // Sort by score descending
-        candidates.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         candidates.truncate(n);
         candidates
@@ -957,10 +947,7 @@ impl EntityRegistry {
     /// 4. Guarantees at least 1 "cold" entity (no insights in 7+ days).
     ///
     /// Returns entity names, not profiles.
-    pub fn select_diverse_entity_set(
-        &self,
-        count: usize,
-    ) -> Vec<String> {
+    pub fn select_diverse_entity_set(&self, count: usize) -> Vec<String> {
         if self.entities.is_empty() || count == 0 {
             return Vec::new();
         }
@@ -969,11 +956,7 @@ impl EntityRegistry {
         let mut by_category: HashMap<&EntityCategory, Vec<(&String, f64)>> = HashMap::new();
         for (name, profile) in &self.entities {
             let cat = &profile.category;
-            let base_score = self
-                .activity_scores
-                .get(name)
-                .copied()
-                .unwrap_or(0.5);
+            let base_score = self.activity_scores.get(name).copied().unwrap_or(0.5);
 
             // Apply recency penalty
             let recency_penalty = if let Some(last_time) = self.last_insight_time.get(name) {
@@ -998,7 +981,7 @@ impl EntityRegistry {
 
         // Sort within each category by adjusted score; break ties on name for
         // determinism (HashMap entry order is otherwise randomized per process).
-        for (_, entries) in by_category.iter_mut() {
+        for entries in by_category.values_mut() {
             entries.sort_by(|a, b| {
                 b.1.partial_cmp(&a.1)
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -1042,7 +1025,8 @@ impl EntityRegistry {
 
             let cat = categories[category_idx % categories.len()];
             // Safety: cat is guaranteed to be in by_category since we just inserted it
-            let entries = by_category.get_mut(cat)
+            let entries = by_category
+                .get_mut(cat)
                 .unwrap_or_else(|| panic!("missing category entry for {cat:?}"));
 
             // Remove entries already selected
@@ -1116,10 +1100,7 @@ impl EntityRegistry {
     /// also query the `insights` table via the store layer and merge results.
     pub fn get_entity_history(&self, entity: &str) -> Vec<InsightRecord> {
         let key = entity.to_lowercase();
-        self.insight_history
-            .get(&key)
-            .cloned()
-            .unwrap_or_default()
+        self.insight_history.get(&key).cloned().unwrap_or_default()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1166,7 +1147,9 @@ impl EntityRegistry {
         // Enrich from discovery source context
         let source_str = discovered_from.as_str();
         profile.industry_keywords.push(source_str.to_string());
-        profile.topic_keywords.push("dynamically_discovered".to_string());
+        profile
+            .topic_keywords
+            .push("dynamically_discovered".to_string());
 
         // Add any website to geographic context
         if let Some(website) = metadata.get("website") {
@@ -1179,7 +1162,8 @@ impl EntityRegistry {
         profile.last_verified = Some(Utc::now());
 
         // Register the profile
-        self.categories.insert(key.clone(), profile.category.clone());
+        self.categories
+            .insert(key.clone(), profile.category.clone());
         self.activity_scores
             .entry(key.clone())
             .or_insert(initial_activity * 0.8); // Apply verification confidence
@@ -1371,11 +1355,7 @@ pub struct SignalMatch {
 /// weights contribute more to the match strength. Returns the top-k matches
 /// sorted by strength. Unknown patterns (no match) return an empty Vec rather
 /// than being silently ignored.
-pub fn parse_signal(
-    text: &str,
-    patterns: &[SignalPattern],
-    top_k: usize,
-) -> Vec<SignalMatch> {
+pub fn parse_signal(text: &str, patterns: &[SignalPattern], top_k: usize) -> Vec<SignalMatch> {
     let mut matches: Vec<SignalMatch> = Vec::new();
 
     for pattern in patterns {
@@ -1942,10 +1922,7 @@ mod tests {
     fn test_entity_registry_contains_specific_entities() {
         let registry = EntityRegistry::from_yaml_config();
 
-        assert!(
-            registry.get("foxconn").is_some(),
-            "Should contain Foxconn"
-        );
+        assert!(registry.get("foxconn").is_some(), "Should contain Foxconn");
         assert!(
             registry.get("jabil inc.").is_some(),
             "Should contain Jabil Inc."
@@ -1981,10 +1958,7 @@ mod tests {
         };
 
         let entity = registry.entity_for_context(&context);
-        assert!(
-            entity.is_some(),
-            "Should find an entity for NVIDIA context"
-        );
+        assert!(entity.is_some(), "Should find an entity for NVIDIA context");
     }
 
     #[test]
@@ -2073,26 +2047,15 @@ mod tests {
         let mut registry = EntityRegistry::empty();
 
         // Register entities from different categories
+        registry
+            .register(EntityProfile::new("ChipMaker").with_category(EntityCategory::Semiconductor));
+        registry.register(EntityProfile::new("BoardAssembler").with_category(EntityCategory::Ems));
+        registry.register(EntityProfile::new("AeroPrime").with_category(EntityCategory::Oem));
         registry.register(
-            EntityProfile::new("ChipMaker")
-                .with_category(EntityCategory::Semiconductor),
+            EntityProfile::new("SecondChip").with_category(EntityCategory::Semiconductor),
         );
-        registry.register(
-            EntityProfile::new("BoardAssembler")
-                .with_category(EntityCategory::Ems),
-        );
-        registry.register(
-            EntityProfile::new("AeroPrime")
-                .with_category(EntityCategory::Oem),
-        );
-        registry.register(
-            EntityProfile::new("SecondChip")
-                .with_category(EntityCategory::Semiconductor),
-        );
-        registry.register(
-            EntityProfile::new("ThirdChip")
-                .with_category(EntityCategory::Semiconductor),
-        );
+        registry
+            .register(EntityProfile::new("ThirdChip").with_category(EntityCategory::Semiconductor));
 
         let selected = registry.select_diverse_entity_set(5);
 
@@ -2159,7 +2122,7 @@ mod tests {
     // ── Signal Pattern Tests ─────────────────────────────────────────────
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_signal_pattern_matches() {
         let pattern = SignalPattern::new(r"(?i)\bGPU\b", "semiconductor", 0.8).unwrap();
         assert!(pattern.matches("NVIDIA GPU sales"));
@@ -2204,11 +2167,15 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_signal_pattern_with_entity_hint() {
-        let pattern =
-            SignalPattern::with_entity_hint(r"(?i)TSMC|Taiwan Semiconductor", "semiconductor", 0.9, "TSMC")
-                .unwrap();
+        let pattern = SignalPattern::with_entity_hint(
+            r"(?i)TSMC|Taiwan Semiconductor",
+            "semiconductor",
+            0.9,
+            "TSMC",
+        )
+        .unwrap();
         assert!(pattern.matches("TSMC announced 3nm production"));
         assert!(pattern.matches("Taiwan Semiconductor leads the foundry market"));
         assert!(!pattern.matches("Samsung foundry"));
@@ -2440,10 +2407,7 @@ mod tests {
 
         // There may or may not be a cold entity (all are warm), but the function
         // should not crash and should return the requested number
-        assert!(
-            selected.len() <= 4,
-            "Should return at most 4 entities"
-        );
+        assert!(selected.len() <= 4, "Should return at most 4 entities");
     }
 
     #[test]
@@ -2451,19 +2415,21 @@ mod tests {
         let registry = EntityRegistry::empty();
 
         assert!(registry.get("anything").is_none());
-        assert!(registry.entity_for_context(&SignalContext {
-            text: "test".to_string(),
-            entity_hint: None,
-            category: None,
-            source_url: None,
-            timestamp: 0,
-        }).is_none());
+        assert!(registry
+            .entity_for_context(&SignalContext {
+                text: "test".to_string(),
+                entity_hint: None,
+                category: None,
+                source_url: None,
+                timestamp: 0,
+            })
+            .is_none());
         assert!(registry.top_n_entities(5, &[]).is_empty());
         assert!(registry.stale_entities().is_empty());
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_get_category_returns_category_for_known_entity() {
         let registry = EntityRegistry::from_yaml_config();
 
@@ -2510,9 +2476,7 @@ mod tests {
         let mut registry = EntityRegistry::empty();
 
         registry.register(EntityProfile::new("LowActivity").with_category(EntityCategory::Ems));
-        registry.register(
-            EntityProfile::new("HighActivity").with_category(EntityCategory::Ems),
-        );
+        registry.register(EntityProfile::new("HighActivity").with_category(EntityCategory::Ems));
 
         // Boost HighActivity
         registry.record_observation("HighActivity");
@@ -2534,17 +2498,17 @@ mod tests {
         let registry = EntityRegistry::empty();
 
         let result = registry.entities_in_category(&EntityCategory::Semiconductor);
-        assert!(result.is_empty(), "Should return empty for unregistered category");
+        assert!(
+            result.is_empty(),
+            "Should return empty for unregistered category"
+        );
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_entity_for_context_text_contains_name() {
         let mut registry = EntityRegistry::empty();
-        registry.register(
-            EntityProfile::new("TestCorp")
-                .with_industry(vec!["electronics"]),
-        );
+        registry.register(EntityProfile::new("TestCorp").with_industry(vec!["electronics"]));
 
         let context = SignalContext {
             text: "TestCorp announced new products.".to_string(),

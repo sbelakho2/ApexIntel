@@ -28,9 +28,9 @@ use crate::{
 
 use apex_threat_intel::attack_surface::AttackSurfaceAnalyzer;
 use apex_threat_intel::competitive_intelligence::CompetitiveIntelligenceEngine;
+use apex_threat_intel::models::IndustrySector;
 use apex_threat_intel::supply_chain_threats::SupplyChainThreatModel;
 use apex_threat_intel::threat_actor_database::ThreatActorDatabase;
-use apex_threat_intel::models::IndustrySector;
 
 /// Overall workflow result containing all analysis components
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -810,8 +810,10 @@ impl CompanyIntelligenceWorkflow {
                 / revenue_indicators.len() as f64
         };
 
-        let overall_financial_score =
-            (revenue_score + profitability_metrics.overall_profitability_score + liquidity_analysis.liquidity_score) / 3.0;
+        let overall_financial_score = (revenue_score
+            + profitability_metrics.overall_profitability_score
+            + liquidity_analysis.liquidity_score)
+            / 3.0;
 
         FinancialHealthAssessment {
             revenue_indicators,
@@ -825,7 +827,11 @@ impl CompanyIntelligenceWorkflow {
     }
 
     /// Analyze leadership from signals
-    fn analyze_leadership(&self, _target_company: &str, signals: &[EvidenceItem]) -> LeadershipAnalysis {
+    fn analyze_leadership(
+        &self,
+        _target_company: &str,
+        signals: &[EvidenceItem],
+    ) -> LeadershipAnalysis {
         let mut key_executives = Vec::new();
         let board_composition = BoardComposition {
             board_size: 0,
@@ -901,28 +907,40 @@ impl CompanyIntelligenceWorkflow {
         };
 
         // Build competitive landscape from real engine data
-        let direct_competitors: Vec<Competitor> = top_competitors.iter().map(|c| {
-            let threat_level = if c.market_position.market_share_percent > 20.0 {
-                "High"
-            } else if c.market_position.market_share_percent > 10.0 {
-                "Medium"
-            } else {
-                "Low"
-            };
-            Competitor {
-                name: c.name.clone(),
-                market_share: c.market_position.market_share_percent / 100.0,
-                strengths: c.capabilities.clone(),
-                weaknesses: Vec::new(),
-                recent_moves: c.strategic_moves.iter().take(3).map(|m| m.title.clone()).collect(),
-                threat_level: threat_level.to_string(),
-            }
-        }).collect();
+        let direct_competitors: Vec<Competitor> = top_competitors
+            .iter()
+            .map(|c| {
+                let threat_level = if c.market_position.market_share_percent > 20.0 {
+                    "High"
+                } else if c.market_position.market_share_percent > 10.0 {
+                    "Medium"
+                } else {
+                    "Low"
+                };
+                Competitor {
+                    name: c.name.clone(),
+                    market_share: c.market_position.market_share_percent / 100.0,
+                    strengths: c.capabilities.clone(),
+                    weaknesses: Vec::new(),
+                    recent_moves: c
+                        .strategic_moves
+                        .iter()
+                        .take(3)
+                        .map(|m| m.title.clone())
+                        .collect(),
+                    threat_level: threat_level.to_string(),
+                }
+            })
+            .collect();
 
         let market_concentration = if direct_competitors.is_empty() {
             0.0
         } else {
-            direct_competitors.iter().map(|c| c.market_share).sum::<f64>().min(1.0)
+            direct_competitors
+                .iter()
+                .map(|c| c.market_share)
+                .sum::<f64>()
+                .min(1.0)
         };
 
         let competitive_landscape = CompetitiveLandscape {
@@ -933,7 +951,9 @@ impl CompanyIntelligenceWorkflow {
         };
 
         // Build SWOT from engine threat assessment data
-        let threat_assessment = self.competitive_intel.generate_threat_assessment(uuid::Uuid::new_v4());
+        let threat_assessment = self
+            .competitive_intel
+            .generate_threat_assessment(uuid::Uuid::new_v4());
         let mut strengths = Vec::new();
         let mut weaknesses = Vec::new();
         let mut opportunities = Vec::new();
@@ -982,9 +1002,9 @@ impl CompanyIntelligenceWorkflow {
         // Use SupplyChainThreatModel to get real supplier data
         let geo_concentration = self.supply_chain.calculate_geo_concentration();
         let single_manufacturer_risks = self.supply_chain.identify_single_manufacturer();
-        let tier1_suppliers = self.supply_chain.get_suppliers_by_tier(
-            apex_threat_intel::supply_chain_threats::SupplierTier::Tier1,
-        );
+        let tier1_suppliers = self
+            .supply_chain
+            .get_suppliers_by_tier(apex_threat_intel::supply_chain_threats::SupplierTier::Tier1);
 
         let supplier_diversity = SupplierDiversity {
             total_supplier_count_estimate: 0,
@@ -995,27 +1015,33 @@ impl CompanyIntelligenceWorkflow {
         };
 
         // Build geographic concentration from real engine data
-        let high_risk_regions: Vec<RegionRisk> = geo_concentration.iter().map(|gcr| {
-            RegionRisk {
+        let high_risk_regions: Vec<RegionRisk> = geo_concentration
+            .iter()
+            .map(|gcr| RegionRisk {
                 region: format!("{:?}", gcr.region),
                 risk_factors: gcr.contributing_factors.clone(),
                 overall_risk_score: gcr.risk_score,
                 recent_developments: Vec::new(),
-            }
-        }).collect();
+            })
+            .collect();
 
-        let concentration_by_region: Vec<RegionConcentration> = geo_concentration.iter().map(|gcr| {
-            RegionConcentration {
+        let concentration_by_region: Vec<RegionConcentration> = geo_concentration
+            .iter()
+            .map(|gcr| RegionConcentration {
                 region: format!("{:?}", gcr.region),
                 percentage_of_suppliers: gcr.revenue_exposure_percent / 100.0,
                 percentage_of_revenue: gcr.revenue_exposure_percent / 100.0,
-            }
-        }).collect();
+            })
+            .collect();
 
         let geopolitical_exposure_score = if high_risk_regions.is_empty() {
             0.0
         } else {
-            high_risk_regions.iter().map(|r| r.overall_risk_score).sum::<f64>() / high_risk_regions.len() as f64
+            high_risk_regions
+                .iter()
+                .map(|r| r.overall_risk_score)
+                .sum::<f64>()
+                / high_risk_regions.len() as f64
         };
 
         let geographic_concentration = GeographicConcentration {
@@ -1025,14 +1051,15 @@ impl CompanyIntelligenceWorkflow {
         };
 
         // Build single source risks from real engine data
-        let single_source_risks: Vec<SingleSourceRisk> = single_manufacturer_risks.iter().map(|smr| {
-            SingleSourceRisk {
+        let single_source_risks: Vec<SingleSourceRisk> = single_manufacturer_risks
+            .iter()
+            .map(|smr| SingleSourceRisk {
                 supplier_name: smr.manufacturer_name.clone(),
                 component_category: smr.part_number.clone(),
                 risk_score: smr.manufacturer_risk_score,
                 mitigation_options: vec![smr.recommendation.clone()],
-            }
-        }).collect();
+            })
+            .collect();
 
         let alternative_supplier_options = Vec::new();
 
@@ -1104,59 +1131,88 @@ impl CompanyIntelligenceWorkflow {
     }
 
     /// Assess threats using real threat actor database and attack surface analyzer
-    fn assess_threats(&mut self, _target_company: &str, _signals: &[EvidenceItem]) -> ThreatAssessment {
+    fn assess_threats(
+        &mut self,
+        _target_company: &str,
+        _signals: &[EvidenceItem],
+    ) -> ThreatAssessment {
         // Use ThreatActorDatabase to get real threat actor data for relevant sectors
         let sector = IndustrySector::Technology;
         let sector_summary = self.threat_actor_db.get_sector_threat_summary(&sector);
         let sector_actors = self.threat_actor_db.get_actors_by_sector(&sector);
 
         // Build threat actor profiles from real database data
-        let threat_actors: Vec<ThreatActorProfile> = sector_actors.iter().map(|actor| {
-            let capability_level = if actor.sophistication_level >= 8 {
-                "High"
-            } else if actor.sophistication_level >= 5 {
-                "Medium"
-            } else {
-                "Low"
-            };
-            let threat_level = if actor.status == apex_threat_intel::threat_actor_database::ActorStatus::Active {
-                "High"
-            } else {
-                "Medium"
-            };
-            ThreatActorProfile {
-                actor_type: format!("{:?}", actor.motivation),
-                motivation: actor.motivation.as_str().to_string(),
-                capability_level: capability_level.to_string(),
-                threat_level: threat_level.to_string(),
-                relevant_indicators: actor.aliases.clone(),
-            }
-        }).collect();
+        let threat_actors: Vec<ThreatActorProfile> = sector_actors
+            .iter()
+            .map(|actor| {
+                let capability_level = if actor.sophistication_level >= 8 {
+                    "High"
+                } else if actor.sophistication_level >= 5 {
+                    "Medium"
+                } else {
+                    "Low"
+                };
+                let threat_level = if actor.status
+                    == apex_threat_intel::threat_actor_database::ActorStatus::Active
+                {
+                    "High"
+                } else {
+                    "Medium"
+                };
+                ThreatActorProfile {
+                    actor_type: format!("{:?}", actor.motivation),
+                    motivation: actor.motivation.as_str().to_string(),
+                    capability_level: capability_level.to_string(),
+                    threat_level: threat_level.to_string(),
+                    relevant_indicators: actor.aliases.clone(),
+                }
+            })
+            .collect();
 
         // Use AttackSurfaceAnalyzer for attack surface data
         let org_id = uuid::Uuid::new_v4();
         let assessment_id = self.attack_surface.create_assessment(org_id);
-        let assessment = self.attack_surface.get_assessment(assessment_id)
+        let assessment = self
+            .attack_surface
+            .get_assessment(assessment_id)
             .cloned()
-            .unwrap_or_else(|| apex_threat_intel::attack_surface::AttackSurfaceAssessment::new(org_id));
+            .unwrap_or_else(|| {
+                apex_threat_intel::attack_surface::AttackSurfaceAssessment::new(org_id)
+            });
 
         let attack_surface = AttackSurface {
             external_assets: assessment.exposures.len() as i32,
-            exposed_services: assessment.exposures.iter().filter(|e| matches!(e.exposure_type, apex_threat_intel::attack_surface::ExposureType::ExposedService | apex_threat_intel::attack_surface::ExposureType::PublicApi)).count() as i32,
+            exposed_services: assessment
+                .exposures
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.exposure_type,
+                        apex_threat_intel::attack_surface::ExposureType::ExposedService
+                            | apex_threat_intel::attack_surface::ExposureType::PublicApi
+                    )
+                })
+                .count() as i32,
             public_facing_systems: 0,
             third_party_integration_points: 0,
             attack_surface_score: assessment.overall_score,
         };
 
         // Build vulnerability summary from assessment data
-        let vulnerability_summary: Vec<VulnerabilitySummary> = assessment.vulnerabilities.iter().map(|v| {
-            VulnerabilitySummary {
+        let vulnerability_summary: Vec<VulnerabilitySummary> = assessment
+            .vulnerabilities
+            .iter()
+            .map(|v| VulnerabilitySummary {
                 vulnerability_type: v.title.clone(),
                 severity: format!("{:?}", v.severity),
                 exploitability: format!("{:?}", v.exploitation_level),
-                remediation_priority: if v.patch_available { "High".to_string() } else { "Medium".to_string() },
-            }
-        }).collect();
+                remediation_priority: if v.patch_available {
+                    "High".to_string()
+                } else {
+                    "Medium".to_string()
+                },
+            })
+            .collect();
 
         let overall_threat_score = if sector_summary.total_actors == 0 {
             0.0
@@ -1310,7 +1366,9 @@ impl CompanyIntelligenceWorkflow {
 
         if let Some(ref opportunities) = report.strategic_opportunities {
             if !opportunities.expansion_signals.is_empty() {
-                recommendations.push("Monitor expansion activities for market entry opportunities".to_string());
+                recommendations.push(
+                    "Monitor expansion activities for market entry opportunities".to_string(),
+                );
             }
         }
 
@@ -1337,7 +1395,11 @@ impl CompanyIntelligenceWorkflow {
         }
 
         if report.leadership.is_none()
-            || report.leadership.as_ref().map(|l| l.key_executives.is_empty()).unwrap_or(false)
+            || report
+                .leadership
+                .as_ref()
+                .map(|l| l.key_executives.is_empty())
+                .unwrap_or(false)
         {
             gaps.push("Limited leadership/executive data available".to_string());
         }
@@ -1354,7 +1416,7 @@ impl Default for CompanyIntelligenceWorkflow {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -1560,19 +1622,17 @@ mod tests {
     #[test]
     fn test_recommendations_generation() {
         let mut workflow = CompanyIntelligenceWorkflow::new();
-        let signals = vec![
-            EvidenceItem {
-                id: "sig1".to_string(),
-                entity_id: "TestCorp".to_string(),
-                entity_type: "company".to_string(),
-                evidence_type: "partnership".to_string(),
-                description: "New partnership detected".to_string(),
-                source: "News".to_string(),
-                confidence: 0.8,
-                timestamp: Utc::now(),
-                raw_data: serde_json::json!({}),
-            },
-        ];
+        let signals = vec![EvidenceItem {
+            id: "sig1".to_string(),
+            entity_id: "TestCorp".to_string(),
+            entity_type: "company".to_string(),
+            evidence_type: "partnership".to_string(),
+            description: "New partnership detected".to_string(),
+            source: "News".to_string(),
+            confidence: 0.8,
+            timestamp: Utc::now(),
+            raw_data: serde_json::json!({}),
+        }];
 
         let report = workflow.run("TestCorp", signals);
         // Recommendations are generated from actual data; without engine data they may be empty

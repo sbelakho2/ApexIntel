@@ -228,10 +228,12 @@ mod analytics;
 mod artifacts;
 mod battlecards;
 pub use battlecards::BattlecardRow;
+mod alert_configs;
 mod collaboration;
 mod companies;
 mod company_assets;
 mod competitors;
+pub mod embeddings;
 mod graph;
 mod history;
 mod insights;
@@ -239,21 +241,19 @@ mod llm_governance;
 mod logistics;
 mod memos;
 mod observations;
-mod alert_configs;
 mod persons;
 mod preferences;
 mod recipes;
 mod sales;
 mod security;
-mod warnings;
-pub mod embeddings;
 pub mod trends;
+mod warnings;
 
 // Sales-activation row types (re-exported for handlers/workers).
 pub use sales::{
-    BuyingCenterMemberRow, BuyingCenterRow, ClosedDealRow, CompetitorPricingRow,
-    ContactMethodRow, CrawlMetricRow, EngagementEventRow, IcpTargetRow, NewBuyingMember,
-    NewClosedDeal, NewContactMethod, NewCrawlMetric, NewEngagementEvent, RealSourceTelemetry,
+    BuyingCenterMemberRow, BuyingCenterRow, ClosedDealRow, CompetitorPricingRow, ContactMethodRow,
+    CrawlMetricRow, EngagementEventRow, IcpTargetRow, NewBuyingMember, NewClosedDeal,
+    NewContactMethod, NewCrawlMetric, NewEngagementEvent, RealSourceTelemetry,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -1750,7 +1750,7 @@ pub struct TeamAssignmentRecord {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 

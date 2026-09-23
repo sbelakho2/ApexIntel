@@ -826,7 +826,7 @@ mod tests {
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn monitor_constructs_without_keys() {
         let monitor = BreachMonitor::new(None, None, None)
@@ -839,7 +839,7 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn password_range_check_bad_prefix() {
         let monitor = BreachMonitor::new(None, None, None)

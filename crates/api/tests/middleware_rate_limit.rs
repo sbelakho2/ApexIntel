@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use apex_api::middleware::rate_limit::{
     append_rate_limit_headers, rate_limited_response, RateLimitInfo, RateLimitSource,

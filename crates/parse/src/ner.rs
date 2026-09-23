@@ -148,8 +148,14 @@ pub fn extract_job_title_with_confidence(text: &str) -> Vec<JobTitleExtraction> 
     // Pattern-based: "NAME, TITLE at COMPANY" or "NAME, TITLE" with proper-case words
     if results.is_empty() {
         let re_patterns: &[(&str, f64)] = &[
-            (r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4}\s+(?:at|with|of|chez)\s+", 0.6),
-            (r"\b(?:VP|SVP|EVP|C[A-Z]O|Head|Lead|Director|Manager|Chief|President)\s+(?:of\s+)?[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,4}", 0.7),
+            (
+                r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,4}\s+(?:at|with|of|chez)\s+",
+                0.6,
+            ),
+            (
+                r"\b(?:VP|SVP|EVP|C[A-Z]O|Head|Lead|Director|Manager|Chief|President)\s+(?:of\s+)?[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,4}",
+                0.7,
+            ),
         ];
         for (pat_str, conf) in re_patterns {
             if let Ok(re) = Regex::new(pat_str) {
@@ -170,28 +176,67 @@ pub fn extract_job_title_with_confidence(text: &str) -> Vec<JobTitleExtraction> 
     results.retain(|r| seen.insert(r.title.clone()));
 
     // Sort by confidence descending
-    results.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results
 }
 
 /// Classify a job title string into a role family.
 fn classify_title_to_role_family(title: &str) -> String {
     let lower = title.to_lowercase();
-    if lower.contains("ceo") || lower.contains("chief executive") || lower.contains("president") || lower.contains("chairman") || lower.contains("founder") || lower.contains("owner") {
+    if lower.contains("ceo")
+        || lower.contains("chief executive")
+        || lower.contains("president")
+        || lower.contains("chairman")
+        || lower.contains("founder")
+        || lower.contains("owner")
+        || lower.contains("cfo")
+        || lower.contains("coo")
+        || lower.contains("cto")
+        || lower.contains("cio")
+        || lower.contains("cmo")
+        || lower.contains("cpo")
+        || lower.contains("cro")
+        || lower.contains("chief")
+    {
         "C-Suite".to_string()
-    } else if lower.contains("cfo") || lower.contains("coo") || lower.contains("cto") || lower.contains("cio") || lower.contains("cmo") || lower.contains("cpo") || lower.contains("cro") || lower.contains("chief") {
-        "C-Suite".to_string()
-    } else if lower.contains("vp") || lower.contains("vice president") || lower.contains("svp") || lower.contains("evp") || lower.contains("executive vice") {
+    } else if lower.contains("vp")
+        || lower.contains("vice president")
+        || lower.contains("svp")
+        || lower.contains("evp")
+        || lower.contains("executive vice")
+        || lower.contains("director")
+        || lower.contains("head of")
+        || lower.contains("global head")
+    {
         "VP/Director".to_string()
-    } else if lower.contains("director") || lower.contains("head of") || lower.contains("global head") {
-        "VP/Director".to_string()
-    } else if lower.contains("manager") || lower.contains("supervisor") || lower.contains("team lead") || lower.contains("lead") {
+    } else if lower.contains("manager")
+        || lower.contains("supervisor")
+        || lower.contains("team lead")
+        || lower.contains("lead")
+    {
         "Manager".to_string()
-    } else if lower.contains("engineer") || lower.contains("developer") || lower.contains("analyst") || lower.contains("specialist") || lower.contains("architect") {
+    } else if lower.contains("engineer")
+        || lower.contains("developer")
+        || lower.contains("analyst")
+        || lower.contains("specialist")
+        || lower.contains("architect")
+    {
         "Technical".to_string()
-    } else if lower.contains("general") || lower.contains("admiral") || lower.contains("colonel") || lower.contains("major") || lower.contains("captain") || lower.contains("commander") {
-        "Defense/Government".to_string()
-    } else if lower.contains("secretary") || lower.contains("minister") || lower.contains("ambassador") || lower.contains("governor") {
+    } else if lower.contains("general")
+        || lower.contains("admiral")
+        || lower.contains("colonel")
+        || lower.contains("major")
+        || lower.contains("captain")
+        || lower.contains("commander")
+        || lower.contains("secretary")
+        || lower.contains("minister")
+        || lower.contains("ambassador")
+        || lower.contains("governor")
+    {
         "Defense/Government".to_string()
     } else {
         "Other".to_string()
@@ -201,90 +246,255 @@ fn classify_title_to_role_family(title: &str) -> String {
 /// Known English job titles (100+ across industries).
 static KNOWN_JOB_TITLES_EN: &[&str] = &[
     // C-Suite
-    "Chief Executive Officer", "Chief Financial Officer", "Chief Operating Officer",
-    "Chief Technology Officer", "Chief Information Officer", "Chief Marketing Officer",
-    "Chief Strategy Officer", "Chief Information Security Officer", "Chief Procurement Officer",
-    "Chief Human Resources Officer", "Chief Data Officer", "Chief Analytics Officer",
-    "Chief Risk Officer", "Chief Compliance Officer", "Chief Revenue Officer",
-    "Chairman", "President", "Founder", "Co-Founder", "Owner", "Partner",
+    "Chief Executive Officer",
+    "Chief Financial Officer",
+    "Chief Operating Officer",
+    "Chief Technology Officer",
+    "Chief Information Officer",
+    "Chief Marketing Officer",
+    "Chief Strategy Officer",
+    "Chief Information Security Officer",
+    "Chief Procurement Officer",
+    "Chief Human Resources Officer",
+    "Chief Data Officer",
+    "Chief Analytics Officer",
+    "Chief Risk Officer",
+    "Chief Compliance Officer",
+    "Chief Revenue Officer",
+    "Chairman",
+    "President",
+    "Founder",
+    "Co-Founder",
+    "Owner",
+    "Partner",
     // VP-Level
-    "Senior Vice President", "Executive Vice President", "Vice President of Operations",
-    "Vice President of Supply Chain", "Vice President of Manufacturing",
-    "Vice President of Engineering", "Vice President of Sales",
-    "Vice President of Procurement", "Vice President of Quality",
-    "Vice President of Research and Development", "Vice President of Business Development",
-    "Vice President of Logistics", "Vice President of Finance",
-    "Vice President of Marketing", "Vice President of Strategy",
-    "Group Vice President", "Regional Vice President",
+    "Senior Vice President",
+    "Executive Vice President",
+    "Vice President of Operations",
+    "Vice President of Supply Chain",
+    "Vice President of Manufacturing",
+    "Vice President of Engineering",
+    "Vice President of Sales",
+    "Vice President of Procurement",
+    "Vice President of Quality",
+    "Vice President of Research and Development",
+    "Vice President of Business Development",
+    "Vice President of Logistics",
+    "Vice President of Finance",
+    "Vice President of Marketing",
+    "Vice President of Strategy",
+    "Group Vice President",
+    "Regional Vice President",
     // Director-Level
-    "Managing Director", "Executive Director", "Senior Director",
-    "Director of Supply Chain", "Director of Operations", "Director of Manufacturing",
-    "Director of Engineering", "Director of Procurement", "Director of Quality",
-    "Director of Logistics", "Director of Sales", "Director of Marketing",
-    "Director of Business Development", "Director of Finance",
-    "Regional Director", "Site Director", "Plant Director", "Factory Director",
-    "Director of Compliance", "Director of Security",
+    "Managing Director",
+    "Executive Director",
+    "Senior Director",
+    "Director of Supply Chain",
+    "Director of Operations",
+    "Director of Manufacturing",
+    "Director of Engineering",
+    "Director of Procurement",
+    "Director of Quality",
+    "Director of Logistics",
+    "Director of Sales",
+    "Director of Marketing",
+    "Director of Business Development",
+    "Director of Finance",
+    "Regional Director",
+    "Site Director",
+    "Plant Director",
+    "Factory Director",
+    "Director of Compliance",
+    "Director of Security",
     // Manager-Level
-    "General Manager", "Senior Manager", "Supply Chain Manager", "Operations Manager",
-    "Plant Manager", "Quality Manager", "Procurement Manager", "Engineering Manager",
-    "Program Manager", "Product Manager", "Project Manager", "Logistics Manager",
-    "Warehouse Manager", "Production Manager", "Sourcing Manager",
-    "Category Manager", "Commodity Manager", "Supplier Quality Manager",
-    "Global Supply Chain Director", "Head of Supply Chain", "Head of Operations",
-    "Head of Manufacturing", "Head of Quality", "Head of Procurement",
-    "Head of Engineering", "Head of Sales", "Head of Marketing",
+    "General Manager",
+    "Senior Manager",
+    "Supply Chain Manager",
+    "Operations Manager",
+    "Plant Manager",
+    "Quality Manager",
+    "Procurement Manager",
+    "Engineering Manager",
+    "Program Manager",
+    "Product Manager",
+    "Project Manager",
+    "Logistics Manager",
+    "Warehouse Manager",
+    "Production Manager",
+    "Sourcing Manager",
+    "Category Manager",
+    "Commodity Manager",
+    "Supplier Quality Manager",
+    "Global Supply Chain Director",
+    "Head of Supply Chain",
+    "Head of Operations",
+    "Head of Manufacturing",
+    "Head of Quality",
+    "Head of Procurement",
+    "Head of Engineering",
+    "Head of Sales",
+    "Head of Marketing",
     // Defense/Government
-    "General", "Admiral", "Colonel", "Lieutenant Colonel", "Major", "Captain", "Commander",
-    "Secretary of Defense", "Undersecretary", "Deputy Secretary",
-    "Assistant Secretary", "Director of National Intelligence",
-    "Program Executive Officer", "Brigadier General", "Major General",
+    "General",
+    "Admiral",
+    "Colonel",
+    "Lieutenant Colonel",
+    "Major",
+    "Captain",
+    "Commander",
+    "Secretary of Defense",
+    "Undersecretary",
+    "Deputy Secretary",
+    "Assistant Secretary",
+    "Director of National Intelligence",
+    "Program Executive Officer",
+    "Brigadier General",
+    "Major General",
     // Other
-    "Principal", "Senior Advisor", "Senior Consultant",
-    "Lead Engineer", "Staff Engineer", "Distinguished Engineer",
-    "Technical Fellow", "Research Fellow", "Senior Fellow",
-    "Senior Analyst", "Principal Engineer", "Staff Scientist",
+    "Principal",
+    "Senior Advisor",
+    "Senior Consultant",
+    "Lead Engineer",
+    "Staff Engineer",
+    "Distinguished Engineer",
+    "Technical Fellow",
+    "Research Fellow",
+    "Senior Fellow",
+    "Senior Analyst",
+    "Principal Engineer",
+    "Staff Scientist",
 ];
 
 /// Known Arabic job titles.
 static KNOWN_JOB_TITLES_AR: &[&str] = &[
-    "مدير عام", "رئيس تنفيذي", "مدير العمليات", "مدير المالي", "مدير التسويق",
-    "مدير الموارد البشرية", "مدير المشتريات", "مدير سلسلة التوريد", "مدير الجودة",
-    "مدير المصنع", "مدير الإنتاج", "مدير الهندسة", "مدير المبيعات",
-    "مدير الخدمات اللوجستية", "مدير المشاريع", "مدير تقنية المعلومات",
-    "رئيس مجلس الإدارة", "نائب الرئيس", "مدير إدارة", "مدير قطاع",
-    "رئيس قسم", "مهندس", "مهندس أول", "استشاري", "مستشار",
-    "مدير تطوير الأعمال", "مدير الامتثال", "مدير الأمن", "مدير المخاطر",
-    "العميد", "العقيد", "المقدم", "الرائد", "نقيب", "لواء", "فريق",
-    "وكيل وزارة", "مساعد وكيل", "سفير", "محافظ",
+    "مدير عام",
+    "رئيس تنفيذي",
+    "مدير العمليات",
+    "مدير المالي",
+    "مدير التسويق",
+    "مدير الموارد البشرية",
+    "مدير المشتريات",
+    "مدير سلسلة التوريد",
+    "مدير الجودة",
+    "مدير المصنع",
+    "مدير الإنتاج",
+    "مدير الهندسة",
+    "مدير المبيعات",
+    "مدير الخدمات اللوجستية",
+    "مدير المشاريع",
+    "مدير تقنية المعلومات",
+    "رئيس مجلس الإدارة",
+    "نائب الرئيس",
+    "مدير إدارة",
+    "مدير قطاع",
+    "رئيس قسم",
+    "مهندس",
+    "مهندس أول",
+    "استشاري",
+    "مستشار",
+    "مدير تطوير الأعمال",
+    "مدير الامتثال",
+    "مدير الأمن",
+    "مدير المخاطر",
+    "العميد",
+    "العقيد",
+    "المقدم",
+    "الرائد",
+    "نقيب",
+    "لواء",
+    "فريق",
+    "وكيل وزارة",
+    "مساعد وكيل",
+    "سفير",
+    "محافظ",
 ];
 
 /// Known French job titles.
 static KNOWN_JOB_TITLES_FR: &[&str] = &[
-    "Directeur Général", "Président Directeur Général", "Directeur des Opérations",
-    "Directeur Financier", "Directeur Marketing", "Directeur des Ressources Humaines",
-    "Directeur des Achats", "Directeur de la Chaîne d'Approvisionnement",
-    "Directeur Qualité", "Directeur d'Usine", "Directeur de Production",
-    "Directeur de l'Ingénierie", "Directeur Commercial", "Directeur Logistique",
-    "Directeur de Projet", "Directeur Informatique", "Directeur Technique",
-    "Directeur Recherche et Développement", "Directeur de la Stratégie",
-    "Président", "Vice-Président", "Secrétaire Général", "Chef de Projet",
-    "Chef de Service", "Chef d'Équipe", "Responsable", "Ingénieur",
-    "Ingénieur Principal", "Consultant", "Conseiller", "Analyste",
-    "Responsable Qualité", "Responsable Achats", "Responsable Logistique",
-    "Responsable Production", "Responsable Commercial", "Gérant",
-    "Directeur Adjoint", "Sous-Directeur",
+    "Directeur Général",
+    "Président Directeur Général",
+    "Directeur des Opérations",
+    "Directeur Financier",
+    "Directeur Marketing",
+    "Directeur des Ressources Humaines",
+    "Directeur des Achats",
+    "Directeur de la Chaîne d'Approvisionnement",
+    "Directeur Qualité",
+    "Directeur d'Usine",
+    "Directeur de Production",
+    "Directeur de l'Ingénierie",
+    "Directeur Commercial",
+    "Directeur Logistique",
+    "Directeur de Projet",
+    "Directeur Informatique",
+    "Directeur Technique",
+    "Directeur Recherche et Développement",
+    "Directeur de la Stratégie",
+    "Président",
+    "Vice-Président",
+    "Secrétaire Général",
+    "Chef de Projet",
+    "Chef de Service",
+    "Chef d'Équipe",
+    "Responsable",
+    "Ingénieur",
+    "Ingénieur Principal",
+    "Consultant",
+    "Conseiller",
+    "Analyste",
+    "Responsable Qualité",
+    "Responsable Achats",
+    "Responsable Logistique",
+    "Responsable Production",
+    "Responsable Commercial",
+    "Gérant",
+    "Directeur Adjoint",
+    "Sous-Directeur",
 ];
 
 /// Known Chinese job titles.
 static KNOWN_JOB_TITLES_ZH: &[&str] = &[
-    "总经理", "首席执行官", "首席运营官", "首席财务官", "首席技术官",
-    "首席信息官", "首席营销官", "副总裁", "高级副总裁", "执行副总裁",
-    "总监", "副总监", "经理", "高级经理", "采购经理", "供应链总监",
-    "质量经理", "运营总监", "工厂经理", "生产经理", "工程经理",
-    "销售总监", "市场总监", "人力资源总监", "财务总监", "技术总监",
-    "研发总监", "项目经理", "物流经理", "仓储经理", "区域经理",
-    "总工程师", "主任", "副主任", "科长", "处长", "局长",
-    "董事长", "总裁", "创始人", "合伙人",
+    "总经理",
+    "首席执行官",
+    "首席运营官",
+    "首席财务官",
+    "首席技术官",
+    "首席信息官",
+    "首席营销官",
+    "副总裁",
+    "高级副总裁",
+    "执行副总裁",
+    "总监",
+    "副总监",
+    "经理",
+    "高级经理",
+    "采购经理",
+    "供应链总监",
+    "质量经理",
+    "运营总监",
+    "工厂经理",
+    "生产经理",
+    "工程经理",
+    "销售总监",
+    "市场总监",
+    "人力资源总监",
+    "财务总监",
+    "技术总监",
+    "研发总监",
+    "项目经理",
+    "物流经理",
+    "仓储经理",
+    "区域经理",
+    "总工程师",
+    "主任",
+    "副主任",
+    "科长",
+    "处长",
+    "局长",
+    "董事长",
+    "总裁",
+    "创始人",
+    "合伙人",
 ];
 
 // ─── Main Dispatch ─────────────────────────────────────────────────────────────
@@ -299,7 +509,11 @@ pub fn extract_entities(text: &str, lang: &str) -> Vec<ExtractedEntity> {
         lang.to_string()
     };
 
-    let effective_lang = if detected.trim().is_empty() { "en" } else { &detected };
+    let effective_lang = if detected.trim().is_empty() {
+        "en"
+    } else {
+        &detected
+    };
 
     let mut entities = match effective_lang {
         "fr" => extract_french_entities(text),
@@ -322,7 +536,8 @@ pub fn extract_entities(text: &str, lang: &str) -> Vec<ExtractedEntity> {
     // If the requested language is not in our supported set (i.e. the _ fallback
     // branch was taken), tag entities with "en" since English extraction was used.
     let tag_lang = match effective_lang {
-        "fr" | "ar" | "zh" | "ja" | "ko" | "de" | "es" | "it" | "pt" | "tr" | "fa" | "he" | "nl" => effective_lang,
+        "fr" | "ar" | "zh" | "ja" | "ko" | "de" | "es" | "it" | "pt" | "tr" | "fa" | "he"
+        | "nl" => effective_lang,
         _ => "en",
     };
     for entity in &mut entities {
@@ -364,9 +579,7 @@ fn deduplicate_entities(entities: &mut Vec<ExtractedEntity>) {
 
 fn spans_overlap(a: &ExtractedEntity, b: &ExtractedEntity) -> bool {
     match (a.span, b.span) {
-        (Some((a_start, a_end)), Some((b_start, b_end))) => {
-            a_start.max(b_start) < a_end.min(b_end)
-        }
+        (Some((a_start, a_end)), Some((b_start, b_end))) => a_start.max(b_start) < a_end.min(b_end),
         _ => false,
     }
 }
@@ -518,42 +731,55 @@ macro_rules! build_company_regex {
                 .size_limit(200_000)
                 .dfa_size_limit(200_000)
                 .build()
-                .unwrap_or_else(|error| panic!("invalid company regex {}: {error}", stringify!($name)))
+                .unwrap_or_else(|error| {
+                    panic!("invalid company regex {}: {error}", stringify!($name))
+                })
         });
     };
 }
 
-build_company_regex!(RE_COMPANY_EN,
+build_company_regex!(
+    RE_COMPANY_EN,
     r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3})\s+(Inc\.?|Corp\.?|Ltd\.?|LLC|Co\.|Group|Holdings|Technologies|Electronics|Manufacturing|Services|Limited|Corporation|Incorporated|Enterprises|International)\b"
 );
-build_company_regex!(RE_COMPANY_FR,
+build_company_regex!(
+    RE_COMPANY_FR,
     r"\b([A-ZÀ-Ÿ][A-Za-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][A-Za-zà-ÿ]+){0,3})\s+(S\.?A\.?(?:S\.?)?|S\.?A\.?R\.?L\.?|EURL|SASU|SARL|SA|EURL|SNC|SCS|CA|Group|Sciences|Technologies|Électronique|Manufacturing)\b"
 );
-build_company_regex!(RE_COMPANY_DE,
+build_company_regex!(
+    RE_COMPANY_DE,
     r"\b([A-ZÄÖÜß][A-Za-zäöüß]+(?:\s+[A-ZÄÖÜß][A-Za-zäöüß]+){0,3})\s+(GmbH|AG|SE\s?&?\s?Co\.?\s?KG|GmbH\s?&?\s?Co\.?\s?KG|KG|OHG|UG|e\.?V\.?|Group|Technologies|Elektronik|Manufacturing)\b"
 );
-build_company_regex!(RE_COMPANY_ES,
+build_company_regex!(
+    RE_COMPANY_ES,
     r"\b([A-ZÁÉÍÓÚÜÑ][A-Za-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][A-Za-záéíóúüñ]+){0,3})\s+(S\.?A\.?|S\.?L\.?|S\.?A\.?P\.?I\.?|S\.?L\.?U\.?|S\.?C\.?|CORP|Group|Tecnologías|Electrónica|Manufacturing)\b"
 );
-build_company_regex!(RE_COMPANY_IT,
+build_company_regex!(
+    RE_COMPANY_IT,
     r"\b([A-ZÀ-Ÿ][A-Za-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][A-Za-zà-ÿ]+){0,3})\s+(S\.?p\.?A\.?|S\.?r\.?l\.?|S\.?a\.?s\.?|S\.?n\.?c\.?|SOCIETÀ|Group|Tecnologie|Elettronica|Manufacturing)\b"
 );
-build_company_regex!(RE_COMPANY_PT,
+build_company_regex!(
+    RE_COMPANY_PT,
     r"\b([A-ZÁÉÍÓÚÂÃÇÊÕ][A-Za-záéíóúâãçêõ]+(?:\s+[A-ZÁÉÍÓÚÂÃÇÊÕ][A-Za-záéíóúâãçêõ]+){0,3})\s+(S\.?A\.?|Ltda\.?|S\.?A\.?R\.?L\.?|Group|Tecnologias|Eletrónica|Manufacturing)\b"
 );
-build_company_regex!(RE_COMPANY_NL,
+build_company_regex!(
+    RE_COMPANY_NL,
     r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(BV|NV|CV|VOF|Group|Technologieën|Elektronica|Manufacturing)\b"
 );
-build_company_regex!(RE_COMPANY_TR,
+build_company_regex!(
+    RE_COMPANY_TR,
     r"\b([A-ZİĞÜŞÖÇ][A-Za-zığüşöç]+(?:\s+[A-ZİĞÜŞÖÇ][A-Za-zığüşöç]+){0,3})\s+(A\.?Ş\.?|Ltd\.?Şti\.?|Tic\.?|San\.?|Group|Teknolojileri|Elektronik|Üretim)\b"
 );
-build_company_regex!(RE_COMPANY_ZH,
+build_company_regex!(
+    RE_COMPANY_ZH,
     r"([\u4e00-\u9fff]{2,10})(?:有限公司|有限责任公司|股份有限公司|集团|控股|电子|科技|实业|制造|工业|股份公司|公司)"
 );
-build_company_regex!(RE_COMPANY_JA,
+build_company_regex!(
+    RE_COMPANY_JA,
     r"([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,10})(?:株式会社|有限会社|合同会社|会社)"
 );
-build_company_regex!(RE_COMPANY_KO,
+build_company_regex!(
+    RE_COMPANY_KO,
     r"([\uac00-\ud7af\u1100-\u11ff]{2,10})(?:\(주\)|주식회사|유한회사|합자회사|회사)"
 );
 
@@ -566,42 +792,55 @@ macro_rules! build_person_regex {
                 .size_limit(200_000)
                 .dfa_size_limit(200_000)
                 .build()
-                .unwrap_or_else(|error| panic!("invalid person regex {}: {error}", stringify!($name)))
+                .unwrap_or_else(|error| {
+                    panic!("invalid person regex {}: {error}", stringify!($name))
+                })
         });
     };
 }
 
-build_person_regex!(RE_PERSON_EN,
+build_person_regex!(
+    RE_PERSON_EN,
     r"(?:Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Prof\.?|Eng\.?|Hon\.?|Sen\.?|Rep\.?|CEO|CTO|CFO|VP|SVP|EVP|GM|Director|President|Chairman|Chairwoman)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
 );
-build_person_regex!(RE_PERSON_FR,
+build_person_regex!(
+    RE_PERSON_FR,
     r"(?:M\.|Mme|Mlle|Dr\.|Pr\.|Ing\.|Directeur|Directrice|Président|Présidente|PDG|DG|Chef)\s+([A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){1,3})"
 );
-build_person_regex!(RE_PERSON_DE,
+build_person_regex!(
+    RE_PERSON_DE,
     r"(?:Herr|Frau|Dr\.|Prof\.|Dipl\.-Ing\.|Ing\.|Geschäftsführer|Vorstand|Direktor|Präsident)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+){1,3})"
 );
-build_person_regex!(RE_PERSON_ES,
+build_person_regex!(
+    RE_PERSON_ES,
     r"(?:Sr\.|Sra\.|Srta\.|Dr\.|Dra\.|Prof\.|Ing\.|Lic\.|Director|Directora|Presidente|Gerente)\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+){1,3})"
 );
-build_person_regex!(RE_PERSON_IT,
+build_person_regex!(
+    RE_PERSON_IT,
     r"(?:Sig\.|Sig\.ra|Sig\.na|Dr\.|Dott\.|Dott\.ssa|Prof\.|Ing\.|Direttore|Direttrice|Presidente|Amministratore)\s+([A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){1,3})"
 );
-build_person_regex!(RE_PERSON_PT,
+build_person_regex!(
+    RE_PERSON_PT,
     r"(?:Sr\.|Sra\.|Srta\.|Dr\.|Dra\.|Prof\.|Eng\.|Diretor|Diretora|Presidente|Gerente)\s+([A-ZÁÉÍÓÚÂÃÇÊÕ][a-záéíóúâãçêõ]+(?:\s+[A-ZÁÉÍÓÚÂÃÇÊÕ][a-záéíóúâãçêõ]+){1,3})"
 );
-build_person_regex!(RE_PERSON_NL,
+build_person_regex!(
+    RE_PERSON_NL,
     r"(?:Dhr\.|Mevr\.|Dr\.|Prof\.|Ir\.|Ing\.|Directeur|Voorzitter|Manager)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
 );
-build_person_regex!(RE_PERSON_TR,
+build_person_regex!(
+    RE_PERSON_TR,
     r"(?:Bay|Bayan|Dr\.|Prof\.|Müh\.|Yönetici|Müdür|Başkan|CEO)\s+([A-ZİĞÜŞÖÇ][a-zığüşöç]+(?:\s+[A-ZİĞÜŞÖÇ][a-zığüşöç]+){1,3})"
 );
-build_person_regex!(RE_PERSON_FA,
+build_person_regex!(
+    RE_PERSON_FA,
     r"(?:آقای|خانم|دکتر|مهندس|پروفسور|جناب|سرکار)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
 );
-build_person_regex!(RE_PERSON_HE,
+build_person_regex!(
+    RE_PERSON_HE,
     r"(?:מר|גב׳|ד״ר|פרופ׳|מר׳|עו״ד)\s+([\u0590-\u05FF]{2,15}(?:\s+[\u0590-\u05FF]{2,15}){1,3})"
 );
-build_person_regex!(RE_PERSON_AR,
+build_person_regex!(
+    RE_PERSON_AR,
     r"(?:السيد|السيدة|الآنسة|الدكتور|المهندس|البروفيسور|الاستاذ|الاستاذة|سعادة)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
 );
 
@@ -609,151 +848,610 @@ build_person_regex!(RE_PERSON_AR,
 
 /// All countries of the world (English names, works as catch-all).
 static COUNTRIES_EN: &[&str] = &[
-    "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia",
-    "Australia", "Austria", "Azerbaijan", "Bahrain", "Bangladesh", "Belarus", "Belgium",
-    "Benin", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei",
-    "Bulgaria", "Burkina Faso", "Burundi", "Cambodia", "Cameroon", "Canada",
-    "Cape Verde", "Central African Republic", "Chad", "Chile", "China", "Colombia",
-    "Congo", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czech Republic", "Denmark",
-    "Djibouti", "Dominican Republic", "Ecuador", "Egypt", "El Salvador",
-    "Equatorial Guinea", "Eritrea", "Estonia", "Ethiopia", "Finland", "France",
-    "Gabon", "Gambia", "Georgia", "Germany", "Ghana", "Greece", "Guatemala",
-    "Guinea", "Guyana", "Haiti", "Honduras", "Hungary", "Iceland", "India",
-    "Indonesia", "Iran", "Iraq", "Ireland", "Israel", "Italy", "Ivory Coast",
-    "Jamaica", "Japan", "Jordan", "Kazakhstan", "Kenya", "Kuwait", "Kyrgyzstan",
-    "Laos", "Latvia", "Lebanon", "Liberia", "Libya", "Liechtenstein", "Lithuania",
-    "Luxembourg", "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta",
-    "Mauritania", "Mauritius", "Mexico", "Moldova", "Monaco", "Mongolia",
-    "Montenegro", "Morocco", "Mozambique", "Myanmar", "Namibia", "Nepal",
-    "Netherlands", "New Zealand", "Nicaragua", "Niger", "Nigeria", "North Korea",
-    "North Macedonia", "Norway", "Oman", "Pakistan", "Panama", "Paraguay", "Peru",
-    "Philippines", "Poland", "Portugal", "Qatar", "Romania", "Russia", "Rwanda",
-    "Saudi Arabia", "Senegal", "Serbia", "Sierra Leone", "Singapore", "Slovakia",
-    "Slovenia", "Somalia", "South Africa", "South Korea", "Spain", "Sri Lanka",
-    "Sudan", "Suriname", "Sweden", "Switzerland", "Syria", "Taiwan", "Tajikistan",
-    "Tanzania", "Thailand", "Togo", "Tunisia", "Turkey", "Turkmenistan", "Uganda",
-    "Ukraine", "United Arab Emirates", "United Kingdom", "United States",
-    "Uruguay", "Uzbekistan", "Vatican City", "Venezuela", "Vietnam", "Yemen",
-    "Zambia", "Zimbabwe",
+    "Afghanistan",
+    "Albania",
+    "Algeria",
+    "Andorra",
+    "Angola",
+    "Argentina",
+    "Armenia",
+    "Australia",
+    "Austria",
+    "Azerbaijan",
+    "Bahrain",
+    "Bangladesh",
+    "Belarus",
+    "Belgium",
+    "Benin",
+    "Bolivia",
+    "Bosnia and Herzegovina",
+    "Botswana",
+    "Brazil",
+    "Brunei",
+    "Bulgaria",
+    "Burkina Faso",
+    "Burundi",
+    "Cambodia",
+    "Cameroon",
+    "Canada",
+    "Cape Verde",
+    "Central African Republic",
+    "Chad",
+    "Chile",
+    "China",
+    "Colombia",
+    "Congo",
+    "Costa Rica",
+    "Croatia",
+    "Cuba",
+    "Cyprus",
+    "Czech Republic",
+    "Denmark",
+    "Djibouti",
+    "Dominican Republic",
+    "Ecuador",
+    "Egypt",
+    "El Salvador",
+    "Equatorial Guinea",
+    "Eritrea",
+    "Estonia",
+    "Ethiopia",
+    "Finland",
+    "France",
+    "Gabon",
+    "Gambia",
+    "Georgia",
+    "Germany",
+    "Ghana",
+    "Greece",
+    "Guatemala",
+    "Guinea",
+    "Guyana",
+    "Haiti",
+    "Honduras",
+    "Hungary",
+    "Iceland",
+    "India",
+    "Indonesia",
+    "Iran",
+    "Iraq",
+    "Ireland",
+    "Israel",
+    "Italy",
+    "Ivory Coast",
+    "Jamaica",
+    "Japan",
+    "Jordan",
+    "Kazakhstan",
+    "Kenya",
+    "Kuwait",
+    "Kyrgyzstan",
+    "Laos",
+    "Latvia",
+    "Lebanon",
+    "Liberia",
+    "Libya",
+    "Liechtenstein",
+    "Lithuania",
+    "Luxembourg",
+    "Madagascar",
+    "Malawi",
+    "Malaysia",
+    "Maldives",
+    "Mali",
+    "Malta",
+    "Mauritania",
+    "Mauritius",
+    "Mexico",
+    "Moldova",
+    "Monaco",
+    "Mongolia",
+    "Montenegro",
+    "Morocco",
+    "Mozambique",
+    "Myanmar",
+    "Namibia",
+    "Nepal",
+    "Netherlands",
+    "New Zealand",
+    "Nicaragua",
+    "Niger",
+    "Nigeria",
+    "North Korea",
+    "North Macedonia",
+    "Norway",
+    "Oman",
+    "Pakistan",
+    "Panama",
+    "Paraguay",
+    "Peru",
+    "Philippines",
+    "Poland",
+    "Portugal",
+    "Qatar",
+    "Romania",
+    "Russia",
+    "Rwanda",
+    "Saudi Arabia",
+    "Senegal",
+    "Serbia",
+    "Sierra Leone",
+    "Singapore",
+    "Slovakia",
+    "Slovenia",
+    "Somalia",
+    "South Africa",
+    "South Korea",
+    "Spain",
+    "Sri Lanka",
+    "Sudan",
+    "Suriname",
+    "Sweden",
+    "Switzerland",
+    "Syria",
+    "Taiwan",
+    "Tajikistan",
+    "Tanzania",
+    "Thailand",
+    "Togo",
+    "Tunisia",
+    "Turkey",
+    "Turkmenistan",
+    "Uganda",
+    "Ukraine",
+    "United Arab Emirates",
+    "United Kingdom",
+    "United States",
+    "Uruguay",
+    "Uzbekistan",
+    "Vatican City",
+    "Venezuela",
+    "Vietnam",
+    "Yemen",
+    "Zambia",
+    "Zimbabwe",
 ];
 
 /// Major world cities for entity extraction.
 static CITIES_WORLD: &[&str] = &[
-    "Tokyo", "Delhi", "Shanghai", "São Paulo", "Mumbai", "Beijing", "Cairo",
-    "Dhaka", "Osaka", "Karachi", "Chongqing", "Istanbul", "Buenos Aires",
-    "Kolkata", "Lagos", "Kinshasa", "Manila", "Tianjin", "Guangzhou", "Rio de Janeiro",
-    "Lahore", "Bangalore", "Paris", "Bangkok", "London", "Dubai", "New York",
-    "Singapore", "Hong Kong", "Berlin", "Madrid", "Rome", "Moscow", "Toronto",
-    "Sydney", "Seoul", "Mexico City", "Jakarta", "Lima", "Shenzhen",
-    "Munich", "Frankfurt", "Milan", "Barcelona", "Amsterdam", "Brussels",
-    "Stockholm", "Oslo", "Copenhagen", "Vienna", "Zurich", "Geneva",
-    "Casablanca", "Rabat", "Tunis", "Algiers", "Tripoli", "Abu Dhabi",
-    "Riyadh", "Doha", "Kuwait City", "Muscat", "Manama", "Tel Aviv", "Jerusalem",
-    "Ankara", "Izmir", "Tehran", "Isfahan", "Shiraz",
+    "Tokyo",
+    "Delhi",
+    "Shanghai",
+    "São Paulo",
+    "Mumbai",
+    "Beijing",
+    "Cairo",
+    "Dhaka",
+    "Osaka",
+    "Karachi",
+    "Chongqing",
+    "Istanbul",
+    "Buenos Aires",
+    "Kolkata",
+    "Lagos",
+    "Kinshasa",
+    "Manila",
+    "Tianjin",
+    "Guangzhou",
+    "Rio de Janeiro",
+    "Lahore",
+    "Bangalore",
+    "Paris",
+    "Bangkok",
+    "London",
+    "Dubai",
+    "New York",
+    "Singapore",
+    "Hong Kong",
+    "Berlin",
+    "Madrid",
+    "Rome",
+    "Moscow",
+    "Toronto",
+    "Sydney",
+    "Seoul",
+    "Mexico City",
+    "Jakarta",
+    "Lima",
+    "Shenzhen",
+    "Munich",
+    "Frankfurt",
+    "Milan",
+    "Barcelona",
+    "Amsterdam",
+    "Brussels",
+    "Stockholm",
+    "Oslo",
+    "Copenhagen",
+    "Vienna",
+    "Zurich",
+    "Geneva",
+    "Casablanca",
+    "Rabat",
+    "Tunis",
+    "Algiers",
+    "Tripoli",
+    "Abu Dhabi",
+    "Riyadh",
+    "Doha",
+    "Kuwait City",
+    "Muscat",
+    "Manama",
+    "Tel Aviv",
+    "Jerusalem",
+    "Ankara",
+    "Izmir",
+    "Tehran",
+    "Isfahan",
+    "Shiraz",
 ];
 
 /// French country names.
 static COUNTRIES_FR: &[&str] = &[
-    "France", "Allemagne", "Italie", "Espagne", "Royaume-Uni", "Belgique",
-    "Suisse", "Pays-Bas", "Portugal", "Suède", "Norvège", "Danemark",
-    "Finlande", "Pologne", "Autriche", "Grèce", "Tunisie", "Maroc", "Algérie",
-    "États-Unis", "Canada", "Chine", "Japon", "Corée du Sud", "Inde",
-    "Brésil", "Mexique", "Argentine", "Russie", "Turquie", "Émirats arabes unis",
-    "Arabie saoudite", "Qatar", "Koweït", "Oman", "Bahreïn", "Israël", "Égypte",
-    "Afrique du Sud", "Nigeria", "Sénégal", "Côte d'Ivoire", "Mali",
-    "Vietnam", "Thaïlande", "Indonésie", "Malaisie", "Singapour", "Taïwan",
+    "France",
+    "Allemagne",
+    "Italie",
+    "Espagne",
+    "Royaume-Uni",
+    "Belgique",
+    "Suisse",
+    "Pays-Bas",
+    "Portugal",
+    "Suède",
+    "Norvège",
+    "Danemark",
+    "Finlande",
+    "Pologne",
+    "Autriche",
+    "Grèce",
+    "Tunisie",
+    "Maroc",
+    "Algérie",
+    "États-Unis",
+    "Canada",
+    "Chine",
+    "Japon",
+    "Corée du Sud",
+    "Inde",
+    "Brésil",
+    "Mexique",
+    "Argentine",
+    "Russie",
+    "Turquie",
+    "Émirats arabes unis",
+    "Arabie saoudite",
+    "Qatar",
+    "Koweït",
+    "Oman",
+    "Bahreïn",
+    "Israël",
+    "Égypte",
+    "Afrique du Sud",
+    "Nigeria",
+    "Sénégal",
+    "Côte d'Ivoire",
+    "Mali",
+    "Vietnam",
+    "Thaïlande",
+    "Indonésie",
+    "Malaisie",
+    "Singapour",
+    "Taïwan",
 ];
 
 /// German country names.
 static COUNTRIES_DE: &[&str] = &[
-    "Deutschland", "Frankreich", "Italien", "Spanien", "Österreich", "Schweiz",
-    "Niederlande", "Belgien", "Schweden", "Norwegen", "Dänemark", "Polen",
-    "Tschechien", "Ungarn", "Rumänien", "Griechenland", "Türkei",
-    "Vereinigte Staaten", "Kanada", "China", "Japan", "Südkorea", "Indien",
-    "Brasilien", "Mexiko", "Russland", "Vereinigtes Königreich",
-    "Vereinigte Arabische Emirate", "Saudi-Arabien", "Katar", "Israel",
-    "Ägypten", "Südafrika", "Tunesien", "Marokko", "Algerien",
+    "Deutschland",
+    "Frankreich",
+    "Italien",
+    "Spanien",
+    "Österreich",
+    "Schweiz",
+    "Niederlande",
+    "Belgien",
+    "Schweden",
+    "Norwegen",
+    "Dänemark",
+    "Polen",
+    "Tschechien",
+    "Ungarn",
+    "Rumänien",
+    "Griechenland",
+    "Türkei",
+    "Vereinigte Staaten",
+    "Kanada",
+    "China",
+    "Japan",
+    "Südkorea",
+    "Indien",
+    "Brasilien",
+    "Mexiko",
+    "Russland",
+    "Vereinigtes Königreich",
+    "Vereinigte Arabische Emirate",
+    "Saudi-Arabien",
+    "Katar",
+    "Israel",
+    "Ägypten",
+    "Südafrika",
+    "Tunesien",
+    "Marokko",
+    "Algerien",
 ];
 
 /// Spanish country names.
 static COUNTRIES_ES: &[&str] = &[
-    "España", "Francia", "Italia", "Alemania", "Portugal", "Reino Unido",
-    "Países Bajos", "Bélgica", "Suiza", "Suecia", "Noruega", "Dinamarca",
-    "Polonia", "Grecia", "Turquía", "Marruecos", "Túnez", "Argelia",
-    "Estados Unidos", "Canadá", "México", "Argentina", "Brasil", "Chile",
-    "Colombia", "Perú", "China", "Japón", "Corea del Sur", "India",
-    "Rusia", "Emiratos Árabes Unidos", "Arabia Saudita", "Israel", "Egipto",
+    "España",
+    "Francia",
+    "Italia",
+    "Alemania",
+    "Portugal",
+    "Reino Unido",
+    "Países Bajos",
+    "Bélgica",
+    "Suiza",
+    "Suecia",
+    "Noruega",
+    "Dinamarca",
+    "Polonia",
+    "Grecia",
+    "Turquía",
+    "Marruecos",
+    "Túnez",
+    "Argelia",
+    "Estados Unidos",
+    "Canadá",
+    "México",
+    "Argentina",
+    "Brasil",
+    "Chile",
+    "Colombia",
+    "Perú",
+    "China",
+    "Japón",
+    "Corea del Sur",
+    "India",
+    "Rusia",
+    "Emiratos Árabes Unidos",
+    "Arabia Saudita",
+    "Israel",
+    "Egipto",
 ];
 
 /// Arabic country names.
 static COUNTRIES_AR: &[&str] = &[
-    "مصر", "السعودية", "الإمارات", "قطر", "الكويت", "عمان", "البحرين",
-    "الأردن", "العراق", "سوريا", "لبنان", "فلسطين", "اليمن", "ليبيا",
-    "تونس", "الجزائر", "المغرب", "السودان", "موريتانيا", "الصومال",
-    "تركيا", "إيران", "فرنسا", "ألمانيا", "إيطاليا", "إسبانيا",
-    "الولايات المتحدة", "بريطانيا", "كندا", "الصين", "اليابان", "الهند",
-    "روسيا", "البرازيل", "أستراليا",
+    "مصر",
+    "السعودية",
+    "الإمارات",
+    "قطر",
+    "الكويت",
+    "عمان",
+    "البحرين",
+    "الأردن",
+    "العراق",
+    "سوريا",
+    "لبنان",
+    "فلسطين",
+    "اليمن",
+    "ليبيا",
+    "تونس",
+    "الجزائر",
+    "المغرب",
+    "السودان",
+    "موريتانيا",
+    "الصومال",
+    "تركيا",
+    "إيران",
+    "فرنسا",
+    "ألمانيا",
+    "إيطاليا",
+    "إسبانيا",
+    "الولايات المتحدة",
+    "بريطانيا",
+    "كندا",
+    "الصين",
+    "اليابان",
+    "الهند",
+    "روسيا",
+    "البرازيل",
+    "أستراليا",
 ];
 
 /// Chinese country/region names.
 static COUNTRIES_ZH: &[&str] = &[
-    "中国", "美国", "日本", "韩国", "德国", "法国", "英国", "意大利",
-    "西班牙", "加拿大", "澳大利亚", "印度", "俄罗斯", "巴西", "墨西哥",
-    "荷兰", "瑞士", "瑞典", "新加坡", "马来西亚", "泰国", "越南",
-    "阿联酋", "沙特阿拉伯", "卡塔尔", "以色列", "土耳其", "伊朗",
-    "埃及", "南非", "尼日利亚", "台湾", "香港",
+    "中国",
+    "美国",
+    "日本",
+    "韩国",
+    "德国",
+    "法国",
+    "英国",
+    "意大利",
+    "西班牙",
+    "加拿大",
+    "澳大利亚",
+    "印度",
+    "俄罗斯",
+    "巴西",
+    "墨西哥",
+    "荷兰",
+    "瑞士",
+    "瑞典",
+    "新加坡",
+    "马来西亚",
+    "泰国",
+    "越南",
+    "阿联酋",
+    "沙特阿拉伯",
+    "卡塔尔",
+    "以色列",
+    "土耳其",
+    "伊朗",
+    "埃及",
+    "南非",
+    "尼日利亚",
+    "台湾",
+    "香港",
 ];
 
 // ─── Threat actor dictionaries ────────────────────────────────────────────────
 
 /// Known threat actor groups (multi-language).
 static THREAT_ACTORS_GLOBAL: &[&str] = &[
-    "APT28", "APT29", "APT10", "APT41", "Lazarus Group", "Kimsuky", "Krypton",
-    "DarkHotel", "OceanLotus", "APT32", "Mustang Panda", "TEMPEST",
-    "Sandworm", "Fancy Bear", "Cozy Bear", "APT1", "APT33", "APT34",
-    "Silent Librarian", "TA444", "TA505", "FIN7", "FIN8", "Carbanak",
-    "Cobalt Group", "Silence Group", "TrickBot Gang", "Conti",
-    "REvil", "DarkSide", "BlackCat", "LockBit", "Hive", "Black Basta",
-    "Clop", "Cactus", "BianLian", "Royal", "Medusa", "Akira",
-    "Volt Typhoon", "Flax Typhoon", "Panda",
+    "APT28",
+    "APT29",
+    "APT10",
+    "APT41",
+    "Lazarus Group",
+    "Kimsuky",
+    "Krypton",
+    "DarkHotel",
+    "OceanLotus",
+    "APT32",
+    "Mustang Panda",
+    "TEMPEST",
+    "Sandworm",
+    "Fancy Bear",
+    "Cozy Bear",
+    "APT1",
+    "APT33",
+    "APT34",
+    "Silent Librarian",
+    "TA444",
+    "TA505",
+    "FIN7",
+    "FIN8",
+    "Carbanak",
+    "Cobalt Group",
+    "Silence Group",
+    "TrickBot Gang",
+    "Conti",
+    "REvil",
+    "DarkSide",
+    "BlackCat",
+    "LockBit",
+    "Hive",
+    "Black Basta",
+    "Clop",
+    "Cactus",
+    "BianLian",
+    "Royal",
+    "Medusa",
+    "Akira",
+    "Volt Typhoon",
+    "Flax Typhoon",
+    "Panda",
     // Chinese state-sponsored
-    "APT40", "APT37", "Gallium", "CactusPete", "DragonOK",
-    "Emissary Panda", "Deep Panda", "Comment Crew", "APT12",
+    "APT40",
+    "APT37",
+    "Gallium",
+    "CactusPete",
+    "DragonOK",
+    "Emissary Panda",
+    "Deep Panda",
+    "Comment Crew",
+    "APT12",
     // Russian state-sponsored
-    "Turla", "Venomous Bear", "Energetic Bear", "TeleBots", "BlackEnergy",
-    "Dragonfly", "APT28", "Zebrocy", "Gamaredon",
+    "Turla",
+    "Venomous Bear",
+    "Energetic Bear",
+    "TeleBots",
+    "BlackEnergy",
+    "Dragonfly",
+    "APT28",
+    "Zebrocy",
+    "Gamaredon",
     // Iranian state-sponsored
-    "MuddyWater", "APT33", "APT34", "OilRig", "Charming Kitten",
-    "Fox Kitten", "Tortoiseshell", "Rocket Kitten",
+    "MuddyWater",
+    "APT33",
+    "APT34",
+    "OilRig",
+    "Charming Kitten",
+    "Fox Kitten",
+    "Tortoiseshell",
+    "Rocket Kitten",
     // North Korean
-    "Lazarus", "BlueNoroff", "Andariel", "DarkSeoul",
+    "Lazarus",
+    "BlueNoroff",
+    "Andariel",
+    "DarkSeoul",
 ];
 
 /// Known EMS / electronics companies (supply-chain domain dictionary).
 static KNOWN_EMS_COMPANIES: &[&str] = &[
-    "Foxconn", "Hon Hai", "Jabil", "Flex", "Celestica", "Benchmark Electronics",
-    "Starz Electronics", "Plexus", "Sanmina", "Venture Corporation",
-    "Pegatron", "Wistron", "Compal Electronics", "Quanta Computer",
-    "USI", "Universal Scientific Industrial", "Inventec", "Sercomm",
-    "Arcadyan Technology", "Accton Technology", "Delta Electronics",
-    "Lite-On Technology", "Kinpo Electronics", "Mitac Holdings",
-    "Wistron NeWeb", "Alpha Networks", "Kaimei Electronics",
-    "BYD Electronic", "DBG Technology", "FIH Mobile",
+    "Foxconn",
+    "Hon Hai",
+    "Jabil",
+    "Flex",
+    "Celestica",
+    "Benchmark Electronics",
+    "Starz Electronics",
+    "Plexus",
+    "Sanmina",
+    "Venture Corporation",
+    "Pegatron",
+    "Wistron",
+    "Compal Electronics",
+    "Quanta Computer",
+    "USI",
+    "Universal Scientific Industrial",
+    "Inventec",
+    "Sercomm",
+    "Arcadyan Technology",
+    "Accton Technology",
+    "Delta Electronics",
+    "Lite-On Technology",
+    "Kinpo Electronics",
+    "Mitac Holdings",
+    "Wistron NeWeb",
+    "Alpha Networks",
+    "Kaimei Electronics",
+    "BYD Electronic",
+    "DBG Technology",
+    "FIH Mobile",
     // EMS in Europe
-    "Videoton", "Elcoteq", "Selcom", "Enics", "GPV Group",
-    "Kitron", "Scanfil", "Note", "Incus", "Lacroix Electronics",
-    "One Solution Group", "AT&S", "Schweizer Electronic",
-    "Rohde & Schwarz", "Kontron", "ASM Assembly Systems",
+    "Videoton",
+    "Elcoteq",
+    "Selcom",
+    "Enics",
+    "GPV Group",
+    "Kitron",
+    "Scanfil",
+    "Note",
+    "Incus",
+    "Lacroix Electronics",
+    "One Solution Group",
+    "AT&S",
+    "Schweizer Electronic",
+    "Rohde & Schwarz",
+    "Kontron",
+    "ASM Assembly Systems",
     // EMS in Americas
-    "Jabil Inc", "Flex Ltd", "Sanmina Corporation", "Plexus Corp",
-    "Creation Technologies", "Spartronics", "Electronic Assembly",
-    "EPM", "SigmaTronix", "Sypris Electronics", "IEC Electronics",
-    "Marine Electronics", "Schweiger Electronics",
+    "Jabil Inc",
+    "Flex Ltd",
+    "Sanmina Corporation",
+    "Plexus Corp",
+    "Creation Technologies",
+    "Spartronics",
+    "Electronic Assembly",
+    "EPM",
+    "SigmaTronix",
+    "Sypris Electronics",
+    "IEC Electronics",
+    "Marine Electronics",
+    "Schweiger Electronics",
     // EMS in APAC
-    "Hana Microelectronics", "Fabrinet", "SMT Technologies",
-    "BEC Electronics", "SVI Public Company", "Honeywell EMS",
-    "MicroStencil", "Chengdu Galaxy", "Shenzhen Kaifa Technology",
-    "Longsys Electronics", "Tongfu Microelectronics",
+    "Hana Microelectronics",
+    "Fabrinet",
+    "SMT Technologies",
+    "BEC Electronics",
+    "SVI Public Company",
+    "Honeywell EMS",
+    "MicroStencil",
+    "Chengdu Galaxy",
+    "Shenzhen Kaifa Technology",
+    "Longsys Electronics",
+    "Tongfu Microelectronics",
 ];
 
 // ─── Language-specific entity extractors ──────────────────────────────────────
@@ -769,16 +1467,36 @@ fn extract_english_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_EN, EntityType::Person, 0.80));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries
-    entities.extend(known_entity_matches(text, COUNTRIES_EN, EntityType::GeoPolitical, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_EN,
+        EntityType::GeoPolitical,
+        0.85,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -794,16 +1512,36 @@ fn extract_french_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_FR, EntityType::Person, 0.80));
 
     // Known EMS companies (same global list)
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries (French names)
-    entities.extend(known_entity_matches(text, COUNTRIES_FR, EntityType::GeoPolitical, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_FR,
+        EntityType::GeoPolitical,
+        0.85,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     // French-specific procurement terms as Organization indicators
     let fr_org_keywords = multilingual::procurement_keywords("fr");
@@ -829,16 +1567,36 @@ fn extract_arabic_entities(text: &str) -> Vec<ExtractedEntity> {
     let ar_company_prefix = RegexBuilder::new(
         r"(?:شركة|مجموعة|مؤسسة|بنك|مصنع|معمل|وكالة)\s+([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})"
     ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap_or_else(|e| panic!("invalid arabic company regex: {e}"));
-    entities.extend(regex_matches(text, &ar_company_prefix, EntityType::Organization, 0.80));
+    entities.extend(regex_matches(
+        text,
+        &ar_company_prefix,
+        EntityType::Organization,
+        0.80,
+    ));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.85,
+    ));
 
     // Countries (Arabic names)
-    entities.extend(known_entity_matches(text, COUNTRIES_AR, EntityType::GeoPolitical, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_AR,
+        EntityType::GeoPolitical,
+        0.85,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     // Arabic procurement terms
     let ar_kws = multilingual::procurement_keywords("ar");
@@ -860,15 +1618,27 @@ fn extract_chinese_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(extract_company_suffixes(text, "zh", 0.85));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.85,
+    ));
 
     // Countries (Chinese names)
-    entities.extend(known_entity_matches(text, COUNTRIES_ZH, EntityType::GeoPolitical, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_ZH,
+        EntityType::GeoPolitical,
+        0.85,
+    ));
 
     // Person names: Chinese 2-3 character names (common surname + given name pattern)
-    let zh_person_re = RegexBuilder::new(
-        r"([\u4e00-\u9fff]{2,3}(?:[\u4e00-\u9fff]{1,2})?)"
-    ).size_limit(100_000).dfa_size_limit(100_000).build().unwrap_or_else(|e| panic!("invalid chinese person regex: {e}"));
+    let zh_person_re = RegexBuilder::new(r"([\u4e00-\u9fff]{2,3}(?:[\u4e00-\u9fff]{1,2})?)")
+        .size_limit(100_000)
+        .dfa_size_limit(100_000)
+        .build()
+        .unwrap_or_else(|e| panic!("invalid chinese person regex: {e}"));
     // Persons matched with lower confidence — ambiguous with other entities
     entities.extend(regex_matches(text, &zh_person_re, EntityType::Person, 0.40));
 
@@ -881,7 +1651,12 @@ fn extract_chinese_entities(text: &str) -> Vec<ExtractedEntity> {
     }
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -894,13 +1669,28 @@ fn extract_japanese_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(extract_company_suffixes(text, "ja", 0.85));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.85,
+    ));
 
     // Countries
-    entities.extend(known_entity_matches(text, COUNTRIES_ZH, EntityType::GeoPolitical, 0.80));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_ZH,
+        EntityType::GeoPolitical,
+        0.80,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     // Japanese procurement terms
     let ja_kws = multilingual::procurement_keywords("ja");
@@ -921,13 +1711,28 @@ fn extract_korean_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(extract_company_suffixes(text, "ko", 0.85));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.85,
+    ));
 
     // Countries
-    entities.extend(known_entity_matches(text, COUNTRIES_ZH, EntityType::GeoPolitical, 0.80));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_ZH,
+        EntityType::GeoPolitical,
+        0.80,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     // Korean procurement terms
     let ko_kws = multilingual::procurement_keywords("ko");
@@ -951,16 +1756,36 @@ fn extract_german_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_DE, EntityType::Person, 0.80));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries (German names)
-    entities.extend(known_entity_matches(text, COUNTRIES_DE, EntityType::GeoPolitical, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_DE,
+        EntityType::GeoPolitical,
+        0.85,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     // German procurement keywords
     let de_kws = multilingual::procurement_keywords("de");
@@ -985,16 +1810,36 @@ fn extract_spanish_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_ES, EntityType::Person, 0.80));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries (Spanish names)
-    entities.extend(known_entity_matches(text, COUNTRIES_ES, EntityType::GeoPolitical, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_ES,
+        EntityType::GeoPolitical,
+        0.85,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     // Spanish procurement keywords
     let es_kws = multilingual::procurement_keywords("es");
@@ -1019,16 +1864,36 @@ fn extract_italian_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_IT, EntityType::Person, 0.80));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries
-    entities.extend(known_entity_matches(text, COUNTRIES_ES, EntityType::GeoPolitical, 0.80));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_ES,
+        EntityType::GeoPolitical,
+        0.80,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -1044,16 +1909,36 @@ fn extract_portuguese_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_PT, EntityType::Person, 0.80));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries
-    entities.extend(known_entity_matches(text, COUNTRIES_FR, EntityType::GeoPolitical, 0.80));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_FR,
+        EntityType::GeoPolitical,
+        0.80,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -1069,16 +1954,36 @@ fn extract_dutch_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_NL, EntityType::Person, 0.80));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries
-    entities.extend(known_entity_matches(text, COUNTRIES_DE, EntityType::GeoPolitical, 0.80));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_DE,
+        EntityType::GeoPolitical,
+        0.80,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -1094,16 +1999,36 @@ fn extract_turkish_entities(text: &str) -> Vec<ExtractedEntity> {
     entities.extend(regex_matches(text, &RE_PERSON_TR, EntityType::Person, 0.80));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.90));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.90,
+    ));
 
     // Countries
-    entities.extend(known_entity_matches(text, COUNTRIES_AR, EntityType::GeoPolitical, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_AR,
+        EntityType::GeoPolitical,
+        0.75,
+    ));
 
     // Cities
-    entities.extend(known_entity_matches(text, CITIES_WORLD, EntityType::Location, 0.75));
+    entities.extend(known_entity_matches(
+        text,
+        CITIES_WORLD,
+        EntityType::Location,
+        0.75,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -1119,16 +2044,36 @@ fn extract_persian_entities(text: &str) -> Vec<ExtractedEntity> {
     let fa_company_re = RegexBuilder::new(
         r"([\u0600-\u06FF]{2,20}(?:\s+[\u0600-\u06FF]{2,20}){0,3})\s*(?:شرکت|گروه|موسسه|بانک|کارخانه|شرکت)\s"
     ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap_or_else(|e| panic!("invalid persian company regex: {e}"));
-    entities.extend(regex_matches(text, &fa_company_re, EntityType::Organization, 0.80));
+    entities.extend(regex_matches(
+        text,
+        &fa_company_re,
+        EntityType::Organization,
+        0.80,
+    ));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.85,
+    ));
 
     // Countries (Persian names - simplified: re-use Arabic country list as many overlap)
-    entities.extend(known_entity_matches(text, COUNTRIES_AR, EntityType::GeoPolitical, 0.80));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_AR,
+        EntityType::GeoPolitical,
+        0.80,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -1144,18 +2089,42 @@ fn extract_hebrew_entities(text: &str) -> Vec<ExtractedEntity> {
     // Note: Hebrew abbreviation גרשיים (״) is used in בע״מ (Ltd.) — we use \x{0022}
     // to avoid raw string conflicts, since " terminates r"..." raw strings.
     let he_company_re = RegexBuilder::new(
-        r#"([\u0590-\u05FF]{2,15}(?:\s+[\u0590-\u05FF]{2,15}){0,2})\s*(?:בע"מ|ע"מ|קבוצת|חברת|בנק)"#
-    ).size_limit(200_000).dfa_size_limit(200_000).build().unwrap_or_else(|e| panic!("invalid hebrew company regex: {e}"));
-    entities.extend(regex_matches(text, &he_company_re, EntityType::Organization, 0.80));
+        r#"([\u0590-\u05FF]{2,15}(?:\s+[\u0590-\u05FF]{2,15}){0,2})\s*(?:בע"מ|ע"מ|קבוצת|חברת|בנק)"#,
+    )
+    .size_limit(200_000)
+    .dfa_size_limit(200_000)
+    .build()
+    .unwrap_or_else(|e| panic!("invalid hebrew company regex: {e}"));
+    entities.extend(regex_matches(
+        text,
+        &he_company_re,
+        EntityType::Organization,
+        0.80,
+    ));
 
     // Known EMS companies
-    entities.extend(known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        KNOWN_EMS_COMPANIES,
+        EntityType::Organization,
+        0.85,
+    ));
 
     // Countries (Hebrew names - use English list as fallback)
-    entities.extend(known_entity_matches(text, COUNTRIES_AR, EntityType::GeoPolitical, 0.70));
+    entities.extend(known_entity_matches(
+        text,
+        COUNTRIES_AR,
+        EntityType::GeoPolitical,
+        0.70,
+    ));
 
     // Threat actors
-    entities.extend(known_entity_matches(text, THREAT_ACTORS_GLOBAL, EntityType::ThreatActor, 0.85));
+    entities.extend(known_entity_matches(
+        text,
+        THREAT_ACTORS_GLOBAL,
+        EntityType::ThreatActor,
+        0.85,
+    ));
 
     entities
 }
@@ -1172,7 +2141,10 @@ mod tests {
     fn test_english_company_suffix() {
         let text = "Foxconn Technology Group announced a new facility.";
         let entities = extract_english_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("Foxconn")));
     }
 
@@ -1180,7 +2152,10 @@ mod tests {
     fn test_english_person_with_honorific() {
         let text = "CEO John Smith announced the results.";
         let entities = extract_english_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("John Smith")));
     }
 
@@ -1188,7 +2163,10 @@ mod tests {
     fn test_english_country() {
         let text = "The factory in Tunisia produces electronics for export to Germany.";
         let entities = extract_english_entities(text);
-        let geo: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::GeoPolitical).collect();
+        let geo: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::GeoPolitical)
+            .collect();
         assert!(geo.iter().any(|e| e.mention == "Tunisia"));
         assert!(geo.iter().any(|e| e.mention == "Germany"));
     }
@@ -1197,7 +2175,10 @@ mod tests {
     fn test_english_threat_actor() {
         let text = "Lazarus Group was identified in the recent campaign.";
         let entities = extract_english_entities(text);
-        let ta: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::ThreatActor).collect();
+        let ta: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::ThreatActor)
+            .collect();
         assert!(ta.iter().any(|e| e.mention.contains("Lazarus")));
     }
 
@@ -1205,7 +2186,10 @@ mod tests {
     fn test_english_known_ems_company() {
         let text = "Jabil Inc and Flex Ltd are major EMS providers.";
         let entities = extract_english_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("Jabil")));
         assert!(orgs.iter().any(|e| e.mention.contains("Flex")));
     }
@@ -1214,7 +2198,10 @@ mod tests {
     fn test_english_city() {
         let text = "The headquarters is in Singapore.";
         let entities = extract_english_entities(text);
-        let locs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Location).collect();
+        let locs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Location)
+            .collect();
         assert!(locs.iter().any(|e| e.mention == "Singapore"));
     }
 
@@ -1224,7 +2211,10 @@ mod tests {
     fn test_french_company_suffix() {
         let text = "Starz Electronics SAS a annoncé une nouvelle usine.";
         let entities = extract_french_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("SAS")));
     }
 
@@ -1232,7 +2222,10 @@ mod tests {
     fn test_french_person() {
         let text = "M. Jean Dupont est le directeur général.";
         let entities = extract_french_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("Jean Dupont")));
     }
 
@@ -1240,7 +2233,10 @@ mod tests {
     fn test_french_country() {
         let text = "L'usine est située en Tunisie et au Maroc.";
         let entities = extract_french_entities(text);
-        let geo: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::GeoPolitical).collect();
+        let geo: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::GeoPolitical)
+            .collect();
         assert!(geo.iter().any(|e| e.mention == "Tunisie"));
         assert!(geo.iter().any(|e| e.mention == "Maroc"));
     }
@@ -1251,7 +2247,10 @@ mod tests {
     fn test_arabic_person() {
         let text = "السيد أحمد بن سالم يتحدث في المؤتمر";
         let entities = extract_arabic_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(!persons.is_empty());
     }
 
@@ -1259,16 +2258,24 @@ mod tests {
     fn test_arabic_company() {
         let text = "شركة فوكسكون للالكترونيات";
         let entities = extract_arabic_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         // The company regex matches "شركة" as suffix or known EMS "Foxconn" might match
-        assert!(orgs.iter().any(|e| e.mention.contains("فوكسكون") || e.mention.contains("Foxconn")));
+        assert!(orgs
+            .iter()
+            .any(|e| e.mention.contains("فوكسكون") || e.mention.contains("Foxconn")));
     }
 
     #[test]
     fn test_arabic_country() {
         let text = "مصر والسعودية والإمارات دول عربية";
         let entities = extract_arabic_entities(text);
-        let geo: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::GeoPolitical).collect();
+        let geo: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::GeoPolitical)
+            .collect();
         assert!(geo.iter().any(|e| e.mention == "مصر"));
     }
 
@@ -1278,17 +2285,34 @@ mod tests {
     fn test_chinese_company() {
         let text = "富士康科技有限公司宣布投资新工厂";
         let entities = extract_chinese_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
-        assert!(orgs.iter().any(|e| e.mention.contains("科技")) || orgs.iter().any(|e| e.mention.contains("富士康")));
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
+        assert!(
+            orgs.iter().any(|e| e.mention.contains("科技"))
+                || orgs.iter().any(|e| e.mention.contains("富士康"))
+        );
     }
 
     #[test]
     fn test_chinese_country() {
         let text = "中国和美国是重要的贸易伙伴";
         let entities = extract_chinese_entities(text);
-        let geo: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::GeoPolitical).collect();
-        assert!(geo.iter().any(|e| e.mention == "中国"), "Expected '中国' in geo entities: {:?}", geo);
-        assert!(geo.iter().any(|e| e.mention == "美国"), "Expected '美国' in geo entities: {:?}", geo);
+        let geo: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::GeoPolitical)
+            .collect();
+        assert!(
+            geo.iter().any(|e| e.mention == "中国"),
+            "Expected '中国' in geo entities: {:?}",
+            geo
+        );
+        assert!(
+            geo.iter().any(|e| e.mention == "美国"),
+            "Expected '美国' in geo entities: {:?}",
+            geo
+        );
     }
 
     // ── Japanese ────────────────────────────────────────────────────────────
@@ -1297,7 +2321,10 @@ mod tests {
     fn test_japanese_company() {
         let text = "富士通株式会社が新工場を開設";
         let entities = extract_japanese_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("株式会社")));
     }
 
@@ -1307,7 +2334,10 @@ mod tests {
     fn test_korean_company() {
         let text = "삼성전자(주)가 새로운 공장을 설립";
         let entities = extract_korean_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("(주)")));
     }
 
@@ -1317,7 +2347,10 @@ mod tests {
     fn test_german_company() {
         let text = "Siemens AG hat einen neuen Vertrag unterzeichnet.";
         let entities = extract_german_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("AG")));
     }
 
@@ -1325,7 +2358,10 @@ mod tests {
     fn test_german_person() {
         let text = "Herr Klaus Müller ist der Geschäftsführer.";
         let entities = extract_german_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("Klaus Müller")));
     }
 
@@ -1333,7 +2369,10 @@ mod tests {
     fn test_german_country() {
         let text = "Das Werk in Frankreich und Spanien produziert EMS.";
         let entities = extract_german_entities(text);
-        let geo: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::GeoPolitical).collect();
+        let geo: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::GeoPolitical)
+            .collect();
         assert!(geo.iter().any(|e| e.mention == "Frankreich"));
         assert!(geo.iter().any(|e| e.mention == "Spanien"));
     }
@@ -1344,7 +2383,10 @@ mod tests {
     fn test_spanish_company() {
         let text = "Indra SL ha anunciado un nuevo contrato.";
         let entities = extract_spanish_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("SL")));
     }
 
@@ -1352,7 +2394,10 @@ mod tests {
     fn test_spanish_person() {
         let text = "El Sr. Carlos García es el presidente.";
         let entities = extract_spanish_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("Carlos García")));
     }
 
@@ -1360,8 +2405,13 @@ mod tests {
     fn test_spanish_country() {
         let text = "México y España son socios comerciales.";
         let entities = extract_spanish_entities(text);
-        let geo: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::GeoPolitical).collect();
-        assert!(geo.iter().any(|e| e.mention == "México" || e.mention == "Mexico"));
+        let geo: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::GeoPolitical)
+            .collect();
+        assert!(geo
+            .iter()
+            .any(|e| e.mention == "México" || e.mention == "Mexico"));
     }
 
     // ── Italian ─────────────────────────────────────────────────────────────
@@ -1370,7 +2420,10 @@ mod tests {
     fn test_italian_person() {
         let text = "Il Dott. Marco Rossi ha presentato i risultati.";
         let entities = extract_italian_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("Marco Rossi")));
     }
 
@@ -1380,7 +2433,10 @@ mod tests {
     fn test_portuguese_person() {
         let text = "O Dr. João Silva é o diretor da empresa.";
         let entities = extract_portuguese_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("João Silva")));
     }
 
@@ -1390,7 +2446,10 @@ mod tests {
     fn test_turkish_company() {
         let text = "Koç Holding A.Ş. yeni bir yatırım açıkladı.";
         let entities = extract_turkish_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("A.Ş")));
     }
 
@@ -1398,7 +2457,10 @@ mod tests {
     fn test_turkish_person() {
         let text = "Bay Mehmet Yılmaz yönetim kurulu başkanıdır.";
         let entities = extract_turkish_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("Mehmet Yılmaz")));
     }
 
@@ -1408,7 +2470,10 @@ mod tests {
     fn test_persian_person() {
         let text = "آقای محمد رضایی در این کنفرانس سخنرانی کرد";
         let entities = extract_persian_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(!persons.is_empty());
     }
 
@@ -1418,7 +2483,10 @@ mod tests {
     fn test_hebrew_person() {
         let text = "מר דוד כהן מונה למנכ\"ל החברה";
         let entities = extract_hebrew_entities(text);
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(!persons.is_empty());
     }
 
@@ -1428,7 +2496,10 @@ mod tests {
     fn test_dutch_company() {
         let text = "ASML BV heeft een nieuw record bereikt.";
         let entities = extract_dutch_entities(text);
-        let orgs: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Organization).collect();
+        let orgs: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Organization)
+            .collect();
         assert!(orgs.iter().any(|e| e.mention.contains("BV")));
     }
 
@@ -1448,7 +2519,10 @@ mod tests {
         let text = "M. Jean Dupont dirige Starz Electronics SAS à Tunis.";
         let entities = extract_entities(text, "fr");
         assert!(!entities.is_empty());
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("Jean Dupont")));
     }
 
@@ -1471,7 +2545,10 @@ mod tests {
         let text = "Herr Klaus Müller ist Geschäftsführer der Siemens AG.";
         let entities = extract_entities(text, "de");
         assert!(!entities.is_empty());
-        let persons: Vec<_> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let persons: Vec<_> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert!(persons.iter().any(|e| e.mention.contains("Klaus Müller")));
     }
 
@@ -1486,7 +2563,10 @@ mod tests {
     fn test_dispatch_fallback_english() {
         let text = "Apple Inc. CEO John Smith announced results in Tunisia.";
         let entities = extract_entities(text, "xx");
-        assert!(!entities.is_empty(), "Expected entities from English fallback");
+        assert!(
+            !entities.is_empty(),
+            "Expected entities from English fallback"
+        );
         assert!(entities.iter().all(|e| e.language == "en"));
     }
 
@@ -1524,7 +2604,8 @@ mod tests {
     #[test]
     fn test_known_ems_company_matches() {
         let text = "Foxconn";
-        let entities = known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.9);
+        let entities =
+            known_entity_matches(text, KNOWN_EMS_COMPANIES, EntityType::Organization, 0.9);
         assert!(entities.iter().any(|e| e.mention == "Foxconn"));
     }
 

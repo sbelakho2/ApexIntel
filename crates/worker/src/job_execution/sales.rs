@@ -75,7 +75,7 @@ pub(super) async fn run_contact_enrichment(kind: &JobKind, store: &Arc<PgStore>)
                         person_id: *person_id,
                         contact_type: c.contact_type.clone(),
                         value: c.value.clone(),
-                        confidence: c.confidence,
+                        confidence: c.confidence as f64,
                         verification_status: c.verification_status.clone(),
                         verified_at: None,
                         source: c.source.clone(),
@@ -90,7 +90,9 @@ pub(super) async fn run_contact_enrichment(kind: &JobKind, store: &Arc<PgStore>)
                 enriched += 1;
             }
             Ok(_) => {}
-            Err(e) => tracing::debug!(error = %e, name = %name, "contact_enrichment: provider error"),
+            Err(e) => {
+                tracing::debug!(error = %e, name = %name, "contact_enrichment: provider error")
+            }
         }
     }
 
@@ -120,11 +122,16 @@ pub(super) async fn run_icp_scoring(kind: &JobKind, store: &Arc<PgStore>) -> Job
             Option<String>,
             Option<String>,
             Option<f64>,
+            Option<Vec<String>>,
+            Option<f64>,
+            Option<String>,
+            Option<f64>,
         ),
     >(
         r#"
         SELECT id, employee_estimate, revenue_estimate_usd, industry_tags,
-               region, country_code, strategic_relevance
+               region, country_code, strategic_relevance,
+               tech_stack, intent_signal_score, funding_stage, headcount_growth_pct
         FROM companies
         WHERE is_competitor IS DISTINCT FROM TRUE
         "#,
@@ -147,18 +154,18 @@ pub(super) async fn run_icp_scoring(kind: &JobKind, store: &Arc<PgStore>) -> Job
     let def = IcpDefinition::default();
     let mut scored = 0u64;
 
-    for (id, emp, rev, tags, region, country, strategic) in &rows {
+    for (id, emp, rev, tags, region, country, strategic, tech, intent, funding, growth) in &rows {
         let input = IcpInput {
             employee_estimate: *emp,
             revenue_estimate_usd: *rev,
             industry_tags: tags.clone().unwrap_or_default(),
-            tech_stack: Vec::new(),
+            tech_stack: tech.clone().unwrap_or_default(),
             region: region.clone(),
             country_code: country.clone(),
-            intent_signal_score: 0.0,
+            intent_signal_score: intent.unwrap_or(0.0).clamp(0.0, 1.0),
             strategic_relevance: strategic.unwrap_or(0.0),
-            funding_stage: None,
-            headcount_growth_pct: None,
+            funding_stage: funding.clone(),
+            headcount_growth_pct: *growth,
         };
         let score = IcpScorer::score(&input, &def);
         let breakdown = serde_json::to_value(&score.components).unwrap_or(serde_json::json!([]));
@@ -168,9 +175,9 @@ pub(super) async fn run_icp_scoring(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 score.icp_fit_score,
                 score.intent_signal_score,
                 &breakdown,
-                None,
-                None,
-                None,
+                tech.as_deref(),
+                funding.as_deref(),
+                *growth,
             )
             .await
         {
@@ -250,7 +257,6 @@ pub(super) async fn run_engagement_refresh(kind: &JobKind, store: &Arc<PgStore>)
             0.0
         };
 
-        // Persist the summary onto the latest engagement profile, or create one.
         let meta = serde_json::json!({
             "engagement_summary": {
                 "total_contacts": total,
@@ -259,31 +265,49 @@ pub(super) async fn run_engagement_refresh(kind: &JobKind, store: &Arc<PgStore>)
                 "avg_outcome_weight": avg_weight,
             }
         });
-        let _ = sqlx::query(
-            r#"
-            INSERT INTO engagement_profiles
-                (person_id, talking_points, opening_topics, avoid_topics, best_channel, best_timing, proof_pack, metadata)
-            VALUES ($1, ARRAY[]::TEXT[], ARRAY[]::TEXT[], ARRAY[]::TEXT[], 'email', NULL, '{}'::JSONB, $2)
-            ON CONFLICT DO NOTHING
-            "#,
+
+        // Persist the summary onto the person's engagement profile, creating one
+        // only when none exists. Both statements are checked: a silent failure
+        // previously reported success while storing nothing.
+        let update = sqlx::query(
+            "UPDATE engagement_profiles SET metadata = $2, updated_at = NOW() WHERE person_id = $1",
         )
         .bind(person_id)
         .bind(&meta)
         .execute(&store.pool)
         .await;
-        let _ = sqlx::query(
-            r#"UPDATE engagement_profiles SET metadata = $2 WHERE person_id = $1"#,
-        )
-        .bind(person_id)
-        .bind(&meta)
-        .execute(&store.pool)
-        .await;
-        updated += 1;
+
+        let persisted = match update {
+            Ok(result) if result.rows_affected() > 0 => Ok(()),
+            Ok(_) => sqlx::query(
+                r#"
+                INSERT INTO engagement_profiles
+                    (person_id, talking_points, opening_topics, avoid_topics, best_channel, best_timing, proof_pack, metadata)
+                VALUES ($1, ARRAY[]::TEXT[], ARRAY[]::TEXT[], ARRAY[]::TEXT[], 'email', NULL, '{}'::JSONB, $2)
+                "#,
+            )
+            .bind(person_id)
+            .bind(&meta)
+            .execute(&store.pool)
+            .await
+            .map(|_| ()),
+            Err(e) => Err(e),
+        };
+
+        match persisted {
+            Ok(()) => updated += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, person = %person_id, "engagement_refresh: persist failed")
+            }
+        }
     }
 
     run.succeed(
         updated,
-        &format!("engagement_refresh: updated {} person engagement summaries", updated),
+        &format!(
+            "engagement_refresh: updated {} person engagement summaries",
+            updated
+        ),
     );
     run
 }
@@ -326,7 +350,9 @@ pub(super) async fn run_buying_center_derivation(kind: &JobKind, store: &Arc<PgS
     {
         Ok(r) => r,
         Err(e) => {
-            run.fail(&format!("buying_center_derivation: query persons failed: {e}"));
+            run.fail(&format!(
+                "buying_center_derivation: query persons failed: {e}"
+            ));
             return run;
         }
     };
@@ -337,7 +363,10 @@ pub(super) async fn run_buying_center_derivation(kind: &JobKind, store: &Arc<PgS
     }
 
     let mut members_added = 0u64;
-    let mut companies_covered: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+    let mut companies_covered: std::collections::HashSet<uuid::Uuid> =
+        std::collections::HashSet::new();
+    let mut center_by_company: std::collections::HashMap<uuid::Uuid, uuid::Uuid> =
+        std::collections::HashMap::new();
 
     for (person_id, name, role_family_str, org_id) in &rows {
         let org_id = match org_id {
@@ -347,18 +376,24 @@ pub(super) async fn run_buying_center_derivation(kind: &JobKind, store: &Arc<PgS
         let rf = RoleFamily::from_str(role_family_str.as_deref().unwrap_or("other"));
         let bc_role = role_to_buying_center(&rf);
         let saas_role = buying_role_to_saas(&bc_role);
-        let influence = (bc_role.priority() as f32) / 4.0; // priority 0..4 → 0..1
+        let influence = bc_role.influence_score();
 
-        // Ensure a buying center exists for the company (idempotent).
-        let bc_id = match store
-            .upsert_buying_center(org_id, None, "Auto-derived Buying Center", None)
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(error = %e, person = %name, "buying_center_derivation: upsert center failed");
-                continue;
-            }
+        // Ensure exactly one buying center exists per company (idempotent).
+        let bc_id = match center_by_company.get(&org_id).copied() {
+            Some(id) => id,
+            None => match store
+                .upsert_buying_center(org_id, None, "Auto-derived Buying Center", None)
+                .await
+            {
+                Ok(id) => {
+                    center_by_company.insert(org_id, id);
+                    id
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, person = %name, "buying_center_derivation: upsert center failed");
+                    continue;
+                }
+            },
         };
 
         let member = NewBuyingMember {
@@ -366,7 +401,10 @@ pub(super) async fn run_buying_center_derivation(kind: &JobKind, store: &Arc<PgS
             person_id: *person_id,
             role: saas_role.to_string(),
             influence_score: influence,
-            budget_authority: matches!(bc_role, BuyingCenterRole::Decider | BuyingCenterRole::Buyer),
+            budget_authority: matches!(
+                bc_role,
+                BuyingCenterRole::Decider | BuyingCenterRole::Buyer
+            ),
             need_signal: 0.0,
             timeline_horizon: None,
             notes: Some(format!("Auto-derived from role_family: {}", rf.as_str())),
@@ -377,7 +415,9 @@ pub(super) async fn run_buying_center_derivation(kind: &JobKind, store: &Arc<PgS
                 members_added += 1;
                 companies_covered.insert(org_id);
             }
-            Err(e) => tracing::warn!(error = %e, person = %name, "buying_center_derivation: member upsert failed"),
+            Err(e) => {
+                tracing::warn!(error = %e, person = %name, "buying_center_derivation: member upsert failed")
+            }
         }
     }
 
@@ -411,7 +451,10 @@ pub(super) async fn run_buying_center_derivation(kind: &JobKind, _store: &Arc<Pg
 ///
 /// This job extracts author/mention names, dedups against existing persons, and
 /// inserts the new ones linked to the company the observation was about.
-pub(super) async fn run_person_mention_materialization(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_person_mention_materialization(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
 
@@ -427,7 +470,9 @@ pub(super) async fn run_person_mention_materialization(kind: &JobKind, store: &A
     {
         Ok(r) => r,
         Err(e) => {
-            run.fail(&format!("person_mention_materialization: query failed: {e}"));
+            run.fail(&format!(
+                "person_mention_materialization: query failed: {e}"
+            ));
             return run;
         }
     };
@@ -444,7 +489,7 @@ pub(super) async fn run_person_mention_materialization(kind: &JobKind, store: &A
         // Extract candidate names from the observation JSON.
         // OpenAlex stores authors under value.authors[]; other sources may use
         // value.person or value.mentions[]. Be tolerant of shape.
-        let names = extract_person_names(&value);
+        let names = extract_person_names(value);
         if names.is_empty() {
             continue;
         }
@@ -485,7 +530,9 @@ pub(super) async fn run_person_mention_materialization(kind: &JobKind, store: &A
             match res {
                 Ok(r) if r.rows_affected() > 0 => created += 1,
                 Ok(_) => skipped_dup += 1,
-                Err(e) => tracing::debug!(error = %e, name = %clean, "person_mention: insert failed"),
+                Err(e) => {
+                    tracing::debug!(error = %e, name = %clean, "person_mention: insert failed")
+                }
             }
         }
     }
@@ -548,6 +595,8 @@ fn clean_person_name(raw: &str) -> String {
 
 /// Normalize a name for dedup: lowercase, collapse whitespace.
 fn normalize_name_key(name: &str) -> String {
-    name.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    name.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
-

@@ -327,13 +327,11 @@ impl InvestigationEngine {
             .collect::<Vec<_>>();
 
         // Step 1: Generate hypotheses
-        let hypotheses = self
-            .hypothesis_generator
-            .generate_hypotheses(
-                &investigation.target_entity_name,
-                &investigation.target_entity_name,
-                &evidence,
-            );
+        let hypotheses = self.hypothesis_generator.generate_hypotheses(
+            &investigation.target_entity_name,
+            &investigation.target_entity_name,
+            &evidence,
+        );
 
         // Step 2: Analyze gaps (build profile from signals)
         let entity_profile = super::hypothesis::EntityDataProfile::from_signals(&signals);
@@ -373,8 +371,12 @@ impl InvestigationEngine {
         // Step 4: Generate narrative report
         let synthesis_context = SynthesisContext {
             report_type: match investigation.investigation_type {
-                InvestigationType::CompanyDeepDive => super::narratives::ReportType::CompanyIntelligence,
-                InvestigationType::PersonInvestigation => super::narratives::ReportType::PersonDeepDive,
+                InvestigationType::CompanyDeepDive => {
+                    super::narratives::ReportType::CompanyIntelligence
+                }
+                InvestigationType::PersonInvestigation => {
+                    super::narratives::ReportType::PersonDeepDive
+                }
                 InvestigationType::SupplyChainAnalysis => {
                     super::narratives::ReportType::SupplyChainThreat
                 }
@@ -400,13 +402,8 @@ impl InvestigationEngine {
                     source: e.source.clone(),
                 })
                 .collect(),
-            findings: hypotheses
-                .iter()
-                .map(|h| h.description.clone())
-                .collect(),
-            primary_conclusion: reasoning_chains
-                .first()
-                .map(|c| c.conclusion.clone()),
+            findings: hypotheses.iter().map(|h| h.description.clone()).collect(),
+            primary_conclusion: reasoning_chains.first().map(|c| c.conclusion.clone()),
             risk_level: None,
             threat_summary: None,
             relationships: vec![],
@@ -448,10 +445,10 @@ impl InvestigationEngine {
 
         // Step 5: Generate supply chain threat model
         let threat_model = if investigation.config.enable_threat_modeling {
-            Some(self.threat_modeler.model_supply_chain(
-                &investigation.target_entity_name,
-                &[],
-            ))
+            Some(
+                self.threat_modeler
+                    .model_supply_chain(&investigation.target_entity_name, &[]),
+            )
         } else {
             None
         };
@@ -523,7 +520,7 @@ impl InvestigationEngine {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use chrono::Duration;
 
@@ -543,12 +540,8 @@ mod tests {
 
     #[test]
     fn test_investigation_lifecycle() {
-        let mut investigation = Investigation::new(
-            "Test",
-            InvestigationType::General,
-            "TestCorp",
-            "company",
-        );
+        let mut investigation =
+            Investigation::new("Test", InvestigationType::General, "TestCorp", "company");
 
         investigation.start();
         assert_eq!(investigation.status, InvestigationStatus::InProgress);

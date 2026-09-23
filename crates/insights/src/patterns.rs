@@ -76,7 +76,9 @@ impl PatternType {
             Self::Temporal => "Recurring events or cyclical patterns detected over time.",
             Self::CoOccurrence => "Entities frequently appearing together across sources.",
             Self::Ownership => "Beneficial ownership chains or structures detected.",
-            Self::ShellCompany => "Shell company indicators (single-member, same address, nominee director).",
+            Self::ShellCompany => {
+                "Shell company indicators (single-member, same address, nominee director)."
+            }
             Self::MoneyLaundering => "Potential money laundering indicators detected.",
             Self::SanctionsEvasion => "Potential sanctions evasion patterns detected.",
             Self::SupplyChain => "Supply chain dependencies or concentrations identified.",
@@ -218,15 +220,17 @@ impl PatternDetector {
 
         for (entity, count) in &date_counts {
             if *count >= 3 {
-                patterns.push(DetectedPattern::new(
-                    PatternType::Temporal,
-                    &format!(
-                        "Entity '{}' appears {} times, suggesting regular activity pattern",
-                        entity, count
-                    ),
-                )
-                .with_confidence(0.7)
-                .with_entities(vec![entity.to_string()]));
+                patterns.push(
+                    DetectedPattern::new(
+                        PatternType::Temporal,
+                        &format!(
+                            "Entity '{}' appears {} times, suggesting regular activity pattern",
+                            entity, count
+                        ),
+                    )
+                    .with_confidence(0.7)
+                    .with_entities(vec![entity.to_string()]),
+                );
             }
         }
 
@@ -235,11 +239,13 @@ impl PatternDetector {
             let diff = (w[1].timestamp - w[0].timestamp).num_hours();
             diff < 24
         }) {
-            patterns.push(DetectedPattern::new(
-                PatternType::TemporalCorrelation,
-                "Multiple events occurred within 24 hours of each other",
-            )
-            .with_confidence(0.8));
+            patterns.push(
+                DetectedPattern::new(
+                    PatternType::TemporalCorrelation,
+                    "Multiple events occurred within 24 hours of each other",
+                )
+                .with_confidence(0.8),
+            );
         }
 
         patterns
@@ -251,33 +257,35 @@ impl PatternDetector {
 
         // Look for circular ownership
         for cycle in &data.ownership_cycles {
-            patterns.push(DetectedPattern::new(
-                PatternType::Ownership,
-                &format!(
-                    "Circular ownership detected: {}",
-                    cycle.join(" → ")
-                ),
-            )
-            .with_confidence(0.85)
-            .with_entities(cycle.clone()));
+            patterns.push(
+                DetectedPattern::new(
+                    PatternType::Ownership,
+                    &format!("Circular ownership detected: {}", cycle.join(" → ")),
+                )
+                .with_confidence(0.85)
+                .with_entities(cycle.clone()),
+            );
         }
 
         // Look for beneficial owners with multiple entities
         for (owner, entities) in &data.beneficial_owners {
             if entities.len() >= 3 {
-                patterns.push(DetectedPattern::new(
-                    PatternType::Ownership,
-                    &format!(
-                        "Beneficial owner '{}' controls {} entities",
-                        owner, entities.len()
+                patterns.push(
+                    DetectedPattern::new(
+                        PatternType::Ownership,
+                        &format!(
+                            "Beneficial owner '{}' controls {} entities",
+                            owner,
+                            entities.len()
+                        ),
+                    )
+                    .with_confidence(0.75)
+                    .with_entities(
+                        std::iter::once(owner.clone())
+                            .chain(entities.iter().cloned())
+                            .collect(),
                     ),
-                )
-                .with_confidence(0.75)
-                .with_entities(
-                    std::iter::once(owner.clone())
-                        .chain(entities.iter().cloned())
-                        .collect(),
-                ));
+                );
             }
         }
 
@@ -291,26 +299,30 @@ impl PatternDetector {
         // Look for entities in sanctioned jurisdictions
         for entity in &data.entities_in_sanctioned {
             if data.high_risk_countries.contains(&entity.1) {
-                patterns.push(DetectedPattern::new(
-                    PatternType::SanctionsEvasion,
-                    &format!(
-                        "Entity '{}' linked to sanctioned country '{}'",
-                        entity.0, entity.1
-                    ),
-                )
-                .with_confidence(0.8)
-                .with_entities(vec![entity.0.clone()]));
+                patterns.push(
+                    DetectedPattern::new(
+                        PatternType::SanctionsEvasion,
+                        &format!(
+                            "Entity '{}' linked to sanctioned country '{}'",
+                            entity.0, entity.1
+                        ),
+                    )
+                    .with_confidence(0.8)
+                    .with_entities(vec![entity.0.clone()]),
+                );
             }
         }
 
         // Look for shell company indicators
         for entity in &data.potential_shells {
-            patterns.push(DetectedPattern::new(
-                PatternType::ShellCompany,
-                &format!("Shell company indicators for '{}': {}", entity.0, entity.1),
-            )
-            .with_confidence(0.7)
-            .with_entities(vec![entity.0.clone()]));
+            patterns.push(
+                DetectedPattern::new(
+                    PatternType::ShellCompany,
+                    &format!("Shell company indicators for '{}': {}", entity.0, entity.1),
+                )
+                .with_confidence(0.7)
+                .with_entities(vec![entity.0.clone()]),
+            );
         }
 
         patterns
@@ -323,15 +335,17 @@ impl PatternDetector {
         // Look for unusual transaction amounts
         if let Some(stats) = &data.transaction_stats {
             for (entity, amount) in &stats.unusual_amounts {
-                patterns.push(DetectedPattern::new(
-                    PatternType::Anomaly,
-                    &format!(
-                        "Unusual transaction amount for '{}': {} (z-score: {:.1})",
-                        entity, amount.0, amount.1
-                    ),
-                )
-                .with_confidence(0.75)
-                .with_entities(vec![entity.clone()]));
+                patterns.push(
+                    DetectedPattern::new(
+                        PatternType::Anomaly,
+                        &format!(
+                            "Unusual transaction amount for '{}': {} (z-score: {:.1})",
+                            entity, amount.0, amount.1
+                        ),
+                    )
+                    .with_confidence(0.75)
+                    .with_entities(vec![entity.clone()]),
+                );
             }
         }
 
@@ -339,15 +353,17 @@ impl PatternDetector {
         for (entity, rate) in &data.activity_velocities {
             if *rate > 10.0 {
                 // Arbitrary threshold
-                patterns.push(DetectedPattern::new(
-                    PatternType::Anomaly,
-                    &format!(
-                        "High activity velocity for '{}': {:.1} events/day",
-                        entity, rate
-                    ),
-                )
-                .with_confidence(0.65)
-                .with_entities(vec![entity.clone()]));
+                patterns.push(
+                    DetectedPattern::new(
+                        PatternType::Anomaly,
+                        &format!(
+                            "High activity velocity for '{}': {:.1} events/day",
+                            entity, rate
+                        ),
+                    )
+                    .with_confidence(0.65)
+                    .with_entities(vec![entity.clone()]),
+                );
             }
         }
 
@@ -391,7 +407,7 @@ pub struct TransactionStats {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -426,13 +442,10 @@ mod tests {
 
     #[test]
     fn detected_pattern_builder() {
-        let pattern = DetectedPattern::new(
-            PatternType::Ownership,
-            "Test ownership pattern",
-        )
-        .with_confidence(0.85)
-        .with_entities(vec!["Entity A".to_string(), "Entity B".to_string()])
-        .with_evidence(vec!["Source 1".to_string(), "Source 2".to_string()]);
+        let pattern = DetectedPattern::new(PatternType::Ownership, "Test ownership pattern")
+            .with_confidence(0.85)
+            .with_entities(vec!["Entity A".to_string(), "Entity B".to_string()])
+            .with_evidence(vec!["Source 1".to_string(), "Source 2".to_string()]);
 
         assert_eq!(pattern.pattern_type, PatternType::Ownership);
         assert_eq!(pattern.confidence, 0.85);
@@ -486,8 +499,7 @@ mod tests {
 
         let patterns = detector.detect_all(&data);
         assert!(patterns.iter().any(|p| {
-            p.pattern_type == PatternType::Ownership
-                && p.description.contains("Circular ownership")
+            p.pattern_type == PatternType::Ownership && p.description.contains("Circular ownership")
         }));
     }
 
@@ -504,7 +516,9 @@ mod tests {
         };
 
         let patterns = detector.detect_all(&data);
-        assert!(patterns.iter().any(|p| p.pattern_type == PatternType::SanctionsEvasion));
+        assert!(patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::SanctionsEvasion));
     }
 
     #[test]
@@ -519,7 +533,9 @@ mod tests {
         };
 
         let patterns = detector.detect_all(&data);
-        assert!(patterns.iter().any(|p| p.pattern_type == PatternType::ShellCompany));
+        assert!(patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::ShellCompany));
     }
 
     #[test]
@@ -531,7 +547,8 @@ mod tests {
         let detector = PatternDetector::new(config);
         let mut data = PatternData::default();
 
-        data.ownership_cycles.push(vec!["A".to_string(), "B".to_string(), "A".to_string()]);
+        data.ownership_cycles
+            .push(vec!["A".to_string(), "B".to_string(), "A".to_string()]);
 
         let patterns = detector.detect_all(&data);
         assert!(patterns.iter().all(|p| p.confidence >= 0.8));

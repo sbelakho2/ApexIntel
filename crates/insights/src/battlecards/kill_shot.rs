@@ -45,9 +45,10 @@ impl KillShotAnalyzer {
             competitor_topics.iter().map(String::as_str).collect();
 
         for topic in our_topic_set.difference(&their_topic_set) {
-            let relevance = if competitor_industries.iter().any(|i| {
-                i.to_lowercase().contains(&topic.to_lowercase())
-            }) {
+            let relevance = if competitor_industries
+                .iter()
+                .any(|i| i.to_lowercase().contains(&topic.to_lowercase()))
+            {
                 0.8
             } else {
                 0.5
@@ -136,7 +137,10 @@ mod tests {
             &["ProductA".to_string(), "ProductB".to_string()],
         );
 
-        assert!(!kill_shots.is_empty(), "should identify at least one kill shot");
+        assert!(
+            !kill_shots.is_empty(),
+            "should identify at least one kill shot"
+        );
 
         // Should identify Edge and Security as gaps
         let edge_shot = kill_shots.iter().find(|k| k.title.contains("Edge"));
@@ -152,14 +156,8 @@ mod tests {
 
     #[test]
     fn test_priority_score_calculation() {
-        let kill_shots = KillShotAnalyzer::identify(
-            "Rival",
-            &[],
-            &[],
-            &[],
-            &["UniqueTech".to_string()],
-            &[],
-        );
+        let kill_shots =
+            KillShotAnalyzer::identify("Rival", &[], &[], &[], &["UniqueTech".to_string()], &[]);
 
         assert!(!kill_shots.is_empty());
         for ks in &kill_shots {

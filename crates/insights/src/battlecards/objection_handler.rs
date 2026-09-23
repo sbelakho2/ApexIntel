@@ -220,8 +220,7 @@ mod tests {
             severity: ObjectionSeverity::High,
         }];
 
-        let profile = EntityProfile::new("Us")
-            .with_topics(vec!["AI", "Machine Learning"]);
+        let profile = EntityProfile::new("Us").with_topics(vec!["AI", "Machine Learning"]);
 
         let handlers = ObjectionHandler::generate_handlers(&objections, &profile);
         assert_eq!(handlers.len(), 1);
@@ -230,8 +229,7 @@ mod tests {
 
     #[test]
     fn test_extract_and_handle_deduplicates() {
-        let competitor = EntityProfile::new("Rival")
-            .with_products(vec!["ProductX"]);
+        let competitor = EntityProfile::new("Rival").with_products(vec!["ProductX"]);
         let us = EntityProfile::new("Us").with_topics(vec!["AI"]);
 
         let result = ObjectionHandler::extract_and_handle(&competitor, &us, &[]);

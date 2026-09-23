@@ -1,11 +1,15 @@
 //! Web (HTML) routes — server-rendered pages via Askama + HTMX.
 
 pub mod admin;
+pub mod alert_settings;
 pub mod auth;
+pub mod battlecards;
+pub mod collaboration;
 pub mod companies;
 pub mod competitors;
 pub mod dashboard;
 pub mod errors;
+pub mod executive;
 pub mod graph;
 pub mod insights;
 pub mod memos;
@@ -14,10 +18,6 @@ pub mod persons;
 pub mod recipes;
 pub mod search;
 pub mod security;
-pub mod alert_settings;
-pub mod battlecards;
-pub mod collaboration;
-pub mod executive;
 pub mod settings;
 pub mod trends;
 pub mod triage;

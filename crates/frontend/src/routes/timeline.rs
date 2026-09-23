@@ -1,5 +1,5 @@
 use apex_shared::{EventTimeline, TimelineEvent};
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use leptos::*;
 use leptos_router::*;
 
@@ -33,37 +33,38 @@ pub fn TimelinePage() -> impl IntoView {
         })
     };
 
-    let timeline = create_resource(
-        entity_id,
-        |eid| async move {
-            if eid == "entity-demo" {
-                return EventTimeline {
-                    entity_id: eid,
-                    entity_name: "No entity selected".to_string(),
-                    events: vec![],
-                };
-            }
-            let path = format!("/api/entities/{}/timeline", eid);
-            match get_json::<TimelineResponse>(&path).await {
-                Ok(data) => EventTimeline {
-                    entity_id: eid,
-                    entity_name: data.entity_name,
-                    events: data.events.into_iter().map(|e| TimelineEvent {
+    let timeline = create_resource(entity_id, |eid| async move {
+        if eid == "entity-demo" {
+            return EventTimeline {
+                entity_id: eid,
+                entity_name: "No entity selected".to_string(),
+                events: vec![],
+            };
+        }
+        let path = format!("/api/entities/{}/timeline", eid);
+        match get_json::<TimelineResponse>(&path).await {
+            Ok(data) => EventTimeline {
+                entity_id: eid,
+                entity_name: data.entity_name,
+                events: data
+                    .events
+                    .into_iter()
+                    .map(|e| TimelineEvent {
                         event_type: e.event_type,
                         date: chrono::DateTime::parse_from_rfc3339(&e.date)
                             .map(|dt| dt.with_timezone(&Utc))
                             .unwrap_or_else(|_| Utc::now()),
                         description: e.description,
-                    }).collect(),
-                },
-                Err(_) => EventTimeline {
-                    entity_id: eid,
-                    entity_name: "Entity data unavailable".to_string(),
-                    events: vec![],
-                },
-            }
-        },
-    );
+                    })
+                    .collect(),
+            },
+            Err(_) => EventTimeline {
+                entity_id: eid,
+                entity_name: "Entity data unavailable".to_string(),
+                events: vec![],
+            },
+        }
+    });
 
     view! {
         <div class="page">

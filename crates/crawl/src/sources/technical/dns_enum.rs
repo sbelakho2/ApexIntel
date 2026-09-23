@@ -7,15 +7,10 @@ use std::net::{IpAddr, ToSocketAddrs};
 use tracing::{debug, info};
 
 pub const COMMON_SUBDOMAINS: &[&str] = &[
-    "www", "mail", "ftp", "admin", "test", "dev", "staging",
-    "api", "app", "mobile", "web", "blog", "shop",
-    "cdn", "static", "assets", "images",
-    "dns", "mx", "ns1", "ns2", "smtp",
-    "vpn", "ssh", "remote", "git",
-    "ci", "build", "demo", "sandbox",
-    "corp", "intranet", "portal", "oauth",
-    "auth", "login", "sso",
-    "status", "monitor", "metrics",
+    "www", "mail", "ftp", "admin", "test", "dev", "staging", "api", "app", "mobile", "web", "blog",
+    "shop", "cdn", "static", "assets", "images", "dns", "mx", "ns1", "ns2", "smtp", "vpn", "ssh",
+    "remote", "git", "ci", "build", "demo", "sandbox", "corp", "intranet", "portal", "oauth",
+    "auth", "login", "sso", "status", "monitor", "metrics",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,14 +22,25 @@ pub struct DnsRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DnsRecordType {
-    A, Aaaa, Cname, Mx, Ns, Txt, Unknown,
+    A,
+    Aaaa,
+    Cname,
+    Mx,
+    Ns,
+    Txt,
+    Unknown,
 }
 
 impl DnsRecordType {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::A => "A", Self::Aaaa => "AAAA", Self::Cname => "CNAME",
-            Self::Mx => "MX", Self::Ns => "NS", Self::Txt => "TXT", Self::Unknown => "UNKNOWN",
+            Self::A => "A",
+            Self::Aaaa => "AAAA",
+            Self::Cname => "CNAME",
+            Self::Mx => "MX",
+            Self::Ns => "NS",
+            Self::Txt => "TXT",
+            Self::Unknown => "UNKNOWN",
         }
     }
 }
@@ -56,7 +62,9 @@ pub struct SubdomainEntry {
 }
 
 impl SubdomainEntry {
-    pub fn fqdn(&self) -> &str { &self.full_name }
+    pub fn fqdn(&self) -> &str {
+        &self.full_name
+    }
 }
 
 pub struct DnsEnumerator {
@@ -65,10 +73,14 @@ pub struct DnsEnumerator {
 
 impl DnsEnumerator {
     pub fn new() -> Self {
-        Self { wordlist: COMMON_SUBDOMAINS.iter().map(|s| s.to_string()).collect() }
+        Self {
+            wordlist: COMMON_SUBDOMAINS.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
-    pub fn with_wordlist(wordlist: Vec<String>) -> Self { Self { wordlist } }
+    pub fn with_wordlist(wordlist: Vec<String>) -> Self {
+        Self { wordlist }
+    }
 
     pub async fn enumerate(&self, domain: &str) -> DnsEnumerationResult {
         let mut subdomains = Vec::new();
@@ -78,14 +90,17 @@ impl DnsEnumerator {
 
         for word in &self.wordlist {
             let subdomain = format!("{}.{}", word, domain);
-            if seen.contains(&subdomain) { continue; }
+            if seen.contains(&subdomain) {
+                continue;
+            }
             seen.insert(subdomain.clone());
 
             // Check if subdomain resolves
             let resolved = tokio::task::spawn_blocking({
                 let sd = subdomain.clone();
                 move || sd.as_str().to_socket_addrs()
-            }).await;
+            })
+            .await;
 
             if let Ok(Ok(addrs)) = resolved {
                 let ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
@@ -104,12 +119,18 @@ impl DnsEnumerator {
         }
 
         info!(domain = %domain, subdomains = subdomains.len(), "DNS enumeration complete");
-        DnsEnumerationResult { domain: domain.to_string(), subdomains, scanned_at: Utc::now() }
+        DnsEnumerationResult {
+            domain: domain.to_string(),
+            subdomains,
+            scanned_at: Utc::now(),
+        }
     }
 }
 
 impl Default for DnsEnumerator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -125,8 +146,11 @@ mod tests {
     #[test]
     fn subdomain_entry_fqdn() {
         let e = SubdomainEntry {
-            subdomain: "www".to_string(), full_name: "www.example.com".to_string(),
-            resolved_ips: vec![], has_web_service: true, first_discovered: Utc::now(),
+            subdomain: "www".to_string(),
+            full_name: "www.example.com".to_string(),
+            resolved_ips: vec![],
+            has_web_service: true,
+            first_discovered: Utc::now(),
         };
         assert_eq!(e.fqdn(), "www.example.com");
     }

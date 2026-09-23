@@ -64,7 +64,11 @@ impl PgStore {
         model_name: &str,
     ) -> Result<()> {
         let vector = Vector::from(
-            embedding.iter().copied().map(|x| x as f32).collect::<Vec<f32>>(),
+            embedding
+                .iter()
+                .copied()
+                .map(|x| x as f32)
+                .collect::<Vec<f32>>(),
         );
 
         sqlx::query(
@@ -97,14 +101,13 @@ impl PgStore {
         entity_type: &str,
         entity_id: &str,
     ) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM embeddings WHERE entity_type = $1 AND entity_id = $2",
-        )
-        .bind(entity_type)
-        .bind(entity_id)
-        .execute(&self.pool)
-        .await
-        .context("failed to delete entity embeddings")?;
+        let result =
+            sqlx::query("DELETE FROM embeddings WHERE entity_type = $1 AND entity_id = $2")
+                .bind(entity_type)
+                .bind(entity_id)
+                .execute(&self.pool)
+                .await
+                .context("failed to delete entity embeddings")?;
 
         Ok(result.rows_affected())
     }
@@ -129,7 +132,11 @@ impl PgStore {
         limit: usize,
     ) -> Result<Vec<VectorSearchHit>> {
         let vector = Vector::from(
-            embedding.iter().copied().map(|x| x as f32).collect::<Vec<f32>>(),
+            embedding
+                .iter()
+                .copied()
+                .map(|x| x as f32)
+                .collect::<Vec<f32>>(),
         );
         let limit = limit.min(100) as i64;
 
@@ -163,7 +170,11 @@ impl PgStore {
         limit: usize,
     ) -> Result<Vec<VectorSearchHit>> {
         let vector = Vector::from(
-            embedding.iter().copied().map(|x| x as f32).collect::<Vec<f32>>(),
+            embedding
+                .iter()
+                .copied()
+                .map(|x| x as f32)
+                .collect::<Vec<f32>>(),
         );
         let limit = limit.min(100) as i64;
 
@@ -194,33 +205,26 @@ impl PgStore {
     /// Count embeddings for a given entity type (or all if None).
     pub async fn count_embeddings(&self, entity_type: Option<&str>) -> Result<i64> {
         let count: (i64,) = match entity_type {
-            Some(ety) => {
-                sqlx::query_as(
-                    "SELECT COUNT(*) FROM embeddings WHERE entity_type = $1",
-                )
+            Some(ety) => sqlx::query_as("SELECT COUNT(*) FROM embeddings WHERE entity_type = $1")
                 .bind(ety)
                 .fetch_one(&self.pool)
                 .await
-                .context("failed to count embeddings")?
-            }
-            None => {
-                sqlx::query_as("SELECT COUNT(*) FROM embeddings")
-                    .fetch_one(&self.pool)
-                    .await
-                    .context("failed to count embeddings")?
-            }
+                .context("failed to count embeddings")?,
+            None => sqlx::query_as("SELECT COUNT(*) FROM embeddings")
+                .fetch_one(&self.pool)
+                .await
+                .context("failed to count embeddings")?,
         };
         Ok(count.0)
     }
 
     /// Get distinct entity types that have embeddings.
     pub async fn embedding_entity_types(&self) -> Result<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT entity_type FROM embeddings ORDER BY entity_type",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to list embedding entity types")?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT DISTINCT entity_type FROM embeddings ORDER BY entity_type")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to list embedding entity types")?;
 
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
@@ -621,16 +625,14 @@ mod tests {
 
     #[test]
     fn test_rrf_k_value_affects_scores() {
-        let bm25 = vec![
-            HybridSearchHit {
-                entity_type: "company".to_string(),
-                entity_id: "1".to_string(),
-                title: "A".to_string(),
-                bm25_score: 0.0,
-                vector_score: 0.0,
-                combined_score: 0.0,
-            },
-        ];
+        let bm25 = vec![HybridSearchHit {
+            entity_type: "company".to_string(),
+            entity_id: "1".to_string(),
+            title: "A".to_string(),
+            bm25_score: 0.0,
+            vector_score: 0.0,
+            combined_score: 0.0,
+        }];
         let result_low_k = fuse_ranked_results(&bm25, &[], 1.0, 10);
         let result_high_k = fuse_ranked_results(&bm25, &[], 100.0, 10);
         // Higher k = lower score

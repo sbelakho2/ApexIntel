@@ -80,7 +80,13 @@ pub trait DedupStore: Send + Sync {
     ) -> Result<Vec<DedupHit>>;
 
     /// Store a newly triaged item for future dedup comparisons.
-    fn store_item(&self, item_type: &TriageItemType, id: &str, title: &str, text: &str) -> Result<()>;
+    fn store_item(
+        &self,
+        item_type: &TriageItemType,
+        id: &str,
+        title: &str,
+        text: &str,
+    ) -> Result<()>;
 
     /// Find similar items by embedding vector (B343).
     ///
@@ -102,7 +108,7 @@ pub trait DedupStore: Send + Sync {
         id: &str,
         title: &str,
         text: &str,
-        vector: Option<&[f64]>,
+        _vector: Option<&[f64]>,
     ) -> Result<()> {
         self.store_item(item_type, id, title, text)
     }
@@ -150,7 +156,7 @@ impl DedupStore for InMemoryDedupStore {
         text: &str,
         max_results: usize,
     ) -> Result<Vec<DedupHit>> {
-        let items = self.items.lock().unwrap();
+        let items = self.items.lock().unwrap_or_else(|e| e.into_inner());
         let item_type_str = item_type.as_str();
 
         let mut hits: Vec<DedupHit> = items
@@ -167,12 +173,22 @@ impl DedupStore for InMemoryDedupStore {
             .filter(|hit| hit.similarity > 0.3)
             .collect();
 
-        hits.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         hits.truncate(max_results);
         Ok(hits)
     }
 
-    fn store_item(&self, item_type: &TriageItemType, id: &str, title: &str, text: &str) -> Result<()> {
+    fn store_item(
+        &self,
+        item_type: &TriageItemType,
+        id: &str,
+        title: &str,
+        text: &str,
+    ) -> Result<()> {
         self.store_item_with_vector(item_type, id, title, text, None)
     }
 
@@ -184,11 +200,14 @@ impl DedupStore for InMemoryDedupStore {
         text: &str,
         vector: Option<&[f64]>,
     ) -> Result<()> {
-        let mut items = self.items.lock().unwrap();
+        let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
         let item_type_str = item_type.as_str();
 
         // Dedup by id within store
-        if !items.iter().any(|item| item.id == id && item.item_type == item_type_str) {
+        if !items
+            .iter()
+            .any(|item| item.id == id && item.item_type == item_type_str)
+        {
             items.push(StoredItem {
                 id: id.to_string(),
                 title: title.to_string(),
@@ -211,7 +230,7 @@ impl DedupStore for InMemoryDedupStore {
         vector: &[f64],
         max_results: usize,
     ) -> Result<Vec<DedupHit>> {
-        let items = self.items.lock().unwrap();
+        let items = self.items.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut hits: Vec<DedupHit> = items
             .iter()
@@ -323,18 +342,19 @@ impl SemanticDedup {
         // 0.92 cosine threshold was being checked against trigram-Jaccard
         // scores that essentially never reach it (dedup never fired).
         if let Some(store) = &self.dedup_store {
-            let mut hits = store.find_similar_by_vector(
-                item_type,
-                &embedding,
-                self.config.max_candidates,
-            )?;
+            let mut hits =
+                store.find_similar_by_vector(item_type, &embedding, self.config.max_candidates)?;
             // Items stored before embeddings were available have no vector;
             // merge text-based hits so they remain comparable.
             hits.extend(store.find_similar(item_type, text, self.config.max_candidates)?);
             if let Some(best) = hits
                 .iter()
                 .filter(|h| h.similarity >= self.config.threshold)
-                .max_by(|a, b| a.similarity.partial_cmp(&b.similarity).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|a, b| {
+                    a.similarity
+                        .partial_cmp(&b.similarity)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
             {
                 return Ok(Some(DedupResult {
                     is_duplicate: true,
@@ -349,17 +369,17 @@ impl SemanticDedup {
     }
 
     /// Check via text-based trigram similarity (fallback).
-    async fn check_via_text(
-        &self,
-        item_type: &TriageItemType,
-        text: &str,
-    ) -> Result<DedupResult> {
+    async fn check_via_text(&self, item_type: &TriageItemType, text: &str) -> Result<DedupResult> {
         if let Some(store) = &self.dedup_store {
             let hits = store.find_similar(item_type, text, self.config.max_candidates)?;
             if let Some(best) = hits
                 .iter()
                 .filter(|h| h.similarity >= self.config.threshold)
-                .max_by(|a, b| a.similarity.partial_cmp(&b.similarity).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|a, b| {
+                    a.similarity
+                        .partial_cmp(&b.similarity)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
             {
                 return Ok(DedupResult {
                     is_duplicate: true,
@@ -421,7 +441,11 @@ impl SemanticDedup {
     pub fn best_match(hits: &[VectorSearchHit], threshold: f64) -> Option<DedupResult> {
         hits.iter()
             .filter(|h| h.similarity >= threshold)
-            .max_by(|a, b| a.similarity.partial_cmp(&b.similarity).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.similarity
+                    .partial_cmp(&b.similarity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|hit| DedupResult {
                 is_duplicate: true,
                 best_match_score: hit.similarity,
@@ -518,7 +542,8 @@ mod tests {
         // differ in wording — Jaccard overlap is moderate, not high.
         assert!(sim > 0.2, "expected moderate similarity, got {sim}");
         // Verify dissimilar strings have near-zero similarity.
-        let low = jaccard_trigram_similarity("Supply chain disruption", "Quarterly earnings report");
+        let low =
+            jaccard_trigram_similarity("Supply chain disruption", "Quarterly earnings report");
         assert!(low < 0.15, "expected low similarity, got {low}");
     }
 
@@ -575,7 +600,10 @@ mod tests {
         // similarity (or returns 0 if only embeddings are wired). The score
         // may be 0 when the embedding backend is absent — verify it doesn't
         // error and returns a valid result either way.
-        assert!(result.best_match_score >= 0.0, "score should be non-negative");
+        assert!(
+            result.best_match_score >= 0.0,
+            "score should be non-negative"
+        );
     }
 
     #[tokio::test]

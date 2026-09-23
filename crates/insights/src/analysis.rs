@@ -9,17 +9,17 @@
 //! Part of Phase 2.1: LLM Integration for ApexIntel OSINT platform.
 
 use chrono::{DateTime, Utc};
-use tracing::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::debug;
 
-use crate::{
-    Insight, InsightSeverity, PatternDetector, PatternDetectorConfig,
-    RiskSummarizer, RiskSummarizerConfig, TrendAnalyzer, TrendAnalyzerConfig,
-};
 use crate::patterns::PatternData;
 use crate::risk_summarizer::RiskSummary;
-use crate::trend_analyzer::{Trend, TimeSeriesPoint};
+use crate::trend_analyzer::{TimeSeriesPoint, Trend};
+use crate::{
+    Insight, InsightSeverity, PatternDetector, PatternDetectorConfig, RiskSummarizer,
+    RiskSummarizerConfig, TrendAnalyzer, TrendAnalyzerConfig,
+};
 
 /// Configuration for the intelligence analyzer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,7 +126,11 @@ impl IntelligenceAnalyzer {
             b.severity
                 .priority()
                 .cmp(&a.severity.priority())
-                .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| {
+                    b.confidence
+                        .partial_cmp(&a.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
 
         // Generate summary
@@ -163,13 +167,9 @@ impl IntelligenceAnalyzer {
         let mut sources: Vec<String> = Vec::new();
         sources.push(format!(
             "trend_series:{}:{}_data_points",
-            series_name,
-            trend.data_points
+            series_name, trend.data_points
         ));
-        sources.push(format!(
-            "trend_name:{}",
-            trend.name
-        ));
+        sources.push(format!("trend_name:{}", trend.name));
         // Include date range for traceability
         sources.push(format!(
             "timerange:{}-{}",
@@ -206,9 +206,9 @@ impl IntelligenceAnalyzer {
         let mut unique: Vec<Insight> = Vec::new();
 
         for insight in insights {
-            let is_duplicate = unique.iter().any(|existing| {
-                self.title_similarity(&insight.title, &existing.title) > 0.8
-            });
+            let is_duplicate = unique
+                .iter()
+                .any(|existing| self.title_similarity(&insight.title, &existing.title) > 0.8);
 
             if !is_duplicate {
                 unique.push(insight);
@@ -234,11 +234,7 @@ impl IntelligenceAnalyzer {
     }
 
     /// Generate summary text.
-    fn generate_summary(
-        &self,
-        insights: &[Insight],
-        risk_summary: &Option<RiskSummary>,
-    ) -> String {
+    fn generate_summary(&self, insights: &[Insight], risk_summary: &Option<RiskSummary>) -> String {
         let mut summary = String::new();
 
         // Overview
@@ -324,7 +320,9 @@ impl IntelligenceAnalyzer {
         let critical: Vec<_> = result
             .insights
             .iter()
-            .filter(|i| i.severity == InsightSeverity::Critical || i.severity == InsightSeverity::High)
+            .filter(|i| {
+                i.severity == InsightSeverity::Critical || i.severity == InsightSeverity::High
+            })
             .collect();
 
         if !critical.is_empty() {
@@ -407,7 +405,10 @@ impl IntelligenceReport {
 
         for section in &self.sections {
             let heading = "#".repeat(section.level as usize);
-            md.push_str(&format!("{} {}\n\n{}\n\n---\n\n", heading, section.title, section.content));
+            md.push_str(&format!(
+                "{} {}\n\n{}\n\n---\n\n",
+                heading, section.title, section.content
+            ));
         }
 
         md.push_str(&format!(
@@ -450,13 +451,10 @@ mod tests {
             "Company A".to_string(),
         ];
         input.pattern_data.high_risk_countries = vec!["Russia".to_string()];
-        input.pattern_data.entities_in_sanctioned = vec![(
-            "Entity X".to_string(),
-            "Russia".to_string(),
-        )];
+        input.pattern_data.entities_in_sanctioned =
+            vec![("Entity X".to_string(), "Russia".to_string())];
 
         let _result = analyzer.analyze(&input);
-
     }
 
     #[test]
@@ -477,7 +475,6 @@ mod tests {
         input.time_series.insert("Revenue".to_string(), series);
 
         let _result = analyzer.analyze(&input);
-
     }
 
     #[test]
@@ -496,13 +493,11 @@ mod tests {
     fn report_markdown_format() {
         let report = IntelligenceReport {
             generated_at: Utc::now(),
-            sections: vec![
-                ReportSection {
-                    title: "Test Section".to_string(),
-                    content: "Test content".to_string(),
-                    level: 2,
-                },
-            ],
+            sections: vec![ReportSection {
+                title: "Test Section".to_string(),
+                content: "Test content".to_string(),
+                level: 2,
+            }],
             total_insights: 5,
             generation_time_ms: 100,
             model_used: "Test".to_string(),

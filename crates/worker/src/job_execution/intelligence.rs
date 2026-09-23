@@ -24,7 +24,9 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
     let real = match store.compute_source_telemetry(window_days).await {
         Ok(rows) => rows,
         Err(e) => {
-            run.fail(&format!("source_scoring: failed to compute source telemetry: {e}"));
+            run.fail(&format!(
+                "source_scoring: failed to compute source telemetry: {e}"
+            ));
             return run;
         }
     };
@@ -82,9 +84,15 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
                 .unwrap_or(src.url.as_str())
                 .to_string();
             let measured = by_slug.get(src.slug.as_str()).copied();
-            let ingested = measured.map(|r| r.observations_ingested as u64).unwrap_or(0);
-            let fires = measured.map(|r| r.observations_in_fires as u64).unwrap_or(0);
-            let promotions = measured.map(|r| r.observations_in_promotions as u64).unwrap_or(0);
+            let ingested = measured
+                .map(|r| r.observations_ingested as u64)
+                .unwrap_or(0);
+            let fires = measured
+                .map(|r| r.observations_in_fires as u64)
+                .unwrap_or(0);
+            let promotions = measured
+                .map(|r| r.observations_in_promotions as u64)
+                .unwrap_or(0);
             let obs_types = measured
                 .map(|r| r.observation_types_produced.clone())
                 .unwrap_or_else(|| vec!["web_change".to_string()]);

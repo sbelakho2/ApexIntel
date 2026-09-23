@@ -4,12 +4,11 @@
 
 use crate::*;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
 use apex_insights::entity_relevance::EntityProfile;
-use apex_store::postgres::{CompanyRow, InsightListFilters, PgStore};
+use apex_store::postgres::CompanyRow;
 
 /// GET /api/battlecards — list all battlecards with optional filters.
 #[derive(Debug, Deserialize)]
@@ -36,7 +35,10 @@ pub struct BattlecardItem {
 }
 
 /// Derive an honest threat level from generated battlecard content.
-fn derive_threat_level(weaknesses: Option<&serde_json::Value>, kill_shots: Option<&serde_json::Value>) -> Option<String> {
+fn derive_threat_level(
+    weaknesses: Option<&serde_json::Value>,
+    kill_shots: Option<&serde_json::Value>,
+) -> Option<String> {
     let weaknesses_count = weaknesses
         .and_then(|v| v.as_array())
         .map(|a| a.len())
@@ -81,33 +83,55 @@ pub(crate) async fn list_battlecards(
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(50).clamp(1, 100);
 
-    match state.store.list_battlecards(params.status.as_deref(), None, page, per_page).await {
+    match state
+        .store
+        .list_battlecards(params.status.as_deref(), None, page, per_page)
+        .await
+    {
         Ok(rows) => {
             let total_rows = rows.len() as u32;
-            let items: Vec<BattlecardItem> = rows.into_iter().map(|row| {
-                BattlecardItem {
+            let items: Vec<BattlecardItem> = rows
+                .into_iter()
+                .map(|row| BattlecardItem {
                     id: row.id.to_string(),
                     account_name: row.title,
-                    threat_level: derive_threat_level(row.weaknesses.as_ref(), row.kill_shots.as_ref()),
+                    threat_level: derive_threat_level(
+                        row.weaknesses.as_ref(),
+                        row.kill_shots.as_ref(),
+                    ),
                     win_probability: derive_win_probability(row.win_loss.as_ref()),
                     competitor_count: total_rows.max(1),
-                    key_intel: row.positioning
+                    key_intel: row
+                        .positioning
                         .as_ref()
                         .and_then(|v| v.get("summary"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("No intel available")
                         .to_string(),
                     last_updated: Some(row.updated_at.to_rfc3339()),
-                }
-            }).collect();
+                })
+                .collect();
 
             let duration_ms = start.elapsed().as_millis() as u64;
             log_latency("list_battlecards", duration_ms);
-            (StatusCode::OK, Json(success_with_meta(items, ResponseMeta::now().with_request_id(request_id).with_duration(duration_ms))))
+            (
+                StatusCode::OK,
+                Json(success_with_meta(
+                    items,
+                    ResponseMeta::now()
+                        .with_request_id(request_id)
+                        .with_duration(duration_ms),
+                )),
+            )
         }
         Err(err) => {
             tracing::error!(request_id = %request_id, "list_battlecards failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to fetch battlecards"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch battlecards",
+                ))),
+            )
         }
     }
 }
@@ -127,21 +151,47 @@ pub(crate) async fn create_battlecard(
     let request_id = Uuid::new_v4().to_string();
     let our_id = match Uuid::parse_str(&payload.our_company_id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid our_company_id")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid our_company_id",
+                ))),
+            )
+        }
     };
     let comp_id = match Uuid::parse_str(&payload.competitor_id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid competitor_id")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid competitor_id",
+                ))),
+            )
+        }
     };
 
-    match state.store.create_battlecard(our_id, comp_id, &payload.title).await {
+    match state
+        .store
+        .create_battlecard(our_id, comp_id, &payload.title)
+        .await
+    {
         Ok(id) => (
             StatusCode::CREATED,
-            Json(success_with_meta(serde_json::json!({"id": id.to_string()}), ResponseMeta::now().with_request_id(request_id))),
+            Json(success_with_meta(
+                serde_json::json!({"id": id.to_string()}),
+                ResponseMeta::now().with_request_id(request_id),
+            )),
         ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "create_battlecard failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to create battlecard"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to create battlecard",
+                ))),
+            )
         }
     }
 }
@@ -154,7 +204,14 @@ pub(crate) async fn get_battlecard(
     let request_id = Uuid::new_v4().to_string();
     let uid = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid battlecard ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid battlecard ID",
+                ))),
+            )
+        }
     };
 
     match state.store.get_battlecard(uid).await {
@@ -176,12 +233,26 @@ pub(crate) async fn get_battlecard(
                 "created_at": row.created_at.to_rfc3339(),
                 "updated_at": row.updated_at.to_rfc3339(),
             });
-            (StatusCode::OK, Json(success_with_meta(body, ResponseMeta::now().with_request_id(request_id))))
+            (
+                StatusCode::OK,
+                Json(success_with_meta(
+                    body,
+                    ResponseMeta::now().with_request_id(request_id),
+                )),
+            )
         }
-        Ok(None) => (StatusCode::NOT_FOUND, Json(error_response(ApiError::not_found("Battlecard", &id)))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(error_response(ApiError::not_found("Battlecard", &id))),
+        ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "get_battlecard failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to fetch battlecard"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch battlecard",
+                ))),
+            )
         }
     }
 }
@@ -194,14 +265,32 @@ pub(crate) async fn delete_battlecard(
     let request_id = Uuid::new_v4().to_string();
     let uid = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid battlecard ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid battlecard ID",
+                ))),
+            )
+        }
     };
 
     match state.store.delete_battlecard(uid).await {
-        Ok(()) => (StatusCode::OK, Json(success_with_meta(serde_json::json!({"deleted": true}), ResponseMeta::now().with_request_id(request_id)))),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(success_with_meta(
+                serde_json::json!({"deleted": true}),
+                ResponseMeta::now().with_request_id(request_id),
+            )),
+        ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "delete_battlecard failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to delete battlecard"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to delete battlecard",
+                ))),
+            )
         }
     }
 }
@@ -221,14 +310,36 @@ pub(crate) async fn update_battlecard_section(
     let request_id = Uuid::new_v4().to_string();
     let uid = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid battlecard ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid battlecard ID",
+                ))),
+            )
+        }
     };
 
-    match state.store.update_battlecard_section(uid, &payload.section, &payload.data).await {
-        Ok(()) => (StatusCode::OK, Json(success_with_meta(serde_json::json!({"updated": true}), ResponseMeta::now().with_request_id(request_id)))),
+    match state
+        .store
+        .update_battlecard_section(uid, &payload.section, &payload.data)
+        .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(success_with_meta(
+                serde_json::json!({"updated": true}),
+                ResponseMeta::now().with_request_id(request_id),
+            )),
+        ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "update_battlecard_section failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to update battlecard section"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to update battlecard section",
+                ))),
+            )
         }
     }
 }
@@ -257,11 +368,7 @@ fn entity_profile_from_company(c: &CompanyRow) -> EntityProfile {
 /// Map industry tags to the closest [`EntityCategory`].
 fn infer_category(industry: &[String]) -> apex_insights::entity_relevance::EntityCategory {
     use apex_insights::entity_relevance::EntityCategory;
-    let has = |kw: &str| {
-        industry
-            .iter()
-            .any(|t| t.to_lowercase().contains(kw))
-    };
+    let has = |kw: &str| industry.iter().any(|t| t.to_lowercase().contains(kw));
     if has("semiconductor") {
         EntityCategory::Semiconductor
     } else if has("ems") || has("manufacturing service") {
@@ -293,28 +400,59 @@ pub(crate) async fn regenerate_battlecard(
     let request_id = Uuid::new_v4().to_string();
     let uid = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid battlecard ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid battlecard ID",
+                ))),
+            )
+        }
     };
 
     // 1. Load the battlecard + both companies.
     let bc = match state.store.get_battlecard(uid).await {
         Ok(Some(bc)) => bc,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(error_response(ApiError::not_found("Battlecard", &id))))
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found("Battlecard", &id))),
+            )
         }
         Err(err) => {
             tracing::error!(request_id = %request_id, "regenerate_battlecard: load failed: {err:#}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to load battlecard"))));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load battlecard",
+                ))),
+            );
         }
     };
 
     let our_company = match state.store.get_company(bc.our_company_id).await {
         Ok(Some(c)) => c,
-        _ => return (StatusCode::NOT_FOUND, Json(error_response(ApiError::not_found("Company", &bc.our_company_id.to_string())))),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found(
+                    "Company",
+                    &bc.our_company_id.to_string(),
+                ))),
+            )
+        }
     };
     let competitor = match state.store.get_company(bc.competitor_id).await {
         Ok(Some(c)) => c,
-        _ => return (StatusCode::NOT_FOUND, Json(error_response(ApiError::not_found("Company", &bc.competitor_id.to_string())))),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(error_response(ApiError::not_found(
+                    "Company",
+                    &bc.competitor_id.to_string(),
+                ))),
+            )
+        }
     };
 
     // 2. Load REAL closed deals + competitor pricing for the battlecard context.
@@ -335,7 +473,11 @@ pub(crate) async fn regenerate_battlecard(
         })
         .collect();
 
-    let pricing_rows = state.store.list_competitor_pricing(bc.competitor_id).await.unwrap_or_default();
+    let pricing_rows = state
+        .store
+        .list_competitor_pricing(bc.competitor_id)
+        .await
+        .unwrap_or_default();
     let pricing: Vec<apex_insights::battlecards::PricingObservation> = pricing_rows
         .iter()
         .map(|p| apex_insights::battlecards::PricingObservation {
@@ -347,7 +489,7 @@ pub(crate) async fn regenerate_battlecard(
             average_contract_value: p.average_contract_value,
             discounting_behavior: p.discounting_behavior.clone(),
             competitive_position: p.competitive_position.clone(),
-            confidence: p.confidence as f64,
+            confidence: p.confidence,
             evidence_url: p.evidence_url.clone(),
         })
         .collect();
@@ -362,7 +504,11 @@ pub(crate) async fn regenerate_battlecard(
         search: Some(competitor.name.clone()),
         ..Default::default()
     };
-    let insight_rows = state.store.list_insights(&filters, 20, 0).await.unwrap_or_default();
+    let insight_rows = state
+        .store
+        .list_insights(&filters, 20, 0)
+        .await
+        .unwrap_or_default();
     let insights: Vec<apex_insights::Insight> = insight_rows
         .iter()
         .map(|r| {
@@ -375,7 +521,7 @@ pub(crate) async fn regenerate_battlecard(
     let comp_profile = entity_profile_from_company(&competitor);
     let our_profile = entity_profile_from_company(&our_company);
     let engine = apex_insights::battlecards::BattlecardEngine::new();
-    let mut data = engine
+    let data = engine
         .generate_full_battlecard(
             &comp_profile,
             &our_profile,
@@ -387,18 +533,19 @@ pub(crate) async fn regenerate_battlecard(
         .await;
 
     // 5. Optional LLM-grounded narrative enrichment.
-    let mut llm_used = false;
+    let llm_used = false;
     #[cfg(feature = "llm")]
     {
         if let Ok(client) = apex_llm::inference::LlmClient::from_env() {
-            if let Ok(Some(llm)) = apex_insights::battlecards::llm_sections::synthesize_llm_sections(
-                &client,
-                &our_company.name,
-                &competitor.name,
-                &insights,
-                3,
-            )
-            .await
+            if let Ok(Some(llm)) =
+                apex_insights::battlecards::llm_sections::synthesize_llm_sections(
+                    &client,
+                    &our_company.name,
+                    &competitor.name,
+                    &insights,
+                    3,
+                )
+                .await
             {
                 llm_used = true;
                 data.positioning = apex_insights::battlecards::llm_sections::enrich_positioning(
@@ -422,18 +569,49 @@ pub(crate) async fn regenerate_battlecard(
 
     // 6. Persist each regenerated section back to the battlecard JSONB.
     let sections: [(&str, serde_json::Value); 9] = [
-        ("positioning", serde_json::to_value(&data.positioning).unwrap_or(serde_json::Value::Null)),
-        ("pricing", serde_json::to_value(&data.pricing).unwrap_or(serde_json::Value::Null)),
-        ("feature_matrix", serde_json::to_value(&data.feature_matrix).unwrap_or(serde_json::Value::Null)),
-        ("strengths", serde_json::to_value(&data.strengths).unwrap_or(serde_json::Value::Null)),
-        ("weaknesses", serde_json::to_value(&data.weaknesses).unwrap_or(serde_json::Value::Null)),
-        ("objection_handlers", serde_json::to_value(&data.objection_handlers).unwrap_or(serde_json::Value::Null)),
-        ("kill_shots", serde_json::to_value(&data.kill_shots).unwrap_or(serde_json::Value::Null)),
-        ("recent_news", serde_json::to_value(&data.recent_news).unwrap_or(serde_json::Value::Null)),
-        ("win_loss", serde_json::to_value(&data.win_loss).unwrap_or(serde_json::Value::Null)),
+        (
+            "positioning",
+            serde_json::to_value(&data.positioning).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "pricing",
+            serde_json::to_value(&data.pricing).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "feature_matrix",
+            serde_json::to_value(&data.feature_matrix).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "strengths",
+            serde_json::to_value(&data.strengths).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "weaknesses",
+            serde_json::to_value(&data.weaknesses).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "objection_handlers",
+            serde_json::to_value(&data.objection_handlers).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "kill_shots",
+            serde_json::to_value(&data.kill_shots).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "recent_news",
+            serde_json::to_value(&data.recent_news).unwrap_or(serde_json::Value::Null),
+        ),
+        (
+            "win_loss",
+            serde_json::to_value(&data.win_loss).unwrap_or(serde_json::Value::Null),
+        ),
     ];
     for (section, json) in sections {
-        if let Err(e) = state.store.update_battlecard_section(uid, section, &json).await {
+        if let Err(e) = state
+            .store
+            .update_battlecard_section(uid, section, &json)
+            .await
+        {
             tracing::warn!(section, error = %e, "regenerate_battlecard: persist section failed");
         }
     }
@@ -490,18 +668,39 @@ pub(crate) async fn export_battlecard(
     let request_id = Uuid::new_v4().to_string();
     let uid = match Uuid::parse_str(&id) {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(error_response(ApiError::bad_request("Invalid battlecard ID")))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_response(ApiError::bad_request(
+                    "Invalid battlecard ID",
+                ))),
+            )
+        }
     };
 
     match state.store.get_battlecard(uid).await {
         Ok(Some(row)) => {
             let body = serde_json::json!({"format": "markdown", "content": format!("# {}\n\nPositioning: {:?}", row.title, row.positioning)});
-            (StatusCode::OK, Json(success_with_meta(body, ResponseMeta::now().with_request_id(request_id))))
+            (
+                StatusCode::OK,
+                Json(success_with_meta(
+                    body,
+                    ResponseMeta::now().with_request_id(request_id),
+                )),
+            )
         }
-        Ok(None) => (StatusCode::NOT_FOUND, Json(error_response(ApiError::not_found("Battlecard", &id)))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(error_response(ApiError::not_found("Battlecard", &id))),
+        ),
         Err(err) => {
             tracing::error!(request_id = %request_id, "export_battlecard failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(ApiError::internal("Failed to export battlecard"))))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to export battlecard",
+                ))),
+            )
         }
     }
 }

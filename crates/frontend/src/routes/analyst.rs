@@ -4,7 +4,6 @@
 
 use leptos::*;
 
-use crate::api_config::api_url;
 use crate::components::{
     cards::{PageHeader, SurfaceCard},
     charts::probability_gauge::ProbabilityGauge,
@@ -140,12 +139,18 @@ pub async fn fetch_workspaces() -> Result<Vec<InvestigationWorkspace>, String> {
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<Vec<InvestigationWorkspace>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<InvestigationWorkspace>> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch workspaces".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch workspaces".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -163,12 +168,18 @@ pub async fn fetch_workspace(id: &str) -> Result<InvestigationWorkspace, String>
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<InvestigationWorkspace> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<InvestigationWorkspace> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch workspace".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch workspace".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -177,7 +188,9 @@ pub async fn fetch_workspace(_id: &str) -> Result<InvestigationWorkspace, String
 }
 
 #[cfg(target_arch = "wasm32")]
-pub async fn create_workspace(req: CreateWorkspaceRequest) -> Result<InvestigationWorkspace, String> {
+pub async fn create_workspace(
+    req: CreateWorkspaceRequest,
+) -> Result<InvestigationWorkspace, String> {
     use gloo_net::http::Request;
     use web_sys::RequestCredentials;
     let response = Request::post(&api_url("/api/workspaces"))
@@ -188,16 +201,24 @@ pub async fn create_workspace(req: CreateWorkspaceRequest) -> Result<Investigati
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<InvestigationWorkspace> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<InvestigationWorkspace> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to create workspace".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to create workspace".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn create_workspace(_req: CreateWorkspaceRequest) -> Result<InvestigationWorkspace, String> {
+pub async fn create_workspace(
+    _req: CreateWorkspaceRequest,
+) -> Result<InvestigationWorkspace, String> {
     Err("WASM mutations are only available in the browser runtime".to_string())
 }
 
@@ -215,16 +236,24 @@ pub async fn fetch_activity_feed(workspace_id: Option<&str>) -> Result<Vec<Activ
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<Vec<ActivityEntry>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<ActivityEntry>> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch activity feed".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch activity feed".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn fetch_activity_feed(_workspace_id: Option<&str>) -> Result<Vec<ActivityEntry>, String> {
+pub async fn fetch_activity_feed(
+    _workspace_id: Option<&str>,
+) -> Result<Vec<ActivityEntry>, String> {
     Err("WASM data fetching is only available in the browser runtime".to_string())
 }
 
@@ -241,8 +270,12 @@ pub async fn fetch_entity_relationships(
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 {
         return Err(format!("API error (status {})", status));
     }
@@ -311,12 +344,18 @@ pub async fn fetch_source_evidence(
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<Vec<SourceEvidence>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<SourceEvidence>> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch evidence".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch evidence".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -641,11 +680,13 @@ pub fn AnalystPage() -> impl IntoView {
                             view! {}.into_view()
                         }}
                     </div>
-                }.into_view()
+                }
+                .into_view()
             }
             Err(msg) => view! {
                 <p class="error-copy">{msg}</p>
-            }.into_view(),
+            }
+            .into_view(),
         })
     };
 

@@ -174,13 +174,20 @@ impl RiskSummarizer {
 
         if tags_lower.iter().any(|t| t.contains("sanction")) || desc_lower.contains("sanction") {
             RiskCategory::Compliance
-        } else if tags_lower.iter().any(|t| t.contains("financial")) || desc_lower.contains("financial") {
+        } else if tags_lower.iter().any(|t| t.contains("financial"))
+            || desc_lower.contains("financial")
+        {
             RiskCategory::Financial
-        } else if tags_lower.iter().any(|t| t.contains("reputat")) || desc_lower.contains("reputat") {
+        } else if tags_lower.iter().any(|t| t.contains("reputat")) || desc_lower.contains("reputat")
+        {
             RiskCategory::Reputational
-        } else if tags_lower.iter().any(|t| t.contains("operational")) || desc_lower.contains("operation") {
+        } else if tags_lower.iter().any(|t| t.contains("operational"))
+            || desc_lower.contains("operation")
+        {
             RiskCategory::Operational
-        } else if tags_lower.iter().any(|t| t.contains("geopolitical")) || desc_lower.contains("geopolitical") {
+        } else if tags_lower.iter().any(|t| t.contains("geopolitical"))
+            || desc_lower.contains("geopolitical")
+        {
             RiskCategory::Geopolitical
         } else if tags_lower.iter().any(|t| t.contains("cyber")) || desc_lower.contains("cyber") {
             RiskCategory::Cyber
@@ -213,10 +220,7 @@ impl RiskSummarizer {
         let mut by_category: HashMap<RiskCategory, Vec<&RiskItem>> = HashMap::new();
 
         for risk in risks {
-            by_category
-                .entry(risk.category)
-                .or_default()
-                .push(risk);
+            by_category.entry(risk.category).or_default().push(risk);
         }
 
         by_category
@@ -234,7 +238,11 @@ impl RiskSummarizer {
                     risk_count: items.len(),
                     top_risk: items
                         .iter()
-                        .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal))
+                        .max_by(|a, b| {
+                            a.score
+                                .partial_cmp(&b.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
                         .map(|r| r.description.clone()),
                 };
 
@@ -246,7 +254,11 @@ impl RiskSummarizer {
     /// Get top N risks by score.
     fn get_top_risks(&self, risks: &[RiskItem], n: usize) -> Vec<String> {
         let mut sorted = risks.to_vec();
-        sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         sorted
             .into_iter()
@@ -282,11 +294,15 @@ impl RiskSummarizer {
     /// Suggest action based on category.
     fn suggest_action(&self, category: &RiskCategory) -> String {
         match category {
-            RiskCategory::Compliance => "Review compliance controls and sanctions screening".to_string(),
+            RiskCategory::Compliance => {
+                "Review compliance controls and sanctions screening".to_string()
+            }
             RiskCategory::Financial => "Conduct detailed financial due diligence".to_string(),
             RiskCategory::Reputational => "Monitor media and assess PR risk".to_string(),
             RiskCategory::Operational => "Review operational procedures and controls".to_string(),
-            RiskCategory::Strategic => "Reassess strategic positioning and partnerships".to_string(),
+            RiskCategory::Strategic => {
+                "Reassess strategic positioning and partnerships".to_string()
+            }
             RiskCategory::Geopolitical => "Update geopolitical risk monitoring".to_string(),
             RiskCategory::Cyber => "Review cybersecurity posture".to_string(),
             RiskCategory::Legal => "Engage legal counsel".to_string(),
@@ -298,8 +314,14 @@ impl RiskSummarizer {
         let mut text = String::new();
 
         text.push_str("## Risk Summary\n\n");
-        text.push_str(&format!("Overall Risk Score: {:.0}%\n", summary.overall_score * 100.0));
-        text.push_str(&format!("Total Risks Identified: {}\n\n", summary.risk_count));
+        text.push_str(&format!(
+            "Overall Risk Score: {:.0}%\n",
+            summary.overall_score * 100.0
+        ));
+        text.push_str(&format!(
+            "Total Risks Identified: {}\n\n",
+            summary.risk_count
+        ));
 
         text.push_str("### Risk Distribution\n");
         text.push_str(&format!(
@@ -381,7 +403,7 @@ pub struct RiskAlert {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -424,8 +446,8 @@ mod tests {
     fn risk_categorization() {
         let summarizer = RiskSummarizer::with_default_config();
 
-        let compliance_insight = Insight::new("Sanctions Risk", "Description")
-            .with_tags(vec!["sanctions".to_string()]);
+        let compliance_insight =
+            Insight::new("Sanctions Risk", "Description").with_tags(vec!["sanctions".to_string()]);
 
         let risk = summarizer.insight_to_risk(&compliance_insight);
         assert_eq!(risk.category, RiskCategory::Compliance);
@@ -435,11 +457,9 @@ mod tests {
     fn alerts_generated_for_high_risks() {
         let summarizer = RiskSummarizer::with_default_config();
 
-        let insights = vec![
-            Insight::new("High Risk", "Description")
-                .with_severity(InsightSeverity::Critical)
-                .with_confidence(0.9),
-        ];
+        let insights = vec![Insight::new("High Risk", "Description")
+            .with_severity(InsightSeverity::Critical)
+            .with_confidence(0.9)];
 
         let summary = summarizer.summarize(&insights);
 
@@ -452,8 +472,7 @@ mod tests {
         let summarizer = RiskSummarizer::with_default_config();
 
         let insights = vec![
-            Insight::new("Risk 1", "Financial risk")
-                .with_tags(vec!["financial".to_string()]),
+            Insight::new("Risk 1", "Financial risk").with_tags(vec!["financial".to_string()]),
             Insight::new("Risk 2", "Another financial risk")
                 .with_tags(vec!["financial".to_string()]),
         ];
@@ -469,11 +488,9 @@ mod tests {
     fn summary_text_generation() {
         let summarizer = RiskSummarizer::with_default_config();
 
-        let insights = vec![
-            Insight::new("Test Risk", "Description")
-                .with_severity(InsightSeverity::Medium)
-                .with_confidence(0.5),
-        ];
+        let insights = vec![Insight::new("Test Risk", "Description")
+            .with_severity(InsightSeverity::Medium)
+            .with_confidence(0.5)];
 
         let summary = summarizer.summarize(&insights);
         let text = summarizer.generate_summary_text(&summary);

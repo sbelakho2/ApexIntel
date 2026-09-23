@@ -126,7 +126,16 @@
 {# ── Inline script for save/delete interactions ────────────────────────── #}
 <script>
 (function() {
-  const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
+  // The CSRF token is issued in the `apex_csrf` cookie by the session
+  // middleware. Read it at request time (app.js may not have loaded yet when
+  // this inline script runs).
+  function readCsrfToken() {
+    if (typeof window.apexCsrfToken === 'function') {
+      return window.apexCsrfToken();
+    }
+    var match = document.cookie.match(/(?:^|;\s*)apex_csrf=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
 
   // Save global defaults
   document.getElementById('save-global-defaults')?.addEventListener('click', async function() {
@@ -143,7 +152,7 @@
     try {
       const res = await fetch('/api/settings/alerts/global', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': readCsrfToken() },
         body: JSON.stringify(payload)
       });
       if (res.ok) {
@@ -166,7 +175,7 @@
       try {
         const res = await fetch(`/api/settings/alerts/entity/${encodeURIComponent(entityId)}`, {
           method: 'DELETE',
-          headers: { 'X-CSRF-Token': csrf }
+          headers: { 'X-CSRF-Token': readCsrfToken() }
         });
         if (res.ok) {
           this.closest('tr')?.remove();

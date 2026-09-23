@@ -139,7 +139,12 @@ pub struct CrawlResult {
 }
 
 impl CrawlResult {
-    pub fn success(source_id: String, url: String, response_time_ms: u64, content_length: usize) -> Self {
+    pub fn success(
+        source_id: String,
+        url: String,
+        response_time_ms: u64,
+        content_length: usize,
+    ) -> Self {
         Self {
             source_id,
             url,
@@ -224,7 +229,9 @@ impl HealthConfig {
             errors.push("metrics_window_secs must be > 0".into());
         }
         if self.failure_threshold_for_dead <= self.failure_threshold_for_unhealthy {
-            errors.push("failure_threshold_for_dead must be > failure_threshold_for_unhealthy".into());
+            errors.push(
+                "failure_threshold_for_dead must be > failure_threshold_for_unhealthy".into(),
+            );
         }
         if self.healthy_success_rate < 0.0 || self.healthy_success_rate > 1.0 {
             errors.push("healthy_success_rate must be in [0, 1]".into());
@@ -300,7 +307,10 @@ impl SourceHealthMonitor {
             }
             m.uptime_percent = m.success_rate * 100.0;
             m.time_since_last_activity = if let Some(last) = m.last_success {
-                Utc::now().signed_duration_since(last).to_std().unwrap_or(Duration::ZERO)
+                Utc::now()
+                    .signed_duration_since(last)
+                    .to_std()
+                    .unwrap_or(Duration::ZERO)
             } else {
                 Duration::ZERO
             };
@@ -338,7 +348,10 @@ impl SourceHealthMonitor {
             }
             m.uptime_percent = m.success_rate * 100.0;
             m.time_since_last_activity = if let Some(last) = m.last_failure {
-                Utc::now().signed_duration_since(last).to_std().unwrap_or(Duration::ZERO)
+                Utc::now()
+                    .signed_duration_since(last)
+                    .to_std()
+                    .unwrap_or(Duration::ZERO)
             } else {
                 Duration::ZERO
             };
@@ -357,11 +370,14 @@ impl SourceHealthMonitor {
 
     async fn record_result(&self, result: CrawlResult) {
         let mut history = self.history.write().await;
-        let entries = history.entry(result.source_id.clone()).or_insert_with(Vec::new);
+        let entries = history
+            .entry(result.source_id.clone())
+            .or_insert_with(Vec::new);
         entries.push(result);
 
         // Trim old entries
-        let cutoff_ts = Utc::now() - chrono::Duration::seconds(self.config.metrics_window_secs as i64);
+        let cutoff_ts =
+            Utc::now() - chrono::Duration::seconds(self.config.metrics_window_secs as i64);
         entries.retain(|r| r.timestamp > cutoff_ts);
     }
 
@@ -384,7 +400,9 @@ impl SourceHealthMonitor {
         // Response time factor (0-0.2)
         // Assume 5000ms is the worst acceptable response time
         let response_factor = if m.avg_response_time_ms > 0.0 {
-            ((self.config.max_response_time_ms as f64 - m.avg_response_time_ms.min(self.config.max_response_time_ms as f64))
+            ((self.config.max_response_time_ms as f64
+                - m.avg_response_time_ms
+                    .min(self.config.max_response_time_ms as f64))
                 / self.config.max_response_time_ms as f64)
                 .max(0.0)
         } else {
@@ -403,11 +421,7 @@ impl SourceHealthMonitor {
 
     /// Get current health status for a source
     pub async fn get_status(&self, source_id: &str) -> Option<HealthStatus> {
-        self.metrics
-            .read()
-            .await
-            .get(source_id)
-            .map(|m| m.status)
+        self.metrics.read().await.get(source_id).map(|m| m.status)
     }
 
     /// Get detailed health metrics for a source
@@ -431,11 +445,26 @@ impl SourceHealthMonitor {
         let metrics = self.metrics.read().await;
 
         let total = metrics.len() as u64;
-        let healthy = metrics.values().filter(|m| m.status == HealthStatus::Healthy).count() as u64;
-        let degraded = metrics.values().filter(|m| m.status == HealthStatus::Degraded).count() as u64;
-        let unhealthy = metrics.values().filter(|m| m.status == HealthStatus::Unhealthy).count() as u64;
-        let dead = metrics.values().filter(|m| m.status == HealthStatus::Dead).count() as u64;
-        let unknown = metrics.values().filter(|m| m.status == HealthStatus::Unknown).count() as u64;
+        let healthy = metrics
+            .values()
+            .filter(|m| m.status == HealthStatus::Healthy)
+            .count() as u64;
+        let degraded = metrics
+            .values()
+            .filter(|m| m.status == HealthStatus::Degraded)
+            .count() as u64;
+        let unhealthy = metrics
+            .values()
+            .filter(|m| m.status == HealthStatus::Unhealthy)
+            .count() as u64;
+        let dead = metrics
+            .values()
+            .filter(|m| m.status == HealthStatus::Dead)
+            .count() as u64;
+        let unknown = metrics
+            .values()
+            .filter(|m| m.status == HealthStatus::Unknown)
+            .count() as u64;
 
         let avg_score = if total > 0 {
             metrics.values().map(|m| m.health_score).sum::<f64>() / total as f64
@@ -523,7 +552,12 @@ impl SourceHealthMonitor {
 
     /// Get list of retired sources
     pub async fn get_retired_sources(&self) -> Vec<RetiredSource> {
-        self.retired_sources.read().await.values().cloned().collect()
+        self.retired_sources
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Manually revive a retired source
@@ -615,10 +649,13 @@ impl SourceHealthMonitor {
         let stale_threshold = Duration::from_secs(self.config.stale_threshold_hours * 3600);
 
         let mut metrics = self.metrics.write().await;
-        metrics.retain(|_, m| m.time_since_last_activity < stale_threshold || m.status == HealthStatus::Dead);
+        metrics.retain(|_, m| {
+            m.time_since_last_activity < stale_threshold || m.status == HealthStatus::Dead
+        });
 
         let mut history = self.history.write().await;
-        let cutoff_ts = Utc::now() - chrono::Duration::seconds(self.config.metrics_window_secs as i64);
+        let cutoff_ts =
+            Utc::now() - chrono::Duration::seconds(self.config.metrics_window_secs as i64);
         for entries in history.values_mut() {
             entries.retain(|r| r.timestamp > cutoff_ts);
         }
@@ -721,7 +758,7 @@ pub struct DiscoveryStats {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -732,7 +769,12 @@ mod tests {
     #[tokio::test]
     async fn test_record_success_updates_metrics() {
         let monitor = create_monitor();
-        let result = CrawlResult::success("test-source".into(), "https://example.com".into(), 500, 1000);
+        let result = CrawlResult::success(
+            "test-source".into(),
+            "https://example.com".into(),
+            500,
+            1000,
+        );
         monitor.record_success(result).await;
 
         let metrics = monitor.get_metrics("test-source").await;
@@ -751,7 +793,8 @@ mod tests {
             message: "timeout".into(),
             category: CrawlFailureCategory::Timeout,
         };
-        let result = CrawlResult::failure("test-source".into(), "https://example.com".into(), &error);
+        let result =
+            CrawlResult::failure("test-source".into(), "https://example.com".into(), &error);
         monitor.record_failure(result).await;
 
         let metrics = monitor.get_metrics("test-source").await;

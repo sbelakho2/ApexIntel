@@ -1,87 +1,83 @@
 use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
-use wasm_bindgen::prelude::Closure;
-use wasm_bindgen::JsCast;
 
 use crate::routes::{
-    activity::ActivityPage,
-    admin::AdminPage,
-    adversarial::AdversarialPage,
-    analyst::AnalystPage,
-    battlecards::BattlecardsPage,
-    calibration::CalibrationPage,
-    causality::CausalityPage,
-    companies::CompaniesPage,
-    company_detail::CompanyDetailPage,
-    competitive_landscape::CompetitiveLandscapePage,
-    competitors::CompetitorsPage,
-    executive::ExecutivePage,
-    graph::GraphPage,
-    insights::InsightsPage,
-    login::LoginPage,
-    memos::MemosPage,
-    operational::OperationalPage,
-    overview::OverviewPage,
-    person_detail::PersonDetailPage,
-    persons::PersonsPage,
-    psych_profiles::PsychProfilesPage,
-    recipes::RecipesPage,
-    search::SearchPage,
-    security::SecurityPage,
-    settings::SettingsPage,
-    strategic_radar::StrategicRadarPage,
-    supply_risk::SupplyRiskPage,
-    threat_intel::ThreatIntelPage,
-    timeline::TimelinePage,
-    trends::TrendsPage,
+    activity::ActivityPage, admin::AdminPage, adversarial::AdversarialPage, analyst::AnalystPage,
+    battlecards::BattlecardsPage, calibration::CalibrationPage, causality::CausalityPage,
+    companies::CompaniesPage, company_detail::CompanyDetailPage,
+    competitive_landscape::CompetitiveLandscapePage, competitors::CompetitorsPage,
+    executive::ExecutivePage, graph::GraphPage, insights::InsightsPage, login::LoginPage,
+    memos::MemosPage, operational::OperationalPage, overview::OverviewPage,
+    person_detail::PersonDetailPage, persons::PersonsPage, psych_profiles::PsychProfilesPage,
+    recipes::RecipesPage, search::SearchPage, security::SecurityPage, settings::SettingsPage,
+    strategic_radar::StrategicRadarPage, supply_risk::SupplyRiskPage,
+    threat_intel::ThreatIntelPage, timeline::TimelinePage, trends::TrendsPage,
     warnings::WarningsPage,
 };
 
 /// Organized navigation groups matching server-rendered rack sidebar.
 const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
-    ("Core", &[
-        ("Dashboard", "/wasm/"),
-        ("Warnings", "/wasm/warnings"),
-        ("Insights", "/wasm/insights"),
-    ]),
-    ("Intelligence", &[
-        ("Companies", "/wasm/companies"),
-        ("Persons", "/wasm/persons"),
-        ("Executive", "/wasm/executive"),
-        ("Analyst", "/wasm/analyst"),
-        ("Search", "/wasm/search"),
-    ]),
-    ("Operations", &[
-        ("Operations", "/wasm/operational"),
-        ("Activity", "/wasm/activity"),
-        ("Calibration", "/wasm/calibration"),
-        ("Graph", "/wasm/graph"),
-    ]),
-    ("Analysis", &[
-        ("Trends", "/wasm/trends"),
-        ("Adversarial", "/wasm/adversarial"),
-        ("Causality", "/wasm/causality"),
-        ("Timeline", "/wasm/entities/demo/timeline"),
-    ]),
-    ("Competitive", &[
-        ("Competitors", "/wasm/competitors"),
-        ("Landscape", "/wasm/competitive-landscape"),
-        ("Strategic Radar", "/wasm/strategic-radar"),
-        ("Battlecards", "/wasm/battlecards"),
-        ("Supply Chain", "/wasm/supply-risk"),
-    ]),
-    ("Content", &[
-        ("Memos", "/wasm/memos"),
-        ("Recipes", "/wasm/recipes"),
-        ("Security", "/wasm/security"),
-        ("Threat Intel", "/wasm/threat-intel"),
-        ("Psych Profiles", "/wasm/psych-profiles"),
-    ]),
-    ("System", &[
-        ("Settings", "/wasm/settings"),
-        ("Admin", "/wasm/admin"),
-    ]),
+    (
+        "Core",
+        &[
+            ("Dashboard", "/wasm/"),
+            ("Warnings", "/wasm/warnings"),
+            ("Insights", "/wasm/insights"),
+        ],
+    ),
+    (
+        "Intelligence",
+        &[
+            ("Companies", "/wasm/companies"),
+            ("Persons", "/wasm/persons"),
+            ("Executive", "/wasm/executive"),
+            ("Analyst", "/wasm/analyst"),
+            ("Search", "/wasm/search"),
+        ],
+    ),
+    (
+        "Operations",
+        &[
+            ("Operations", "/wasm/operational"),
+            ("Activity", "/wasm/activity"),
+            ("Calibration", "/wasm/calibration"),
+            ("Graph", "/wasm/graph"),
+        ],
+    ),
+    (
+        "Analysis",
+        &[
+            ("Trends", "/wasm/trends"),
+            ("Adversarial", "/wasm/adversarial"),
+            ("Causality", "/wasm/causality"),
+            ("Timeline", "/wasm/entities/demo/timeline"),
+        ],
+    ),
+    (
+        "Competitive",
+        &[
+            ("Competitors", "/wasm/competitors"),
+            ("Landscape", "/wasm/competitive-landscape"),
+            ("Strategic Radar", "/wasm/strategic-radar"),
+            ("Battlecards", "/wasm/battlecards"),
+            ("Supply Chain", "/wasm/supply-risk"),
+        ],
+    ),
+    (
+        "Content",
+        &[
+            ("Memos", "/wasm/memos"),
+            ("Recipes", "/wasm/recipes"),
+            ("Security", "/wasm/security"),
+            ("Threat Intel", "/wasm/threat-intel"),
+            ("Psych Profiles", "/wasm/psych-profiles"),
+        ],
+    ),
+    (
+        "System",
+        &[("Settings", "/wasm/settings"), ("Admin", "/wasm/admin")],
+    ),
 ];
 
 fn normalize_route_path(path: &str) -> String {
@@ -134,7 +130,11 @@ fn nav_aria_current(current_path: &str, href: &str) -> Option<&'static str> {
     } else {
         normalized == href_norm || normalized.starts_with(&format!("{href_norm}/"))
     };
-    if active { Some("page") } else { None }
+    if active {
+        Some("page")
+    } else {
+        None
+    }
 }
 
 /// Initializes dark mode from localStorage or system preference.
@@ -251,11 +251,19 @@ fn AppShell() -> impl IntoView {
     }
 
     let theme_icon = move || {
-        if dark.get() { "☀" } else { "☾" }
+        if dark.get() {
+            "☀"
+        } else {
+            "☾"
+        }
     };
 
     let theme_label = move || {
-        if dark.get() { "Switch to light mode" } else { "Switch to dark mode" }
+        if dark.get() {
+            "Switch to light mode"
+        } else {
+            "Switch to dark mode"
+        }
     };
 
     let on_theme_toggle = move |_| {

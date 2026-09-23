@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use apex_poi::model::{
-    DecisionStyle, PoiArtifact, PoiProfile, PriorityVector, ChangeAppetite, PsychProfile,
+    ChangeAppetite, DecisionStyle, PoiArtifact, PoiProfile, PriorityVector, PsychProfile,
 };
 
 use crate::reasoning::EvidenceItem;
@@ -194,6 +194,12 @@ impl Default for WorkflowConfig {
     }
 }
 
+impl Default for PersonDeepDiveWorkflow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PersonDeepDiveWorkflow {
     /// Create a new person deep-dive workflow.
     pub fn new() -> Self {
@@ -261,16 +267,28 @@ impl PersonDeepDiveWorkflow {
 
         // Calculate overall confidence from available analyses
         let mut confidences: Vec<f64> = Vec::new();
-        if let Some(ref ph) = report.professional_history {
+        if report.professional_history.is_some() {
             // confidence derived from role_history richness
-            let conf = if profile.role_history.len() >= 5 { 0.8 } else if !profile.role_history.is_empty() { 0.5 } else { 0.1 };
+            let conf = if profile.role_history.len() >= 5 {
+                0.8
+            } else if !profile.role_history.is_empty() {
+                0.5
+            } else {
+                0.1
+            };
             confidences.push(conf);
         }
         if let Some(ref pp) = report.psychological_profile {
             confidences.push(pp.enrichment_quality);
         }
         if report.network_mapping.is_some() {
-            let net_conf = if profile.artifacts.iter().any(|a| a.artifact_type.contains("associate") || a.artifact_type.contains("network")) { 0.6 } else { 0.2 };
+            let net_conf = if profile.artifacts.iter().any(|a| {
+                a.artifact_type.contains("associate") || a.artifact_type.contains("network")
+            }) {
+                0.6
+            } else {
+                0.2
+            };
             confidences.push(net_conf);
         }
         report.overall_confidence = if confidences.is_empty() {
@@ -299,9 +317,7 @@ impl PersonDeepDiveWorkflow {
     // ── Signal-to-profile conversion (legacy support) ──────────────────
 
     fn signals_to_profile(&self, name: &str, signals: &[EvidenceItem]) -> PoiProfile {
-        use apex_poi::model::{
-            InfluenceProfile, RoleFamily, RoleHistoryEntry,
-        };
+        use apex_poi::model::{InfluenceProfile, RoleFamily, RoleHistoryEntry};
 
         let mut aliases = Vec::new();
         let mut profile_urls = Vec::new();
@@ -382,13 +398,25 @@ impl PersonDeepDiveWorkflow {
         PersonIdentity {
             name: profile.name.clone(),
             aliases: profile.name_variants.clone(),
-            current_org: if !profile.org.is_empty() { profile.org.clone() } else { "Not available".into() },
-            current_role: if !profile.current_role.is_empty() { profile.current_role.clone() } else { "Not available".into() },
+            current_org: if !profile.org.is_empty() {
+                profile.org.clone()
+            } else {
+                "Not available".into()
+            },
+            current_role: if !profile.current_role.is_empty() {
+                profile.current_role.clone()
+            } else {
+                "Not available".into()
+            },
             region: profile.region.clone(),
             country_code: profile.country_code.clone(),
             public_bio: profile.public_bio.clone(),
             email_available: profile.public_email.is_some(),
-            profile_urls: profile.artifacts.iter().filter_map(|a| a.source_url.clone()).collect(),
+            profile_urls: profile
+                .artifacts
+                .iter()
+                .filter_map(|a| a.source_url.clone())
+                .collect(),
             profile_completeness: profile.compute_completeness(),
         }
     }
@@ -398,48 +426,78 @@ impl PersonDeepDiveWorkflow {
 
         let now_epoch = Utc::now().timestamp();
 
-        let position_history: Vec<Position> = profile.role_history.iter().map(|r| Position {
-            title: r.title.clone(),
-            organization: r.org.clone(),
-            role_family: r.role_family.canonical_label().to_string(),
-            start_date: DateTime::from_timestamp(r.start_ts, 0),
-            end_date: r.end_ts.and_then(|ts| DateTime::from_timestamp(ts, 0)),
-            is_current: r.end_ts.is_none(),
-        }).collect();
+        let position_history: Vec<Position> = profile
+            .role_history
+            .iter()
+            .map(|r| Position {
+                title: r.title.clone(),
+                organization: r.org.clone(),
+                role_family: r.role_family.canonical_label().to_string(),
+                start_date: DateTime::from_timestamp(r.start_ts, 0),
+                end_date: r.end_ts.and_then(|ts| DateTime::from_timestamp(ts, 0)),
+                is_current: r.end_ts.is_none(),
+            })
+            .collect();
 
-        let current_pos = position_history.iter().find(|p| p.is_current)
+        let current_pos = position_history
+            .iter()
+            .find(|p| p.is_current)
             .cloned()
             .or_else(|| position_history.last().cloned());
 
         let total_years = if profile.role_history.len() >= 2 {
-            let career_start = profile.role_history.iter().map(|r| r.start_ts).min().unwrap_or(now_epoch);
-            let career_end = profile.role_history.iter().filter_map(|r| r.end_ts).max().unwrap_or(now_epoch);
+            let career_start = profile
+                .role_history
+                .iter()
+                .map(|r| r.start_ts)
+                .min()
+                .unwrap_or(now_epoch);
+            let career_end = profile
+                .role_history
+                .iter()
+                .filter_map(|r| r.end_ts)
+                .max()
+                .unwrap_or(now_epoch);
             (career_end - career_start) as f64 / (365.25 * 86_400.0)
         } else {
             profile.role_history.first().map(|_| 0.0).unwrap_or(0.0)
         };
 
         let average_tenure = if !profile.role_history.is_empty() {
-            let tenures: Vec<f64> = profile.role_history.iter().map(|r| {
-                let end = r.end_ts.unwrap_or(now_epoch);
-                ((end - r.start_ts) as f64 / (365.25 * 86_400.0)).max(0.0)
-            }).collect();
+            let tenures: Vec<f64> = profile
+                .role_history
+                .iter()
+                .map(|r| {
+                    let end = r.end_ts.unwrap_or(now_epoch);
+                    ((end - r.start_ts) as f64 / (365.25 * 86_400.0)).max(0.0)
+                })
+                .collect();
             tenures.iter().sum::<f64>() / tenures.len() as f64
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         let career_velocity = features::compute_career_velocity(&profile.role_history, now_epoch);
         let change_risk = features::compute_change_risk(&profile.role_history, now_epoch);
         let role_drift = features::compute_role_drift_score(&profile.role_history);
 
-        let trajectory = if career_velocity > 0.5 { "ascending" }
-            else if role_drift > 0.5 { "lateral" }
-            else if change_risk > 0.6 { "volatile" }
-            else { "stable" };
+        let trajectory = if career_velocity > 0.5 {
+            "ascending"
+        } else if role_drift > 0.5 {
+            "lateral"
+        } else if change_risk > 0.6 {
+            "volatile"
+        } else {
+            "stable"
+        };
 
         let data_source = if profile.role_history.is_empty() {
             "No role history data available".into()
         } else {
-            format!("Derived from {} role history entries", profile.role_history.len())
+            format!(
+                "Derived from {} role history entries",
+                profile.role_history.len()
+            )
         };
 
         ProfessionalHistory {
@@ -467,7 +525,8 @@ impl PersonDeepDiveWorkflow {
         let enrichment_q = psych.enrichment_quality();
 
         let data_source = if psych.is_enriched() {
-            "Computed from artifact analysis via PsychologicalProfiler (lexical marker methodology)".into()
+            "Computed from artifact analysis via PsychologicalProfiler (lexical marker methodology)"
+                .into()
         } else {
             "Insufficient artifact data for psychometric profiling".into()
         };
@@ -480,16 +539,22 @@ impl PersonDeepDiveWorkflow {
                 DecisionStyle::RiskFirst => "risk_first",
                 DecisionStyle::ComplianceFirst => "compliance_first",
                 DecisionStyle::BalancedAnalytical => "balanced_analytical",
-            }.into(),
+            }
+            .into(),
             change_appetite: match psych.change_appetite {
                 ChangeAppetite::EarlyAdopter => "early_adopter",
                 ChangeAppetite::Pragmatist => "pragmatist",
                 ChangeAppetite::Conservative => "conservative",
                 ChangeAppetite::Laggard => "laggard",
-            }.into(),
+            }
+            .into(),
             pain_index: psych.pain_index,
             risk_tolerance: psych.risk_tolerance,
-            preferred_proof: psych.preferred_proof.iter().map(|p| format!("{:?}", p)).collect(),
+            preferred_proof: psych
+                .preferred_proof
+                .iter()
+                .map(|p| format!("{:?}", p))
+                .collect(),
             enrichment_quality: enrichment_q,
             data_source,
         }
@@ -501,7 +566,11 @@ impl PersonDeepDiveWorkflow {
 
         for artifact in &profile.artifacts {
             let atype = artifact.artifact_type.to_lowercase();
-            if atype.contains("associate") || atype.contains("network") || atype.contains("connection") || atype.contains("colleague") {
+            if atype.contains("associate")
+                || atype.contains("network")
+                || atype.contains("connection")
+                || atype.contains("colleague")
+            {
                 connections.push(ConnectionRecord {
                     target_name: artifact.title.clone(),
                     relationship_type: artifact.artifact_type.clone(),
@@ -537,7 +606,11 @@ impl PersonDeepDiveWorkflow {
         let data_source = if connections.is_empty() && org_links.is_empty() {
             "No network data available in profile".into()
         } else {
-            format!("Extracted from {} artifacts and {} role history entries", profile.artifacts.len(), profile.role_history.len())
+            format!(
+                "Extracted from {} artifacts and {} role history entries",
+                profile.artifacts.len(),
+                profile.role_history.len()
+            )
         };
 
         NetworkMapping {
@@ -552,9 +625,28 @@ impl PersonDeepDiveWorkflow {
         let mut risks = Vec::new();
 
         // Behavioral signals from artifact content
-        let aggressive = ["threat", "attack", "confrontation", "hostile", "aggressive", "litigation"];
-        let deceptive = ["misleading", "false", "fabricated", "deceptive", "contradictory"];
-        let volatility = ["erratic", "unstable", "volatile", "unpredictable", "sudden change"];
+        let aggressive = [
+            "threat",
+            "attack",
+            "confrontation",
+            "hostile",
+            "aggressive",
+            "litigation",
+        ];
+        let deceptive = [
+            "misleading",
+            "false",
+            "fabricated",
+            "deceptive",
+            "contradictory",
+        ];
+        let volatility = [
+            "erratic",
+            "unstable",
+            "volatile",
+            "unpredictable",
+            "sudden change",
+        ];
 
         for artifact in &profile.artifacts {
             let text = format!("{} {}", artifact.title, artifact.content_summary).to_lowercase();
@@ -562,7 +654,14 @@ impl PersonDeepDiveWorkflow {
             if ag_matches.len() >= 2 {
                 risks.push(BehavioralRiskItem {
                     risk_type: "Aggressive Communication Pattern".into(),
-                    description: format!("Detected aggressive indicators: {}", ag_matches.iter().map(|s| **s).collect::<Vec<&str>>().join(", ")),
+                    description: format!(
+                        "Detected aggressive indicators: {}",
+                        ag_matches
+                            .iter()
+                            .map(|s| **s)
+                            .collect::<Vec<&str>>()
+                            .join(", ")
+                    ),
                     confidence: 0.7,
                 });
             }
@@ -570,28 +669,50 @@ impl PersonDeepDiveWorkflow {
             if dec_matches.len() >= 2 {
                 risks.push(BehavioralRiskItem {
                     risk_type: "Potential Deception Indicators".into(),
-                    description: format!("Indicators of potential misrepresentation: {}", dec_matches.iter().map(|s| **s).collect::<Vec<&str>>().join(", ")),
+                    description: format!(
+                        "Indicators of potential misrepresentation: {}",
+                        dec_matches
+                            .iter()
+                            .map(|s| **s)
+                            .collect::<Vec<&str>>()
+                            .join(", ")
+                    ),
                     confidence: 0.6,
                 });
             }
-            let vol_matches: Vec<&&str> = volatility.iter().filter(|k| text.contains(**k)).collect();
+            let vol_matches: Vec<&&str> =
+                volatility.iter().filter(|k| text.contains(**k)).collect();
             if vol_matches.len() >= 2 {
                 risks.push(BehavioralRiskItem {
                     risk_type: "Behavioral Volatility".into(),
-                    description: format!("Unstable behavior pattern: {}", vol_matches.iter().map(|s| **s).collect::<Vec<&str>>().join(", ")),
+                    description: format!(
+                        "Unstable behavior pattern: {}",
+                        vol_matches
+                            .iter()
+                            .map(|s| **s)
+                            .collect::<Vec<&str>>()
+                            .join(", ")
+                    ),
                     confidence: 0.65,
                 });
             }
         }
 
-        let risk_level = if risks.len() >= 3 { "high" }
-            else if risks.len() >= 1 { "medium" }
-            else { "low" };
+        let risk_level = if risks.len() >= 3 {
+            "high"
+        } else if !risks.is_empty() {
+            "medium"
+        } else {
+            "low"
+        };
 
         let data_source = if profile.artifacts.is_empty() {
             "No artifact data to analyze".into()
         } else {
-            format!("Keyword analysis of {} artifact content descriptions", profile.artifacts.len())
+            format!(
+                "Keyword analysis of {} artifact content descriptions",
+                profile.artifacts.len()
+            )
         };
 
         let is_empty = risks.is_empty();
@@ -611,33 +732,55 @@ impl PersonDeepDiveWorkflow {
             let text = format!("{} {}", artifact.title, artifact.content_summary).to_lowercase();
             let ts = DateTime::from_timestamp(artifact.ts_utc, 0).unwrap_or(now);
 
-            if text.contains("promoted") || text.contains("appointed") || text.contains("named") || text.contains("new role") {
+            if text.contains("promoted")
+                || text.contains("appointed")
+                || text.contains("named")
+                || text.contains("new role")
+            {
                 events.push(TriggerEvent {
                     event_id: Uuid::new_v4().to_string(),
                     event_type: "PositionChange".into(),
                     description: format!("Potential role change: {}", artifact.title),
                     detection_date: ts,
-                    source: artifact.source_url.clone().unwrap_or_else(|| "unknown".into()),
+                    source: artifact
+                        .source_url
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
                     confidence: 0.7,
                 });
             }
-            if text.contains("breach") || text.contains("violation") || text.contains("sanction") || text.contains("investigation") || text.contains("fine") {
+            if text.contains("breach")
+                || text.contains("violation")
+                || text.contains("sanction")
+                || text.contains("investigation")
+                || text.contains("fine")
+            {
                 events.push(TriggerEvent {
                     event_id: Uuid::new_v4().to_string(),
                     event_type: "LegalIssue".into(),
                     description: format!("Legal/regulatory event: {}", artifact.title),
                     detection_date: ts,
-                    source: artifact.source_url.clone().unwrap_or_else(|| "unknown".into()),
+                    source: artifact
+                        .source_url
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
                     confidence: 0.8,
                 });
             }
-            if text.contains("departure") || text.contains("resigned") || text.contains("stepping down") || text.contains("replaced") {
+            if text.contains("departure")
+                || text.contains("resigned")
+                || text.contains("stepping down")
+                || text.contains("replaced")
+            {
                 events.push(TriggerEvent {
                     event_id: Uuid::new_v4().to_string(),
                     event_type: "PositionChange".into(),
                     description: format!("Potential departure: {}", artifact.title),
                     detection_date: ts,
-                    source: artifact.source_url.clone().unwrap_or_else(|| "unknown".into()),
+                    source: artifact
+                        .source_url
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
                     confidence: 0.65,
                 });
             }
@@ -694,19 +837,39 @@ impl PersonDeepDiveWorkflow {
             best_channel: eng_profile.best_channel,
             best_timing: eng_profile.best_timing,
             what_they_want: eng_profile.what_they_want_to_hear,
-            talking_points: profile.artifacts.iter().take(5).map(|a| a.title.clone()).collect(),
+            talking_points: profile
+                .artifacts
+                .iter()
+                .take(5)
+                .map(|a| a.title.clone())
+                .collect(),
             topics_to_avoid: eng_profile.avoid_topics,
-            engagement_confidence: if profile.psychological.is_enriched() { 0.7 } else { 0.3 },
+            engagement_confidence: if profile.psychological.is_enriched() {
+                0.7
+            } else {
+                0.3
+            },
             data_source,
         }
     }
 
     fn generate_executive_summary(&self, profile: &PoiProfile) -> String {
         let name = &profile.name;
-        let org = if profile.org.is_empty() { "an organization" } else { &profile.org };
-        let role = if profile.current_role.is_empty() { "a position" } else { &profile.current_role };
-        let bio = if profile.public_bio.is_empty() { "No biographical information available." }
-            else { &profile.public_bio };
+        let org = if profile.org.is_empty() {
+            "an organization"
+        } else {
+            &profile.org
+        };
+        let role = if profile.current_role.is_empty() {
+            "a position"
+        } else {
+            &profile.current_role
+        };
+        let bio = if profile.public_bio.is_empty() {
+            "No biographical information available."
+        } else {
+            &profile.public_bio
+        };
 
         let psych_status = if profile.psychological.is_enriched() {
             format!(
@@ -721,7 +884,9 @@ impl PersonDeepDiveWorkflow {
                 },
                 profile.psychological.pain_index
             )
-        } else { "Insufficient data for psychological profiling.".into() };
+        } else {
+            "Insufficient data for psychological profiling.".into()
+        };
 
         format!(
             "{} is a {} at {}. {}. {}. Profile completeness: {:.0}%. Artifacts on file: {}. Role history entries: {}.",
@@ -732,42 +897,87 @@ impl PersonDeepDiveWorkflow {
         )
     }
 
-    fn extract_key_findings(&self, report: &PersonDeepDiveReport, profile: &PoiProfile) -> Vec<String> {
+    fn extract_key_findings(
+        &self,
+        report: &PersonDeepDiveReport,
+        profile: &PoiProfile,
+    ) -> Vec<String> {
         let mut findings = Vec::new();
 
-        if profile.role_history.len() >= 5 { findings.push(format!("Extensive career history with {} documented roles", profile.role_history.len())); }
-        else if !profile.role_history.is_empty() { findings.push(format!("{} career roles documented", profile.role_history.len())); }
+        if profile.role_history.len() >= 5 {
+            findings.push(format!(
+                "Extensive career history with {} documented roles",
+                profile.role_history.len()
+            ));
+        } else if !profile.role_history.is_empty() {
+            findings.push(format!(
+                "{} career roles documented",
+                profile.role_history.len()
+            ));
+        }
 
         if let Some(ref ph) = report.professional_history {
-            if ph.career_velocity > 0.5 { findings.push("Fast-track career trajectory with rapid seniority gains".into()); }
-            if ph.change_risk > 0.5 { findings.push("Elevated change risk — may be considering a career move".into()); }
+            if ph.career_velocity > 0.5 {
+                findings.push("Fast-track career trajectory with rapid seniority gains".into());
+            }
+            if ph.change_risk > 0.5 {
+                findings.push("Elevated change risk — may be considering a career move".into());
+            }
         }
 
         if let Some(ref pp) = report.psychological_profile {
-            if pp.pain_index > 0.5 { findings.push(format!("High pain index ({:.2}) suggests active pain points", pp.pain_index)); }
-            if pp.enrichment_quality > 0.4 { findings.push("Psychometric profile well-enriched from artifact analysis".into()); }
+            if pp.pain_index > 0.5 {
+                findings.push(format!(
+                    "High pain index ({:.2}) suggests active pain points",
+                    pp.pain_index
+                ));
+            }
+            if pp.enrichment_quality > 0.4 {
+                findings.push("Psychometric profile well-enriched from artifact analysis".into());
+            }
         }
 
         if let Some(ref ri) = report.risk_indicators {
-            if !ri.behavioral_risks.is_empty() { findings.push(format!("{} behavioral risk indicators detected", ri.behavioral_risks.len())); }
+            if !ri.behavioral_risks.is_empty() {
+                findings.push(format!(
+                    "{} behavioral risk indicators detected",
+                    ri.behavioral_risks.len()
+                ));
+            }
         }
 
-        if profile.artifacts.len() >= 20 { findings.push(format!("Rich artifact set: {} items providing strong evidence base", profile.artifacts.len())); }
+        if profile.artifacts.len() >= 20 {
+            findings.push(format!(
+                "Rich artifact set: {} items providing strong evidence base",
+                profile.artifacts.len()
+            ));
+        }
 
         findings
     }
 
-    fn identify_critical_concerns(&self, report: &PersonDeepDiveReport, profile: &PoiProfile) -> Vec<String> {
+    fn identify_critical_concerns(
+        &self,
+        report: &PersonDeepDiveReport,
+        _profile: &PoiProfile,
+    ) -> Vec<String> {
         let mut concerns = Vec::new();
 
         if let Some(ref pp) = report.psychological_profile {
-            if pp.pain_index > 0.7 { concerns.push("Critical pain index — immediate engagement priority".into()); }
+            if pp.pain_index > 0.7 {
+                concerns.push("Critical pain index — immediate engagement priority".into());
+            }
         }
         if let Some(ref ri) = report.risk_indicators {
-            if ri.overall_risk_level == "high" { concerns.push("High behavioral risk level — proceed with caution".into()); }
+            if ri.overall_risk_level == "high" {
+                concerns.push("High behavioral risk level — proceed with caution".into());
+            }
         }
         if let Some(ref ph) = report.professional_history {
-            if ph.change_risk > 0.7 { concerns.push("High change risk — this person may not be in role much longer".into()); }
+            if ph.change_risk > 0.7 {
+                concerns
+                    .push("High change risk — this person may not be in role much longer".into());
+            }
         }
 
         concerns
@@ -776,20 +986,38 @@ impl PersonDeepDiveWorkflow {
     fn generate_recommendations(&self, profile: &PoiProfile) -> Vec<String> {
         let mut recs = Vec::new();
         recs.push("Verify all profile data with at least one independent source".into());
-        if profile.psychological.pain_index > 0.5 { recs.push("Prioritize pain-point resolution in engagement messaging".into()); }
-        if profile.artifacts.len() < 5 { recs.push("Gather more public artifacts to enrich psychometric profile".into()); }
-        if profile.role_history.is_empty() { recs.push("Investigate career history through additional data sources".into()); }
+        if profile.psychological.pain_index > 0.5 {
+            recs.push("Prioritize pain-point resolution in engagement messaging".into());
+        }
+        if profile.artifacts.len() < 5 {
+            recs.push("Gather more public artifacts to enrich psychometric profile".into());
+        }
+        if profile.role_history.is_empty() {
+            recs.push("Investigate career history through additional data sources".into());
+        }
         recs
     }
 
     fn identify_data_gaps(&self, profile: &PoiProfile) -> Vec<String> {
         let mut gaps = Vec::new();
-        if profile.role_history.is_empty() { gaps.push("No role history records available".into()); }
-        if profile.artifacts.is_empty() { gaps.push("No public artifacts on file — profiling quality severely limited".into()); }
-        if profile.public_bio.is_empty() { gaps.push("No public biography available".into()); }
-        if profile.public_email.is_none() { gaps.push("No verified email on file".into()); }
-        if profile.name_variants.is_empty() { gaps.push("No known aliases or name variants".into()); }
-        if !profile.psychological.is_enriched() { gaps.push("Psychological profile is unenriched — insufficient artifact data".into()); }
+        if profile.role_history.is_empty() {
+            gaps.push("No role history records available".into());
+        }
+        if profile.artifacts.is_empty() {
+            gaps.push("No public artifacts on file — profiling quality severely limited".into());
+        }
+        if profile.public_bio.is_empty() {
+            gaps.push("No public biography available".into());
+        }
+        if profile.public_email.is_none() {
+            gaps.push("No verified email on file".into());
+        }
+        if profile.name_variants.is_empty() {
+            gaps.push("No known aliases or name variants".into());
+        }
+        if !profile.psychological.is_enriched() {
+            gaps.push("Psychological profile is unenriched — insufficient artifact data".into());
+        }
         gaps
     }
 }
@@ -813,10 +1041,31 @@ mod tests {
             public_bio: "20 years in EMS procurement and supply chain".into(),
             public_email: Some("ahmed@foxconn.tn".into()),
             artifacts: vec![
-                PoiArtifact { artifact_type: "conference_talk".into(), title: "Cost optimization in EMS".into(), content_summary: "Discussed cost reduction strategies and supply chain resilience".into(), source_url: Some("https://example.com/talk".into()), ts_utc: Utc::now().timestamp() - 86400 * 30 },
-                PoiArtifact { artifact_type: "interview".into(), title: "Supply chain disruption".into(), content_summary: "Cost overrun and delivery delays causing major issues".into(), source_url: Some("https://example.com/interview".into()), ts_utc: Utc::now().timestamp() - 86400 * 10 },
+                PoiArtifact {
+                    artifact_type: "conference_talk".into(),
+                    title: "Cost optimization in EMS".into(),
+                    content_summary:
+                        "Discussed cost reduction strategies and supply chain resilience".into(),
+                    source_url: Some("https://example.com/talk".into()),
+                    ts_utc: Utc::now().timestamp() - 86400 * 30,
+                },
+                PoiArtifact {
+                    artifact_type: "interview".into(),
+                    title: "Supply chain disruption".into(),
+                    content_summary: "Cost overrun and delivery delays causing major issues".into(),
+                    source_url: Some("https://example.com/interview".into()),
+                    ts_utc: Utc::now().timestamp() - 86400 * 10,
+                },
             ],
-            priority_vector: PriorityVector { cost: 0.5, quality: 0.2, speed: 0.1, resilience: 0.1, compliance: 0.05, security: 0.05, confidence: 0.6 },
+            priority_vector: PriorityVector {
+                cost: 0.5,
+                quality: 0.2,
+                speed: 0.1,
+                resilience: 0.1,
+                compliance: 0.05,
+                security: 0.05,
+                confidence: 0.6,
+            },
             psychological: PsychProfile {
                 decision_style: DecisionStyle::CostFirst,
                 change_appetite: ChangeAppetite::Pragmatist,
@@ -824,11 +1073,29 @@ mod tests {
                 preferred_proof: vec![ProofType::KpiMetrics, ProofType::CaseStudies],
                 risk_tolerance: 0.4,
             },
-            influence: InfluenceProfile { influence_score: 65.0, graph_centrality: 50.0, public_recurrence: 55.0, role_seniority_score: 85.0, network_size: 20 },
+            influence: InfluenceProfile {
+                influence_score: 65.0,
+                graph_centrality: 50.0,
+                public_recurrence: 55.0,
+                role_seniority_score: 85.0,
+                network_size: 20,
+            },
             engagement: None,
             role_history: vec![
-                RoleHistoryEntry { org: "Foxconn Tunisia".into(), title: "Senior Procurement Manager".into(), role_family: RoleFamily::Procurement, start_ts: 1500000000, end_ts: Some(1600000000) },
-                RoleHistoryEntry { org: "Foxconn Tunisia".into(), title: "VP Procurement".into(), role_family: RoleFamily::Procurement, start_ts: 1600000000, end_ts: None },
+                RoleHistoryEntry {
+                    org: "Foxconn Tunisia".into(),
+                    title: "Senior Procurement Manager".into(),
+                    role_family: RoleFamily::Procurement,
+                    start_ts: 1500000000,
+                    end_ts: Some(1600000000),
+                },
+                RoleHistoryEntry {
+                    org: "Foxconn Tunisia".into(),
+                    title: "VP Procurement".into(),
+                    role_family: RoleFamily::Procurement,
+                    start_ts: 1600000000,
+                    end_ts: None,
+                },
             ],
             last_updated_utc: Utc::now().timestamp(),
             profile_completeness: 0.85,
@@ -868,7 +1135,13 @@ mod tests {
             artifacts: vec![],
             priority_vector: PriorityVector::zero(),
             psychological: PsychProfile::default_profile(),
-            influence: InfluenceProfile { influence_score: 0.0, graph_centrality: 0.0, public_recurrence: 0.0, role_seniority_score: 0.0, network_size: 0 },
+            influence: InfluenceProfile {
+                influence_score: 0.0,
+                graph_centrality: 0.0,
+                public_recurrence: 0.0,
+                role_seniority_score: 0.0,
+                network_size: 0,
+            },
             engagement: None,
             role_history: vec![],
             last_updated_utc: 0,
@@ -899,13 +1172,23 @@ mod tests {
             artifacts: vec![],
             priority_vector: PriorityVector::zero(),
             psychological: PsychProfile::default_profile(),
-            influence: InfluenceProfile { influence_score: 0.0, graph_centrality: 0.0, public_recurrence: 0.0, role_seniority_score: 0.0, network_size: 0 },
+            influence: InfluenceProfile {
+                influence_score: 0.0,
+                graph_centrality: 0.0,
+                public_recurrence: 0.0,
+                role_seniority_score: 0.0,
+                network_size: 0,
+            },
             engagement: None,
             role_history: vec![],
             last_updated_utc: 0,
             profile_completeness: 0.0,
         };
         let report = workflow.run_with_profile(&profile);
-        assert!(!report.psychological_profile.unwrap().data_source.contains("lexical")); // not enriched
+        assert!(!report
+            .psychological_profile
+            .unwrap()
+            .data_source
+            .contains("lexical")); // not enriched
     }
 }

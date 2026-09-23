@@ -13,6 +13,7 @@
 use crate::alert_router::AlertRouter;
 use anyhow::{Context, Result};
 use axum::response::sse::{Event, KeepAlive, Sse};
+#[cfg(test)]
 use chrono::Utc;
 use futures_util::stream::Stream;
 use futures_util::StreamExt;
@@ -107,7 +108,10 @@ impl SseManager {
     pub async fn register(
         &self,
         user_id: Uuid,
-    ) -> (mpsc::UnboundedSender<SseEvent>, mpsc::UnboundedReceiver<SseEvent>) {
+    ) -> (
+        mpsc::UnboundedSender<SseEvent>,
+        mpsc::UnboundedReceiver<SseEvent>,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let mut conns = self.connections.write().await;
@@ -145,10 +149,7 @@ impl SseManager {
     /// connected users.
     ///
     /// Returns the number of clients the event was sent to.
-    pub async fn dispatch_alert(
-        &self,
-        alert: &crate::alert_router::AlertEvent,
-    ) -> usize {
+    pub async fn dispatch_alert(&self, alert: &crate::alert_router::AlertEvent) -> usize {
         let event = SseEvent::new(
             alert.event_type.as_str(),
             serde_json::to_string(alert).unwrap_or_else(|_| "{}".to_string()),
@@ -250,59 +251,65 @@ impl SseManager {
 
         let manager = self.clone();
         tokio::spawn(async move {
-            let mut messages = match consumer.messages().await {
-                Ok(msgs) => msgs,
-                Err(e) => {
-                    error!(error = %e, "Failed to open NATS consumer message stream");
-                    return;
-                }
-            };
-            info!("NATS consumer message stream opened");
-
+            // Reconnect loop: a closed or errored subscription must not
+            // permanently disable real-time alerts for the process lifetime.
             loop {
-                match tokio::time::timeout(Duration::from_secs(5), messages.next()).await {
-                    Ok(Some(Ok(msg))) => {
-                        let payload = msg.payload.clone();
-                        if let Err(e) = msg.ack().await {
-                            warn!(error = %e, "Failed to ack NATS message");
-                        }
+                let mut messages = match consumer.messages().await {
+                    Ok(msgs) => msgs,
+                    Err(e) => {
+                        error!(error = %e, "Failed to open NATS consumer message stream");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+                info!("NATS consumer message stream opened");
 
-                        // Deserialize the alert event
-                        match serde_json::from_slice::<crate::alert_router::AlertEvent>(&payload) {
-                            Ok(alert) => {
-                                // Route and dispatch
-                                let targets = alert_router.route_alert(&alert).await;
-                                let mut routed_alert = alert.clone();
-                                if !targets.is_empty() {
-                                    routed_alert.user_ids = targets;
-                                }
-                                manager.dispatch_alert(&routed_alert).await;
+                loop {
+                    match tokio::time::timeout(Duration::from_secs(5), messages.next()).await {
+                        Ok(Some(Ok(msg))) => {
+                            let payload = msg.payload.clone();
+                            if let Err(e) = msg.ack().await {
+                                warn!(error = %e, "Failed to ack NATS message");
                             }
-                            Err(e) => {
-                                warn!(error = %e, "Failed to deserialize alert from NATS");
+
+                            // Deserialize the alert event
+                            match serde_json::from_slice::<crate::alert_router::AlertEvent>(
+                                &payload,
+                            ) {
+                                Ok(alert) => {
+                                    // Route and dispatch
+                                    let targets = alert_router.route_alert(&alert).await;
+                                    let mut routed_alert = alert.clone();
+                                    if !targets.is_empty() {
+                                        routed_alert.user_ids = targets;
+                                    }
+                                    manager.dispatch_alert(&routed_alert).await;
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Failed to deserialize alert from NATS");
+                                }
                             }
                         }
-                    }
-                    Ok(Some(Err(e))) => {
-                        error!(error = %e, "NATS consumer message error");
-                    }
-                    Ok(None) => {
-                        info!("NATS consumer stream ended, reconnecting...");
-                        break;
-                    }
-                    Err(_) => {
-                        // Timeout — normal, just loop and wait for more messages
+                        Ok(Some(Err(e))) => {
+                            error!(error = %e, "NATS consumer message error");
+                        }
+                        Ok(None) => {
+                            info!("NATS consumer stream ended, reconnecting...");
+                            break;
+                        }
+                        Err(_) => {
+                            // Timeout — normal, just loop and wait for more messages
+                        }
                     }
                 }
-            }
 
-            warn!("NATS consumer task exiting — SSE will stop receiving alerts");
+                warn!("NATS consumer stream closed — reconnecting");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
         });
     }
 
-    async fn ensure_stream(
-        jetstream: &async_nats::jetstream::Context,
-    ) -> Result<()> {
+    async fn ensure_stream(jetstream: &async_nats::jetstream::Context) -> Result<()> {
         use async_nats::jetstream::stream::Config;
 
         match jetstream.get_stream("alerts").await {
@@ -375,12 +382,10 @@ impl SseManager {
             user_id,
             tx,
         };
-        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(
-            move |event| {
-                let _guard = &guard;
-                Ok::<_, std::convert::Infallible>(event.into_axum_event())
-            },
-        );
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(move |event| {
+            let _guard = &guard;
+            Ok::<_, std::convert::Infallible>(event.into_axum_event())
+        });
 
         Sse::new(stream).keep_alive(
             KeepAlive::new()
@@ -430,7 +435,12 @@ mod tests {
 
         let (tx, rx) = manager.register(user_id).await;
         assert_eq!(
-            manager.connections.read().await.get(&user_id).map_or(0, Vec::len),
+            manager
+                .connections
+                .read()
+                .await
+                .get(&user_id)
+                .map_or(0, Vec::len),
             1
         );
 
@@ -471,7 +481,7 @@ mod tests {
         assert_eq!(sent, 1, "Should deliver to one user");
 
         // Verify the user received the event
-        if let Some(event) = rx.try_recv().ok() {
+        if let Ok(event) = rx.try_recv() {
             assert_eq!(event.event, "new_warning");
         }
     }

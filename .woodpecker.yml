@@ -1,0 +1,43 @@
+# Woodpecker CI pipeline for ApexIntel.
+#
+# Pipeline contract (all steps must be green):
+#   1. rustfmt formatting check
+#   2. clippy across all targets with warnings denied
+#   3. full workspace test suite (unit + integration; no external services
+#      required — the API tests use the in-memory FakeStore)
+#   4. release build of the whole workspace
+#   5. frontend asset build (Tailwind CSS)
+#
+# Tests deliberately do not require PostgreSQL/Redis/NATS: the store layer is
+# exercised through fakes, and bootstrap/migration behaviour is covered by
+# unit tests. If a future test needs a database, add a `services:` block here.
+
+when:
+  - event: [push, pull_request, tag, manual]
+
+steps:
+  - name: rust
+    image: rust:bookworm
+    environment:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    commands:
+      - rustup component add rustfmt clippy
+      - cargo fmt --all -- --check
+      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo test --workspace --no-fail-fast
+      - cargo build --release --workspace
+
+  - name: frontend-assets
+    image: node:20-bookworm
+    commands:
+      - npm ci
+      # The compiled stylesheet is committed; rebuild it to prove the Tailwind
+      # config and source CSS still produce output.
+      - npx tailwindcss -i crates/api/static/css/globals.css -o /tmp/tailwind.css --minify
+
+  - name: wasm-shared
+    image: rust:bookworm
+    commands:
+      - rustup target add wasm32-unknown-unknown
+      - cargo check -p apex-shared --target wasm32-unknown-unknown

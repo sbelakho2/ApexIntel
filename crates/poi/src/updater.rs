@@ -158,8 +158,7 @@ fn compute_full_psych_profile(profile: &mut PoiProfile, now_epoch: i64) {
     // Compute risk_tolerance from features when not already set by LLM enrichment.
     // Risk tolerance is derived from change risk: higher change risk = higher tolerance.
     if profile.psychological.risk_tolerance == 0.0 {
-        let change_risk =
-            crate::features::compute_change_risk(&profile.role_history, now_epoch);
+        let change_risk = crate::features::compute_change_risk(&profile.role_history, now_epoch);
         profile.psychological.risk_tolerance = change_risk.clamp(0.1, 0.9);
     }
 
@@ -197,10 +196,8 @@ fn compute_full_psych_profile(profile: &mut PoiProfile, now_epoch: i64) {
                         proof_types.push(ProofType::AuditReadiness);
                     }
                 }
-                "cyber_threat" => {
-                    if !proof_types.contains(&ProofType::TechDemos) {
-                        proof_types.push(ProofType::TechDemos);
-                    }
+                "cyber_threat" if !proof_types.contains(&ProofType::TechDemos) => {
+                    proof_types.push(ProofType::TechDemos);
                 }
                 _ => {}
             }
@@ -509,8 +506,8 @@ mod tests {
         profile.artifacts.push(PoiArtifact {
             artifact_type: "press_release".into(),
             title: "Leadership change".into(),
-            content_summary:
-                "Acme Corp appoints Test Person as Senior Director of Engineering".into(),
+            content_summary: "Acme Corp appoints Test Person as Senior Director of Engineering"
+                .into(),
             source_url: Some("https://example.com/press".into()),
             ts_utc: now,
         });
@@ -526,8 +523,7 @@ mod tests {
         let new_arts = vec![PoiArtifact {
             artifact_type: "article".into(),
             title: "Supply chain crisis".into(),
-            content_summary:
-                "Major shortage and delays causing failure and disruption".into(),
+            content_summary: "Major shortage and delays causing failure and disruption".into(),
             source_url: Some("https://example.com/crisis".into()),
             ts_utc: Utc::now().timestamp() - 86400,
         }];
@@ -606,8 +602,8 @@ mod tests {
         let new_arts = vec![PoiArtifact {
             artifact_type: "press_release".into(),
             title: "New hire".into(),
-            content_summary:
-                "Test Person has been appointed VP Quality at NewCorp Technologies".into(),
+            content_summary: "Test Person has been appointed VP Quality at NewCorp Technologies"
+                .into(),
             source_url: Some("https://example.com/newhire".into()),
             ts_utc: Utc::now().timestamp(),
         }];

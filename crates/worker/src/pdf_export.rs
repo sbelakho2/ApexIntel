@@ -38,8 +38,7 @@ impl Default for PdfExportConfig {
 ///
 /// Returns the path to the generated PDF file.
 pub async fn generate_pdf(report: &PdfReport, config: &PdfExportConfig) -> Result<PathBuf> {
-    fs::create_dir_all(&config.output_dir)
-        .context("Failed to create PDF output directory")?;
+    fs::create_dir_all(&config.output_dir).context("Failed to create PDF output directory")?;
 
     let (width_mm, height_mm) = config.page_size.dimensions_mm();
     let pt_width = Mm(width_mm as f32);
@@ -86,23 +85,26 @@ pub async fn generate_pdf(report: &PdfReport, config: &PdfExportConfig) -> Resul
     let safe_title: String = report
         .title
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let timestamp = report.generated_at.format("%Y%m%d_%H%M%S");
     let filename = format!("{}_{}.pdf", safe_title.replace(' ', "_"), timestamp);
     let output_path = config.output_dir.join(&filename);
 
     // Save to temporary file first, then rename
-    let temp = NamedTempFile::new_in(&config.output_dir)
-        .context("Failed to create temp file for PDF")?;
+    let temp =
+        NamedTempFile::new_in(&config.output_dir).context("Failed to create temp file for PDF")?;
     let temp_path = temp.path().to_path_buf();
 
-    doc.save(&mut std::io::BufWriter::new(
-        fs::File::create(&temp_path)?,
-    ))?;
+    doc.save(&mut std::io::BufWriter::new(fs::File::create(&temp_path)?))?;
 
-    fs::rename(&temp_path, &output_path)
-        .context("Failed to rename temporary PDF file")?;
+    fs::rename(&temp_path, &output_path).context("Failed to rename temporary PDF file")?;
 
     tracing::info!(path = %output_path.display(), "PDF generated successfully");
     Ok(output_path)
@@ -229,7 +231,13 @@ fn draw_header(
     let layer = page.add_layer("Header");
 
     // Title
-    layer.use_text(report.title.as_str(), 16.0_f32, margin_left, Mm(*y), font_bold);
+    layer.use_text(
+        report.title.as_str(),
+        16.0_f32,
+        margin_left,
+        Mm(*y),
+        font_bold,
+    );
     *y -= 7.0_f32;
 
     // Subtitle
@@ -269,20 +277,10 @@ fn draw_header(
 }
 
 /// Draw a horizontal line.
-fn draw_line(
-    doc: &PdfDocumentReference,
-    page_idx: PdfPageIndex,
-    x1: Mm,
-    y1: Mm,
-    x2: Mm,
-    y2: Mm,
-) {
+fn draw_line(doc: &PdfDocumentReference, page_idx: PdfPageIndex, x1: Mm, y1: Mm, x2: Mm, y2: Mm) {
     let page = doc.get_page(page_idx);
     let layer = page.add_layer("Lines");
-    let points = vec![
-        (Point::new(x1, y1), false),
-        (Point::new(x2, y2), false),
-    ];
+    let points = vec![(Point::new(x1, y1), false), (Point::new(x2, y2), false)];
     let line = Line {
         points,
         is_closed: false,
@@ -441,8 +439,17 @@ fn draw_footer(
 
     let footer_y = y_position + 3.0_f32;
     let classification = report.report_type.classification();
-    let footer_text = format!("ApexIntel Intelligence Report  |  Page {}  |  {}", page_num, classification);
-    layer.use_text(&footer_text, 6.5_f32, margin_left, Mm(footer_y), font_regular);
+    let footer_text = format!(
+        "ApexIntel Intelligence Report  |  Page {}  |  {}",
+        page_num, classification
+    );
+    layer.use_text(
+        &footer_text,
+        6.5_f32,
+        margin_left,
+        Mm(footer_y),
+        font_regular,
+    );
 
     Ok(())
 }
@@ -503,10 +510,8 @@ fn word_wrap(text: &str, chars_per_line: usize, font_size_pt: f32) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apex_insights::pdf_report::{EvidenceItem, PdfReport, ReportSection, ReportType};
     use apex_insights::InsightSeverity;
-    use apex_insights::pdf_report::{
-        EvidenceItem, PdfReport, ReportSection, ReportType,
-    };
 
     fn create_test_report() -> PdfReport {
         let mut report = PdfReport::new("Test Intelligence Report", ReportType::InsightSummary);
@@ -515,8 +520,9 @@ mod tests {
         let mut section = ReportSection::new("Supply Chain Alert")
             .with_body("Detected increased procurement activity in the EU region.")
             .with_severity(InsightSeverity::High);
-        section.add_evidence(EvidenceItem::new("Procurement Signal", "12 new RFQs issued")
-            .with_confidence(0.87));
+        section.add_evidence(
+            EvidenceItem::new("Procurement Signal", "12 new RFQs issued").with_confidence(0.87),
+        );
         section.add_source(apex_insights::pdf_report::SourceRef {
             title: "Industry Report".to_string(),
             url: "https://example.com/report".to_string(),
@@ -559,7 +565,12 @@ mod tests {
         assert!(result.len() > 1);
         // Each line should be within the limit
         for line in &result {
-            assert!(line.len() <= 35, "Line too long: '{}' ({} chars)", line, line.len());
+            assert!(
+                line.len() <= 35,
+                "Line too long: '{}' ({} chars)",
+                line,
+                line.len()
+            );
         }
     }
 
@@ -595,8 +606,9 @@ mod tests {
         let mut report = create_test_report();
         // Add many sections to test multi-page
         for i in 0..5 {
-            let section = ReportSection::new(&format!("Extra Section {}", i + 1))
-                .with_body("This is additional content to test multi-page PDF generation with printpdf.");
+            let section = ReportSection::new(&format!("Extra Section {}", i + 1)).with_body(
+                "This is additional content to test multi-page PDF generation with printpdf.",
+            );
             report.add_section(section);
         }
 
@@ -609,7 +621,11 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         let result = rt.block_on(generate_pdf(&report, &config));
-        assert!(result.is_ok(), "Multi-page PDF generation failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Multi-page PDF generation failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -624,7 +640,11 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         let result = rt.block_on(generate_pdf(&report, &config));
-        assert!(result.is_ok(), "Letter-size PDF generation failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Letter-size PDF generation failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -643,7 +663,15 @@ mod tests {
 
         let path = result.unwrap();
         let filename = path.file_name().unwrap().to_string_lossy();
-        assert!(filename.contains("Test_Intelligence_Report"), "Filename should contain report title: {}", filename);
-        assert!(filename.ends_with(".pdf"), "Filename should end with .pdf: {}", filename);
+        assert!(
+            filename.contains("Test_Intelligence_Report"),
+            "Filename should contain report title: {}",
+            filename
+        );
+        assert!(
+            filename.ends_with(".pdf"),
+            "Filename should end with .pdf: {}",
+            filename
+        );
     }
 }

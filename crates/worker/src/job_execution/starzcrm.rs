@@ -159,10 +159,8 @@ pub(super) async fn run_starzcrm_sync(store: &Arc<PgStore>) -> JobRun {
     };
 
     // Build account lookup map
-    let account_map: std::collections::HashMap<i64, StarzCrmAccount> = accounts
-        .into_iter()
-        .map(|a| (a.id, a))
-        .collect();
+    let account_map: std::collections::HashMap<i64, StarzCrmAccount> =
+        accounts.into_iter().map(|a| (a.id, a)).collect();
 
     // ── Map deals to observations ───────────────────────────────────────
     let observations: Vec<DealObservation> = deals
@@ -242,7 +240,7 @@ async fn probe_schema(pool: &sqlx::MySqlPool) -> Result<SchemaInfo, anyhow::Erro
 
     // Get list of tables
     let tables: Vec<(String,)> = sqlx::query_as(
-        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'starz_crm'"
+        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'starz_crm'",
     )
     .fetch_all(pool)
     .await?;
@@ -256,7 +254,7 @@ async fn probe_schema(pool: &sqlx::MySqlPool) -> Result<SchemaInfo, anyhow::Erro
         if tables.iter().any(|(t,)| t == tbl_name) {
             let cols: Vec<(String,)> = sqlx::query_as(
                 "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
-                 WHERE TABLE_SCHEMA = 'starz_crm' AND TABLE_NAME = ?"
+                 WHERE TABLE_SCHEMA = 'starz_crm' AND TABLE_NAME = ?",
             )
             .bind(tbl_name)
             .fetch_all(pool)
@@ -274,7 +272,7 @@ async fn probe_schema(pool: &sqlx::MySqlPool) -> Result<SchemaInfo, anyhow::Erro
         if tables.iter().any(|(t,)| t == tbl_name) {
             let cols: Vec<(String,)> = sqlx::query_as(
                 "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
-                 WHERE TABLE_SCHEMA = 'starz_crm' AND TABLE_NAME = ?"
+                 WHERE TABLE_SCHEMA = 'starz_crm' AND TABLE_NAME = ?",
             )
             .bind(tbl_name)
             .fetch_all(pool)
@@ -299,13 +297,27 @@ async fn fetch_deals_since(
     // Try common table/column names. The exact schema is unknown,
     // so we use a flexible query approach.
     // First try: deals table with id + updated_at
-    let rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i64,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<f64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
         "SELECT d.id, d.account_id, d.name, d.stage, d.amount, d.currency, \
                 d.close_date, d.description, d.won_lost_reason, d.owner_email \
          FROM deals d \
          WHERE d.id > ? \
          ORDER BY d.id ASC \
-         LIMIT ?"
+         LIMIT ?",
     )
     .bind(since_id)
     .bind(limit)
@@ -315,8 +327,8 @@ async fn fetch_deals_since(
     match rows {
         Ok(rows) => Ok(rows
             .into_iter()
-            .map(|(id, account_id, name, stage, amount, currency, close_date, description, won_lost_reason, owner_email)| {
-                StarzCrmDeal {
+            .map(
+                |(
                     id,
                     account_id,
                     name,
@@ -325,20 +337,43 @@ async fn fetch_deals_since(
                     currency,
                     close_date,
                     description,
-                    notes: None, // fetched separately if needed
                     won_lost_reason,
                     owner_email,
-                }
-            })
+                )| {
+                    StarzCrmDeal {
+                        id,
+                        account_id,
+                        name,
+                        stage,
+                        amount,
+                        currency,
+                        close_date,
+                        description,
+                        notes: None, // fetched separately if needed
+                        won_lost_reason,
+                        owner_email,
+                    }
+                },
+            )
             .collect()),
         Err(_e) => {
             // Fallback: try without account_id or different column names
-            let rows = sqlx::query_as::<_, (i64, Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>)>(
+            let rows = sqlx::query_as::<
+                _,
+                (
+                    i64,
+                    Option<String>,
+                    Option<String>,
+                    Option<f64>,
+                    Option<String>,
+                    Option<String>,
+                ),
+            >(
                 "SELECT id, name, stage, amount, description, won_lost_reason \
                  FROM deals \
                  WHERE id > ? \
                  ORDER BY id ASC \
-                 LIMIT ?"
+                 LIMIT ?",
             )
             .bind(since_id)
             .bind(limit)
@@ -347,8 +382,8 @@ async fn fetch_deals_since(
 
             Ok(rows
                 .into_iter()
-                .map(|(id, name, stage, amount, description, won_lost_reason)| {
-                    StarzCrmDeal {
+                .map(
+                    |(id, name, stage, amount, description, won_lost_reason)| StarzCrmDeal {
                         id,
                         name,
                         stage,
@@ -356,8 +391,8 @@ async fn fetch_deals_since(
                         description,
                         won_lost_reason,
                         ..Default::default()
-                    }
-                })
+                    },
+                )
                 .collect())
         }
     }
@@ -373,13 +408,18 @@ async fn fetch_accounts(
     }
 
     // Build a parameterized query with placeholders
-    let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+    let placeholders: Vec<String> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
     let sql = format!(
         "SELECT id, name, industry, website FROM accounts WHERE id IN ({})",
         placeholders.join(", ")
     );
 
-    let mut query = sqlx::query_as::<_, (i64, Option<String>, Option<String>, Option<String>)>(&sql);
+    let mut query =
+        sqlx::query_as::<_, (i64, Option<String>, Option<String>, Option<String>)>(&sql);
     for id in ids {
         query = query.bind(id);
     }
@@ -448,19 +488,22 @@ fn extract_competitors(description: &Option<String>, notes: &Option<String>) -> 
 
         // If sentence mentions a competitor keyword, try to extract company names
         let sentence_lower = sentence.to_lowercase();
-        if COMPETITOR_KEYWORDS.iter().any(|kw| sentence_lower.contains(kw)) {
+        if COMPETITOR_KEYWORDS
+            .iter()
+            .any(|kw| sentence_lower.contains(kw))
+        {
             // Look for capitalized words or phrases that might be company names
             let words: Vec<&str> = sentence.split_whitespace().collect();
             for (i, _word) in words.iter().enumerate() {
                 // Simple heuristic: take words that start with uppercase after competitor keywords
                 if let Some(next) = words.get(i + 1) {
-                    if next.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    if next.chars().next().is_some_and(|c| c.is_uppercase()) {
                         let candidate = next.trim_matches(|c: char| c.is_ascii_punctuation());
                         // Skip pure stopwords that happen to be capitalized
                         // (sentence starts, common words).
                         const STOPWORDS: [&str; 12] = [
-                            "The", "A", "An", "And", "But", "We", "They", "Our", "Their",
-                            "This", "That", "It",
+                            "The", "A", "An", "And", "But", "We", "They", "Our", "Their", "This",
+                            "That", "It",
                         ];
                         if !candidate.is_empty()
                             && candidate.len() > 1
@@ -512,9 +555,9 @@ async fn read_sync_state(store: &PgStore) -> Result<(i64, i64), anyhow::Error> {
     // to PgStore here, we use raw sqlx on the underlying pool.
     let pool = &store.pool;
 
-    let row: Option<(i64, i64,)> = sqlx::query_as(
+    let row: Option<(i64, i64)> = sqlx::query_as(
         "SELECT COALESCE(last_deal_id, 0), COALESCE(last_account_id, 0) \
-         FROM starzcrm_sync_state WHERE id = 1"
+         FROM starzcrm_sync_state WHERE id = 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -613,9 +656,14 @@ pub(crate) async fn write_back_icp_targets(
     }
 
     // Load top ICP targets not yet pushed to the CRM.
-    let targets: Vec<(uuid::Uuid, String, Option<String>, Option<String>, Option<f64>)> =
-        sqlx::query_as(
-            r#"
+    let targets: Vec<(
+        uuid::Uuid,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<f64>,
+    )> = sqlx::query_as(
+        r#"
             SELECT id, name, domain, region, icp_fit_score
             FROM companies
             WHERE is_competitor IS DISTINCT FROM TRUE
@@ -629,9 +677,9 @@ pub(crate) async fn write_back_icp_targets(
             ORDER BY icp_fit_score DESC
             LIMIT 50
             "#,
-        )
-        .fetch_all(&store.pool)
-        .await?;
+    )
+    .fetch_all(&store.pool)
+    .await?;
 
     if targets.is_empty() {
         return Ok(0);
@@ -661,7 +709,7 @@ pub(crate) async fn write_back_icp_targets(
         .bind(name)
         .bind(domain.as_deref().unwrap_or(""))
         .bind(region.as_deref().unwrap_or(""))
-        .bind(fit.unwrap_or(0.0) as f64)
+        .bind(fit.unwrap_or(0.0))
         .bind(format!("Auto-generated by ApexIntel ICP scoring (fit={:.2}). High-priority sales target.", fit.unwrap_or(0.0)))
         .execute(mysql_pool)
         .await
@@ -673,7 +721,14 @@ pub(crate) async fn write_back_icp_targets(
         }
         // Record the mapping idempotently so we never re-push the same company.
         let _ = store
-            .record_crm_sync("lead", &company_id.to_string(), &name, "starzcrm", "outbound", None)
+            .record_crm_sync(
+                "lead",
+                &company_id.to_string(),
+                name,
+                "starzcrm",
+                "outbound",
+                None,
+            )
             .await;
     }
 

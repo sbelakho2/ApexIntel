@@ -81,90 +81,255 @@ impl SourceEvidence {
 /// Known English job titles expanded from the NER module.
 static KNOWN_JOB_TITLES_EN: &[&str] = &[
     // C-Suite
-    "Chief Executive Officer", "Chief Financial Officer", "Chief Operating Officer",
-    "Chief Technology Officer", "Chief Information Officer", "Chief Marketing Officer",
-    "Chief Strategy Officer", "Chief Information Security Officer", "Chief Procurement Officer",
-    "Chief Human Resources Officer", "Chief Data Officer", "Chief Analytics Officer",
-    "Chief Risk Officer", "Chief Compliance Officer", "Chief Revenue Officer",
-    "Chairman", "President", "Founder", "Co-Founder", "Owner", "Partner",
+    "Chief Executive Officer",
+    "Chief Financial Officer",
+    "Chief Operating Officer",
+    "Chief Technology Officer",
+    "Chief Information Officer",
+    "Chief Marketing Officer",
+    "Chief Strategy Officer",
+    "Chief Information Security Officer",
+    "Chief Procurement Officer",
+    "Chief Human Resources Officer",
+    "Chief Data Officer",
+    "Chief Analytics Officer",
+    "Chief Risk Officer",
+    "Chief Compliance Officer",
+    "Chief Revenue Officer",
+    "Chairman",
+    "President",
+    "Founder",
+    "Co-Founder",
+    "Owner",
+    "Partner",
     // VP-Level
-    "Senior Vice President", "Executive Vice President", "Vice President of Operations",
-    "Vice President of Supply Chain", "Vice President of Manufacturing",
-    "Vice President of Engineering", "Vice President of Sales",
-    "Vice President of Procurement", "Vice President of Quality",
-    "Vice President of Research and Development", "Vice President of Business Development",
-    "Vice President of Logistics", "Vice President of Finance",
-    "Vice President of Marketing", "Vice President of Strategy",
-    "Group Vice President", "Regional Vice President",
+    "Senior Vice President",
+    "Executive Vice President",
+    "Vice President of Operations",
+    "Vice President of Supply Chain",
+    "Vice President of Manufacturing",
+    "Vice President of Engineering",
+    "Vice President of Sales",
+    "Vice President of Procurement",
+    "Vice President of Quality",
+    "Vice President of Research and Development",
+    "Vice President of Business Development",
+    "Vice President of Logistics",
+    "Vice President of Finance",
+    "Vice President of Marketing",
+    "Vice President of Strategy",
+    "Group Vice President",
+    "Regional Vice President",
     // Director-Level
-    "Managing Director", "Executive Director", "Senior Director",
-    "Director of Supply Chain", "Director of Operations", "Director of Manufacturing",
-    "Director of Engineering", "Director of Procurement", "Director of Quality",
-    "Director of Logistics", "Director of Sales", "Director of Marketing",
-    "Director of Business Development", "Director of Finance",
-    "Regional Director", "Site Director", "Plant Director", "Factory Director",
-    "Director of Compliance", "Director of Security",
+    "Managing Director",
+    "Executive Director",
+    "Senior Director",
+    "Director of Supply Chain",
+    "Director of Operations",
+    "Director of Manufacturing",
+    "Director of Engineering",
+    "Director of Procurement",
+    "Director of Quality",
+    "Director of Logistics",
+    "Director of Sales",
+    "Director of Marketing",
+    "Director of Business Development",
+    "Director of Finance",
+    "Regional Director",
+    "Site Director",
+    "Plant Director",
+    "Factory Director",
+    "Director of Compliance",
+    "Director of Security",
     // Manager-Level
-    "General Manager", "Senior Manager", "Supply Chain Manager", "Operations Manager",
-    "Plant Manager", "Quality Manager", "Procurement Manager", "Engineering Manager",
-    "Program Manager", "Product Manager", "Project Manager", "Logistics Manager",
-    "Warehouse Manager", "Production Manager", "Sourcing Manager",
-    "Category Manager", "Commodity Manager", "Supplier Quality Manager",
-    "Global Supply Chain Director", "Head of Supply Chain", "Head of Operations",
-    "Head of Manufacturing", "Head of Quality", "Head of Procurement",
-    "Head of Engineering", "Head of Sales", "Head of Marketing",
+    "General Manager",
+    "Senior Manager",
+    "Supply Chain Manager",
+    "Operations Manager",
+    "Plant Manager",
+    "Quality Manager",
+    "Procurement Manager",
+    "Engineering Manager",
+    "Program Manager",
+    "Product Manager",
+    "Project Manager",
+    "Logistics Manager",
+    "Warehouse Manager",
+    "Production Manager",
+    "Sourcing Manager",
+    "Category Manager",
+    "Commodity Manager",
+    "Supplier Quality Manager",
+    "Global Supply Chain Director",
+    "Head of Supply Chain",
+    "Head of Operations",
+    "Head of Manufacturing",
+    "Head of Quality",
+    "Head of Procurement",
+    "Head of Engineering",
+    "Head of Sales",
+    "Head of Marketing",
     // Defense/Government
-    "General", "Admiral", "Colonel", "Lieutenant Colonel", "Major", "Captain", "Commander",
-    "Secretary of Defense", "Undersecretary", "Deputy Secretary",
-    "Assistant Secretary", "Director of National Intelligence",
-    "Program Executive Officer", "Brigadier General", "Major General",
+    "General",
+    "Admiral",
+    "Colonel",
+    "Lieutenant Colonel",
+    "Major",
+    "Captain",
+    "Commander",
+    "Secretary of Defense",
+    "Undersecretary",
+    "Deputy Secretary",
+    "Assistant Secretary",
+    "Director of National Intelligence",
+    "Program Executive Officer",
+    "Brigadier General",
+    "Major General",
     // Other
-    "Principal", "Senior Advisor", "Senior Consultant",
-    "Lead Engineer", "Staff Engineer", "Distinguished Engineer",
-    "Technical Fellow", "Research Fellow", "Senior Fellow",
-    "Senior Analyst", "Principal Engineer", "Staff Scientist",
+    "Principal",
+    "Senior Advisor",
+    "Senior Consultant",
+    "Lead Engineer",
+    "Staff Engineer",
+    "Distinguished Engineer",
+    "Technical Fellow",
+    "Research Fellow",
+    "Senior Fellow",
+    "Senior Analyst",
+    "Principal Engineer",
+    "Staff Scientist",
 ];
 
 /// Known Arabic job titles.
 static KNOWN_JOB_TITLES_AR: &[&str] = &[
-    "مدير عام", "رئيس تنفيذي", "مدير العمليات", "مدير المالي", "مدير التسويق",
-    "مدير الموارد البشرية", "مدير المشتريات", "مدير سلسلة التوريد", "مدير الجودة",
-    "مدير المصنع", "مدير الإنتاج", "مدير الهندسة", "مدير المبيعات",
-    "مدير الخدمات اللوجستية", "مدير المشاريع", "مدير تقنية المعلومات",
-    "رئيس مجلس الإدارة", "نائب الرئيس", "مدير إدارة", "مدير قطاع",
-    "رئيس قسم", "مهندس", "مهندس أول", "استشاري", "مستشار",
-    "مدير تطوير الأعمال", "مدير الامتثال", "مدير الأمن", "مدير المخاطر",
-    "العميد", "العقيد", "المقدم", "الرائد", "نقيب", "لواء", "فريق",
-    "وكيل وزارة", "مساعد وكيل", "سفير", "محافظ",
+    "مدير عام",
+    "رئيس تنفيذي",
+    "مدير العمليات",
+    "مدير المالي",
+    "مدير التسويق",
+    "مدير الموارد البشرية",
+    "مدير المشتريات",
+    "مدير سلسلة التوريد",
+    "مدير الجودة",
+    "مدير المصنع",
+    "مدير الإنتاج",
+    "مدير الهندسة",
+    "مدير المبيعات",
+    "مدير الخدمات اللوجستية",
+    "مدير المشاريع",
+    "مدير تقنية المعلومات",
+    "رئيس مجلس الإدارة",
+    "نائب الرئيس",
+    "مدير إدارة",
+    "مدير قطاع",
+    "رئيس قسم",
+    "مهندس",
+    "مهندس أول",
+    "استشاري",
+    "مستشار",
+    "مدير تطوير الأعمال",
+    "مدير الامتثال",
+    "مدير الأمن",
+    "مدير المخاطر",
+    "العميد",
+    "العقيد",
+    "المقدم",
+    "الرائد",
+    "نقيب",
+    "لواء",
+    "فريق",
+    "وكيل وزارة",
+    "مساعد وكيل",
+    "سفير",
+    "محافظ",
 ];
 
 /// Known French job titles.
 static KNOWN_JOB_TITLES_FR: &[&str] = &[
-    "Directeur Général", "Président Directeur Général", "Directeur des Opérations",
-    "Directeur Financier", "Directeur Marketing", "Directeur des Ressources Humaines",
-    "Directeur des Achats", "Directeur de la Chaîne d'Approvisionnement",
-    "Directeur Qualité", "Directeur d'Usine", "Directeur de Production",
-    "Directeur de l'Ingénierie", "Directeur Commercial", "Directeur Logistique",
-    "Directeur de Projet", "Directeur Informatique", "Directeur Technique",
-    "Directeur Recherche et Développement", "Directeur de la Stratégie",
-    "Président", "Vice-Président", "Secrétaire Général", "Chef de Projet",
-    "Chef de Service", "Chef d'Équipe", "Responsable", "Ingénieur",
-    "Ingénieur Principal", "Consultant", "Conseiller", "Analyste",
-    "Responsable Qualité", "Responsable Achats", "Responsable Logistique",
-    "Responsable Production", "Responsable Commercial", "Gérant",
-    "Directeur Adjoint", "Sous-Directeur",
+    "Directeur Général",
+    "Président Directeur Général",
+    "Directeur des Opérations",
+    "Directeur Financier",
+    "Directeur Marketing",
+    "Directeur des Ressources Humaines",
+    "Directeur des Achats",
+    "Directeur de la Chaîne d'Approvisionnement",
+    "Directeur Qualité",
+    "Directeur d'Usine",
+    "Directeur de Production",
+    "Directeur de l'Ingénierie",
+    "Directeur Commercial",
+    "Directeur Logistique",
+    "Directeur de Projet",
+    "Directeur Informatique",
+    "Directeur Technique",
+    "Directeur Recherche et Développement",
+    "Directeur de la Stratégie",
+    "Président",
+    "Vice-Président",
+    "Secrétaire Général",
+    "Chef de Projet",
+    "Chef de Service",
+    "Chef d'Équipe",
+    "Responsable",
+    "Ingénieur",
+    "Ingénieur Principal",
+    "Consultant",
+    "Conseiller",
+    "Analyste",
+    "Responsable Qualité",
+    "Responsable Achats",
+    "Responsable Logistique",
+    "Responsable Production",
+    "Responsable Commercial",
+    "Gérant",
+    "Directeur Adjoint",
+    "Sous-Directeur",
 ];
 
 /// Known Chinese job titles.
 static KNOWN_JOB_TITLES_ZH: &[&str] = &[
-    "总经理", "首席执行官", "首席运营官", "首席财务官", "首席技术官",
-    "首席信息官", "首席营销官", "副总裁", "高级副总裁", "执行副总裁",
-    "总监", "副总监", "经理", "高级经理", "采购经理", "供应链总监",
-    "质量经理", "运营总监", "工厂经理", "生产经理", "工程经理",
-    "销售总监", "市场总监", "人力资源总监", "财务总监", "技术总监",
-    "研发总监", "项目经理", "物流经理", "仓储经理", "区域经理",
-    "总工程师", "主任", "副主任", "科长", "处长", "局长",
-    "董事长", "总裁", "创始人", "合伙人",
+    "总经理",
+    "首席执行官",
+    "首席运营官",
+    "首席财务官",
+    "首席技术官",
+    "首席信息官",
+    "首席营销官",
+    "副总裁",
+    "高级副总裁",
+    "执行副总裁",
+    "总监",
+    "副总监",
+    "经理",
+    "高级经理",
+    "采购经理",
+    "供应链总监",
+    "质量经理",
+    "运营总监",
+    "工厂经理",
+    "生产经理",
+    "工程经理",
+    "销售总监",
+    "市场总监",
+    "人力资源总监",
+    "财务总监",
+    "技术总监",
+    "研发总监",
+    "项目经理",
+    "物流经理",
+    "仓储经理",
+    "区域经理",
+    "总工程师",
+    "主任",
+    "副主任",
+    "科长",
+    "处长",
+    "局长",
+    "董事长",
+    "总裁",
+    "创始人",
+    "合伙人",
 ];
 
 /// Build a union of all known title keywords for the structured pattern regex.
@@ -178,9 +343,28 @@ fn known_title_keywords() -> String {
         }
     }
     // Add the original short set
-    for &kw in &["CEO", "CTO", "COO", "CFO", "VP", "SVP", "EVP", "GM", "Director",
-                  "Manager", "Head", "President", "Chairman", "Engineer", "Founder",
-                  "Partner", "Lead", "Chief", "Senior", "Principal"] {
+    for &kw in &[
+        "CEO",
+        "CTO",
+        "COO",
+        "CFO",
+        "VP",
+        "SVP",
+        "EVP",
+        "GM",
+        "Director",
+        "Manager",
+        "Head",
+        "President",
+        "Chairman",
+        "Engineer",
+        "Founder",
+        "Partner",
+        "Lead",
+        "Chief",
+        "Senior",
+        "Principal",
+    ] {
         keywords.insert(kw);
     }
     let mut sorted: Vec<&str> = keywords.into_iter().collect();
@@ -202,7 +386,9 @@ static PERSON_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     );
     [pattern1, pattern2]
         .iter()
-        .map(|p| Regex::new(p).unwrap_or_else(|error| panic!("invalid person regex `{p}`: {error}")))
+        .map(|p| {
+            Regex::new(p).unwrap_or_else(|error| panic!("invalid person regex `{p}`: {error}"))
+        })
         .collect()
 });
 
@@ -221,13 +407,9 @@ static KNOWN_TITLE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .chain(KNOWN_JOB_TITLES_ZH.iter())
         .copied()
         .collect();
-    let escaped: Vec<String> = all_titles
-        .into_iter()
-        .map(|t| regex::escape(t))
-        .collect();
+    let escaped: Vec<String> = all_titles.into_iter().map(regex::escape).collect();
     let pattern = format!(r"({})", escaped.join("|"));
-    Regex::new(&pattern)
-        .unwrap_or_else(|error| panic!("invalid known title regex: {error}"))
+    Regex::new(&pattern).unwrap_or_else(|error| panic!("invalid known title regex: {error}"))
 });
 
 // ─── Person Extract ─────────────────────────────────────────────────────────
@@ -284,7 +466,9 @@ pub fn extract_person(body_text: &str, url: &str) -> Vec<PersonExtract> {
     // Post-process: for persons missing titles, scan nearby context for known titles
     for p in &mut persons {
         if p.title.is_none() && !normalized_body.is_empty() {
-            if let Some((found_title, _span)) = find_title_near_name(&normalized_body, &p.name, &normalized_url) {
+            if let Some((found_title, _span)) =
+                find_title_near_name(&normalized_body, &p.name, &normalized_url)
+            {
                 let seniority = detect_seniority_from_title(&found_title).to_string();
                 let role_family = detect_role_domain(&found_title).to_string();
                 p.title = Some(found_title.clone());
@@ -300,7 +484,11 @@ pub fn extract_person(body_text: &str, url: &str) -> Vec<PersonExtract> {
 }
 
 /// Find a known job title in the text near a given person name (within ~300 chars).
-fn find_title_near_name(text: &str, name: &str, _source_url: &str) -> Option<(String, (usize, usize))> {
+fn find_title_near_name(
+    text: &str,
+    name: &str,
+    _source_url: &str,
+) -> Option<(String, (usize, usize))> {
     if let Some(name_pos) = text.find(name) {
         let start = name_pos.saturating_sub(300);
         let end = (name_pos + name.len() + 300).min(text.len());
@@ -363,8 +551,10 @@ fn extract_structured_persons(text: &str, url: &str) -> Vec<PersonExtract> {
             let has_title = title.is_some();
             let has_company = company.is_some();
 
-            let mut evidence = SourceEvidence::default();
-            evidence.name_source = Some("structured_pattern_regex".to_string());
+            let mut evidence = SourceEvidence {
+                name_source: Some("structured_pattern_regex".to_string()),
+                ..Default::default()
+            };
             if has_title {
                 evidence.title_source = Some("structured_pattern_regex".to_string());
             }
@@ -422,9 +612,11 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
                 continue;
             }
 
-            let mut evidence = SourceEvidence::default();
-            evidence.name_source = Some("email_localpart_parsing".to_string());
-            evidence.email_source = Some("email_harvesting".to_string());
+            let mut evidence = SourceEvidence {
+                name_source: Some("email_localpart_parsing".to_string()),
+                email_source: Some("email_harvesting".to_string()),
+                ..Default::default()
+            };
             evidence.source_urls.push(url.to_string());
 
             results.push(PersonExtract {
@@ -470,9 +662,11 @@ fn extract_named_persons(text: &str, url: &str) -> Vec<PersonExtract> {
                 continue;
             }
 
-            let mut evidence = SourceEvidence::default();
-            evidence.name_source = Some("linkedin_slug_parsing".to_string());
-            evidence.linkedin_source = Some("linkedin_url_extraction".to_string());
+            let mut evidence = SourceEvidence {
+                name_source: Some("linkedin_slug_parsing".to_string()),
+                linkedin_source: Some("linkedin_url_extraction".to_string()),
+                ..Default::default()
+            };
             evidence.source_urls.push(url.to_string());
 
             results.push(PersonExtract {
@@ -761,10 +955,7 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
             let rest = title.get(idx..)?;
             if let Some(body) = rest.get(12..) {
                 if let Some(end) = body.find([',', '.', '\n']) {
-                    return Some(format!(
-                        "{}",
-                        rest.get(..(12 + end)).unwrap_or(body).trim()
-                    ));
+                    return Some(rest.get(..(12 + end)).unwrap_or(body).trim().to_string());
                 } else {
                     return Some(rest.trim().to_string());
                 }
@@ -806,7 +997,11 @@ pub fn extract_government_affiliation(title: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::assertions_on_constants)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::assertions_on_constants
+    )]
 
     use super::*;
 
@@ -822,7 +1017,12 @@ mod tests {
         assert!(p.role_family.as_deref().unwrap().contains("Supply Chain"));
         assert_eq!(p.seniority.as_deref().unwrap(), "Manager");
         assert_eq!(p.confidence, 0.85);
-        assert!(p.evidence.title_source.as_deref().unwrap().contains("structured_pattern"));
+        assert!(p
+            .evidence
+            .title_source
+            .as_deref()
+            .unwrap()
+            .contains("structured_pattern"));
     }
 
     #[test]
@@ -833,10 +1033,19 @@ mod tests {
         // no panic and that the company name is detected via context.
         let found = persons.iter().any(|p| {
             p.name.contains("Jean")
-                || p.company.as_deref().map(|c| c.contains("Starz")).unwrap_or(false)
-                || p.title.as_deref().map(|t| t.contains("Achats")).unwrap_or(false)
+                || p.company
+                    .as_deref()
+                    .map(|c| c.contains("Starz"))
+                    .unwrap_or(false)
+                || p.title
+                    .as_deref()
+                    .map(|t| t.contains("Achats"))
+                    .unwrap_or(false)
         });
-        assert!(found || persons.is_empty(), "French extraction should not panic");
+        assert!(
+            found || persons.is_empty(),
+            "French extraction should not panic"
+        );
     }
 
     #[test]
@@ -845,12 +1054,20 @@ mod tests {
         let persons = extract_person(text, "https://example.com");
         let mut found = false;
         for p in &persons {
-            if p.name.contains("أحمد") || p.title.as_deref().map(|t| t.contains("مدير")).unwrap_or(false) {
+            if p.name.contains("أحمد")
+                || p.title
+                    .as_deref()
+                    .map(|t| t.contains("مدير"))
+                    .unwrap_or(false)
+            {
                 found = true;
             }
         }
         // Arabic name extraction depends on Unicode support; at minimum verify no panic
-        assert!(found || persons.is_empty(), "Arabic extraction should not panic");
+        assert!(
+            found || persons.is_empty(),
+            "Arabic extraction should not panic"
+        );
     }
 
     #[test]
@@ -864,7 +1081,14 @@ mod tests {
                 assert!(p.evidence.has_bare_name_extraction());
                 assert!(p.linkedin_url.is_some());
                 // Title should NOT be hardcoded
-                assert!(p.title.is_none() || p.evidence.title_source.as_deref().map(|s| s.contains("context_scan")).unwrap_or(false));
+                assert!(
+                    p.title.is_none()
+                        || p.evidence
+                            .title_source
+                            .as_deref()
+                            .map(|s| s.contains("context_scan"))
+                            .unwrap_or(false)
+                );
                 found = true;
             }
         }
@@ -898,9 +1122,15 @@ mod tests {
     #[test]
     fn test_seniority_detection() {
         assert_eq!(detect_seniority_from_title("CEO"), "C-Level");
-        assert_eq!(detect_seniority_from_title("Chief Technology Officer"), "C-Level");
+        assert_eq!(
+            detect_seniority_from_title("Chief Technology Officer"),
+            "C-Level"
+        );
         assert_eq!(detect_seniority_from_title("Vice President of Sales"), "VP");
-        assert_eq!(detect_seniority_from_title("Supply Chain Manager"), "Manager");
+        assert_eq!(
+            detect_seniority_from_title("Supply Chain Manager"),
+            "Manager"
+        );
         assert_eq!(detect_seniority_from_title("Senior Engineer"), "Senior");
     }
 
@@ -934,9 +1164,16 @@ mod tests {
         let persons = extract_person(text, "https://example.com");
         // Context scan is best-effort on free prose; verify no panic and that
         // either the person or the title is detected.
-        let found = persons
-            .iter()
-            .any(|p| p.name.contains("John") || p.title.as_deref().map(|t| t.contains("Director")).unwrap_or(false));
-        assert!(found || persons.is_empty(), "Extraction should not panic on prose");
+        let found = persons.iter().any(|p| {
+            p.name.contains("John")
+                || p.title
+                    .as_deref()
+                    .map(|t| t.contains("Director"))
+                    .unwrap_or(false)
+        });
+        assert!(
+            found || persons.is_empty(),
+            "Extraction should not panic on prose"
+        );
     }
 }

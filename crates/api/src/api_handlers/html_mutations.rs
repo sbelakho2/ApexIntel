@@ -147,7 +147,7 @@ pub(crate) async fn post_trigger_scan_html(
             StatusCode::BAD_REQUEST,
             Html(format!(
                 "<div class=\"rounded border border-rams-red/30 bg-rams-red/10 px-3 py-2 text-xs font-semibold text-rams-red\">Unknown scan type: {}</div>",
-                requested_kind
+                crate::web::escape_html(&requested_kind)
             )),
         );
     }

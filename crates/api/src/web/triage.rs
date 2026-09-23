@@ -16,7 +16,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use apex_core::triage::{TriageQueueItem, TriageStatus, TriageThresholds};
-use apex_store::postgres::PgStore;
+use apex_store::postgres::{PgStore, WarningListFilters};
 use apex_triage::TriageQueue;
 
 use crate::middleware::session::WebSession;
@@ -162,14 +162,17 @@ pub async fn list_triage(
     headers: HeaderMap,
     Query(params): Query<TriageListQuery>,
 ) -> impl IntoResponse {
-    let queue = make_queue(store);
+    let queue = make_queue(store.clone());
     let thresholds = TriageThresholds::default();
     let page = params.page.unwrap_or(1).max(1);
     let per_page = 50usize;
     let offset = ((page - 1) * per_page as u32) as u64;
 
     let status_filter = parse_status(params.status.as_deref());
-    let items = queue.list(status_filter.clone(), per_page, offset).await.unwrap_or_default();
+    let items = queue
+        .list(status_filter.clone(), per_page, offset)
+        .await
+        .unwrap_or_default();
     let total = queue.count(status_filter.clone()).await.unwrap_or(0);
     let total_pages = if per_page > 0 {
         (total as f64 / per_page as f64).ceil() as u32
@@ -180,7 +183,15 @@ pub async fn list_triage(
 
     let current_status = params.status.unwrap_or_else(|| "all".to_string());
 
-    let pctx = PageContext::from_session(&session, "/triage", total);
+    // Nav badge shows unacknowledged warnings, not the triage queue size.
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
+    let pctx = PageContext::from_session(&session, "/triage", unack);
     let (current_path, username, warning_count, theme) = page_from_ctx(&pctx);
 
     if is_htmx_request(&headers) {
@@ -324,11 +335,18 @@ pub async fn override_triage_html(
         return (StatusCode::BAD_REQUEST, "Score must be between 0.0 and 1.0").into_response();
     }
 
-    match queue.override_score(id, form.score, form.reason.as_deref().unwrap_or("")).await {
+    match queue
+        .override_score(id, form.score, form.reason.as_deref().unwrap_or(""))
+        .await
+    {
         Ok(_) => Redirect::to(&format!("/triage/{}", id)).into_response(),
         Err(e) => {
             tracing::error!("Failed to override triage item {id}: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to override score").into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to override score",
+            )
+                .into_response()
         }
     }
 }

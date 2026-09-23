@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Psychological profiling API handlers.
 //!
@@ -59,7 +59,9 @@ pub(crate) async fn get_person_psych(
             tracing::error!(request_id = %request_id, "get_person_psych failed: {err:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to load psych profile"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to load psych profile",
+                ))),
             )
         }
     }
@@ -140,7 +142,10 @@ pub(crate) async fn get_person_engagement_profile(
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(error_response(ApiError::not_found("Engagement profile", &id))),
+            Json(error_response(ApiError::not_found(
+                "Engagement profile",
+                &id,
+            ))),
         ),
         Err(err) => {
             tracing::error!(

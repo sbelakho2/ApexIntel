@@ -716,11 +716,7 @@ pub struct ActivityEvent {
 }
 
 pub async fn fetch_activity_feed(limit: u32, offset: u32) -> Result<Vec<ActivityEvent>, String> {
-    get_api(&format!(
-        "/api/activity?limit={}&offset={}",
-        limit, offset
-    ))
-    .await
+    get_api(&format!("/api/activity?limit={}&offset={}", limit, offset)).await
 }
 
 // === Battlecards Types ===

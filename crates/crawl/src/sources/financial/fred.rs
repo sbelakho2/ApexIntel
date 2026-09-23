@@ -136,7 +136,10 @@ impl FredMonitor {
             }
         }
 
-        info!(total = all_signals.len(), "FRED economic monitoring scan complete");
+        info!(
+            total = all_signals.len(),
+            "FRED economic monitoring scan complete"
+        );
         all_signals
     }
 

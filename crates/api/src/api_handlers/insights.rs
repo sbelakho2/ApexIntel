@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::*;
 
@@ -889,10 +889,18 @@ pub(crate) async fn investigate_insight(
     // Run the investigation engine.
     let engine = apex_investigation::investigations::InvestigationEngine::new();
     let investigation_type = match insight.insight_type.as_deref() {
-        Some("supply_chain_risk") => apex_investigation::investigations::InvestigationType::SupplyChainAnalysis,
-        Some("competitor_market") => apex_investigation::investigations::InvestigationType::CompanyDeepDive,
-        Some("geopolitical_analysis") => apex_investigation::investigations::InvestigationType::GeopoliticalRisk,
-        Some("security_compliance") | Some("cybersecurity_threat") => apex_investigation::investigations::InvestigationType::ThreatAssessment,
+        Some("supply_chain_risk") => {
+            apex_investigation::investigations::InvestigationType::SupplyChainAnalysis
+        }
+        Some("competitor_market") => {
+            apex_investigation::investigations::InvestigationType::CompanyDeepDive
+        }
+        Some("geopolitical_analysis") => {
+            apex_investigation::investigations::InvestigationType::GeopoliticalRisk
+        }
+        Some("security_compliance") | Some("cybersecurity_threat") => {
+            apex_investigation::investigations::InvestigationType::ThreatAssessment
+        }
         _ => apex_investigation::investigations::InvestigationType::CompanyDeepDive,
     };
     let investigation_type_label = format!("{investigation_type:?}");

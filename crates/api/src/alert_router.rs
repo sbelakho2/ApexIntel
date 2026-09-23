@@ -254,8 +254,14 @@ mod tests {
         assert_eq!(AlertEventType::NewInsight.as_str(), "new_insight");
         assert_eq!(AlertEventType::NewWarning.as_str(), "new_warning");
         assert_eq!(AlertEventType::RecipeMatch.as_str(), "recipe_match");
-        assert_eq!(AlertEventType::CompetitorChange.as_str(), "competitor_change");
-        assert_eq!(AlertEventType::SupplyChainRisk.as_str(), "supply_chain_risk");
+        assert_eq!(
+            AlertEventType::CompetitorChange.as_str(),
+            "competitor_change"
+        );
+        assert_eq!(
+            AlertEventType::SupplyChainRisk.as_str(),
+            "supply_chain_risk"
+        );
         assert_eq!(AlertEventType::SystemAlert.as_str(), "system_alert");
     }
 
@@ -297,10 +303,7 @@ mod tests {
         assert_eq!(deserialized.id, event.id);
         assert_eq!(deserialized.event_type, event.event_type);
         assert_eq!(deserialized.user_ids.len(), 1);
-        assert_eq!(
-            deserialized.metadata["change_type"],
-            "pivot"
-        );
+        assert_eq!(deserialized.metadata["change_type"], "pivot");
     }
 
     #[test]

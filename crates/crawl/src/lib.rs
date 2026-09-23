@@ -1,6 +1,5 @@
 pub mod academic;
 pub mod breach;
-pub mod dark_web;
 pub mod browser;
 pub mod browser_renderer;
 pub mod change_detection;
@@ -8,6 +7,7 @@ pub mod client;
 pub mod contact_enrichment;
 pub mod ct;
 pub mod cve;
+pub mod dark_web;
 pub mod diff_engine;
 pub mod dns;
 pub mod errors;
@@ -37,17 +37,17 @@ pub mod tor_client;
 pub mod trade_shows;
 
 // Re-export commonly used types for convenience
+pub use browser_renderer::{
+    BrowserRendererConfig, CacheStats, EnhancedBrowserRenderer, LazyLoadingDetector, RenderResult,
+    ScreenshotVerifier,
+};
 pub use errors::{CrawlError, CrawlFailureCategory};
 pub use retry_engine::{
-    RetryEngine, RetryConfig, ContentCache, CachedContent, CircuitState, CircuitStats,
-    RetryDecision, RetryEngineError, DomainCircuitBreaker,
-};
-pub use browser_renderer::{
-    EnhancedBrowserRenderer, BrowserRendererConfig, RenderResult, CacheStats,
-    LazyLoadingDetector, ScreenshotVerifier,
+    CachedContent, CircuitState, CircuitStats, ContentCache, DomainCircuitBreaker, RetryConfig,
+    RetryDecision, RetryEngine, RetryEngineError,
 };
 pub use source_health::{
-    SourceHealthMonitor, HealthConfig, HealthMetrics, HealthStatus, HealthStatistics,
-    CrawlResult, RetiredSource, DiscoveredSource, NewSourceSuggestion,
-    SourceType, DiscoveryMethod, DiscoveryStats,
+    CrawlResult, DiscoveredSource, DiscoveryMethod, DiscoveryStats, HealthConfig, HealthMetrics,
+    HealthStatistics, HealthStatus, NewSourceSuggestion, RetiredSource, SourceHealthMonitor,
+    SourceType,
 };

@@ -393,7 +393,7 @@ pub fn format_gate_report(evidence: &GateEvidence, config: &GateConfig) -> Strin
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 

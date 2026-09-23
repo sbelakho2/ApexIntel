@@ -27,10 +27,10 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::{Result, ThreatIntelError};
+use crate::mitre_attck::{AttackTactic, AttackTechnique};
 use crate::models::{
     ConfidenceLevel, GeoLocation, IndustrySector, PaginatedResponse, PaginationParams, RiskScore,
 };
-use crate::mitre_attck::{AttackSubTechnique, AttackTechnique, AttackTactic};
 
 /// State of a threat actor's activity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -179,8 +179,18 @@ impl ThreatActor {
 
         let recency_factor = if let Some(last) = self.last_activity {
             let days_since = (Utc::now().date_naive() - last).num_days();
-            if days_since < 30 { 0.15 } else if days_since < 180 { 0.10 } else if days_since < 365 { 0.05 } else { 0.0 }
-        } else { 0.05 };
+            if days_since < 30 {
+                0.15
+            } else if days_since < 180 {
+                0.10
+            } else if days_since < 365 {
+                0.05
+            } else {
+                0.0
+            }
+        } else {
+            0.05
+        };
         factors.push(crate::models::RiskFactor {
             name: "recency".to_string(),
             contribution: recency_factor,
@@ -206,7 +216,11 @@ impl ThreatActor {
         score += motivation_factor * 0.20;
         weight_sum += 0.20;
 
-        let final_score = if weight_sum > 0.0 { score / weight_sum } else { 0.0 };
+        let final_score = if weight_sum > 0.0 {
+            score / weight_sum
+        } else {
+            0.0
+        };
         let confidence = if self.target_sectors.len() >= 3 && self.techniques.len() >= 5 {
             ConfidenceLevel::High
         } else if !self.target_sectors.is_empty() || self.techniques.len() >= 2 {
@@ -223,7 +237,9 @@ impl ThreatActor {
     }
 
     pub fn has_technique(&self, technique_id: &str) -> bool {
-        self.techniques.iter().any(|t| t.technique_id == technique_id)
+        self.techniques
+            .iter()
+            .any(|t| t.technique_id == technique_id)
     }
 }
 
@@ -528,7 +544,10 @@ impl ThreatActorDatabase {
         self.actors.insert(id, actor.clone());
         self.actors_by_alias.insert(actor.alias.clone(), id);
         for sector in &actor.target_sectors {
-            self.actors_by_sector.entry(sector.clone()).or_default().push(id);
+            self.actors_by_sector
+                .entry(sector.clone())
+                .or_default()
+                .push(id);
         }
         Ok(id)
     }
@@ -538,7 +557,9 @@ impl ThreatActorDatabase {
     }
 
     pub fn get_actor_by_alias(&self, alias: &str) -> Option<&ThreatActor> {
-        self.actors_by_alias.get(alias).and_then(|id| self.actors.get(id))
+        self.actors_by_alias
+            .get(alias)
+            .and_then(|id| self.actors.get(id))
     }
 
     pub fn get_actors_by_sector(&self, sector: &IndustrySector) -> Vec<&ThreatActor> {
@@ -549,11 +570,17 @@ impl ThreatActorDatabase {
     }
 
     pub fn get_actors_by_status(&self, status: ActorStatus) -> Vec<&ThreatActor> {
-        self.actors.values().filter(|a| a.status == status).collect()
+        self.actors
+            .values()
+            .filter(|a| a.status == status)
+            .collect()
     }
 
     pub fn get_actors_by_motivation(&self, motivation: ActorMotivation) -> Vec<&ThreatActor> {
-        self.actors.values().filter(|a| a.motivation == motivation).collect()
+        self.actors
+            .values()
+            .filter(|a| a.motivation == motivation)
+            .collect()
     }
 
     pub fn search_actors(&self, query: &str) -> Vec<&ThreatActor> {
@@ -562,8 +589,12 @@ impl ThreatActorDatabase {
             .values()
             .filter(|a| {
                 a.alias.to_lowercase().contains(&query_lower)
-                    || a.aliases.iter().any(|alias| alias.to_lowercase().contains(&query_lower))
-                    || a.name.as_ref().is_some_and(|n| n.to_lowercase().contains(&query_lower))
+                    || a.aliases
+                        .iter()
+                        .any(|alias| alias.to_lowercase().contains(&query_lower))
+                    || a.name
+                        .as_ref()
+                        .is_some_and(|n| n.to_lowercase().contains(&query_lower))
             })
             .collect()
     }
@@ -587,7 +618,10 @@ impl ThreatActorDatabase {
     }
 
     pub fn get_patterns_by_sector(&self, sector: &IndustrySector) -> Vec<&AttackPattern> {
-        self.patterns.values().filter(|p| p.applicable_sectors.contains(sector)).collect()
+        self.patterns
+            .values()
+            .filter(|p| p.applicable_sectors.contains(sector))
+            .collect()
     }
 
     pub fn add_ttp(&mut self, ttp: TTP) -> Uuid {
@@ -612,22 +646,37 @@ impl ThreatActorDatabase {
 
     pub fn search_indicators(&self, pattern: &str) -> Vec<&Indicator> {
         let pattern_lower = pattern.to_lowercase();
-        self.indicators.values().filter(|i| i.value.to_lowercase().contains(&pattern_lower)).collect()
+        self.indicators
+            .values()
+            .filter(|i| i.value.to_lowercase().contains(&pattern_lower))
+            .collect()
     }
 
     pub fn get_indicators_by_type(&self, indicator_type: IndicatorType) -> Vec<&Indicator> {
-        self.indicators.values().filter(|i| i.indicator_type == indicator_type).collect()
+        self.indicators
+            .values()
+            .filter(|i| i.indicator_type == indicator_type)
+            .collect()
     }
 
     pub fn find_actors_by_technique(&self, technique_id: &str) -> Vec<&ThreatActor> {
-        self.actors.values().filter(|a| a.has_technique(technique_id)).collect()
+        self.actors
+            .values()
+            .filter(|a| a.has_technique(technique_id))
+            .collect()
     }
 
     pub fn get_sector_threat_summary(&self, sector: &IndustrySector) -> SectorThreatSummary {
         let actors = self.get_actors_by_sector(sector);
-        let active_count = actors.iter().filter(|a| a.status == ActorStatus::Active).count();
+        let active_count = actors
+            .iter()
+            .filter(|a| a.status == ActorStatus::Active)
+            .count();
         let patterns = self.get_patterns_by_sector(sector);
-        let techniques: Vec<_> = actors.iter().flat_map(|a| a.techniques.iter().map(|t| t.technique_id.clone())).collect();
+        let techniques: Vec<_> = actors
+            .iter()
+            .flat_map(|a| a.techniques.iter().map(|t| t.technique_id.clone()))
+            .collect();
         let mut unique_techniques = techniques.clone();
         unique_techniques.sort();
         unique_techniques.dedup();
@@ -642,7 +691,11 @@ impl ThreatActorDatabase {
             overall_risk_score: if actors.is_empty() {
                 0.0
             } else {
-                actors.iter().map(|a| a.calculate_risk_score().score).sum::<f64>() / actors.len() as f64
+                actors
+                    .iter()
+                    .map(|a| a.calculate_risk_score().score)
+                    .sum::<f64>()
+                    / actors.len() as f64
             },
         }
     }
@@ -651,7 +704,7 @@ impl ThreatActorDatabase {
     // All data sourced from: MITRE ATT&CK, CISA advisories, Mandiant reports,
     // CrowdStrike Global Threat Report, joint government advisories.
 
-    #[allow(clippy::disallowed_methods, unused_must_use)]
+    #[allow(clippy::unwrap_used, clippy::expect_used, unused_must_use)]
     fn populate_known_actors(&mut self) {
         // ── APT28 — Fancy Bear (GRU Unit 26165, Russia) ──
         self.add_actor(
@@ -880,26 +933,30 @@ impl ThreatActorDatabase {
         );
 
         // ── Add attack patterns ──
-        self.add_pattern(AttackPattern::new("PAT-001", "Supply Chain Compromise")
-            .with_description("Compromising software dependencies, update mechanisms, or hardware components")
-            .with_mitre_id("T1195")
-            .with_mitigation(vec![
-                "Implement code signing verification".into(),
-                "Maintain SBOM inventory".into(),
-                "Verify dependency integrity".into(),
-                "Monitor build pipeline for unauthorized changes".into(),
-            ])
+        self.add_pattern(
+            AttackPattern::new("PAT-001", "Supply Chain Compromise")
+                .with_description(
+                    "Compromising software dependencies, update mechanisms, or hardware components",
+                )
+                .with_mitre_id("T1195")
+                .with_mitigation(vec![
+                    "Implement code signing verification".into(),
+                    "Maintain SBOM inventory".into(),
+                    "Verify dependency integrity".into(),
+                    "Monitor build pipeline for unauthorized changes".into(),
+                ]),
         );
 
-        self.add_pattern(AttackPattern::new("PAT-002", "Phishing with Spearphishing Attachment")
-            .with_description("Targeted phishing with malicious attachments")
-            .with_mitre_id("T1566.001")
-            .with_mitigation(vec![
-                "Email filtering with sandbox analysis".into(),
-                "User awareness training".into(),
-                "Attachment sandboxing".into(),
-                "Disable macros in documents from external sources".into(),
-            ])
+        self.add_pattern(
+            AttackPattern::new("PAT-002", "Phishing with Spearphishing Attachment")
+                .with_description("Targeted phishing with malicious attachments")
+                .with_mitre_id("T1566.001")
+                .with_mitigation(vec![
+                    "Email filtering with sandbox analysis".into(),
+                    "User awareness training".into(),
+                    "Attachment sandboxing".into(),
+                    "Disable macros in documents from external sources".into(),
+                ]),
         );
 
         self.add_pattern(AttackPattern::new("PAT-003", "Ransomware Double Extortion")
@@ -931,36 +988,91 @@ pub struct SectorThreatSummary {
 
 // Builder pattern extensions
 impl ThreatActor {
-    pub fn with_name(mut self, name: impl Into<String>) -> Self { self.name = Some(name.into()); self }
-    pub fn with_aliases(mut self, aliases: Vec<String>) -> Self { self.aliases = aliases; self }
-    pub fn with_attributed_country(mut self, country: impl Into<String>) -> Self { self.attributed_country = Some(country.into()); self }
-    pub fn with_sponsor(mut self, sponsor: impl Into<String>) -> Self { self.sponsor = Some(sponsor.into()); self }
-    pub fn with_target_sectors(mut self, sectors: Vec<IndustrySector>) -> Self { self.target_sectors = sectors; self }
-    pub fn with_target_regions(mut self, regions: Vec<String>) -> Self { self.target_regions = regions; self }
-    pub fn with_first_activity(mut self, date: NaiveDate) -> Self { self.first_activity = Some(date); self }
-    pub fn with_last_activity(mut self, date: NaiveDate) -> Self { self.last_activity = Some(date); self }
-    pub fn with_sophistication(mut self, level: u8) -> Self { self.sophistication_level = level.min(10); self }
-    pub fn with_techniques(mut self, techniques: Vec<ActorTechnique>) -> Self { self.techniques = techniques; self }
-    pub fn with_campaigns(mut self, campaigns: Vec<Campaign>) -> Self { self.campaigns = campaigns; self }
-    pub fn with_references(mut self, references: Vec<ActorReference>) -> Self { self.references = references; self }
-    pub fn with_description(mut self, desc: impl Into<String>) -> Self { self.description = Some(desc.into()); self }
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+    pub fn with_aliases(mut self, aliases: Vec<String>) -> Self {
+        self.aliases = aliases;
+        self
+    }
+    pub fn with_attributed_country(mut self, country: impl Into<String>) -> Self {
+        self.attributed_country = Some(country.into());
+        self
+    }
+    pub fn with_sponsor(mut self, sponsor: impl Into<String>) -> Self {
+        self.sponsor = Some(sponsor.into());
+        self
+    }
+    pub fn with_target_sectors(mut self, sectors: Vec<IndustrySector>) -> Self {
+        self.target_sectors = sectors;
+        self
+    }
+    pub fn with_target_regions(mut self, regions: Vec<String>) -> Self {
+        self.target_regions = regions;
+        self
+    }
+    pub fn with_first_activity(mut self, date: NaiveDate) -> Self {
+        self.first_activity = Some(date);
+        self
+    }
+    pub fn with_last_activity(mut self, date: NaiveDate) -> Self {
+        self.last_activity = Some(date);
+        self
+    }
+    pub fn with_sophistication(mut self, level: u8) -> Self {
+        self.sophistication_level = level.min(10);
+        self
+    }
+    pub fn with_techniques(mut self, techniques: Vec<ActorTechnique>) -> Self {
+        self.techniques = techniques;
+        self
+    }
+    pub fn with_campaigns(mut self, campaigns: Vec<Campaign>) -> Self {
+        self.campaigns = campaigns;
+        self
+    }
+    pub fn with_references(mut self, references: Vec<ActorReference>) -> Self {
+        self.references = references;
+        self
+    }
+    pub fn with_description(mut self, desc: impl Into<String>) -> Self {
+        self.description = Some(desc.into());
+        self
+    }
 }
 
 impl AttackPattern {
-    pub fn with_description(mut self, desc: impl Into<String>) -> Self { self.description = desc.into(); self }
-    pub fn with_mitre_id(mut self, id: impl Into<String>) -> Self { self.mitre_id = Some(id.into()); self }
-    pub fn with_mitigation(mut self, mitigations: Vec<String>) -> Self { self.mitigation_strategies = mitigations; self }
-    pub fn with_sectors(mut self, sectors: Vec<IndustrySector>) -> Self { self.applicable_sectors = sectors; self }
+    pub fn with_description(mut self, desc: impl Into<String>) -> Self {
+        self.description = desc.into();
+        self
+    }
+    pub fn with_mitre_id(mut self, id: impl Into<String>) -> Self {
+        self.mitre_id = Some(id.into());
+        self
+    }
+    pub fn with_mitigation(mut self, mitigations: Vec<String>) -> Self {
+        self.mitigation_strategies = mitigations;
+        self
+    }
+    pub fn with_sectors(mut self, sectors: Vec<IndustrySector>) -> Self {
+        self.applicable_sectors = sectors;
+        self
+    }
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_actor_creation() {
-        let actor = ThreatActor::new("TEST-ACTOR", ActorMotivation::Financial, ActorStatus::Active);
+        let actor = ThreatActor::new(
+            "TEST-ACTOR",
+            ActorMotivation::Financial,
+            ActorStatus::Active,
+        );
         assert_eq!(actor.alias, "TEST-ACTOR");
         assert_eq!(actor.motivation, ActorMotivation::Financial);
         assert_eq!(actor.status, ActorStatus::Active);
@@ -983,7 +1095,13 @@ mod tests {
     #[test]
     fn test_database_operations() {
         let mut db = ThreatActorDatabase::new();
-        let id = db.add_actor(ThreatActor::new("TEST", ActorMotivation::Financial, ActorStatus::Active)).unwrap();
+        let id = db
+            .add_actor(ThreatActor::new(
+                "TEST",
+                ActorMotivation::Financial,
+                ActorStatus::Active,
+            ))
+            .unwrap();
         assert!(db.get_actor(id).is_some());
         assert!(db.get_actor_by_alias("TEST").is_some());
         assert!(db.get_actor_by_alias("UNKNOWN").is_none());
@@ -992,8 +1110,17 @@ mod tests {
     #[test]
     fn test_duplicate_alias_rejected() {
         let mut db = ThreatActorDatabase::new();
-        db.add_actor(ThreatActor::new("TEST", ActorMotivation::Financial, ActorStatus::Active)).unwrap();
-        let result = db.add_actor(ThreatActor::new("TEST", ActorMotivation::Espionage, ActorStatus::Active));
+        db.add_actor(ThreatActor::new(
+            "TEST",
+            ActorMotivation::Financial,
+            ActorStatus::Active,
+        ))
+        .unwrap();
+        let result = db.add_actor(ThreatActor::new(
+            "TEST",
+            ActorMotivation::Espionage,
+            ActorStatus::Active,
+        ));
         assert!(result.is_err());
     }
 

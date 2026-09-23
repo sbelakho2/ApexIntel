@@ -35,9 +35,7 @@ pub use distribution::BattlecardDistributor;
 pub use feature_matrix::{Advantage, FeatureComparison, FeatureMatrixBuilder, FeatureSupport};
 pub use generator::{BattlecardContext, BattlecardGenerator, PricingObservation};
 pub use kill_shot::{KillShot, KillShotAnalyzer};
-pub use objection_handler::{
-    Objection, ObjectionHandler, ObjectionHandlerPair, ObjectionSeverity,
-};
+pub use objection_handler::{Objection, ObjectionHandler, ObjectionHandlerPair, ObjectionSeverity};
 pub use win_loss_analyzer::{
     ClosedDeal, LossReason, WinLossAnalysis, WinLossAnalyzer, WinLossTrend,
 };
@@ -75,17 +73,26 @@ impl BattlecardEngine {
         competitor_id: Uuid,
     ) -> BattlecardData {
         let positioning = self.generator.generate_positioning(competitor, our_company);
-        let pricing = self.generator.generate_pricing(competitor, our_company, ctx);
-        let feature_matrix = self.generator.generate_feature_matrix(competitor, our_company);
+        let pricing = self
+            .generator
+            .generate_pricing(competitor, our_company, ctx);
+        let feature_matrix = self
+            .generator
+            .generate_feature_matrix(competitor, our_company);
         let strengths = self.generator.generate_strengths(competitor, our_company);
         let weaknesses = self.generator.generate_weaknesses(competitor, our_company);
         let objection_handlers =
-            self.generator.generate_objection_handlers(competitor, our_company, recent_insights);
+            self.generator
+                .generate_objection_handlers(competitor, our_company, recent_insights);
         let kill_shots = self.generator.generate_kill_shots(competitor, our_company);
         let recent_news = self.generator.generate_recent_news(recent_insights);
-        let win_loss = self
-            .generator
-            .generate_win_loss(competitor, our_company, ctx, our_company_id, competitor_id);
+        let win_loss = self.generator.generate_win_loss(
+            competitor,
+            our_company,
+            ctx,
+            our_company_id,
+            competitor_id,
+        );
 
         BattlecardData {
             positioning,
@@ -118,11 +125,15 @@ impl BattlecardEngine {
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "pricing" => {
-                let data = self.generator.generate_pricing(competitor, our_company, ctx);
+                let data = self
+                    .generator
+                    .generate_pricing(competitor, our_company, ctx);
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "feature_matrix" => {
-                let data = self.generator.generate_feature_matrix(competitor, our_company);
+                let data = self
+                    .generator
+                    .generate_feature_matrix(competitor, our_company);
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "strengths" => {
@@ -134,8 +145,11 @@ impl BattlecardEngine {
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "objection_handlers" => {
-                let data =
-                    self.generator.generate_objection_handlers(competitor, our_company, recent_insights);
+                let data = self.generator.generate_objection_handlers(
+                    competitor,
+                    our_company,
+                    recent_insights,
+                );
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "kill_shots" => {
@@ -147,9 +161,13 @@ impl BattlecardEngine {
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "win_loss" => {
-                let data = self
-                    .generator
-                    .generate_win_loss(competitor, our_company, ctx, our_company_id, competitor_id);
+                let data = self.generator.generate_win_loss(
+                    competitor,
+                    our_company,
+                    ctx,
+                    our_company_id,
+                    competitor_id,
+                );
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             _ => Err(format!("unknown section: {}", section)),
@@ -181,25 +199,13 @@ pub struct BattlecardData {
 
 // ─── Positioning ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PositioningSection {
     pub market_position: String,
     pub value_proposition: String,
     pub differentiators: Vec<String>,
     pub target_segments: Vec<String>,
     pub brand_perception: String,
-}
-
-impl Default for PositioningSection {
-    fn default() -> Self {
-        Self {
-            market_position: String::new(),
-            value_proposition: String::new(),
-            differentiators: Vec::new(),
-            target_segments: Vec::new(),
-            brand_perception: String::new(),
-        }
-    }
 }
 
 // ─── Pricing ───────────────────────────────────────────────────────────────
@@ -229,19 +235,10 @@ impl Default for PricingSection {
 
 // ─── Feature Matrix ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FeatureMatrixSection {
     pub categories: Vec<FeatureCategory>,
     pub summary: String,
-}
-
-impl Default for FeatureMatrixSection {
-    fn default() -> Self {
-        Self {
-            categories: Vec::new(),
-            summary: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -741,7 +741,10 @@ fn company_row_to_detail(
 
     let now = Utc::now();
     let region_text = row.region.clone().unwrap_or_default();
-    let type_text = row.company_type.clone().unwrap_or_else(|| "Unknown type".to_string());
+    let type_text = row
+        .company_type
+        .clone()
+        .unwrap_or_else(|| "Unknown type".to_string());
     let domain_clone = row.domain.clone();
     let metadata_ref = row.metadata.clone();
 
@@ -796,7 +799,9 @@ fn company_row_to_detail(
                 "{} | {} | {} | Risk: {:.1}",
                 region_text,
                 type_text,
-                row.employee_estimate.map(|e| format!("~{} employees", e)).unwrap_or_default(),
+                row.employee_estimate
+                    .map(|e| format!("~{} employees", e))
+                    .unwrap_or_default(),
                 row.risk_score.unwrap_or(0.0),
             ),
             date: row.updated_at.unwrap_or(now),
@@ -806,7 +811,11 @@ fn company_row_to_detail(
             .as_ref()
             .and_then(|meta| meta.get("community_badges"))
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default(),
         source_entropy: metadata_ref
             .as_ref()

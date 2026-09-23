@@ -25,9 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use apex_llm::inference::{ChatMessage, InferenceConfig, LlmClient};
 
-use crate::battlecards::{
-    ObjectionHandlerPair, PositioningSection, StrengthItem, WeaknessItem,
-};
+use crate::battlecards::{ObjectionHandlerPair, PositioningSection, StrengthItem, WeaknessItem};
 use crate::Insight;
 
 /// LLM-synthesized battlecard sections, all grounded in provided evidence.
@@ -120,10 +118,7 @@ pub async fn synthesize_llm_sections(
     );
 
     let config = InferenceConfig::json_structured();
-    let messages = vec![
-        ChatMessage::system(system),
-        ChatMessage::user(user),
-    ];
+    let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
 
     let raw = match client.complete_with_config(messages, &config).await {
         Ok(resp) => resp.text,
@@ -271,12 +266,18 @@ pub fn merge_weaknesses(algo: Vec<WeaknessItem>, llm: &[LlmWeakness]) -> Vec<Wea
 
 /// Enrich a positioning section with the LLM narrative (appended to the
 /// existing value_proposition so the algorithmic signal is preserved).
-pub fn enrich_positioning(mut base: PositioningSection, llm: &LlmBattlecardSections) -> PositioningSection {
+pub fn enrich_positioning(
+    mut base: PositioningSection,
+    llm: &LlmBattlecardSections,
+) -> PositioningSection {
     if !llm.positioning_narrative.is_empty() {
         base.value_proposition = if base.value_proposition.is_empty() {
             llm.positioning_narrative.clone()
         } else {
-            format!("{}\n\n{}", base.value_proposition, llm.positioning_narrative)
+            format!(
+                "{}\n\n{}",
+                base.value_proposition, llm.positioning_narrative
+            )
         };
     }
     base

@@ -129,15 +129,18 @@ impl Default for TwitterMonitorConfig {
 
 impl TwitterMonitorConfig {
     pub fn add_account(mut self, username: impl Into<String>) -> Self {
-        self.tracked_accounts.push(username.into()); self
+        self.tracked_accounts.push(username.into());
+        self
     }
 
     pub fn add_keyword(mut self, keyword: impl Into<String>) -> Self {
-        self.tracked_keywords.push(keyword.into()); self
+        self.tracked_keywords.push(keyword.into());
+        self
     }
 
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
-        self.bearer_token = Some(token.into()); self
+        self.bearer_token = Some(token.into());
+        self
     }
 }
 
@@ -160,16 +163,22 @@ impl TwitterMonitor {
 
     /// Fetch recent tweets from an account.
     pub async fn fetch_user_tweets(&self, username: &str) -> Result<Vec<Tweet>> {
-        let bearer = self.config.bearer_token.as_ref()
+        let bearer = self
+            .config
+            .bearer_token
+            .as_ref()
             .context("Twitter API requires a bearer token")?;
 
         let url = format!(
             "https://api.twitter.com/2/users/by/username/{}/tweets",
             urlencoding::encode(username)
         );
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("Authorization", format!("Bearer {}", bearer))
-            .send().await
+            .send()
+            .await
             .context("Twitter user tweets request")?;
 
         if !resp.status().is_success() {
@@ -179,16 +188,23 @@ impl TwitterMonitor {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct TwitterApiResponse { data: Option<Vec<serde_json::Value>> }
+        struct TwitterApiResponse {
+            data: Option<Vec<serde_json::Value>>,
+        }
 
-        let twitter_resp: TwitterApiResponse = resp.json().await.unwrap_or(TwitterApiResponse { data: None });
-        let tweets: Vec<Tweet> = twitter_resp.data
+        let twitter_resp: TwitterApiResponse = resp
+            .json()
+            .await
+            .unwrap_or(TwitterApiResponse { data: None });
+        let tweets: Vec<Tweet> = twitter_resp
+            .data
             .unwrap_or_default()
             .into_iter()
             .filter_map(|t| {
                 let tweet_id = t["id"].as_str()?.to_string();
                 let text = t["text"].as_str()?.to_string();
-                let created_at = t["created_at"].as_str()
+                let created_at = t["created_at"]
+                    .as_str()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(Utc::now);
@@ -202,7 +218,10 @@ impl TwitterMonitor {
                     })
                     .unwrap_or_default();
 
-                let matched: Vec<String> = self.config.tracked_keywords.iter()
+                let matched: Vec<String> = self
+                    .config
+                    .tracked_keywords
+                    .iter()
                     .filter(|kw| text.to_lowercase().contains(&kw.to_lowercase()))
                     .cloned()
                     .collect();
@@ -231,13 +250,17 @@ impl TwitterMonitor {
                     mentions: t["entities"]["mentions"]
                         .as_array()
                         .map(|arr| {
-                            arr.iter().filter_map(|m| m["username"].as_str().map(String::from)).collect()
+                            arr.iter()
+                                .filter_map(|m| m["username"].as_str().map(String::from))
+                                .collect()
                         })
                         .unwrap_or_default(),
                     urls: t["entities"]["urls"]
                         .as_array()
                         .map(|arr| {
-                            arr.iter().filter_map(|u| u["expanded_url"].as_str().map(String::from)).collect()
+                            arr.iter()
+                                .filter_map(|u| u["expanded_url"].as_str().map(String::from))
+                                .collect()
                         })
                         .unwrap_or_default(),
                     matched_keywords: matched,
@@ -252,7 +275,10 @@ impl TwitterMonitor {
 
     /// Search tweets by keyword.
     pub async fn search_tweets(&self, query: &str) -> Result<Vec<Tweet>> {
-        let bearer = self.config.bearer_token.as_ref()
+        let bearer = self
+            .config
+            .bearer_token
+            .as_ref()
             .context("Twitter API requires a bearer token")?;
 
         let url = format!(
@@ -260,9 +286,12 @@ impl TwitterMonitor {
             urlencoding::encode(query),
             self.config.max_tweets
         );
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("Authorization", format!("Bearer {}", bearer))
-            .send().await
+            .send()
+            .await
             .context("Twitter search request")?;
 
         if !resp.status().is_success() {
@@ -271,10 +300,16 @@ impl TwitterMonitor {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct TwitterSearchResponse { data: Option<Vec<serde_json::Value>> }
+        struct TwitterSearchResponse {
+            data: Option<Vec<serde_json::Value>>,
+        }
 
-        let search_resp: TwitterSearchResponse = resp.json().await.unwrap_or(TwitterSearchResponse { data: None });
-        let tweets: Vec<Tweet> = search_resp.data
+        let search_resp: TwitterSearchResponse = resp
+            .json()
+            .await
+            .unwrap_or(TwitterSearchResponse { data: None });
+        let tweets: Vec<Tweet> = search_resp
+            .data
             .unwrap_or_default()
             .into_iter()
             .map(|t| Tweet {
@@ -282,7 +317,8 @@ impl TwitterMonitor {
                 author_username: t["author_id"].as_str().unwrap_or("").to_string(),
                 author_id: t["author_id"].as_str().unwrap_or("").to_string(),
                 text: t["text"].as_str().unwrap_or("").to_string(),
-                created_at: t["created_at"].as_str()
+                created_at: t["created_at"]
+                    .as_str()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(Utc::now),
@@ -376,16 +412,46 @@ mod tests {
     fn top_engagement() {
         use chrono::Utc;
         let tweets = vec![
-            Tweet { tweet_id: "1".to_string(), author_username: "a".to_string(), author_id: "1".to_string(),
-                text: "Low engagement".to_string(), created_at: Utc::now(),
-                like_count: Some(10), retweet_count: Some(5), reply_count: Some(1), quote_count: Some(0),
-                language: None, is_reply: false, is_retweet: false, is_quote: false,
-                hashtags: vec![], mentions: vec![], urls: vec![], matched_keywords: vec![], fetched_at: Utc::now() },
-            Tweet { tweet_id: "2".to_string(), author_username: "b".to_string(), author_id: "2".to_string(),
-                text: "High engagement".to_string(), created_at: Utc::now(),
-                like_count: Some(1000), retweet_count: Some(500), reply_count: Some(100), quote_count: Some(50),
-                language: None, is_reply: false, is_retweet: false, is_quote: false,
-                hashtags: vec![], mentions: vec![], urls: vec![], matched_keywords: vec![], fetched_at: Utc::now() },
+            Tweet {
+                tweet_id: "1".to_string(),
+                author_username: "a".to_string(),
+                author_id: "1".to_string(),
+                text: "Low engagement".to_string(),
+                created_at: Utc::now(),
+                like_count: Some(10),
+                retweet_count: Some(5),
+                reply_count: Some(1),
+                quote_count: Some(0),
+                language: None,
+                is_reply: false,
+                is_retweet: false,
+                is_quote: false,
+                hashtags: vec![],
+                mentions: vec![],
+                urls: vec![],
+                matched_keywords: vec![],
+                fetched_at: Utc::now(),
+            },
+            Tweet {
+                tweet_id: "2".to_string(),
+                author_username: "b".to_string(),
+                author_id: "2".to_string(),
+                text: "High engagement".to_string(),
+                created_at: Utc::now(),
+                like_count: Some(1000),
+                retweet_count: Some(500),
+                reply_count: Some(100),
+                quote_count: Some(50),
+                language: None,
+                is_reply: false,
+                is_retweet: false,
+                is_quote: false,
+                hashtags: vec![],
+                mentions: vec![],
+                urls: vec![],
+                matched_keywords: vec![],
+                fetched_at: Utc::now(),
+            },
         ];
         let top = TwitterMonitor::top_engagement(&tweets);
         assert_eq!(top.len(), 2);
@@ -396,22 +462,48 @@ mod tests {
     fn is_high_influence_uses_engagement_proxy() {
         // Low-engagement tweet should NOT be classified as high influence
         let low = Tweet {
-            tweet_id: "1".to_string(), author_username: "a".to_string(), author_id: "1".to_string(),
-            text: "Low engagement".to_string(), created_at: Utc::now(),
-            like_count: Some(10), retweet_count: Some(5), reply_count: Some(1), quote_count: Some(0),
-            language: None, is_reply: false, is_retweet: false, is_quote: false,
-            hashtags: vec![], mentions: vec![], urls: vec![], matched_keywords: vec![], fetched_at: Utc::now(),
+            tweet_id: "1".to_string(),
+            author_username: "a".to_string(),
+            author_id: "1".to_string(),
+            text: "Low engagement".to_string(),
+            created_at: Utc::now(),
+            like_count: Some(10),
+            retweet_count: Some(5),
+            reply_count: Some(1),
+            quote_count: Some(0),
+            language: None,
+            is_reply: false,
+            is_retweet: false,
+            is_quote: false,
+            hashtags: vec![],
+            mentions: vec![],
+            urls: vec![],
+            matched_keywords: vec![],
+            fetched_at: Utc::now(),
         };
         // 10 + (5*2) + (1*3) + (0*2) = 23
         assert!(!low.is_high_influence());
 
         // High-engagement tweet SHOULD be classified as high influence
         let high = Tweet {
-            tweet_id: "2".to_string(), author_username: "b".to_string(), author_id: "2".to_string(),
-            text: "High engagement".to_string(), created_at: Utc::now(),
-            like_count: Some(200), retweet_count: Some(100), reply_count: Some(50), quote_count: Some(25),
-            language: None, is_reply: false, is_retweet: false, is_quote: false,
-            hashtags: vec![], mentions: vec![], urls: vec![], matched_keywords: vec![], fetched_at: Utc::now(),
+            tweet_id: "2".to_string(),
+            author_username: "b".to_string(),
+            author_id: "2".to_string(),
+            text: "High engagement".to_string(),
+            created_at: Utc::now(),
+            like_count: Some(200),
+            retweet_count: Some(100),
+            reply_count: Some(50),
+            quote_count: Some(25),
+            language: None,
+            is_reply: false,
+            is_retweet: false,
+            is_quote: false,
+            hashtags: vec![],
+            mentions: vec![],
+            urls: vec![],
+            matched_keywords: vec![],
+            fetched_at: Utc::now(),
         };
         // 200 + (100*2) + (50*3) + (25*2) = 200 + 200 + 150 + 50 = 600 >= 500
         assert!(high.is_high_influence());

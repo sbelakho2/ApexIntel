@@ -165,16 +165,14 @@ struct WarningSignals {
 }
 
 impl WarningSignals {
-    fn from_warning(title: &str, description: Option<&str>, source_urls: Option<&[String]>) -> Self {
-        let desc_tokens = description
-            .map(tokenize)
-            .unwrap_or_default();
+    fn from_warning(
+        title: &str,
+        description: Option<&str>,
+        source_urls: Option<&[String]>,
+    ) -> Self {
+        let desc_tokens = description.map(tokenize).unwrap_or_default();
         let source_domains = source_urls
-            .map(|urls| {
-                urls.iter()
-                    .filter_map(|u| extract_domain(u))
-                    .collect()
-            })
+            .map(|urls| urls.iter().filter_map(|u| extract_domain(u)).collect())
             .unwrap_or_default();
 
         Self {
@@ -273,9 +271,10 @@ impl WarningVerifier for DnsHygieneVerifier {
         }
 
         // Check: does the warning reference a domain found in sources?
-        let has_domain_ref = signals.source_domains.iter().any(|d| {
-            signals.mentions_domain(d)
-        });
+        let has_domain_ref = signals
+            .source_domains
+            .iter()
+            .any(|d| signals.mentions_domain(d));
 
         if has_domain_ref {
             VerificationResult::new(
@@ -330,9 +329,10 @@ impl WarningVerifier for SslCertificateVerifier {
 
         // Check: does the description or title mention a specific domain that
         // appears in source URLs?
-        let has_ssl_source = signals.source_domains.iter().any(|d| {
-            signals.mentions_domain(d)
-        });
+        let has_ssl_source = signals
+            .source_domains
+            .iter()
+            .any(|d| signals.mentions_domain(d));
 
         if has_ssl_source {
             VerificationResult::new(
@@ -369,7 +369,7 @@ impl WarningVerifier for BreachVerifier {
         description: Option<&str>,
         source_urls: Option<&[String]>,
     ) -> VerificationResult {
-    let _signals = WarningSignals::from_warning(title, description, source_urls);
+        let _signals = WarningSignals::from_warning(title, description, source_urls);
 
         // Breach warnings require source evidence
         if source_urls.is_none_or(|u| u.is_empty()) {
@@ -518,9 +518,7 @@ pub fn verify_warning(
 }
 
 /// Verify a batch of warnings, returning results keyed by warning ID.
-pub fn verify_warnings_batch(
-    warnings: &[VerificationInput],
-) -> Vec<VerificationResult> {
+pub fn verify_warnings_batch(warnings: &[VerificationInput]) -> Vec<VerificationResult> {
     warnings
         .iter()
         .map(|w| {
@@ -559,10 +557,22 @@ pub struct VerificationSummary {
 impl VerificationSummary {
     pub fn from_results(results: &[VerificationResult]) -> Self {
         let total = results.len();
-        let confirmed = results.iter().filter(|r| r.status == VerificationStatus::Confirmed).count();
-        let disputed = results.iter().filter(|r| r.status == VerificationStatus::Disputed).count();
-        let unverifiable = results.iter().filter(|r| r.status == VerificationStatus::Unverifiable).count();
-        let pending = results.iter().filter(|r| r.status == VerificationStatus::Pending).count();
+        let confirmed = results
+            .iter()
+            .filter(|r| r.status == VerificationStatus::Confirmed)
+            .count();
+        let disputed = results
+            .iter()
+            .filter(|r| r.status == VerificationStatus::Disputed)
+            .count();
+        let unverifiable = results
+            .iter()
+            .filter(|r| r.status == VerificationStatus::Unverifiable)
+            .count();
+        let pending = results
+            .iter()
+            .filter(|r| r.status == VerificationStatus::Pending)
+            .count();
         let avg_confidence = if total == 0 {
             0.0
         } else {
@@ -612,18 +622,14 @@ pub async fn notify_slack_on_confirmed_warning(
     let slack_severity = crate::slack::SlackMessageSeverity::from_str(severity);
     let alert_type = crate::slack::AlertType::Warning;
 
-    let mut msg = crate::slack::SlackMessage::new(
-        slack_severity,
-        alert_type,
-        title,
-        &result.detail,
-    )
-    .with_field("Confidence", format!("{:.0}%", result.confidence * 100.0))
-    .with_field("Verifier", &result.verifier)
-    .with_source_url(format!(
-        "https://apexintel.io/warnings/{}",
-        result.warning_id
-    ));
+    let mut msg =
+        crate::slack::SlackMessage::new(slack_severity, alert_type, title, &result.detail)
+            .with_field("Confidence", format!("{:.0}%", result.confidence * 100.0))
+            .with_field("Verifier", &result.verifier)
+            .with_source_url(format!(
+                "https://apexintel.io/warnings/{}",
+                result.warning_id
+            ));
 
     if result.confidence >= 0.8 {
         msg = msg.with_field("Status", "✅ Confirmed (high confidence)");

@@ -31,14 +31,14 @@ pub mod poi_targeting;
 pub mod title_diversity;
 
 // Intelligence pipeline modules
-pub mod hypothesis;
-pub mod predictive;
-pub mod renderer;
-pub mod memo;
-pub mod weekly_pipeline;
 pub mod arbitrage;
 pub mod bias_mitigation;
 pub mod comparison;
+pub mod hypothesis;
+pub mod memo;
+pub mod predictive;
+pub mod renderer;
+pub mod weekly_pipeline;
 
 // Supporting modules
 pub mod adversarial;
@@ -76,9 +76,7 @@ pub use psych_compute::{
     BehavioralPatternResult, EngagementResult, PsychComputeEngine, PsychObservation,
     PsychProfileResult, RawProfileSnapshot,
 };
-pub use psych_store::{
-    BehavioralPatternRecord, EngagementProfileRecord, PsychProfileRecord,
-};
+pub use psych_store::{BehavioralPatternRecord, EngagementProfileRecord, PsychProfileRecord};
 
 use serde::{Deserialize, Serialize};
 
@@ -192,7 +190,11 @@ impl InsightResult {
             b.severity
                 .priority()
                 .cmp(&a.severity.priority())
-                .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| {
+                    b.confidence
+                        .partial_cmp(&a.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
         insights
     }
@@ -213,37 +215,34 @@ impl InsightResult {
 }
 
 // Re-export key types for convenience
-pub use analysis::{IntelligenceAnalyzer, IntelligenceAnalyzerConfig, AnalysisInput};
-pub use patterns::{PatternDetector, PatternDetectorConfig, PatternType, PatternData};
+pub use analysis::{AnalysisInput, IntelligenceAnalyzer, IntelligenceAnalyzerConfig};
+pub use patterns::{PatternData, PatternDetector, PatternDetectorConfig, PatternType};
 pub use risk_summarizer::{RiskSummarizer, RiskSummarizerConfig, RiskSummary};
 pub use trend_analyzer::{TrendAnalyzer, TrendAnalyzerConfig};
 
 // Phase 4.1: Deep Insight exports
 pub use deep_insight::{
-    AuthorityTier, DeepEvidence, DeepInsight, DeepInsightConfig, DeepInsightGenerator,
-    FreshnessTier, InsightSeverityLevel, RiskCategory, RiskFactor,
-    ActionPriority, ActionRecommendation, ActionRisk,
+    ActionPriority, ActionRecommendation, ActionRisk, AuthorityTier, DeepEvidence, DeepInsight,
+    DeepInsightConfig, DeepInsightGenerator, FreshnessTier, InsightSeverityLevel, RiskCategory,
+    RiskFactor,
 };
 
 // Phase 4.2: Quality Assurance exports
 pub use quality_assurance::{
     BiasConfig, BiasContent, BiasDetector, BiasIndicator, BiasInstance, BiasReport, BiasType,
-    CredibilityConfig, CredibilityFlag, CredibilityScore, ErrorSeverity,
-    ImprovementConfig, OutputValidator, PatternOfLifeAnalysis, QualityFeedback,
-    QualityFeedbackType, QualityStats, RecipeRefinement, ScoredEvidence,
-    ThresholdAdjustment, ValidationConfig, ValidationContent, ValidationError,
-    ValidationResult, ValidationStatus, ValidationWarning,
-    SourceCredibilityScorer, QualityImprovementEngine,
+    CredibilityConfig, CredibilityFlag, CredibilityScore, ErrorSeverity, ImprovementConfig,
+    OutputValidator, PatternOfLifeAnalysis, QualityFeedback, QualityFeedbackType,
+    QualityImprovementEngine, QualityStats, RecipeRefinement, ScoredEvidence,
+    SourceCredibilityScorer, ThresholdAdjustment, ValidationConfig, ValidationContent,
+    ValidationError, ValidationResult, ValidationStatus, ValidationWarning,
 };
 
 // Psychological & Behavioral Intelligence exports
 pub use psychological::{
-    BehavioralPattern, BehavioralPatternDetector, BehavioralPatternType,
-    BigFiveTraits, BiasContext, CognitiveBias, CognitiveBiasDetector,
-    EngagementStrategist, EngagementStrategy, EntityType, HexacoTraits,
-    OrgCultureProfile, OrgCultureProfiler, OrgCultureSignal,
-    PersonalityAssessor, ProfileSnapshot, PsychologicalProfiler,
-    SentimentAggregator, SentimentAnomaly, SentimentBucket,
-    SentimentSignal, SentimentTrend, StrategyContext, StrategyType,
-    TrendDirection,
+    BehavioralPattern, BehavioralPatternDetector, BehavioralPatternType, BiasContext,
+    BigFiveTraits, CognitiveBias, CognitiveBiasDetector, EngagementStrategist, EngagementStrategy,
+    EntityType, HexacoTraits, OrgCultureProfile, OrgCultureProfiler, OrgCultureSignal,
+    PersonalityAssessor, ProfileSnapshot, PsychologicalProfiler, SentimentAggregator,
+    SentimentAnomaly, SentimentBucket, SentimentSignal, SentimentTrend, StrategyContext,
+    StrategyType, TrendDirection,
 };

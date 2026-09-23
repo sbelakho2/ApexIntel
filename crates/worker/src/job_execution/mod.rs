@@ -52,18 +52,20 @@ async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogge
         "notes": run.notes,
     });
 
-    logger.insert(
-        "system",
-        "Worker Engine",
-        action,
-        Some("job"),
-        Some(&run.run_id),
-        Some(kind.as_str()),
-        &details,
-        None,
-        None,
-        "team",
-    ).await;
+    logger
+        .insert(
+            "system",
+            "Worker Engine",
+            action,
+            Some("job"),
+            Some(&run.run_id),
+            Some(kind.as_str()),
+            &details,
+            None,
+            None,
+            "team",
+        )
+        .await;
 }
 
 #[tracing::instrument(skip(kind, store), fields(job = %kind.as_str()))]
@@ -96,10 +98,14 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
         JobKind::PoiDiscovery => poi::run_poi_discovery(store).await,
         JobKind::UpdateEmailDigest => weekly::run_update_email_digest(store).await,
         JobKind::StarzCrmSync => starzcrm::run_starzcrm_sync(store).await,
-        JobKind::EmbeddingReindex => apex_worker::embedding_indexer::run_embedding_reindex(kind, store).await,
+        JobKind::EmbeddingReindex => {
+            apex_worker::embedding_indexer::run_embedding_reindex(kind, store).await
+        }
         JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store).await,
         JobKind::TriageProcessing => triage::run_triage_processing(kind, store).await,
-        JobKind::TrendAggregation => apex_worker::trend_aggregator::run_trend_aggregation(kind, store).await,
+        JobKind::TrendAggregation => {
+            apex_worker::trend_aggregator::run_trend_aggregation(kind, store).await
+        }
         JobKind::InsightGeneration => insights::run_insight_generation(kind, store).await,
         JobKind::ThreatIntelRefresh => threat_intel::run_threat_intel_refresh(kind, store).await,
         JobKind::PsychProfileCompute => psych_profile::run_psych_profile_compute(kind, store).await,
@@ -124,7 +130,11 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::field_reassign_with_default
+    )]
 
     #[tokio::test]
     async fn custom_job_without_env_is_skipped() {

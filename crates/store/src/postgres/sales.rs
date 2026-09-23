@@ -150,7 +150,7 @@ pub struct CompetitorPricingRow {
     pub evidence_url: Option<String>,
     pub observed_at: DateTime<Utc>,
     pub source: String,
-    pub confidence: f32,
+    pub confidence: f64,
     pub metadata: Option<Value>,
     pub created_at: DateTime<Utc>,
 }
@@ -202,7 +202,10 @@ impl PgStore {
     }
 
     /// Latest pricing for a competitor across product categories.
-    pub async fn list_competitor_pricing(&self, competitor_id: Uuid) -> Result<Vec<CompetitorPricingRow>> {
+    pub async fn list_competitor_pricing(
+        &self,
+        competitor_id: Uuid,
+    ) -> Result<Vec<CompetitorPricingRow>> {
         let rows = sqlx::query_as::<_, CompetitorPricingRow>(
             r#"
             SELECT DISTINCT ON (product_category, currency)
@@ -232,7 +235,7 @@ pub struct ContactMethodRow {
     pub person_id: Uuid,
     pub contact_type: String,
     pub value: String,
-    pub confidence: f32,
+    pub confidence: f64,
     pub verification_status: String,
     pub verified_at: Option<DateTime<Utc>>,
     pub source: String,
@@ -332,7 +335,7 @@ pub struct NewContactMethod {
     pub person_id: Uuid,
     pub contact_type: String,
     pub value: String,
-    pub confidence: f32,
+    pub confidence: f64,
     pub verification_status: String,
     pub verified_at: Option<DateTime<Utc>>,
     pub source: String,
@@ -353,7 +356,7 @@ pub struct EngagementEventRow {
     pub channel: String,
     pub direction: String,
     pub outcome: String,
-    pub outcome_weight: f32,
+    pub outcome_weight: f64,
     pub subject: Option<String>,
     pub message_ref: Option<String>,
     pub cadence_step: Option<i32>,
@@ -424,7 +427,7 @@ pub struct NewEngagementEvent {
     pub channel: String,
     pub direction: String,
     pub outcome: String,
-    pub outcome_weight: f32,
+    pub outcome_weight: f64,
     pub subject: Option<String>,
     pub message_ref: Option<String>,
     pub cadence_step: Option<i32>,
@@ -456,9 +459,9 @@ pub struct BuyingCenterMemberRow {
     pub buying_center_id: Uuid,
     pub person_id: Uuid,
     pub role: String,
-    pub influence_score: f32,
+    pub influence_score: f64,
     pub budget_authority: bool,
-    pub need_signal: f32,
+    pub need_signal: f64,
     pub timeline_horizon: Option<String>,
     pub notes: Option<String>,
     pub metadata: Option<Value>,
@@ -474,19 +477,31 @@ impl PgStore {
         name: &str,
         deal_value: Option<f64>,
     ) -> Result<Uuid> {
-        // Reuse an existing active center for the same opportunity if present.
-        if let Some(opp) = opportunity_id {
-            let existing = sqlx::query_scalar::<_, Uuid>(
+        // Reuse an existing active center for the same opportunity, or for the
+        // same company when no opportunity is given, so repeated derivations
+        // are idempotent instead of creating one center per call.
+        let existing = if let Some(opp) = opportunity_id {
+            sqlx::query_scalar::<_, Uuid>(
                 "SELECT id FROM buying_centers \
                  WHERE opportunity_id = $1 AND status IN ('forming','engaged') \
                  ORDER BY updated_at DESC LIMIT 1",
             )
             .bind(opp)
             .fetch_optional(&self.pool)
-            .await?;
-            if let Some(id) = existing {
-                return Ok(id);
-            }
+            .await?
+        } else {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM buying_centers \
+                 WHERE company_id = $1 AND opportunity_id IS NULL \
+                   AND status IN ('forming','engaged') \
+                 ORDER BY updated_at DESC LIMIT 1",
+            )
+            .bind(company_id)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        if let Some(id) = existing {
+            return Ok(id);
         }
         let row = sqlx::query_scalar::<_, Uuid>(
             r#"
@@ -578,9 +593,9 @@ pub struct NewBuyingMember {
     pub buying_center_id: Uuid,
     pub person_id: Uuid,
     pub role: String,
-    pub influence_score: f32,
+    pub influence_score: f64,
     pub budget_authority: bool,
-    pub need_signal: f32,
+    pub need_signal: f64,
     pub timeline_horizon: Option<String>,
     pub notes: Option<String>,
     pub metadata: Value,
@@ -599,7 +614,7 @@ pub struct CrawlMetricRow {
     pub observations_in_promotions: i64,
     pub fetch_attempts: i64,
     pub fetch_errors: i64,
-    pub median_ingest_latency_secs: Option<f32>,
+    pub median_ingest_latency_secs: Option<f64>,
     pub last_crawl_at: Option<DateTime<Utc>>,
     pub observation_types_produced: Vec<String>,
     pub window_start: DateTime<Utc>,
@@ -616,7 +631,7 @@ pub struct RealSourceTelemetry {
     pub observations_in_promotions: i64,
     pub fetch_attempts: i64,
     pub fetch_errors: i64,
-    pub median_ingest_latency_secs: Option<f32>,
+    pub median_ingest_latency_secs: Option<f64>,
     pub last_crawl_at: Option<DateTime<Utc>>,
     pub observation_types_produced: Vec<String>,
 }
@@ -717,13 +732,13 @@ impl PgStore {
                 -- observations whose provenance source also appears in a fired
                 -- warning (recipe fire) within the window.
                 SELECT
-                    w.provenance->>'source' AS source_id,
+                    w.metadata->>'source' AS source_id,
                     COUNT(*)                AS fire_count
                 FROM warnings w
                 WHERE w.deleted_at IS NULL
                   AND w.created_at >= NOW() - ($1 || ' days')::INTERVAL
-                  AND w.provenance->>'source' IS NOT NULL
-                GROUP BY w.provenance->>'source'
+                  AND w.metadata->>'source' IS NOT NULL
+                GROUP BY w.metadata->>'source'
             )
             SELECT
                 src.source_id,
@@ -733,7 +748,7 @@ impl PgStore {
                 -- promotions: high-confidence obs as a proxy for promoted-grade signal
                 COALESCE(src.high_conf_count, 0)         AS observations_in_promotions,
                 src.observations_ingested                AS fetch_attempts,
-                0                                        AS fetch_errors,
+                0::BIGINT                                AS fetch_errors,
                 NULL::REAL                               AS median_ingest_latency_secs,
                 src.last_crawl_at,
                 COALESCE(src.obs_types, ARRAY[]::TEXT[]) AS observation_types_produced
@@ -760,7 +775,7 @@ pub struct NewCrawlMetric {
     pub observations_in_promotions: i64,
     pub fetch_attempts: i64,
     pub fetch_errors: i64,
-    pub median_ingest_latency_secs: Option<f32>,
+    pub median_ingest_latency_secs: Option<f64>,
     pub last_crawl_at: Option<DateTime<Utc>>,
     pub observation_types_produced: Vec<String>,
     pub metadata: Value,
@@ -786,7 +801,9 @@ impl PgStore {
             r#"
             UPDATE companies SET
                 icp_fit_score       = $2,
-                intent_signal_score = $3,
+                -- Never downgrade a stored intent signal to zero: callers that
+                -- lack intent data pass 0.0, which previously erased it.
+                intent_signal_score = GREATEST(intent_signal_score, $3),
                 icp_breakdown       = $4,
                 tech_stack          = COALESCE($5, tech_stack),
                 funding_stage       = COALESCE($6, funding_stage),

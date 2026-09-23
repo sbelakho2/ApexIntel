@@ -37,12 +37,7 @@ pub trait AlertDispatcher: Send + Sync {
     async fn notify_queue_update(&self, stats_json: &str);
 
     /// Send a notification when a specific triage item's status changes.
-    async fn notify_status_change(
-        &self,
-        queue_item_id: Uuid,
-        new_status: &str,
-        title: &str,
-    );
+    async fn notify_status_change(&self, queue_item_id: Uuid, new_status: &str, title: &str);
 }
 
 /// A fallback dispatcher that logs alerts and writes them to the activity_feed table.
@@ -61,7 +56,9 @@ impl LoggingAlertDispatcher {
 
     /// Create a dispatcher that also writes alert events to `activity_feed`.
     pub fn with_db(pool: sqlx::PgPool) -> Self {
-        Self { db_pool: Some(pool) }
+        Self {
+            db_pool: Some(pool),
+        }
     }
 }
 
@@ -74,13 +71,18 @@ impl AlertDispatcher for LoggingAlertDispatcher {
         title: &str,
         description: &str,
         composite_score: f64,
-        entity_id: Option<Uuid>,
+        _entity_id: Option<Uuid>,
         entity_name: Option<&str>,
     ) -> Vec<Uuid> {
-        let severity = if composite_score >= 0.80 { "critical" }
-            else if composite_score >= 0.60 { "high" }
-            else if composite_score >= 0.40 { "medium" }
-            else { "low" };
+        let severity = if composite_score >= 0.80 {
+            "critical"
+        } else if composite_score >= 0.60 {
+            "high"
+        } else if composite_score >= 0.40 {
+            "medium"
+        } else {
+            "low"
+        };
 
         let item_type_label = format!("{:?}", item_type);
         tracing::warn!(
@@ -155,50 +157,6 @@ impl AlertDispatcher for LoggingAlertDispatcher {
             .execute(pool)
             .await;
         }
-    }
-}
-
-/// (Kept for backward compatibility — prefer [`LoggingAlertDispatcher`].)
-#[deprecated(note = "Use LoggingAlertDispatcher instead")]
-pub struct NoopAlertDispatcher;
-
-#[async_trait]
-#[allow(deprecated)]
-impl AlertDispatcher for NoopAlertDispatcher {
-    async fn dispatch_triage_alert(
-        &self,
-        item_type: &TriageItemType,
-        source_id: &str,
-        title: &str,
-        description: &str,
-        composite_score: f64,
-        _entity_id: Option<Uuid>,
-        entity_name: Option<&str>,
-    ) -> Vec<Uuid> {
-        tracing::warn!(
-            target = "triage::alert",
-            item_type = ?item_type, %source_id, %title, composite_score,
-            entity_name = entity_name.unwrap_or("none"),
-            "Triage alert dispatched via deprecated NoopAlertDispatcher — alerts are NOT being delivered to users! Switch to LoggingAlertDispatcher."
-        );
-        let _ = description;
-        Vec::new()
-    }
-
-    async fn notify_queue_update(&self, stats_json: &str) {
-        tracing::warn!(
-            target = "triage::queue",
-            stats = %stats_json,
-            "Triage queue update via deprecated NoopAlertDispatcher — update is NOT propagated!"
-        );
-    }
-
-    async fn notify_status_change(&self, queue_item_id: Uuid, new_status: &str, title: &str) {
-        tracing::warn!(
-            target = "triage::status",
-            %queue_item_id, %new_status, %title,
-            "Triage status change via deprecated NoopAlertDispatcher — change is NOT propagated!"
-        );
     }
 }
 
@@ -304,7 +262,13 @@ mod tests {
 
         async fn notify_queue_update(&self, _stats_json: &str) {}
 
-        async fn notify_status_change(&self, _queue_item_id: Uuid, _new_status: &str, _title: &str) {}
+        async fn notify_status_change(
+            &self,
+            _queue_item_id: Uuid,
+            _new_status: &str,
+            _title: &str,
+        ) {
+        }
     }
 
     #[tokio::test]
@@ -333,7 +297,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_noop_dispatcher_returns_empty() {
-        let integration = RouterIntegration::new(Box::new(NoopAlertDispatcher));
+        let integration = RouterIntegration::new(Box::new(LoggingAlertDispatcher::console_only()));
 
         let user_ids = integration
             .dispatch_triage_alert(

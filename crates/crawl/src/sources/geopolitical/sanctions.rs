@@ -3,7 +3,7 @@
 //! Wraps the existing `SanctionsScreener` from `crate::sanctions`
 //! and adds structured helpers for ApexIntel entities.
 
-use crate::sanctions::{SanctionsMatch, SanctionsScreener, SanctionsList};
+use crate::sanctions::{SanctionsList, SanctionsMatch, SanctionsScreener};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,11 @@ impl EntityScreeningResult {
         }
         let highest = matches
             .iter()
-            .max_by(|a, b| a.similarity.partial_cmp(&b.similarity).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.similarity
+                    .partial_cmp(&b.similarity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|m| m.list.as_str().to_string());
         Self {
             entity_name: name.to_string(),
@@ -103,7 +107,10 @@ impl SanctionsMonitor {
 
     /// Create with an existing screener.
     pub fn with_screener(screener: SanctionsScreener) -> Self {
-        Self { screener, _config: SanctionsMonitorConfig::default() }
+        Self {
+            screener,
+            _config: SanctionsMonitorConfig::default(),
+        }
     }
 
     /// Screen a single entity name.
@@ -112,12 +119,19 @@ impl SanctionsMonitor {
     }
 
     /// Screen a single entity with identifiers.
-    pub fn screen_with_ids(&self, name: &str, identifiers: &[(String, String)]) -> Vec<SanctionsMatch> {
+    pub fn screen_with_ids(
+        &self,
+        name: &str,
+        identifiers: &[(String, String)],
+    ) -> Vec<SanctionsMatch> {
         self.screener.screen_entity(name, identifiers)
     }
 
     /// Screen multiple entities in batch.
-    pub fn screen_batch(&self, entities: &[(String, Vec<(String, String)>)]) -> Vec<(String, Vec<SanctionsMatch>)> {
+    pub fn screen_batch(
+        &self,
+        entities: &[(String, Vec<(String, String)>)],
+    ) -> Vec<(String, Vec<SanctionsMatch>)> {
         self.screener.screen_batch(entities)
     }
 
@@ -128,7 +142,9 @@ impl SanctionsMonitor {
     }
 
     /// Return the total number of entries in the screener.
-    pub fn entry_count(&self) -> usize { self.screener.entry_count() }
+    pub fn entry_count(&self) -> usize {
+        self.screener.entry_count()
+    }
 
     /// Return per-list entry counts.
     pub fn list_counts(&self) -> std::collections::HashMap<String, usize> {
@@ -138,7 +154,10 @@ impl SanctionsMonitor {
 
 impl Default for SanctionsMonitor {
     fn default() -> Self {
-        Self { screener: SanctionsScreener::empty(), _config: SanctionsMonitorConfig::default() }
+        Self {
+            screener: SanctionsScreener::empty(),
+            _config: SanctionsMonitorConfig::default(),
+        }
     }
 }
 

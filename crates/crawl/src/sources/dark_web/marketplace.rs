@@ -58,12 +58,19 @@ pub struct MarketplacePrice {
 impl MarketplacePrice {
     /// Whether this is a cryptocurrency price.
     pub fn is_crypto(&self) -> bool {
-        matches!(self.currency.to_uppercase().as_str(), "BTC" | "XMR" | "ETH" | "LTC")
+        matches!(
+            self.currency.to_uppercase().as_str(),
+            "BTC" | "XMR" | "ETH" | "LTC"
+        )
     }
 
     /// Create a new price.
     pub fn new(amount: f64, currency: &str) -> Self {
-        Self { amount, currency: currency.to_string(), usd_value: None }
+        Self {
+            amount,
+            currency: currency.to_string(),
+            usd_value: None,
+        }
     }
 
     /// Create in BTC.
@@ -158,7 +165,11 @@ pub struct MarketplaceMonitor {
 impl MarketplaceMonitor {
     /// Create with a Tor proxy and config.
     pub fn new(tor_proxy: TorProxy, config: MarketplaceMonitorConfig) -> Self {
-        Self { tor_proxy, config, listings: Vec::new() }
+        Self {
+            tor_proxy,
+            config,
+            listings: Vec::new(),
+        }
     }
 
     /// Create with a Tor proxy, using default config.
@@ -172,14 +183,21 @@ impl MarketplaceMonitor {
     }
 
     /// Monitor a specific onion site for listings.
-    pub async fn scan_onion(&mut self, onion_url: &str, category: &str) -> Result<Vec<MarketplaceListing>> {
+    pub async fn scan_onion(
+        &mut self,
+        onion_url: &str,
+        category: &str,
+    ) -> Result<Vec<MarketplaceListing>> {
         if !self.is_tor_available() {
             warn!("Tor not reachable, dark web scan skipped");
             return Ok(Vec::new());
         }
 
         let client = self.tor_proxy.create_tor_client()?;
-        let resp = client.get(onion_url).send().await
+        let resp = client
+            .get(onion_url)
+            .send()
+            .await
             .with_context(|| format!("onion site request: {}", onion_url))?;
 
         if !resp.status().is_success() {
@@ -191,7 +209,12 @@ impl MarketplaceMonitor {
         self.parse_listings(&body, onion_url, category)
     }
 
-    fn parse_listings(&mut self, html: &str, source: &str, category: &str) -> Result<Vec<MarketplaceListing>> {
+    fn parse_listings(
+        &mut self,
+        html: &str,
+        source: &str,
+        category: &str,
+    ) -> Result<Vec<MarketplaceListing>> {
         use regex::Regex;
 
         let title_re = Regex::new(r"<title>([^<]+)</title>").ok();

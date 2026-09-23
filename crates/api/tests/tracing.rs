@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[test]
 fn request_id_is_present_in_handler_and_store_logs() {

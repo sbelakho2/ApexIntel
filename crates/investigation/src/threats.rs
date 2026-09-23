@@ -10,8 +10,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use apex_threat_intel::threat_actor_database::ThreatActorDatabase;
 use apex_threat_intel::models::IndustrySector;
+use apex_threat_intel::threat_actor_database::ThreatActorDatabase;
 
 /// Risk vector types for threat assessment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -402,7 +402,8 @@ impl ThreatModeling {
         // Convert all known actors from the database into investigation's ThreatActor type
         let params = apex_threat_intel::models::PaginationParams::new(0, 1000);
         let all_actors = db.list_actors(params);
-        let threat_actors: Vec<ThreatActor> = all_actors.items.iter().map(convert_threat_actor).collect();
+        let threat_actors: Vec<ThreatActor> =
+            all_actors.items.iter().map(convert_threat_actor).collect();
 
         Self {
             actor_database: db,
@@ -433,7 +434,11 @@ impl ThreatModeling {
     }
 
     /// Assess attack surface for an entity.
-    pub fn assess_attack_surface(&self, entity_id: &str, external_assets: &[ExternalAsset]) -> AttackSurfaceAssessment {
+    pub fn assess_attack_surface(
+        &self,
+        entity_id: &str,
+        external_assets: &[ExternalAsset],
+    ) -> AttackSurfaceAssessment {
         let mut vulnerabilities = Vec::new();
         let mut misconfigurations = Vec::new();
         let mut shadow_it = Vec::new();
@@ -477,7 +482,8 @@ impl ThreatModeling {
                             owner_unknown: true,
                             risk_level: "High".to_string(),
                         });
-                        recommendations.push(format!("Review and secure cloud asset: {}", asset.name));
+                        recommendations
+                            .push(format!("Review and secure cloud asset: {}", asset.name));
                     }
                 }
 
@@ -497,8 +503,11 @@ impl ThreatModeling {
                         system: asset.name.clone(),
                         issue_type: "Mobile app security posture".to_string(),
                         severity: "Medium".to_string(),
-                        description: "Mobile application may expose backend APIs or sensitive data".to_string(),
-                        remediation: "Review mobile app certificate pinning, API auth, and data storage".to_string(),
+                        description: "Mobile application may expose backend APIs or sensitive data"
+                            .to_string(),
+                        remediation:
+                            "Review mobile app certificate pinning, API auth, and data storage"
+                                .to_string(),
                     });
                 }
 
@@ -514,7 +523,10 @@ impl ThreatModeling {
                         patch_available: false,
                         exploitation_observed: false,
                     });
-                    recommendations.push(format!("Conduct IoT firmware and communication security review for: {}", asset.name));
+                    recommendations.push(format!(
+                        "Conduct IoT firmware and communication security review for: {}",
+                        asset.name
+                    ));
                 }
 
                 // Desktop/endpoint exposure
@@ -535,8 +547,12 @@ impl ThreatModeling {
                         system: asset.name.clone(),
                         issue_type: "Endpoint security posture".to_string(),
                         severity: "Low".to_string(),
-                        description: "Desktop endpoint may have unpatched software or weak configurations".to_string(),
-                        remediation: "Ensure endpoint protection, patch management, and EDR coverage".to_string(),
+                        description:
+                            "Desktop endpoint may have unpatched software or weak configurations"
+                                .to_string(),
+                        remediation:
+                            "Ensure endpoint protection, patch management, and EDR coverage"
+                                .to_string(),
                     });
                 }
 
@@ -552,7 +568,10 @@ impl ThreatModeling {
                         patch_available: false,
                         exploitation_observed: false,
                     });
-                    recommendations.push(format!("Isolate OT network and perform ICS security assessment for: {}", asset.name));
+                    recommendations.push(format!(
+                        "Isolate OT network and perform ICS security assessment for: {}",
+                        asset.name
+                    ));
                 }
 
                 // Default: unknown asset type — still generate a basic exposure point
@@ -567,7 +586,10 @@ impl ThreatModeling {
                         patch_available: false,
                         exploitation_observed: false,
                     });
-                    recommendations.push(format!("Catalog and assess unknown asset type '{}': {}", asset.asset_type, asset.name));
+                    recommendations.push(format!(
+                        "Catalog and assess unknown asset type '{}': {}",
+                        asset.asset_type, asset.name
+                    ));
                 }
             }
         }
@@ -602,7 +624,11 @@ impl ThreatModeling {
     }
 
     /// Model supply chain threats.
-    pub fn model_supply_chain(&self, entity_id: &str, suppliers: &[Supplier]) -> SupplyChainThreatModel {
+    pub fn model_supply_chain(
+        &self,
+        entity_id: &str,
+        suppliers: &[Supplier],
+    ) -> SupplyChainThreatModel {
         let mut tier1_risks = Vec::new();
         let mut tier2_risks = Vec::new();
         let mut single_source = Vec::new();
@@ -611,7 +637,8 @@ impl ThreatModeling {
 
         // Pre-compute supplier distribution for concentration risk
         // Count how many suppliers share each country to estimate geographic concentration
-        let mut country_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut country_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
         for s in suppliers {
             if let Some(ref c) = s.country {
                 *country_counts.entry(c.as_str()).or_insert(0) += 1;
@@ -619,11 +646,19 @@ impl ThreatModeling {
         }
         let total_suppliers = suppliers.len();
 
-        fn compute_concentration(country: &Option<String>, country_counts: &std::collections::HashMap<&str, usize>, total: usize) -> String {
+        fn compute_concentration(
+            country: &Option<String>,
+            country_counts: &std::collections::HashMap<&str, usize>,
+            total: usize,
+        ) -> String {
             match country {
                 Some(c) => {
                     let count = country_counts.get(c.as_str()).copied().unwrap_or(0);
-                    let ratio = if total > 0 { count as f64 / total as f64 } else { 0.0 };
+                    let ratio = if total > 0 {
+                        count as f64 / total as f64
+                    } else {
+                        0.0
+                    };
                     if ratio >= 0.5 {
                         "High".to_string()
                     } else if ratio >= 0.25 {
@@ -640,7 +675,8 @@ impl ThreatModeling {
         for supplier in suppliers {
             let risk_factors = self.calculate_supplier_risk_factors(supplier);
             let risk_score = self.calculate_supplier_risk_score(&risk_factors);
-            let concentration = compute_concentration(&supplier.country, &country_counts, total_suppliers);
+            let concentration =
+                compute_concentration(&supplier.country, &country_counts, total_suppliers);
 
             if supplier.tier == 1 {
                 tier1_risks.push(SupplierRisk {
@@ -687,7 +723,9 @@ impl ThreatModeling {
 
         // Generate disruption scenarios
         if !tier1_risks.is_empty() {
-            let top_risk = tier1_risks.iter().max_by_key(|s| (s.risk_score * 100.0) as i32);
+            let top_risk = tier1_risks
+                .iter()
+                .max_by_key(|s| (s.risk_score * 100.0) as i32);
             if let Some(risk) = top_risk {
                 scenarios.push(DisruptionScenario {
                     scenario_name: format!("Loss of {} as supplier", risk.supplier_name),
@@ -718,7 +756,9 @@ impl ThreatModeling {
             recommendations.push("Consider supplier diversification program".to_string());
         }
         if !single_source.is_empty() {
-            recommendations.push("Develop second-source qualification for single-source components".to_string());
+            recommendations.push(
+                "Develop second-source qualification for single-source components".to_string(),
+            );
         }
 
         SupplyChainThreatModel {
@@ -789,7 +829,11 @@ impl ThreatModeling {
     }
 
     /// Simulate threat scenarios.
-    pub fn simulate_scenarios(&self, entity_id: &str, context: &SimulationContext) -> Vec<ScenarioSimulation> {
+    pub fn simulate_scenarios(
+        &self,
+        entity_id: &str,
+        context: &SimulationContext,
+    ) -> Vec<ScenarioSimulation> {
         let mut scenarios = Vec::new();
 
         // Supply chain disruption scenario
@@ -798,7 +842,8 @@ impl ThreatModeling {
                 id: Uuid::new_v4().to_string(),
                 name: "Major Supply Chain Disruption".to_string(),
                 scenario_type: ScenarioType::SupplyChainDisruption,
-                description: "A critical supplier experiences a disruption affecting production".to_string(),
+                description: "A critical supplier experiences a disruption affecting production"
+                    .to_string(),
                 trigger_conditions: vec![
                     "Supplier financial distress".to_string(),
                     "Natural disaster at supplier location".to_string(),
@@ -826,7 +871,8 @@ impl ThreatModeling {
                 id: Uuid::new_v4().to_string(),
                 name: "Aggressive Competitive Move".to_string(),
                 scenario_type: ScenarioType::CompetitiveMove,
-                description: "Competitor makes aggressive market move (price cut, new product)".to_string(),
+                description: "Competitor makes aggressive market move (price cut, new product)"
+                    .to_string(),
                 trigger_conditions: vec![
                     "Competitor hiring surge".to_string(),
                     "New capacity announcements".to_string(),
@@ -856,14 +902,26 @@ impl ThreatModeling {
 // ============================================================================
 
 /// Convert a `threat_intel::ThreatActor` (owned) to an `investigation::ThreatActor`.
-#[allow(clippy::disallowed_methods)]
-fn convert_threat_actor(actor: &apex_threat_intel::threat_actor_database::ThreatActor) -> ThreatActor {
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn convert_threat_actor(
+    actor: &apex_threat_intel::threat_actor_database::ThreatActor,
+) -> ThreatActor {
     let actor_type = convert_actor_motivation(actor.motivation);
-    let capabilities: Vec<String> = actor.techniques.iter().map(|t| t.technique_name.clone()).collect();
-    let ttps: Vec<String> = actor.techniques.iter().map(|t| {
-        format!("{} - {}", t.technique_id, t.technique_name)
-    }).collect();
-    let industry_focus: Vec<String> = actor.target_sectors.iter().map(|s| s.as_str().to_string()).collect();
+    let capabilities: Vec<String> = actor
+        .techniques
+        .iter()
+        .map(|t| t.technique_name.clone())
+        .collect();
+    let ttps: Vec<String> = actor
+        .techniques
+        .iter()
+        .map(|t| format!("{} - {}", t.technique_id, t.technique_name))
+        .collect();
+    let industry_focus: Vec<String> = actor
+        .target_sectors
+        .iter()
+        .map(|s| s.as_str().to_string())
+        .collect();
     let threat_level = actor.sophistication_level as f64 / 10.0;
     let attribution_confidence = match &actor.risk_score {
         Some(rs) => match rs.confidence {
@@ -874,14 +932,17 @@ fn convert_threat_actor(actor: &apex_threat_intel::threat_actor_database::Threat
         },
         None => 0.5,
     };
-    let last_observed = actor.last_activity
+    let last_observed = actor
+        .last_activity
         .map(|d| {
-            let naive = chrono::NaiveDateTime::new(d, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+            let naive =
+                chrono::NaiveDateTime::new(d, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
             DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc)
         })
         .unwrap_or_else(|| {
             let now = Utc::now().date_naive();
-            let naive = chrono::NaiveDateTime::new(now, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+            let naive =
+                chrono::NaiveDateTime::new(now, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
             DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc)
         });
 
@@ -901,7 +962,9 @@ fn convert_threat_actor(actor: &apex_threat_intel::threat_actor_database::Threat
 }
 
 /// Map threat_intel motivation to investigation ThreatActorType.
-fn convert_actor_motivation(motivation: apex_threat_intel::threat_actor_database::ActorMotivation) -> ThreatActorType {
+fn convert_actor_motivation(
+    motivation: apex_threat_intel::threat_actor_database::ActorMotivation,
+) -> ThreatActorType {
     use apex_threat_intel::threat_actor_database::ActorMotivation;
     match motivation {
         ActorMotivation::Espionage => ThreatActorType::NationState,
@@ -961,15 +1024,13 @@ mod tests {
     #[test]
     fn test_attack_surface_assessment() {
         let tm = ThreatModeling::new();
-        let assets = vec![
-            ExternalAsset {
-                asset_type: "web".to_string(),
-                name: "www.example.com".to_string(),
-                has_known_vulnerabilities: true,
-                has_security_headers: Some(false),
-                is_publicly_accessible: Some(true),
-            },
-        ];
+        let assets = vec![ExternalAsset {
+            asset_type: "web".to_string(),
+            name: "www.example.com".to_string(),
+            has_known_vulnerabilities: true,
+            has_security_headers: Some(false),
+            is_publicly_accessible: Some(true),
+        }];
 
         let assessment = tm.assess_attack_surface("entity1", &assets);
         assert!(assessment.overall_score > 0.0);

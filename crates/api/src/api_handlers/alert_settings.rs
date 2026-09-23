@@ -47,11 +47,8 @@ pub(crate) struct UpsertGlobalDefaultsRequest {
 pub(crate) async fn list_alert_settings(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<AlertSettingsListResponse>>, ApiError> {
-    let entities = state
-        .store
-        .list_entity_alert_configs()
-        .await
-        .map_err(|e| {
+    let entities =
+        state.store.list_entity_alert_configs().await.map_err(|e| {
             ApiError::internal(format!("Failed to list entity alert configs: {}", e))
         })?;
 

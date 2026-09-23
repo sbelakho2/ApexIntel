@@ -24,6 +24,7 @@
 //! All pure logic (routing, config validation, response parsing) is testable
 //! without external services.  Async HTTP is hidden behind the `LlmClient`
 //! trait — provide a mock impl in tests.
+pub mod advanced_prompting;
 pub mod anti_hallucination;
 pub mod evaluation;
 pub mod inference;
@@ -33,16 +34,15 @@ pub mod prompt_registry;
 pub mod recipe_hypothesis;
 pub mod self_improvement;
 pub mod validators;
-pub mod advanced_prompting;
 
 // Re-exports from advanced_prompting
 pub mod embeddings;
 
 pub use advanced_prompting::{
-    AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence,
-    CalibrationConfig, CalibrationFactor, ChainOfThoughtConfig, ConfidenceLevel,
-    MultiPerspectiveConfig, MultiPerspectiveResult, PerspectiveResult, ReasoningPath,
-    ReasoningStep, SelfConsistencyConfig, SelfConsistencyResult,
+    AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence, CalibrationConfig,
+    CalibrationFactor, ChainOfThoughtConfig, ConfidenceLevel, MultiPerspectiveConfig,
+    MultiPerspectiveResult, PerspectiveResult, ReasoningPath, ReasoningStep, SelfConsistencyConfig,
+    SelfConsistencyResult,
 };
 
 pub mod agents;
@@ -752,7 +752,7 @@ impl LlmClient for OpenAiCompatibleClient {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 

@@ -272,9 +272,9 @@ pub fn build_interaction_contingency(
         let has_outcome = if let Some(sig_ts) = latest_signal_ts {
             let window_start = sig_ts + lag_secs;
             let window_end = sig_ts + lag_secs + window_secs;
-            outcome_map.get(entity).is_some_and(|ots| {
-                ots.iter().any(|&t| t >= window_start && t <= window_end)
-            })
+            outcome_map
+                .get(entity)
+                .is_some_and(|ots| ots.iter().any(|&t| t >= window_start && t <= window_end))
         } else {
             // No signals — check if entity had any outcome at all.
             outcome_map.get(entity).is_some_and(|ots| !ots.is_empty())
@@ -594,9 +594,9 @@ pub fn sweep_lags(
         );
         for combo in combos {
             let key = (combo.type_a.clone(), combo.type_b.clone());
-            let is_better = best_by_pair.get(&key).is_none_or(|existing| {
-                combo.interaction_effect > existing.interaction_effect
-            });
+            let is_better = best_by_pair
+                .get(&key)
+                .is_none_or(|existing| combo.interaction_effect > existing.interaction_effect);
             if is_better {
                 best_by_pair.insert(key, combo);
             }
@@ -620,7 +620,7 @@ pub fn sweep_lags(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn make_events(obs_type: &str, entities: &[&str], base_ts: i64) -> Vec<TypedEvent> {

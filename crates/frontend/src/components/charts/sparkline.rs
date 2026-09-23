@@ -105,7 +105,10 @@ impl SparklineChart {
         }
 
         // Compute min/max for scaling
-        let min_val = data.iter().map(|d| d.1).fold(f64::INFINITY, |a, v| a.min(v));
+        let min_val = data
+            .iter()
+            .map(|d| d.1)
+            .fold(f64::INFINITY, |a, v| a.min(v));
         let max_val = data
             .iter()
             .map(|d| d.1)
@@ -232,15 +235,8 @@ impl SparklineChart {
 // ─── Existing Leptos component — kept for backward compatibility ─────────────
 
 #[component]
-pub fn Sparkline(
-    values: Vec<f64>,
-    #[prop(optional)] label: Option<String>,
-) -> impl IntoView {
-    let values = if values.is_empty() {
-        vec![0.0]
-    } else {
-        values
-    };
+pub fn Sparkline(values: Vec<f64>, #[prop(optional)] label: Option<String>) -> impl IntoView {
+    let values = if values.is_empty() { vec![0.0] } else { values };
     let min = values
         .iter()
         .copied()

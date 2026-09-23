@@ -3,7 +3,7 @@
 //! Scheduled every 6 hours: runs placement clustering, source entropy detection,
 //! and quarantine management. Detects coordinated misinformation campaigns,
 //! adversarial content placement patterns, and manages suspicious sources.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -91,7 +91,7 @@ async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
     }
 
     // Build token sets per observation for Jaccard similarity
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     let obs_tokens: Vec<(Uuid, Vec<String>, chrono::DateTime<chrono::Utc>, String)> = {
         use sqlx::Row;
         rows.iter()
@@ -154,7 +154,7 @@ async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
             let now = chrono::Utc::now();
 
             let placement_id = Uuid::new_v4();
-            #[allow(clippy::disallowed_methods)]
+            #[allow(clippy::unwrap_used, clippy::expect_used)]
             let value = serde_json::json!({
                 "placement_id": placement_id.to_string(),
                 "source_count": cluster.len(),
@@ -193,7 +193,12 @@ async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
                      content placement campaign. Sources: {}",
                     cluster.len(),
                     source_domains.len(),
-                    source_domains.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+                    source_domains
+                        .iter()
+                        .take(5)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 );
 
                 let _ = store
@@ -201,7 +206,11 @@ async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
                         "adversarial",
                         &title,
                         Some(&description),
-                        if cluster.len() >= 10 { "critical" } else { "high" },
+                        if cluster.len() >= 10 {
+                            "critical"
+                        } else {
+                            "high"
+                        },
                         None,
                         None,
                         None,
@@ -262,17 +271,14 @@ async fn run_source_entropy_detection(store: &Arc<PgStore>) -> Result<u64, Strin
         let obs_count: i32 = row.try_get("observation_count").unwrap_or(0);
         let type_diversity: i32 = row.try_get("type_diversity").unwrap_or(0);
         let entity_span: i32 = row.try_get("entity_span").unwrap_or(0);
-        let avg_confidence: f64 = row
-            .try_get::<f64, _>("avg_confidence")
-            .unwrap_or(0.5);
+        let avg_confidence: f64 = row.try_get::<f64, _>("avg_confidence").unwrap_or(0.5);
 
         // Entropy heuristics: flag sources with unusual patterns
         let is_high_volume_single_type = obs_count > 50 && type_diversity <= 2;
         let is_wide_entity_span = entity_span > 20;
         let is_low_confidence_spam = obs_count > 20 && avg_confidence < 0.4;
-        let is_suspicious = is_high_volume_single_type
-            || is_wide_entity_span
-            || is_low_confidence_spam;
+        let is_suspicious =
+            is_high_volume_single_type || is_wide_entity_span || is_low_confidence_spam;
 
         if is_suspicious {
             let reason = if is_high_volume_single_type {
@@ -293,7 +299,7 @@ async fn run_source_entropy_detection(store: &Arc<PgStore>) -> Result<u64, Strin
             let quarantine_id = Uuid::new_v4();
             let release_at = now + chrono::Duration::hours(24);
 
-            #[allow(clippy::disallowed_methods)]
+            #[allow(clippy::unwrap_used, clippy::expect_used)]
             let value = serde_json::json!({
                 "quarantine_id": quarantine_id.to_string(),
                 "source_domain": source_domain,
@@ -392,7 +398,7 @@ async fn run_quarantine_management(store: &Arc<PgStore>) -> Result<u64, String> 
 
     for row in &persistent {
         use sqlx::Row;
-        let id: Uuid = match row.try_get("id") {
+        let _id: Uuid = match row.try_get("id") {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -486,16 +492,8 @@ mod tests {
 
     #[test]
     fn test_jaccard_partial() {
-        let a = vec![
-            "hello".to_string(),
-            "world".to_string(),
-            "foo".to_string(),
-        ];
-        let b = vec![
-            "hello".to_string(),
-            "world".to_string(),
-            "bar".to_string(),
-        ];
+        let a = vec!["hello".to_string(), "world".to_string(), "foo".to_string()];
+        let b = vec!["hello".to_string(), "world".to_string(), "bar".to_string()];
         assert!((jaccard_similarity(&a, &b) - 0.5).abs() < 0.01);
     }
 

@@ -4,8 +4,9 @@ const CACHE_NAME = 'apexintel-v1';
 const STATIC_CACHE = 'apexintel-static-v1';
 
 /* ─── Assets to pre-cache on install ─────────────────────────────────── */
+/* Never pre-cache '/' or any HTML: navigations are authenticated and must
+   not persist in Cache Storage (B349). Only static, non-user assets here. */
 const PRECACHE_URLS = [
-  '/',
   '/static/css/tailwind.css',
   '/static/js/htmx.min.js',
   '/static/js/app.js',

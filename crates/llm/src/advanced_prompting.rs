@@ -173,7 +173,8 @@ impl SelfConsistencyResult {
 
         // Collect dissenting paths
         if include_dissent {
-            self.dissent = self.paths
+            self.dissent = self
+                .paths
                 .iter()
                 .filter(|p| p.answer != self.consensus_answer)
                 .cloned()
@@ -226,9 +227,9 @@ impl ReasoningPath {
             return self.confidence;
         }
 
-        let step_confidence: f64 = self.steps.iter().map(|s| s.confidence).sum::<f64>()
-            / self.steps.len() as f64;
-        
+        let step_confidence: f64 =
+            self.steps.iter().map(|s| s.confidence).sum::<f64>() / self.steps.len() as f64;
+
         (step_confidence * 0.6 + self.confidence * 0.4).clamp(0.0, 1.0)
     }
 }
@@ -559,13 +560,16 @@ impl AdvancedPromptingEngine {
     }
 
     /// Synthesize results from multiple perspectives.
-    pub fn synthesize_perspectives(&self, results: &HashMap<AnalysisPerspective, PerspectiveResult>) -> MultiPerspectiveResult {
+    pub fn synthesize_perspectives(
+        &self,
+        results: &HashMap<AnalysisPerspective, PerspectiveResult>,
+    ) -> MultiPerspectiveResult {
         let mut agreements = Vec::new();
         let mut disagreements = Vec::new();
-        
+
         // Find key findings that appear across multiple perspectives
         let mut finding_counts: HashMap<String, Vec<AnalysisPerspective>> = HashMap::new();
-        
+
         for result in results.values() {
             for finding in &result.key_findings {
                 let normalized = finding.to_lowercase();
@@ -588,18 +592,28 @@ impl AdvancedPromptingEngine {
         // Identify disagreements (same topic, different conclusions)
         let perspectives: Vec<_> = results.keys().collect();
         for i in 0..perspectives.len() {
-            for j in (i+1)..perspectives.len() {
+            for j in (i + 1)..perspectives.len() {
                 let persp1 = perspectives[i];
                 let persp2 = perspectives[j];
-                let Some(result1) = results.get(persp1) else { continue; };
-                let Some(result2) = results.get(persp2) else { continue; };
+                let Some(result1) = results.get(persp1) else {
+                    continue;
+                };
+                let Some(result2) = results.get(persp2) else {
+                    continue;
+                };
                 // Check for contradictory findings
-                let common_topics = result1.key_findings.iter()
-                    .filter(|f1| result2.key_findings.iter().any(|f2| {
-                        f1.to_lowercase() != f2.to_lowercase() &&
-                        (f1.to_lowercase().contains("risk") != f2.to_lowercase().contains("risk") ||
-                         f1.to_lowercase().contains("opportunity") != f2.to_lowercase().contains("opportunity"))
-                    }))
+                let common_topics = result1
+                    .key_findings
+                    .iter()
+                    .filter(|f1| {
+                        result2.key_findings.iter().any(|f2| {
+                            f1.to_lowercase() != f2.to_lowercase()
+                                && (f1.to_lowercase().contains("risk")
+                                    != f2.to_lowercase().contains("risk")
+                                    || f1.to_lowercase().contains("opportunity")
+                                        != f2.to_lowercase().contains("opportunity"))
+                        })
+                    })
                     .count();
 
                 if common_topics > 0 {
@@ -648,9 +662,9 @@ impl AdvancedPromptingEngine {
         }
 
         // Overall assessment
-        let avg_confidence: f64 = results.values().map(|r| r.confidence).sum::<f64>()
-            / results.len().max(1) as f64;
-        
+        let avg_confidence: f64 =
+            results.values().map(|r| r.confidence).sum::<f64>() / results.len().max(1) as f64;
+
         synthesis.push_str(&format!(
             "\n### Overall Assessment\n\
             Average confidence: {:.0}%\n\
@@ -682,7 +696,10 @@ impl AdvancedPromptingEngine {
             factors.push(CalibrationFactor {
                 name: "Base Uncertainty".to_string(),
                 adjustment: base_adj,
-                reason: format!("Applied base uncertainty factor: {}", self.calib_config.base_uncertainty),
+                reason: format!(
+                    "Applied base uncertainty factor: {}",
+                    self.calib_config.base_uncertainty
+                ),
             });
             calibrated += base_adj;
         }
@@ -752,7 +769,7 @@ impl AdvancedPromptingEngine {
     /// Extract confidence mentions from text.
     pub fn extract_confidence_mentions(&self, text: &str) -> Vec<(String, f64)> {
         let mut mentions = Vec::new();
-        
+
         let patterns = [
             (r"(?i)high confidence", 0.85),
             (r"(?i)very confident", 0.90),
@@ -826,7 +843,7 @@ mod tests {
     fn cot_prompt_includes_steps() {
         let engine = AdvancedPromptingEngine::new();
         let prompt = engine.generate_cot_prompt("Analyze company X");
-        
+
         assert!(prompt.contains("numbered steps") || prompt.contains("Number of steps"));
         assert!(prompt.contains("Confidence"));
         assert!(prompt.contains("/no_think"));
@@ -836,7 +853,7 @@ mod tests {
     fn cot_response_parsing() {
         let engine = AdvancedPromptingEngine::new();
         let response = "Step 1: Initial data review\nStep 2: Market analysis\nStep 3: Conclusion";
-        
+
         let steps = engine.parse_cot_response(response);
         assert!(!steps.is_empty());
     }
@@ -845,7 +862,7 @@ mod tests {
     fn sc_prompts_diverse() {
         let engine = AdvancedPromptingEngine::new();
         let prompts = engine.generate_sc_prompts("Analyze this situation");
-        
+
         assert_eq!(prompts.len(), 3);
         // Each prompt should have different instruction
         assert!(prompts[0] != prompts[1]);
@@ -854,20 +871,20 @@ mod tests {
     #[test]
     fn sc_result_evaluates_consensus() {
         let engine = AdvancedPromptingEngine::new();
-        
+
         let mut result = engine.create_sc_result();
-        
+
         // Add paths with same answer
         let mut path1 = ReasoningPath::new(1);
         path1.set_answer("Growth".to_string(), 0.8);
         result.paths.push(path1);
-        
+
         let mut path2 = ReasoningPath::new(2);
         path2.set_answer("Growth".to_string(), 0.7);
         result.paths.push(path2);
-        
+
         result.evaluate_consensus(true);
-        
+
         assert!(result.consensus_reached);
         assert_eq!(result.consensus_answer, "Growth");
         assert_eq!(result.agreement_ratio, 1.0);
@@ -876,19 +893,19 @@ mod tests {
     #[test]
     fn sc_result_no_consensus() {
         let engine = AdvancedPromptingEngine::new();
-        
+
         let mut result = engine.create_sc_result();
-        
+
         let mut path1 = ReasoningPath::new(1);
         path1.set_answer("Growth".to_string(), 0.8);
         result.paths.push(path1);
-        
+
         let mut path2 = ReasoningPath::new(2);
         path2.set_answer("Decline".to_string(), 0.7);
         result.paths.push(path2);
-        
+
         result.evaluate_consensus(true);
-        
+
         assert!(!result.consensus_reached);
         assert!(!result.dissent.is_empty());
     }
@@ -897,7 +914,7 @@ mod tests {
     fn mp_prompts_all_perspectives() {
         let engine = AdvancedPromptingEngine::new();
         let prompts = engine.generate_mp_prompts("Analyze company X");
-        
+
         assert!(prompts.contains_key(&AnalysisPerspective::Optimistic));
         assert!(prompts.contains_key(&AnalysisPerspective::Pessimistic));
         assert!(prompts.contains_key(&AnalysisPerspective::Contrarian));
@@ -906,7 +923,7 @@ mod tests {
     #[test]
     fn mp_synthesis_finds_agreements() {
         let engine = AdvancedPromptingEngine::new();
-        
+
         let mut results = HashMap::new();
         results.insert(
             AnalysisPerspective::Optimistic,
@@ -926,9 +943,9 @@ mod tests {
                 key_findings: vec!["Revenue growth".to_string(), "Competition".to_string()],
             },
         );
-        
+
         let synthesis = engine.synthesize_perspectives(&results);
-        
+
         assert!(!synthesis.agreements.is_empty());
         assert!(synthesis.agreements.iter().any(|a| a.contains("revenue")));
     }
@@ -936,9 +953,9 @@ mod tests {
     #[test]
     fn confidence_calibration() {
         let engine = AdvancedPromptingEngine::new();
-        
+
         let result = engine.calibrate_confidence(0.9, 0.8, 0.9, false);
-        
+
         assert!(result.calibrated_score < result.raw_score);
         assert!(!result.factors.is_empty());
     }
@@ -946,9 +963,9 @@ mod tests {
     #[test]
     fn confidence_calibration_with_overconfidence() {
         let engine = AdvancedPromptingEngine::new();
-        
+
         let result = engine.calibrate_confidence(0.95, 0.5, 0.5, true);
-        
+
         assert!(result.calibrated_score < 0.95);
         assert!(result.warnings.iter().any(|w| w.contains("overstated")));
     }
@@ -965,7 +982,7 @@ mod tests {
     fn extract_confidence_mentions() {
         let engine = AdvancedPromptingEngine::new();
         let text = "We are highly confident in this analysis. The evidence is clear.";
-        
+
         let mentions = engine.extract_confidence_mentions(text);
         assert!(!mentions.is_empty());
     }
@@ -974,7 +991,7 @@ mod tests {
     fn detect_overconfidence() {
         let engine = AdvancedPromptingEngine::new();
         let text = "This is clearly the best approach. It is guaranteed to succeed.";
-        
+
         let patterns = engine.detect_overconfidence(text);
         assert!(!patterns.is_empty());
         assert!(patterns.iter().any(|p| p.contains("clearly")));
@@ -983,9 +1000,8 @@ mod tests {
 
     #[test]
     fn reasoning_step_with_confidence() {
-        let step = ReasoningStep::new(1, "Initial analysis", "Data reviewed")
-            .with_confidence(0.9);
-        
+        let step = ReasoningStep::new(1, "Initial analysis", "Data reviewed").with_confidence(0.9);
+
         assert_eq!(step.confidence, 0.9);
     }
 
@@ -995,24 +1011,30 @@ mod tests {
         path.add_step(ReasoningStep::new(1, "Step 1", "Evidence 1").with_confidence(0.8));
         path.add_step(ReasoningStep::new(2, "Step 2", "Evidence 2").with_confidence(0.7));
         path.set_answer("Conclusion".to_string(), 0.75);
-        
+
         let overall = path.overall_confidence();
         assert!(overall > 0.0 && overall <= 1.0);
     }
 
     #[test]
     fn perspective_prompt_suffixes() {
-        assert!(AnalysisPerspective::Optimistic.prompt_suffix().contains("favorable"));
-        assert!(AnalysisPerspective::Pessimistic.prompt_suffix().contains("worst-case"));
-        assert!(AnalysisPerspective::Contrarian.prompt_suffix().contains("wrong"));
+        assert!(AnalysisPerspective::Optimistic
+            .prompt_suffix()
+            .contains("favorable"));
+        assert!(AnalysisPerspective::Pessimistic
+            .prompt_suffix()
+            .contains("worst-case"));
+        assert!(AnalysisPerspective::Contrarian
+            .prompt_suffix()
+            .contains("wrong"));
     }
 
     #[test]
     fn calibration_interval() {
         let engine = AdvancedPromptingEngine::new();
-        
+
         let result = engine.calibrate_confidence(0.7, 0.9, 0.9, false);
-        
+
         assert!(result.interval.0 < result.calibrated_score);
         assert!(result.calibrated_score < result.interval.1);
     }

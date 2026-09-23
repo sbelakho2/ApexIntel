@@ -142,10 +142,7 @@ impl TriageHistory {
     }
 
     /// Count how many overrides have occurred (optionally within a timeframe).
-    pub async fn override_frequency(
-        &self,
-        since: Option<DateTime<Utc>>,
-    ) -> Result<u64> {
+    pub async fn override_frequency(&self, since: Option<DateTime<Utc>>) -> Result<u64> {
         let row: (i64,) = sqlx::query_as(
             r#"
             SELECT COUNT(*)::bigint
@@ -163,11 +160,9 @@ impl TriageHistory {
 
     /// Get the total count of triage decisions.
     pub async fn total_decisions(&self) -> Result<u64> {
-        let row: (i64,) = sqlx::query_as(
-            r#"SELECT COUNT(*)::bigint FROM triage_decisions"#,
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let row: (i64,) = sqlx::query_as(r#"SELECT COUNT(*)::bigint FROM triage_decisions"#)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(row.0 as u64)
     }
@@ -191,19 +186,18 @@ struct TriageDecisionRow {
 
 impl TriageDecisionRow {
     fn into_decision(self) -> TriageDecision {
-        let original_dims: TriageDimensions =
-            serde_json::from_value(self.original_dimensions)
-                .unwrap_or(TriageDimensions {
-                    urgency: 0.0,
-                    impact: 0.0,
-                    actionability: 0.0,
-                    novelty: 0.0,
-                    confidence: 0.0,
-                });
+        let original_dims: TriageDimensions = serde_json::from_value(self.original_dimensions)
+            .unwrap_or(TriageDimensions {
+                urgency: 0.0,
+                impact: 0.0,
+                actionability: 0.0,
+                novelty: 0.0,
+                confidence: 0.0,
+            });
 
-        let override_dims = self.override_dimensions.and_then(|v| {
-            serde_json::from_value(v).ok()
-        });
+        let override_dims = self
+            .override_dimensions
+            .and_then(|v| serde_json::from_value(v).ok());
 
         TriageDecision {
             id: self.id,
@@ -250,7 +244,10 @@ mod tests {
         let decision = row.into_decision();
         assert_eq!(decision.original_composite, 0.755);
         assert!((decision.original_dimensions.urgency - 0.8).abs() < 1e-9);
-        assert!(matches!(decision.decision_type, TriageDecisionType::AutoTriage));
+        assert!(matches!(
+            decision.decision_type,
+            TriageDecisionType::AutoTriage
+        ));
         assert!(decision.override_dimensions.is_none());
     }
 
@@ -276,7 +273,10 @@ mod tests {
         };
 
         let decision = row.into_decision();
-        assert!(matches!(decision.decision_type, TriageDecisionType::UserOverride));
+        assert!(matches!(
+            decision.decision_type,
+            TriageDecisionType::UserOverride
+        ));
         assert!(decision.override_dimensions.is_some());
         assert!(decision.override_composite.is_some());
         assert_eq!(decision.overridden_by.unwrap(), "user-abc");

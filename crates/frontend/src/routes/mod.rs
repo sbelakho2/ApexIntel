@@ -1,6 +1,8 @@
+pub mod activity;
 pub mod admin;
 pub mod adversarial;
 pub mod analyst;
+pub mod battlecards;
 pub mod calibration;
 pub mod causality;
 pub mod companies;
@@ -13,8 +15,6 @@ pub mod insights;
 pub mod login;
 pub mod memos;
 pub mod operational;
-pub mod activity;
-pub mod battlecards;
 pub mod overview;
 pub mod person_detail;
 pub mod persons;

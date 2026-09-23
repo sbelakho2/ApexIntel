@@ -416,8 +416,8 @@ impl InsightFeedbackTracker {
                 positive / total
             }
             _ => 0.5, // Default neutral score
+        }
     }
-}
 }
 
 /// Compute a title-diversity penalty factor using semantic similarity.
@@ -430,19 +430,21 @@ impl InsightFeedbackTracker {
 /// Uses [`semantic_diversity_score`] to compare the proposed title against a
 /// sliding window of recent titles for the same entity.
 pub fn title_diversity_penalty(new_title: &str, recent_titles: &[String]) -> f64 {
-if recent_titles.is_empty() {
-    return 1.0; // No history → no penalty
-}
-let max_similarity = recent_titles
-    .iter()
-    .map(|t| crate::title_diversity::semantic_diversity_score(new_title, std::slice::from_ref(t)))
-    .fold(0.0_f64, f64::max);
+    if recent_titles.is_empty() {
+        return 1.0; // No history → no penalty
+    }
+    let max_similarity = recent_titles
+        .iter()
+        .map(|t| {
+            crate::title_diversity::semantic_diversity_score(new_title, std::slice::from_ref(t))
+        })
+        .fold(0.0_f64, f64::max);
 
-// Map similarity to penalty: 0.0 similarity → 1.0 multiplier
-// 1.0 similarity → 0.0 multiplier
-let penalty = 1.0 - max_similarity;
-// Clamp to [0.0, 1.0]
-penalty.clamp(0.0, 1.0)
+    // Map similarity to penalty: 0.0 similarity → 1.0 multiplier
+    // 1.0 similarity → 0.0 multiplier
+    let penalty = 1.0 - max_similarity;
+    // Clamp to [0.0, 1.0]
+    penalty.clamp(0.0, 1.0)
 }
 
 /// Threshold recommendation based on performance
@@ -543,22 +545,13 @@ pub enum FeedbackSignalType {
         recent_count: usize,
     },
     /// User feedback indicates declining quality for this entity / category
-    QualityDecline {
-        avg_rating: f64,
-        trend: f64,
-    },
+    QualityDecline { avg_rating: f64, trend: f64 },
     /// A new entity is emerging and should be added to the active set
-    NewEntitySignal {
-        observation_velocity: f64,
-    },
+    NewEntitySignal { observation_velocity: f64 },
     /// A previously ignored entity now has sufficient data to revive coverage
-    StaleEntityRevival {
-        data_accumulated: usize,
-    },
+    StaleEntityRevival { data_accumulated: usize },
     /// Comparison frames for this entity have not changed recently
-    ComparisonStaleness {
-        days_since_last_comparison: usize,
-    },
+    ComparisonStaleness { days_since_last_comparison: usize },
     /// A dynamically discovered entity needs an insight generated urgently
     /// to establish analytical coverage (Discovery Integration — Phase 2).
     ///
@@ -684,8 +677,7 @@ impl FeedbackController {
         let mut category_titles: HashMap<String, Vec<String>> = HashMap::new();
 
         for insight in recent_insights {
-            let ts = chrono::DateTime::from_timestamp(insight.timestamp, 0)
-                .unwrap_or(now);
+            let ts = chrono::DateTime::from_timestamp(insight.timestamp, 0).unwrap_or(now);
 
             // Entity coverage
             let cov = self
@@ -748,8 +740,7 @@ impl FeedbackController {
         // 3a. EntityFatigue: >5 insights in 7 days
         for (entity, cov) in &self.entity_coverage {
             if cov.insight_count_7d > 5 {
-                let intensity =
-                    ((cov.insight_count_7d as f64 - 5.0) / 15.0).clamp(0.0, 1.0);
+                let intensity = ((cov.insight_count_7d as f64 - 5.0) / 15.0).clamp(0.0, 1.0);
                 self.signals.push(FeedbackSignal {
                     signal_type: FeedbackSignalType::EntityFatigue {
                         times_covered: cov.insight_count_7d,
@@ -936,8 +927,7 @@ impl FeedbackController {
                 ((uncoverage_duration as f64) / (max_urgency_secs as f64)).clamp(0.1, 1.0);
 
             // Discovery confidence from verification count
-            let discovery_confidence =
-                (profile.verification_count as f64 * 0.3).clamp(0.3, 1.0);
+            let discovery_confidence = (profile.verification_count as f64 * 0.3).clamp(0.3, 1.0);
 
             self.signals.push(FeedbackSignal {
                 signal_type: FeedbackSignalType::DiscoveryUrgency {
@@ -1017,12 +1007,10 @@ impl FeedbackController {
 
         // Tier 3: non-fatigued entities with coverage data
         for (entity, cov) in &self.entity_coverage {
-            if !fatigued.contains(entity.as_str())
-                && !scored.iter().any(|(e, _)| e == entity)
-            {
+            if !fatigued.contains(entity.as_str()) && !scored.iter().any(|(e, _)| e == entity) {
                 // Prefer entities with decent ratings and low 7d count
-                let score = cov.avg_rating_30d * 0.5
-                    + (1.0 / (cov.insight_count_7d.max(1) as f64)) * 0.5;
+                let score =
+                    cov.avg_rating_30d * 0.5 + (1.0 / (cov.insight_count_7d.max(1) as f64)) * 0.5;
                 scored.push((entity.clone(), score));
             }
         }
@@ -1126,7 +1114,8 @@ impl FeedbackController {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::manual_range_contains,
         clippy::needless_borrows_for_generic_args,
@@ -1335,10 +1324,18 @@ mod tests {
             .filter(|s| matches!(s.signal_type, FeedbackSignalType::EntityFatigue { .. }))
             .collect();
 
-        assert_eq!(fatigue_signals.len(), 1, "Should emit exactly one EntityFatigue signal");
+        assert_eq!(
+            fatigue_signals.len(),
+            1,
+            "Should emit exactly one EntityFatigue signal"
+        );
         let sig = fatigue_signals[0];
         assert_eq!(sig.entity.as_deref(), Some("nvidia"));
-        if let FeedbackSignalType::EntityFatigue { times_covered, period_days } = &sig.signal_type {
+        if let FeedbackSignalType::EntityFatigue {
+            times_covered,
+            period_days,
+        } = &sig.signal_type
+        {
             assert_eq!(*times_covered, 7);
             assert_eq!(*period_days, 7);
         } else {
@@ -1385,9 +1382,7 @@ mod tests {
 
         let repetition_signals: Vec<&FeedbackSignal> = signals
             .iter()
-            .filter(|s| {
-                matches!(s.signal_type, FeedbackSignalType::CategoryRepetition { .. })
-            })
+            .filter(|s| matches!(s.signal_type, FeedbackSignalType::CategoryRepetition { .. }))
             .collect();
 
         assert!(
@@ -1435,9 +1430,24 @@ mod tests {
 
         // Analyze with repetitive titles to trigger CategoryRepetition signal
         let repetitive = vec![
-            make_insight("nvidia", "supply_chain", "NVIDIA supply chain risk update", 1),
-            make_insight("nvidia", "supply_chain", "NVIDIA supply chain risk analysis", 1),
-            make_insight("nvidia", "supply_chain", "NVIDIA supply chain risk assessment", 1),
+            make_insight(
+                "nvidia",
+                "supply_chain",
+                "NVIDIA supply chain risk update",
+                1,
+            ),
+            make_insight(
+                "nvidia",
+                "supply_chain",
+                "NVIDIA supply chain risk analysis",
+                1,
+            ),
+            make_insight(
+                "nvidia",
+                "supply_chain",
+                "NVIDIA supply chain risk assessment",
+                1,
+            ),
         ];
 
         let _signals = controller.analyze(&[], &repetitive);
@@ -1473,19 +1483,17 @@ mod tests {
         use crate::entity_relevance::{EntityCategory, EntityProfile, EntityRegistry};
 
         let mut registry = EntityRegistry::empty();
-        registry.register(
-            EntityProfile::new("NVIDIA").with_category(EntityCategory::Semiconductor),
-        );
-        registry.register(
-            EntityProfile::new("AMD").with_category(EntityCategory::Semiconductor),
-        );
-        registry.register(
-            EntityProfile::new("Intel").with_category(EntityCategory::Semiconductor),
-        );
+        registry
+            .register(EntityProfile::new("NVIDIA").with_category(EntityCategory::Semiconductor));
+        registry.register(EntityProfile::new("AMD").with_category(EntityCategory::Semiconductor));
+        registry.register(EntityProfile::new("Intel").with_category(EntityCategory::Semiconductor));
 
         let candidates = FeedbackController::suggest_new_comparison_frames("nvidia", &registry);
 
-        assert!(!candidates.is_empty(), "Should suggest comparison candidates");
+        assert!(
+            !candidates.is_empty(),
+            "Should suggest comparison candidates"
+        );
         assert!(
             !candidates.iter().any(|c| c.eq_ignore_ascii_case("nvidia")),
             "Should not suggest the entity itself"

@@ -7,6 +7,112 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — Independent re-audit (B359–B380)
+
+A zero-context re-audit of every crate plus the web UI. The build now passes
+`cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+the full `cargo test --workspace` suite, and a release build; a Woodpecker CI
+pipeline (`.woodpecker.yml`) enforces all four.
+
+### Critical — runtime correctness with a database
+
+- **B359** The sales/ICP store layer decoded and bound `f32` values against
+  PostgreSQL `FLOAT` (i.e. `float8`) columns in `competitor_pricing`,
+  `contact_methods`, `engagement_events`, `buying_center_members`, and
+  `crawl_metrics`. Every write (engagement, contact methods, buying-center
+  members, pricing) and every read errored at runtime. All fields are now
+  `f64`, matching the schema and every sibling store module.
+- **B360** `compute_source_telemetry` queried `warnings.provenance`, a column
+  that does not exist, so `run_source_scoring` always failed. It now reads
+  `warnings.metadata->>'source'`; the `fetch_errors` literal is cast to
+  `BIGINT` to match `i64`.
+- **B361** `run_engagement_refresh` wrote to a non-existent
+  `engagement_profiles.metadata` column inside a `let _ = ...`, reporting
+  success while storing nothing. Migration `044` adds the column, the write is
+  a checked update-or-insert, and failures are logged instead of counted.
+- **B362** Buying-center derivation created one buying center per person per
+  run (`upsert_buying_center(company, None, …)` never reused an existing
+  row). It now reuses the company's active center and caches it per run.
+- **B363** `influence_score` was `priority()/4.0` (priority is `1..=6`), so
+  Decider/User exceeded the `<= 1.0` CHECK constraint and were rejected. A
+  dedicated `BuyingCenterRole::influence_score()` maps roles to `0.0..=1.0`.
+
+### High — pipeline and analysis
+
+- **B364** `RetryEngine::execute_with_retry` slept for the circuit-breaker
+  recovery window (up to **5 minutes**) inside the caller when the breaker was
+  open, hanging crawl tasks and the test suite. It now fails fast with
+  `CircuitBreakerOpen` (or cached fallback); the scheduler retries later.
+- **B365** Tender buyer extraction stripped the *remainder* instead of the
+  prefix (`strip_prefix_chars(trimmed, rest)`), corrupting every buyer name
+  and degrading entity linking. It now strips the matched prefix.
+- **B366** `score_technographics` divided by `target_technologies.len().min(1)`
+  (a constant `1`), so a single matching technology earned full credit for any
+  target list. Corrected to `.max(1)`; the "ideal account" fixture now matches
+  the whole target stack.
+- **B367** ICP scoring hardcoded `tech_stack`/`intent_signal_score`/
+  `funding_stage`/`headcount_growth_pct` to empty, permanently zeroing 45% of
+  the configured weight, and wrote `0.0` over any stored intent signal. The
+  worker now reads the real columns and `update_company_icp_score` never
+  downgrades `intent_signal_score` to zero (`GREATEST`).
+- **B368** Stabilised social-post IDs hashed the volatile engagement counter,
+  so the same Hacker News story was re-inserted every scan. `engagement` is
+  excluded from the content hash, restoring idempotency (with a regression
+  test).
+
+### Security
+
+- **B369** `POST /api/admin/embeddings/reindex` was registered outside the
+  `require_admin` sub-router, so any Analyst key or browser session could
+  enqueue a costly full reindex. Moved into the admin-only surface.
+- **B370** WebSocket teardown called `forward_task.abort()`, which skipped the
+  task's `unregister` and permanently leaked an SSE channel per disconnect.
+  The connection is now unregistered on the main teardown path.
+- **B371** The NATS alert consumer `break`ed on stream end and the task then
+  exited, silently disabling real-time alerts for the process lifetime. It now
+  reconnects with backoff.
+- **B372** The alert-settings page read `meta[name="csrf-token"]`, which no
+  template emits, so Save/Delete always sent an empty token and returned 401.
+  The token is now read from the `apex_csrf` cookie at request time.
+- **B373** Session, logout, and CSRF cookies can now be marked `Secure` via
+  `COOKIE_SECURE=1` (opt-in so local HTTP development still works).
+- **B374** Battlecard export linked to `/battlecards/:id/export` (404); it now
+  targets the registered `/api/battlecards/:id/export`.
+- **B375** `post_trigger_scan_html` interpolated the unvalidated `job_kind`
+  into `Html`, a reflected-XSS sink. Output is now HTML-escaped.
+- **B376** The CSRF form-body cap (16 KiB) was below the router body limit
+  (64 KiB), so large legitimate forms returned a misleading 403; the cap now
+  matches.
+
+### UI / clients
+
+- **B377** `sse-client.js` re-attached named event handlers only on the first
+  connection; after any reconnect `new_warning`, `new_insight`, etc. stopped
+  firing. Handlers are re-attached on every (re)connect.
+- **B378** The service worker pre-cached `/` (authenticated dashboard HTML),
+  defeating B349's no-HTML-caching rule; only static assets are pre-cached now.
+- **B379** The triage page used the triage queue size as the nav warning badge;
+  it now shows the unacknowledged warning count like every other page.
+- **B380** `base_standalone.html` pinned a stale stylesheet cache-bust version;
+  synced with `base.html`.
+
+### Build, lint, and CI
+
+- Removed redundant `unsafe impl Send/Sync` on `TitleGenerator`.
+- Migrated the lint policy from `clippy.toml` `disallowed-methods` (which also
+  fired on `serde_json::json!` internals) to `unwrap_used`/`expect_used`
+  workspace lints with test exemptions; resolved all remaining clippy
+  warnings across all targets.
+- `Dockerfile.worker` healthcheck probed `http://127.0.0.1:8080/api/health`,
+  but the worker exposes no HTTP server, so the container was always
+  unhealthy; it now checks the process. Both Dockerfiles use the current
+  `rust:bookworm` base.
+- Added `.woodpecker.yml`: rustfmt check, clippy (`-D warnings`), full test
+  suite, release build, Tailwind asset build, and a wasm32 `apex-shared`
+  check.
+
+---
+
 ## [Unreleased] — Full-platform audit batch (B290–B351)
 
 Outcome of a line-by-line audit of all 18 crates plus the web UI, benchmarked

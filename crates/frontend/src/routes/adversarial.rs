@@ -1,4 +1,3 @@
-use apex_shared::{PlacementAlert, QuarantineItem, SourceReliabilityHistory};
 use leptos::*;
 
 use crate::api;
@@ -11,15 +10,16 @@ use crate::components::{
 
 #[component]
 pub fn AdversarialPage() -> impl IntoView {
-    let placements_resource = create_resource(|| (), |_| async {
-        api::fetch_adversarial_placements().await
-    });
-    let quarantine_resource = create_resource(|| (), |_| async {
-        api::fetch_quarantine_items().await
-    });
-    let reliability_resource = create_resource(|| (), |_| async {
-        api::fetch_source_reliability_history().await
-    });
+    let placements_resource = create_resource(
+        || (),
+        |_| async { api::fetch_adversarial_placements().await },
+    );
+    let quarantine_resource =
+        create_resource(|| (), |_| async { api::fetch_quarantine_items().await });
+    let reliability_resource = create_resource(
+        || (),
+        |_| async { api::fetch_source_reliability_history().await },
+    );
 
     view! {
         <div class="page">

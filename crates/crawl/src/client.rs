@@ -481,7 +481,7 @@ mod tests {
         addr
     }
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn fetch_text_retries_after_rate_limit() {
         let addr = start_test_server(vec![
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(client.metrics().get("127.0.0.1"), 2);
     }
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn fetch_text_uses_cached_robots_rules() {
         let config = CrawlClientConfig::default();

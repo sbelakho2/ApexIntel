@@ -3,7 +3,7 @@ use crate::*;
 use apex_api::middleware::session::require_session;
 use axum::{
     middleware,
-    routing::{get, post, put, patch, delete},
+    routing::{delete, get, patch, post, put},
     Extension, Router,
 };
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
@@ -152,8 +152,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route(
             "/api/persons/:id/outreach",
-            get(sales_handlers::list_person_engagement)
-                .post(sales_handlers::record_engagement),
+            get(sales_handlers::list_person_engagement).post(sales_handlers::record_engagement),
         )
         .route(
             "/api/persons/:id/dossier-entries",
@@ -224,10 +223,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/search/semantic",
             get(overview_handlers::semantic_search),
         )
-        .route(
-            "/api/search/suggest",
-            get(overview_handlers::suggest),
-        )
+        .route("/api/search/suggest", get(overview_handlers::suggest))
         .route("/api/graph", get(overview_handlers::list_graph))
         .route(
             "/api/graph/neighborhood/:id",
@@ -290,7 +286,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(catalog_handlers::list_poi_artifacts),
         )
         .route("/api/dashboard", get(catalog_handlers::get_dashboard))
-
         // ─── Alert Settings API Routes ───────────────────────────────────
         .route(
             "/api/settings/alerts",
@@ -306,7 +301,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/settings/alerts/global",
             put(alert_settings_handlers::upsert_global_alert_defaults),
         )
-
         // B292: admin-only surface. Registered as a separate router so the
         // `require_admin` layer scopes to exactly these routes — a layer in
         // the main chain would also gate every route registered above it.
@@ -322,6 +316,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
                 .route(
                     "/api/admin/search/rebuild-autocomplete",
                     post(post_rebuild_autocomplete),
+                )
+                .route(
+                    "/api/admin/embeddings/reindex",
+                    post(vector_search_handlers::reindex_embeddings),
                 )
                 .route_layer(middleware::from_fn(require_admin)),
         )
@@ -341,7 +339,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/llm/generate-memo",
             post(llm_handlers::llm_generate_memo),
         )
-        
         // ─── Entity Trend Chart Data Routes ──────────────────────────────
         .route(
             "/api/charts/entity/:id/activity",
@@ -355,7 +352,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/charts/entity/:id/observations",
             get(charts_handlers::get_entity_observation_chart),
         )
-
         // ─── Phase 4.3: Executive Dashboard ─────────────────────────────
         .route(
             "/api/executive/summary",
@@ -363,11 +359,13 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route(
             "/api/executive/opportunities",
-            get(collaboration_handlers::list_opportunities).post(collaboration_handlers::create_opportunity),
+            get(collaboration_handlers::list_opportunities)
+                .post(collaboration_handlers::create_opportunity),
         )
         .route(
             "/api/executive/opportunities/:id",
-            get(collaboration_handlers::get_opportunity).patch(collaboration_handlers::update_opportunity),
+            get(collaboration_handlers::get_opportunity)
+                .patch(collaboration_handlers::update_opportunity),
         )
         .route(
             "/api/executive/threats",
@@ -377,11 +375,11 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/executive/threats/:id",
             get(collaboration_handlers::get_threat).patch(collaboration_handlers::update_threat),
         )
-
         // ─── Phase 4.3: Investigation Workspaces ─────────────────────────
         .route(
             "/api/workspaces",
-            get(collaboration_handlers::list_workspaces).post(collaboration_handlers::create_workspace),
+            get(collaboration_handlers::list_workspaces)
+                .post(collaboration_handlers::create_workspace),
         )
         .route(
             "/api/workspaces/:id",
@@ -391,7 +389,8 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route(
             "/api/workspaces/:id/assignments",
-            get(collaboration_handlers::list_workspace_assignments).post(collaboration_handlers::assign_user_to_workspace),
+            get(collaboration_handlers::list_workspace_assignments)
+                .post(collaboration_handlers::assign_user_to_workspace),
         )
         .route(
             "/api/workspaces/:id/assignments/:user_id",
@@ -399,94 +398,85 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route(
             "/api/workspaces/:id/shares",
-            get(collaboration_handlers::list_workspace_shares).post(collaboration_handlers::share_workspace),
+            get(collaboration_handlers::list_workspace_shares)
+                .post(collaboration_handlers::share_workspace),
         )
-
         // ─── Phase 4.3: Activity Feed ─────────────────────────────────────
         .route(
             "/api/activity-feed",
-            get(collaboration_handlers::get_activity_feed).post(collaboration_handlers::record_activity),
+            get(collaboration_handlers::get_activity_feed)
+                .post(collaboration_handlers::record_activity),
         )
-
         // ─── Standalone Activity Feed API ──────────────────────────────────
         .route(
             "/api/activity",
-            get(activity_handlers::get_activity_feed).post(activity_handlers::create_activity_event),
+            get(activity_handlers::get_activity_feed)
+                .post(activity_handlers::create_activity_event),
         )
-
         // ─── Supply Chain Risk API ────────────────────────────────────────
         .route(
             "/api/supply-risk",
             get(supply_risk_handlers::get_supply_risks),
         )
-
         // ─── Threat Intelligence API ──────────────────────────────────────
         .route(
             "/api/threat-intel",
             get(threat_intel_handlers::get_threat_intel),
         )
-
         // ─── Psychological Profiles API ──────────────────────────────────
         .route(
             "/api/psych-profiles",
             get(psych_profiles_handlers::get_psych_profiles),
         )
-
         // ─── ICP Sales Targeting API ──────────────────────────────────────
         .route("/api/icp/targets", get(icp_handlers::list_icp_targets))
         .route(
             "/api/icp/companies/:id/score",
             post(icp_handlers::score_company_icp),
         )
-
         // ─── Phase 4.3: Daily Priority Queue ─────────────────────────────
         .route(
             "/api/queue",
-            get(collaboration_handlers::list_queue_items).post(collaboration_handlers::add_to_queue),
+            get(collaboration_handlers::list_queue_items)
+                .post(collaboration_handlers::add_to_queue),
         )
         .route(
             "/api/queue/:id",
             patch(collaboration_handlers::update_queue_item),
         )
-
         // ─── Phase 4.3: Supplier Risk ──────────────────────────────────────
         .route(
             "/api/supplier-risk",
-            get(collaboration_handlers::list_supplier_risks).post(collaboration_handlers::add_supplier_risk),
+            get(collaboration_handlers::list_supplier_risks)
+                .post(collaboration_handlers::add_supplier_risk),
         )
         .route(
             "/api/supplier-risk/:id",
             patch(collaboration_handlers::update_supplier_risk),
         )
-
         // ─── Phase 4.3: Pipeline Opportunities ────────────────────────────
         .route(
             "/api/pipeline",
-            get(collaboration_handlers::list_pipeline_opportunities).post(collaboration_handlers::create_pipeline_opportunity),
+            get(collaboration_handlers::list_pipeline_opportunities)
+                .post(collaboration_handlers::create_pipeline_opportunity),
         )
         .route(
             "/api/pipeline/:id/stage",
             patch(collaboration_handlers::update_pipeline_stage),
         )
-
         // ─── Phase 4.3: Source Evidence ───────────────────────────────────
         .route(
             "/api/evidence",
             get(collaboration_handlers::get_evidence).post(collaboration_handlers::add_evidence),
         )
-
         // ─── Real-time Events (SSE) ────────────────────────────────────────
-        .route(
-            "/api/v1/events/stream",
-            get(crate::alert_sse_handler),
-        )
-
+        .route("/api/v1/events/stream", get(crate::alert_sse_handler))
         // ─── Phase 4.3: Team Assignments ──────────────────────────────────
         .route(
             "/api/team-assignments",
-            get(collaboration_handlers::list_team_assignments).post(collaboration_handlers::create_team_assignment),
+            get(collaboration_handlers::list_team_assignments)
+                .post(collaboration_handlers::create_team_assignment),
         )
-
         // ─── Vector Search Routes ──────────────────────────────────────────
         .route(
             "/api/search/vector",
@@ -496,19 +486,11 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/entities/:entity_type/:entity_id/similar",
             get(vector_search_handlers::similar_entities),
         )
-        .route(
-            "/api/admin/embeddings/reindex",
-            post(vector_search_handlers::reindex_embeddings),
-        )
-
         // ─── AI Triage Engine API Routes ────────────────────────────────
         .route("/api/triage", get(triage_handlers::list_triage))
         .route("/api/triage/stats", get(triage_handlers::get_triage_stats))
         .route("/api/triage/bands", get(triage_handlers::get_triage_bands))
-        .route(
-            "/api/triage/:id",
-            get(triage_handlers::get_triage_item),
-        )
+        .route("/api/triage/:id", get(triage_handlers::get_triage_item))
         .route(
             "/api/triage/:id/override",
             post(triage_handlers::override_triage_score),
@@ -525,18 +507,13 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/triage/:id/dismiss",
             post(triage_handlers::dismiss_triage_item),
         )
-
         // ─── Historical Trends API Routes ─────────────────────────────────
         .route("/api/trends", get(trends_handlers::query_trends))
         .route(
             "/api/trends/comparison",
             get(trends_handlers::trend_comparison),
         )
-        .route(
-            "/api/trends/entities",
-            get(trends_handlers::entity_trends),
-        )
-
+        .route("/api/trends/entities", get(trends_handlers::entity_trends))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
         // B300: `/api/trends*` handlers extract `Extension<Arc<PgStore>>`, which
         // was previously provided only to the web-page router — every trends
@@ -632,7 +609,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route("/admin", get(apex_api::web::admin::admin_page))
         .route("/memos", get(apex_api::web::memos::list_memos))
-        .route("/memos/_list", get(apex_api::web::memos::list_memos_partial))
+        .route(
+            "/memos/_list",
+            get(apex_api::web::memos::list_memos_partial),
+        )
         .route(
             "/notifications",
             get(apex_api::web::notifications::list_notifications_page),
@@ -650,7 +630,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/settings/alerts",
             get(apex_api::web::alert_settings::alert_settings_page),
         )
-
         // ─── Collaboration Web Routes ──────────────────────────────────────
         .route(
             "/workspaces",
@@ -726,22 +705,16 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/team-assignments",
             post(apex_api::web::collaboration::create_team_assignment),
         )
-
         // ─── Executive Dashboard Web Route ─────────────────────────────────
         .route(
             "/executive",
             get(apex_api::web::executive::executive_dashboard),
         )
-
         // ─── Historical Trends Web Route ───────────────────────────────────
         .route("/trends", get(apex_api::web::trends::trends_page))
-
         // ─── AI Triage Engine Web Routes ─────────────────────────────────
         .route("/triage", get(apex_api::web::triage::list_triage))
-        .route(
-            "/triage/:id",
-            get(apex_api::web::triage::get_triage_item),
-        )
+        .route("/triage/:id", get(apex_api::web::triage::get_triage_item))
         .route(
             "/triage/:id/acknowledge",
             post(apex_api::web::triage::acknowledge_triage_html),
@@ -758,7 +731,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/triage/:id/override",
             post(apex_api::web::triage::override_triage_html),
         )
-
         .route_layer(middleware::from_fn(require_session))
         .layer(Extension(state.store.clone()))
         .layer(Extension(state.search_index.clone()))
@@ -770,7 +742,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .merge(web_pages)
         .route("/ws/warnings", get(warnings_ws))
         // ─── PWA static files (dev mode; nginx serves in production) ───
-        .nest_service("/static", ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
+        .nest_service(
+            "/static",
+            ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")),
+        )
         .layer(middleware::from_fn(add_rate_limit_headers))
         .layer(Extension(state.rate_limiter.clone()))
         .layer(cors)

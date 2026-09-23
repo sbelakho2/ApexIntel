@@ -854,14 +854,24 @@ pub(super) fn low_signal_certification_warning_case(evidence_signals: &[Evidence
 #[cfg(feature = "llm")]
 fn has_battery_safety_certification_signal(normalized_signals: &[String]) -> bool {
     const BATTERY_CERT_MARKERS: &[&str] = &[
-        "un38.3", "un 38.3", "un 38 3", "un383",
-        "iec 62619", "iec62619",
-        "iec 62133", "iec62133",
-        "iec 61427", "iec61427",
-        "iec 62660", "iec62660",
-        "ul 1973", "ul1973",
-        "ul 9540", "ul9540",
-        "en 50604", "en50604",
+        "un38.3",
+        "un 38.3",
+        "un 38 3",
+        "un383",
+        "iec 62619",
+        "iec62619",
+        "iec 62133",
+        "iec62133",
+        "iec 61427",
+        "iec61427",
+        "iec 62660",
+        "iec62660",
+        "ul 1973",
+        "ul1973",
+        "ul 9540",
+        "ul9540",
+        "en 50604",
+        "en50604",
     ];
     normalized_signals.iter().any(|signal| {
         BATTERY_CERT_MARKERS

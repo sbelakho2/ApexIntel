@@ -39,3 +39,6 @@ rand = { workspace = true }
 sha2 = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

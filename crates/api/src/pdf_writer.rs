@@ -53,12 +53,8 @@ pub fn render_report_to_pdf(report: &PdfReport) -> Result<Vec<u8>> {
     let (page_w, page_h) = page_dimensions_mm(&report.page_size);
     let content_width_mm = page_w.0 as f64 - MARGIN_LEFT_MM - MARGIN_RIGHT_MM;
 
-    let (doc, page_idx, layer_idx) = PdfDocument::new(
-        &report.title,
-        page_w,
-        page_h,
-        "ApexIntel Report",
-    );
+    let (doc, page_idx, layer_idx) =
+        PdfDocument::new(&report.title, page_w, page_h, "ApexIntel Report");
 
     let font_bold = doc
         .add_builtin_font(BuiltinFont::HelveticaBold)
@@ -83,9 +79,7 @@ pub fn render_report_to_pdf(report: &PdfReport) -> Result<Vec<u8>> {
     let mut state = PageState::new(page_idx, layer_idx, page_h.0 as f64);
     pdf.render_all(report, &mut state)?;
 
-    let bytes = doc
-        .save_to_bytes()
-        .context("failed to save PDF to bytes")?;
+    let bytes = doc.save_to_bytes().context("failed to save PDF to bytes")?;
     Ok(bytes)
 }
 
@@ -162,7 +156,10 @@ impl PdfDocWriter<'_> {
     }
 
     fn draw_header(&self, report: &PdfReport, state: &mut PageState) {
-        let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+        let layer = self
+            .doc
+            .get_page(state.current_page)
+            .get_layer(state.current_layer);
 
         // Title
         layer.use_text(
@@ -207,7 +204,7 @@ impl PdfDocWriter<'_> {
         // Classification
         let classification = report.report_type.classification();
         layer.use_text(
-            &format!("CLASSIFICATION: {}", classification),
+            format!("CLASSIFICATION: {}", classification),
             SMALL_SIZE as f32,
             Mm(MARGIN_LEFT_MM as f32),
             Mm(state.cursor_y as f32),
@@ -216,7 +213,12 @@ impl PdfDocWriter<'_> {
         state.cursor_y -= 3.5;
 
         // Horizontal rule
-        self.draw_line(state, MARGIN_LEFT_MM, state.cursor_y, self.page_w.0 as f64 - MARGIN_RIGHT_MM);
+        self.draw_line(
+            state,
+            MARGIN_LEFT_MM,
+            state.cursor_y,
+            self.page_w.0 as f64 - MARGIN_RIGHT_MM,
+        );
         state.cursor_y -= 3.0;
 
         self.ensure_space(state, 0.0);
@@ -225,7 +227,10 @@ impl PdfDocWriter<'_> {
     fn draw_toc(&self, report: &PdfReport, state: &mut PageState) {
         self.ensure_space(state, 0.0);
 
-        let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+        let layer = self
+            .doc
+            .get_page(state.current_page)
+            .get_layer(state.current_layer);
         layer.use_text(
             "TABLE OF CONTENTS",
             BODY_SIZE as f32,
@@ -249,7 +254,12 @@ impl PdfDocWriter<'_> {
         }
 
         state.cursor_y -= 2.0;
-        self.draw_line(state, MARGIN_LEFT_MM, state.cursor_y, self.page_w.0 as f64 - MARGIN_RIGHT_MM);
+        self.draw_line(
+            state,
+            MARGIN_LEFT_MM,
+            state.cursor_y,
+            self.page_w.0 as f64 - MARGIN_RIGHT_MM,
+        );
         state.cursor_y -= 3.0;
         self.ensure_space(state, 0.0);
     }
@@ -261,7 +271,10 @@ impl PdfDocWriter<'_> {
     ) {
         self.ensure_space(state, 5.0);
 
-        let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+        let layer = self
+            .doc
+            .get_page(state.current_page)
+            .get_layer(state.current_layer);
 
         // Section heading
         layer.use_text(
@@ -291,8 +304,17 @@ impl PdfDocWriter<'_> {
         let line_spacing = 3.5;
         for line in word_wrap(&section.body, max_chars) {
             self.ensure_space(state, line_spacing);
-            let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
-            layer.use_text(&line, BODY_SIZE as f32, Mm(MARGIN_LEFT_MM as f32), Mm(state.cursor_y as f32), &self.font_regular);
+            let layer = self
+                .doc
+                .get_page(state.current_page)
+                .get_layer(state.current_layer);
+            layer.use_text(
+                &line,
+                BODY_SIZE as f32,
+                Mm(MARGIN_LEFT_MM as f32),
+                Mm(state.cursor_y as f32),
+                &self.font_regular,
+            );
             state.cursor_y -= line_spacing;
         }
         state.cursor_y -= 1.5;
@@ -317,7 +339,10 @@ impl PdfDocWriter<'_> {
     ) {
         self.ensure_space(state, 4.0);
 
-        let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+        let layer = self
+            .doc
+            .get_page(state.current_page)
+            .get_layer(state.current_layer);
         layer.use_text(
             "EVIDENCE",
             BODY_SIZE as f32,
@@ -341,7 +366,10 @@ impl PdfDocWriter<'_> {
 
             for wrapped in word_wrap(&line, max_chars) {
                 self.ensure_space(state, 3.5);
-                let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+                let layer = self
+                    .doc
+                    .get_page(state.current_page)
+                    .get_layer(state.current_layer);
                 layer.use_text(
                     &wrapped,
                     BODY_SIZE as f32,
@@ -355,14 +383,13 @@ impl PdfDocWriter<'_> {
         state.cursor_y -= 1.5;
     }
 
-    fn draw_sources(
-        &self,
-        sources: &[SourceRef],
-        state: &mut PageState,
-    ) {
+    fn draw_sources(&self, sources: &[SourceRef], state: &mut PageState) {
         self.ensure_space(state, 4.0);
 
-        let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+        let layer = self
+            .doc
+            .get_page(state.current_page)
+            .get_layer(state.current_layer);
         layer.use_text(
             "SOURCES",
             BODY_SIZE as f32,
@@ -379,7 +406,10 @@ impl PdfDocWriter<'_> {
             let text = format!("[{}] {} ({})", i + 1, source.title, source.url);
             for wrapped in word_wrap(&text, max_chars) {
                 self.ensure_space(state, 3.0);
-                let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+                let layer = self
+                    .doc
+                    .get_page(state.current_page)
+                    .get_layer(state.current_layer);
                 layer.use_text(
                     &wrapped,
                     SMALL_SIZE as f32,
@@ -424,7 +454,10 @@ impl PdfDocWriter<'_> {
 
     /// Draw a horizontal line at `y` (in mm).
     fn draw_line(&self, state: &mut PageState, x1_mm: f64, y_mm: f64, x2_mm: f64) {
-        let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+        let layer = self
+            .doc
+            .get_page(state.current_page)
+            .get_layer(state.current_layer);
         let points = vec![
             (Point::new(Mm(x1_mm as f32), Mm(y_mm as f32)), false),
             (Point::new(Mm(x2_mm as f32), Mm(y_mm as f32)), false),
@@ -441,7 +474,10 @@ impl PdfDocWriter<'_> {
         if state.remaining_height() < needed {
             state.add_page(self.doc, self.page_w, self.page_h);
             // Re-draw header on continuation pages
-            let layer = self.doc.get_page(state.current_page).get_layer(state.current_layer);
+            let layer = self
+                .doc
+                .get_page(state.current_page)
+                .get_layer(state.current_layer);
             layer.use_text(
                 "(continued)",
                 SMALL_SIZE as f32,
@@ -450,7 +486,12 @@ impl PdfDocWriter<'_> {
                 &self.font_regular,
             );
             state.cursor_y -= 3.5;
-            self.draw_line(state, MARGIN_LEFT_MM, state.cursor_y, self.page_w.0 as f64 - MARGIN_RIGHT_MM);
+            self.draw_line(
+                state,
+                MARGIN_LEFT_MM,
+                state.cursor_y,
+                self.page_w.0 as f64 - MARGIN_RIGHT_MM,
+            );
             state.cursor_y -= 3.0;
         }
     }
@@ -498,9 +539,7 @@ fn word_wrap(text: &str, max_chars: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apex_insights::pdf_report::{
-        EvidenceItem, PageSize, PdfReport, ReportSection, ReportType,
-    };
+    use apex_insights::pdf_report::{EvidenceItem, PageSize, PdfReport, ReportSection, ReportType};
 
     #[test]
     fn test_word_wrap_empty() {
@@ -533,12 +572,10 @@ mod tests {
     fn test_render_report_with_section() {
         let mut report = PdfReport::new("Detailed Report", ReportType::EntityDossier);
         report.add_section(
-            ReportSection::new("Section 1")
-                .with_body("This is the body content of section one."),
+            ReportSection::new("Section 1").with_body("This is the body content of section one."),
         );
         report.add_section(
-            ReportSection::new("Section 2")
-                .with_body("This is the body content of section two."),
+            ReportSection::new("Section 2").with_body("This is the body content of section two."),
         );
         let pdf = render_report_to_pdf(&report).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));

@@ -317,16 +317,12 @@ pub async fn list_sentiment_snapshots(
 }
 
 /// Count total behavioral pattern events for a person.
-pub async fn count_behavioral_patterns(
-    pool: &PgPool,
-    person_id: &str,
-) -> Result<i64, sqlx::Error> {
-    let row: (i64,) = sqlx::query_as(
-        r#"SELECT COUNT(*) FROM behavioral_pattern_events WHERE person_id = $1"#,
-    )
-    .bind(person_id)
-    .fetch_one(pool)
-    .await?;
+pub async fn count_behavioral_patterns(pool: &PgPool, person_id: &str) -> Result<i64, sqlx::Error> {
+    let row: (i64,) =
+        sqlx::query_as(r#"SELECT COUNT(*) FROM behavioral_pattern_events WHERE person_id = $1"#)
+            .bind(person_id)
+            .fetch_one(pool)
+            .await?;
     Ok(row.0)
 }
 
@@ -417,12 +413,16 @@ mod tests {
     // converter into a literal that satisfies the DB CHECK constraint.
 
     /// Every string `psych_compute::compute_decision_style` is capable of returning.
-    const ALL_COMPUTE_DECISION_STYLES: &[&str] =
-        &["Unknown", "Collaborative", "Authoritative", "Analytical", "DataDriven"];
+    const ALL_COMPUTE_DECISION_STYLES: &[&str] = &[
+        "Unknown",
+        "Collaborative",
+        "Authoritative",
+        "Analytical",
+        "DataDriven",
+    ];
 
     /// Every string `psych_compute::compute_change_appetite` is capable of returning.
-    const ALL_COMPUTE_CHANGE_APPETITES: &[&str] =
-        &["High", "Moderate", "Low", "Resistant"];
+    const ALL_COMPUTE_CHANGE_APPETITES: &[&str] = &["High", "Moderate", "Low", "Resistant"];
 
     #[test]
     fn test_decision_style_conversions() {
@@ -485,14 +485,30 @@ mod tests {
     #[test]
     fn test_converters_are_total_and_db_valid() {
         let junk_inputs = [
-            "", " ", "Garbage", "decisive", "aggressive", "conservative", "123",
-            "Data Driven", "data-driven", "consensus", "intuitive", "delegative",
+            "",
+            " ",
+            "Garbage",
+            "decisive",
+            "aggressive",
+            "conservative",
+            "123",
+            "Data Driven",
+            "data-driven",
+            "consensus",
+            "intuitive",
+            "delegative",
         ];
         for input in junk_inputs {
             let ds = decision_style_to_db(input);
-            assert!(is_valid_decision_style_db(ds), "decision_style '{input}' -> '{ds}'");
+            assert!(
+                is_valid_decision_style_db(ds),
+                "decision_style '{input}' -> '{ds}'"
+            );
             let ca = change_appetite_to_db(input);
-            assert!(is_valid_change_appetite_db(ca), "change_appetite '{input}' -> '{ca}'");
+            assert!(
+                is_valid_change_appetite_db(ca),
+                "change_appetite '{input}' -> '{ca}'"
+            );
         }
     }
 
@@ -512,8 +528,14 @@ mod tests {
         assert_eq!(
             VALID_DECISION_STYLES_DB,
             &[
-                "authoritative", "collaborative", "analytical", "consensus_driven",
-                "data_driven", "intuitive", "delegative", "unknown",
+                "authoritative",
+                "collaborative",
+                "analytical",
+                "consensus_driven",
+                "data_driven",
+                "intuitive",
+                "delegative",
+                "unknown",
             ]
         );
         assert_eq!(

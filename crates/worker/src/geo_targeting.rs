@@ -42,11 +42,11 @@ const DEFAULT_SECONDARY_MARKETS: &[&str] = &[
 /// supply / infrastructure rather than a pack buyer. Such entities are monitored
 /// globally and never receive a geographic demand weight.
 const GLOBAL_SUPPLY_TYPE_MARKERS: &[&str] = &[
-    "cell",            // "Cell Manufacturer" / "Cell Supplier"
-    "distributor",     // component distributors
-    "semiconductor",   // chip makers
-    "pcb",             // bare-board makers
-    "test",            // test & measurement vendors
+    "cell",          // "Cell Manufacturer" / "Cell Supplier"
+    "distributor",   // component distributors
+    "semiconductor", // chip makers
+    "pcb",           // bare-board makers
+    "test",          // test & measurement vendors
     "trade association",
     "industry body",
     "component supplier",
@@ -242,8 +242,14 @@ mod tests {
     fn region_fallback_is_conservative() {
         // Ambiguous macro-regions must not penalise — they stay Unknown.
         assert_eq!(classify_market(None, Some("MENA")), MarketTier::Unknown);
-        assert_eq!(classify_market(None, Some("North Africa")), MarketTier::Unknown);
-        assert_eq!(classify_market(None, Some("Middle East")), MarketTier::Unknown);
+        assert_eq!(
+            classify_market(None, Some("North Africa")),
+            MarketTier::Unknown
+        );
+        assert_eq!(
+            classify_market(None, Some("Middle East")),
+            MarketTier::Unknown
+        );
         assert_eq!(classify_market(None, Some("Global")), MarketTier::Unknown);
         assert_eq!(classify_market(None, None), MarketTier::Unknown);
         // Unambiguous regions still classify.
@@ -253,7 +259,10 @@ mod tests {
             classify_market(None, Some("North America")),
             MarketTier::OffTarget
         );
-        assert_eq!(classify_market(None, Some("Asia-Pacific")), MarketTier::OffTarget);
+        assert_eq!(
+            classify_market(None, Some("Asia-Pacific")),
+            MarketTier::OffTarget
+        );
     }
 
     #[test]
@@ -284,8 +293,14 @@ mod tests {
 
     #[test]
     fn cell_suppliers_are_always_global() {
-        assert!(is_global_monitoring_entity(false, Some("Cell Manufacturer")));
-        assert!(is_global_monitoring_entity(false, Some("Component Distributor")));
+        assert!(is_global_monitoring_entity(
+            false,
+            Some("Cell Manufacturer")
+        ));
+        assert!(is_global_monitoring_entity(
+            false,
+            Some("Component Distributor")
+        ));
         assert!(is_global_monitoring_entity(false, Some("Semiconductor")));
         // A Chinese cell supplier is monitored at full weight, never down-weighted.
         assert_eq!(
@@ -293,7 +308,10 @@ mod tests {
             1.0
         );
         // A pack buyer (no supply marker) is not exempt.
-        assert!(!is_global_monitoring_entity(false, Some("Project Developer")));
+        assert!(!is_global_monitoring_entity(
+            false,
+            Some("Project Developer")
+        ));
         assert!(!is_global_monitoring_entity(false, Some("OEM")));
         assert!(!is_global_monitoring_entity(false, None));
     }
@@ -308,7 +326,10 @@ mod tests {
         assert!(primary > secondary, "primary should outrank secondary");
         assert!(secondary > unknown, "secondary should outrank neutral");
         assert!(unknown > off_target, "off-target should rank below neutral");
-        assert!((unknown - 1.0).abs() < f64::EPSILON, "unknown is neutral 1.0");
+        assert!(
+            (unknown - 1.0).abs() < f64::EPSILON,
+            "unknown is neutral 1.0"
+        );
     }
 
     #[test]

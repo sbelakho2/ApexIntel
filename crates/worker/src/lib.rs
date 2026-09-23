@@ -12,23 +12,23 @@
 //! reading from JSON stub files.
 
 #![allow(clippy::should_implement_trait)]
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod activity_logger;
+pub mod embedding_indexer;
 pub mod holiday_calendar;
 pub mod nats_stream;
 pub mod nightly;
 pub mod notifications;
+pub mod pdf_export;
 pub mod recipe_loader;
+pub mod retry;
 pub mod scheduler;
 pub mod self_improvement;
-pub mod slack;
 pub mod sla_predictor;
+pub mod slack;
 pub mod storage;
-pub mod embedding_indexer;
 pub mod trend_aggregator;
-pub mod pdf_export;
-pub mod retry;
 pub mod warning_verifier;
 pub mod webhooks;
 pub mod weekly;

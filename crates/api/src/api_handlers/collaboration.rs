@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 // Collaboration API Handlers
 // Phase 4.3: User Experience Enhancement - User Experience Features
 
@@ -6,18 +6,19 @@ use apex_api::destructive_actions::ApiAuthContext;
 use apex_api::responses::{success, ApiError, ApiResponse};
 use apex_api::routes::collaboration::{
     ActivityEntry, ActivityFeedQuery, AddEvidenceRequest, AddSupplierRiskRequest,
-    AddToQueueRequest, AssignUserRequest, CreateOpportunityRequest, CreatePipelineOpportunityRequest,
-    CreateTeamAssignmentRequest, CreateThreatRequest, CreateWorkspaceRequest, CriticalThreat,
-    InvestigationShare, InvestigationWorkspace, PipelineOpportunity, PriorityQueueItem,
-    RecordActivityRequest, ShareWorkspaceRequest, SourceEvidence, StrategicOpportunity,
-    SupplierRiskEntry, TeamAssignment, UpdatePipelineStageRequest, UpdateQueueItemRequest,
-    UpdateSupplierRiskRequest, UpdateWorkspaceRequest, WorkspaceAssignment,
+    AddToQueueRequest, AssignUserRequest, CreateOpportunityRequest,
+    CreatePipelineOpportunityRequest, CreateTeamAssignmentRequest, CreateThreatRequest,
+    CreateWorkspaceRequest, CriticalThreat, InvestigationShare, InvestigationWorkspace,
+    PipelineOpportunity, PriorityQueueItem, RecordActivityRequest, ShareWorkspaceRequest,
+    SourceEvidence, StrategicOpportunity, SupplierRiskEntry, TeamAssignment,
+    UpdatePipelineStageRequest, UpdateQueueItemRequest, UpdateSupplierRiskRequest,
+    UpdateWorkspaceRequest, WorkspaceAssignment,
 };
 use apex_store::postgres::{
-    ActivityFeedRecord, CriticalThreatRecord, InvestigationShareRecord, InvestigationWorkspaceRecord,
-    PipelineOpportunityRecord, PriorityQueueItemRecord, SourceEvidenceRecord,
-    StrategicOpportunityRecord, SupplierRiskEntryRecord, TeamAssignmentRecord,
-    WorkspaceAssignmentRecord,
+    ActivityFeedRecord, CriticalThreatRecord, InvestigationShareRecord,
+    InvestigationWorkspaceRecord, PipelineOpportunityRecord, PriorityQueueItemRecord,
+    SourceEvidenceRecord, StrategicOpportunityRecord, SupplierRiskEntryRecord,
+    TeamAssignmentRecord, WorkspaceAssignmentRecord,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -34,32 +35,48 @@ use uuid::Uuid;
 
 pub fn validate_workspace_request(req: &CreateWorkspaceRequest) -> Result<(), ApiError> {
     if req.name.trim().len() < 3 {
-        return Err(ApiError::validation("name", "must be at least 3 characters"));
+        return Err(ApiError::validation(
+            "name",
+            "must be at least 3 characters",
+        ));
     }
     if req.name.trim().len() > 255 {
-        return Err(ApiError::validation("name", "must not exceed 255 characters"));
+        return Err(ApiError::validation(
+            "name",
+            "must not exceed 255 characters",
+        ));
     }
     if !["ad-hoc", "structured", "incident", "ongoing"].contains(&req.workspace_type.as_str()) {
-        return Err(ApiError::validation("workspace_type",
-            "must be one of: ad-hoc, structured, incident, ongoing"));
+        return Err(ApiError::validation(
+            "workspace_type",
+            "must be one of: ad-hoc, structured, incident, ongoing",
+        ));
     }
     if !["private", "team", "organization", "public"].contains(&req.visibility.as_str()) {
-        return Err(ApiError::validation("visibility",
-            "must be one of: private, team, organization, public"));
+        return Err(ApiError::validation(
+            "visibility",
+            "must be one of: private, team, organization, public",
+        ));
     }
     Ok(())
 }
 
 pub fn validate_priority(value: i32) -> Result<(), ApiError> {
     if !(1..=100).contains(&value) {
-        return Err(ApiError::validation("priority", "must be between 1 and 100"));
+        return Err(ApiError::validation(
+            "priority",
+            "must be between 1 and 100",
+        ));
     }
     Ok(())
 }
 
 pub fn validate_confidence(value: f64) -> Result<(), ApiError> {
     if !(0.0..=1.0).contains(&value) {
-        return Err(ApiError::validation("confidence", "must be between 0.0 and 1.0"));
+        return Err(ApiError::validation(
+            "confidence",
+            "must be between 0.0 and 1.0",
+        ));
     }
     Ok(())
 }
@@ -67,15 +84,24 @@ pub fn validate_confidence(value: f64) -> Result<(), ApiError> {
 pub fn validate_severity(value: &str) -> Result<(), ApiError> {
     let lower = value.to_lowercase();
     if !["low", "medium", "high", "critical"].contains(&lower.as_str()) {
-        return Err(ApiError::validation("severity",
-            "must be one of: low, medium, high, critical"));
+        return Err(ApiError::validation(
+            "severity",
+            "must be one of: low, medium, high, critical",
+        ));
     }
     Ok(())
 }
 
 pub fn validate_stage(value: &str) -> Result<(), ApiError> {
-    if !["discovery", "qualification", "proposal", "negotiation", "closed_won", "closed_lost"]
-        .contains(&value)
+    if ![
+        "discovery",
+        "qualification",
+        "proposal",
+        "negotiation",
+        "closed_won",
+        "closed_lost",
+    ]
+    .contains(&value)
     {
         return Err(ApiError::validation("stage",
             "must be one of: discovery, qualification, proposal, negotiation, closed_won, closed_lost"));
@@ -198,10 +224,8 @@ fn assignment_from_record(r: WorkspaceAssignmentRecord) -> WorkspaceAssignment {
 }
 
 fn activity_from_record(r: ActivityFeedRecord) -> ActivityEntry {
-    let formatted_details = apex_api::routes::collaboration::format_activity_details(
-        &r.action_type,
-        &r.details,
-    );
+    let formatted_details =
+        apex_api::routes::collaboration::format_activity_details(&r.action_type, &r.details);
     ActivityEntry {
         id: r.id.to_string(),
         actor_id: r.actor_id,
@@ -355,7 +379,11 @@ pub async fn get_executive_summary(
     };
 
     let threat_records = if include_threats {
-        state.store.list_critical_threats(limit).await.map_err(store_err)?
+        state
+            .store
+            .list_critical_threats(limit)
+            .await
+            .map_err(store_err)?
     } else {
         Vec::new()
     };
@@ -464,7 +492,10 @@ pub async fn create_opportunity(
     validate_confidence(req.confidence)?;
 
     if req.priority_score < 0.0 || req.priority_score > 1.0 {
-        return Err(ApiError::validation("priority_score", "must be between 0.0 and 1.0"));
+        return Err(ApiError::validation(
+            "priority_score",
+            "must be between 0.0 and 1.0",
+        ));
     }
 
     let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
@@ -553,7 +584,10 @@ pub async fn create_threat(
     validate_severity(&req.severity)?;
 
     if req.impact_score < 0.0 || req.impact_score > 1.0 {
-        return Err(ApiError::validation("impact_score", "must be between 0.0 and 1.0"));
+        return Err(ApiError::validation(
+            "impact_score",
+            "must be between 0.0 and 1.0",
+        ));
     }
 
     let entity_id = parse_optional_uuid(&req.entity_id, "entity_id")?;
@@ -607,7 +641,10 @@ pub async fn update_opportunity(
     validate_confidence(req.confidence)?;
 
     if req.priority_score < 0.0 || req.priority_score > 1.0 {
-        return Err(ApiError::validation("priority_score", "must be between 0.0 and 1.0"));
+        return Err(ApiError::validation(
+            "priority_score",
+            "must be between 0.0 and 1.0",
+        ));
     }
 
     let uuid = parse_uuid(&id, "id")?;
@@ -658,8 +695,8 @@ pub async fn update_threat(
 
     let uuid = parse_uuid(&id, "id")?;
 
-    let resolved = req.severity.eq_ignore_ascii_case("resolved")
-        || req.threat_type.contains("resolved");
+    let resolved =
+        req.severity.eq_ignore_ascii_case("resolved") || req.threat_type.contains("resolved");
     let status = if resolved { "resolved" } else { "active" };
 
     let record = state
@@ -691,7 +728,8 @@ pub async fn list_workspaces(
         .await
         .map_err(store_err)?;
 
-    let workspaces: Vec<InvestigationWorkspace> = records.into_iter().map(workspace_from_record).collect();
+    let workspaces: Vec<InvestigationWorkspace> =
+        records.into_iter().map(workspace_from_record).collect();
 
     // Filter by visibility based on user role
     let filtered: Vec<InvestigationWorkspace> = workspaces
@@ -1054,7 +1092,10 @@ pub async fn add_supplier_risk(
     Json(req): Json<AddSupplierRiskRequest>,
 ) -> Result<Json<ApiResponse<SupplierRiskEntry>>, ApiError> {
     if req.risk_score < 0.0 || req.risk_score > 1.0 {
-        return Err(ApiError::validation("risk_score", "must be between 0.0 and 1.0"));
+        return Err(ApiError::validation(
+            "risk_score",
+            "must be between 0.0 and 1.0",
+        ));
     }
 
     let valid_categories = [
@@ -1096,7 +1137,10 @@ pub async fn update_supplier_risk(
 ) -> Result<Json<ApiResponse<SupplierRiskEntry>>, ApiError> {
     if let Some(risk_score) = req.risk_score {
         if !(0.0..=1.0).contains(&risk_score) {
-            return Err(ApiError::validation("risk_score", "must be between 0.0 and 1.0"));
+            return Err(ApiError::validation(
+                "risk_score",
+                "must be between 0.0 and 1.0",
+            ));
         }
     }
 
@@ -1131,11 +1175,7 @@ pub async fn list_pipeline_opportunities(
 
     let records = state
         .store
-        .list_pipeline_opportunities(
-            params.stage.as_deref(),
-            params.owner_id.as_deref(),
-            limit,
-        )
+        .list_pipeline_opportunities(params.stage.as_deref(), params.owner_id.as_deref(), limit)
         .await
         .map_err(store_err)?;
 
@@ -1424,7 +1464,10 @@ pub async fn add_evidence(
         "analyst_report",
     ];
     if !valid_types.contains(&req.evidence_type.as_str()) {
-        return Err(ApiError::validation("evidence_type", "invalid evidence type"));
+        return Err(ApiError::validation(
+            "evidence_type",
+            "invalid evidence type",
+        ));
     }
 
     if req.source_url.trim().is_empty() {
@@ -1471,8 +1514,10 @@ pub async fn list_team_assignments(
         .await
         .map_err(store_err)?;
 
-    let assignments: Vec<TeamAssignment> =
-        records.into_iter().map(team_assignment_from_record).collect();
+    let assignments: Vec<TeamAssignment> = records
+        .into_iter()
+        .map(team_assignment_from_record)
+        .collect();
 
     Ok(Json(success(assignments)))
 }

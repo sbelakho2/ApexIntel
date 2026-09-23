@@ -1,6 +1,2 @@
-disallowed-methods = [
-  "std::option::Option::unwrap",
-  "std::result::Result::unwrap",
-  "std::option::Option::expect",
-  "std::result::Result::expect"
-]
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

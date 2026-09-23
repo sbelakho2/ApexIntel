@@ -66,14 +66,13 @@ pub async fn run_embedding_reindex(kind: &JobKind, store: &Arc<PgStore>) -> JobR
     let mut total_skipped: u64 = 0;
     let mut errors: Vec<String> = Vec::new();
     // Multi-language tracking (Phase 2.4)
-    let mut lang_distribution: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut lang_distribution: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
 
     for entity_type in INDEXED_ENTITY_TYPES {
         // Check if we've hit the per-run limit
         if total_indexed >= MAX_ENTITIES_PER_RUN as u64 {
-            info!(
-                "embedding indexer: reached per-run limit of {MAX_ENTITIES_PER_RUN}, stopping"
-            );
+            info!("embedding indexer: reached per-run limit of {MAX_ENTITIES_PER_RUN}, stopping");
             break;
         }
 
@@ -105,8 +104,14 @@ pub async fn run_embedding_reindex(kind: &JobKind, store: &Arc<PgStore>) -> JobR
                 break;
             }
 
-            match index_single_entity(store, &embedding_client, entity_type, entity_id, &model_name)
-                .await
+            match index_single_entity(
+                store,
+                &embedding_client,
+                entity_type,
+                entity_id,
+                &model_name,
+            )
+            .await
             {
                 Ok(Some(lang)) => {
                     total_indexed += 1;
@@ -127,8 +132,12 @@ pub async fn run_embedding_reindex(kind: &JobKind, store: &Arc<PgStore>) -> JobR
     // Build language distribution summary
     let lang_summary: String = {
         let mut langs: Vec<_> = lang_distribution.into_iter().collect();
-        langs.sort_by(|a, b| b.1.cmp(&a.1));
-        langs.iter().map(|(lang, count)| format!("{lang}:{count}")).collect::<Vec<_>>().join(", ")
+        langs.sort_by_key(|a| std::cmp::Reverse(a.1));
+        langs
+            .iter()
+            .map(|(lang, count)| format!("{lang}:{count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let notes = if errors.is_empty() {
@@ -248,7 +257,14 @@ async fn index_single_entity(
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         let embedding = client.embed(chunk).await?;
         store
-            .upsert_embedding(entity_type, entity_id, chunk_index as i32, &embedding, chunk, model_name)
+            .upsert_embedding(
+                entity_type,
+                entity_id,
+                chunk_index as i32,
+                &embedding,
+                chunk,
+                model_name,
+            )
             .await?;
     }
 
@@ -260,8 +276,10 @@ async fn index_single_entity(
 /// Expects `LLM_BASE_URL` (default: `http://localhost:8080`) and
 /// `LLM_MODEL_NAME` (default: `Qwen3-30B-A3B-Q4_K_M`).
 fn create_embedding_client() -> Result<EmbeddingClient> {
-    let base_url = std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let model_name = std::env::var("LLM_MODEL_NAME").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".to_string());
+    let base_url =
+        std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let model_name =
+        std::env::var("LLM_MODEL_NAME").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".to_string());
 
     let mut config = apex_llm::ModelConfig::llamacpp_default();
     config.base_url = base_url;

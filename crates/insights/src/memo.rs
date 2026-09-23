@@ -144,7 +144,10 @@ fn vary_heading(line: &str, rng: &mut MemoRng) -> String {
 fn dedup_repeated_narratives(cards: &[InsightCard]) -> Vec<CardDisplayItem> {
     let mut groups: HashMap<&str, Vec<&InsightCard>> = HashMap::new();
     for card in cards {
-        groups.entry(card.narrative.as_str()).or_default().push(card);
+        groups
+            .entry(card.narrative.as_str())
+            .or_default()
+            .push(card);
     }
 
     let mut items: Vec<CardDisplayItem> = Vec::with_capacity(groups.len());
@@ -152,8 +155,7 @@ fn dedup_repeated_narratives(cards: &[InsightCard]) -> Vec<CardDisplayItem> {
         if group.len() == 1 {
             items.push(CardDisplayItem::Single(group[0].clone()));
         } else {
-            let entity_names: Vec<String> =
-                group.iter().map(|c| c.entity_name.clone()).collect();
+            let entity_names: Vec<String> = group.iter().map(|c| c.entity_name.clone()).collect();
             items.push(CardDisplayItem::Grouped {
                 count: group.len(),
                 entity_names,
@@ -170,13 +172,13 @@ fn dedup_repeated_narratives(cards: &[InsightCard]) -> Vec<CardDisplayItem> {
     items.sort_by(|a, b| {
         let a_is_group = matches!(a, CardDisplayItem::Grouped { .. });
         let b_is_group = matches!(b, CardDisplayItem::Grouped { .. });
-        b_is_group
-            .cmp(&a_is_group)
-            .then_with(|| {
-                let a_score = a.priority_score();
-                let b_score = b.priority_score();
-                b_score.partial_cmp(&a_score).unwrap_or(std::cmp::Ordering::Equal)
-            })
+        b_is_group.cmp(&a_is_group).then_with(|| {
+            let a_score = a.priority_score();
+            let b_score = b.priority_score();
+            b_score
+                .partial_cmp(&a_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
 
     items
@@ -1043,7 +1045,8 @@ pub fn generate_weekly_memo(cards: &[InsightCard]) -> WeeklyMemo {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::manual_range_contains,
         clippy::needless_borrows_for_generic_args,
@@ -1273,9 +1276,18 @@ mod tests {
         assert!(memo.full_text.contains("# Weekly Strategy Memo"));
         assert!(memo.full_text.contains("##")); // at least some level-2 headings
         assert!(memo.full_text.contains("Foxconn"), "should mention Foxconn");
-        assert!(memo.full_text.contains("Celestica"), "should mention Celestica");
-        assert!(memo.full_text.contains("insight"), "should contain insight text");
-        assert!(memo.full_text.contains("Action A"), "should contain actions");
+        assert!(
+            memo.full_text.contains("Celestica"),
+            "should mention Celestica"
+        );
+        assert!(
+            memo.full_text.contains("insight"),
+            "should contain insight text"
+        );
+        assert!(
+            memo.full_text.contains("Action A"),
+            "should contain actions"
+        );
     }
 
     #[test]

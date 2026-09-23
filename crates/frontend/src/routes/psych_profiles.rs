@@ -15,7 +15,10 @@ pub fn PsychProfilesPage() -> impl IntoView {
                     set_loading.set(false);
                 }
                 Err(e) => {
-                    set_error.set(Some(format!("Failed to load psychological profiles: {}", e)));
+                    set_error.set(Some(format!(
+                        "Failed to load psychological profiles: {}",
+                        e
+                    )));
                     set_loading.set(false);
                 }
             }
@@ -24,7 +27,10 @@ pub fn PsychProfilesPage() -> impl IntoView {
 
     let selected_profile = move || {
         let id = selected_id.get();
-        profiles.get().into_iter().find(|p| Some(p.person_id.clone()) == id)
+        profiles
+            .get()
+            .into_iter()
+            .find(|p| Some(p.person_id.clone()) == id)
     };
 
     view! {
@@ -62,7 +68,7 @@ pub fn PsychProfilesPage() -> impl IntoView {
                             {profiles.get().into_iter().map(|profile| {
                                 let pid = profile.person_id.clone();
                                 let pid_for_click = pid.clone();
-                                let sid = selected_id.clone();
+                                let sid = selected_id;
                                 view! {
                                     <button
                                         class=move || format!("profile-list-item {}", if sid.get().as_ref() == Some(&pid) { "profile-list-item-active" } else { "" })

@@ -58,6 +58,20 @@ impl BuyingCenterRole {
         }
     }
 
+    /// Relative decision influence for this role, normalised to `0.0..=1.0`.
+    /// Used to populate `buying_center_members.influence_score`, which is
+    /// constrained to that range.
+    pub fn influence_score(&self) -> f64 {
+        match self {
+            Self::Decider => 1.0,
+            Self::Buyer => 0.9,
+            Self::Influencer => 0.6,
+            Self::Initiator => 0.5,
+            Self::Gatekeeper => 0.4,
+            Self::User => 0.2,
+        }
+    }
+
     /// Human-readable label for display.
     pub fn label(&self) -> &'static str {
         match self {
@@ -152,8 +166,16 @@ pub fn role_to_buying_center(role: &RoleFamily) -> BuyingCenterRole {
             s if s.contains("finance") => BuyingCenterRole::Gatekeeper,
             s if s.contains("hr") || s.contains("human resources") => BuyingCenterRole::User,
             s if s.contains("legal") => BuyingCenterRole::Gatekeeper,
-            s if s.contains("procurement") || s.contains("sourcing") || s.contains("purchasing") || s.contains("buyer") => BuyingCenterRole::Buyer,
-            s if s.contains("supply chain") || s.contains("logistics") => BuyingCenterRole::Influencer,
+            s if s.contains("procurement")
+                || s.contains("sourcing")
+                || s.contains("purchasing")
+                || s.contains("buyer") =>
+            {
+                BuyingCenterRole::Buyer
+            }
+            s if s.contains("supply chain") || s.contains("logistics") => {
+                BuyingCenterRole::Influencer
+            }
             s if s.contains("quality") => BuyingCenterRole::Influencer,
             s if s.contains("engineer") || s.contains("r&d") => BuyingCenterRole::Influencer,
             _ => BuyingCenterRole::Influencer,
@@ -269,10 +291,7 @@ pub fn contact_recommendation_text(recommendations: &[ContactRecommendation]) ->
             .map(|r| format!("{} ({})", r.person_name, r.buying_center_role.label()))
             .collect();
         if !others.is_empty() {
-            text.push_str(&format!(
-                "\n\n**Also relevant:** {}.",
-                others.join(", ")
-            ));
+            text.push_str(&format!("\n\n**Also relevant:** {}.", others.join(", ")));
         }
     }
 
@@ -282,7 +301,32 @@ pub fn contact_recommendation_text(recommendations: &[ContactRecommendation]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{PoiProfile, PsychProfile, InfluenceProfile, PriorityVector, ChangeAppetite, DecisionStyle, ProofType};
+
+    #[test]
+    fn influence_score_is_normalised_and_ordered() {
+        let all = [
+            BuyingCenterRole::Buyer,
+            BuyingCenterRole::Decider,
+            BuyingCenterRole::Influencer,
+            BuyingCenterRole::Initiator,
+            BuyingCenterRole::Gatekeeper,
+            BuyingCenterRole::User,
+        ];
+        for role in all {
+            let score = role.influence_score();
+            assert!(
+                (0.0..=1.0).contains(&score),
+                "{role:?} influence {score} out of range"
+            );
+        }
+        assert!(
+            BuyingCenterRole::Decider.influence_score() > BuyingCenterRole::User.influence_score()
+        );
+    }
+    use crate::model::{
+        ChangeAppetite, DecisionStyle, InfluenceProfile, PoiProfile, PriorityVector, ProofType,
+        PsychProfile,
+    };
 
     fn make_poi(name: &str, role: &str, org: &str, role_family: RoleFamily) -> PoiProfile {
         PoiProfile {
@@ -344,8 +388,18 @@ mod tests {
     fn test_recommend_contacts_prioritizes_buyer_over_executive() {
         let pois = vec![
             make_poi("CEO Person", "CEO", "Target Corp", RoleFamily::Executive),
-            make_poi("Procurement Manager", "Global Sourcing Director", "Target Corp", RoleFamily::Procurement),
-            make_poi("Quality Lead", "Supplier Quality Manager", "Target Corp", RoleFamily::SupplierQuality),
+            make_poi(
+                "Procurement Manager",
+                "Global Sourcing Director",
+                "Target Corp",
+                RoleFamily::Procurement,
+            ),
+            make_poi(
+                "Quality Lead",
+                "Supplier Quality Manager",
+                "Target Corp",
+                RoleFamily::SupplierQuality,
+            ),
         ];
 
         let recs = recommend_contacts(&pois);

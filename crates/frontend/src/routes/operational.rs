@@ -4,10 +4,7 @@
 
 use leptos::*;
 
-use crate::api_config::api_url;
-use crate::components::{
-    cards::{PageHeader, SurfaceCard},
-};
+use crate::components::cards::{PageHeader, SurfaceCard};
 
 // ────────────────────────────────────────────
 // API Response Types
@@ -112,12 +109,18 @@ pub async fn fetch_priority_queue(user_id: &str) -> Result<Vec<PriorityQueueItem
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<Vec<PriorityQueueItem>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<PriorityQueueItem>> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch priority queue".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch priority queue".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -137,12 +140,18 @@ pub async fn add_to_queue(req: AddToQueueRequest) -> Result<PriorityQueueItem, S
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<PriorityQueueItem> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<PriorityQueueItem> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to add to queue".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to add to queue".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -160,12 +169,18 @@ pub async fn fetch_supplier_risks() -> Result<Vec<SupplierRiskEntry>, String> {
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<Vec<SupplierRiskEntry>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<SupplierRiskEntry>> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch supplier risks".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch supplier risks".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -183,12 +198,18 @@ pub async fn fetch_pipeline() -> Result<Vec<PipelineOpportunity>, String> {
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<Vec<PipelineOpportunity>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<PipelineOpportunity>> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch pipeline".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch pipeline".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -206,12 +227,18 @@ pub async fn fetch_alerts() -> Result<Vec<AlertItem>, String> {
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    let envelope: ApiEnvelope<Vec<AlertItem>> = serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+    let envelope: ApiEnvelope<Vec<AlertItem>> =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse: {}", e))?;
     if status >= 400 || !envelope.success {
         return Err(format!("API error (status {})", status));
     }
-    envelope.data.ok_or_else(|| "Failed to fetch alerts".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "Failed to fetch alerts".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -328,11 +355,20 @@ fn pipeline_stage_label(stage: &str) -> &str {
 }
 
 fn pipeline_stage_view(opportunities: Vec<PipelineOpportunity>) -> impl IntoView {
-    let stages: Vec<&str> = vec!["discovery", "qualification", "proposal", "negotiation", "closed_won", "closed_lost"];
+    let stages: Vec<&str> = vec![
+        "discovery",
+        "qualification",
+        "proposal",
+        "negotiation",
+        "closed_won",
+        "closed_lost",
+    ];
 
-    let stage_items: Vec<(&str, Vec<PipelineOpportunity>)> = stages.into_iter()
+    let stage_items: Vec<(&str, Vec<PipelineOpportunity>)> = stages
+        .into_iter()
         .map(|stage| {
-            let items: Vec<PipelineOpportunity> = opportunities.iter()
+            let items: Vec<PipelineOpportunity> = opportunities
+                .iter()
                 .filter(|o| o.stage == stage)
                 .cloned()
                 .collect();
@@ -400,7 +436,11 @@ fn PipelineCard(opportunity: PipelineOpportunity) -> impl IntoView {
 #[component]
 fn AlertCard(alert: AlertItem) -> impl IntoView {
     let severity_class = format!("alert-severity-{}", alert.severity.to_lowercase());
-    let ack_class = if alert.acknowledged { "acknowledged" } else { "unacknowledged" };
+    let ack_class = if alert.acknowledged {
+        "acknowledged"
+    } else {
+        "unacknowledged"
+    };
 
     view! {
         <article class={format!("alert-card {}", ack_class)}>
@@ -449,31 +489,25 @@ fn QueueSummary(pending: u64, overdue: u64, completed: u64) -> impl IntoView {
 #[component]
 pub fn OperationalPage() -> impl IntoView {
     let (active_tab, set_active_tab) = create_signal::<String>("queue".to_string());
-    
+
     let queue_items = create_resource(|| (), |_| async { fetch_priority_queue("system").await });
     let supplier_risks = create_resource(|| (), |_| async { fetch_supplier_risks().await });
     let pipeline = create_resource(|| (), |_| async { fetch_pipeline().await });
     let alerts = create_resource(|| (), |_| async { fetch_alerts().await });
 
-    let pending_count = move || {
-        match queue_items.get() {
-            Some(Ok(items)) => items.iter().filter(|i| i.status == "pending").count() as u64,
-            _ => 0,
-        }
+    let pending_count = move || match queue_items.get() {
+        Some(Ok(items)) => items.iter().filter(|i| i.status == "pending").count() as u64,
+        _ => 0,
     };
-    
-    let overdue_count = move || {
-        match queue_items.get() {
-            Some(Ok(items)) => items.iter().filter(|i| i.status == "overdue").count() as u64,
-            _ => 0,
-        }
+
+    let overdue_count = move || match queue_items.get() {
+        Some(Ok(items)) => items.iter().filter(|i| i.status == "overdue").count() as u64,
+        _ => 0,
     };
-    
-    let completed_count = move || {
-        match queue_items.get() {
-            Some(Ok(items)) => items.iter().filter(|i| i.status == "completed").count() as u64,
-            _ => 0,
-        }
+
+    let completed_count = move || match queue_items.get() {
+        Some(Ok(items)) => items.iter().filter(|i| i.status == "completed").count() as u64,
+        _ => 0,
     };
 
     view! {
@@ -486,7 +520,7 @@ pub fn OperationalPage() -> impl IntoView {
 
             // Tab Navigation — accessible ARIA tab pattern
             <div class="tab-navigation" role="tablist" aria-label="Operational views">
-                <button 
+                <button
                     class={format!("tab-button {}", if active_tab.get() == "queue" { "active" } else { "" })}
                     role="tab"
                     aria-selected={move || (active_tab.get() == "queue").to_string()}
@@ -496,7 +530,7 @@ pub fn OperationalPage() -> impl IntoView {
                 >
                     "Daily Queue"
                 </button>
-                <button 
+                <button
                     class={format!("tab-button {}", if active_tab.get() == "suppliers" { "active" } else { "" })}
                     role="tab"
                     aria-selected={move || (active_tab.get() == "suppliers").to_string()}
@@ -506,7 +540,7 @@ pub fn OperationalPage() -> impl IntoView {
                 >
                     "Supplier Risk"
                 </button>
-                <button 
+                <button
                     class={format!("tab-button {}", if active_tab.get() == "pipeline" { "active" } else { "" })}
                     role="tab"
                     aria-selected={move || (active_tab.get() == "pipeline").to_string()}
@@ -516,7 +550,7 @@ pub fn OperationalPage() -> impl IntoView {
                 >
                     "Pipeline"
                 </button>
-                <button 
+                <button
                     class={format!("tab-button {}", if active_tab.get() == "alerts" { "active" } else { "" })}
                     role="tab"
                     aria-selected={move || (active_tab.get() == "alerts").to_string()}
@@ -534,7 +568,7 @@ pub fn OperationalPage() -> impl IntoView {
                 {move || if active_tab.get() == "queue" {
                     view! {
                         <SurfaceCard title="Daily Priority Queue" subtitle="Your prioritized task list for today">
-                            <QueueSummary 
+                            <QueueSummary
                                 pending={pending_count()}
                                 overdue={overdue_count()}
                                 completed={completed_count()}

@@ -163,7 +163,10 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
         // ── System event types (from ActivityLogger) ──────────────────────
         "insight_generated" => {
             let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let conf = obj.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let conf = obj
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             if title.is_empty() {
                 format!("Confidence: {:.0}%", conf * 100.0)
             } else {
@@ -184,13 +187,28 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
             }
         }
         "crawl_completed" => {
-            let urls = obj.get("urls_crawled").and_then(|v| v.as_u64()).unwrap_or(0);
-            let obs = obj.get("new_observations").and_then(|v| v.as_u64()).unwrap_or(0);
-            let secs = obj.get("duration_secs").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            format!("{} pages crawled, {} new observations (in {:.0}s)", urls, obs, secs)
+            let urls = obj
+                .get("urls_crawled")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let obs = obj
+                .get("new_observations")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let secs = obj
+                .get("duration_secs")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            format!(
+                "{} pages crawled, {} new observations (in {:.0}s)",
+                urls, obs, secs
+            )
         }
         "company_detected" => {
-            let signal = obj.get("signal_type").and_then(|v| v.as_str()).unwrap_or("");
+            let signal = obj
+                .get("signal_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let region = obj.get("region").and_then(|v| v.as_str());
             match (signal, region) {
                 (s, Some(r)) if !s.is_empty() => format!("{} · {}", s, r),
@@ -199,7 +217,10 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
             }
         }
         "threat_detected" => {
-            let ttype = obj.get("threat_type").and_then(|v| v.as_str()).unwrap_or("");
+            let ttype = obj
+                .get("threat_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let sev = obj.get("severity").and_then(|v| v.as_str()).unwrap_or("");
             if !ttype.is_empty() && !sev.is_empty() {
                 format!("{} [{}]", ttype, sev)
@@ -212,7 +233,10 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
             }
         }
         "psych_profile_updated" => {
-            let quality = obj.get("profile_quality").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let quality = obj
+                .get("profile_quality")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             format!("Profile quality: {:.2}", quality)
         }
         "battlecard_generated" => {
@@ -225,7 +249,10 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
         }
         "memo_generated" => {
             let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let count = obj.get("entity_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let count = obj
+                .get("entity_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if !title.is_empty() {
                 format!("\"{}\" ({} entities)", title, count)
             } else {
@@ -233,7 +260,10 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
             }
         }
         "recipe_promoted" => {
-            let code = obj.get("recipe_code").and_then(|v| v.as_str()).unwrap_or("");
+            let code = obj
+                .get("recipe_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let cat = obj.get("category").and_then(|v| v.as_str()).unwrap_or("");
             if !code.is_empty() && !cat.is_empty() {
                 format!("{} [{}]", code, cat)
@@ -247,10 +277,16 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
         }
         "job_completed" | "job_failed" | "job_skipped" | "job_unknown" => {
             let job_kind = obj.get("job_kind").and_then(|v| v.as_str()).unwrap_or("");
-            let items = obj.get("items_processed").and_then(|v| v.as_u64()).unwrap_or(0);
+            let items = obj
+                .get("items_processed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let dur = obj.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
             let notes = obj.get("notes").and_then(|v| v.as_str()).unwrap_or("");
-            let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or(action_type);
+            let status = obj
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or(action_type);
             let mut out = format!("{} — {} ({} items, {}ms)", job_kind, status, items, dur);
             if !notes.is_empty() {
                 out.push_str(&format!(" — {}", notes));
@@ -262,10 +298,18 @@ pub fn format_activity_details(action_type: &str, details: &serde_json::Value) -
         // For these, details often contains a free-text message or comment.
         _ => {
             // Try to extract a "message" or "comment" field first
-            if let Some(msg) = obj.get("message").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            if let Some(msg) = obj
+                .get("message")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 return msg.to_string();
             }
-            if let Some(comment) = obj.get("comment").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            if let Some(comment) = obj
+                .get("comment")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 return comment.to_string();
             }
             // Fall back to generic JSON rendering
@@ -628,7 +672,9 @@ pub fn validate_workspace_request(req: &CreateWorkspaceRequest) -> Result<(), St
         return Err("name must be at least 2 characters".to_string());
     }
     let workspace_type = req.workspace_type.trim().to_ascii_lowercase();
-    if !workspace_type.is_empty() && !matches!(workspace_type.as_str(), "ad-hoc" | "structured" | "review") {
+    if !workspace_type.is_empty()
+        && !matches!(workspace_type.as_str(), "ad-hoc" | "structured" | "review")
+    {
         return Err("workspace_type must be ad-hoc, structured, or review".to_string());
     }
     Ok(())
@@ -658,7 +704,10 @@ pub fn validate_severity(severity: &str) -> Result<(), String> {
 
 pub fn validate_stage(stage: &str) -> Result<(), String> {
     let stage = stage.trim().to_ascii_lowercase();
-    if !matches!(stage.as_str(), "discovery" | "qualification" | "proposal" | "negotiation" | "closed_won" | "closed_lost") {
+    if !matches!(
+        stage.as_str(),
+        "discovery" | "qualification" | "proposal" | "negotiation" | "closed_won" | "closed_lost"
+    ) {
         return Err("stage must be discovery, qualification, proposal, negotiation, closed_won, or closed_lost".to_string());
     }
     Ok(())
@@ -1315,7 +1364,10 @@ mod comprehensive_tests {
             entity_id: Some("company-456".to_string()),
             entity_type: Some("company".to_string()),
             region: Some("EMEA".to_string()),
-            mitigation_steps: serde_json::json!(["Monitor regulatory updates", "Engage compliance team"]),
+            mitigation_steps: serde_json::json!([
+                "Monitor regulatory updates",
+                "Engage compliance team"
+            ]),
             owner_id: Some("compliance-lead".to_string()),
             status: "active".to_string(),
             sla_deadline: Some(chrono::Utc::now()),

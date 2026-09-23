@@ -1,6 +1,6 @@
 #![cfg_attr(test, allow(dead_code))]
 #![allow(clippy::duplicated_attributes, clippy::too_many_arguments)]
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod config;
 mod digest_filtering;
@@ -110,6 +110,7 @@ use apex_store::postgres::{
     HistoricalQualityGateLabel, QualityGateGoldenSetExample, WarningListFilters,
 };
 use apex_store::postgres::{InsightListFilters, PersonListFilters, PersonOrderBy, PgStore};
+use apex_worker::activity_logger::ActivityLogger;
 use apex_worker::nightly::{
     process_drift_stage, process_mining_stage, CrawlStageResult, DriftCheckStageResult,
     MiningStageResult, PoiRefreshStageResult,
@@ -123,7 +124,6 @@ use apex_worker::recipe_loader::{
 use apex_worker::scheduler::{
     default_scheduler, validate_custom_command, JobKind, JobRun, JobStatus, Scheduler,
 };
-use apex_worker::activity_logger::ActivityLogger;
 use apex_worker::storage::{
     build_memo_inputs, load_production_recipes, load_staged_recipes, StorageContext,
 };
@@ -1158,11 +1158,20 @@ fn sanitize_certification_claims(text: &str) -> String {
         ("we have IATF 16949", "we lack IATF 16949"),
         ("we have ISO 13485", "we lack ISO 13485"),
         ("with our AS9100", "noting our AS9100 gap relative to"),
-        ("with our IATF 16949", "noting our IATF 16949 gap relative to"),
+        (
+            "with our IATF 16949",
+            "noting our IATF 16949 gap relative to",
+        ),
         ("with our ISO 13485", "noting our ISO 13485 gap relative to"),
         ("AS9100 certification", "AS9100 (which we do not hold)"),
-        ("IATF 16949 certification", "IATF 16949 (which we do not hold)"),
-        ("ISO 13485 certification", "ISO 13485 (which we do not hold)"),
+        (
+            "IATF 16949 certification",
+            "IATF 16949 (which we do not hold)",
+        ),
+        (
+            "ISO 13485 certification",
+            "ISO 13485 (which we do not hold)",
+        ),
         ("AS9100 certified", "AS9100-adjacent (unverified)"),
         ("IATF certified", "IATF 16949-adjacent (unverified)"),
         ("13485 certified", "ISO 13485-adjacent (unverified)"),
@@ -1490,7 +1499,7 @@ NEVER address the competitor itself as a target.",
 
     // ── System prompt: competitive intelligence operator, not passive analyst ──
     // Load our company profile from env so the model knows what we offer.
-    let our_profile = std::env::var("COMPANY_PROFILE").unwrap_or_else(|_|
+    let our_profile = std::env::var("COMPANY_PROFILE").unwrap_or_else(|_| {
         "Starz Electronics is an electronics manufacturer (EMS heritage: PCBA assembly, box build, \
 test & inspection, supply chain management) whose primary growth focus is battery energy storage \
 systems (BESS): it designs and manufactures residential and commercial/industrial battery packs \
@@ -1501,8 +1510,8 @@ Circuits) ONLY. We DO NOT hold AS9100, ISO 13485, or IATF 16949 certifications. 
 focus: PRIMARILY Morocco, Tunisia and Egypt; SECONDARILY (smaller focus) the European Union; we do \
 NOT sell battery packs in any other market. Cell suppliers and competing pack/BMS makers are \
 tracked globally regardless of their location."
-        .to_string()
-    );
+            .to_string()
+    });
 
     let system = format!("You are a competitive intelligence analyst at an OSINT firm. Your job is to read raw signal evidence and report what it actually shows — nothing more, nothing less. You write for C-suite executives and procurement leadership who will act on your words, so accuracy matters more than narrative flair.
 
@@ -1875,20 +1884,44 @@ REQUIREMENTS:
         let raw_text = resp.text.to_ascii_lowercase();
         let is_cert_invented = {
             // Check for possessive claims: "our [forbidden_cert]", "we hold [forbidden_cert]", etc.
-            let has_forbidden_cert = ["as9100", "iatf 16949", "iatf16949", "iso 13485", "13485 certification"]
-                .iter().any(|c| raw_text.contains(c));
+            let has_forbidden_cert = [
+                "as9100",
+                "iatf 16949",
+                "iatf16949",
+                "iso 13485",
+                "13485 certification",
+            ]
+            .iter()
+            .any(|c| raw_text.contains(c));
             let has_possessive_pattern = [
-                "our as9100", "our iatf", "our iso 13485",
-                "as9100 certification", "iatf 16949 certification", "iso 13485 certification",
-                "as9100 certified", "iatf certified", "13485 certified",
-                "we hold as9100", "we hold iatf", "we hold iso 13485",
-                "we are as9100", "we are iatf", "we are iso 13485",
-                "we have as9100", "we have iatf", "we have iso 13485",
-                "our facility is as9100", "our facility is iatf",
-                "as9100 and iso 13485", "iatf 16949 and ",
-                "with our as9100", "with our iatf",
+                "our as9100",
+                "our iatf",
+                "our iso 13485",
+                "as9100 certification",
+                "iatf 16949 certification",
+                "iso 13485 certification",
+                "as9100 certified",
+                "iatf certified",
+                "13485 certified",
+                "we hold as9100",
+                "we hold iatf",
+                "we hold iso 13485",
+                "we are as9100",
+                "we are iatf",
+                "we are iso 13485",
+                "we have as9100",
+                "we have iatf",
+                "we have iso 13485",
+                "our facility is as9100",
+                "our facility is iatf",
+                "as9100 and iso 13485",
+                "iatf 16949 and ",
+                "with our as9100",
+                "with our iatf",
                 "with our iso 13485",
-            ].iter().any(|p| raw_text.contains(p));
+            ]
+            .iter()
+            .any(|p| raw_text.contains(p));
             has_forbidden_cert && has_possessive_pattern
         };
 
@@ -2599,7 +2632,7 @@ fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::SeedRecipe) -> 
 }
 
 #[tokio::main]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let log_level = std::env::var("WORKER_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
@@ -2687,7 +2720,7 @@ async fn main() -> Result<()> {
 
     // Create the shared ActivityLogger for recording system events
     // to the activity_feed table across all pipeline stages.
-    let activity_logger = ActivityLogger::new(pool.clone());
+    let _activity_logger = ActivityLogger::new(pool.clone());
     tracing::info!("activity_logger initialized");
 
     let mut scheduler_state = default_scheduler();
@@ -4826,7 +4859,10 @@ const HOMOGLYPHS: &[(&str, &[&str])] = &[
 
 /// TLD swap mappings — common typosquat TLD alternatives.
 const TLD_SWAPS: &[(&str, &[&str])] = &[
-    (".com", &[".co", ".cm", ".corn", ".om", ".com.co", ".net", ".org"]),
+    (
+        ".com",
+        &[".co", ".cm", ".corn", ".om", ".com.co", ".net", ".org"],
+    ),
     (".net", &[".ner", ".met", ".org"]),
     (".org", &[".orq", ".og", ".net"]),
     (".co.uk", &[".co.ck", ".co.uk.com"]),
@@ -4840,8 +4876,10 @@ const TLD_SWAPS: &[(&str, &[&str])] = &[
 /// homoglyph substitution, hyphen insertion, and TLD swaps.
 fn generate_typosquat_variants(domain: &str) -> Vec<String> {
     // Handle multi-part TLDs (co.uk, com.au, co.jp, etc.)
-    let multi_tlds = &[".co.uk", ".com.au", ".co.jp", ".co.nz", ".com.br", ".com.mx", ".co.za",
-                       ".com.ar", ".com.tn", ".net.au", ".org.uk", ".ac.uk", ".gov.uk"];
+    let multi_tlds = &[
+        ".co.uk", ".com.au", ".co.jp", ".co.nz", ".com.br", ".com.mx", ".co.za", ".com.ar",
+        ".com.tn", ".net.au", ".org.uk", ".ac.uk", ".gov.uk",
+    ];
     let (sld_str, tld_str) = {
         let lower = domain.to_ascii_lowercase();
         let mut found = None;
@@ -4938,7 +4976,8 @@ fn generate_typosquat_variants(domain: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        clippy::expect_used,
         clippy::field_reassign_with_default,
         clippy::absurd_extreme_comparisons
     )]

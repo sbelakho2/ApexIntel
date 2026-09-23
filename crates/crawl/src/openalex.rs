@@ -141,11 +141,7 @@ impl OpenAlexClient {
             .cloned()
             .unwrap_or_default();
 
-        let works: Vec<OpenAlexWork> = results
-            .iter()
-            .map(|raw| Self::parse_work(raw))
-            .take(limit)
-            .collect();
+        let works: Vec<OpenAlexWork> = results.iter().map(Self::parse_work).take(limit).collect();
 
         Ok(works)
     }
@@ -189,7 +185,11 @@ impl OpenAlexClient {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|c| c.get("display_name").and_then(|v| v.as_str()).map(ToString::to_string))
+                    .filter_map(|c| {
+                        c.get("display_name")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -250,13 +250,21 @@ impl Default for OpenAlexClient {
 /// the original text.  We invert it back into a positional array and join.
 fn reconstruct_abstract(index: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
     // First find the maximum position so we can size the slots array.
-    let max_pos = index.values().filter_map(|positions| positions.as_array()).flat_map(|positions| {
-        positions.iter().filter_map(|p| p.as_u64().map(|n| n as usize))
-    }).max()?;
+    let max_pos = index
+        .values()
+        .filter_map(|positions| positions.as_array())
+        .flat_map(|positions| {
+            positions
+                .iter()
+                .filter_map(|p| p.as_u64().map(|n| n as usize))
+        })
+        .max()?;
 
     let mut slots: Vec<Option<String>> = vec![None; max_pos + 1];
     for (word, positions) in index {
-        let Some(positions) = positions.as_array() else { continue };
+        let Some(positions) = positions.as_array() else {
+            continue;
+        };
         for pos in positions {
             if let Some(idx) = pos.as_u64() {
                 let idx = idx as usize;
@@ -330,7 +338,10 @@ mod tests {
         assert_eq!(work.authors, vec!["Alice Author", "Bob Builder"]);
         assert_eq!(work.concepts, vec!["Supply chain", "Resilience"]);
         assert_eq!(work.cited_by_count, 42);
-        assert_eq!(work.abstract_text.as_deref(), Some("Supply chain resilience matters"));
+        assert_eq!(
+            work.abstract_text.as_deref(),
+            Some("Supply chain resilience matters")
+        );
         assert_eq!(work.source.as_deref(), Some("Journal of Demo Studies"));
         assert_eq!(work.oa_url.as_deref(), Some("https://example.org/demo.pdf"));
     }

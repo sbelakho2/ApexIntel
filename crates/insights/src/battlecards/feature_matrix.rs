@@ -139,7 +139,7 @@ impl FeatureMatrixBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity_relevance::{EntityCategory, EntityProfile};
+    use crate::entity_relevance::EntityProfile;
 
     fn make_profile(name: &str, products: Vec<&str>, topics: Vec<&str>) -> EntityProfile {
         EntityProfile::new(name)
@@ -149,23 +149,39 @@ mod tests {
 
     #[test]
     fn test_feature_matrix_builds_comparisons() {
-        let competitor = make_profile("RivalCorp", vec!["ProductA", "ProductB"], vec!["AI", "Cloud"]);
+        let competitor = make_profile(
+            "RivalCorp",
+            vec!["ProductA", "ProductB"],
+            vec!["AI", "Cloud"],
+        );
         let us = make_profile("OurCorp", vec!["ProductA", "ProductC"], vec!["AI", "Edge"]);
 
         let comparisons = FeatureMatrixBuilder::build(&competitor, &us);
 
-        assert!(!comparisons.is_empty(), "should produce at least one comparison");
+        assert!(
+            !comparisons.is_empty(),
+            "should produce at least one comparison"
+        );
 
         // ProductA is common -> Tie
-        let prod_a = comparisons.iter().find(|c| c.feature_name == "ProductA").unwrap();
+        let prod_a = comparisons
+            .iter()
+            .find(|c| c.feature_name == "ProductA")
+            .unwrap();
         assert_eq!(prod_a.advantage, Advantage::Tie);
 
         // ProductB is competitor-only -> Them
-        let prod_b = comparisons.iter().find(|c| c.feature_name == "ProductB").unwrap();
+        let prod_b = comparisons
+            .iter()
+            .find(|c| c.feature_name == "ProductB")
+            .unwrap();
         assert_eq!(prod_b.advantage, Advantage::Them);
 
         // ProductC is us-only -> Us
-        let prod_c = comparisons.iter().find(|c| c.feature_name == "ProductC").unwrap();
+        let prod_c = comparisons
+            .iter()
+            .find(|c| c.feature_name == "ProductC")
+            .unwrap();
         assert_eq!(prod_c.advantage, Advantage::Us);
     }
 

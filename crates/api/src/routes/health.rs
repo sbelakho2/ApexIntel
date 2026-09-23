@@ -37,7 +37,7 @@ pub struct ComponentCheck {
 // Deep health check runner
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub async fn deep_health_check(
     pool: &sqlx::PgPool,
     redis_url: &str,

@@ -408,10 +408,7 @@ pub fn compute_entity_similarity(a: &EntityProfile, b: &EntityProfile) -> f64 {
 /// 3. Group similarity scores by category and pick the category with the
 ///    highest aggregate similarity.
 /// 4. If no known entities exist, fall back to [`EntityCategory::Technology`].
-pub fn infer_category(
-    profile: &EntityProfile,
-    registry: &EntityRegistry,
-) -> EntityCategory {
+pub fn infer_category(profile: &EntityProfile, registry: &EntityRegistry) -> EntityCategory {
     if registry.is_empty() {
         // Use the profile's own category if already set (e.g., from discovery)
         if profile.category != EntityCategory::Other("unknown".to_string()) {
@@ -540,10 +537,7 @@ pub fn generate_comparison_matrix(
         .collect();
 
     // Sort by similarity descending
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(max_entities);
 
     let target_name = target_profile.entity_name.clone();
@@ -775,10 +769,7 @@ mod tests {
             "direct competitor"
         );
         assert_eq!(ComparisonCategory::SupplyChain.as_str(), "supply chain");
-        assert_eq!(
-            ComparisonCategory::CrossCategory.as_str(),
-            "cross-category"
-        );
+        assert_eq!(ComparisonCategory::CrossCategory.as_str(), "cross-category");
     }
 
     // ── compute_entity_similarity tests ─────────────────────────────────
@@ -867,16 +858,13 @@ mod tests {
     // ── select_reference_entity tests ───────────────────────────────────
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_select_reference_entity_same_category() {
         // Foxconn → should select Pegatron or similar EMS, not Starz
         let registry = EntityRegistry::from_yaml_config();
 
-        let reference = select_reference_entity(
-            "Foxconn",
-            &registry,
-            ComparisonCategory::DirectCompetitor,
-        );
+        let reference =
+            select_reference_entity("Foxconn", &registry, ComparisonCategory::DirectCompetitor);
         assert!(
             reference.is_some(),
             "Should find a reference entity for Foxconn"
@@ -891,10 +879,7 @@ mod tests {
 
         // The reference should be another EMS company
         let ref_profile = registry.get(&ref_name);
-        assert!(
-            ref_profile.is_some(),
-            "Reference should exist in registry"
-        );
+        assert!(ref_profile.is_some(), "Reference should exist in registry");
         assert_eq!(
             ref_profile.unwrap().category,
             EntityCategory::Ems,
@@ -931,16 +916,13 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_select_reference_entity_supply_chain() {
         // For supply chain comparison, should pick from a different category
         let registry = EntityRegistry::from_yaml_config();
 
-        let reference = select_reference_entity(
-            "Foxconn",
-            &registry,
-            ComparisonCategory::SupplyChain,
-        );
+        let reference =
+            select_reference_entity("Foxconn", &registry, ComparisonCategory::SupplyChain);
         assert!(
             reference.is_some(),
             "Should find a supply-chain reference for Foxconn"
@@ -956,15 +938,12 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_select_reference_entity_cross_category() {
         let registry = EntityRegistry::from_yaml_config();
 
-        let reference = select_reference_entity(
-            "Foxconn",
-            &registry,
-            ComparisonCategory::CrossCategory,
-        );
+        let reference =
+            select_reference_entity("Foxconn", &registry, ComparisonCategory::CrossCategory);
         assert!(
             reference.is_some(),
             "Should find a cross-category reference"
@@ -1165,10 +1144,7 @@ mod tests {
         // Step 1: Select reference entity
         let reference =
             select_reference_entity("Foxconn", &registry, ComparisonCategory::DirectCompetitor);
-        assert!(
-            reference.is_some(),
-            "Should find reference for Foxconn"
-        );
+        assert!(reference.is_some(), "Should find reference for Foxconn");
 
         // Step 2: Generate comparison matrix
         let matrix = generate_comparison_matrix("Foxconn", 5, &registry);
@@ -1179,10 +1155,7 @@ mod tests {
             assert!(!insight.insight_text.is_empty(), "Insight should have text");
             assert_eq!(insight.entity_a, "Foxconn");
             assert_eq!(insight.entity_b, profile.entity_name);
-            assert!(
-                insight.similarity > 0.0,
-                "Similarity should be positive"
-            );
+            assert!(insight.similarity > 0.0, "Similarity should be positive");
 
             // Verify the insight mentions the entities
             assert!(
@@ -1210,7 +1183,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_select_reference_entity_no_starz_default() {
         // Verify that select_reference_entity returns a valid same-category
         // competitor for Foxconn (EMS) rather than hardcoding a specific fallback.
@@ -1316,16 +1289,13 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_select_reference_entity_with_specific_target() {
         let registry = EntityRegistry::from_yaml_config();
 
         // Pegatron should get a different EMS reference (not itself)
-        let reference = select_reference_entity(
-            "Pegatron",
-            &registry,
-            ComparisonCategory::DirectCompetitor,
-        );
+        let reference =
+            select_reference_entity("Pegatron", &registry, ComparisonCategory::DirectCompetitor);
         assert!(reference.is_some(), "Should find reference for Pegatron");
         assert_ne!(
             reference.unwrap().entity_name.to_lowercase(),

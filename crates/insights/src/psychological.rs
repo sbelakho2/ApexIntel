@@ -303,7 +303,8 @@ impl PsychologicalProfiler {
         let signal_density = self.signal_density(artifacts);
 
         // Lexical-marker-based dimensions
-        let risk_tolerance = self.compute_risk_tolerance_from_markers(&text_lower, artifacts, signal_density);
+        let risk_tolerance =
+            self.compute_risk_tolerance_from_markers(&text_lower, artifacts, signal_density);
         let pain_index = self.compute_pain_index(artifacts);
 
         // Priority vector from full lexicon (not just 6 keywords each)
@@ -340,9 +341,18 @@ impl PsychologicalProfiler {
         // EMA blend: 70% existing, 30% fresh
         let alpha = 0.3;
         PsychProfile {
-            decision_style: if alpha > 0.5 { fresh.decision_style } else { existing.decision_style.clone() },
-            change_appetite: if alpha > 0.5 { fresh.change_appetite } else { existing.change_appetite.clone() },
-            pain_index: (existing.pain_index * (1.0 - alpha) + fresh.pain_index * alpha).clamp(0.0, 1.0),
+            decision_style: if alpha > 0.5 {
+                fresh.decision_style
+            } else {
+                existing.decision_style.clone()
+            },
+            change_appetite: if alpha > 0.5 {
+                fresh.change_appetite
+            } else {
+                existing.change_appetite.clone()
+            },
+            pain_index: (existing.pain_index * (1.0 - alpha) + fresh.pain_index * alpha)
+                .clamp(0.0, 1.0),
             preferred_proof: {
                 let mut merged = existing.preferred_proof.clone();
                 for p in fresh.preferred_proof {
@@ -353,7 +363,9 @@ impl PsychologicalProfiler {
                 merged.truncate(6);
                 merged
             },
-            risk_tolerance: (existing.risk_tolerance * (1.0 - alpha) + fresh.risk_tolerance * alpha).clamp(0.0, 1.0),
+            risk_tolerance: (existing.risk_tolerance * (1.0 - alpha)
+                + fresh.risk_tolerance * alpha)
+                .clamp(0.0, 1.0),
         }
     }
 
@@ -391,12 +403,12 @@ impl PsychologicalProfiler {
     fn compute_risk_tolerance_from_markers(
         &self,
         text_lower: &str,
-        artifacts: &[PoiArtifact],
+        _artifacts: &[PoiArtifact],
         density: f64,
     ) -> f64 {
         let risk_accept = count_markers(text_lower, RISK_ACCEPTANT_MARKERS);
-        let risk_avert  = count_markers(text_lower, RISK_AVERSE_MARKERS);
-        let certainty   = count_markers(text_lower, CERTAINTY_MARKERS);
+        let risk_avert = count_markers(text_lower, RISK_AVERSE_MARKERS);
+        let certainty = count_markers(text_lower, CERTAINTY_MARKERS);
         let future_focus = count_markers(text_lower, FUTURE_FOCUS_MARKERS);
 
         let total_signals = (risk_accept + risk_avert + certainty + future_focus) as f64;
@@ -447,7 +459,9 @@ impl PsychologicalProfiler {
                 artifact.content_summary.to_lowercase()
             );
 
-            for (cat_idx, (_category_name, signal_list)) in PAIN_SIGNAL_CATEGORIES.iter().enumerate() {
+            for (cat_idx, (_category_name, signal_list)) in
+                PAIN_SIGNAL_CATEGORIES.iter().enumerate()
+            {
                 for (phrase, weight) in *signal_list {
                     if text_lower.contains(phrase) {
                         total_weighted += weight * decay;
@@ -463,11 +477,11 @@ impl PsychologicalProfiler {
         }
 
         // Category multiplier: pain is more credible when multiple categories fire
-        let cat_multiplier = 0.5 + 0.5 * (category_hits.iter().filter(|&&h| h).count() as f64 / 6.0);
+        let cat_multiplier =
+            0.5 + 0.5 * (category_hits.iter().filter(|&&h| h).count() as f64 / 6.0);
 
         // Normalise by evidence count with diminishing returns (avoid infinities)
-        let normalised = (total_weighted / (evidence_count as f64).sqrt())
-            .min(5.0);
+        let normalised = (total_weighted / (evidence_count as f64).sqrt()).min(5.0);
         (normalised / 5.0 * cat_multiplier).clamp(0.0, 1.0)
     }
 
@@ -478,14 +492,19 @@ impl PsychologicalProfiler {
         text_lower: &str,
         _artifacts: &[PoiArtifact],
     ) -> PriorityVector {
-        let cost_hits = count_markers_weighted(text_lower, &COST_PRIORITY_MARKERS);
-        let quality_hits = count_markers_weighted(text_lower, &QUALITY_PRIORITY_MARKERS);
-        let speed_hits = count_markers_weighted(text_lower, &SPEED_PRIORITY_MARKERS);
-        let resilience_hits = count_markers_weighted(text_lower, &RESILIENCE_PRIORITY_MARKERS);
-        let compliance_hits = count_markers_weighted(text_lower, &COMPLIANCE_PRIORITY_MARKERS);
-        let security_hits = count_markers_weighted(text_lower, &SECURITY_PRIORITY_MARKERS);
+        let cost_hits = count_markers_weighted(text_lower, COST_PRIORITY_MARKERS);
+        let quality_hits = count_markers_weighted(text_lower, QUALITY_PRIORITY_MARKERS);
+        let speed_hits = count_markers_weighted(text_lower, SPEED_PRIORITY_MARKERS);
+        let resilience_hits = count_markers_weighted(text_lower, RESILIENCE_PRIORITY_MARKERS);
+        let compliance_hits = count_markers_weighted(text_lower, COMPLIANCE_PRIORITY_MARKERS);
+        let security_hits = count_markers_weighted(text_lower, SECURITY_PRIORITY_MARKERS);
 
-        let total = (cost_hits + quality_hits + speed_hits + resilience_hits + compliance_hits + security_hits) as f64;
+        let total = cost_hits
+            + quality_hits
+            + speed_hits
+            + resilience_hits
+            + compliance_hits
+            + security_hits;
         if total < 1.0 {
             return PriorityVector::zero();
         }
@@ -493,12 +512,12 @@ impl PsychologicalProfiler {
         let artifact_adjusted_total = total.max(1.0);
 
         PriorityVector {
-            cost: (cost_hits as f64 / artifact_adjusted_total).clamp(0.0, 1.0),
-            quality: (quality_hits as f64 / artifact_adjusted_total).clamp(0.0, 1.0),
-            speed: (speed_hits as f64 / artifact_adjusted_total).clamp(0.0, 1.0),
-            resilience: (resilience_hits as f64 / artifact_adjusted_total).clamp(0.0, 1.0),
-            compliance: (compliance_hits as f64 / artifact_adjusted_total).clamp(0.0, 1.0),
-            security: (security_hits as f64 / artifact_adjusted_total).clamp(0.0, 1.0),
+            cost: (cost_hits / artifact_adjusted_total).clamp(0.0, 1.0),
+            quality: (quality_hits / artifact_adjusted_total).clamp(0.0, 1.0),
+            speed: (speed_hits / artifact_adjusted_total).clamp(0.0, 1.0),
+            resilience: (resilience_hits / artifact_adjusted_total).clamp(0.0, 1.0),
+            compliance: (compliance_hits / artifact_adjusted_total).clamp(0.0, 1.0),
+            security: (security_hits / artifact_adjusted_total).clamp(0.0, 1.0),
             confidence: (total / (total + 10.0)).clamp(0.0, 1.0),
         }
     }
@@ -527,12 +546,41 @@ impl PsychologicalProfiler {
             return ChangeAppetite::Pragmatist;
         }
 
-        let early_keywords = ["disrupt", "innovate", "cutting edge", "first mover", "pioneer",
-            "bleeding edge", "transformative", "revolutionize", "breakthrough", "agile"];
-        let conservative_keywords = ["proven", "established", "traditional", "risk averse",
-            "incremental", "stable", "legacy", "tried and tested", "reliable", "conservative"];
-        let laggard_keywords = ["resistant", "outdated", "obsolete", "declining", "behind",
-            "late adopter", "manual", "paper based", "reluctant"];
+        let early_keywords = [
+            "disrupt",
+            "innovate",
+            "cutting edge",
+            "first mover",
+            "pioneer",
+            "bleeding edge",
+            "transformative",
+            "revolutionize",
+            "breakthrough",
+            "agile",
+        ];
+        let conservative_keywords = [
+            "proven",
+            "established",
+            "traditional",
+            "risk averse",
+            "incremental",
+            "stable",
+            "legacy",
+            "tried and tested",
+            "reliable",
+            "conservative",
+        ];
+        let laggard_keywords = [
+            "resistant",
+            "outdated",
+            "obsolete",
+            "declining",
+            "behind",
+            "late adopter",
+            "manual",
+            "paper based",
+            "reluctant",
+        ];
 
         let mut early_score = 0u32;
         let mut conservative_score = 0u32;
@@ -540,9 +588,18 @@ impl PsychologicalProfiler {
 
         for artifact in artifacts {
             let text_lower = artifact.content_summary.to_lowercase();
-            early_score += early_keywords.iter().filter(|kw| text_lower.contains(*kw)).count() as u32;
-            conservative_score += conservative_keywords.iter().filter(|kw| text_lower.contains(*kw)).count() as u32;
-            laggard_score += laggard_keywords.iter().filter(|kw| text_lower.contains(*kw)).count() as u32;
+            early_score += early_keywords
+                .iter()
+                .filter(|kw| text_lower.contains(*kw))
+                .count() as u32;
+            conservative_score += conservative_keywords
+                .iter()
+                .filter(|kw| text_lower.contains(*kw))
+                .count() as u32;
+            laggard_score += laggard_keywords
+                .iter()
+                .filter(|kw| text_lower.contains(*kw))
+                .count() as u32;
         }
 
         if laggard_score > early_score && laggard_score > conservative_score {
@@ -569,18 +626,80 @@ impl PsychologicalProfiler {
         let mut scores: HashMap<ProofType, u32> = HashMap::new();
 
         let proof_keywords: &[(ProofType, &[&str])] = &[
-            (ProofType::KpiMetrics, &["kpi", "metric", "roi", "benchmark", "data driven", "quantifiable", "measurable"]),
-            (ProofType::Certifications, &["certified", "iso", "standard", "compliance", "accredited", "qualification"]),
-            (ProofType::CaseStudies, &["case study", "testimonial", "reference", "portfolio", "track record", "proven"]),
-            (ProofType::AuditReadiness, &["audit", "transparency", "traceability", "documentation", "inspection"]),
-            (ProofType::TechDemos, &["demo", "pilot", "prototype", "proof of concept", "trial", "sandbox"]),
-            (ProofType::CostTransparency, &["cost breakdown", "pricing", "transparent", "open book", "should cost"]),
+            (
+                ProofType::KpiMetrics,
+                &[
+                    "kpi",
+                    "metric",
+                    "roi",
+                    "benchmark",
+                    "data driven",
+                    "quantifiable",
+                    "measurable",
+                ],
+            ),
+            (
+                ProofType::Certifications,
+                &[
+                    "certified",
+                    "iso",
+                    "standard",
+                    "compliance",
+                    "accredited",
+                    "qualification",
+                ],
+            ),
+            (
+                ProofType::CaseStudies,
+                &[
+                    "case study",
+                    "testimonial",
+                    "reference",
+                    "portfolio",
+                    "track record",
+                    "proven",
+                ],
+            ),
+            (
+                ProofType::AuditReadiness,
+                &[
+                    "audit",
+                    "transparency",
+                    "traceability",
+                    "documentation",
+                    "inspection",
+                ],
+            ),
+            (
+                ProofType::TechDemos,
+                &[
+                    "demo",
+                    "pilot",
+                    "prototype",
+                    "proof of concept",
+                    "trial",
+                    "sandbox",
+                ],
+            ),
+            (
+                ProofType::CostTransparency,
+                &[
+                    "cost breakdown",
+                    "pricing",
+                    "transparent",
+                    "open book",
+                    "should cost",
+                ],
+            ),
         ];
 
         for artifact in artifacts {
             let text_lower = artifact.content_summary.to_lowercase();
             for (proof_type, keywords) in proof_keywords {
-                let hits = keywords.iter().filter(|kw| text_lower.contains(*kw)).count() as u32;
+                let hits = keywords
+                    .iter()
+                    .filter(|kw| text_lower.contains(*kw))
+                    .count() as u32;
                 *scores.entry(proof_type.clone()).or_insert(0) += hits;
             }
         }
@@ -590,7 +709,7 @@ impl PsychologicalProfiler {
         }
 
         let mut entries: Vec<_> = scores.into_iter().collect();
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|a| std::cmp::Reverse(a.1));
         let top: Vec<ProofType> = entries.into_iter().take(3).map(|(k, _)| k).collect();
         if top.is_empty() {
             vec![]
@@ -621,109 +740,242 @@ fn count_markers_weighted(text: &str, markers: &[(f64, &str)]) -> f64 {
 /// Aggregate of all psychometric markers (for signal density calculation).
 const ALL_PSYCHOMETRIC_MARKERS: &[&str] = &[
     // risk-acceptant
-    "aggressive expansion", "high risk", "venture", "speculative", "bold", "daring",
-    "ambitious", "disruptive", "moonshot", "leveraged",
+    "aggressive expansion",
+    "high risk",
+    "venture",
+    "speculative",
+    "bold",
+    "daring",
+    "ambitious",
+    "disruptive",
+    "moonshot",
+    "leveraged",
     // risk-averse
-    "risk mitigation", "conservative", "hedge", "diversification", "safe",
-    "guaranteed", "insured", "proven", "stable", "regulated",
+    "risk mitigation",
+    "conservative",
+    "hedge",
+    "diversification",
+    "safe",
+    "guaranteed",
+    "insured",
+    "proven",
+    "stable",
+    "regulated",
     // certainty
-    "definitely", "certainly", "undoubtedly", "proven", "guaranteed",
+    "definitely",
+    "certainly",
+    "undoubtedly",
+    "proven",
+    "guaranteed",
     // future-focus
-    "future", "long term", "strategic", "vision", "horizon",
+    "future",
+    "long term",
+    "strategic",
+    "vision",
+    "horizon",
 ];
 
 /// Risk-acceptant markers — positively correlated with risk tolerance.
 const RISK_ACCEPTANT_MARKERS: &[&str] = &[
-    "aggressive expansion", "high risk", "venture", "speculative",
-    "bold", "daring", "ambitious", "disruptive", "moonshot", "leveraged",
+    "aggressive expansion",
+    "high risk",
+    "venture",
+    "speculative",
+    "bold",
+    "daring",
+    "ambitious",
+    "disruptive",
+    "moonshot",
+    "leveraged",
 ];
 
 /// Risk-averse markers — negatively correlated with risk tolerance.
 const RISK_AVERSE_MARKERS: &[&str] = &[
-    "risk mitigation", "conservative", "hedge", "diversification",
-    "safe", "guaranteed", "insured", "proven", "stable", "regulated",
+    "risk mitigation",
+    "conservative",
+    "hedge",
+    "diversification",
+    "safe",
+    "guaranteed",
+    "insured",
+    "proven",
+    "stable",
+    "regulated",
 ];
 
 /// Certainty/confidence markers — modulate the conviction behind risk attitudes.
 const CERTAINTY_MARKERS: &[&str] = &[
-    "definitely", "certainly", "without doubt", "undoubtedly",
-    "proven", "guaranteed", "assured", "confirmed",
+    "definitely",
+    "certainly",
+    "without doubt",
+    "undoubtedly",
+    "proven",
+    "guaranteed",
+    "assured",
+    "confirmed",
 ];
 
 /// Future-focus markers — longer time horizon correlates with higher risk tolerance.
 const FUTURE_FOCUS_MARKERS: &[&str] = &[
-    "future", "long term", "strategic", "vision", "horizon",
-    "long range", "foresight", "roadmap", "anticipate",
+    "future",
+    "long term",
+    "strategic",
+    "vision",
+    "horizon",
+    "long range",
+    "foresight",
+    "roadmap",
+    "anticipate",
 ];
 
 /// Weighted priority-dimension markers: (weight, marker_phrase).
 /// Weights represent the psycholinguistic strength of the association.
 const COST_PRIORITY_MARKERS: &[(f64, &str)] = &[
-    (1.0, "cost"), (0.9, "price"), (0.8, "budget"), (0.7, "saving"),
-    (0.5, "cheap"), (0.5, "affordable"), (0.5, "discount"), (0.8, "roi"),
-    (0.7, "margin"), (0.6, "capex"), (0.6, "opex"), (0.7, "tco"),
+    (1.0, "cost"),
+    (0.9, "price"),
+    (0.8, "budget"),
+    (0.7, "saving"),
+    (0.5, "cheap"),
+    (0.5, "affordable"),
+    (0.5, "discount"),
+    (0.8, "roi"),
+    (0.7, "margin"),
+    (0.6, "capex"),
+    (0.6, "opex"),
+    (0.7, "tco"),
 ];
 
 const QUALITY_PRIORITY_MARKERS: &[(f64, &str)] = &[
-    (1.0, "quality"), (0.7, "excellence"), (0.6, "precision"),
-    (0.7, "reliability"), (0.6, "durability"), (0.6, "defect"),
-    (0.7, "yield"), (0.6, "six sigma"), (0.5, "iso 9001"),
-    (0.6, "inspection"), (0.6, "traceability"),
+    (1.0, "quality"),
+    (0.7, "excellence"),
+    (0.6, "precision"),
+    (0.7, "reliability"),
+    (0.6, "durability"),
+    (0.6, "defect"),
+    (0.7, "yield"),
+    (0.6, "six sigma"),
+    (0.5, "iso 9001"),
+    (0.6, "inspection"),
+    (0.6, "traceability"),
 ];
 
 const SPEED_PRIORITY_MARKERS: &[(f64, &str)] = &[
-    (1.0, "speed"), (0.8, "fast"), (0.7, "rapid"), (0.6, "accelerate"),
-    (0.7, "quick"), (0.7, "deadline"), (0.7, "urgent"),
-    (0.6, "agile"), (0.6, "time to market"), (0.6, "lead time"),
+    (1.0, "speed"),
+    (0.8, "fast"),
+    (0.7, "rapid"),
+    (0.6, "accelerate"),
+    (0.7, "quick"),
+    (0.7, "deadline"),
+    (0.7, "urgent"),
+    (0.6, "agile"),
+    (0.6, "time to market"),
+    (0.6, "lead time"),
 ];
 
 const RESILIENCE_PRIORITY_MARKERS: &[(f64, &str)] = &[
-    (0.8, "resilient"), (0.7, "redundant"), (0.7, "backup"),
-    (0.8, "continuity"), (0.6, "robust"), (0.5, "diversif"),
-    (0.6, "contingency"), (0.7, "recovery"), (0.6, "bcp"),
+    (0.8, "resilient"),
+    (0.7, "redundant"),
+    (0.7, "backup"),
+    (0.8, "continuity"),
+    (0.6, "robust"),
+    (0.5, "diversif"),
+    (0.6, "contingency"),
+    (0.7, "recovery"),
+    (0.6, "bcp"),
 ];
 
 const COMPLIANCE_PRIORITY_MARKERS: &[(f64, &str)] = &[
-    (1.0, "compliance"), (0.8, "regulation"), (0.7, "standard"),
-    (0.7, "certification"), (0.8, "audit"), (0.6, "iso"),
-    (0.6, "gdpr"), (0.6, "sox"), (0.6, "governance"),
+    (1.0, "compliance"),
+    (0.8, "regulation"),
+    (0.7, "standard"),
+    (0.7, "certification"),
+    (0.8, "audit"),
+    (0.6, "iso"),
+    (0.6, "gdpr"),
+    (0.6, "sox"),
+    (0.6, "governance"),
 ];
 
 const SECURITY_PRIORITY_MARKERS: &[(f64, &str)] = &[
-    (1.0, "security"), (0.8, "secure"), (0.7, "encrypt"),
-    (0.7, "protection"), (0.7, "defense"), (0.8, "cyber"),
-    (0.7, "vulnerability"), (0.6, "penetration"), (0.6, "zero trust"),
+    (1.0, "security"),
+    (0.8, "secure"),
+    (0.7, "encrypt"),
+    (0.7, "protection"),
+    (0.7, "defense"),
+    (0.8, "cyber"),
+    (0.7, "vulnerability"),
+    (0.6, "penetration"),
+    (0.6, "zero trust"),
 ];
 
 /// Pain signal categories: (category_name, &[(phrase, weight)]).
 /// Weight represents the severity correlation strength.
 const PAIN_SIGNAL_CATEGORIES: &[(&str, &[(&str, f64)])] = &[
-    ("cost", &[
-        ("cost overrun", 1.0), ("budget cut", 1.0), ("financial loss", 1.0),
-        ("revenue decline", 1.0), ("margin pressure", 0.8), ("price increase", 0.7),
-        ("cost reduction mandate", 0.9),
-    ]),
-    ("supply", &[
-        ("supply disruption", 0.9), ("shortage", 0.8), ("delivery delay", 0.9),
-        ("logistics bottleneck", 0.8), ("inventory shortage", 0.8),
-        ("supplier failure", 0.9), ("lead time increase", 0.7),
-    ]),
-    ("quality", &[
-        ("quality issue", 0.85), ("defect", 0.8), ("recall", 0.9),
-        ("non-conformance", 0.8), ("audit failure", 0.9), ("rework", 0.7),
-    ]),
-    ("compliance", &[
-        ("compliance violation", 0.8), ("regulatory fine", 0.9), ("sanction", 0.9),
-        ("export control", 0.7), ("tariff", 0.7),
-    ]),
-    ("security", &[
-        ("security breach", 0.85), ("cyber attack", 0.85), ("data leak", 0.8),
-        ("ransomware", 0.9), ("vulnerability", 0.7),
-    ]),
-    ("workforce", &[
-        ("layoff", 0.8), ("strike", 0.8), ("labor shortage", 0.7),
-        ("talent drain", 0.7), ("resignation", 0.6),
-    ]),
+    (
+        "cost",
+        &[
+            ("cost overrun", 1.0),
+            ("budget cut", 1.0),
+            ("financial loss", 1.0),
+            ("revenue decline", 1.0),
+            ("margin pressure", 0.8),
+            ("price increase", 0.7),
+            ("cost reduction mandate", 0.9),
+        ],
+    ),
+    (
+        "supply",
+        &[
+            ("supply disruption", 0.9),
+            ("shortage", 0.8),
+            ("delivery delay", 0.9),
+            ("logistics bottleneck", 0.8),
+            ("inventory shortage", 0.8),
+            ("supplier failure", 0.9),
+            ("lead time increase", 0.7),
+        ],
+    ),
+    (
+        "quality",
+        &[
+            ("quality issue", 0.85),
+            ("defect", 0.8),
+            ("recall", 0.9),
+            ("non-conformance", 0.8),
+            ("audit failure", 0.9),
+            ("rework", 0.7),
+        ],
+    ),
+    (
+        "compliance",
+        &[
+            ("compliance violation", 0.8),
+            ("regulatory fine", 0.9),
+            ("sanction", 0.9),
+            ("export control", 0.7),
+            ("tariff", 0.7),
+        ],
+    ),
+    (
+        "security",
+        &[
+            ("security breach", 0.85),
+            ("cyber attack", 0.85),
+            ("data leak", 0.8),
+            ("ransomware", 0.9),
+            ("vulnerability", 0.7),
+        ],
+    ),
+    (
+        "workforce",
+        &[
+            ("layoff", 0.8),
+            ("strike", 0.8),
+            ("labor shortage", 0.7),
+            ("talent drain", 0.7),
+            ("resignation", 0.6),
+        ],
+    ),
 ];
 
 impl Default for PsychologicalProfiler {
@@ -768,7 +1020,11 @@ impl BehavioralPatternDetector {
             return None;
         }
 
-        let direction = if z_score > 0.0 { "positive" } else { "negative" };
+        let direction = if z_score > 0.0 {
+            "positive"
+        } else {
+            "negative"
+        };
         let severity = if z_score.abs() > 3.0 {
             InsightSeverity::High
         } else if z_score.abs() > 2.0 {
@@ -839,8 +1095,8 @@ impl BehavioralPatternDetector {
         let new_topics: Vec<String> = current_topics
             .iter()
             .filter(|t| !historical_set.contains(t.as_str()))
-            .cloned()
             .take(5)
+            .cloned()
             .collect();
 
         Some(BehavioralPattern {
@@ -900,7 +1156,14 @@ impl BehavioralPatternDetector {
         };
 
         // Find the dimension that changed the most
-        let dim_names = ["cost", "quality", "speed", "resilience", "compliance", "security"];
+        let dim_names = [
+            "cost",
+            "quality",
+            "speed",
+            "resilience",
+            "compliance",
+            "security",
+        ];
         let mut max_change = 0.0;
         let mut max_dim = "unknown";
         for (i, (c, p)) in dims.iter().enumerate() {
@@ -982,9 +1245,20 @@ impl BehavioralPatternDetector {
         }
 
         let role_keywords = [
-            "promoted", "appointed", "named", "new role", "new position",
-            "transition", "stepping down", "departure", "resigned", "replaced",
-            "reorganization", "restructure", "assumes", "takes over",
+            "promoted",
+            "appointed",
+            "named",
+            "new role",
+            "new position",
+            "transition",
+            "stepping down",
+            "departure",
+            "resigned",
+            "replaced",
+            "reorganization",
+            "restructure",
+            "assumes",
+            "takes over",
         ];
 
         let mut role_change_hits = 0u32;
@@ -1036,22 +1310,16 @@ impl BehavioralPatternDetector {
         }
 
         // Sentiment shift
-        let sentiment_history: Vec<f64> =
-            history.iter().map(|s| s.sentiment_score).collect();
-        if let Some(p) = self.detect_sentiment_shift(
-            current.sentiment_score,
-            &sentiment_history,
-            1.5,
-        ) {
+        let sentiment_history: Vec<f64> = history.iter().map(|s| s.sentiment_score).collect();
+        if let Some(p) =
+            self.detect_sentiment_shift(current.sentiment_score, &sentiment_history, 1.5)
+        {
             patterns.push(p);
         }
 
         // Communication drift (topics)
-        let topic_history: Vec<Vec<String>> =
-            history.iter().map(|s| s.topics.clone()).collect();
-        if let Some(p) =
-            self.detect_communication_drift(&current.topics, &topic_history)
-        {
+        let topic_history: Vec<Vec<String>> = history.iter().map(|s| s.topics.clone()).collect();
+        if let Some(p) = self.detect_communication_drift(&current.topics, &topic_history) {
             patterns.push(p);
         }
 
@@ -1073,9 +1341,7 @@ impl BehavioralPatternDetector {
                 .map(|s| s.engagement_count as f64)
                 .sum::<f64>()
                 / 3.0;
-            if let Some(p) =
-                self.detect_engagement_surge(current.engagement_count, moving_avg)
-            {
+            if let Some(p) = self.detect_engagement_surge(current.engagement_count, moving_avg) {
                 patterns.push(p);
             }
         }
@@ -1327,9 +1593,13 @@ impl EngagementStrategist {
             }
             StrategyType::Negotiation => {
                 points.push("Let's align on mutual success metrics first".to_string());
-                points.push("We're prepared to structure terms that de-risk your position".to_string());
+                points.push(
+                    "We're prepared to structure terms that de-risk your position".to_string(),
+                );
                 if profile.risk_tolerance < 0.4 {
-                    points.push("We offer guaranteed service levels with penalty clauses".to_string());
+                    points.push(
+                        "We offer guaranteed service levels with penalty clauses".to_string(),
+                    );
                 }
             }
             StrategyType::MeetingPrep => {
@@ -1338,9 +1608,13 @@ impl EngagementStrategist {
                     "Based on their profile, they respond best to {} evidence",
                     proof_label(first_proof)
                 ));
-                points.push("Prepare quantitative comparisons rather than qualitative claims".to_string());
+                points.push(
+                    "Prepare quantitative comparisons rather than qualitative claims".to_string(),
+                );
                 if profile.pain_index > 0.5 {
-                    points.push("Lead with pain point resolution — they have active issues".to_string());
+                    points.push(
+                        "Lead with pain point resolution — they have active issues".to_string(),
+                    );
                 }
             }
             _ => {
@@ -1356,9 +1630,15 @@ impl EngagementStrategist {
     pub fn infer_best_channel(&self, profile: &PsychProfile) -> String {
         match profile.decision_style {
             DecisionStyle::SpeedFirst => "phone or video call with decision-makers".to_string(),
-            DecisionStyle::CostFirst | DecisionStyle::ComplianceFirst => "email with detailed attachments and data".to_string(),
-            DecisionStyle::QualityFirst | DecisionStyle::RiskFirst => "in-person meeting with technical team".to_string(),
-            DecisionStyle::BalancedAnalytical => "structured presentation followed by Q&A session".to_string(),
+            DecisionStyle::CostFirst | DecisionStyle::ComplianceFirst => {
+                "email with detailed attachments and data".to_string()
+            }
+            DecisionStyle::QualityFirst | DecisionStyle::RiskFirst => {
+                "in-person meeting with technical team".to_string()
+            }
+            DecisionStyle::BalancedAnalytical => {
+                "structured presentation followed by Q&A session".to_string()
+            }
         }
     }
 
@@ -1431,12 +1711,24 @@ impl EngagementStrategist {
             .preferred_proof
             .iter()
             .map(|p| match p {
-                ProofType::KpiMetrics => "Quantitative KPI dashboards with benchmark comparisons".to_string(),
-                ProofType::Certifications => "Current certifications and compliance documentation".to_string(),
-                ProofType::CaseStudies => "Relevant case studies with measurable outcomes".to_string(),
-                ProofType::AuditReadiness => "Audit trail documentation and inspection readiness evidence".to_string(),
-                ProofType::TechDemos => "Live technical demonstration or proof of concept".to_string(),
-                ProofType::CostTransparency => "Detailed cost breakdown with open-book pricing".to_string(),
+                ProofType::KpiMetrics => {
+                    "Quantitative KPI dashboards with benchmark comparisons".to_string()
+                }
+                ProofType::Certifications => {
+                    "Current certifications and compliance documentation".to_string()
+                }
+                ProofType::CaseStudies => {
+                    "Relevant case studies with measurable outcomes".to_string()
+                }
+                ProofType::AuditReadiness => {
+                    "Audit trail documentation and inspection readiness evidence".to_string()
+                }
+                ProofType::TechDemos => {
+                    "Live technical demonstration or proof of concept".to_string()
+                }
+                ProofType::CostTransparency => {
+                    "Detailed cost breakdown with open-book pricing".to_string()
+                }
             })
             .collect()
     }
@@ -1499,29 +1791,89 @@ impl PersonalityAssessor {
         }
 
         let openness_keywords = [
-            "innovative", "creative", "curious", "explore", "novel", "artistic",
-            "unconventional", "abstract", "philosophical", "diverse", "imaginative",
-            "experimental", "visionary", "intellectual", "cultural",
+            "innovative",
+            "creative",
+            "curious",
+            "explore",
+            "novel",
+            "artistic",
+            "unconventional",
+            "abstract",
+            "philosophical",
+            "diverse",
+            "imaginative",
+            "experimental",
+            "visionary",
+            "intellectual",
+            "cultural",
         ];
         let conscientiousness_keywords = [
-            "organized", "disciplined", "reliable", "meticulous", "thorough",
-            "diligent", "systematic", "structured", "precise", "responsible",
-            "efficient", "planned", "detail oriented", "accountable", "punctual",
+            "organized",
+            "disciplined",
+            "reliable",
+            "meticulous",
+            "thorough",
+            "diligent",
+            "systematic",
+            "structured",
+            "precise",
+            "responsible",
+            "efficient",
+            "planned",
+            "detail oriented",
+            "accountable",
+            "punctual",
         ];
         let extraversion_keywords = [
-            "outgoing", "social", "assertive", "energetic", "enthusiastic",
-            "talkative", "gregarious", "confident", "charismatic", "lively",
-            "sociable", "dynamic", "animated", "bold", "expressive",
+            "outgoing",
+            "social",
+            "assertive",
+            "energetic",
+            "enthusiastic",
+            "talkative",
+            "gregarious",
+            "confident",
+            "charismatic",
+            "lively",
+            "sociable",
+            "dynamic",
+            "animated",
+            "bold",
+            "expressive",
         ];
         let agreeableness_keywords = [
-            "cooperative", "empathetic", "compassionate", "trusting", "helpful",
-            "collaborative", "supportive", "kind", "considerate", "diplomatic",
-            "team player", "harmonious", "accommodating", "patient", "generous",
+            "cooperative",
+            "empathetic",
+            "compassionate",
+            "trusting",
+            "helpful",
+            "collaborative",
+            "supportive",
+            "kind",
+            "considerate",
+            "diplomatic",
+            "team player",
+            "harmonious",
+            "accommodating",
+            "patient",
+            "generous",
         ];
         let neuroticism_keywords = [
-            "anxious", "worried", "stressed", "volatile", "moody",
-            "sensitive", "tense", "reactive", "uneasy", "insecure",
-            "nervous", "irritable", "emotional", "self-conscious", "vulnerable",
+            "anxious",
+            "worried",
+            "stressed",
+            "volatile",
+            "moody",
+            "sensitive",
+            "tense",
+            "reactive",
+            "uneasy",
+            "insecure",
+            "nervous",
+            "irritable",
+            "emotional",
+            "self-conscious",
+            "vulnerable",
         ];
 
         let mut o_score = 0u32;
@@ -1538,11 +1890,26 @@ impl PersonalityAssessor {
                 artifact.content_summary.to_lowercase()
             );
 
-            o_score += openness_keywords.iter().filter(|kw| text.contains(*kw)).count() as u32;
-            c_score += conscientiousness_keywords.iter().filter(|kw| text.contains(*kw)).count() as u32;
-            e_score += extraversion_keywords.iter().filter(|kw| text.contains(*kw)).count() as u32;
-            a_score += agreeableness_keywords.iter().filter(|kw| text.contains(*kw)).count() as u32;
-            n_score += neuroticism_keywords.iter().filter(|kw| text.contains(*kw)).count() as u32;
+            o_score += openness_keywords
+                .iter()
+                .filter(|kw| text.contains(*kw))
+                .count() as u32;
+            c_score += conscientiousness_keywords
+                .iter()
+                .filter(|kw| text.contains(*kw))
+                .count() as u32;
+            e_score += extraversion_keywords
+                .iter()
+                .filter(|kw| text.contains(*kw))
+                .count() as u32;
+            a_score += agreeableness_keywords
+                .iter()
+                .filter(|kw| text.contains(*kw))
+                .count() as u32;
+            n_score += neuroticism_keywords
+                .iter()
+                .filter(|kw| text.contains(*kw))
+                .count() as u32;
             total_artifacts += 1;
         }
 
@@ -1578,8 +1945,18 @@ impl PersonalityAssessor {
         // HEXACO adds Honesty-Humility and splits Neuroticism into Emotionality.
         // Estimate H-H from content patterns related to sincerity, fairness, greed-avoidance, modesty.
         let hh_keywords = [
-            "honest", "sincere", "fair", "ethical", "humble", "modest", "transparent",
-            "integrity", "principled", "genuine", "authentic", "forthright",
+            "honest",
+            "sincere",
+            "fair",
+            "ethical",
+            "humble",
+            "modest",
+            "transparent",
+            "integrity",
+            "principled",
+            "genuine",
+            "authentic",
+            "forthright",
         ];
 
         let mut hh_score = 0u32;
@@ -1653,36 +2030,93 @@ impl OrgCultureProfiler {
         }
 
         let innovation_keywords = [
-            "innovate", "research", "patent", "r&d", "disrupt", "startup", "agile",
-            "design thinking", "creative", "lab", "incubator",
+            "innovate",
+            "research",
+            "patent",
+            "r&d",
+            "disrupt",
+            "startup",
+            "agile",
+            "design thinking",
+            "creative",
+            "lab",
+            "incubator",
         ];
         let risk_keywords = [
-            "risk taking", "venture", "bold", "speculative", "acquisition",
-            "expansion", "aggressive", "moonshot",
+            "risk taking",
+            "venture",
+            "bold",
+            "speculative",
+            "acquisition",
+            "expansion",
+            "aggressive",
+            "moonshot",
         ];
         let hierarchy_keywords = [
-            "hierarchy", "bureaucracy", "matrix", "reporting lines", "approval chain",
-            "governance", "formal", "top-down",
+            "hierarchy",
+            "bureaucracy",
+            "matrix",
+            "reporting lines",
+            "approval chain",
+            "governance",
+            "formal",
+            "top-down",
         ];
         let speed_keywords = [
-            "fast decision", "rapid", "quick to market", "nimble", "responsive",
-            "streamlined", "empowered", "autonomous",
+            "fast decision",
+            "rapid",
+            "quick to market",
+            "nimble",
+            "responsive",
+            "streamlined",
+            "empowered",
+            "autonomous",
         ];
         let talent_keywords = [
-            "talent", "hiring", "retention", "culture", "employee", "workforce",
-            "development", "training", "upskill", "diversity", "inclusion",
+            "talent",
+            "hiring",
+            "retention",
+            "culture",
+            "employee",
+            "workforce",
+            "development",
+            "training",
+            "upskill",
+            "diversity",
+            "inclusion",
         ];
         let cost_keywords = [
-            "cost cutting", "efficiency", "lean", "optimization", "frugal",
-            "margin", "profitability", "shareholder value", "eps",
+            "cost cutting",
+            "efficiency",
+            "lean",
+            "optimization",
+            "frugal",
+            "margin",
+            "profitability",
+            "shareholder value",
+            "eps",
         ];
         let compliance_keywords = [
-            "compliance", "regulatory", "sox", "gdpr", "audit", "control",
-            "governance", "risk management", "legal",
+            "compliance",
+            "regulatory",
+            "sox",
+            "gdpr",
+            "audit",
+            "control",
+            "governance",
+            "risk management",
+            "legal",
         ];
         let external_keywords = [
-            "customer", "market", "competitor", "partner", "ecosystem", "outward",
-            "client focused", "market driven", "customer centric",
+            "customer",
+            "market",
+            "competitor",
+            "partner",
+            "ecosystem",
+            "outward",
+            "client focused",
+            "market driven",
+            "customer centric",
         ];
 
         let mut scores: HashMap<&str, (f64, u32)> = HashMap::new();
@@ -1884,8 +2318,12 @@ impl CognitiveBiasDetector {
 
         // Anchoring bias: fixating on a specific number or reference point
         let anchor_indicators = [
-            "baseline of", "starting point", "reference value", "anchor",
-            "compared to last", "relative to previous",
+            "baseline of",
+            "starting point",
+            "reference value",
+            "anchor",
+            "compared to last",
+            "relative to previous",
         ];
         let has_anchor = anchor_indicators.iter().any(|a| text_lower.contains(a));
         if has_anchor {
@@ -1900,15 +2338,28 @@ impl CognitiveBiasDetector {
 
         // Negativity bias: disproportionate focus on negative signals
         let negative_words = [
-            "threat", "risk", "danger", "concern", "warning", "crisis",
-            "failure", "loss", "decline", "problem",
+            "threat", "risk", "danger", "concern", "warning", "crisis", "failure", "loss",
+            "decline", "problem",
         ];
         let positive_words = [
-            "opportunity", "growth", "strength", "advantage", "success",
-            "improvement", "gain", "benefit", "progress",
+            "opportunity",
+            "growth",
+            "strength",
+            "advantage",
+            "success",
+            "improvement",
+            "gain",
+            "benefit",
+            "progress",
         ];
-        let neg_count = negative_words.iter().filter(|w| text_lower.contains(*w)).count();
-        let pos_count = positive_words.iter().filter(|w| text_lower.contains(*w)).count();
+        let neg_count = negative_words
+            .iter()
+            .filter(|w| text_lower.contains(*w))
+            .count();
+        let pos_count = positive_words
+            .iter()
+            .filter(|w| text_lower.contains(*w))
+            .count();
         if neg_count > pos_count * 3 && neg_count >= 5 {
             biases.push(CognitiveBias {
                 bias_type: "negativity".to_string(),
@@ -1924,8 +2375,15 @@ impl CognitiveBiasDetector {
 
         // Geographic bias: favoring certain regions
         let geographic_terms = [
-            "us ", "united states", "europe", "asia", "china", "russia",
-            "america", "western", "eastern",
+            "us ",
+            "united states",
+            "europe",
+            "asia",
+            "china",
+            "russia",
+            "america",
+            "western",
+            "eastern",
         ];
         let geo_mentioned: Vec<&str> = geographic_terms
             .iter()
@@ -1936,8 +2394,12 @@ impl CognitiveBiasDetector {
             biases.push(CognitiveBias {
                 bias_type: "geographic".to_string(),
                 severity: InsightSeverity::Low,
-                description: "Analysis may have geographic bias — limited regional perspective detected.".to_string(),
-                mitigation: "Include data from multiple geographies. Check for regional blind spots.".to_string(),
+                description:
+                    "Analysis may have geographic bias — limited regional perspective detected."
+                        .to_string(),
+                mitigation:
+                    "Include data from multiple geographies. Check for regional blind spots."
+                        .to_string(),
                 confidence: 0.5,
             });
         }
@@ -2035,21 +2497,30 @@ mod tests {
         ];
 
         let pain = profiler.compute_pain_index(&artifacts);
-        assert!(pain > 0.3, "Expected elevated pain index with 3 high-signal artifacts, got {pain}");
+        assert!(
+            pain > 0.3,
+            "Expected elevated pain index with 3 high-signal artifacts, got {pain}"
+        );
     }
 
     #[test]
     fn test_pain_index_empty() {
         let profiler = PsychologicalProfiler::new();
         let pain = profiler.compute_pain_index(&[]);
-        assert_eq!(pain, 0.0, "Empty artifacts must return 0.0 — no hallucinated pain");
+        assert_eq!(
+            pain, 0.0,
+            "Empty artifacts must return 0.0 — no hallucinated pain"
+        );
     }
 
     #[test]
     fn test_profile_not_enriched_when_empty() {
         let profiler = PsychologicalProfiler::new();
         let profile = profiler.profile_person(Uuid::nil(), &[]);
-        assert!(!profile.is_enriched(), "Empty artifacts must yield unenriched profile");
+        assert!(
+            !profile.is_enriched(),
+            "Empty artifacts must yield unenriched profile"
+        );
     }
 
     #[test]
@@ -2057,7 +2528,10 @@ mod tests {
         let profiler = PsychologicalProfiler::new();
         let artifacts = vec![make_artifact("Hi", "Hello", Utc::now().timestamp())];
         let profile = profiler.profile_person(Uuid::nil(), &artifacts);
-        assert!(!profile.is_enriched(), "Below min evidence threshold must yield unenriched profile");
+        assert!(
+            !profile.is_enriched(),
+            "Below min evidence threshold must yield unenriched profile"
+        );
     }
 
     #[test]
@@ -2066,11 +2540,14 @@ mod tests {
         let now = Utc::now().timestamp();
         let mut summary = String::new();
         for _ in 0..10 {
-            summary.push_str(&"cost overrun supply disruption quality defect security breach compliance violation layoff ");
+            summary.push_str("cost overrun supply disruption quality defect security breach compliance violation layoff ");
         }
         let artifacts = vec![make_artifact("Crisis report", &summary, now)];
         let profile = profiler.profile_person(Uuid::nil(), &artifacts);
-        assert!(profile.is_enriched(), "Good evidence should produce an enriched profile");
+        assert!(
+            profile.is_enriched(),
+            "Good evidence should produce an enriched profile"
+        );
         assert!(profile.pain_index > 0.3);
     }
 
@@ -2086,10 +2563,7 @@ mod tests {
             security: 0.0,
             confidence: 0.9,
         };
-        assert_eq!(
-            profiler.infer_decision_style(&pv),
-            DecisionStyle::CostFirst
-        );
+        assert_eq!(profiler.infer_decision_style(&pv), DecisionStyle::CostFirst);
     }
 
     #[test]
@@ -2147,11 +2621,8 @@ mod tests {
             },
         ];
 
-        let bucket = aggregator.aggregate_entity_sentiment(
-            Uuid::nil(),
-            EntityType::Company,
-            &signals,
-        );
+        let bucket =
+            aggregator.aggregate_entity_sentiment(Uuid::nil(), EntityType::Company, &signals);
 
         assert_eq!(bucket.sample_count, 3);
         assert!(bucket.positive_pct > 0.0);

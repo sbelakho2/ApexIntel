@@ -594,7 +594,7 @@ impl PgStore {
         Ok(())
     }
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     pub async fn count_replay_candidates(
         &self,
         from_date: NaiveDate,
@@ -822,10 +822,7 @@ impl PgStore {
         .await?)
     }
 
-    pub async fn get_critical_threat(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<CriticalThreatRecord>> {
+    pub async fn get_critical_threat(&self, id: Uuid) -> Result<Option<CriticalThreatRecord>> {
         Ok(sqlx::query_as::<_, CriticalThreatRecord>(
             "SELECT id, title, description, threat_type, severity, impact_score, confidence, entity_id, entity_type, region, mitigation_steps, owner_id, status, sla_deadline, resolved_at, metadata, created_at, updated_at FROM critical_threats WHERE id = $1",
         )

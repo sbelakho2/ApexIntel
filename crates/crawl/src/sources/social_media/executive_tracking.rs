@@ -51,12 +51,18 @@ pub struct ExecutiveMovement {
 impl ExecutiveMovement {
     /// Whether this is a departure.
     pub fn is_departure(&self) -> bool {
-        matches!(self.movement_type, MovementType::Departure | MovementType::Resignation | MovementType::Termination)
+        matches!(
+            self.movement_type,
+            MovementType::Departure | MovementType::Resignation | MovementType::Termination
+        )
     }
 
     /// Whether this is a hire.
     pub fn is_hire(&self) -> bool {
-        matches!(self.movement_type, MovementType::Hire | MovementType::Promotion | MovementType::InternalMove)
+        matches!(
+            self.movement_type,
+            MovementType::Hire | MovementType::Promotion | MovementType::InternalMove
+        )
     }
 }
 
@@ -94,11 +100,20 @@ impl MovementType {
         let lower = headline.to_lowercase();
         if lower.contains("appointed") || lower.contains("hired") || lower.contains("joins") {
             Self::Hire
-        } else if lower.contains("resigns") || lower.contains("stepping down") || lower.contains("depart") {
+        } else if lower.contains("resigns")
+            || lower.contains("stepping down")
+            || lower.contains("depart")
+        {
             Self::Resignation
-        } else if lower.contains("fired") || lower.contains("terminated") || lower.contains("removed") {
+        } else if lower.contains("fired")
+            || lower.contains("terminated")
+            || lower.contains("removed")
+        {
             Self::Termination
-        } else if lower.contains("promoted") || lower.contains("elevation") || lower.contains("rises to") {
+        } else if lower.contains("promoted")
+            || lower.contains("elevation")
+            || lower.contains("rises to")
+        {
             Self::Promotion
         } else if lower.contains("leaves") || lower.contains("exits") {
             Self::Departure
@@ -171,11 +186,13 @@ impl Default for ExecutiveTrackerConfig {
 
 impl ExecutiveTrackerConfig {
     pub fn add_company(mut self, company: impl Into<String>) -> Self {
-        self.tracked_companies.push(company.into()); self
+        self.tracked_companies.push(company.into());
+        self
     }
 
     pub fn add_executive(mut self, name: impl Into<String>) -> Self {
-        self.tracked_executives.push(name.into()); self
+        self.tracked_executives.push(name.into());
+        self
     }
 }
 
@@ -189,7 +206,10 @@ pub struct ExecutiveTracker {
 impl ExecutiveTracker {
     /// Create with configuration.
     pub fn new(config: ExecutiveTrackerConfig) -> Self {
-        Self { config, movements: Vec::new() }
+        Self {
+            config,
+            movements: Vec::new(),
+        }
     }
 
     /// Create with default configuration.
@@ -205,12 +225,21 @@ impl ExecutiveTracker {
         for kw in &self.config.movement_keywords {
             if lower.contains(&kw.to_lowercase()) {
                 // Try to extract name before the keyword
-                let before_keyword: String = lower.split(&kw.to_lowercase()).next()
-                    .map(|s| { let parts: Vec<&str> = s.split_whitespace().collect(); parts[parts.len().saturating_sub(3)..].join(" ") })
+                let before_keyword: String = lower
+                    .split(&kw.to_lowercase())
+                    .next()
+                    .map(|s| {
+                        let parts: Vec<&str> = s.split_whitespace().collect();
+                        parts[parts.len().saturating_sub(3)..].join(" ")
+                    })
                     .unwrap_or_default();
 
                 let movement_type = MovementType::from_headline(text);
-                let confidence = if before_keyword.len() > 5 { MovementConfidence::Medium } else { MovementConfidence::Low };
+                let confidence = if before_keyword.len() > 5 {
+                    MovementConfidence::Medium
+                } else {
+                    MovementConfidence::Low
+                };
 
                 detected.push(ExecutiveMovement {
                     movement_id: format!("mv-{}-{}", source, Utc::now().timestamp()),
@@ -248,10 +277,17 @@ impl ExecutiveTracker {
 
     /// Get movements for a specific company.
     pub fn movements_for_company(&self, company: &str) -> Vec<&ExecutiveMovement> {
-        self.movements.iter()
+        self.movements
+            .iter()
             .filter(|m| {
-                m.from_company.as_ref().map(|c| c.to_lowercase() == company.to_lowercase()).unwrap_or(false)
-                || m.to_company.as_ref().map(|c| c.to_lowercase() == company.to_lowercase()).unwrap_or(false)
+                m.from_company
+                    .as_ref()
+                    .map(|c| c.to_lowercase() == company.to_lowercase())
+                    .unwrap_or(false)
+                    || m.to_company
+                        .as_ref()
+                        .map(|c| c.to_lowercase() == company.to_lowercase())
+                        .unwrap_or(false)
             })
             .collect()
     }
@@ -278,9 +314,18 @@ mod tests {
 
     #[test]
     fn movement_type_from_headline() {
-        assert_eq!(MovementType::from_headline("John Smith appointed CEO of Acme Corp"), MovementType::Hire);
-        assert_eq!(MovementType::from_headline("Jane Doe resigns from XYZ Inc"), MovementType::Resignation);
-        assert_eq!(MovementType::from_headline("Bob promoted to CFO at BigCo"), MovementType::Promotion);
+        assert_eq!(
+            MovementType::from_headline("John Smith appointed CEO of Acme Corp"),
+            MovementType::Hire
+        );
+        assert_eq!(
+            MovementType::from_headline("Jane Doe resigns from XYZ Inc"),
+            MovementType::Resignation
+        );
+        assert_eq!(
+            MovementType::from_headline("Bob promoted to CFO at BigCo"),
+            MovementType::Promotion
+        );
     }
 
     #[test]
@@ -327,7 +372,7 @@ mod tests {
         let tracker = ExecutiveTracker::with_defaults();
         let movements = tracker.detect_in_text(
             "Robert Johnson appointed Chief Technology Officer at Defense Systems Inc",
-            "news_feed"
+            "news_feed",
         );
         assert!(!movements.is_empty());
     }

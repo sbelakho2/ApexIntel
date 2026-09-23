@@ -31,3 +31,6 @@ tokio-test = "0.4"
 
 [features]
 experimental = []
+
+[lints]
+workspace = true

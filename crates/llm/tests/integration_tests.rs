@@ -4,19 +4,15 @@
 //! Tests the integration between agents, RAG, quality control, and prompting.
 
 use apex_llm::advanced_prompting::{
-    AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence,
-    ChainOfThoughtConfig, ConfidenceLevel,
-    MultiPerspectiveConfig, ReasoningPath,
-    SelfConsistencyConfig,
+    AdvancedPromptingEngine, AnalysisPerspective, CalibratedConfidence, ChainOfThoughtConfig,
+    ConfidenceLevel, MultiPerspectiveConfig, ReasoningPath, SelfConsistencyConfig,
 };
 use apex_llm::agents::{
-    AgentConfig, AgentResult, AgentState, AgentType,
-    CrossReferenceAgent, Finding, FinancialAnalystAgent, GeopoliticalAgent,
-    InvestigatorAgent, MultiAgentCoordinator, ThreatAnalystAgent,
+    AgentConfig, AgentResult, AgentState, AgentType, CrossReferenceAgent, FinancialAnalystAgent,
+    Finding, GeopoliticalAgent, InvestigatorAgent, MultiAgentCoordinator, ThreatAnalystAgent,
 };
 use apex_llm::quality_control::{
-    AssessmentVerdict, BiasType,
-    InconsistencyType, QualityControlConfig, QualityControlEngine,
+    AssessmentVerdict, BiasType, InconsistencyType, QualityControlConfig, QualityControlEngine,
     RiskLevel,
 };
 use apex_llm::rag::{
@@ -138,14 +134,16 @@ mod quality_control_tests {
     fn test_coherence_detects_contradictions() {
         let engine = QualityControlEngine::with_default_config();
 
-        let contradictory_text = "The company is increasing revenue. However, the revenue is decreasing. \
+        let contradictory_text =
+            "The company is increasing revenue. However, the revenue is decreasing. \
                                   The market is growing while simultaneously shrinking.";
         let coherence = engine.check_coherence(contradictory_text);
 
         assert!(!coherence.inconsistencies.is_empty());
-        assert!(coherence.inconsistencies.iter().any(|i| {
-            matches!(i.kind, InconsistencyType::Contradiction)
-        }));
+        assert!(coherence
+            .inconsistencies
+            .iter()
+            .any(|i| { matches!(i.kind, InconsistencyType::Contradiction) }));
     }
 
     #[test]
@@ -168,7 +166,11 @@ mod quality_control_tests {
         let result = engine.detect_hallucinations(text);
 
         // Hallucination detection should produce some result
-        assert!(result.hallucinations.is_empty() || result.risky_claims.is_empty() || result.risk_score >= 0.0);
+        assert!(
+            result.hallucinations.is_empty()
+                || result.risky_claims.is_empty()
+                || result.risk_score >= 0.0
+        );
     }
 
     #[test]
@@ -215,9 +217,18 @@ mod quality_control_tests {
 
     #[test]
     fn test_assessment_verdict() {
-        assert_eq!(AssessmentVerdict::from_risk_score(0.1), AssessmentVerdict::Approved);
-        assert_eq!(AssessmentVerdict::from_risk_score(0.35), AssessmentVerdict::NeedsReview);
-        assert_eq!(AssessmentVerdict::from_risk_score(0.7), AssessmentVerdict::Rejected);
+        assert_eq!(
+            AssessmentVerdict::from_risk_score(0.1),
+            AssessmentVerdict::Approved
+        );
+        assert_eq!(
+            AssessmentVerdict::from_risk_score(0.35),
+            AssessmentVerdict::NeedsReview
+        );
+        assert_eq!(
+            AssessmentVerdict::from_risk_score(0.7),
+            AssessmentVerdict::Rejected
+        );
     }
 
     #[test]
@@ -265,7 +276,13 @@ mod rag_tests {
         });
 
         let results = kb.query_by_topic("supply_chain", 10);
-        assert_eq!(results.iter().find(|e| e.id == "entry-1").map(|e| e.id.as_str()), Some("entry-1"));
+        assert_eq!(
+            results
+                .iter()
+                .find(|e| e.id == "entry-1")
+                .map(|e| e.id.as_str()),
+            Some("entry-1")
+        );
 
         let _results = kb.query_by_entity("Apple", 10);
     }
@@ -294,11 +311,7 @@ mod rag_tests {
             expires_at: None,
         });
 
-        let query = RagQuery::new(
-            vec!["Apple".to_string()],
-            vec![],
-        )
-        .with_limit(10);
+        let query = RagQuery::new(vec!["Apple".to_string()], vec![]).with_limit(10);
 
         let ranked = kb.query(&query);
         assert!(!ranked.is_empty());
@@ -484,7 +497,8 @@ mod agent_tests {
 
     #[test]
     fn test_geopolitical_regional_risk() {
-        let prompt = GeopoliticalAgent::regional_risk_prompt("Eastern Europe", "Tech Manufacturing");
+        let prompt =
+            GeopoliticalAgent::regional_risk_prompt("Eastern Europe", "Tech Manufacturing");
         assert!(prompt.contains("Eastern Europe"));
         assert!(prompt.contains("Tech Manufacturing"));
         assert!(prompt.contains("Political Stability"));
@@ -517,10 +531,13 @@ mod agent_tests {
     fn test_agent_config_customization() {
         let config = AgentConfig::for_type(AgentType::FinancialAnalyst)
             .with_cot(true)
-            .with_multi_perspective(true, vec![
-                AnalysisPerspective::Optimistic,
-                AnalysisPerspective::Pessimistic,
-            ])
+            .with_multi_perspective(
+                true,
+                vec![
+                    AnalysisPerspective::Optimistic,
+                    AnalysisPerspective::Pessimistic,
+                ],
+            )
             .with_rag(true)
             .with_quality_control(false);
 
@@ -533,10 +550,7 @@ mod agent_tests {
     fn test_finding_builder() {
         let finding = Finding::new("Key Finding", "Detailed description")
             .with_confidence(0.85)
-            .with_sources(vec![
-                "Reuters".to_string(),
-                "Bloomberg".to_string(),
-            ])
+            .with_sources(vec!["Reuters".to_string(), "Bloomberg".to_string()])
             .with_tags(vec!["risk".to_string(), "high".to_string()]);
 
         assert_eq!(finding.title, "Key Finding");
@@ -595,13 +609,11 @@ mod agent_tests {
 
     #[test]
     fn test_confidence_bounds() {
-        let finding = Finding::new("Test", "Description")
-            .with_confidence(1.5); // Should clamp to 1.0
+        let finding = Finding::new("Test", "Description").with_confidence(1.5); // Should clamp to 1.0
 
         assert!(finding.confidence <= 1.0);
 
-        let finding2 = Finding::new("Test", "Description")
-            .with_confidence(-0.5); // Should clamp to 0.0
+        let finding2 = Finding::new("Test", "Description").with_confidence(-0.5); // Should clamp to 0.0
 
         assert!(finding2.confidence >= 0.0);
     }
@@ -620,7 +632,10 @@ mod agent_tests {
             // B351: prompts were hardened from "expert persona" to grounded
             // analytical system personas — assert the grounding contract
             // every prompt must carry instead of the retired wording.
-            assert!(prompt.contains("ONLY"), "prompt must constrain to source data");
+            assert!(
+                prompt.contains("ONLY"),
+                "prompt must constrain to source data"
+            );
             assert!(prompt.contains("NEVER"), "prompt must forbid fabrication");
             assert!(prompt.len() > 100);
         }
@@ -668,7 +683,9 @@ mod integration_tests {
         assert!(bias.bias_score >= 0.0);
 
         // Calculate overall score
-        let overall = (coherence.score * 0.4 + (1.0 - hallucination.risk_score) * 0.35 + (1.0 - bias.bias_score) * 0.25)
+        let overall = (coherence.score * 0.4
+            + (1.0 - hallucination.risk_score) * 0.35
+            + (1.0 - bias.bias_score) * 0.25)
             .clamp(0.0, 1.0);
 
         assert!(overall >= 0.0);
@@ -682,10 +699,15 @@ mod integration_tests {
         // Add knowledge base entries
         kb.add_entry(KnowledgeEntry {
             id: "1".to_string(),
-            content: "Apple's primary manufacturing partner Foxconn is diversifying to India.".to_string(),
+            content: "Apple's primary manufacturing partner Foxconn is diversifying to India."
+                .to_string(),
             source: KnowledgeSource::new(KnowledgeSourceType::News, "Reuters"),
             credibility_weight: 0.75,
-            topics: vec!["Apple".to_string(), "Foxconn".to_string(), "supply_chain".to_string()],
+            topics: vec![
+                "Apple".to_string(),
+                "Foxconn".to_string(),
+                "supply_chain".to_string(),
+            ],
             timestamp: chrono::Utc::now(),
             expires_at: None,
         });

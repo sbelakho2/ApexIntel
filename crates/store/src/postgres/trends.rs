@@ -92,6 +92,9 @@ impl BucketType {
     }
 
     /// Compute the bucket start date for a given date.
+    /// The day/month components used below are always valid calendar values
+    /// (day 1, month 1..=12), so the construction cannot fail.
+    #[allow(clippy::unwrap_used)]
     pub fn bucket_start(&self, date: NaiveDate) -> NaiveDate {
         match self {
             Self::Daily => date,
@@ -110,6 +113,7 @@ impl BucketType {
     }
 
     /// Return the next bucket start date after the given one.
+    #[allow(clippy::unwrap_used)]
     pub fn next_bucket_start(&self, bucket_start: NaiveDate) -> NaiveDate {
         match self {
             Self::Daily => bucket_start + chrono::Duration::days(1),
@@ -134,9 +138,7 @@ impl BucketType {
                 }
                 NaiveDate::from_ymd_opt(y, m, 1).unwrap()
             }
-            Self::Yearly => {
-                NaiveDate::from_ymd_opt(bucket_start.year() + 1, 1, 1).unwrap()
-            }
+            Self::Yearly => NaiveDate::from_ymd_opt(bucket_start.year() + 1, 1, 1).unwrap(),
         }
     }
 
@@ -232,10 +234,12 @@ impl PgStore {
             }
         };
 
-        let since = bucket_date.and_hms_opt(0, 0, 0)
+        let since = bucket_date
+            .and_hms_opt(0, 0, 0)
             .map(|d| chrono::DateTime::from_naive_utc_and_offset(d, chrono::Utc))
             .unwrap_or_else(chrono::Utc::now);
-        let until = bucket_end.and_hms_opt(23, 59, 59)
+        let until = bucket_end
+            .and_hms_opt(23, 59, 59)
             .map(|d| chrono::DateTime::from_naive_utc_and_offset(d, chrono::Utc))
             .unwrap_or_else(chrono::Utc::now);
 
@@ -265,8 +269,15 @@ impl PgStore {
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
-        self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "new_warnings", new_warnings)
-            .await?;
+        self.upsert_trend_rollup(
+            bucket_date,
+            bucket_type,
+            None,
+            None,
+            "new_warnings",
+            new_warnings,
+        )
+        .await?;
         metrics_computed += 1;
 
         // Insights count
@@ -291,8 +302,15 @@ impl PgStore {
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
-        self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "observations", observations)
-            .await?;
+        self.upsert_trend_rollup(
+            bucket_date,
+            bucket_type,
+            None,
+            None,
+            "observations",
+            observations,
+        )
+        .await?;
         metrics_computed += 1;
 
         // Companies tracked
@@ -300,8 +318,15 @@ impl PgStore {
             .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
-        self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "companies_tracked", companies)
-            .await?;
+        self.upsert_trend_rollup(
+            bucket_date,
+            bucket_type,
+            None,
+            None,
+            "companies_tracked",
+            companies,
+        )
+        .await?;
         metrics_computed += 1;
 
         // Persons tracked
@@ -309,8 +334,15 @@ impl PgStore {
             .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
-        self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "persons_tracked", persons)
-            .await?;
+        self.upsert_trend_rollup(
+            bucket_date,
+            bucket_type,
+            None,
+            None,
+            "persons_tracked",
+            persons,
+        )
+        .await?;
         metrics_computed += 1;
 
         // Active recipes
@@ -320,8 +352,15 @@ impl PgStore {
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
-        self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "active_recipes", active_recipes)
-            .await?;
+        self.upsert_trend_rollup(
+            bucket_date,
+            bucket_type,
+            None,
+            None,
+            "active_recipes",
+            active_recipes,
+        )
+        .await?;
         metrics_computed += 1;
 
         // Unacknowledged warnings
@@ -331,8 +370,15 @@ impl PgStore {
         .fetch_one(&self.pool)
         .await
         .unwrap_or(0);
-        self.upsert_trend_rollup(bucket_date, bucket_type, None, None, "unacknowledged_warnings", unacked_warnings)
-            .await?;
+        self.upsert_trend_rollup(
+            bucket_date,
+            bucket_type,
+            None,
+            None,
+            "unacknowledged_warnings",
+            unacked_warnings,
+        )
+        .await?;
         metrics_computed += 1;
 
         // ── Entity-level metrics ──────────────────────────────────────────
@@ -409,11 +455,8 @@ impl PgStore {
     ///
     /// Returns a list of trend data points sorted by date ascending.
     #[tracing::instrument(skip(self))]
-    pub async fn query_trends(
-        &self,
-        query: &TrendQuery,
-    ) -> anyhow::Result<Vec<TrendDataPoint>> {
-        let limit = query.limit.unwrap_or(1000).max(1).min(10000);
+    pub async fn query_trends(&self, query: &TrendQuery) -> anyhow::Result<Vec<TrendDataPoint>> {
+        let limit = query.limit.unwrap_or(1000).clamp(1, 10000);
         let entity_type = normalize_optional_text(query.entity_type.as_deref());
         let entity_id = normalize_optional_text(query.entity_id.as_deref());
 
@@ -458,10 +501,10 @@ impl PgStore {
         let entity_type = normalize_optional_text(query.entity_type.as_deref());
         let entity_id = normalize_optional_text(query.entity_id.as_deref());
 
-        let current_end = query.current_period_start
-            + chrono::Duration::days(query.period_duration_days);
-        let previous_end = query.previous_period_start
-            + chrono::Duration::days(query.period_duration_days);
+        let current_end =
+            query.current_period_start + chrono::Duration::days(query.period_duration_days);
+        let previous_end =
+            query.previous_period_start + chrono::Duration::days(query.period_duration_days);
 
         // Fetch current period data
         let current_rows = sqlx::query_as::<_, (i64,)>(
@@ -565,7 +608,8 @@ impl PgStore {
         // Aggregate weekly buckets for the last 52 weeks
         let weekly_type = BucketType::Weekly;
         for week_offset in (0..52).rev() {
-            let bucket_date = weekly_type.bucket_start(now - chrono::Duration::days(week_offset * 7));
+            let bucket_date =
+                weekly_type.bucket_start(now - chrono::Duration::days(week_offset * 7));
             // Check if already aggregated
             let existing: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*)::BIGINT FROM trend_rollups WHERE bucket_type = 'weekly' AND bucket_date = $1 LIMIT 1",
@@ -685,10 +729,7 @@ impl PgStore {
     }
 
     /// Compute summary statistics for a set of trend data points.
-    pub async fn get_trend_summary(
-        &self,
-        query: &TrendQuery,
-    ) -> anyhow::Result<TrendSummary> {
+    pub async fn get_trend_summary(&self, query: &TrendQuery) -> anyhow::Result<TrendSummary> {
         let data_points = self.query_trends(query).await?;
 
         if data_points.is_empty() {
@@ -747,7 +788,10 @@ mod tests {
         assert_eq!(BucketType::from_str("daily"), Some(BucketType::Daily));
         assert_eq!(BucketType::from_str("weekly"), Some(BucketType::Weekly));
         assert_eq!(BucketType::from_str("monthly"), Some(BucketType::Monthly));
-        assert_eq!(BucketType::from_str("quarterly"), Some(BucketType::Quarterly));
+        assert_eq!(
+            BucketType::from_str("quarterly"),
+            Some(BucketType::Quarterly)
+        );
         assert_eq!(BucketType::from_str("yearly"), Some(BucketType::Yearly));
         assert_eq!(BucketType::from_str("unknown"), None);
     }
@@ -864,7 +908,13 @@ mod tests {
 
     #[test]
     fn test_bucket_type_roundtrip() {
-        for expected in &[BucketType::Daily, BucketType::Weekly, BucketType::Monthly, BucketType::Quarterly, BucketType::Yearly] {
+        for expected in &[
+            BucketType::Daily,
+            BucketType::Weekly,
+            BucketType::Monthly,
+            BucketType::Quarterly,
+            BucketType::Yearly,
+        ] {
             let s = expected.as_str();
             let back = BucketType::from_str(s);
             assert_eq!(back, Some(*expected), "roundtrip failed for {:?}", expected);

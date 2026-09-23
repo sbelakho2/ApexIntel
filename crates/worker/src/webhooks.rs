@@ -152,7 +152,7 @@ impl WebhookDispatcher {
 
     // ── Slack ────────────────────────────────────────────────
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     async fn send_slack(&self, url: &str, alert: &AlertPayload) -> Result<()> {
         let color = severity_color(&alert.severity);
         let payload = serde_json::json!({
@@ -185,7 +185,7 @@ impl WebhookDispatcher {
 
     // ── Microsoft Teams ─────────────────────────────────────
 
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     async fn send_teams(&self, url: &str, alert: &AlertPayload) -> Result<()> {
         let theme_color = severity_color_hex(&alert.severity);
         let payload = serde_json::json!({
@@ -261,7 +261,11 @@ fn severity_color_hex(severity: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::field_reassign_with_default)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::field_reassign_with_default
+    )]
 
     use super::*;
 

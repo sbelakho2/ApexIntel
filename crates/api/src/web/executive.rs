@@ -123,13 +123,10 @@ pub async fn executive_dashboard(
             vec![]
         });
 
-    let threats = store
-        .list_critical_threats(20)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to fetch critical threats: {e}");
-            vec![]
-        });
+    let threats = store.list_critical_threats(20).await.unwrap_or_else(|e| {
+        tracing::error!("Failed to fetch critical threats: {e}");
+        vec![]
+    });
 
     // Fetch recent insights for trending topics & competitor mention volume
     let insight_filters = InsightListFilters {
@@ -239,7 +236,9 @@ pub async fn executive_dashboard(
             .filter(|i| {
                 i.title.contains(name.as_str())
                     || i.summary.contains(name.as_str())
-                    || i.tags.as_ref().is_some_and(|t| t.iter().any(|tag| tag.contains(name.as_str())))
+                    || i.tags
+                        .as_ref()
+                        .is_some_and(|t| t.iter().any(|tag| tag.contains(name.as_str())))
             })
             .count() as i64;
         if count > 0 {
@@ -248,7 +247,7 @@ pub async fn executive_dashboard(
     }
 
     let mut sorted_competitors: Vec<(String, i64)> = mention_counts.into_iter().collect();
-    sorted_competitors.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_competitors.sort_by_key(|a| std::cmp::Reverse(a.1));
     sorted_competitors.truncate(5);
 
     let max_mention = sorted_competitors
@@ -260,7 +259,7 @@ pub async fn executive_dashboard(
         .into_iter()
         .map(|(name, count)| {
             let raw_pct = count * 100 / max_mention;
-            let bar_pct = raw_pct.max(5).min(100);
+            let bar_pct = raw_pct.clamp(5, 100);
             CompetitorMention {
                 name,
                 mention_count: count,
@@ -297,10 +296,7 @@ pub async fn executive_dashboard(
             id: t.id.to_string(),
             title: t.title.clone(),
             severity: t.severity.clone(),
-            company: t
-                .entity_id
-                .clone()
-                .unwrap_or_else(|| "Unknown".into()),
+            company: t.entity_id.clone().unwrap_or_else(|| "Unknown".into()),
             score: t.impact_score,
             region: t.region.clone().unwrap_or_default(),
             score_display: format!("{:.1}", t.impact_score),
@@ -327,7 +323,7 @@ pub async fn executive_dashboard(
     }
 
     let mut sorted_topics: Vec<(String, i64)> = topic_counts.into_iter().collect();
-    sorted_topics.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_topics.sort_by_key(|a| std::cmp::Reverse(a.1));
     sorted_topics.truncate(5);
 
     // B313: honest week-over-week change — count this week's mentions against
@@ -339,19 +335,23 @@ pub async fn executive_dashboard(
     let trending_topics: Vec<TrendingTopic> = sorted_topics
         .into_iter()
         .map(|(topic, count)| {
-            let topic_matches =
-                |i: &apex_store::postgres::InsightRow, t: &str| -> bool {
-                    i.tags.as_ref().is_some_and(|tags| tags.iter().any(|tag| tag == t))
-                        || i.insight_type.as_deref() == Some(t)
-                };
+            let topic_matches = |i: &apex_store::postgres::InsightRow, t: &str| -> bool {
+                i.tags
+                    .as_ref()
+                    .is_some_and(|tags| tags.iter().any(|tag| tag == t))
+                    || i.insight_type.as_deref() == Some(t)
+            };
             let this_week = recent_insights
                 .iter()
-                .filter(|i| i.created_at.is_some_and(|ts| ts >= week_ago) && topic_matches(i, &topic))
+                .filter(|i| {
+                    i.created_at.is_some_and(|ts| ts >= week_ago) && topic_matches(i, &topic)
+                })
                 .count() as i64;
             let prev_week = recent_insights
                 .iter()
                 .filter(|i| {
-                    i.created_at.is_some_and(|ts| ts >= two_weeks_ago && ts < week_ago)
+                    i.created_at
+                        .is_some_and(|ts| ts >= two_weeks_ago && ts < week_ago)
                         && topic_matches(i, &topic)
                 })
                 .count() as i64;
@@ -362,7 +362,8 @@ pub async fn executive_dashboard(
                     "new".to_string()
                 }
             } else {
-                let delta = ((this_week - prev_week) as f64 / prev_week as f64 * 100.0).round() as i64;
+                let delta =
+                    ((this_week - prev_week) as f64 / prev_week as f64 * 100.0).round() as i64;
                 format!("{}{}%", if delta >= 0 { "+" } else { "" }, delta)
             };
             let _ = count;
@@ -378,7 +379,11 @@ pub async fn executive_dashboard(
 
     let sorted_opps: Vec<_> = {
         let mut v = opportunities.clone();
-        v.sort_by(|a, b| b.priority_score.partial_cmp(&a.priority_score).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            b.priority_score
+                .partial_cmp(&a.priority_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         v.truncate(5);
         v
     };
@@ -389,7 +394,11 @@ pub async fn executive_dashboard(
             let is_win = o.status == "won" || o.status == "closed";
             RecentWinLoss {
                 title: o.title.clone(),
-                result_type: if is_win { "win".into() } else { "opportunity".into() },
+                result_type: if is_win {
+                    "win".into()
+                } else {
+                    "opportunity".into()
+                },
                 company: o.entity_id.clone().unwrap_or_default(),
                 date: o.created_at.format("%Y-%m-%d").to_string(),
                 description: o.description.clone().unwrap_or_default(),

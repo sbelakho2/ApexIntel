@@ -16,12 +16,11 @@ impl PgStore {
         &self,
         entity_id: &str,
     ) -> Result<Option<EntityAlertConfig>> {
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(
-            "SELECT config FROM entity_alert_configs WHERE entity_id = $1",
-        )
-        .bind(entity_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT config FROM entity_alert_configs WHERE entity_id = $1")
+                .bind(entity_id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         match row {
             Some((json,)) => {
@@ -34,11 +33,10 @@ impl PgStore {
 
     /// Return all entity alert configs stored in the database.
     pub async fn list_entity_alert_configs(&self) -> Result<Vec<EntityAlertConfig>> {
-        let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
-            "SELECT entity_id, config FROM entity_alert_configs ORDER BY entity_id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(String, serde_json::Value)> =
+            sqlx::query_as("SELECT entity_id, config FROM entity_alert_configs ORDER BY entity_id")
+                .fetch_all(&self.pool)
+                .await?;
 
         let mut configs = Vec::with_capacity(rows.len());
         for (_, json) in rows {
@@ -90,11 +88,10 @@ impl PgStore {
 
     /// Retrieve the global alert defaults (the singleton row).
     pub async fn get_global_alert_defaults(&self) -> Result<Option<GlobalAlertDefaults>> {
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(
-            "SELECT config FROM global_alert_defaults WHERE id = 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT config FROM global_alert_defaults WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?;
 
         match row {
             Some((json,)) => {

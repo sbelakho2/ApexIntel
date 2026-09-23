@@ -164,19 +164,29 @@ impl InferenceChain {
         let mut lines = vec![
             format!("# Inference Chain: {}", self.name),
             format!("Target: {} ({})", self.target_entity, self.entity_type),
-            format!("Steps: {} | Overall Confidence: {:.0}%", 
-                self.steps.len(), self.overall_confidence * 100.0),
+            format!(
+                "Steps: {} | Overall Confidence: {:.0}%",
+                self.steps.len(),
+                self.overall_confidence * 100.0
+            ),
             String::new(),
             "## Reasoning Steps".to_string(),
         ];
 
         for (i, step) in self.steps.iter().enumerate() {
-            lines.push(format!("### Step {}: {}", i + 1, step.reasoning_type.label()));
+            lines.push(format!(
+                "### Step {}: {}",
+                i + 1,
+                step.reasoning_type.label()
+            ));
             lines.push(format!("**Premise:** {}", step.premise));
             lines.push(format!("**Inference:** {}", step.inference));
             lines.push(format!("Confidence: {:.0}%", step.confidence * 100.0));
             if !step.supporting_evidence.is_empty() {
-                lines.push(format!("Evidence: {} sources", step.supporting_evidence.len()));
+                lines.push(format!(
+                    "Evidence: {} sources",
+                    step.supporting_evidence.len()
+                ));
             }
             lines.push(String::new());
         }
@@ -327,7 +337,7 @@ impl ConfidencePropagation {
     pub fn propagate(initial: f64, num_steps: usize, decay_rate: f64) -> Self {
         let mut evidence_weights = Vec::new();
         let mut current_weight = 1.0f64;
-        
+
         for i in 0..num_steps {
             evidence_weights.push(current_weight);
             // Decay weight based on position in chain
@@ -424,7 +434,11 @@ impl ChainOfThoughtReasoner {
         entity_type: &str,
         evidence: &[EvidenceItem],
     ) -> InferenceChain {
-        let mut chain = InferenceChain::new(target_entity, entity_type, &format!("Investigation of {}", target_entity));
+        let mut chain = InferenceChain::new(
+            target_entity,
+            entity_type,
+            &format!("Investigation of {}", target_entity),
+        );
 
         // Sort evidence by timestamp
         let mut sorted_evidence: Vec<&EvidenceItem> = evidence.iter().collect();
@@ -461,8 +475,11 @@ impl ChainOfThoughtReasoner {
                 step_number: chain.steps.len(),
                 reasoning_type: ReasoningType::PatternMatch,
                 premise: pattern.description.clone(),
-                inference: format!("Pattern detected: {} (significance: {:.0}%)", 
-                    pattern.pattern_type.label(), pattern.significance * 100.0),
+                inference: format!(
+                    "Pattern detected: {} (significance: {:.0}%)",
+                    pattern.pattern_type.label(),
+                    pattern.significance * 100.0
+                ),
                 confidence: pattern.significance,
                 supporting_evidence: sorted_evidence
                     .iter()
@@ -486,8 +503,11 @@ impl ChainOfThoughtReasoner {
                 step_number: chain.steps.len(),
                 reasoning_type: ReasoningType::EntityRelationship,
                 premise: format!("{} and {} show relationship", rel.entity_a, rel.entity_b),
-                inference: format!("Entities correlated: {} relationship with {:.0}% confidence",
-                    rel.correlation_type.label(), rel.coefficient * 100.0),
+                inference: format!(
+                    "Entities correlated: {} relationship with {:.0}% confidence",
+                    rel.correlation_type.label(),
+                    rel.coefficient * 100.0
+                ),
                 confidence: rel.coefficient.abs(),
                 supporting_evidence: Vec::new(),
                 computed_at: Utc::now(),
@@ -512,10 +532,7 @@ impl ChainOfThoughtReasoner {
         chain.set_conclusion(&conclusion, chain.overall_confidence);
 
         // Calculate time span
-        if let (Some(first), Some(last)) = (
-            sorted_evidence.first(),
-            sorted_evidence.last(),
-        ) {
+        if let (Some(first), Some(last)) = (sorted_evidence.first(), sorted_evidence.last()) {
             chain.time_span_days = (last.timestamp - first.timestamp).num_days();
         }
 
@@ -573,7 +590,10 @@ impl ChainOfThoughtReasoner {
                 end_date: end,
                 duration_days: duration,
                 event_count: recent.len(),
-                involved_entities: vec![evidence.first().map(|e| e.entity_id.clone()).unwrap_or_default()],
+                involved_entities: vec![evidence
+                    .first()
+                    .map(|e| e.entity_id.clone())
+                    .unwrap_or_default()],
                 significance: (recent.len() as f64 / 10.0).min(1.0),
                 correlation: None,
             });
@@ -600,18 +620,28 @@ impl ChainOfThoughtReasoner {
             .count();
         let older: usize = sorted
             .iter()
-            .filter(|e| (now - e.timestamp).num_days() > window && (now - e.timestamp).num_days() <= 2 * window)
+            .filter(|e| {
+                (now - e.timestamp).num_days() > window
+                    && (now - e.timestamp).num_days() <= 2 * window
+            })
             .count();
 
         if recent > older * 2 && recent >= 3 {
             return Some(TemporalPattern {
                 pattern_type: TemporalPatternType::Trend,
-                description: format!("Increasing activity: {} recent events vs {} in prior period", recent, older),
+                description: format!(
+                    "Increasing activity: {} recent events vs {} in prior period",
+                    recent, older
+                ),
                 start_date: sorted.first().map(|e| e.timestamp).unwrap_or(now),
                 end_date: now,
-                duration_days: (now - sorted.first().map(|e| e.timestamp).unwrap_or(now)).num_days(),
+                duration_days: (now - sorted.first().map(|e| e.timestamp).unwrap_or(now))
+                    .num_days(),
                 event_count: evidence.len(),
-                involved_entities: vec![evidence.first().map(|e| e.entity_id.clone()).unwrap_or_default()],
+                involved_entities: vec![evidence
+                    .first()
+                    .map(|e| e.entity_id.clone())
+                    .unwrap_or_default()],
                 significance: (recent as f64 / 10.0).min(1.0),
                 correlation: None,
             });
@@ -680,7 +710,10 @@ impl ChainOfThoughtReasoner {
                                 1.0 - coefficient.abs().min(0.99)
                             }
                         },
-                        window_start: evidence_a.first().map(|e| e.timestamp).unwrap_or_else(Utc::now),
+                        window_start: evidence_a
+                            .first()
+                            .map(|e| e.timestamp)
+                            .unwrap_or_else(Utc::now),
                         window_end: Utc::now(),
                         shared_events: cooccurrence,
                         causality_direction: None,

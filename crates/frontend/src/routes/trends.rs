@@ -1,5 +1,4 @@
 use leptos::*;
-use serde_json::Value;
 
 use crate::api;
 use crate::components::cards::{PageHeader, SurfaceCard};
@@ -7,9 +6,10 @@ use crate::components::cards::{PageHeader, SurfaceCard};
 #[component]
 pub fn TrendsPage() -> impl IntoView {
     let page = create_rw_signal(1u32);
-    let trends_resource = create_resource(move || page.get(), |page| async move {
-        api::fetch_trends(page).await
-    });
+    let trends_resource = create_resource(
+        move || page.get(),
+        |page| async move { api::fetch_trends(page).await },
+    );
 
     view! {
         <div class="page">

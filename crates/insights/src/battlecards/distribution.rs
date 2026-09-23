@@ -15,8 +15,14 @@ impl BattlecardDistributor {
 
         // Positioning
         md.push_str("## Positioning\n\n");
-        md.push_str(&format!("**Market Position:** {}\n\n", card.positioning.market_position));
-        md.push_str(&format!("**Value Proposition:** {}\n\n", card.positioning.value_proposition));
+        md.push_str(&format!(
+            "**Market Position:** {}\n\n",
+            card.positioning.market_position
+        ));
+        md.push_str(&format!(
+            "**Value Proposition:** {}\n\n",
+            card.positioning.value_proposition
+        ));
         if !card.positioning.differentiators.is_empty() {
             md.push_str("**Differentiators:**\n");
             for d in &card.positioning.differentiators {
@@ -51,7 +57,10 @@ impl BattlecardDistributor {
         // Strengths
         md.push_str("## Our Strengths\n\n");
         for s in &card.strengths {
-            md.push_str(&format!("**{}** — {} ({})\n", s.title, s.description, s.impact_area));
+            md.push_str(&format!(
+                "**{}** — {} ({})\n",
+                s.title, s.description, s.impact_area
+            ));
             if !s.evidence_url.is_empty() {
                 md.push_str(&format!("  Evidence: {}\n", s.evidence_url));
             }
@@ -63,7 +72,9 @@ impl BattlecardDistributor {
         for w in &card.weaknesses {
             md.push_str(&format!(
                 "**{}** — {} (Severity: {:.0}%)\n",
-                w.title, w.description, w.severity * 100.0
+                w.title,
+                w.description,
+                w.severity * 100.0
             ));
         }
         md.push('\n');
@@ -73,7 +84,9 @@ impl BattlecardDistributor {
         for oh in &card.objection_handlers {
             md.push_str(&format!(
                 "**Objection:** {}\n**Response:** {}\n**Effectiveness:** {:.0}%\n\n",
-                oh.objection, oh.counter_arg, oh.effectiveness * 100.0
+                oh.objection,
+                oh.counter_arg,
+                oh.effectiveness * 100.0
             ));
         }
 
@@ -109,7 +122,9 @@ impl BattlecardDistributor {
             for lr in &card.win_loss.top_loss_reasons {
                 md.push_str(&format!(
                     "- {}: {} ({:.0}%)\n",
-                    lr.reason, lr.count, lr.percentage * 100.0
+                    lr.reason,
+                    lr.count,
+                    lr.percentage * 100.0
                 ));
             }
         }
@@ -184,8 +199,14 @@ impl BattlecardDistributor {
 
         // Positioning
         html.push_str("<section><h2>Positioning</h2>");
-        html.push_str(&format!("<p><strong>Market Position:</strong> {}</p>", card.positioning.market_position));
-        html.push_str(&format!("<p><strong>Value Proposition:</strong> {}</p>", card.positioning.value_proposition));
+        html.push_str(&format!(
+            "<p><strong>Market Position:</strong> {}</p>",
+            card.positioning.market_position
+        ));
+        html.push_str(&format!(
+            "<p><strong>Value Proposition:</strong> {}</p>",
+            card.positioning.value_proposition
+        ));
         if !card.positioning.differentiators.is_empty() {
             html.push_str("<ul>");
             for d in &card.positioning.differentiators {
@@ -204,7 +225,10 @@ impl BattlecardDistributor {
         if !card.strengths.is_empty() {
             html.push_str("<section><h2>Our Strengths</h2><ul>");
             for s in &card.strengths {
-                html.push_str(&format!("<li><strong>{}</strong>: {}</li>", s.title, s.description));
+                html.push_str(&format!(
+                    "<li><strong>{}</strong>: {}</li>",
+                    s.title, s.description
+                ));
             }
             html.push_str("</ul></section>");
         }
@@ -229,13 +253,13 @@ impl BattlecardDistributor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::battlecards::kill_shot::KillShot;
+    use crate::battlecards::win_loss_analyzer::LossReason;
     use crate::battlecards::{
         BattlecardData, FeatureCategory, FeatureComparisonData, FeatureMatrixSection, NewsItem,
         ObjectionHandlerPair, PositioningSection, PricingSection, StrengthItem, WeaknessItem,
         WinLossSection,
     };
-    use crate::battlecards::kill_shot::KillShot;
-    use crate::battlecards::win_loss_analyzer::LossReason;
 
     fn sample_battlecard() -> BattlecardData {
         BattlecardData {

@@ -41,7 +41,11 @@ pub struct ExternalExposure {
 }
 
 impl ExternalExposure {
-    pub fn new(asset_id: Uuid, asset_identifier: impl Into<String>, exposure_type: ExposureType) -> Self {
+    pub fn new(
+        asset_id: Uuid,
+        asset_identifier: impl Into<String>,
+        exposure_type: ExposureType,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -571,7 +575,8 @@ impl AttackSurfaceAssessment {
         self.overall_score = (exposure_score * 0.3
             + vuln_score * 0.35
             + config_score * 0.2
-            + shadow_it_score * 0.15).min(1.0);
+            + shadow_it_score * 0.15)
+            .min(1.0);
 
         self.update_risk_distribution();
     }
@@ -581,15 +586,15 @@ impl AttackSurfaceAssessment {
             return 0.0;
         }
 
-        let total: f64 = self.exposures.iter()
-            .map(|e| {
-                match e.severity {
-                    SeverityLevel::Critical => 1.0,
-                    SeverityLevel::High => 0.75,
-                    SeverityLevel::Medium => 0.5,
-                    SeverityLevel::Low => 0.25,
-                    SeverityLevel::Info => 0.1,
-                }
+        let total: f64 = self
+            .exposures
+            .iter()
+            .map(|e| match e.severity {
+                SeverityLevel::Critical => 1.0,
+                SeverityLevel::High => 0.75,
+                SeverityLevel::Medium => 0.5,
+                SeverityLevel::Low => 0.25,
+                SeverityLevel::Info => 0.1,
             })
             .sum();
 
@@ -601,7 +606,9 @@ impl AttackSurfaceAssessment {
             return 0.0;
         }
 
-        let total: f64 = self.vulnerabilities.iter()
+        let total: f64 = self
+            .vulnerabilities
+            .iter()
             .map(|v| {
                 let sev_score: f64 = match v.severity {
                     SeverityLevel::Critical => 1.0,
@@ -630,15 +637,15 @@ impl AttackSurfaceAssessment {
             return 0.0;
         }
 
-        let total: f64 = self.misconfigurations.iter()
-            .map(|m| {
-                match m.severity {
-                    SeverityLevel::Critical => 1.0,
-                    SeverityLevel::High => 0.75,
-                    SeverityLevel::Medium => 0.5,
-                    SeverityLevel::Low => 0.25,
-                    SeverityLevel::Info => 0.1,
-                }
+        let total: f64 = self
+            .misconfigurations
+            .iter()
+            .map(|m| match m.severity {
+                SeverityLevel::Critical => 1.0,
+                SeverityLevel::High => 0.75,
+                SeverityLevel::Medium => 0.5,
+                SeverityLevel::Low => 0.25,
+                SeverityLevel::Info => 0.1,
             })
             .sum();
 
@@ -650,9 +657,7 @@ impl AttackSurfaceAssessment {
             return 0.0;
         }
 
-        let total: f64 = self.shadow_it.iter()
-            .map(|s| s.risk_score)
-            .sum();
+        let total: f64 = self.shadow_it.iter().map(|s| s.risk_score).sum();
 
         (total / self.shadow_it.len() as f64).min(1.0)
     }
@@ -693,7 +698,12 @@ impl AttackSurfaceAssessment {
             }
         }
 
-        self.risk_distribution = RiskDistribution { critical, high, medium, low };
+        self.risk_distribution = RiskDistribution {
+            critical,
+            high,
+            medium,
+            low,
+        };
     }
 }
 
@@ -778,32 +788,43 @@ impl AttackSurfaceAnalyzer {
 
     /// Add an exposure to an assessment.
     pub fn add_exposure(&mut self, assessment_id: Uuid, exposure: ExternalExposure) -> Result<()> {
-        let assessment = self.assessments
+        let assessment = self
+            .assessments
             .get_mut(&assessment_id)
             .ok_or_else(|| ThreatIntelError::attack_surface("Assessment not found"))?;
-        
+
         assessment.exposures.push(exposure);
         assessment.calculate_overall_score();
         Ok(())
     }
 
     /// Add a vulnerability to an assessment.
-    pub fn add_vulnerability(&mut self, assessment_id: Uuid, vulnerability: Vulnerability) -> Result<()> {
-        let assessment = self.assessments
+    pub fn add_vulnerability(
+        &mut self,
+        assessment_id: Uuid,
+        vulnerability: Vulnerability,
+    ) -> Result<()> {
+        let assessment = self
+            .assessments
             .get_mut(&assessment_id)
             .ok_or_else(|| ThreatIntelError::attack_surface("Assessment not found"))?;
-        
+
         assessment.vulnerabilities.push(vulnerability);
         assessment.calculate_overall_score();
         Ok(())
     }
 
     /// Add a misconfiguration to an assessment.
-    pub fn add_misconfiguration(&mut self, assessment_id: Uuid, misconfiguration: Misconfiguration) -> Result<()> {
-        let assessment = self.assessments
+    pub fn add_misconfiguration(
+        &mut self,
+        assessment_id: Uuid,
+        misconfiguration: Misconfiguration,
+    ) -> Result<()> {
+        let assessment = self
+            .assessments
             .get_mut(&assessment_id)
             .ok_or_else(|| ThreatIntelError::attack_surface("Assessment not found"))?;
-        
+
         assessment.misconfigurations.push(misconfiguration);
         assessment.calculate_overall_score();
         Ok(())
@@ -811,28 +832,47 @@ impl AttackSurfaceAnalyzer {
 
     /// Add a shadow IT asset to an assessment.
     pub fn add_shadow_it(&mut self, assessment_id: Uuid, asset: ShadowITAsset) -> Result<()> {
-        let assessment = self.assessments
+        let assessment = self
+            .assessments
             .get_mut(&assessment_id)
             .ok_or_else(|| ThreatIntelError::attack_surface("Assessment not found"))?;
-        
+
         assessment.shadow_it.push(asset);
         assessment.calculate_overall_score();
         Ok(())
     }
 
     /// Get vulnerabilities by severity.
-    pub fn get_vulnerabilities_by_severity(&self, assessment_id: Uuid, severity: SeverityLevel) -> Vec<&Vulnerability> {
+    pub fn get_vulnerabilities_by_severity(
+        &self,
+        assessment_id: Uuid,
+        severity: SeverityLevel,
+    ) -> Vec<&Vulnerability> {
         self.assessments
             .get(&assessment_id)
-            .map(|a| a.vulnerabilities.iter().filter(|v| v.severity == severity).collect())
+            .map(|a| {
+                a.vulnerabilities
+                    .iter()
+                    .filter(|v| v.severity == severity)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     /// Get exposures by type.
-    pub fn get_exposures_by_type(&self, assessment_id: Uuid, exposure_type: ExposureType) -> Vec<&ExternalExposure> {
+    pub fn get_exposures_by_type(
+        &self,
+        assessment_id: Uuid,
+        exposure_type: ExposureType,
+    ) -> Vec<&ExternalExposure> {
         self.assessments
             .get(&assessment_id)
-            .map(|a| a.exposures.iter().filter(|e| e.exposure_type == exposure_type).collect())
+            .map(|a| {
+                a.exposures
+                    .iter()
+                    .filter(|e| e.exposure_type == exposure_type)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -903,7 +943,11 @@ impl AttackSurfaceAnalyzer {
         }
 
         // Sort by priority score descending
-        items.sort_by(|a, b| b.priority_score.partial_cmp(&a.priority_score).unwrap_or(std::cmp::Ordering::Equal));
+        items.sort_by(|a, b| {
+            b.priority_score
+                .partial_cmp(&a.priority_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         items
     }
 
@@ -1023,19 +1067,16 @@ impl ShadowITAsset {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_exposure_creation() {
-        let exposure = ExternalExposure::new(
-            Uuid::new_v4(),
-            "api.example.com",
-            ExposureType::PublicApi,
-        )
-        .with_severity(SeverityLevel::High)
-        .with_port(443);
+        let exposure =
+            ExternalExposure::new(Uuid::new_v4(), "api.example.com", ExposureType::PublicApi)
+                .with_severity(SeverityLevel::High)
+                .with_port(443);
 
         assert_eq!(exposure.asset_identifier, "api.example.com");
         assert_eq!(exposure.exposure_type, ExposureType::PublicApi);
@@ -1058,8 +1099,7 @@ mod tests {
 
     #[test]
     fn test_vulnerability_cvss_severity() {
-        let vuln = Vulnerability::new("Test Vulnerability")
-            .with_cvss(9.5);
+        let vuln = Vulnerability::new("Test Vulnerability").with_cvss(9.5);
 
         assert_eq!(vuln.severity, SeverityLevel::Critical);
         assert!(vuln.cvss_score.is_some());
@@ -1072,8 +1112,14 @@ mod tests {
             "Missing MFA on admin portal",
         );
 
-        assert_eq!(misconfig.misconfiguration_type, MisconfigurationType::WeakAuthentication);
-        assert_eq!(misconfig.severity, MisconfigurationType::WeakAuthentication.severity_default());
+        assert_eq!(
+            misconfig.misconfiguration_type,
+            MisconfigurationType::WeakAuthentication
+        );
+        assert_eq!(
+            misconfig.severity,
+            MisconfigurationType::WeakAuthentication.severity_default()
+        );
     }
 
     #[test]
@@ -1119,10 +1165,8 @@ mod tests {
         let assessment_id = analyzer.create_assessment(org_id);
 
         // Add multiple vulnerabilities
-        let vuln1 = Vulnerability::new("Critical CVE")
-            .with_cvss(9.8);
-        let vuln2 = Vulnerability::new("Medium CVE")
-            .with_cvss(5.5);
+        let vuln1 = Vulnerability::new("Critical CVE").with_cvss(9.8);
+        let vuln2 = Vulnerability::new("Medium CVE").with_cvss(5.5);
 
         analyzer.add_vulnerability(assessment_id, vuln1).unwrap();
         analyzer.add_vulnerability(assessment_id, vuln2).unwrap();
@@ -1138,8 +1182,7 @@ mod tests {
         let org_id = Uuid::new_v4();
         let assessment_id = analyzer.create_assessment(org_id);
 
-        let vuln = Vulnerability::new("Critical")
-            .with_cvss(9.5);
+        let vuln = Vulnerability::new("Critical").with_cvss(9.5);
         analyzer.add_vulnerability(assessment_id, vuln).unwrap();
 
         let critical = analyzer.get_all_critical_findings();
@@ -1149,7 +1192,10 @@ mod tests {
     #[test]
     fn test_exposure_type_conversion() {
         assert_eq!(ExposureType::PublicApi.as_str(), "public_api");
-        assert_eq!(ExposureType::CloudMisconfiguration.as_str(), "cloud_misconfiguration");
+        assert_eq!(
+            ExposureType::CloudMisconfiguration.as_str(),
+            "cloud_misconfiguration"
+        );
     }
 
     #[test]

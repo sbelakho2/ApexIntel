@@ -3,7 +3,7 @@
 //! - `GET /api/threat-intel` — returns threat intelligence assessments
 
 use crate::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sqlx::Row;
 use std::time::Instant;
 use uuid::Uuid;
@@ -60,7 +60,9 @@ pub(crate) async fn get_threat_intel(
             tracing::error!(request_id = %request_id, "get_threat_intel query failed: {err:#}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_response(ApiError::internal("Failed to fetch threat intelligence"))),
+                Json(error_response(ApiError::internal(
+                    "Failed to fetch threat intelligence",
+                ))),
             );
         }
     };

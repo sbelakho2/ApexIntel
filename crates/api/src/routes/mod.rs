@@ -892,7 +892,7 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
     ]
 }
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub fn openapi_spec() -> Value {
     let mut paths = Map::new();
     for endpoint in all_endpoints() {

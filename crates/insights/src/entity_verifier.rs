@@ -224,8 +224,7 @@ impl EntityVerifier {
         };
 
         // Cache the result
-        self.verification_cache
-            .put(cache_key, result.clone());
+        self.verification_cache.put(cache_key, result.clone());
 
         result
     }
@@ -253,8 +252,8 @@ impl EntityVerifier {
         if let Some(dot_pos) = domain.rfind('.') {
             let tld = &domain[dot_pos + 1..];
             let valid_tlds = [
-                "com", "org", "net", "io", "ai", "co", "de", "fr", "jp", "cn",
-                "sg", "tw", "uk", "eu", "gov", "edu",
+                "com", "org", "net", "io", "ai", "co", "de", "fr", "jp", "cn", "sg", "tw", "uk",
+                "eu", "gov", "edu",
             ];
             valid_tlds.contains(&tld) && domain.len() > 4
         } else {
@@ -317,14 +316,13 @@ impl EntityVerifier {
 
         // Stopword set: common words that aren't company names
         let stopwords: std::collections::HashSet<&str> = [
-            "the", "this", "that", "these", "those", "there", "their", "they",
-            "have", "has", "had", "been", "being", "some", "any", "each",
-            "every", "both", "few", "more", "most", "other", "into", "over",
-            "such", "only", "own", "same", "than", "very", "just", "also",
-            "about", "above", "below", "between", "through", "during",
-            "before", "after", "where", "which", "what", "when", "why", "how",
-            "who", "whom", "with", "without",
-        ].into();
+            "the", "this", "that", "these", "those", "there", "their", "they", "have", "has",
+            "had", "been", "being", "some", "any", "each", "every", "both", "few", "more", "most",
+            "other", "into", "over", "such", "only", "own", "same", "than", "very", "just", "also",
+            "about", "above", "below", "between", "through", "during", "before", "after", "where",
+            "which", "what", "when", "why", "how", "who", "whom", "with", "without",
+        ]
+        .into();
 
         // If ALL words are stopwords, this is not a company name
         if !words.is_empty() && words.iter().all(|w| stopwords.contains(w)) {
@@ -333,12 +331,37 @@ impl EntityVerifier {
 
         // Exclusion list: common locations and phrases
         let exclusion_list: std::collections::HashSet<&str> = [
-            "new york", "los angeles", "chicago", "houston", "london", "paris",
-            "tokyo", "beijing", "shanghai", "hong kong", "singapore", "dubai",
-            "san francisco", "washington", "boston", "seattle", "miami", "dallas",
-            "berlin", "munich", "milan", "rome", "madrid", "toronto", "sydney",
-            "melbourne", "mumbai", "delhi", "bangalore",
-        ].into();
+            "new york",
+            "los angeles",
+            "chicago",
+            "houston",
+            "london",
+            "paris",
+            "tokyo",
+            "beijing",
+            "shanghai",
+            "hong kong",
+            "singapore",
+            "dubai",
+            "san francisco",
+            "washington",
+            "boston",
+            "seattle",
+            "miami",
+            "dallas",
+            "berlin",
+            "munich",
+            "milan",
+            "rome",
+            "madrid",
+            "toronto",
+            "sydney",
+            "melbourne",
+            "mumbai",
+            "delhi",
+            "bangalore",
+        ]
+        .into();
         if exclusion_list.contains(lower.as_str()) {
             return 0.0;
         }
@@ -347,8 +370,20 @@ impl EntityVerifier {
 
         // Check for company suffix
         let suffixes = [
-            "inc", "corp", "ltd", "llc", "plc", "gmbh", "sarl", "ag", "kg",
-            "limited", "incorporated", "corporation", "company", "co",
+            "inc",
+            "corp",
+            "ltd",
+            "llc",
+            "plc",
+            "gmbh",
+            "sarl",
+            "ag",
+            "kg",
+            "limited",
+            "incorporated",
+            "corporation",
+            "company",
+            "co",
         ];
         let words: Vec<&str> = lower.split_whitespace().collect();
         let has_suffix = words
@@ -363,7 +398,11 @@ impl EntityVerifier {
             .split_whitespace()
             .filter(|w| {
                 let chars: Vec<char> = w.chars().collect();
-                chars.len() > 1 && chars[0].is_uppercase() && chars[1..].iter().all(|c| c.is_lowercase() || !c.is_alphabetic())
+                chars.len() > 1
+                    && chars[0].is_uppercase()
+                    && chars[1..]
+                        .iter()
+                        .all(|c| c.is_lowercase() || !c.is_alphabetic())
             })
             .collect();
         if titlecase_words.len() >= 2 {
@@ -428,7 +467,11 @@ mod tests {
     fn test_heuristic_check_passes_good_name() {
         let verifier = EntityVerifier::new();
         let score = verifier.heuristic_check("NVIDIA Corporation");
-        assert!(score > 0.5, "NVIDIA Corporation should score > 0.5, got {:.2}", score);
+        assert!(
+            score > 0.5,
+            "NVIDIA Corporation should score > 0.5, got {:.2}",
+            score
+        );
     }
 
     #[test]
@@ -496,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn test_verify_ticker_known() {
         let verifier = EntityVerifier::new();
         let result = verifier.verify_ticker("NASDAQ", "NVDA");
@@ -528,7 +571,10 @@ mod tests {
         let result1 = verifier.verify(&candidate);
         let result2 = verifier.verify(&candidate);
         assert_eq!(result1.confidence, result2.confidence);
-        assert_eq!(result1.verification_methods.len(), result2.verification_methods.len());
+        assert_eq!(
+            result1.verification_methods.len(),
+            result2.verification_methods.len()
+        );
     }
 
     #[test]

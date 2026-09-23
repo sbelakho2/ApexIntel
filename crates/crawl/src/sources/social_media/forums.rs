@@ -21,15 +21,23 @@ pub struct ForumSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForumType {
-    Reddit, HackerNews, StackExchange, Discord, Irc, CustomForum,
+    Reddit,
+    HackerNews,
+    StackExchange,
+    Discord,
+    Irc,
+    CustomForum,
 }
 
 impl ForumType {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Reddit => "reddit", Self::HackerNews => "hacker_news",
-            Self::StackExchange => "stack_exchange", Self::Discord => "discord",
-            Self::Irc => "irc", Self::CustomForum => "custom_forum",
+            Self::Reddit => "reddit",
+            Self::HackerNews => "hacker_news",
+            Self::StackExchange => "stack_exchange",
+            Self::Discord => "discord",
+            Self::Irc => "irc",
+            Self::CustomForum => "custom_forum",
         }
     }
 }
@@ -94,19 +102,33 @@ impl ForumMonitor {
             .user_agent("ApexIntel/1.0 (+https://apexintel.io) Forum Monitor")
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { client, config, sources: Self::default_sources() }
+        Self {
+            client,
+            config,
+            sources: Self::default_sources(),
+        }
     }
 
     fn default_sources() -> Vec<ForumSource> {
         vec![
-            ForumSource { source_id: "reddit-defense".to_string(), name: "r/Defense".to_string(),
+            ForumSource {
+                source_id: "reddit-defense".to_string(),
+                name: "r/Defense".to_string(),
                 url: "https://www.reddit.com/r/Defense/.rss".to_string(),
-                forum_type: ForumType::Reddit, region: "global".to_string(),
-                topics: vec!["defense".to_string()], enabled: true },
-            ForumSource { source_id: "reddit-tech".to_string(), name: "r/tech".to_string(),
+                forum_type: ForumType::Reddit,
+                region: "global".to_string(),
+                topics: vec!["defense".to_string()],
+                enabled: true,
+            },
+            ForumSource {
+                source_id: "reddit-tech".to_string(),
+                name: "r/tech".to_string(),
                 url: "https://www.reddit.com/r/tech/.rss".to_string(),
-                forum_type: ForumType::Reddit, region: "global".to_string(),
-                topics: vec!["technology".to_string()], enabled: true },
+                forum_type: ForumType::Reddit,
+                region: "global".to_string(),
+                topics: vec!["technology".to_string()],
+                enabled: true,
+            },
         ]
     }
 
@@ -125,14 +147,16 @@ impl ForumMonitor {
 
     async fn fetch_rss(&self, url: &str) -> Result<Vec<ForumRssItem>> {
         let resp = self.client.get(url).send().await?;
-        if !resp.status().is_success() { return Ok(Vec::new()); }
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
         let body = resp.text().await?;
         self.parse_rss(&body)
     }
 
     fn parse_rss(&self, xml: &str) -> Result<Vec<ForumRssItem>> {
-        use quick_xml::Reader;
         use quick_xml::events::Event;
+        use quick_xml::Reader;
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
         let mut items = Vec::new();
@@ -148,18 +172,31 @@ impl ForumMonitor {
             match reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if tag == "item" { in_item = true; }
-                    else if in_item { current_tag = tag; }
+                    if tag == "item" {
+                        in_item = true;
+                    } else if in_item {
+                        current_tag = tag;
+                    }
                 }
                 Ok(Event::End(e)) => {
                     let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                     if tag == "item" {
                         items.push(ForumRssItem {
-                            title: title.clone(), description: description.clone(),
-                            link: link.clone(), guid: if guid.is_empty() { link.clone() } else { guid.clone() },
+                            title: title.clone(),
+                            description: description.clone(),
+                            link: link.clone(),
+                            guid: if guid.is_empty() {
+                                link.clone()
+                            } else {
+                                guid.clone()
+                            },
                             author: author.clone(),
                         });
-                        title.clear(); description.clear(); link.clear(); guid.clear(); author = None;
+                        title.clear();
+                        description.clear();
+                        link.clear();
+                        guid.clear();
+                        author = None;
                         in_item = false;
                     }
                 }
@@ -167,9 +204,12 @@ impl ForumMonitor {
                     if in_item {
                         let text = e.unescape().unwrap_or_default().to_string();
                         match current_tag.as_str() {
-                            "title" => title = text, "description" => description = text,
-                            "link" => link = text, "guid" => guid = text,
-                            "author" | "dc:creator" => author = Some(text), _ => {}
+                            "title" => title = text,
+                            "description" => description = text,
+                            "link" => link = text,
+                            "guid" => guid = text,
+                            "author" | "dc:creator" => author = Some(text),
+                            _ => {}
                         }
                     }
                 }
@@ -182,39 +222,82 @@ impl ForumMonitor {
     }
 
     fn items_to_mentions(&self, items: &[ForumRssItem], source: &ForumSource) -> Vec<ForumMention> {
-        items.iter().filter_map(|item| {
-            let combined = format!("{} {}", item.title, item.description).to_lowercase();
-            let entities: Vec<String> = self.config.tracked_entities.iter()
-                .filter(|e| combined.contains(&e.to_lowercase())).cloned().collect();
-            let keywords: Vec<String> = self.config.tracked_keywords.iter()
-                .filter(|kw| combined.contains(&kw.to_lowercase())).cloned().collect();
-            if entities.is_empty() && keywords.is_empty() { return None; }
-            Some(ForumMention {
-                mention_id: format!("{}-{}-{}", source.source_id, item.guid, Utc::now().timestamp()),
-                source_id: source.source_id.clone(), source_name: source.name.clone(),
-                source_type: source.forum_type, author: item.author.clone(),
-                title: item.title.clone(),
-                content_preview: item.description.chars().take(200).collect(),
-                url: item.link.clone(), score: None, comment_count: None,
-                published_at: Some(Utc::now()), matched_entities: entities,
-                matched_keywords: keywords, fetched_at: Utc::now(),
+        items
+            .iter()
+            .filter_map(|item| {
+                let combined = format!("{} {}", item.title, item.description).to_lowercase();
+                let entities: Vec<String> = self
+                    .config
+                    .tracked_entities
+                    .iter()
+                    .filter(|e| combined.contains(&e.to_lowercase()))
+                    .cloned()
+                    .collect();
+                let keywords: Vec<String> = self
+                    .config
+                    .tracked_keywords
+                    .iter()
+                    .filter(|kw| combined.contains(&kw.to_lowercase()))
+                    .cloned()
+                    .collect();
+                if entities.is_empty() && keywords.is_empty() {
+                    return None;
+                }
+                Some(ForumMention {
+                    mention_id: format!(
+                        "{}-{}-{}",
+                        source.source_id,
+                        item.guid,
+                        Utc::now().timestamp()
+                    ),
+                    source_id: source.source_id.clone(),
+                    source_name: source.name.clone(),
+                    source_type: source.forum_type,
+                    author: item.author.clone(),
+                    title: item.title.clone(),
+                    content_preview: item.description.chars().take(200).collect(),
+                    url: item.link.clone(),
+                    score: None,
+                    comment_count: None,
+                    published_at: Some(Utc::now()),
+                    matched_entities: entities,
+                    matched_keywords: keywords,
+                    fetched_at: Utc::now(),
+                })
             })
-        }).collect()
+            .collect()
     }
 
-    pub fn mentions_for_entity<'a>(&self, mentions: &'a [ForumMention], entity: &str) -> Vec<&'a ForumMention> {
-        mentions.iter().filter(|m| m.matched_entities.iter().any(|e| e.to_lowercase() == entity.to_lowercase())).collect()
+    pub fn mentions_for_entity<'a>(
+        &self,
+        mentions: &'a [ForumMention],
+        entity: &str,
+    ) -> Vec<&'a ForumMention> {
+        mentions
+            .iter()
+            .filter(|m| {
+                m.matched_entities
+                    .iter()
+                    .any(|e| e.to_lowercase() == entity.to_lowercase())
+            })
+            .collect()
     }
 
     pub fn trending_mentions<'a>(&self, mentions: &'a [ForumMention]) -> Vec<&'a ForumMention> {
         mentions.iter().filter(|m| m.is_trending()).collect()
     }
 
-    pub fn source_count(&self) -> usize { self.sources.len() }
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
 }
 
 struct ForumRssItem {
-    title: String, description: String, link: String, guid: String, author: Option<String>,
+    title: String,
+    description: String,
+    link: String,
+    guid: String,
+    author: Option<String>,
 }
 
 #[cfg(test)]
@@ -229,10 +312,15 @@ mod tests {
 
     #[test]
     fn forum_monitor_chaining() {
-        let cfg = ForumMonitorConfig { tracked_entities: vec!["Lockheed Martin".to_string()],
-            tracked_keywords: vec!["F-35".to_string()], custom_feeds: vec![],
-            max_results: 50 };
-        assert!(cfg.tracked_entities.contains(&"Lockheed Martin".to_string()));
+        let cfg = ForumMonitorConfig {
+            tracked_entities: vec!["Lockheed Martin".to_string()],
+            tracked_keywords: vec!["F-35".to_string()],
+            custom_feeds: vec![],
+            max_results: 50,
+        };
+        assert!(cfg
+            .tracked_entities
+            .contains(&"Lockheed Martin".to_string()));
     }
 
     #[test]
@@ -242,12 +330,22 @@ mod tests {
 
     #[test]
     fn forum_mention_is_trending() {
-        let m = ForumMention { mention_id: "test".to_string(), source_id: "r".to_string(),
-            source_name: "r/Defense".to_string(), source_type: ForumType::Reddit,
-            author: Some("user".to_string()), title: "Test".to_string(),
-            content_preview: "...".to_string(), url: "https://".to_string(),
-            score: Some(500), comment_count: None, published_at: Some(Utc::now()),
-            matched_entities: vec![], matched_keywords: vec![], fetched_at: Utc::now() };
+        let m = ForumMention {
+            mention_id: "test".to_string(),
+            source_id: "r".to_string(),
+            source_name: "r/Defense".to_string(),
+            source_type: ForumType::Reddit,
+            author: Some("user".to_string()),
+            title: "Test".to_string(),
+            content_preview: "...".to_string(),
+            url: "https://".to_string(),
+            score: Some(500),
+            comment_count: None,
+            published_at: Some(Utc::now()),
+            matched_entities: vec![],
+            matched_keywords: vec![],
+            fetched_at: Utc::now(),
+        };
         assert!(m.is_trending());
     }
 }

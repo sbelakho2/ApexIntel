@@ -32,7 +32,7 @@
 //! reports (material events) feed the insight engine; 10-K annual reports feed
 //! company enrichment.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -99,7 +99,10 @@ impl SecFiling {
     pub fn summary(&self) -> String {
         match &self.description {
             Some(desc) if !desc.is_empty() => {
-                format!("SEC {} filing ({}): {}", self.form_type, self.filing_date, desc)
+                format!(
+                    "SEC {} filing ({}): {}",
+                    self.form_type, self.filing_date, desc
+                )
             }
             _ => format!("SEC {} filing ({})", self.form_type, self.filing_date),
         }
@@ -125,7 +128,8 @@ impl Default for SecEdgarClient {
 impl SecEdgarClient {
     /// Create a new SEC EDGAR client with the required User-Agent.
     pub fn new() -> Self {
-        let email = std::env::var("SEC_EDGAR_EMAIL").unwrap_or_else(|_| SEC_USER_AGENT_EMAIL.to_string());
+        let email =
+            std::env::var("SEC_EDGAR_EMAIL").unwrap_or_else(|_| SEC_USER_AGENT_EMAIL.to_string());
         let ua = format!("ApexIntel-Research research@{email}");
         let client = reqwest::Client::builder()
             .user_agent(ua)
@@ -163,11 +167,7 @@ impl SecEdgarClient {
     /// `cik` may be with or without leading zeros. Returns only filings of the
     /// tracked form types (8-K, 10-K, 10-Q, DEF 14A, Form 3/4/5), limited to
     /// `limit` most recent filings.
-    pub async fn fetch_recent_filings(
-        &self,
-        cik: &str,
-        limit: usize,
-    ) -> Result<Vec<SecFiling>> {
+    pub async fn fetch_recent_filings(&self, cik: &str, limit: usize) -> Result<Vec<SecFiling>> {
         let padded_cik = format_cik(cik.parse::<u64>().unwrap_or(0));
         let url = format!("https://data.sec.gov/submissions/CIK{padded_cik}.json");
 
@@ -192,9 +192,16 @@ impl SecEdgarClient {
         let filing_dates: Vec<&str> = recent.filing_date.iter().map(|s| s.as_str()).collect();
         let accessions: Vec<&str> = recent.accession_number.iter().map(|s| s.as_str()).collect();
         let primary_docs: Vec<&str> = recent.primary_document.iter().map(|s| s.as_str()).collect();
-        let primary_descs: Vec<&str> = recent.primary_doc_description.iter().map(|s| s.as_str()).collect();
+        let primary_descs: Vec<&str> = recent
+            .primary_doc_description
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
 
-        let count = form_types.len().min(filing_dates.len()).min(accessions.len());
+        let count = form_types
+            .len()
+            .min(filing_dates.len())
+            .min(accessions.len());
         for i in 0..count {
             let form = form_types[i];
             if !TRACKED_FORM_TYPES.contains(&form) {
@@ -203,7 +210,9 @@ impl SecEdgarClient {
             let accession = accessions[i];
             let accession_no_dash = accession.replace('-', "");
             let doc = primary_docs.get(i).copied().unwrap_or("");
-            let doc_url = format!("https://www.sec.gov/Archives/edgar/data/{padded_cik}/{accession_no_dash}/{doc}");
+            let doc_url = format!(
+                "https://www.sec.gov/Archives/edgar/data/{padded_cik}/{accession_no_dash}/{doc}"
+            );
 
             filings.push(SecFiling {
                 accession_number: accession.to_string(),
@@ -241,7 +250,10 @@ impl SecEdgarClient {
             }
         };
         let filings = self.fetch_recent_filings(&cik, limit).await?;
-        Ok(filings.into_iter().map(|f| f.to_observation(entity_id)).collect())
+        Ok(filings
+            .into_iter()
+            .map(|f| f.to_observation(entity_id))
+            .collect())
     }
 }
 
@@ -302,7 +314,8 @@ mod tests {
             form_type: "8-K".to_string(),
             filing_date: "2024-01-15".to_string(),
             report_date: None,
-            primary_document_url: "https://www.sec.gov/Archives/edgar/data/0000320193/...".to_string(),
+            primary_document_url: "https://www.sec.gov/Archives/edgar/data/0000320193/..."
+                .to_string(),
             description: Some("Item 8.01 - Other Events".to_string()),
             cik: "0000320193".to_string(),
             company_name: "Apple Inc.".to_string(),

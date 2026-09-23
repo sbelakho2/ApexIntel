@@ -5,16 +5,15 @@
 use std::time::Duration;
 
 use apex_crawl::{
-    CachedContent, CircuitState, ContentCache, CrawlError,
-    CrawlFailureCategory, HealthConfig, HealthStatus,
-    RetryConfig, RetryEngine, SourceHealthMonitor,
+    CachedContent, CircuitState, ContentCache, CrawlError, CrawlFailureCategory, HealthConfig,
+    HealthStatus, RetryConfig, RetryEngine, SourceHealthMonitor,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Retry Engine Integration Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod retry_engine_tests {
     use super::*;
 
@@ -119,7 +118,7 @@ mod retry_engine_tests {
 // Content Cache Integration Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod content_cache_tests {
     use super::*;
 
@@ -232,7 +231,7 @@ mod content_cache_tests {
 // Source Health Monitor Integration Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod source_health_tests {
     use super::*;
 
@@ -266,8 +265,11 @@ mod source_health_tests {
             message: "connection timeout".to_string(),
             category: CrawlFailureCategory::Timeout,
         };
-        let result =
-            apex_crawl::source_health::CrawlResult::failure("failing-source".to_string(), "https://example.com".to_string(), &error);
+        let result = apex_crawl::source_health::CrawlResult::failure(
+            "failing-source".to_string(),
+            "https://example.com".to_string(),
+            &error,
+        );
         monitor.record_failure(result).await;
 
         let metrics = monitor.get_metrics("failing-source").await;
@@ -354,7 +356,7 @@ mod source_health_tests {
 // Error Handling Integration Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod error_handling_tests {
     use super::*;
 
@@ -436,7 +438,10 @@ mod error_handling_tests {
             retry_after_secs: Some(120),
             body_excerpt: None,
         };
-        assert_eq!(error_with_retry.retry_after(), Some(Duration::from_secs(120)));
+        assert_eq!(
+            error_with_retry.retry_after(),
+            Some(Duration::from_secs(120))
+        );
 
         let error_without_retry = CrawlError::HttpStatus {
             url: "https://example.com".to_string(),
@@ -452,7 +457,7 @@ mod error_handling_tests {
 // End-to-End Workflow Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod e2e_workflow_tests {
     use super::*;
 
@@ -475,8 +480,11 @@ mod e2e_workflow_tests {
                 message: "timeout".to_string(),
                 category: CrawlFailureCategory::Timeout,
             };
-            let result =
-                apex_crawl::source_health::CrawlResult::failure("dying-source".to_string(), "https://dying.com".to_string(), &error);
+            let result = apex_crawl::source_health::CrawlResult::failure(
+                "dying-source".to_string(),
+                "https://dying.com".to_string(),
+                &error,
+            );
             monitor.record_failure(result).await;
         }
 
@@ -490,8 +498,11 @@ mod e2e_workflow_tests {
             message: "timeout".to_string(),
             category: CrawlFailureCategory::Timeout,
         };
-        let result =
-            apex_crawl::source_health::CrawlResult::failure("dying-source".to_string(), "https://dying.com".to_string(), &error);
+        let result = apex_crawl::source_health::CrawlResult::failure(
+            "dying-source".to_string(),
+            "https://dying.com".to_string(),
+            &error,
+        );
         monitor.record_failure(result).await;
 
         // Process retirements
@@ -514,8 +525,11 @@ mod e2e_workflow_tests {
             message: "timeout".to_string(),
             category: CrawlFailureCategory::Timeout,
         };
-        let result =
-            apex_crawl::source_health::CrawlResult::failure("revival-source".to_string(), "https://example.com".to_string(), &error);
+        let result = apex_crawl::source_health::CrawlResult::failure(
+            "revival-source".to_string(),
+            "https://example.com".to_string(),
+            &error,
+        );
         monitor.record_failure(result).await;
 
         // Revive the source

@@ -101,16 +101,24 @@
 //! - Built-in bias detection and confidence calibration
 
 pub mod company_intelligence;
+pub mod geopolitical_risk;
+pub mod market_opportunity;
 pub mod person_deep_dive;
 pub mod supply_chain_threat;
-pub mod market_opportunity;
-pub mod geopolitical_risk;
 
 // Re-export workflow types
 pub use company_intelligence::{
     CompanyIntelligenceReport, CompanyIntelligenceWorkflow, CompetitorAnalysis,
     FinancialHealthAssessment, LeadershipAnalysis, StrategicOpportunity, SupplyChainRisk,
     ThreatAssessment, WorkflowResult,
+};
+pub use geopolitical_risk::{
+    GeopoliticalRiskReport, GeopoliticalRiskWorkflow, PoliticalStability, RegionalRiskScore,
+    SanctionsExposure, TradePolicyImpact,
+};
+pub use market_opportunity::{
+    CompetitorWeakness, MarketOpportunityReport, MarketOpportunityWorkflow, MarketTiming,
+    ProcurementSignal, StrategicEntryPoint,
 };
 pub use person_deep_dive::{
     EngagementStrategy, NetworkMapping, PersonDeepDiveReport, PersonDeepDiveWorkflow,
@@ -119,12 +127,4 @@ pub use person_deep_dive::{
 pub use supply_chain_threat::{
     AlternativeSupplier, ConcentrationRisk, FinancialStability, GeographicRisk,
     SinglePointOfFailure, SupplyChainThreatReport, SupplyChainThreatWorkflow,
-};
-pub use market_opportunity::{
-    CompetitorWeakness, MarketOpportunityReport, MarketOpportunityWorkflow,
-    MarketTiming, ProcurementSignal, StrategicEntryPoint,
-};
-pub use geopolitical_risk::{
-    GeopoliticalRiskReport, GeopoliticalRiskWorkflow, PoliticalStability,
-    RegionalRiskScore, SanctionsExposure, TradePolicyImpact,
 };

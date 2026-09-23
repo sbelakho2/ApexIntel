@@ -46,11 +46,7 @@ impl TriageQueue {
     }
 
     /// Create a [`TriageQueue`] with custom weights and thresholds.
-    pub fn with_config(
-        pool: PgPool,
-        weights: TriageWeights,
-        thresholds: TriageThresholds,
-    ) -> Self {
+    pub fn with_config(pool: PgPool, weights: TriageWeights, thresholds: TriageThresholds) -> Self {
         Self {
             pool,
             weights,
@@ -167,7 +163,10 @@ impl TriageQueue {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| r.into_item(&self.thresholds)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| r.into_item(&self.thresholds))
+            .collect())
     }
 
     /// List items with optional status filter, ordered by priority.
@@ -203,7 +202,10 @@ impl TriageQueue {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| r.into_item(&self.thresholds)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| r.into_item(&self.thresholds))
+            .collect())
     }
 
     /// Count items, optionally filtered by status.
@@ -419,14 +421,14 @@ impl TriageQueue {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| r.into_item(&self.thresholds)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| r.into_item(&self.thresholds))
+            .collect())
     }
 
     /// Batch-update scores for items after LLM processing.
-    pub async fn batch_update_scores(
-        &self,
-        scores: Vec<(Uuid, TriageDimensions)>,
-    ) -> Result<u64> {
+    pub async fn batch_update_scores(&self, scores: Vec<(Uuid, TriageDimensions)>) -> Result<u64> {
         let mut updated = 0u64;
         for (id, dims) in scores {
             let score = composite_score(&dims, &self.weights);
@@ -512,7 +514,12 @@ pub trait TriageQueueProvider: Send + Sync {
 
     async fn batch_update_scores(&self, scores: Vec<(Uuid, TriageDimensions)>) -> Result<u64>;
 
-    async fn override_score(&self, id: Uuid, new_score: f64, overridden_by: &str) -> Result<TriageQueueItem>;
+    async fn override_score(
+        &self,
+        id: Uuid,
+        new_score: f64,
+        overridden_by: &str,
+    ) -> Result<TriageQueueItem>;
 
     async fn acknowledge(&self, id: Uuid) -> Result<TriageQueueItem>;
 
@@ -534,7 +541,17 @@ impl TriageQueueProvider for TriageQueue {
         static_severity: Option<&str>,
         dimensions: Option<&TriageDimensions>,
     ) -> Result<TriageQueueItem> {
-        self.enqueue(item_type, source_id, title, description, entity_id, entity_name, static_severity, dimensions).await
+        self.enqueue(
+            item_type,
+            source_id,
+            title,
+            description,
+            entity_id,
+            entity_name,
+            static_severity,
+            dimensions,
+        )
+        .await
     }
 
     async fn peek_top(&self, limit: usize) -> Result<Vec<TriageQueueItem>> {
@@ -570,7 +587,12 @@ impl TriageQueueProvider for TriageQueue {
         self.batch_update_scores(scores).await
     }
 
-    async fn override_score(&self, id: Uuid, new_score: f64, overridden_by: &str) -> Result<TriageQueueItem> {
+    async fn override_score(
+        &self,
+        id: Uuid,
+        new_score: f64,
+        overridden_by: &str,
+    ) -> Result<TriageQueueItem> {
         self.override_score(id, new_score, overridden_by).await
     }
 
@@ -717,7 +739,10 @@ mod tests {
     fn test_triage_status_from_str() {
         assert_eq!(TriageStatus::from_str("pending"), TriageStatus::Pending);
         assert_eq!(TriageStatus::from_str("triaged"), TriageStatus::Triaged);
-        assert_eq!(TriageStatus::from_str("acknowledged"), TriageStatus::Acknowledged);
+        assert_eq!(
+            TriageStatus::from_str("acknowledged"),
+            TriageStatus::Acknowledged
+        );
         assert_eq!(TriageStatus::from_str("resolved"), TriageStatus::Resolved);
         assert_eq!(TriageStatus::from_str("dismissed"), TriageStatus::Dismissed);
         assert_eq!(TriageStatus::from_str("unknown"), TriageStatus::Pending);

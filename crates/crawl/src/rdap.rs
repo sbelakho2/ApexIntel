@@ -233,7 +233,12 @@ impl RdapClient {
                 registrar = entity
                     .get("vcardArray")
                     .and_then(|v| Self::vcard_fn(Some(v)))
-                    .or_else(|| entity.get("handle").and_then(|v| v.as_str()).map(ToString::to_string));
+                    .or_else(|| {
+                        entity
+                            .get("handle")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string)
+                    });
             }
 
             // Abuse contact is typically nested under the registrar entity as
@@ -241,14 +246,14 @@ impl RdapClient {
             if abuse_contact.is_none() {
                 if let Some(nested) = entity.get("entities").and_then(|v| v.as_array()) {
                     for sub in nested {
-                        let is_abuse = sub
-                            .get("roles")
-                            .and_then(|v| v.as_array())
-                            .is_some_and(|roles| {
-                                roles.iter().any(|r| {
-                                    r.as_str().is_some_and(|s| s.eq_ignore_ascii_case("abuse"))
-                                })
-                            });
+                        let is_abuse =
+                            sub.get("roles")
+                                .and_then(|v| v.as_array())
+                                .is_some_and(|roles| {
+                                    roles.iter().any(|r| {
+                                        r.as_str().is_some_and(|s| s.eq_ignore_ascii_case("abuse"))
+                                    })
+                                });
                         if is_abuse {
                             abuse_contact = Self::vcard_email(sub.get("vcardArray"));
                             if abuse_contact.is_none() {
@@ -371,7 +376,9 @@ mod tests {
 
         assert_eq!(record.domain, "example.com");
         assert_eq!(record.status.len(), 2);
-        assert!(record.status.contains(&"clientTransferProhibited".to_string()));
+        assert!(record
+            .status
+            .contains(&"clientTransferProhibited".to_string()));
         assert_eq!(
             record.registration_date.as_deref(),
             Some("1995-08-14T04:00:00Z")
@@ -380,22 +387,13 @@ mod tests {
             record.expiration_date.as_deref(),
             Some("2025-08-13T04:00:00Z")
         );
-        assert_eq!(
-            record.updated_date.as_deref(),
-            Some("2024-09-13T07:01:38Z")
-        );
+        assert_eq!(record.updated_date.as_deref(), Some("2024-09-13T07:01:38Z"));
         assert_eq!(record.name_servers.len(), 2);
         assert!(record
             .name_servers
             .contains(&"A.IANA-SERVERS.NET".to_string()));
         assert_eq!(record.secure_dns, Some(false));
-        assert!(
-            record
-                .registrar
-                .as_deref()
-                .unwrap()
-                .contains("RESERVED")
-        );
+        assert!(record.registrar.as_deref().unwrap().contains("RESERVED"));
         assert_eq!(record.abuse_contact.as_deref(), Some("abuse@iana.org"));
     }
 
@@ -425,13 +423,12 @@ mod tests {
             obs.provenance.get("source").and_then(|v| v.as_str()),
             Some("rdap")
         );
-        assert!(
-            obs.provenance
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap()
-                .ends_with("example.com")
-        );
+        assert!(obs
+            .provenance
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .ends_with("example.com"));
         assert_eq!(
             obs.value.get("domain").and_then(|v| v.as_str()),
             Some("example.com")

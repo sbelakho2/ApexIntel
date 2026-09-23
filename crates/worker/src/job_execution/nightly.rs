@@ -208,7 +208,10 @@ async fn persist_dynamic_discovery_candidates(
         }
         // Relax the co-occurrence gate: allow single-source discoveries if they
         // have meaningful confidence (was: require co_occurrence>0 OR source_diversity>=2).
-        if candidate.co_occurrence_count == 0 && candidate.source_diversity < 1 && candidate.confidence < 0.6 {
+        if candidate.co_occurrence_count == 0
+            && candidate.source_diversity < 1
+            && candidate.confidence < 0.6
+        {
             continue;
         }
 
@@ -269,8 +272,7 @@ async fn persist_dynamic_discovery_candidates(
             .and_then(|entity| entity.geography.first())
             .map(String::as_str);
         let company_id = company.id.to_string();
-        let activity_logger =
-            apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+        let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
         activity_logger
             .log_company_detected(
                 &company.name,
@@ -290,7 +292,7 @@ async fn persist_dynamic_discovery_candidates(
     Ok(inserted)
 }
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(JobKind::CrawlCycle);
     run.start();
@@ -808,8 +810,7 @@ async fn run_pattern_mining_mined(kind: &JobKind, store: &Arc<PgStore>) -> JobRu
     }
 
     // 2. Mine statistically robust candidates across all ordered signal pairs.
-    let candidates =
-        mine_pattern_candidates(&streams, &miner_config, max_q, max_candidates);
+    let candidates = mine_pattern_candidates(&streams, &miner_config, max_q, max_candidates);
     tracing::info!(
         streams = streams.len(),
         candidates = candidates.len(),
@@ -1242,7 +1243,7 @@ fn hypothesis_to_definition(
 
 #[cfg(all(test, feature = "llm"))]
 mod pattern_mining_tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use apex_learning::hypothesis::{
         Applicability, HypothesisThresholds, RecipeHypothesis, TransformSpec,
@@ -1300,7 +1301,9 @@ mod pattern_mining_tests {
         streams.insert("alpha_signal".to_string(), signal);
         streams.insert("zeta_outcome".to_string(), outcome);
         // Independent stream (disjoint entities & time) → yields no candidate.
-        let noise: Vec<EventRecord> = (0..10).map(|i| (format!("n{i}"), ts_day(500 + i))).collect();
+        let noise: Vec<EventRecord> = (0..10)
+            .map(|i| (format!("n{i}"), ts_day(500 + i)))
+            .collect();
         streams.insert("noise".to_string(), noise);
         streams
     }
@@ -1445,8 +1448,11 @@ mod pattern_mining_tests {
 
     #[test]
     fn hypothesis_to_definition_round_trips_as_seed_recipe() {
-        let definition =
-            hypothesis_to_definition("mined_supplier_distress", &sample_hypothesis(), &sample_candidate());
+        let definition = hypothesis_to_definition(
+            "mined_supplier_distress",
+            &sample_hypothesis(),
+            &sample_candidate(),
+        );
 
         // Provenance metadata is attached for review tooling.
         assert_eq!(definition["provenance"]["source"], "pattern_mining");
@@ -1461,7 +1467,10 @@ mod pattern_mining_tests {
         assert_eq!(seed.outcome, "RfQPosted");
         assert_eq!(seed.category, "mined");
         assert_eq!(seed.join, vec!["Entity".to_string()]);
-        assert_eq!(seed.action_playbook, vec!["Reach out to procurement".to_string()]);
+        assert_eq!(
+            seed.action_playbook,
+            vec!["Reach out to procurement".to_string()]
+        );
         assert_eq!(seed.signals.len(), 2);
         assert_eq!(seed.transforms.len(), 2);
     }

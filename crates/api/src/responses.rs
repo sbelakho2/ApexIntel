@@ -210,8 +210,8 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = StatusCode::from_u16(self.http_status())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(self.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         (status, Json(error_response::<()>(self))).into_response()
     }
 }

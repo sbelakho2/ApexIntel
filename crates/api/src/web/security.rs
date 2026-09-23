@@ -10,7 +10,7 @@ use axum::{
     extract::Query,
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse},
-    Form, Extension,
+    Extension, Form,
 };
 use serde::Deserialize;
 

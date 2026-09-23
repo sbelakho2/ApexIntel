@@ -1,17 +1,16 @@
-#![cfg_attr(test, allow(clippy::disallowed_methods))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use anyhow::Result;
 use apex_api::auth::ApiKey;
-use secrecy::ExposeSecret;
 use apex_api::config::{ApiRuntimeConfig, PriorityWeights};
-use apex_api::filters::{
-    validate_search_text,
-};
+use apex_api::filters::validate_search_text;
 use apex_api::middleware::auth::{
     auth_error_response, authenticate_api_request, extract_websocket_token,
     validate_websocket_token, WebSocketAuthOptions,
 };
-use apex_api::middleware::session::{api_session_csrf_ok, current_session_secret, validate_session};
+use apex_api::middleware::session::{
+    api_session_csrf_ok, current_session_secret, validate_session,
+};
 use apex_api::rate_limit::RateLimiter;
 use apex_api::responses::{
     aggregate_health, error_response, success, success_with_meta, ApiError, ApiResponse,
@@ -30,8 +29,8 @@ use apex_api::routes::llm::{
 #[cfg(feature = "llm")]
 use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
 use apex_api::routes::persons::{
-    priority_tier, validate_person_id, ListPersonsQuery, PersonDetail,
-    PersonListItem, PersonSortField, PriorityVector,
+    priority_tier, validate_person_id, ListPersonsQuery, PersonDetail, PersonListItem,
+    PersonSortField, PriorityVector,
 };
 use apex_api::routes::recipes::{
     sort_recipes, ListRecipesQuery, RecipeListItem, RecipeSortField, RecipeStatus,
@@ -64,6 +63,7 @@ use axum::{
     Extension, Json,
 };
 use chrono::{DateTime, NaiveDate, Utc};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "llm")]
 use serde_json::Value as JsonValue;
@@ -83,8 +83,16 @@ mod app_router;
 mod mappings;
 mod runtime_metrics;
 
+#[path = "api_handlers/activity.rs"]
+mod activity_handlers;
+#[path = "api_handlers/alert_settings.rs"]
+mod alert_settings_handlers;
+#[path = "api_handlers/battlecards.rs"]
+mod battlecards_handlers;
 #[path = "api_handlers/catalog.rs"]
 mod catalog_handlers;
+#[path = "api_handlers/charts.rs"]
+mod charts_handlers;
 #[path = "api_handlers/collaboration.rs"]
 mod collaboration_handlers;
 #[path = "api_handlers/competitors.rs"]
@@ -99,6 +107,8 @@ mod entities_handlers;
 mod exports_handlers;
 #[path = "api_handlers/graph.rs"]
 mod graph_handlers;
+#[path = "api_handlers/icp.rs"]
+mod icp_handlers;
 #[path = "api_handlers/insights.rs"]
 mod insights_handlers;
 #[path = "api_handlers/llm.rs"]
@@ -107,43 +117,32 @@ mod llm_handlers;
 mod memos_handlers;
 #[path = "api_handlers/overview.rs"]
 mod overview_handlers;
+#[path = "api_handlers/psych.rs"]
+mod psych_handlers;
+#[path = "api_handlers/psych_profiles.rs"]
+mod psych_profiles_handlers;
 #[path = "api_handlers/recipes.rs"]
 mod recipes_handlers;
+#[path = "api_handlers/sales.rs"]
+mod sales_handlers;
 #[path = "api_handlers/security.rs"]
 mod security_handlers;
+#[path = "api_handlers/supply_risk.rs"]
+mod supply_risk_handlers;
+#[path = "api_handlers/threat_intel.rs"]
+mod threat_intel_handlers;
+#[path = "api_handlers/trends.rs"]
+mod trends_handlers;
+#[path = "api_handlers/triage.rs"]
+mod triage_handlers;
 #[path = "api_handlers/vector_search.rs"]
 mod vector_search_handlers;
 #[path = "api_handlers/warnings.rs"]
 mod warnings_handlers;
-#[path = "api_handlers/charts.rs"]
-mod charts_handlers;
-#[path = "api_handlers/alert_settings.rs"]
-mod alert_settings_handlers;
-#[path = "api_handlers/activity.rs"]
-mod activity_handlers;
-#[path = "api_handlers/battlecards.rs"]
-mod battlecards_handlers;
-#[path = "api_handlers/icp.rs"]
-mod icp_handlers;
-#[path = "api_handlers/psych_profiles.rs"]
-mod psych_profiles_handlers;
-#[path = "api_handlers/supply_risk.rs"]
-mod supply_risk_handlers;
-#[path = "api_handlers/sales.rs"]
-mod sales_handlers;
-#[path = "api_handlers/threat_intel.rs"]
-mod threat_intel_handlers;
-#[path = "api_handlers/triage.rs"]
-mod triage_handlers;
-#[path = "api_handlers/trends.rs"]
-mod trends_handlers;
-#[path = "api_handlers/psych.rs"]
-mod psych_handlers;
 pub(crate) use apex_api::destructive_actions::ApiAuthContext;
 pub(crate) use apex_store::autocomplete::AutocompleteIndex;
 pub(crate) use apex_store::postgres::{
-    CompanyDossier, CompetitorChange, PersonDossier,
-    PersonEngagement,
+    CompanyDossier, CompetitorChange, PersonDossier, PersonEngagement,
 };
 pub(crate) use chrono::TimeZone;
 pub(crate) use mappings::*;
@@ -174,7 +173,7 @@ struct LlmRuntime {
 }
 
 #[tokio::main]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn main() -> Result<()> {
     let log_level = std::env::var("API_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
     let log_filter = std::env::var("RUST_LOG")
@@ -200,8 +199,18 @@ async fn main() -> Result<()> {
         // PATCH is used by 13 registered routes (executive opportunities/threats,
         // queue, supplier-risk, pipeline) — omitting it broke every cross-origin
         // PATCH preflight (B297).
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::HeaderName::from_static("x-csrf-token")]);
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::HeaderName::from_static("x-csrf-token"),
+        ]);
 
     let app = app_router::build_app_router(state.clone(), cors);
     let address = format!("{}:{}", state.config.server.host, state.config.server.port);
@@ -231,7 +240,10 @@ async fn build_state() -> Result<AppState> {
         for error in &validation_errors {
             eprintln!("CONFIG ERROR: {}", error);
         }
-        anyhow::bail!("Configuration validation failed: {} errors", validation_errors.len());
+        anyhow::bail!(
+            "Configuration validation failed: {} errors",
+            validation_errors.len()
+        );
     }
 
     let store = Arc::new(PgStore::connect(config.app.database_url.expose_secret()).await?);
@@ -284,7 +296,8 @@ async fn build_state() -> Result<AppState> {
     tracing::info!("rate limiter initialized");
 
     // ─── SSE / Real-time alerts ─────────────────────────────────────────
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let sse_manager = if !nats_url.is_empty() {
         let manager = Arc::new(apex_api::sse::SseManager::new());
         let alert_router = Arc::new(apex_api::alert_router::AlertRouter::new(store.clone()));
@@ -304,7 +317,9 @@ async fn build_state() -> Result<AppState> {
             });
             tracing::info!(nats_url = %nats_url, "SSE real-time alerts enabled with NATS consumer");
         } else {
-            tracing::info!("SSE manager initialized (NATS consumer disabled by NATS_SSE_ENABLED=false)");
+            tracing::info!(
+                "SSE manager initialized (NATS consumer disabled by NATS_SSE_ENABLED=false)"
+            );
         }
 
         Some(manager)
@@ -373,7 +388,10 @@ fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
         timeout_seconds: config.llm.lightweight_timeout_secs,
     };
 
-    Ok(Some(LlmRuntime { primary, lightweight }))
+    Ok(Some(LlmRuntime {
+        primary,
+        lightweight,
+    }))
 }
 
 #[cfg(not(feature = "llm"))]
@@ -410,7 +428,6 @@ fn infer_llm_provider(config: &ApiRuntimeConfig, base_url: &str) -> LlmProvider 
         LlmProvider::LlamaCpp
     }
 }
-
 
 async fn require_auth(
     State(state): State<AppState>,
@@ -451,7 +468,10 @@ async fn require_auth(
 /// Returns `None` when a Bearer key was presented (handled above), the session
 /// is missing/expired, or an unsafe method fails the CSRF check.
 fn session_fallback_context(request: &axum::extract::Request) -> Option<ApiAuthContext> {
-    if request.headers().contains_key(axum::http::header::AUTHORIZATION) {
+    if request
+        .headers()
+        .contains_key(axum::http::header::AUTHORIZATION)
+    {
         return None;
     }
     let secret = current_session_secret();
@@ -494,13 +514,17 @@ async fn add_rate_limit_headers(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     // Apply rate limit check
-    let tier = apex_api::rate_limit::classify_endpoint(request.uri().path(), request.method().as_str());
+    let tier =
+        apex_api::rate_limit::classify_endpoint(request.uri().path(), request.method().as_str());
     // B298: identify clients by their socket address. The previous scheme
     // trusted the client-supplied `x-forwarded-for` header (rotate it to bypass
     // limits entirely) and lumped everyone else into one shared "unknown"
     // bucket. `X-Forwarded-For` is honored only when API_TRUST_PROXY=1, for
     // deployments behind a reverse proxy that overwrites the header.
-    let identifier = if std::env::var("API_TRUST_PROXY").map(|v| v == "1").unwrap_or(false) {
+    let identifier = if std::env::var("API_TRUST_PROXY")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         request
             .headers()
             .get("x-forwarded-for")
@@ -537,7 +561,10 @@ async fn add_rate_limit_headers(
 fn llm_service_unavailable<T: Serialize>(message: &str) -> (StatusCode, Json<ApiResponse<T>>) {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(error_response(ApiError::new(ErrorCode::ServiceUnavailable, message))),
+        Json(error_response(ApiError::new(
+            ErrorCode::ServiceUnavailable,
+            message,
+        ))),
     )
 }
 
@@ -569,15 +596,13 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
         .map(|started| (Utc::now() - started).num_seconds() as u64)
         .unwrap_or(0);
 
-    let store_check = sqlx::query("SELECT 1")
-        .execute(&state.store.pool)
-        .await;
+    let store_check = sqlx::query("SELECT 1").execute(&state.store.pool).await;
     let status = match store_check {
         Ok(_) => HealthStatus::Healthy,
         Err(_) => HealthStatus::Unhealthy,
     };
 
-    let mut checks = vec![ComponentHealth {
+    let checks = vec![ComponentHealth {
         name: "database".to_string(),
         status,
         message: store_check.err().map(|e| e.to_string()),
@@ -614,9 +639,7 @@ async fn health_deep(State(mut state): State<AppState>) -> (StatusCode, Json<Hea
         .map(|started| (Utc::now() - started).num_seconds() as u64)
         .unwrap_or(0);
 
-    let store_check = sqlx::query("SELECT 1")
-        .execute(&state.store.pool)
-        .await;
+    let store_check = sqlx::query("SELECT 1").execute(&state.store.pool).await;
     let db_status = match &store_check {
         Ok(_) => HealthStatus::Healthy,
         Err(e) => {
@@ -632,7 +655,8 @@ async fn health_deep(State(mut state): State<AppState>) -> (StatusCode, Json<Hea
     }];
 
     if let Some(ref mut redis) = state.redis {
-        let redis_check: Result<String, redis::RedisError> = redis::cmd("PING").query_async(redis).await;
+        let redis_check: Result<String, redis::RedisError> =
+            redis::cmd("PING").query_async(redis).await;
         let redis_status = match &redis_check {
             Ok(_) => HealthStatus::Healthy,
             Err(e) => {
@@ -720,7 +744,7 @@ async fn endpoints() -> Json<Vec<serde_json::Value>> {
 }
 
 #[allow(dead_code)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn openapi_json() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "openapi": "3.0.0",
@@ -776,7 +800,7 @@ async fn openapi_json() -> Json<serde_json::Value> {
 }
 
 #[allow(dead_code)]
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn api_features() -> Json<serde_json::Value> {
     #[cfg(feature = "llm")]
     let llm_enabled = true;
@@ -882,9 +906,11 @@ async fn post_trigger_scan(
         ));
     }
 
-    let job_id = state.store.queue_job_trigger(&req.source_id).await.map_err(|e| {
-        ApiError::internal(format!("Failed to queue job trigger: {e}"))
-    })?;
+    let job_id = state
+        .store
+        .queue_job_trigger(&req.source_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to queue job trigger: {e}")))?;
 
     Ok(Json(success(TriggerScanResponse {
         job_id,
@@ -902,13 +928,11 @@ async fn post_rebuild_autocomplete(
 
     let new_index = apex_store::autocomplete::build_from_database(store)
         .await
-        .map_err(|e| {
-            ApiError::internal(format!("Failed to rebuild autocomplete index: {e}"))
-        })?;
+        .map_err(|e| ApiError::internal(format!("Failed to rebuild autocomplete index: {e}")))?;
 
-    new_index.save(&path).map_err(|e| {
-        ApiError::internal(format!("Failed to save autocomplete index: {e}"))
-    })?;
+    new_index
+        .save(&path)
+        .map_err(|e| ApiError::internal(format!("Failed to save autocomplete index: {e}")))?;
 
     let entry_count = new_index.len();
     // B305: recover from lock poisoning instead of panicking — one poisoned
@@ -944,7 +968,7 @@ fn ws_unauthorized_response(body: &'static str) -> axum::response::Response {
         [(header::CONTENT_TYPE, "text/plain")],
         body,
     )
-    .into_response()
+        .into_response()
 }
 
 #[allow(dead_code)]
@@ -954,7 +978,7 @@ fn ws_upgrade_required_response() -> axum::response::Response {
         [(header::CONTENT_TYPE, "text/plain")],
         "WebSocket upgrade required",
     )
-    .into_response()
+        .into_response()
 }
 
 fn validate_ws_origin(headers: &axum::http::HeaderMap) -> bool {
@@ -1021,7 +1045,7 @@ async fn warnings_ws(
 /// Previously a stub (only ping/pong), now subscribes to the SSE event stream
 /// and forwards alerts as JSON messages. Falls back gracefully if SSE is not
 /// configured.
-async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: AppState) {
+async fn warnings_ws_stream(socket: axum::extract::ws::WebSocket, state: AppState) {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
 
@@ -1035,11 +1059,14 @@ async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: App
         let user_id = uuid::Uuid::new_v4();
         let (tx, mut rx) = sse_manager.register(user_id).await;
         let sse_clone = sse_manager.clone();
+        // Kept in the main scope so the connection is unregistered even when
+        // the forward task is aborted (abort skips the task's own cleanup).
+        let sse_for_cleanup = sse_manager.clone();
+        let tx_for_cleanup = tx.clone();
 
         // Channel to forward pong data from the main loop to the forward task
         // (which owns the WebSocket sender)
-        let (pong_tx, mut pong_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (pong_tx, mut pong_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
         // Spawn a task that owns the WebSocket sender and reads from both
         // the SSE event stream and the pong response channel.
@@ -1091,7 +1118,7 @@ async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: App
                 msg = receiver.next() => {
                     match msg {
                         Some(Ok(Message::Ping(data))) => {
-                            if pong_tx.send(data.into()).is_err() {
+                            if pong_tx.send(data).is_err() {
                                 break;
                             }
                         }
@@ -1112,9 +1139,13 @@ async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: App
         }
 
         forward_task.abort();
+        let _ = forward_task.await;
+        sse_for_cleanup.unregister(user_id, &tx_for_cleanup).await;
     } else {
         // No SSE manager — keepalive only (legacy behavior)
-        tracing::warn!("WebSocket connected but SSE manager not available — no alerts will be streamed");
+        tracing::warn!(
+            "WebSocket connected but SSE manager not available — no alerts will be streamed"
+        );
 
         loop {
             match receiver.next().await {
@@ -1140,9 +1171,7 @@ async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: App
 ///
 /// Registers the authenticated user for real-time event streaming.
 /// Requires the SSE manager to be configured.
-async fn alert_sse_handler(
-    State(state): State<AppState>,
-) -> axum::response::Response {
+async fn alert_sse_handler(State(state): State<AppState>) -> axum::response::Response {
     let Some(ref sse_manager) = state.sse_manager else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -1157,7 +1186,12 @@ async fn alert_sse_handler(
     let user_id = uuid::Uuid::new_v4();
     let (tx, rx) = sse_manager.register(user_id).await;
 
-    let stream = apex_api::sse::SseManager::build_sse_stream_with_cleanup(rx, sse_manager.clone(), user_id, tx);
+    let stream = apex_api::sse::SseManager::build_sse_stream_with_cleanup(
+        rx,
+        sse_manager.clone(),
+        user_id,
+        tx,
+    );
     stream.into_response()
 }
 
@@ -1173,14 +1207,20 @@ fn pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32, i64) {
     (page, per_page, offset as i64)
 }
 
-fn validate_pagination(page: Option<u32>, per_page: Option<u32>) -> Result<(u32, u32, i64), ApiError> {
+fn validate_pagination(
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<(u32, u32, i64), ApiError> {
     let page = page.unwrap_or(1);
     let per_page = per_page.unwrap_or(50);
     if page == 0 {
         return Err(ApiError::validation("page", "must be >= 1"));
     }
     if per_page == 0 || per_page > 100 {
-        return Err(ApiError::validation("per_page", "must be between 1 and 100"));
+        return Err(ApiError::validation(
+            "per_page",
+            "must be between 1 and 100",
+        ));
     }
     let offset = ((page - 1) as i64) * (per_page as i64);
     Ok((page, per_page, offset))
@@ -1292,7 +1332,11 @@ fn company_row_to_detail(
         .map(|p| CompanyKeyPerson {
             person_id: p.id.to_string(),
             name: p.name.clone(),
-            role: p.current_role.clone().unwrap_or_else(|| p.role_family.clone().unwrap_or_else(|| "Unknown".to_string())),
+            role: p.current_role.clone().unwrap_or_else(|| {
+                p.role_family
+                    .clone()
+                    .unwrap_or_else(|| "Unknown".to_string())
+            }),
         })
         .collect();
 
@@ -1312,32 +1356,28 @@ fn company_row_to_detail(
     }
 
     // Extract certifications from the certs parameter
-    let certifications: Vec<String> = certs
-        .iter()
-        .map(|c| c.standard.clone())
-        .collect();
+    let certifications: Vec<String> = certs.iter().map(|c| c.standard.clone()).collect();
 
     // Determine if competitor from the canonical column, with metadata fallback
-    let is_competitor = row
-        .is_competitor
-        .unwrap_or_else(|| {
-            row.metadata
-                .as_ref()
-                .and_then(|meta| meta.get("is_competitor"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        });
+    let is_competitor = row.is_competitor.unwrap_or_else(|| {
+        row.metadata
+            .as_ref()
+            .and_then(|meta| meta.get("is_competitor"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    });
 
     // Extract city from sites
-    let city = sites
-        .iter()
-        .find_map(|s| s.city.clone());
+    let city = sites.iter().find_map(|s| s.city.clone());
 
     let now = Utc::now();
 
     // Build a baseline recent event from the company's own metadata
     let region_text = row.region.clone().unwrap_or_default();
-    let type_text = row.company_type.clone().unwrap_or_else(|| "Unknown type".to_string());
+    let type_text = row
+        .company_type
+        .clone()
+        .unwrap_or_else(|| "Unknown type".to_string());
     let domain_clone = row.domain.clone();
 
     let recent_events = vec![CompanyEvent {
@@ -1346,7 +1386,9 @@ fn company_row_to_detail(
             "{} | {} | {} | Risk: {:.1}",
             region_text,
             type_text,
-            row.employee_estimate.map(|e| format!("~{} employees", e)).unwrap_or_default(),
+            row.employee_estimate
+                .map(|e| format!("~{} employees", e))
+                .unwrap_or_default(),
             row.risk_score.unwrap_or(0.0),
         ),
         date: row.updated_at.unwrap_or(now),
@@ -1359,7 +1401,11 @@ fn company_row_to_detail(
         .as_ref()
         .and_then(|meta| meta.get("community_badges"))
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let source_entropy: Option<f64> = metadata_ref
@@ -1419,10 +1465,7 @@ fn default_priority_vector() -> PriorityVector {
     }
 }
 
-fn person_row_to_detail(
-    row: PersonRow,
-    _artifacts: Vec<ArtifactRow>,
-) -> PersonDetail {
+fn person_row_to_detail(row: PersonRow, _artifacts: Vec<ArtifactRow>) -> PersonDetail {
     let mut name_alt = Vec::new();
     if let Some(ref ar) = row.name_ar {
         name_alt.push(ar.clone());
@@ -1431,7 +1474,8 @@ fn person_row_to_detail(
         name_alt.push(fr.clone());
     }
 
-    let pv = row.priority_vector
+    let pv = row
+        .priority_vector
         .as_ref()
         .and_then(|v| serde_json::from_value::<PriorityVector>(v.clone()).ok())
         .unwrap_or_else(default_priority_vector);
@@ -1472,7 +1516,8 @@ fn person_row_to_detail(
         buying_center_role: classify_buying_center_role(
             row.current_role.as_deref().unwrap_or(""),
             row.role_family.as_deref().unwrap_or(""),
-        ).to_string(),
+        )
+        .to_string(),
         affiliations: vec![],
         timeline: vec![],
         role_history: vec![],
@@ -1488,16 +1533,25 @@ fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
     let title_lower = title.to_lowercase();
     let family_lower = role_family.to_lowercase();
 
-    if title_lower.contains("vp") || title_lower.contains("vice president") || title_lower.contains("director") {
+    if title_lower.contains("vp")
+        || title_lower.contains("vice president")
+        || title_lower.contains("director")
+    {
         return "decision_maker";
     }
     if title_lower.contains("manager") || title_lower.contains("lead") {
         return "influencer";
     }
-    if title_lower.contains("buyer") || title_lower.contains("procurement") || title_lower.contains("purchasing") {
+    if title_lower.contains("buyer")
+        || title_lower.contains("procurement")
+        || title_lower.contains("purchasing")
+    {
         return "purchasing";
     }
-    if title_lower.contains("engineer") || title_lower.contains("analyst") || title_lower.contains("specialist") {
+    if title_lower.contains("engineer")
+        || title_lower.contains("analyst")
+        || title_lower.contains("specialist")
+    {
         return "technical";
     }
     if family_lower.contains("user") {
@@ -1524,10 +1578,7 @@ fn compute_edge_type_counts(rows: &[EdgeRow]) -> Vec<EdgeTypeCount> {
     }
     counts
         .into_iter()
-        .map(|(edge_type, count)| EdgeTypeCount {
-            edge_type,
-            count,
-        })
+        .map(|(edge_type, count)| EdgeTypeCount { edge_type, count })
         .collect()
 }
 
@@ -1556,7 +1607,6 @@ fn parse_recipe_status(raw: &str) -> Option<RecipeStatus> {
         _ => None,
     }
 }
-
 
 pub(crate) fn map_warning_sort(sort: WarningSortField) -> WarningOrderBy {
     match sort {
@@ -1618,7 +1668,7 @@ pub(crate) fn validate_warning_type_codes(values: &[String]) -> Result<(), ApiEr
     Ok(())
 }
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub(crate) fn parse_date_start(value: &Option<String>) -> Result<Option<DateTime<Utc>>, String> {
     match value {
         None => Ok(None),
@@ -1632,7 +1682,7 @@ pub(crate) fn parse_date_start(value: &Option<String>) -> Result<Option<DateTime
     }
 }
 
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn parse_query_date(value: &Option<String>, name: &str) -> Result<Option<DateTime<Utc>>, ApiError> {
     match value {
         None => Ok(None),
@@ -1698,12 +1748,18 @@ mod tests {
     fn parse_csv_upper_strict_works() {
         assert_eq!(parse_csv_upper_strict(Some("us,EMEA")), vec!["US", "EMEA"]);
         assert_eq!(parse_csv_upper_strict(None), Vec::<String>::new());
-        assert_eq!(parse_csv_upper_strict(Some("  us  ,  , EMEA")), vec!["US", "EMEA"]);
+        assert_eq!(
+            parse_csv_upper_strict(Some("  us  ,  , EMEA")),
+            vec!["US", "EMEA"]
+        );
     }
 
     #[test]
     fn parse_recipe_status_works() {
-        assert_eq!(parse_recipe_status("production"), Some(RecipeStatus::Production));
+        assert_eq!(
+            parse_recipe_status("production"),
+            Some(RecipeStatus::Production)
+        );
         assert_eq!(parse_recipe_status("STAGING"), Some(RecipeStatus::Staging));
         assert_eq!(parse_recipe_status("unknown"), None);
     }
@@ -1739,9 +1795,18 @@ mod tests {
 
     #[test]
     fn classify_buying_center_role_works() {
-        assert_eq!(classify_buying_center_role("VP of Sales", "executive"), "decision_maker");
-        assert_eq!(classify_buying_center_role("IT Manager", "technical"), "influencer");
-        assert_eq!(classify_buying_center_role("Procurement Specialist", "purchasing"), "purchasing");
+        assert_eq!(
+            classify_buying_center_role("VP of Sales", "executive"),
+            "decision_maker"
+        );
+        assert_eq!(
+            classify_buying_center_role("IT Manager", "technical"),
+            "influencer"
+        );
+        assert_eq!(
+            classify_buying_center_role("Procurement Specialist", "purchasing"),
+            "purchasing"
+        );
         assert_eq!(classify_buying_center_role("End User", "user"), "user");
     }
 }
