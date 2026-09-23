@@ -77,6 +77,23 @@ pipeline.
   NaN/Inf, invalid configs, array/delimiter canonicalisation), and corrected
   the threat-level test to assert both boundaries.
 
+### Production deployment (2026-09-23)
+- Cross-compiled `aarch64-unknown-linux-gnu` release binaries (`apex-api`,
+  `apex-worker`, `--features llm`) and deployed them to `starzerp.fi`
+  (`77.42.65.89`) with the RUNBOOK swap procedure (stop → `.prev` copies →
+  install → start → verify), plus refreshed static assets.
+- **Zero data loss**: a fresh `pg_dump` was taken and verified before the swap;
+  the pre-swap dump was fully restored into a scratch database and the new
+  migrations were rehearsed against real production data first. Post-deploy
+  row counts are identical (156/13083/307105/11411/9586).
+- Production runs with `APEX_SKIP_MIGRATIONS=true`, so migrations are applied
+  manually. `044` and `045` were applied in a single transaction and recorded
+  in `_sqlx_migrations` with their true SHA-384 checksums (now `max=45`).
+- Note for future deploys: because migrations are skipped at boot, any new
+  migration must be rehearsed on a restored backup and applied manually;
+  `045` was hardened during rehearsal (`tags.name`/`tag_assignments.entity_type`
+  do not exist in production).
+
 ### Known follow-ups
 - `DECIMAL(5,4)` → `DOUBLE PRECISION` for strategic/threat/supplier/pipeline/
   source-evidence scores is blocked by dependent views; needs a

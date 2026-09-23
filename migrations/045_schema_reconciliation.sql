@@ -19,11 +19,19 @@ ALTER TABLE triage_queue ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NUL
 ALTER TABLE triage_queue ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
 ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS prefs JSONB NOT NULL DEFAULT '{}';
 
--- Tags: the code upserts on a normalised label.
+-- Tags: the code upserts on a normalised label. `label`/`normalized_label`
+-- exist in the production lineage but not the repository-root lineage, so add
+-- them defensively and backfill only from columns that actually exist.
 ALTER TABLE tags ADD COLUMN IF NOT EXISTS label TEXT;
 ALTER TABLE tags ADD COLUMN IF NOT EXISTS normalized_label TEXT;
-UPDATE tags SET normalized_label = lower(coalesce(normalized_label, label, name))
-    WHERE normalized_label IS NULL;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'tags' AND column_name = 'label') THEN
+        EXECUTE 'UPDATE tags SET normalized_label = lower(label)
+                 WHERE normalized_label IS NULL AND label IS NOT NULL';
+    END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tags_normalized_label
     ON tags (normalized_label)
     WHERE normalized_label IS NOT NULL;
@@ -31,10 +39,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_tags_normalized_label
 ALTER TABLE tag_assignments ADD COLUMN IF NOT EXISTS subject_type TEXT;
 ALTER TABLE tag_assignments ADD COLUMN IF NOT EXISTS subject_id TEXT;
 ALTER TABLE tag_assignments ADD COLUMN IF NOT EXISTS source TEXT;
-UPDATE tag_assignments SET subject_type = coalesce(subject_type, entity_type)
-    WHERE subject_type IS NULL;
-UPDATE tag_assignments SET subject_id = coalesce(subject_id, entity_id::text)
-    WHERE subject_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tag_assignments_natural
     ON tag_assignments (tag_id, subject_type, subject_id, source)
     WHERE subject_type IS NOT NULL AND subject_id IS NOT NULL;
