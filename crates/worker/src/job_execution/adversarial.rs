@@ -155,7 +155,7 @@ async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
 
             let placement_id = Uuid::new_v4();
             #[allow(clippy::unwrap_used, clippy::expect_used)]
-            let value = serde_json::json!({
+            let _placement_detail = serde_json::json!({
                 "placement_id": placement_id.to_string(),
                 "source_count": cluster.len(),
                 "time_window_hours": 6,
@@ -167,14 +167,16 @@ async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
 
             let _ = sqlx::query(
                 r#"INSERT INTO pattern_candidates
-                   (id, pattern_type, entity_type, confidence, source_observations, metadata, created_at)
-                   VALUES ($1, 'adversarial_placement', 'system', $2, $3, $4, $5)"#,
+                   (entity_type, pattern_label, passed_gates, confidence, created_at)
+                   VALUES ('system', $1, TRUE, $2, $3)"#,
             )
-            .bind(placement_id)
+            .bind(format!(
+                "adversarial_placement:{}:{} signals/{} sources",
+                placement_id,
+                cluster.len(),
+                source_domains.len()
+            ))
             .bind(0.55 + (cluster.len() as f64 * 0.05).min(0.2))
-            .bind(signal_ids.len() as i32)
-            .bind(serde_json::to_value(&signal_ids).unwrap_or_default())
-            .bind(value)
             .bind(now)
             .execute(&store.pool)
             .await

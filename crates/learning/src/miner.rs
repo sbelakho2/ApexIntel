@@ -275,6 +275,12 @@ pub fn build_contingency(
 pub fn odds_ratio(a: u64, b: u64, c: u64, d: u64) -> f64 {
     let num = (a as f64) * (d as f64);
     let den = (b as f64) * (c as f64);
+    // A zero numerator means the signal never coincided with an outcome: that
+    // is no association at all, not a huge effect. Previously this returned the
+    // 100x cap and created mined patterns from zero co-occurrence.
+    if num <= 0.0 {
+        return 0.0;
+    }
     if den < 1e-12 {
         return 100.0; // cap instead of f64::MAX to prevent Infinity propagation in rank scoring
     }

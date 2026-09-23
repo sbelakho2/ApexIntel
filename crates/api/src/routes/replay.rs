@@ -115,9 +115,9 @@ impl ReplayStatus {
 /// of `$N` placeholders used.  The LIMIT is always the last param.
 pub fn replay_observations_sql(request: &ReplayRequest) -> (String, usize) {
     let mut sql = String::from(
-        "SELECT id, observation_type, entity_id, value, provenance, observed_at \
+        "SELECT id, observation_type, entity_id, value, provenance, ts_utc \
          FROM observations \
-         WHERE observed_at >= $1 AND observed_at <= $2",
+         WHERE ts_utc >= $1 AND ts_utc <= $2",
     );
 
     let mut param_idx = 3;
@@ -136,7 +136,7 @@ pub fn replay_observations_sql(request: &ReplayRequest) -> (String, usize) {
         }
     }
 
-    sql.push_str(&format!(" ORDER BY observed_at ASC LIMIT ${}", param_idx));
+    sql.push_str(&format!(" ORDER BY ts_utc ASC LIMIT ${}", param_idx));
     let total_params = param_idx;
 
     (sql, total_params)
@@ -237,7 +237,7 @@ mod tests {
     fn test_sql_generation() {
         let req = make_request(7);
         let (sql, param_count) = replay_observations_sql(&req);
-        assert!(sql.contains("observed_at >= $1"));
+        assert!(sql.contains("ts_utc >= $1"));
         assert!(sql.contains("LIMIT $3"));
         assert_eq!(param_count, 3);
     }

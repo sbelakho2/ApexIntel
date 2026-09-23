@@ -19,7 +19,7 @@
 /// | `penalty`             | 3.0     | Fixed penalty fallback when adaptive mode is disabled              |
 /// | `adaptive_penalty`    | true    | Use modified BIC penalty `β = c · log(n)` with variance-adaptive `c` |
 /// | `min_segment`         | 2       | Minimum observations per segment; must be ≥ 1                      |
-/// | `max_candidates`      | 64      | Bounds PELT worst-case inner loop to O(64·n) instead of O(n²)     |
+/// | `max_candidates`      | 200     | Bounds PELT worst-case inner loop to O(200·n) instead of O(n²)    |
 ///
 /// Increase `penalty` to suppress noise-driven change-points on smooth series;
 /// decrease it for volatile series where subtle shifts matter.
@@ -125,8 +125,14 @@ impl PeltConfig {
 /// Worst case: O(max_candidates · n) bounded by the candidate cap,
 /// instead of the unbounded O(n²) of standard PELT.
 pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
+    // Reject invalid configurations instead of panicking on arithmetic
+    // under/overflow (e.g. `max_candidates = 0`, `min_segment = usize::MAX`).
+    if !config.validate().is_empty() {
+        return vec![];
+    }
+
     let n = data.len();
-    if n < config.min_segment * 2 {
+    if n < config.min_segment.saturating_mul(2) {
         return vec![];
     }
 
@@ -184,8 +190,8 @@ pub fn detect_changepoints(data: &[f64], config: &PeltConfig) -> Vec<usize> {
         // longer segments, which naturally suppresses false positives in noise.
         // Leave room for t, which is appended after truncation so the newest
         // candidate is always available for future iterations.
-        if candidates.len() > config.max_candidates - 1 {
-            candidates.truncate(config.max_candidates - 1);
+        if candidates.len() > config.max_candidates.saturating_sub(1) {
+            candidates.truncate(config.max_candidates.saturating_sub(1));
         }
         candidates.push(t);
     }

@@ -368,7 +368,7 @@ impl BattlecardGenerator {
     /// driven entirely by the deal records in `ctx`).
     pub fn generate_win_loss(
         &self,
-        _competitor: &EntityProfile,
+        competitor: &EntityProfile,
         _our_company: &EntityProfile,
         ctx: &BattlecardContext,
         our_company_id: Uuid,
@@ -377,7 +377,12 @@ impl BattlecardGenerator {
         if ctx.closed_deals.is_empty() {
             return WinLossSection::default();
         }
-        let analysis = WinLossAnalyzer::analyze(our_company_id, competitor_id, &ctx.closed_deals);
+        let analysis = WinLossAnalyzer::analyze(
+            our_company_id,
+            competitor_id,
+            Some(competitor.entity_name.as_str()),
+            &ctx.closed_deals,
+        );
         WinLossSection {
             win_rate: analysis.win_rate,
             total_deals: analysis.total_deals,

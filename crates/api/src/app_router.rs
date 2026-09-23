@@ -8,6 +8,26 @@ use axum::{
 };
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
+/// Fallback for unmatched routes. API paths get a JSON 404 (clients expect a
+/// machine-readable envelope); everything else gets the styled HTML 404 page,
+/// which was previously unreachable.
+async fn fallback_not_found(
+    req: axum::http::Request<axum::body::Body>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    if req.uri().path().starts_with("/api/") {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "error": { "code": "not_found", "message": "Route not found" }
+            })),
+        )
+            .into_response()
+    } else {
+        apex_api::web::errors::not_found().await.into_response()
+    }
+}
+
 pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
     let public = Router::new()
         .route("/api/health", get(health))
@@ -741,6 +761,8 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .merge(protected)
         .merge(web_pages)
         .route("/ws/warnings", get(warnings_ws))
+        // Styled 404 for pages; JSON 404 for unmatched API routes.
+        .fallback(fallback_not_found)
         // ─── PWA static files (dev mode; nginx serves in production) ───
         .nest_service(
             "/static",

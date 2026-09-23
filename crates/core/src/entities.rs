@@ -686,40 +686,72 @@ impl Observation {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let value_key = canonical_value_key(&self.value);
+        // Length-prefix each component so a `|` inside a provenance field
+        // cannot be confused with a field boundary (which would let two
+        // distinct facts collide on one ID).
+        let type_repr = format!("{:?}", self.observation_type);
         let key = format!(
-            "{:?}|{source}|{source_id}|{url}|{value_key}",
-            self.observation_type
+            "{}:{};{}:{};{}:{};{}:{};{}:{}",
+            type_repr.len(),
+            type_repr,
+            source.len(),
+            source,
+            source_id.len(),
+            source_id,
+            url.len(),
+            url,
+            value_key.len(),
+            value_key,
         );
         self.id = Self::deterministic_id(namespace, &key);
         key
     }
 }
 
-/// Stable serialization used for content hashing: object keys sorted,
-/// volatile timestamp fields excluded.
+/// Stable, unambiguous serialization used for content hashing: object keys are
+/// sorted, volatile timestamp/engagement fields excluded (at every nesting
+/// level), and arrays are canonicalized element-wise. Every component is
+/// length-prefixed so nested values cannot collide by delimiter ambiguity.
 fn canonical_value_key(value: &serde_json::Value) -> String {
+    fn volatile(key: &str) -> bool {
+        matches!(
+            key,
+            "ts" | "ts_utc"
+                | "fetched_at"
+                | "crawled_at"
+                | "observed_at"
+                | "ingested_at"
+                // Provider scan timestamps change on every run while the
+                // measured facts do not (e.g. dns_posture.checked_at).
+                | "checked_at"
+                | "scanned_at"
+                | "generated_at"
+                // Engagement counters (points/upvotes/likes) change between
+                // scans of unchanged content; excluding them keeps
+                // content-derived IDs stable and idempotent.
+                | "engagement"
+        )
+    }
+
     match value {
         serde_json::Value::Object(map) => {
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort();
-            keys.into_iter()
-                .filter(|k| {
-                    !matches!(
-                        k.as_str(),
-                        "ts" | "ts_utc"
-                            | "fetched_at"
-                            | "crawled_at"
-                            | "observed_at"
-                            | "ingested_at"
-                            // Engagement counters (points/upvotes/likes) change
-                            // between scans of unchanged content; excluding them
-                            // keeps content-derived IDs stable and idempotent.
-                            | "engagement"
-                    )
-                })
-                .map(|k| format!("{}={}", k, canonical_value_key(&map[k])))
-                .collect::<Vec<_>>()
-                .join("&")
+            let mut out = String::new();
+            for key in keys.into_iter().filter(|k| !volatile(k.as_str())) {
+                let val = canonical_value_key(&map[key]);
+                out.push_str(&format!("{}:{};", key.len(), key));
+                out.push_str(&format!("{}:{};", val.len(), val));
+            }
+            out
+        }
+        serde_json::Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                let item_key = canonical_value_key(item);
+                out.push_str(&format!("{}:{};", item_key.len(), item_key));
+            }
+            out
         }
         other => other.to_string(),
     }

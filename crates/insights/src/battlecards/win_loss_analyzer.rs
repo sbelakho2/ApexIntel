@@ -50,11 +50,23 @@ pub struct WinLossAnalyzer;
 
 impl WinLossAnalyzer {
     /// Analyze closed deals against a specific competitor.
+    ///
+    /// When `competitor_name` is provided, only deals recorded against that
+    /// competitor are analysed, so a battlecard reports its own win rate rather
+    /// than the company-wide figure.
     pub fn analyze(
         _our_company_id: Uuid,
         _competitor_id: Uuid,
+        competitor_name: Option<&str>,
         deals: &[ClosedDeal],
     ) -> WinLossAnalysis {
+        let deals: Vec<&ClosedDeal> = match competitor_name {
+            Some(name) if !name.trim().is_empty() => deals
+                .iter()
+                .filter(|d| d.competitor_name.eq_ignore_ascii_case(name.trim()))
+                .collect(),
+            _ => deals.iter().collect(),
+        };
         let total_deals = deals.len() as u32;
         let won = deals.iter().filter(|d| d.won).count() as u32;
         let lost = deals.iter().filter(|d| !d.won).count() as u32;
@@ -68,8 +80,8 @@ impl WinLossAnalyzer {
         let total_value_lost: f64 = deals.iter().filter(|d| !d.won).map(|d| d.value).sum();
 
         // Aggregate loss reasons
-        let loss_reasons = Self::aggregate_loss_reasons(deals);
-        let trends = Self::calculate_trends(deals);
+        let loss_reasons = Self::aggregate_loss_reasons(&deals);
+        let trends = Self::calculate_trends(&deals);
 
         WinLossAnalysis {
             total_deals,
@@ -83,10 +95,10 @@ impl WinLossAnalyzer {
         }
     }
 
-    fn aggregate_loss_reasons(deals: &[ClosedDeal]) -> Vec<LossReason> {
+    fn aggregate_loss_reasons(deals: &[&ClosedDeal]) -> Vec<LossReason> {
         let mut reason_counts: std::collections::HashMap<String, u32> =
             std::collections::HashMap::new();
-        let lost_deals: Vec<&ClosedDeal> = deals.iter().filter(|d| !d.won).collect();
+        let lost_deals: Vec<&ClosedDeal> = deals.iter().filter(|d| !d.won).copied().collect();
         let total_lost = lost_deals.len() as f64;
 
         for deal in &lost_deals {
@@ -115,7 +127,7 @@ impl WinLossAnalyzer {
         reasons
     }
 
-    fn calculate_trends(deals: &[ClosedDeal]) -> Vec<WinLossTrend> {
+    fn calculate_trends(deals: &[&ClosedDeal]) -> Vec<WinLossTrend> {
         let mut period_map: std::collections::BTreeMap<String, Vec<&ClosedDeal>> =
             std::collections::BTreeMap::new();
 
@@ -125,7 +137,7 @@ impl WinLossAnalyzer {
                 deal.closed_at.year(),
                 ((deal.closed_at.month() - 1) / 3) + 1
             );
-            period_map.entry(period).or_default().push(deal);
+            period_map.entry(period).or_default().push(*deal);
         }
 
         period_map
@@ -180,7 +192,7 @@ mod tests {
             make_deal("Deal3", 150_000.0, true, None, (2026, 3, 15)),
         ];
 
-        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), &deals);
+        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), None, &deals);
         assert_eq!(analysis.total_deals, 3);
         assert_eq!(analysis.won, 2);
         assert_eq!(analysis.lost, 1);
@@ -198,7 +210,7 @@ mod tests {
             make_deal("Deal4", 100_000.0, true, None, (2026, 4, 15)),
         ];
 
-        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), &deals);
+        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), None, &deals);
         assert_eq!(analysis.top_loss_reasons.len(), 2);
         assert_eq!(analysis.top_loss_reasons[0].reason, "Price");
         assert_eq!(analysis.top_loss_reasons[0].count, 2);
@@ -212,7 +224,7 @@ mod tests {
             make_deal("Deal3", 100_000.0, true, None, (2026, 5, 15)),
         ];
 
-        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), &deals);
+        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), None, &deals);
         assert_eq!(analysis.trends.len(), 2);
         assert_eq!(analysis.trends[0].period, "2026-Q1");
         assert_eq!(analysis.trends[0].deals_count, 2);
@@ -222,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_empty_deals() {
-        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), &[]);
+        let analysis = WinLossAnalyzer::analyze(Uuid::nil(), Uuid::nil(), None, &[]);
         assert_eq!(analysis.total_deals, 0);
         assert_eq!(analysis.win_rate, 0.0);
         assert!(analysis.top_loss_reasons.is_empty());

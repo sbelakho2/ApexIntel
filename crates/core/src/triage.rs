@@ -244,12 +244,29 @@ pub struct TriageStats {
 // ─── Composite Score Calculation ──────────────────────────────────────────
 
 /// Calculate a composite priority score from dimensions and weights.
+///
+/// The result is normalised by the weight sum (so custom weights need not add
+/// up to 1.0) and clamped to `[0.0, 1.0]`; non-finite inputs yield `0.0`.
 pub fn composite_score(dimensions: &TriageDimensions, weights: &TriageWeights) -> f64 {
-    dimensions.urgency * weights.urgency
+    let total_weight = weights.urgency
+        + weights.impact
+        + weights.actionability
+        + weights.novelty
+        + weights.confidence;
+    if !total_weight.is_finite() || total_weight <= 0.0 {
+        return 0.0;
+    }
+    let raw = dimensions.urgency * weights.urgency
         + dimensions.impact * weights.impact
         + dimensions.actionability * weights.actionability
         + dimensions.novelty * weights.novelty
-        + dimensions.confidence * weights.confidence
+        + dimensions.confidence * weights.confidence;
+    let normalized = raw / total_weight;
+    if normalized.is_finite() {
+        normalized.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Map a composite score to a severity band label.

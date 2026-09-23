@@ -854,6 +854,10 @@ impl CompetitiveIntelligenceEngine {
         let first = shares.first()?;
         let last = shares.last()?;
 
+        // A zero (or near-zero) base makes the relative change undefined.
+        if first.abs() < f64::EPSILON {
+            return Some(TrendDirection::Stable);
+        }
         let change = (last - first) / first * 100.0;
         if change > 5.0 {
             Some(TrendDirection::Increasing)
@@ -979,10 +983,13 @@ impl CompetitiveIntelligenceEngine {
     }
 
     fn calculate_threat_level(&self, competitor: &Competitor) -> ThreatLevel {
-        let threat_score = competitor.market_position.market_share_percent * 0.3
-            + (competitor.market_position.growth_rate.max(0.0) / 0.5) * 0.3 // Normalized growth
-            + competitor.market_position.relative_strength * 0.2
-            + competitor.market_position.innovation_index * 0.2;
+        // `market_share_percent` is 0–100 while the other inputs are 0–1;
+        // mixing them raw made almost every competitor "Severe".
+        let share = (competitor.market_position.market_share_percent / 100.0).clamp(0.0, 1.0);
+        let growth = (competitor.market_position.growth_rate.max(0.0) / 0.5).clamp(0.0, 1.0);
+        let strength = competitor.market_position.relative_strength.clamp(0.0, 1.0);
+        let innovation = competitor.market_position.innovation_index.clamp(0.0, 1.0);
+        let threat_score = share * 0.3 + growth * 0.3 + strength * 0.2 + innovation * 0.2;
 
         if threat_score > 0.8 {
             ThreatLevel::Severe
@@ -1438,18 +1445,28 @@ mod tests {
     fn test_threat_level_calculation() {
         let mut engine = CompetitiveIntelligenceEngine::new();
 
-        let id = engine.add_competitor(
-            Competitor::new("Aggressive Competitor", IndustrySector::Technology)
-                .with_market_share(25.0),
+        // A 25% share with no other signal is a *low* threat under the corrected
+        // 0–1 normalisation (previously 25 was mixed in raw and scored Severe).
+        let share_only = engine.add_competitor(
+            Competitor::new("Share Only", IndustrySector::Technology).with_market_share(25.0),
+        );
+        let level = engine.calculate_threat_level(engine.get_competitor(share_only).unwrap());
+        assert!(
+            matches!(level, ThreatLevel::Minimal | ThreatLevel::Low),
+            "25% share alone should not be Severe, got {level:?}"
         );
 
-        let competitor = engine.get_competitor(id).unwrap();
-        let threat_level = engine.calculate_threat_level(competitor);
-
-        // High market share and assumed good metrics should result in higher threat
+        // A genuinely dominant competitor is High/Severe.
+        let mut dominant = Competitor::new("Aggressive Competitor", IndustrySector::Technology);
+        dominant.market_position.market_share_percent = 40.0;
+        dominant.market_position.relative_strength = 0.9;
+        dominant.market_position.growth_rate = 0.45;
+        dominant.market_position.innovation_index = 0.9;
+        let id = engine.add_competitor(dominant);
+        let threat_level = engine.calculate_threat_level(engine.get_competitor(id).unwrap());
         assert!(matches!(
             threat_level,
-            ThreatLevel::High | ThreatLevel::Severe | ThreatLevel::Moderate
+            ThreatLevel::High | ThreatLevel::Severe
         ));
     }
 

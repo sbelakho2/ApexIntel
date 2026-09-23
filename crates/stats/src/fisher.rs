@@ -21,16 +21,26 @@ pub struct FisherExactResult {
 /// Returns `1.0` when the total count is zero.
 /// Result is always in `[0.0, 1.0]` and is never `NaN`.
 pub fn p_value(a: u64, b: u64, c: u64, d: u64) -> f64 {
-    let n = a + b + c + d;
-    if n == 0 {
+    // Exact enumeration need not be attempted on adversarial inputs. Guard the
+    // marginal sums against u64 overflow (using u128) and cap the enumeration
+    // loop, returning the conservative `1.0` when the exact test is infeasible.
+    let n_u = a as u128 + b as u128 + c as u128 + d as u128;
+    if n_u == 0 {
         return 1.0;
     }
+    let row1_u = a as u128 + b as u128;
+    let col1_u = a as u128 + c as u128;
+    if n_u > u64::MAX as u128 || row1_u.min(col1_u) > 1_000_000 {
+        return 1.0;
+    }
+
+    let n = n_u as u64;
+    let row1 = row1_u as u64;
+    let col1 = col1_u as u64;
 
     let log_p_cutoff = log_hypergeometric(a, b, c, d, n);
 
     let mut p = 0.0;
-    let row1 = a + b;
-    let col1 = a + c;
 
     for x in 0..=row1.min(col1) {
         let y = row1.saturating_sub(x);
@@ -68,16 +78,23 @@ pub fn analyze(a: u64, b: u64, c: u64, d: u64) -> FisherExactResult {
 }
 
 /// Odds ratio for a 2×2 table.
+///
+/// Returns `+∞` when the denominator is zero but the numerator is positive,
+/// and `NaN` when the ratio is genuinely undefined (`a·d = 0` and `b·c = 0`).
 pub fn odds_ratio(a: u64, b: u64, c: u64, d: u64) -> f64 {
     if b == 0 || c == 0 {
+        // 0/0 (or 0/x over 0) is undefined rather than infinite.
+        if a == 0 || d == 0 {
+            return f64::NAN;
+        }
         return f64::INFINITY;
     }
     (a as f64 * d as f64) / (b as f64 * c as f64)
 }
 
 pub fn woolf_odds_ratio_confidence_interval(a: u64, b: u64, c: u64, d: u64) -> Option<(f64, f64)> {
-    let total = a + b + c + d;
-    if total == 0 {
+    let total_u = a as u128 + b as u128 + c as u128 + d as u128;
+    if total_u == 0 || total_u > u64::MAX as u128 {
         return None;
     }
 

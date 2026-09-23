@@ -202,12 +202,13 @@ pub(crate) async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStor
                 // blocking forever. The inner task also contains panics:
                 // a JoinError becomes a Failed run rather than silently
                 // vanishing (which previously left no history record).
-                match tokio::time::timeout(
-                    timeout,
-                    tokio::spawn(async move { execute_job(&run_kind, &store).await }),
-                )
-                .await
-                {
+                //
+                // The JoinHandle is retained and aborted on timeout: dropping
+                // a Tokio JoinHandle only *detaches* the task, so a timed-out
+                // job previously kept running (and could be started again).
+                let mut job_handle =
+                    tokio::spawn(async move { execute_job(&run_kind, &store).await });
+                match tokio::time::timeout(timeout, &mut job_handle).await {
                     Ok(Ok(run)) => run,
                     Ok(Err(join_error)) => {
                         let mut run = JobRun::new(fail_kind);
@@ -215,6 +216,7 @@ pub(crate) async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStor
                         run
                     }
                     Err(_) => {
+                        job_handle.abort();
                         let mut run = JobRun::new(fail_kind);
                         run.fail(&format!(
                             "job timed out after {}s (enforced by scheduler)",

@@ -84,7 +84,11 @@ impl RobotsRules {
             } else if lower.starts_with("crawl-delay:") {
                 let value = line[12..].trim();
                 if let Ok(d) = value.parse::<f64>() {
-                    crawl_delay = Some(d);
+                    // Reject NaN/Inf/negative delays: `Duration::from_secs_f64`
+                    // panics on them, so a hostile robots.txt could crash a crawl.
+                    if d.is_finite() && d >= 0.0 {
+                        crawl_delay = Some(d);
+                    }
                 }
             }
         }
@@ -131,9 +135,12 @@ impl RobotsRules {
 
     /// Get the crawl delay as Duration.
     pub fn crawl_delay_duration(&self) -> Option<Duration> {
-        self.crawl_delay.map(|d| {
+        self.crawl_delay.and_then(|d| {
+            if !d.is_finite() {
+                return None;
+            }
             let clamped = d.clamp(MIN_CRAWL_DELAY_SECS, MAX_CRAWL_DELAY_SECS);
-            Duration::from_secs_f64(clamped)
+            Some(Duration::from_secs_f64(clamped))
         })
     }
 

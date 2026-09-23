@@ -31,6 +31,17 @@ pub struct BayesianFusionResult {
 }
 
 pub fn fuse_signals_detailed(prior: f64, likelihoods: &[(f64, f64)]) -> BayesianFusionResult {
+    // A non-finite prior would otherwise poison the log-odds and produce a NaN
+    // posterior. Report a neutral, finite result instead.
+    if !prior.is_finite() {
+        return BayesianFusionResult {
+            posterior: 0.0,
+            capped_updates: 0,
+            cap_trigger_rate: 0.0,
+            interpretation: "unknown",
+            combined_bayes_factor: 0.0,
+        };
+    }
     if prior <= 0.0 {
         return BayesianFusionResult {
             posterior: 0.0,
@@ -54,6 +65,11 @@ pub fn fuse_signals_detailed(prior: f64, likelihoods: &[(f64, f64)]) -> Bayesian
     let mut log_odds = prior_log_odds;
     let mut capped_updates = 0usize;
     for &(p_true, p_false) in likelihoods {
+        // Non-finite likelihoods are unusable; skip them rather than emitting a
+        // NaN posterior.
+        if !p_true.is_finite() || !p_false.is_finite() {
+            continue;
+        }
         if p_true.abs() < 1e-12 && p_false.abs() < 1e-12 {
             continue; // both near zero — uninformative signal
         }
@@ -114,8 +130,19 @@ impl BetaUpdater {
         }
     }
 
-    /// Create with custom prior parameters.
+    /// Create with custom prior parameters. Non-finite or non-positive values
+    /// fall back to the neutral `1.0` prior so `mean()`/`variance()` stay valid.
     pub fn new(alpha: f64, beta: f64) -> Self {
+        let alpha = if alpha.is_finite() && alpha > 0.0 {
+            alpha
+        } else {
+            1.0
+        };
+        let beta = if beta.is_finite() && beta > 0.0 {
+            beta
+        } else {
+            1.0
+        };
         Self {
             alpha,
             beta,

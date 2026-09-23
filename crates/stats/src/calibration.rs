@@ -55,6 +55,10 @@ fn has_both_classes(samples: &[CalibrationSample]) -> bool {
 }
 
 pub fn legacy_score_to_probability(score: f64) -> f64 {
+    if !score.is_finite() {
+        // An unknown score must not map to the highest alert probability.
+        return 0.05;
+    }
     if score < 1.0 {
         0.05
     } else if score < 3.0 {
@@ -91,6 +95,11 @@ pub fn fit_platt_scaling(samples: &[CalibrationSample]) -> Option<PlattScalingMo
         let mut grad_slope = 0.0;
         let mut grad_intercept = 0.0;
         for sample in samples {
+            // Skip non-finite scores: otherwise a single NaN makes the fitted
+            // intercept permanently NaN.
+            if !sample.raw_score.is_finite() {
+                continue;
+            }
             let probability = stable_logistic(slope * sample.raw_score + intercept);
             let outcome = if sample.actual_outcome { 1.0 } else { 0.0 };
             let error = probability - outcome;
@@ -100,6 +109,10 @@ pub fn fit_platt_scaling(samples: &[CalibrationSample]) -> Option<PlattScalingMo
         slope -= learning_rate * grad_slope;
         intercept -= learning_rate * grad_intercept;
         slope = slope.max(1e-6);
+    }
+
+    if !slope.is_finite() || !intercept.is_finite() {
+        return None;
     }
 
     Some(PlattScalingModel { slope, intercept })

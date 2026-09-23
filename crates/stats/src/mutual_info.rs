@@ -7,6 +7,12 @@
 //! **Bins parameter**: must be ≥ 1.  `bins = 0` is treated as having
 //! insufficient data and returns `0.0` immediately.  More bins improve
 //! resolution but require more data; a rule of thumb is `bins ≈ √(n/5)`.
+//!
+//! The bin count is capped at [`MAX_BINS`] so that the `bins²` joint grid and
+//! `2 × bins` arithmetic stay bounded for adversarial inputs.
+
+/// Hard upper bound on the number of bins used by any estimator.
+pub const MAX_BINS: usize = 1024;
 
 /// Estimate mutual information between two variables using binned estimation.
 ///
@@ -54,6 +60,13 @@ pub fn normalized_mi_adaptive(x: &[f64], y: &[f64]) -> f64 {
 }
 
 fn estimate_with_bins(x: &[f64], y: &[f64], bins: usize) -> f64 {
+    // Zero bins is a degenerate request; cap the upper bound so adversarial
+    // inputs cannot overflow `bins * 2` or allocate an unbounded bins² grid.
+    if bins == 0 {
+        return 0.0;
+    }
+    let bins = bins.min(MAX_BINS);
+
     let finite_pairs: Vec<(f64, f64)> = x
         .iter()
         .zip(y.iter())
@@ -67,7 +80,7 @@ fn estimate_with_bins(x: &[f64], y: &[f64], bins: usize) -> f64 {
         .collect();
 
     let n = finite_pairs.len();
-    if n < bins * 2 || bins == 0 {
+    if n < bins.saturating_mul(2) {
         return 0.0;
     }
 
@@ -186,7 +199,7 @@ fn adaptive_bin_count(data: &[f64]) -> usize {
     if bin_width < 1e-12 {
         return 1;
     }
-    ((range / bin_width).ceil() as usize).max(1)
+    ((range / bin_width).ceil() as usize).clamp(1, MAX_BINS)
 }
 
 fn percentile(sorted: &[f64], quantile: f64) -> f64 {

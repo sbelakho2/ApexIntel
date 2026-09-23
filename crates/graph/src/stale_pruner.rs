@@ -202,7 +202,7 @@ impl StalePruner {
         r#"
         SELECT
             e.id, e.name, e.entity_type,
-            MAX(o.observed_at) AS last_observation_at,
+            MAX(o.ts_utc) AS last_observation_at,
             COUNT(o.id) AS observation_count,
             e.created_at, e.region
         FROM (
@@ -214,9 +214,9 @@ impl StalePruner {
         ) e
         LEFT JOIN observations o ON o.entity_id = e.id
         GROUP BY e.id, e.name, e.entity_type, e.created_at, e.region
-        HAVING MAX(o.observed_at) IS NULL
-           OR MAX(o.observed_at) < NOW() - ($1::text || ' days')::INTERVAL
-        ORDER BY MAX(o.observed_at) ASC NULLS FIRST
+        HAVING MAX(o.ts_utc) IS NULL
+           OR MAX(o.ts_utc) < NOW() - ($1::text || ' days')::INTERVAL
+        ORDER BY MAX(o.ts_utc) ASC NULLS FIRST
         "#
         .to_string()
     }

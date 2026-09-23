@@ -217,7 +217,15 @@ pub fn round_to_dp(value: f64, decimal_places: u32) -> f64 {
     if !value.is_finite() {
         return value;
     }
+    // More than ~15 decimal places is below f64 precision; the scale factor
+    // overflows to infinity and would turn a finite value into NaN.
+    if decimal_places > 15 {
+        return value;
+    }
     let factor = 10_f64.powi(decimal_places as i32);
+    if !factor.is_finite() || factor == 0.0 {
+        return value;
+    }
     (value * factor).round() / factor
 }
 

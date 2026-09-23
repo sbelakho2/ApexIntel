@@ -16,18 +16,30 @@
 /// overlapping points and their correlation is reported as `0.0` (B256).
 pub fn lagged_xcorr(x: &[f64], y: &[f64], max_lag: i32) -> Vec<(i32, f64)> {
     let n = x.len().min(y.len());
-    if n < 3 {
+    if n < 3 || max_lag < 0 {
+        // Negative lags are meaningless and `-i32::MIN` overflows.
+        return vec![];
+    }
+    // Bound the output size for adversarial requests (`i32::MAX` would otherwise
+    // attempt to allocate ~4 billion entries).
+    if (max_lag as i64) * 2 + 1 > 100_000 {
         return vec![];
     }
 
     (-max_lag..=max_lag)
         .map(|lag| {
-            // Collect overlapping indices
+            // Collect overlapping, finite index pairs
             let pairs: Vec<(f64, f64)> = (0..n)
                 .filter_map(|i| {
                     let j = i as i32 + lag;
                     if j >= 0 && (j as usize) < n {
-                        Some((x[i], y[j as usize]))
+                        let a = x[i];
+                        let b = y[j as usize];
+                        if a.is_finite() && b.is_finite() {
+                            Some((a, b))
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }

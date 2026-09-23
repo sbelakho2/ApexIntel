@@ -785,7 +785,13 @@ pub async fn graph_page(
             "node_type": normalize_node_type(&node.node_type),
         })).collect::<Vec<_>>(),
     })
-    .to_string();
+    .to_string()
+    // Escape characters that would let a crawled entity label break out of the
+    // `<script type="application/json">` block. These escapes are still valid
+    // JSON string escapes, so `JSON.parse` decodes them back.
+    .replace('&', "\\u0026")
+    .replace('<', "\\u003c")
+    .replace('>', "\\u003e");
 
     let tpl = GraphPage {
         current_path: ctx.current_path,

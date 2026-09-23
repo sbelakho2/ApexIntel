@@ -133,17 +133,17 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)
         EntityType::Site => "sites",
     };
 
-    // 1. Record in entity_merges table
+    // 1. Record in entity_merges table (schema: entity_type, survivor_id,
+    //    merged_ids UUID[], merge_reason, merged_by).
     for source_id in &event.source_ids {
         stmts.push((
-            "INSERT INTO entity_merges (source_id, target_id, entity_type, merge_reason, confidence, merged_by) \
-             VALUES ($1, $2, $3, $4, $5, $6)".to_string(),
+            "INSERT INTO entity_merges (entity_type, survivor_id, merged_ids, merge_reason, merged_by) \
+             VALUES ($1, $2::uuid, ARRAY[$3::uuid], $4, $5)".to_string(),
             vec![
-                source_id.clone(),
-                event.target_id.clone(),
                 entity_type_str.clone(),
+                event.target_id.clone(),
+                source_id.clone(),
                 reason_json.clone(),
-                event.confidence.to_string(),
                 event.merged_by.clone(),
             ],
         ));
@@ -169,9 +169,9 @@ pub fn generate_merge_sql(event: &EntityMergeEvent) -> Vec<(String, Vec<String>)
         ));
     }
 
-    // 4. Record in audit log
+    // 4. Record in audit log (schema column is `event_type`, not `action`)
     stmts.push((
-        "INSERT INTO audit_log (action, entity_type, entity_id, detail) \
+        "INSERT INTO audit_log (event_type, entity_type, entity_id, detail) \
          VALUES ($1, $2, $3, $4)"
             .to_string(),
         vec![

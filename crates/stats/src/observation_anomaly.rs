@@ -72,7 +72,9 @@ pub fn detect_volume_anomalies(
     let mut anomalies = Vec::new();
 
     for (obs_type, type_counts) in &by_type {
-        if type_counts.len() < window + 1 {
+        // `<= window` avoids the `window + 1` overflow for huge window values
+        // and guarantees the index arithmetic below cannot underflow.
+        if type_counts.len() <= window {
             continue; // Not enough history
         }
 
@@ -80,7 +82,8 @@ pub fn detect_volume_anomalies(
         let Some(current) = type_counts.last() else {
             continue;
         };
-        let history = &type_counts[type_counts.len() - 1 - window..type_counts.len() - 1];
+        let end = type_counts.len() - 1;
+        let history = &type_counts[end - window..end];
 
         let avg: f64 = history.iter().map(|c| c.count as f64).sum::<f64>() / history.len() as f64;
         let matching_weekday: Vec<&DailyObsCount> = history

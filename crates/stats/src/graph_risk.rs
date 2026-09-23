@@ -87,7 +87,13 @@ pub fn contagion_score(
             }
         }
     }
-    total.min(1.0)
+    // Negative edge weights or non-finite risks must not escape the [0,1]
+    // contract (and `NaN.min(1.0) == 1.0`, so a plain `.min()` is unsafe).
+    if !total.is_finite() {
+        0.0
+    } else {
+        total.clamp(0.0, 1.0)
+    }
 }
 
 /// Identify high-risk clusters: connected components of nodes above threshold.

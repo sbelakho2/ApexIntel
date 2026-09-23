@@ -7,6 +7,85 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — Deep audit, pass 3 (B389–B396)
+
+Driven by five parallel read-only audits (core, persistence, worker, API/UI,
+analysis). Fixes are verified by the adversarial suites and the Woodpecker
+pipeline.
+
+### Statistics / core numerical hardening (B389)
+- `fisher::p_value` no longer overflows `u64` marginal sums and refuses
+  infeasible exact enumeration; `odds_ratio` distinguishes undefined (`NaN`)
+  from infinite; Woolf CI rejects overflowing totals.
+- `mutual_info` caps bins (`MAX_BINS`) so `bins*2`/`bins²` cannot overflow or
+  allocate unboundedly; `changepoint` validates its config and uses saturating
+  arithmetic; `correlation::lagged_xcorr` filters NaN pairs and rejects
+  `i32::MIN`/oversized lags; `graph_risk::contagion_score` and `soft_saturate`
+  clamp/guard non-finite and negative inputs; `bayesian` fusion and
+  `BetaUpdater` guard non-finite priors/likelihoods.
+- `validation::round_to_dp` stays finite for absurd precision;
+  `quality_score::compute_quality` can no longer emit NaN;
+  `triage::composite_score` normalises by the weight sum and clamps to `[0,1]`;
+  `analysis::assess_evidence_quality` no longer fabricates independence for
+  unsourced records.
+- `canonical_value_key` recurses into arrays, filters volatile keys at every
+  level, and length-prefixes components (fixes dedup failures for list
+  payloads and delimiter-ambiguity ID collisions).
+
+### Analysis correctness (B390)
+- `learning::miner::odds_ratio` returns `0` for a zero numerator (the `100×`
+  cap previously created patterns from zero co-occurrence).
+- `threat_intel::calculate_threat_level` normalises `market_share_percent`
+  (0–100) against the 0–1 features; previously almost every competitor was
+  `Severe`. `calculate_market_share_trend` guards a zero base.
+- `recipes::engine` no longer propagates NaN confidence and its impact gate can
+  reject a zero-strength signal.
+- `WinLossAnalyzer::analyze` scopes to the competitor; ICP scoring stops
+  penalising an unknown region.
+
+### Worker / runtime (B391)
+- Scheduler timeouts now `abort()` the job (`JoinHandle` was dropped → detach →
+  zombie run + concurrent re-fire).
+- `adversarial` inserts into the real `pattern_candidates` schema.
+- `canonical_value_key` excludes provider scan timestamps (`checked_at`, …),
+  restoring `dns_posture` observation idempotency.
+- `crawl::robots` rejects `NaN`/negative `Crawl-delay` (the old path panicked);
+  `retry_engine` no longer calls `blocking_read` in async and promotes
+  `Open → HalfOpen` after cooldown.
+
+### Security (B392)
+- Removed stored-XSS sinks: insight `summary`/`body` rendered as text (was
+  `|safe` over worker/LLM narrative) and the graph JSON block escapes
+  `<`/`>`/`&`.
+- The browser WebSocket accepts the session cookie (previously every dashboard
+  connection 401-looped because a token was required first).
+
+### Persistence (B393)
+- New idempotent migration `045_schema_reconciliation.sql` adds the columns,
+  unique constraints and tables the code references but the applied lineage
+  never created.
+- Code fixed to the real schema: `audit_log.event_type`, `entity_merges`
+  (survivor_id/merged_ids), `observations.ts_utc` in stale-pruner/replay.
+
+### Web (B394)
+- Unmatched routes serve the styled HTML 404 page while `/api/*` keeps a JSON
+  404 envelope.
+
+### Tests (B395)
+- Added `crates/stats/tests/adversarial_stats.rs` and
+  `crates/core/tests/adversarial_core.rs` (hostile `u64::MAX`/`usize::MAX`,
+  NaN/Inf, invalid configs, array/delimiter canonicalisation), and corrected
+  the threat-level test to assert both boundaries.
+
+### Known follow-ups
+- `DECIMAL(5,4)` → `DOUBLE PRECISION` for strategic/threat/supplier/pipeline/
+  source-evidence scores is blocked by dependent views; needs a
+  view-preserving migration.
+- Dead/duplicate lineage in `crates/store/migrations/`, unused resilience
+  modules in `crawl`/`worker`, and the unwired WASM UI remain.
+
+---
+
 ## [Unreleased] — Independent re-audit (B359–B380)
 
 A zero-context re-audit of every crate plus the web UI. The build now passes

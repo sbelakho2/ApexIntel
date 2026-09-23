@@ -250,22 +250,42 @@ pub fn compute_quality(
         .map(|stats| stats.effective_reliability)
         .unwrap_or(tier_prior_score);
 
-    // Extraction confidence (clamp to 0–1)
-    let confidence_score = input.extraction_confidence.clamp(0.0, 1.0);
+    // Extraction confidence (clamp to 0–1). Non-finite values are treated as
+    // no confidence rather than propagating NaN into the total.
+    let confidence_score = if input.extraction_confidence.is_finite() {
+        input.extraction_confidence.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
-    // Freshness — exponential decay with half-life
+    // Adaptive reliability can itself be non-finite if upstream stats are.
+    let source_score = if source_score.is_finite() {
+        source_score.clamp(0.0, 1.0)
+    } else {
+        tier_prior_score.clamp(0.0, 1.0)
+    };
+
+    // Freshness — exponential decay with half-life. A non-finite or non-positive
+    // half-life would make `powf` produce NaN/inf; fall back to "no decay".
     let age_days = (now - input.observed_at).num_hours() as f64 / 24.0;
-    let freshness_score = if age_days <= 0.0 {
+    let freshness_score = if age_days <= 0.0
+        || !config.freshness_halflife_days.is_finite()
+        || config.freshness_halflife_days <= 0.0
+    {
         1.0
     } else {
         0.5_f64.powf(age_days / config.freshness_halflife_days)
     };
 
-    // Weighted total
-    let total = (source_score * config.source_weight
+    // Weighted total. `f64::clamp` propagates NaN, so guard explicitly.
+    let raw_total = source_score * config.source_weight
         + confidence_score * config.confidence_weight
-        + freshness_score * config.freshness_weight)
-        .clamp(0.0, 1.0);
+        + freshness_score * config.freshness_weight;
+    let total = if raw_total.is_finite() {
+        raw_total.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
     QualityScore {
         total,

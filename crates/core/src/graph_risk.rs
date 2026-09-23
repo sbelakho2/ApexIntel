@@ -94,6 +94,10 @@ pub fn propagate_weighted_risk_with_decay(
 fn soft_saturate(x: f64) -> f64 {
     // Risk level at which the curve starts bending toward 1.0.
     const KNEE: f64 = 0.8;
+    if x.is_nan() {
+        // Non-finite input must not poison the [0,1] risk contract.
+        return 0.0;
+    }
     if x <= 0.0 {
         0.0
     } else if x <= KNEE {

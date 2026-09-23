@@ -209,7 +209,14 @@ impl IcpScorer {
             score += (matches as f64 / input.industry_tags.len() as f64).min(1.0);
         }
 
-        // Region match.
+        // Region match. Only count this dimension when a region/country is
+        // actually known; otherwise an account with unknown region would score
+        // strictly lower than one with a non-target region.
+        let region_present = input.region.as_ref().is_some_and(|s| !s.trim().is_empty())
+            || input
+                .country_code
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty());
         let region_hits = [&input.region, &input.country_code]
             .iter()
             .filter_map(|r| r.as_ref().map(|s| s.to_string()))
@@ -219,8 +226,10 @@ impl IcpScorer {
                     .iter()
                     .any(|t| rl.contains(&t.to_lowercase()))
             });
-        parts += 1.0;
-        score += if region_hits { 1.0 } else { 0.0 };
+        if region_present {
+            parts += 1.0;
+            score += if region_hits { 1.0 } else { 0.0 };
+        }
 
         // Employee band.
         if let Some(emp) = input.employee_estimate {

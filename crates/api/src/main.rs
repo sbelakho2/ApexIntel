@@ -1014,23 +1014,25 @@ async fn warnings_ws(
 ) -> axum::response::Response {
     let auth_options = WebSocketAuthOptions::default();
 
-    let token_result = extract_websocket_token(&headers, query.token.as_deref(), auth_options);
-    let token = match token_result {
-        Ok(token) => token,
-        Err(err) => return auth_error_response(err),
-    };
+    // A browser dashboard connects with only the session cookie (no token), so
+    // a missing token must fall through to session validation rather than
+    // failing immediately. A token that is present but invalid is still
+    // rejected.
+    let key_auth = extract_websocket_token(&headers, query.token.as_deref(), auth_options)
+        .ok()
+        .map(|token| validate_websocket_token(&token, &state.api_keys, Utc::now()));
 
     // B294: the extracted token must actually be validated — previously any
     // non-empty `?token=` value granted a live alert stream. API keys are
     // checked first; browser dashboards fall back to the session cookie.
-    let key_auth = validate_websocket_token(&token, &state.api_keys, Utc::now());
     let session_auth = || {
         let secret = current_session_secret();
         (!secret.is_empty())
             .then(|| validate_session(&headers, secret))
             .flatten()
     };
-    if key_auth.is_err() && session_auth().is_none() {
+    let key_ok = matches!(key_auth, Some(Ok(_)));
+    if !key_ok && session_auth().is_none() {
         tracing::warn!("WebSocket connection rejected: invalid token");
         return ws_unauthorized_response("Invalid token");
     }

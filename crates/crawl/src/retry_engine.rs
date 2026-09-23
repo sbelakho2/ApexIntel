@@ -122,6 +122,21 @@ impl DomainCircuitBreaker {
         }
     }
 
+    /// Promote an `Open` breaker to `HalfOpen` once the recovery window has
+    /// elapsed, so a recovered domain can be probed and closed again.
+    fn maybe_half_open(&mut self) {
+        if self.state == CircuitState::Open
+            && self
+                .last_failure
+                .map(|lf| {
+                    lf.elapsed() >= Duration::from_millis(CIRCUIT_BREAKER_RECOVERY_TIMEOUT_MS)
+                })
+                .unwrap_or(true)
+        {
+            self.transition_to(CircuitState::HalfOpen);
+        }
+    }
+
     fn transition_to(&mut self, new_state: CircuitState) {
         if self.state != new_state {
             info!(
@@ -423,10 +438,13 @@ impl RetryEngine {
 
         // Check max retries
         if attempt >= self.config.max_retries {
-            // If we have cached content, use it
-            if let Some(cached) = self.cache.blocking_read().get(domain) {
-                if cached.is_fresh() {
-                    return RetryDecision::retry_with_cache(attempt, Duration::ZERO);
+            // If we have cached content, use it. `try_read` (not `blocking_read`)
+            // because this runs inside an async context.
+            if let Ok(cache) = self.cache.try_read() {
+                if let Some(cached) = cache.get(domain) {
+                    if cached.is_fresh() {
+                        return RetryDecision::retry_with_cache(attempt, Duration::ZERO);
+                    }
                 }
             }
             return RetryDecision::stop(
@@ -508,7 +526,9 @@ impl RetryEngine {
 
     /// Check if a domain is available (circuit not open)
     pub async fn is_domain_available(&self, domain: &str) -> bool {
-        if let Some(cb) = self.circuit_breakers.read().await.get(domain) {
+        let mut breakers = self.circuit_breakers.write().await;
+        if let Some(cb) = breakers.get_mut(domain) {
+            cb.maybe_half_open();
             cb.is_available()
         } else {
             true

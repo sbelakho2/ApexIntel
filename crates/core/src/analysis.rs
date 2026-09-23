@@ -134,7 +134,10 @@ pub fn assess_evidence_quality(records: &[EvidenceRecord], now: DateTime<Utc>) -
     }
 
     let source_count = records.len();
-    let independent_source_count = independent_sources.len().max(1);
+    // Do not inflate independence: records with no source id/url contribute no
+    // independent source (previously `.max(1)` gave a single unsourced record
+    // full independence credit).
+    let independent_source_count = independent_sources.len();
     let corroboration_score = if support_count == 0 {
         0.0
     } else {

@@ -271,11 +271,13 @@ pub fn estimate_impact(values: &[f64]) -> f64 {
     }
     let max_abs = values
         .iter()
-        .filter(|v| !v.is_nan() && !v.is_infinite()) // B135: skip NaN/Inf
+        .filter(|v| v.is_finite()) // B135: skip NaN/Inf
         .map(|v| v.abs())
         .fold(0.0f64, |a, b| a.max(b));
-    // Sigmoid normalization to 0-1
-    1.0 / (1.0 + (-max_abs + 2.0).exp())
+    // Exponential saturation in [0, 1): 0 for a zero-strength signal, ~1 as
+    // strength grows. (The previous shifted sigmoid was ~0.12 at zero, so the
+    // `impact < 0.1` gate below could never reject a zero-strength signal.)
+    1.0 - (-max_abs).exp()
 }
 
 /// Estimate confidence from number of signals and their (transformed) strengths.
@@ -336,7 +338,13 @@ pub fn estimate_confidence(signal_values: &[f64], recipe: &Recipe) -> f64 {
         recipe.false_positive_count,
         None,
     );
-    calibration.calibrated_confidence.clamp(0.05, 1.0)
+    let calibrated = calibration.calibrated_confidence.clamp(0.05, 1.0);
+    // Non-finite signal values must not leak a NaN confidence downstream.
+    if calibrated.is_finite() {
+        calibrated
+    } else {
+        0.05
+    }
 }
 
 // ────────────────────────────────────────────
@@ -350,7 +358,7 @@ const PARTIAL_MATCH_MIN_FRACTION: f64 = 0.50;
 ///
 /// Tries exact (all signals) matching first.  When that fails, uses partial
 /// matching with a fallback to `{observation_type}.count` keys.  The recipe
-/// fires if at least [`PARTIAL_MATCH_MIN_FRACTION`] (40 %) of its signals can
+/// fires if at least [`PARTIAL_MATCH_MIN_FRACTION`] (50 %) of its signals can
 /// be satisfied; confidence is then scaled by the match fraction so fully-
 /// matched recipes always rank higher.
 pub fn evaluate_recipe(
