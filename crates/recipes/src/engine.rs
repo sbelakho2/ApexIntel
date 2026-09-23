@@ -65,7 +65,18 @@ pub type FeatureMap = HashMap<String, f64>;
 // ────────────────────────────────────────────
 
 /// Build a feature key from a signal spec.
+///
+/// If the signal has a discriminating value (e.g. `role_family=Procurement`),
+/// the value is incorporated into the key so that different values produce
+/// different feature keys: `JobPost.role_family.Procurement` vs
+/// `JobPost.role_family.Engineering`. Without this, all `=value` discriminators
+/// in seed recipes are silently ignored, collapsing semantically distinct recipes.
 pub fn signal_key(spec: &SignalSpec) -> String {
+    if let Some(ref value) = spec.value {
+        if !value.is_empty() {
+            return format!("{}.{}.{}", spec.observation_type, spec.field, value);
+        }
+    }
     format!("{}.{}", spec.observation_type, spec.field)
 }
 

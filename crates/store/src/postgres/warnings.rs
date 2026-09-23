@@ -399,6 +399,11 @@ impl PgStore {
                            AND created_at > NOW() - $8::INTERVAL
                            AND left(trim(regexp_replace(regexp_replace(lower(coalesce(description, '')), '[^a-z0-9]+', ' ', 'g'), '\s+', ' ', 'g')), 380) = $6
                        )
+                       OR (
+                           COALESCE($7, ARRAY[]::uuid[]) <> ARRAY[]::uuid[]
+                           AND COALESCE(entity_ids, ARRAY[]::uuid[]) = COALESCE($7, ARRAY[]::uuid[])
+                           AND created_at > NOW() - $8::INTERVAL
+                       )
                    )
                  ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, ts_utc DESC, id DESC
                  LIMIT 1"#,

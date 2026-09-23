@@ -184,7 +184,7 @@ pub fn default_forums() -> Vec<DarkWebForum> {
             base_url: "https://breachforums.st".into(),
             forum_type: ForumType::Leak,
             access_method: AccessMethod::Clearnet,
-            is_active: false, // often inaccessible — operator must enable
+            is_active: true, // enabled — clearnet mirror often works
             last_checked: None,
             topics_of_interest: vec![
                 "databases".into(),
@@ -198,7 +198,7 @@ pub fn default_forums() -> Vec<DarkWebForum> {
             base_url: "https://exploit.in".into(),
             forum_type: ForumType::Exploit,
             access_method: AccessMethod::Clearnet,
-            is_active: false, // often inaccessible — operator must enable
+            is_active: true, // enabled — clearnet mirror often works
             last_checked: None,
             topics_of_interest: vec![
                 "exploit".into(),

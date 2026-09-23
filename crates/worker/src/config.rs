@@ -98,7 +98,7 @@ pub static LLM_MAX_EVIDENCE_SIGNALS: LazyLock<usize> =
 /// insight stream night after night.
 /// Override with `WEEKLY_ENTITY_INSIGHT_BUDGET` env var.
 pub static WEEKLY_ENTITY_INSIGHT_BUDGET: LazyLock<usize> =
-    LazyLock::new(|| parse_env_with_warning("WEEKLY_ENTITY_INSIGHT_BUDGET", 4usize).clamp(1, 100));
+    LazyLock::new(|| parse_env_with_warning("WEEKLY_ENTITY_INSIGHT_BUDGET", 8usize).clamp(1, 100));
 
 /// Coverage-damping factor `k` for anti-repetition ranking. An entity that
 /// already has `n` insights in the recent window receives a ranking multiplier

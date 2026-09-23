@@ -742,9 +742,10 @@ impl EntityRegistry {
         // Check if any entity name is mentioned in the context text
         for (name, profile) in &self.entities {
             let name_lower = name.to_lowercase();
-            if context_lower.contains(&name_lower)
-                || name_lower.contains(&context_lower)
-            {
+            // B340: only forward containment is valid ("the text mentions
+            // the entity name"). The previous reverse check matched whenever
+            // an entity name happened to contain the signal text.
+            if !name_lower.is_empty() && context_lower.contains(&name_lower) {
                 return Some(profile);
             }
         }
@@ -995,11 +996,13 @@ impl EntityRegistry {
                 .push((name, adjusted_score));
         }
 
-        // Sort within each category by adjusted score
+        // Sort within each category by adjusted score; break ties on name for
+        // determinism (HashMap entry order is otherwise randomized per process).
         for (_, entries) in by_category.iter_mut() {
             entries.sort_by(|a, b| {
                 b.1.partial_cmp(&a.1)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(b.0))
             });
         }
 
@@ -1007,12 +1010,36 @@ impl EntityRegistry {
         let mut selected: Vec<String> = Vec::new();
         let max_per_category = 2;
 
-        // Round-robin across categories to ensure diversity
-        let categories: Vec<&EntityCategory> = by_category.keys().copied().collect();
+        // Round-robin across categories to ensure diversity.
+        // Sort category keys deterministically (by Debug/formatted repr) so the
+        // round-robin order is stable across runs — otherwise HashMap iteration
+        // order randomizes which category is picked first on ties.
+        let categories: Vec<&EntityCategory> = {
+            let mut keys: Vec<&EntityCategory> = by_category.keys().copied().collect();
+            keys.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+            keys
+        };
         let mut category_idx = 0;
-        let mut picks_this_round = 0;
+        // B342: per-round no-progress detection. The previous counter
+        // accumulated across ALL rounds and never reset, so selection always
+        // stopped after ~2×categories iterations — requesting more entities
+        // than that silently returned fewer. Now: one clean pass per round;
+        // a round that selects nothing ends the loop.
+        let mut round_start_len = selected.len();
+        let mut max_iterations = categories.len().saturating_mul(count.max(1) * 4 + 1);
 
         while selected.len() < count {
+            if category_idx > 0 && category_idx % categories.len() == 0 {
+                if selected.len() == round_start_len {
+                    break; // full round with no picks: nothing left to take
+                }
+                round_start_len = selected.len();
+            }
+            if max_iterations == 0 {
+                break; // defensive hard cap on total work
+            }
+            max_iterations -= 1;
+
             let cat = categories[category_idx % categories.len()];
             // Safety: cat is guaranteed to be in by_category since we just inserted it
             let entries = by_category.get_mut(cat)
@@ -1039,12 +1066,6 @@ impl EntityRegistry {
             }
 
             category_idx += 1;
-            picks_this_round += 1;
-
-            // Safety valve: break if we've gone through all categories without picking
-            if picks_this_round > categories.len() * 2 {
-                break;
-            }
         }
 
         // Guarantee at least 1 "cold" entity (no insights in 7+ days)
@@ -1395,11 +1416,13 @@ pub fn default_signal_patterns() -> Vec<SignalPattern> {
     let mut patterns = Vec::new();
 
     // Semiconductor / GPU patterns
-    if let Ok(p) = SignalPattern::with_entity_hint(
+    // B339: no entity hint — the previous "NVIDIA" hint short-circuited
+    // attribution so ANY GPU/AI-chip news was credited to NVIDIA regardless
+    // of which company the text was about.
+    if let Ok(p) = SignalPattern::new(
         r"(?i)\b(GPU|CUDA|Hopper|H100|A100|Tensor\s*Core|AI\s*chip|semiconductor|foundry|3nm|5nm|EUV)\b",
         "semiconductor",
         0.8,
-        "NVIDIA",
     ) {
         patterns.push(p);
     }
@@ -1441,11 +1464,11 @@ pub fn default_signal_patterns() -> Vec<SignalPattern> {
     }
 
     // AI / Software patterns
-    if let Ok(p) = SignalPattern::with_entity_hint(
+    // B339: entity hint removed — see the semiconductor note above.
+    if let Ok(p) = SignalPattern::new(
         r"(?i)\b(artificial intelligence|machine learning|large language model|LLM|GPT|deep learning|neural network)\b",
         "technology",
         0.7,
-        "NVIDIA",
     ) {
         patterns.push(p);
     }
@@ -1571,12 +1594,24 @@ impl RelevanceValidator {
         // dividing by the full pool would penalise well-described entities.
         // Cap the denominator so matching a reasonable number of keywords
         // produces a strong signal regardless of vocabulary size.
+        //
+        // B341: dynamically discovered entities have tiny keyword sets
+        // (name + placeholder tokens like "dynamically_discovered"), so a
+        // name-mention alone scored ~0.25 and could never clear the 0.3
+        // threshold — the pipeline rejected insights about entities it had
+        // itself just discovered. An explicit entity-name mention is itself
+        // a floor-strength relevance signal.
         let total_keywords = keywords.len();
         let effective_total = (total_keywords as f64).min(10.0);
-        let relevance_score = if effective_total > 0.0 {
+        let keyword_ratio = if effective_total > 0.0 {
             (matched_keywords.len() as f64 / effective_total).min(1.0)
         } else {
             0.0
+        };
+        let relevance_score = if entity_name_mentioned {
+            keyword_ratio.max(0.35)
+        } else {
+            keyword_ratio
         };
 
         // Calculate specificity - how many non-generic keywords matched?

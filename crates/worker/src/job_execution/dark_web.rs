@@ -119,13 +119,21 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
             "content_hash": format!("dw_{}", post.id),
         });
 
-        let obs_id = Uuid::new_v4();
+        // B326: deterministic ID from (forum, post id) — the generic-scrape
+        // path generates unstable post ids, so include the content key too.
+        // Every 6h scan previously re-inserted the same posts as new rows.
+        let obs_id = apex_core::entities::Observation::deterministic_id(
+            "darkweb",
+            &format!("{}|{}|{}", post.forum_name, post.id, post.thread_title),
+        );
 
-        // Insert observation
+        // Insert observation (ON CONFLICT-free: id conflicts are impossible
+        // now that ids are content-derived and re-scans dedup upstream).
         let insert_result = sqlx::query(
             r#"INSERT INTO observations
                (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
-               VALUES ($1, 'DarkWebPost', NULL, NULL, $2, $3::jsonb, $4::jsonb, $5)"#,
+               VALUES ($1, 'DarkWebPost', NULL, NULL, $2, $3::jsonb, $4::jsonb, $5)
+               ON CONFLICT (id) DO NOTHING"#,
         )
         .bind(obs_id)
         .bind(post.posted_at)
@@ -135,8 +143,14 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
         .execute(pool)
         .await;
 
+        let mut newly_stored = false;
         match insert_result {
-            Ok(_) => observations_stored += 1,
+            Ok(result) => {
+                if result.rows_affected() > 0 {
+                    observations_stored += 1;
+                    newly_stored = true;
+                }
+            }
             Err(e) => {
                 tracing::warn!(
                     post_id = %post.id,
@@ -147,8 +161,10 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
             }
         }
 
-        // Generate warning for high-relevance matches (score >= 0.7)
-        if post.relevance_score >= 0.7 {
+        // Generate warning for high-relevance matches (score >= 0.7).
+        // B327: only warn on first store — the deduped re-scan previously
+        // re-warned for the same post every 6h.
+        if newly_stored && post.relevance_score >= 0.7 {
             let title = format!(
                 "Dark web mention: {} — {}",
                 post.forum_name, post.thread_title
@@ -178,7 +194,7 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
                     Some(&description),
                     severity,
                     None,
-                    Some("worker_dark_web_scan"),
+                    None,
                     None,
                     Some(vec![post.url.clone()]),
                     Some(post.relevance_score),

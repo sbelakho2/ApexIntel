@@ -1,4 +1,5 @@
 mod adversarial;
+mod anomaly_scan;
 mod custom;
 mod dark_web;
 mod insights;
@@ -9,9 +10,12 @@ mod poi;
 mod psych_profile;
 mod recipes;
 mod resilience;
+mod sales;
 mod security;
+mod social_scan;
 mod starzcrm;
 mod template_variation;
+mod tender_scan;
 mod threat_intel;
 mod triage;
 mod weekly;
@@ -83,7 +87,7 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
         JobKind::SanctionsScreen => security::run_sanctions_screen(kind, store).await,
         JobKind::SlaEnforcement => security::run_sla_enforcement(kind, store).await,
         JobKind::DnsPostureScan => security::run_dns_posture_scan(kind, store).await,
-        JobKind::KevCatalogFetch => security::run_kev_catalog_fetch(kind).await,
+        JobKind::KevCatalogFetch => security::run_kev_catalog_fetch(kind, store).await,
         JobKind::LookalikeDomainScan => security::run_lookalike_domain_scan(kind, store).await,
         JobKind::SelfImprovementCycle => {
             intelligence::run_self_improvement_cycle(kind, store).await
@@ -102,6 +106,16 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
         JobKind::PoiRoleReclassify => poi::run_poi_role_reclassify(kind, store).await,
         JobKind::OsintEnrichment => osint_enrichment::run_osint_enrichment(kind, store).await,
         JobKind::AdversarialAnalysis => adversarial::run_adversarial_analysis(kind, store).await,
+        JobKind::AnomalyScan => anomaly_scan::run_anomaly_scan(kind, store).await,
+        JobKind::SocialScan => social_scan::run_social_scan(kind, store).await,
+        JobKind::TenderScan => tender_scan::run_tender_scan(kind, store).await,
+        JobKind::ContactEnrichment => sales::run_contact_enrichment(kind, store).await,
+        JobKind::IcpScoring => sales::run_icp_scoring(kind, store).await,
+        JobKind::EngagementRefresh => sales::run_engagement_refresh(kind, store).await,
+        JobKind::BuyingCenterDerivation => sales::run_buying_center_derivation(kind, store).await,
+        JobKind::PersonMentionMaterialization => {
+            sales::run_person_mention_materialization(kind, store).await
+        }
         JobKind::Custom(name) => custom::run_custom_job(name).await,
     };
     log_job_completion(kind, &run, &logger).await;

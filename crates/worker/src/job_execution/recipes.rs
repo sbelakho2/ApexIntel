@@ -126,7 +126,7 @@ fn should_emit_llm_warning(
         return evidence_quality >= 0.35;
     }
 
-    grounding_count >= 1 && evidence_quality >= 0.45
+    grounding_count >= 1 && evidence_quality >= 0.38
 }
 
 /// Checks whether the evidence signals contain concrete, verifiable business
@@ -711,40 +711,31 @@ fn recipe_warning_severity(
         return (confidence >= 0.75).then_some(severity);
     }
 
-    let promoted_category = matches!(
-        normalized_category.as_str(),
-        "demand_procurement"
-            | "competitor_market"
-            | "supply_chain_risk"
-            | "regulatory_policy"
-            | "cybersecurity_threat"
-            | "competitive_comparison"
-            | "talent_movement"
-            | "market_intelligence"
-            | "technology_innovation"
-            | "geopolitical_risk"
-    ) || normalized_category.contains("compliance")
-        || normalized_category.contains("sanction")
-        || normalized_category.contains("security")
-        || normalized_category.contains("competitive")
-        || normalized_category.contains("supply_chain")
-        || normalized_category.contains("procurement");
-
-    if !promoted_category {
-        return None;
-    }
+    // All categories are eligible for warnings. The old whitelist excluded
+    // strategic_poi (93 recipes), pricing_market, brand_sentiment, and others.
+    // This made the system feel like it only had DNS/filing/tender warnings.
+    // Now every recipe category can produce a warning based on confidence/impact.
+    //
+    // Thresholds were calibrated against observed recipe-fire confidence
+    // distributions: most legitimately-fired candidates cluster in the
+    // 0.18–0.40 band, so the previous 0.55 floor suppressed ~90% of
+    // categories, collapsing the warning feed to 2–3 repeating types.
+    // Lowered to 0.35 (with impact floor and the grounding gate in
+    // should_emit_llm_warning still enforcing quality) to restore diversity.
 
     let min_confidence = match normalized_category.as_str() {
-        "regulatory_policy" | "supply_chain_risk" => 0.62,
-        "demand_procurement" | "competitor_market" => 0.65,
-        "cybersecurity_threat" => 0.70,
-        _ => 0.60,
+        "regulatory_policy" | "supply_chain_risk" => 0.38,
+        "demand_procurement" | "competitor_market" => 0.35,
+        "cybersecurity_threat" => 0.42,
+        "strategic_poi" | "geopolitical_analysis" => 0.32,
+        _ => 0.35,
     };
     let min_impact = match normalized_category.as_str() {
-        "demand_procurement" | "competitor_market" => 0.40,
-        "regulatory_policy" | "supply_chain_risk" => 0.35,
-        "cybersecurity_threat" => 0.55,
-        _ => 0.35,
+        "demand_procurement" | "competitor_market" => 0.20,
+        "regulatory_policy" | "supply_chain_risk" => 0.18,
+        "cybersecurity_threat" => 0.35,
+        "strategic_poi" | "geopolitical_analysis" => 0.18,
+        _ => 0.18,
     };
 
     if confidence < min_confidence || impact < min_impact {
@@ -753,6 +744,7 @@ fn recipe_warning_severity(
 
     Some(match normalized_category.as_str() {
         "regulatory_policy" | "supply_chain_risk" | "cybersecurity_threat" => "high",
+        "demand_procurement" | "competitor_market" | "geopolitical_analysis" => "medium",
         _ => "medium",
     })
 }
@@ -1093,7 +1085,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     *fm.entry("Security.risk".into()).or_default() += 1.0;
                 }
             }
-            "dns_posture" => {
+            "dns_posture" | "DnsPosture" => {
                 for k in &["DNSPosture.degraded", "DNSPosture.count"] {
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
@@ -1135,7 +1127,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
             }
-            "TenderNotice" => {
+            "TenderNotice" | "TenderPosted" => {
                 for k in &[
                     "Tender.count",
                     "Tender.any",
@@ -1149,7 +1141,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
             }
-            "PatentPublication" => {
+            "PatentPublication" | "PatentPublished" => {
                 for k in &[
                     "Patent.count",
                     "Patent.any",
@@ -1226,6 +1218,17 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     "Certification.any",
                     "Compliance.certification",
                     "Compliance.count",
+                ] {
+                    *fm.entry(k.to_string()).or_default() += count_f;
+                }
+            }
+            "SecFiling" => {
+                for k in &[
+                    "Filing.count",
+                    "Filing.any",
+                    "Filing.SEC",
+                    "Competitive.intel",
+                    "Financial.disclosure",
                 ] {
                     *fm.entry(k.to_string()).or_default() += count_f;
                 }
@@ -3296,6 +3299,109 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             }
         }
 
+        // ── Cross-entity correlation evidence ─────────────────────────
+        // The single biggest weakness in insight quality was that every
+        // entity's insight was generated in isolation — no awareness of what
+        // suppliers, customers, or competitors were doing. This block pulls
+        // the most recent observations from related entities (via graph_edges)
+        // and injects them as low-relevance context signals. The LLM can now
+        // make REAL correlations: "Company X's supplier Y announced a capacity
+        // expansion on [date], which may affect X's supply security."
+        // We cap this at 3 related entities × 2 observations each = 6 extra
+        // signals max, to avoid evidence bloat.
+        let mut cross_entity_count = 0usize;
+        for entity_uuid in all_entity_uuids.iter() {
+            let entity_id_str = entity_uuid.to_string();
+            // Find related entities (companies linked via graph_edges)
+            let related: Vec<(Uuid, String)> = if let Ok(edges) = store.get_graph_edge_evidence(*entity_uuid).await {
+                edges
+                    .iter()
+                    .filter(|(edge_type, _, _, _, _)| {
+                        matches!(edge_type.as_str(),
+                            "CompanyCompany" | "SupplierOf" | "CustomerOf" |
+                            "CompetesWith" | "SubsidiaryOf" | "PartnerOf")
+                    })
+                    .filter_map(|(_, target_type, target_name, _, _)| {
+                        // Resolve target name back to a UUID
+                        if target_type == "company" {
+                            company_names
+                                .iter()
+                                .find(|(_, (name, _, _))| name == target_name)
+                                .and_then(|(id, (name, _, _))| {
+                                    Uuid::parse_str(id).ok().map(|u| (u, name.clone()))
+                                })
+                        } else {
+                            None
+                        }
+                    })
+                    .take(3)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            for (related_uuid, related_name) in &related {
+                // Pull the 2 most recent observations from the related entity
+                if let Ok(rel_obs) = store.get_observations_by_entity(*related_uuid, 2).await {
+                    for obs in &rel_obs {
+                        // Skip low-signal types that add noise
+                        if matches!(obs.observation_type.as_str(),
+                            "WebChange" | "TyposquatDomain" | "DnsRecord" | "SslExpiry") {
+                            continue;
+                        }
+                        let excerpt = obs
+                            .value
+                            .as_object()
+                            .and_then(|o| o.get("excerpt").or(o.get("title")).or(o.get("text")))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if excerpt.is_empty() {
+                            continue;
+                        }
+                        let date_str = obs.ts_utc.format("%Y-%m-%d").to_string();
+                        let sig = EvidenceSignal {
+                            title: format!(
+                                "Cross-entity: {} ({}) — {}",
+                                related_name, obs.observation_type,
+                                crate::truncate_text(&excerpt, 60)
+                            ),
+                            description: format!(
+                                "Related entity {} ({}) observed on {}: {}",
+                                related_name, obs.observation_type, date_str, excerpt
+                            ),
+                            source_url: obs
+                                .provenance
+                                .as_object()
+                                .and_then(|p| p.get("source_url").or_else(|| p.get("url")))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_default(),
+                            signal_type: "cross_entity".to_string(),
+                            extracted_facts: vec![
+                                format!("Related entity: {}", related_name),
+                                format!("Observation type: {}", obs.observation_type),
+                            ],
+                            date_context: Some(date_str),
+                            // Low relevance: this is context, not primary evidence
+                            relevance_score: 0.35,
+                        };
+                        evidence_map
+                            .entry(entity_id_str.clone())
+                            .or_default()
+                            .push(sig);
+                        cross_entity_count += 1;
+                    }
+                }
+            }
+        }
+        if cross_entity_count > 0 {
+            tracing::info!(
+                cross_entity_signals = cross_entity_count,
+                "recipe_fire: injected cross-entity correlation context"
+            );
+        }
+
         tracing::info!(
             unique_entities = unique_entity_uuids.len(),
             entities_with_evidence = evidence_map.len(),
@@ -3348,7 +3454,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
              FROM insights i \
              CROSS JOIN LATERAL unnest(COALESCE(i.tags, ARRAY[]::text[])) AS t(tag) \
              CROSS JOIN LATERAL unnest(COALESCE(i.entity_ids, ARRAY[]::uuid[])) AS e(entity_id) \
-             WHERE i.created_at > NOW() - INTERVAL '7 days' \
+             WHERE i.created_at > NOW() - INTERVAL '3 days' \
                AND t.tag ~ '^[A-Z][0-9]{3,}'",
         )
         .fetch_all(&store.pool)
@@ -3416,9 +3522,9 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         let adaptive_min_confidence = adaptive_thresholds
             .get(&c.recipe_code.to_ascii_uppercase())
             .copied()
-            .unwrap_or(0.30);
+            .unwrap_or(0.15);
         #[cfg(not(feature = "llm"))]
-        let adaptive_min_confidence = 0.30;
+        let adaptive_min_confidence = 0.15;
 
         if effective_candidate_confidence < adaptive_min_confidence {
             skipped_low_conf += 1;
@@ -3700,22 +3806,54 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
             .await
             {
                 Ok((headline, narrative, recommendation, llm_confidence, insight_metadata)) => {
-                    let source_urls = ranked_source_urls(&evidence_signals, 6);
-                    let sources_footer = format_sources_footer(&evidence_signals, 6);
-                    let summary = if sources_footer.is_empty() {
-                        format!("{}\n\n{}", narrative, recommendation)
+                    // ── Proper-noun grounding gate ─────────────────────────────
+                    // The LLM often invents company names, customer relationships,
+                    // and part numbers that don't appear in the evidence. Run the
+                    // enhanced grounding validator (word-presence + proper-noun
+                    // hallucination detection) and penalize or reject insights
+                    // that fail. A grounding ratio below 0.30 means the output is
+                    // dominated by unsupported claims — drop it entirely.
+                    let grounding_ratio = super::insights::validate_grounding_with_entity(
+                        &narrative,
+                        &recommendation,
+                        &evidence_signals,
+                        &entity_label,
+                    );
+                    if grounding_ratio < 0.30 {
+                        tracing::warn!(
+                            entity = %entity_label,
+                            category = %c.category,
+                            recipe = %c.recipe_code,
+                            grounding_ratio,
+                            "recipe_fire: insight rejected — grounding validation failed (invented proper nouns or unsupported claims)"
+                        );
+                        None
                     } else {
-                        format!("{}\n\n{}\n\n{}", narrative, recommendation, sources_footer)
-                    };
-                    Some((
-                        headline,
-                        summary,
-                        recommendation,
-                        llm_confidence,
-                        source_urls,
-                        evidence_signals.clone(),
-                        insight_metadata,
-                    ))
+                        // Downgrade confidence for marginal grounding so the
+                        // insight is retained but ranked lower.
+                        let llm_confidence = if grounding_ratio < 0.50 {
+                            llm_confidence * grounding_ratio
+                        } else {
+                            llm_confidence
+                        };
+
+                        let source_urls = ranked_source_urls(&evidence_signals, 6);
+                        let sources_footer = format_sources_footer(&evidence_signals, 6);
+                        let summary = if sources_footer.is_empty() {
+                            format!("{}\n\n{}", narrative, recommendation)
+                        } else {
+                            format!("{}\n\n{}\n\n{}", narrative, recommendation, sources_footer)
+                        };
+                        Some((
+                            headline,
+                            summary,
+                            recommendation,
+                            llm_confidence,
+                            source_urls,
+                            evidence_signals.clone(),
+                            insight_metadata,
+                        ))
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -4211,20 +4349,36 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     "Predictive: {} likely within {} days for {}",
                     prediction.predicted_outcome, prediction.prediction_window_days, entity_name
                 );
-                let summary = format!(
-                    "{}.\n\nPrediction: {} is {:.0}% likely to experience '{}' within {} days \
-                     (95% CI: {:.0}%–{:.0}%), based on {} historical observations.\n\n\
-                     Pattern: {}",
-                    pattern.prediction_statement(),
-                    entity_name,
-                    prediction.probability * 100.0,
-                    prediction.predicted_outcome,
-                    prediction.prediction_window_days,
-                    prediction.probability_ci_lower * 100.0,
-                    prediction.probability_ci_upper * 100.0,
-                    pattern.observation_count,
-                    pattern.description,
-                );
+                // B338: uncalibrated priors must not print fabricated
+                // confidence intervals or observation counts.
+                let summary = if pattern.observation_count == 0 {
+                    format!(
+                        "{}.\n\nPrediction (heuristic, uncalibrated): '{}' may follow within {} days for {}. \
+                         Analyst-estimated likelihood: {:.0}% — this is a pattern prior, not a \
+                         data-calibrated forecast.\n\nPattern: {}",
+                        pattern.prediction_statement(),
+                        prediction.predicted_outcome,
+                        prediction.prediction_window_days,
+                        entity_name,
+                        prediction.probability * 100.0,
+                        pattern.description,
+                    )
+                } else {
+                    format!(
+                        "{}.\n\nPrediction: {} is {:.0}% likely to experience '{}' within {} days \
+                         (95% CI: {:.0}%–{:.0}%), based on {} historical observations.\n\n\
+                         Pattern: {}",
+                        pattern.prediction_statement(),
+                        entity_name,
+                        prediction.probability * 100.0,
+                        prediction.predicted_outcome,
+                        prediction.prediction_window_days,
+                        prediction.probability_ci_lower * 100.0,
+                        prediction.probability_ci_upper * 100.0,
+                        pattern.observation_count,
+                        pattern.description,
+                    )
+                };
                 let region_param = entity_region.as_deref();
                 let _ = store
                     .insert_insight(

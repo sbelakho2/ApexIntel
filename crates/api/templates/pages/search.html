@@ -20,8 +20,8 @@
   <form action="/search" method="get" class="relative">
     <div class="flex gap-2">
       <input type="search" name="q" id="search-input" value="{{ query }}" placeholder="Search companies, persons, warnings, insights…" autocomplete="off"
-        class="flex-1 rounded-rams-sm border border-rams-line bg-rams-panel/40 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-rams-line"
-        hx-get="/search" hx-trigger="input changed delay:300ms" hx-target="#main-results" hx-push-url="true"
+        class="flex-1 rounded-rams-sm border border-rams-line bg-rams-panel px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-rams-line"
+        hx-get="/search" hx-trigger="input changed delay:300ms" hx-target="#search-results-zone" hx-push-url="true"
         hx-indicator="#search-results-spinner"
         data-suggest-url="/search/suggestions">
       <div id="suggestions-spinner" class="hidden absolute right-3 top-2.5">
@@ -108,34 +108,8 @@
 </script>
 
 {% if !query.is_empty() %}
-<div class="flex items-center gap-2 mb-4">
-  {% for f in facets %}
-  <a href="/search?q={{ query }}&entity_type={{ f.label|lower }}"
-    class="rounded-rams-sm border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] {% if f.active %}border-rams-orange bg-rams-orange/10 text-rams-orange{% else %}border-rams-line text-rams-muted hover:text-rams-foreground{% endif %}">
-    {{ f.label }} ({{ f.count }})
-  </a>
-  {% endfor %}
+<div id="search-results-zone">
+  {% include "pages/search/_results.html" %}
 </div>
-
-<div class="space-y-2">
-  {% for r in results %}
-  <a href="{{ r.url }}" class="apex-card block px-4 py-3 hover:bg-rams-panel">
-    <div class="flex items-center gap-2">
-      <span class="inline-flex items-center rounded-rams-sm bg-rams-panel/60 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ r.entity_type }}</span>
-      <span class="text-sm font-semibold">{{ r.title }}</span>
-    </div>
-    <p class="mt-1 text-[11px] text-rams-muted">{{ r.subtitle }}</p>
-    {% if !r.snippet.is_empty() %}
-    <p class="mt-1 text-[11px]">{{ r.snippet }}</p>
-    {% endif %}
-  </a>
-  {% endfor %}
-</div>
-
-{% if results.is_empty() %}
-  {% call m::empty_state("No Results", "No results found for your search query.") %}
-{% endif %}
-
-<p class="mt-4 text-[10px] text-rams-muted text-right">{{ total }} results in {{ took_ms }}ms</p>
 {% endif %}
 {% endblock %}

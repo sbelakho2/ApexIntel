@@ -26,6 +26,59 @@ pub fn is_valid_manual_trigger_kind(kind: &str) -> bool {
 }
 
 impl PgStore {
+    /// Human-readable size of the current database (B316) — replaces the
+    /// fabricated "db_connections: 12 / cache_hit_rate: 87%" admin tiles.
+    pub async fn get_database_size(&self) -> Result<String> {
+        let (size,): (String,) =
+            sqlx::query_as("SELECT pg_size_pretty(pg_database_size(current_database()))")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(size)
+    }
+
+    /// Real ingestion panel for the admin page (B316): observation volume and
+    /// freshness per observation type, replacing the hardcoded source list.
+    pub async fn get_observation_source_stats(
+        &self,
+    ) -> Result<Vec<(String, i64, Option<DateTime<Utc>>)>> {
+        let rows: Vec<(String, i64, Option<DateTime<Utc>>)> = sqlx::query_as(
+            r#"SELECT observation_type, COUNT(*)::BIGINT AS cnt, MAX(ts_utc)
+               FROM observations
+               GROUP BY observation_type
+               ORDER BY cnt DESC
+               LIMIT 12"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Lease-based claim for scheduled job execution (B319).
+    ///
+    /// Returns `true` when this worker atomically won the right to run
+    /// `job_kind` now. The claim expires after `lease_secs`, so a worker that
+    /// crashes mid-run does not block the job forever, and a second replica
+    /// computing the same schedule cannot double-fire the job within the
+    /// lease window (the previous design used only in-memory `last_run`).
+    pub async fn try_claim_scheduled_job(&self, job_kind: &str, lease_secs: i64) -> Result<bool> {
+        let row: Option<(String,)> = sqlx::query_as(
+            r#"INSERT INTO worker_job_state (job_kind, last_run, last_status, updated_at)
+               VALUES ($1, now(), 'running', now())
+               ON CONFLICT (job_kind) DO UPDATE SET
+                   last_run = now(),
+                   last_status = 'running',
+                   updated_at = now()
+               WHERE worker_job_state.last_status IS DISTINCT FROM 'running'
+                  OR worker_job_state.updated_at <= now() - make_interval(secs => $2)
+               RETURNING job_kind"#,
+        )
+        .bind(job_kind)
+        .bind(lease_secs)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn get_admin_crawl_status(&self) -> Result<AdminCrawlStatus> {
         let (total_fp,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM page_fingerprints")
             .fetch_one(&self.pool)

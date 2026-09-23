@@ -173,8 +173,8 @@ async fn persist_dynamic_discovery_candidates(
     let insert_limit = std::env::var("CRAWL_DYNAMIC_DISCOVERY_INSERT_LIMIT")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(20)
-        .clamp(1, 200);
+        .unwrap_or(100)
+        .clamp(1, 1000);
 
     let discovered_by_name: HashMap<String, &DiscoveredEntity> = discovered
         .iter()
@@ -198,10 +198,17 @@ async fn persist_dynamic_discovery_candidates(
         ) {
             continue;
         }
-        if candidate.confidence < 0.72 {
+        // Confidence threshold lowered from 0.72 → 0.45 to escape the
+        // bootstrapping trap where new companies only score high confidence if
+        // they already resemble the seed set. At 0.45, genuinely new companies
+        // that appear in crawl content with reasonable signal get admitted, then
+        // get enriched/scored by downstream jobs (ICP, OSINT enrichment).
+        if candidate.confidence < 0.45 {
             continue;
         }
-        if candidate.co_occurrence_count == 0 && candidate.source_diversity < 2 {
+        // Relax the co-occurrence gate: allow single-source discoveries if they
+        // have meaningful confidence (was: require co_occurrence>0 OR source_diversity>=2).
+        if candidate.co_occurrence_count == 0 && candidate.source_diversity < 1 && candidate.confidence < 0.6 {
             continue;
         }
 
@@ -293,8 +300,15 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
 
-    let always_include_slugs = ["globes_il_tech"];
-    let fetch_sources = select_sources_for_crawl(&sources, 2, crawl_limit, &always_include_slugs);
+    // Include tier 3 (Reddit, Telegram, niche feeds) — previously capped at 2,
+    // which silently excluded all high-velocity social/aggregator sources.
+    let always_include_slugs = [
+        "globes_il_tech",
+        "reddit_worldnews",
+        "reddit_geopolitics",
+        "telegram_channels",
+    ];
+    let fetch_sources = select_sources_for_crawl(&sources, 3, crawl_limit, &always_include_slugs);
 
     if fetch_sources.is_empty() {
         run.skip("crawl_cycle: no enabled tier-1/2 sources configured");
@@ -435,6 +449,10 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                         o.entity_id = Some(eid);
                         o.entity_type = Some("company".to_string());
                     }
+                    // B326: content-derived ID — an unchanged page re-crawled
+                    // hourly no longer inserts a duplicate WebChange row; a
+                    // genuinely changed page still produces a new one.
+                    o.stabilize_id("webchange");
                     o
                 };
                 match store.insert_observation(&obs).await {
@@ -553,7 +571,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                 Some(&failure_summary),
                 "high",
                 None,
-                Some("crawl_cycle"),
+                None,
                 None,
                 None,
                 Some((1.0 - success_ratio).clamp(0.0, 1.0)),

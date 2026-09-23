@@ -95,29 +95,36 @@
   }
 
   function updateWarningBadges(nextCount) {
-    var badges = document.querySelectorAll('[data-warning-badge]');
+    // B310: the sidebar renders this badge twice (mobile drawer + desktop);
+    // query by class so both stay in sync.
+    var badges = document.querySelectorAll('.warning-badge');
     badges.forEach(function (badge) {
       badge.textContent = String(nextCount);
       badge.classList.toggle('hidden', nextCount <= 0);
     });
   }
 
+  function currentBadgeCount() {
+    var firstBadge = document.querySelector('.warning-badge');
+    return firstBadge ? parseInt(firstBadge.textContent || '0', 10) || 0 : 0;
+  }
+
   function incrementWarningBadges() {
-    var firstBadge = document.querySelector('[data-warning-badge]');
-    var currentCount = firstBadge ? parseInt(firstBadge.textContent || '0', 10) || 0 : 0;
-    updateWarningBadges(currentCount + 1);
+    updateWarningBadges(currentBadgeCount() + 1);
   }
 
   function decrementWarningBadges() {
-    var firstBadge = document.querySelector('[data-warning-badge]');
-    var currentCount = firstBadge ? parseInt(firstBadge.textContent || '0', 10) || 0 : 0;
+    var currentCount = currentBadgeCount();
     if (currentCount > 0) {
       updateWarningBadges(currentCount - 1);
     }
   }
 
   function refreshWarningBadgeFromServer() {
-    fetch('/api/warnings/unread-count')
+    // B310: /warnings/unread-count is the session-authenticated web route;
+    // the previous /api/warnings/unread-count path does not exist and made
+    // this refresh a perpetual 404.
+    fetch('/warnings/unread-count')
       .then(function (res) { return res.text(); })
       .then(function (count) {
         updateWarningBadges(parseInt(count, 10) || 0);
@@ -169,8 +176,71 @@
     applyCsrfToForms(document);
     updateOnlineStatus();
     connectWarningsWs();
+    initDenseTableKeyboardNav();
+    initDestructiveConfirms();
     window.setInterval(refreshWarningBadgeFromServer, 60000);
   });
+
+  // B346: arrow-key row navigation for `[data-dense-table]` tables — the
+  // templates advertise "Arrow keys move between rows. Press Enter to open"
+  // but no script ever implemented it.
+  function initDenseTableKeyboardNav() {
+    var tables = document.querySelectorAll('table[data-dense-table]');
+    tables.forEach(function (table) {
+      var rows = Array.prototype.slice.call(table.querySelectorAll('tbody tr'));
+      if (!rows.length) { return; }
+      var index = -1;
+
+      function apply() {
+        rows.forEach(function (row, i) {
+          row.classList.toggle('apex-row-selected', i === index);
+        });
+        if (index >= 0 && rows[index].scrollIntoView) {
+          rows[index].scrollIntoView({ block: 'nearest' });
+        }
+      }
+
+      table.setAttribute('tabindex', '0');
+      table.addEventListener('keydown', function (event) {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          index = event.key === 'ArrowDown'
+            ? Math.min(index + 1, rows.length - 1)
+            : Math.max(index - 1, 0);
+          apply();
+        } else if (event.key === 'Enter' && index >= 0) {
+          var link = rows[index].querySelector('a[href]');
+          if (link) {
+            event.preventDefault();
+            link.click();
+          }
+        }
+      });
+    });
+  }
+
+  // B347: confirmation for destructive form submissions. Templates opt in
+  // with data-confirm="…"; used by close-workspace, queue complete, triage
+  // resolve/acknowledge.
+  function initDestructiveConfirms() {
+    document.addEventListener('submit', function (event) {
+      var form = event.target;
+      if (!(form instanceof HTMLFormElement)) { return; }
+      var message = form.getAttribute('data-confirm');
+      if (message && !window.confirm(message)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, true);
+    // Also cover plain confirmation links.
+    document.addEventListener('click', function (event) {
+      var link = event.target.closest ? event.target.closest('a[data-confirm]') : null;
+      if (link && !window.confirm(link.getAttribute('data-confirm'))) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
+  }
 
   document.addEventListener('submit', function (event) {
     ensureCsrfField(event.target);

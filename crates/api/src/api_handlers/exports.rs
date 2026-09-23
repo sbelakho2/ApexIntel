@@ -9,7 +9,18 @@ pub(crate) struct ExportQuery {
 }
 
 fn csv_escape(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    // B318: neutralize spreadsheet formula injection. Crawled company/person
+    // names can start with =, +, -, or @; without the leading apostrophe,
+    // Excel/Sheets executes them as formulas when the export is opened.
+    let needs_guard = value
+        .strip_prefix(['=', '+', '-', '@'])
+        .is_some();
+    let guarded = if needs_guard {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    };
+    format!("\"{}\"", guarded.replace('"', "\"\""))
 }
 
 fn normalize_export_window(

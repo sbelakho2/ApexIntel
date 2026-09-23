@@ -474,6 +474,21 @@ impl PgStore {
         .bind(confidence)
         .execute(&self.pool)
         .await?;
+
+        // Increment the recipe's fire_count so the precision/recall lifecycle
+        // can function. Without this, every recipe stays at fire_count=0
+        // forever and the engine's precision prior is frozen at 0.5.
+        let _ = sqlx::query(
+            r#"UPDATE recipes
+                  SET fire_count = COALESCE(fire_count, 0) + 1,
+                      last_fired = NOW(),
+                      updated_at = NOW()
+                WHERE code = $1"#,
+        )
+        .bind(recipe_code.trim())
+        .execute(&self.pool)
+        .await;
+
         Ok(())
     }
 

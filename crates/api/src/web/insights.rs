@@ -1178,7 +1178,7 @@ pub async fn bookmark_insight_html(
 
     let icon_fill = if bookmarked { "currentColor" } else { "none" };
     let color_class = if bookmarked {
-        "text-yellow-500"
+        "text-rams-orange"
     } else {
         "text-muted-foreground"
     };
@@ -1225,11 +1225,11 @@ pub async fn analyze_insight_html(
                        and generate actionable recommendations.
                      </p>
                      <div class="mt-3 flex items-center gap-2 text-[10px] text-muted-foreground">
-                       <span class="h-2 w-2 rounded-full bg-yellow-500 animate-pulse"></span>
+                       <span class="h-2 w-2 rounded-full bg-rams-orange animate-pulse"></span>
                        Processing…
                      </div>
                    </div>"#,
-                i.title
+                super::escape_html(&i.title)
             )).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Html("Insight not found".to_string())).into_response(),
@@ -1285,4 +1285,73 @@ pub async fn create_insight_note(
     }
 
     Redirect::to(&format!("/insights/{id}")).into_response()
+}
+
+/// GET /insights/:id/pdf — download insight as PDF (session-auth, not API-key).
+/// The API route at /api/insights/:id/pdf requires API key auth which the
+/// browser session cookie can't provide. This web route does the same PDF
+/// generation but uses the session middleware.
+pub async fn export_insight_pdf_html(
+    Extension(store): Extension<Arc<PgStore>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    let uid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "Invalid insight ID").into_response();
+        }
+    };
+
+    let insight = match store.get_insight(uid).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Insight not found").into_response(),
+        Err(e) => {
+            tracing::error!(%e, "pdf export: failed to fetch insight");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    };
+
+    let report_row = apex_insights::pdf_report::InsightReportRow {
+        id: insight.id.to_string(),
+        title: insight.title,
+        summary: insight.summary,
+        insight_type: insight.insight_type.unwrap_or_default(),
+        severity: apex_insights::InsightSeverity::Medium,
+        confidence: insight.confidence.unwrap_or(0.5),
+        region: insight.region,
+        evidence: Vec::new(),
+        sources: Vec::new(),
+        tags: insight.tags.unwrap_or_default(),
+        generated_at: None,
+    };
+
+    let report = apex_insights::pdf_report::PdfReport::from_insights(
+        &format!("Insight: {}", report_row.title),
+        &[report_row],
+    );
+
+    let pdf_bytes = match crate::pdf_writer::render_report_to_pdf(&report) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(%e, "pdf export: generation failed for insight {id}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "PDF generation failed").into_response();
+        }
+    };
+
+    let filename = format!("insight-{}.pdf", id);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/pdf".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        axum::body::Body::from(pdf_bytes),
+    )
+        .into_response()
 }

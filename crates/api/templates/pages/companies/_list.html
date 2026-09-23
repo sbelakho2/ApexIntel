@@ -20,7 +20,7 @@
     <h2 class="text-xs font-black uppercase tracking-[0.12em] mb-3">Quick Links</h2>
     <div class="space-y-2">
       {% for q in quick_links %}
-      <a href="/companies/{{ q.id }}" class="flex items-center justify-between rounded-rams-sm border border-rams-line bg-rams-panel/30 px-3 py-2 text-sm hover:bg-rams-panel">
+      <a href="/companies/{{ q.id }}" class="flex items-center justify-between rounded-rams-sm border border-rams-line bg-rams-panel px-3 py-2 text-sm hover:bg-rams-panel">
         <span class="font-bold">{{ q.name }}</span>
         <span class="text-[10px] text-rams-muted uppercase">{{ q.tier }}</span>
       </a>
@@ -74,7 +74,7 @@
   </div>
   <div class="overflow-x-auto">
     <table class="min-w-full text-left text-xs" data-dense-table data-table-name="companies">
-      <thead class="bg-rams-panel/40 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+      <thead class="bg-rams-panel text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
         <tr>
           <th class="px-4 py-3"><a href="{{ page_base_href }}sort=name&dir={% if sort_field == "name" && sort_dir == "asc" %}desc{% else %}asc{% endif %}">Company</a></th>
           <th class="px-4 py-3"><a href="{{ page_base_href }}sort=region&dir={% if sort_field == "region" && sort_dir == "asc" %}desc{% else %}asc{% endif %}">Region</a></th>

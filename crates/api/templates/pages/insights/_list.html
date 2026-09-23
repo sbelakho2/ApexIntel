@@ -98,7 +98,7 @@
       </thead>
       <tbody>
         {% for i in insights %}
-        <tr class="cursor-pointer border-t border-rams-line/70 hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/insights/{{ i.id }}">
+        <tr class="cursor-pointer border-t border-rams-line hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/insights/{{ i.id }}">
           <td class="px-4 py-3 font-semibold"><a href="/insights/{{ i.id }}" class="hover:underline">{{ i.title }}</a></td>
           <td class="px-4 py-3"><span class="mobile-inline-chip inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.category_css }}">{{ i.category_label }}</span></td>
           <td class="px-4 py-3"><span class="inline-flex items-center rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ i.impact_css }}">{{ i.impact_tier }}</span></td>

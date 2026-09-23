@@ -37,7 +37,7 @@
       <tr>
         <td class="sticky left-0 z-10 bg-rams-module font-bold text-[10px] uppercase tracking-[0.12em] text-rams-muted">{{ row.label }}</td>
         {% for cell in row.cells %}
-        <td class="text-[12px] {% if !cell.has_data %}text-rams-muted/50 italic{% endif %}">
+        <td class="text-[12px] {% if !cell.has_data %}text-rams-muted italic{% endif %}">
           {% if cell.has_data %}
           {{ cell.value }}
           {% else %}

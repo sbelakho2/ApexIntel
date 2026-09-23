@@ -285,7 +285,7 @@ async fn fetch_entity_activity_data(
         .collect();
 
     let ins_data = store
-        .get_daily_warning_counts_per_entity(since)
+        .get_daily_insight_counts_per_entity(since)
         .await
         .map_err(|e| {
             tracing::error!("Failed to fetch insight counts: {e:#}");
@@ -553,10 +553,10 @@ mod tests {
     fn test_chart_data_point() {
         let pt = ChartDataPoint {
             date: "2026-01-01".into(),
-            value: 3.14,
+            value: 2.71,
         };
         assert_eq!(pt.date, "2026-01-01");
-        assert!((pt.value - 3.14).abs() < f64::EPSILON);
+        assert!((pt.value - 2.71).abs() < f64::EPSILON);
     }
 
     #[test]

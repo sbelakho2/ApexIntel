@@ -551,6 +551,8 @@ pub enum ObservationType {
     /// SEC EDGAR filing (10-K, 8-K, DEF 14A, Form 4, etc.) — public-company
     /// financial and officer/director change disclosures.
     SecFiling,
+    /// Social media post from Reddit, Telegram, Twitter/X, Hacker News, etc.
+    SocialPost,
 }
 
 impl ObservationType {
@@ -574,6 +576,7 @@ impl ObservationType {
             Self::CompetitorEvent => "CompetitorEvent",
             Self::DarkWebPost => "DarkWebPost",
             Self::SecFiling => "SecFiling",
+            Self::SocialPost => "SocialPost",
         }
     }
 
@@ -598,6 +601,7 @@ impl ObservationType {
             "CompetitorEvent" => Some(Self::CompetitorEvent),
             "DarkWebPost" => Some(Self::DarkWebPost),
             "SecFiling" => Some(Self::SecFiling),
+            "SocialPost" => Some(Self::SocialPost),
             _ => None,
         }
     }
@@ -640,6 +644,73 @@ impl Observation {
             confidence: 1.0,
             created_at: Utc::now(),
         }
+    }
+
+    /// Deterministic observation ID (B326).
+    ///
+    /// Recurring fetches of the *same* external fact (same CVE, same paper,
+    /// same page revision, same post) previously produced a fresh random UUID
+    /// each cycle, and `insert_observation`'s `ON CONFLICT (id) DO NOTHING`
+    /// could never fire — the observations table grew without bound and
+    /// duplicated signals inflated every downstream count, anomaly detector,
+    /// and pattern miner. Deriving the ID from stable content makes the
+    /// upsert path actually deduplicate: identical key → identical UUID →
+    /// conflict → skip.
+    pub fn deterministic_id(namespace: &str, key: &str) -> Uuid {
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, format!("{namespace}:{key}").as_bytes())
+    }
+
+    /// Assign a deterministic ID from `(observation_type, provenance source,
+    /// value)` and return the key used, so callers can log it.
+    ///
+    /// Volatile fields (`ts_utc`, `fetched_at`, crawl timestamps inside the
+    /// provenance) are excluded from the key so a re-fetch of unchanged
+    /// content maps to the same row.
+    pub fn stabilize_id(&mut self, namespace: &str) -> String {
+        let source = self
+            .provenance
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let source_id = self
+            .provenance
+            .get("source_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let url = self
+            .provenance
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let value_key = canonical_value_key(&self.value);
+        let key = format!(
+            "{:?}|{source}|{source_id}|{url}|{value_key}",
+            self.observation_type
+        );
+        self.id = Self::deterministic_id(namespace, &key);
+        key
+    }
+}
+
+/// Stable serialization used for content hashing: object keys sorted,
+/// volatile timestamp fields excluded.
+fn canonical_value_key(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            keys.into_iter()
+                .filter(|k| {
+                    !matches!(
+                        k.as_str(),
+                        "ts" | "ts_utc" | "fetched_at" | "crawled_at" | "observed_at" | "ingested_at"
+                    )
+                })
+                .map(|k| format!("{}={}", k, canonical_value_key(&map[k])))
+                .collect::<Vec<_>>()
+                .join("&")
+        }
+        other => other.to_string(),
     }
 }
 

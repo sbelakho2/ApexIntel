@@ -1022,15 +1022,14 @@ pub async fn acknowledge_warning_html(
             let mut headers = HeaderMap::new();
             headers.insert("HX-Trigger", HeaderValue::from_static("warning-acknowledged"));
             (headers, Html(format!(
-                r#"<div class="apex-card p-4 border-green-500/30 bg-green-500/5">
-                     <p class="text-sm font-bold text-green-600">Warning acknowledged by {}</p>
+                r#"<div class="apex-card p-4 border-rams-green/30 bg-rams-green/5">
+                     <p class="text-sm font-bold text-rams-green">Warning acknowledged by {}</p>
                      <p class="text-[10px] text-muted-foreground mt-1">The warning has been marked as acknowledged.</p>
                    </div>"#,
-                session.username
+                super::escape_html(&session.username)
             ))).into_response()
         }
-        Ok(apex_store::postgres::AcknowledgeWarningResult::AlreadyAcknowledged) => {
-            Html(r#"<div class="apex-card p-4"><p class="text-sm text-muted-foreground">Already acknowledged</p></div>"#.to_string()).into_response()
+        Ok(apex_store::postgres::AcknowledgeWarningResult::AlreadyAcknowledged) => {            Html(r#"<div class="apex-card p-4"><p class="text-sm text-muted-foreground">Already acknowledged</p></div>"#.to_string()).into_response()
         }
         Ok(apex_store::postgres::AcknowledgeWarningResult::NotFound) => {
             (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response()
@@ -1087,11 +1086,11 @@ pub async fn analyze_warning_html(
                        and recommend response actions based on available intelligence.
                      </p>
                      <div class="mt-3 flex items-center gap-2 text-[10px] text-muted-foreground">
-                       <span class="h-2 w-2 rounded-full bg-yellow-500 animate-pulse"></span>
+                       <span class="h-2 w-2 rounded-full bg-rams-orange animate-pulse"></span>
                        Processing…
                      </div>
                    </div>"#,
-                w.title
+                super::escape_html(&w.title)
             )).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response(),
@@ -1160,8 +1159,9 @@ pub async fn review_warning_html(
             Html(format!(
                 r#"<div class="apex-card p-4 border-primary/30 bg-primary/5">
                      <p class="text-sm font-bold text-primary">Review saved</p>
-                     <p class="mt-1 text-[10px] text-muted-foreground">{detail}</p>
-                   </div>"#
+                     <p class="mt-1 text-[10px] text-muted-foreground">{}</p>
+                   </div>"#,
+                super::escape_html(&detail)
             ))
             .into_response()
         }

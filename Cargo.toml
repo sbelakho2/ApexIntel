@@ -76,7 +76,7 @@ thiserror = "1"
 async-trait = "0.1"
 
 # UUID
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
 # Language detection
 whatlang = "0.16"

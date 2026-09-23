@@ -81,6 +81,31 @@ pub trait DedupStore: Send + Sync {
 
     /// Store a newly triaged item for future dedup comparisons.
     fn store_item(&self, item_type: &TriageItemType, id: &str, title: &str, text: &str) -> Result<()>;
+
+    /// Find similar items by embedding vector (B343).
+    ///
+    /// Returns `Ok(Vec::new())` when the implementation does not store
+    /// vectors — the caller falls back to text similarity.
+    fn find_similar_by_vector(
+        &self,
+        _item_type: &TriageItemType,
+        _vector: &[f64],
+        _max_results: usize,
+    ) -> Result<Vec<DedupHit>> {
+        Ok(Vec::new())
+    }
+
+    /// Store an item together with its embedding (B343).
+    fn store_item_with_vector(
+        &self,
+        item_type: &TriageItemType,
+        id: &str,
+        title: &str,
+        text: &str,
+        vector: Option<&[f64]>,
+    ) -> Result<()> {
+        self.store_item(item_type, id, title, text)
+    }
 }
 
 /// A hit from the dedup store with similarity score.
@@ -106,6 +131,7 @@ struct StoredItem {
     title: String,
     text: String,
     item_type: String,
+    embedding: Option<Vec<f64>>,
 }
 
 impl InMemoryDedupStore {
@@ -147,6 +173,17 @@ impl DedupStore for InMemoryDedupStore {
     }
 
     fn store_item(&self, item_type: &TriageItemType, id: &str, title: &str, text: &str) -> Result<()> {
+        self.store_item_with_vector(item_type, id, title, text, None)
+    }
+
+    fn store_item_with_vector(
+        &self,
+        item_type: &TriageItemType,
+        id: &str,
+        title: &str,
+        text: &str,
+        vector: Option<&[f64]>,
+    ) -> Result<()> {
         let mut items = self.items.lock().unwrap();
         let item_type_str = item_type.as_str();
 
@@ -157,6 +194,7 @@ impl DedupStore for InMemoryDedupStore {
                 title: title.to_string(),
                 text: text.to_string(),
                 item_type: item_type_str.to_string(),
+                embedding: vector.map(|v| v.to_vec()),
             });
 
             // Trim oldest if over capacity
@@ -165,6 +203,37 @@ impl DedupStore for InMemoryDedupStore {
             }
         }
         Ok(())
+    }
+
+    fn find_similar_by_vector(
+        &self,
+        item_type: &TriageItemType,
+        vector: &[f64],
+        max_results: usize,
+    ) -> Result<Vec<DedupHit>> {
+        let items = self.items.lock().unwrap();
+
+        let mut hits: Vec<DedupHit> = items
+            .iter()
+            .filter(|item| item.item_type == item_type.as_str())
+            .filter_map(|item| {
+                let stored = item.embedding.as_ref()?;
+                let similarity = SemanticDedup::cosine_similarity(vector, stored);
+                (similarity > 0.3).then(|| DedupHit {
+                    id: item.id.clone(),
+                    title: item.title.clone(),
+                    similarity,
+                })
+            })
+            .collect();
+
+        hits.sort_by(|a, b| {
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits.truncate(max_results);
+        Ok(hits)
     }
 }
 
@@ -248,9 +317,20 @@ impl SemanticDedup {
             return Ok(None);
         }
 
-        // Search against stored items using the dedup store if available
+        // Search against stored items using the dedup store if available.
+        // B343: compare VECTORS — the previous code paid for the embedding
+        // and then threw it away, searching by raw text instead, so the
+        // 0.92 cosine threshold was being checked against trigram-Jaccard
+        // scores that essentially never reach it (dedup never fired).
         if let Some(store) = &self.dedup_store {
-            let hits = store.find_similar(item_type, text, self.config.max_candidates)?;
+            let mut hits = store.find_similar_by_vector(
+                item_type,
+                &embedding,
+                self.config.max_candidates,
+            )?;
+            // Items stored before embeddings were available have no vector;
+            // merge text-based hits so they remain comparable.
+            hits.extend(store.find_similar(item_type, text, self.config.max_candidates)?);
             if let Some(best) = hits
                 .iter()
                 .filter(|h| h.similarity >= self.config.threshold)
@@ -303,7 +383,13 @@ impl SemanticDedup {
     ) -> Result<()> {
         let text = format!("{}: {}", title, description);
         if let Some(store) = &self.dedup_store {
-            store.store_item(item_type, id, title, &text)?;
+            // B343: store the embedding alongside the text so future
+            // vector comparisons have something to compare against.
+            let embedding = match &self.embedding_client {
+                Some(client) => client.embed(&text).await.ok(),
+                None => None,
+            };
+            store.store_item_with_vector(item_type, id, title, &text, embedding.as_deref())?;
         }
         Ok(())
     }

@@ -909,3 +909,56 @@ compiled into the Rust `apex-api` binary:
 - [x] Old Next.js frontend removed from server
 - [x] Old frontend systemd service removed
 - [x] Full system verified (Mar 4, 2026 — API healthy, 45 endpoints, static serving OK)
+
+## Appendix D – Migration Lineage Reconciliation (Aug 27, 2026)
+
+Production's `_sqlx_migrations` was built from a **consolidated** set
+(`crates/store/migrations/0001–0014` + `20260701_sales_activation_layer`)
+that no longer matches the repository's embedded migration directory
+(`migrations/` → versions `000`–`043`, renumbered for sqlx uniqueness in the
+B353 batch). Deploying any binary built from the repo would have aborted at
+boot with checksum/version-mismatch errors.
+
+Reconciliation performed (one-time, 2026-08-27, after a full `pg_dump` backup):
+
+1. **Schema diff** — fresh reference DB (bootstrapped from the new binary)
+   vs production: shared tables were column-complete; 17 tables + 4 views
+   existed only in the reference and were created on production from
+   `pg_dump`-extracted definitions (`alert_rules`, `social_signals`,
+   `llm_response_cache`, `insight_generation_log`, supplier/supply-chain
+   set, `strategic_predictions`, `weekly_memo_recipients`, …).
+2. **Lineage normalization** — old `_sqlx_migrations` rows preserved in
+   `_sqlx_migrations_lineage_backup_20260827`; the table rewritten to the
+   44 repository migrations (versions 0–43) with their true SHA-384
+   checksums, all marked applied. Future migrations append cleanly.
+3. **Dropped hand-patched constraint** — `warnings_recipe_code_fkey`
+   (production-only; the code treats `warnings.recipe_code` as a free-form
+   provenance tag, see B355).
+
+**Rule going forward**: never hand-edit production schema outside the repo's
+`migrations/` directory — the API validates checksums at boot and a
+divergent lineage blocks startup.
+
+### D.1 Production tuning knobs added
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `WORKER_MAX_CONCURRENT_JOBS` | 4 | Scheduler-wide concurrency permit count |
+| `LLM_INSIGHT_MAX_COMPANIES` | 10 | Companies per insight-generation run (CPU LLM budget) |
+| `LLM_TIMEOUT_SECS` | 600 (prod) | Per-call LLM timeout; 180 default is too small for 30B CPU inference of 4k-token prompts |
+| `LOOKALIKE_MAX_CHECKS_PER_DOMAIN` | 15 | DNS verification budget per domain in the lookalike scan |
+| `POI_LLM_ENRICH_PER_RUN` | 40 | Bounded POI enrichment per nightly run |
+| `API_TRUST_PROXY` | unset | Set `1` only behind a proxy that overwrites `X-Forwarded-For` |
+
+### D.2 Verified at deploy (2026-08-27)
+
+All seven services active; `/api/health` Healthy over HTTPS; all 26
+authenticated pages HTTP 200 (session cookie verified server-side); all 7
+static assets 200 via nginx; `/metrics` 401 without a key / 200 with;
+session-authenticated `/api/*` 200; admin routes 403 for Analyst sessions;
+`/api/trends` 200 (previously permanent 500); search partial renders all
+five facets; worker: 88 runs/24 h with 0 failures, DB leases claiming,
+crawl cycle + enrichment writing observations; LLM pipeline verified
+end-to-end (loader 0→14 companies, llama-server evaluating prompts,
+quality gates accepting/rejecting generated narratives); zero ERROR lines
+in both units post-deploy.

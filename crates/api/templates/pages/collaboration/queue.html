@@ -107,7 +107,7 @@
             {% endif %}
           </div>
           {% if item.status != "completed" %}
-          <form action="/queue/{{ item.id }}/complete" method="post">
+          <form action="/queue/{{ item.id }}/complete" method="post" data-confirm="Mark this queue item complete?">
             <button type="submit" class="apex-btn apex-btn-primary text-[10px]">Complete</button>
           </form>
           {% endif %}

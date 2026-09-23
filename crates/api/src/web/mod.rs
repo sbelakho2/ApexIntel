@@ -31,6 +31,20 @@ use axum::{
 
 use crate::middleware::session::WebSession;
 
+/// HTML-escape text for hand-built `Html(format!(...))` fragments (B301).
+///
+/// Askama auto-escapes template output, but every raw `Html(format!())`
+/// interpolation of crawled or user-supplied text must go through this —
+/// warning titles, insight titles, review notes, and form echo-backs are all
+/// attacker-controllable upstream content.
+pub(crate) fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 /// Helper: extract session from request extensions.
 pub fn get_session(extensions: &axum::http::Extensions) -> Option<WebSession> {
     extensions.get::<WebSession>().cloned()

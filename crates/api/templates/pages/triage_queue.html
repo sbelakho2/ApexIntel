@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block breadcrumb %}
+{% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
   <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
     <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
@@ -82,7 +82,7 @@
           </thead>
           <tbody>
             {% for item in items %}
-            <tr class="cursor-pointer border-t border-rams-line/70 hover:bg-rams-panel focus-within:bg-rams-panel"
+            <tr class="cursor-pointer border-t border-rams-line hover:bg-rams-panel focus-within:bg-rams-panel"
                 tabindex="0" data-row-link="/triage/{{ item.id }}">
               <td class="px-4 py-3">
                 <span class="inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[10px] font-black uppercase tracking-wider"
@@ -95,7 +95,7 @@
               <td class="px-4 py-3">
                 <span class="inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[10px] font-black uppercase tracking-wider
                   {% if item.status.as_str() == "resolved" %}border-rams-green/30 text-rams-green
-                  {% else if item.status.as_str() == "dismissed" %}border-rams-muted/30 text-rams-muted
+                  {% else if item.status.as_str() == "dismissed" %}border-rams-muted text-rams-muted
                   {% else if item.status.as_str() == "acknowledged" %}border-rams-steel/30 text-rams-steel
                   {% else if item.status.as_str() == "triaged" %}border-rams-orange/30 text-rams-orange
                   {% else %}border-rams-red/30 text-rams-red{% endif %}">

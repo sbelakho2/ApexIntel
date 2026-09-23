@@ -96,7 +96,10 @@ async function cacheFirst(request) {
 async function networkFirst(request) {
   try {
     const response = await fetch(request);
-    if (response.ok && response.type === 'basic') {
+    // B349: never cache HTML documents — pages are authenticated and the
+    // cache survives logout on shared machines.
+    const isHtml = (response.headers.get('content-type') || '').includes('text/html');
+    if (response.ok && response.type === 'basic' && !isHtml) {
       const cache = await caches.open(CACHE_NAME);
       cache.put(request, response.clone());
     }

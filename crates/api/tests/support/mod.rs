@@ -130,6 +130,7 @@ impl FakeStore {
                 threat_score: Some(0.63),
                 overlap_score: Some(0.45),
                 strategic_relevance: None,
+                is_competitor: Some(false),
                 metadata: Some(serde_json::json!({"is_competitor": true})),
                 created_at: Some(now),
                 updated_at: Some(now),

@@ -53,7 +53,80 @@ impl PgStore {
         .bind(since)
         .fetch_all(&self.pool)
         .await?;
+        Self::parse_entity_day_rows(rows)
+    }
 
+    /// Daily insight counts per entity (B311). The entity activity chart
+    /// previously fed its "Insights" series from warning counts — the two
+    /// lines were identical and mislabeled.
+    pub async fn get_daily_insight_counts_per_entity(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<(Uuid, i64, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT unnest(entity_ids) AS entity_id,
+                      DATE_PART('day', date_trunc('day', created_at) - date_trunc('day', $1))::BIGINT AS day_offset,
+                      COUNT(*)::BIGINT AS cnt
+               FROM insights
+               WHERE entity_ids IS NOT NULL
+                 AND array_length(entity_ids, 1) > 0
+                 AND created_at >= $1
+               GROUP BY entity_id, day_offset
+               ORDER BY entity_id, day_offset"#,
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+        Self::parse_entity_day_rows(rows)
+    }
+
+    /// Total warning count per entity across all time (B315) — powers list
+    /// pages without per-row count queries.
+    pub async fn get_warning_counts_by_entity(&self) -> Result<Vec<(Uuid, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT unnest(entity_ids) AS entity_id, COUNT(*)::BIGINT AS cnt
+               FROM warnings
+               WHERE entity_ids IS NOT NULL
+                                 AND deleted_at IS NULL
+                 AND array_length(entity_ids, 1) > 0
+               GROUP BY entity_id"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let entity_id: Uuid = row.try_get("entity_id").ok()?;
+                let cnt: i64 = row.try_get("cnt").ok()?;
+                Some((entity_id, cnt))
+            })
+            .collect())
+    }
+
+    /// Total insight count per entity across all time (B315).
+    pub async fn get_insight_counts_by_entity(&self) -> Result<Vec<(Uuid, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT unnest(entity_ids) AS entity_id, COUNT(*)::BIGINT AS cnt
+               FROM insights
+               WHERE entity_ids IS NOT NULL
+                 AND array_length(entity_ids, 1) > 0
+               GROUP BY entity_id"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        use sqlx::Row as _;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let entity_id: Uuid = row.try_get("entity_id").ok()?;
+                let cnt: i64 = row.try_get("cnt").ok()?;
+                Some((entity_id, cnt))
+            })
+            .collect())
+    }
+
+    fn parse_entity_day_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<(Uuid, i64, i64)>> {
         use sqlx::Row as _;
         Ok(rows
             .into_iter()

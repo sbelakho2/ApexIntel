@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block title %}New Workspace — ApexIntel{% endblock %}
+
+{% block breadcrumbs %}
+<nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
+  <ol class="flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">
+    <li><a href="/" class="hover:text-rams-foreground">Home</a></li>
+    <li class="select-none">/</li>
+    <li><a href="/workspaces" class="hover:text-rams-foreground">Workspaces</a></li>
+    <li class="select-none">/</li>
+    <li class="text-rams-foreground" aria-current="page">New</li>
+  </ol>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl">
+  {% call m::page_header("New Workspace", "folder", "Open an investigation workspace to collaborate with your team.", "") %}
+
+  <form method="post" action="/workspaces" class="space-y-4 pb-8">
+    <div class="apex-card p-4 space-y-3">
+      <label class="flex flex-col gap-1">
+        <span class="text-[9px] font-bold uppercase text-rams-muted">Name</span>
+        <input type="text" name="name" required maxlength="120" placeholder="e.g. Q3 competitor pricing investigation"
+          class="rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-2 text-sm w-full focus:outline-none focus:ring-1 focus:ring-rams-line">
+      </label>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-[9px] font-bold uppercase text-rams-muted">Description</span>
+        <textarea name="description" rows="3" placeholder="What is this workspace investigating?"
+          class="rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-2 text-sm w-full focus:outline-none focus:ring-1 focus:ring-rams-line"></textarea>
+      </label>
+
+      <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1">
+          <span class="text-[9px] font-bold uppercase text-rams-muted">Type</span>
+          <select name="workspace_type" class="apex-select">
+            <option value="investigation">Investigation</option>
+            <option value="monitoring">Monitoring</option>
+            <option value="response">Response</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-[9px] font-bold uppercase text-rams-muted">Visibility</span>
+          <select name="visibility" class="apex-select">
+            <option value="team">Team</option>
+            <option value="private">Private</option>
+            <option value="org">Organization</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-[9px] font-bold uppercase text-rams-muted">Tags (comma-separated)</span>
+        <input type="text" name="tags" placeholder="pricing, competitor, q3"
+          class="rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-2 text-sm w-full focus:outline-none focus:ring-1 focus:ring-rams-line">
+      </label>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <button type="submit" class="apex-btn apex-btn-primary">Create Workspace</button>
+      <a href="/workspaces" class="apex-btn apex-btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

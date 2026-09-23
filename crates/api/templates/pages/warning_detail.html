@@ -17,9 +17,9 @@
 
 {% block content %}
 <div class="briefing-page space-y-6">
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1>{{ title }}</h1>
+  <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between lg:gap-4">
+    <div class="min-w-0">
+      <h1 class="break-words">{{ title }}</h1>
       <div class="mt-2 flex items-center gap-2">
         {% call m::severity_badge(severity) %}
         {% call m::region_badge(region) %}
@@ -30,7 +30,7 @@
       {% if !briefing_mode %}
       <a href="/warnings/{{ id }}?briefing=true" class="apex-btn apex-btn-secondary">Briefing</a>
       {% else %}
-      <button type="button" class="no-print apex-btn apex-btn-primary">Print / PDF</button>
+      <button type="button" onclick="window.print()" class="no-print apex-btn apex-btn-primary">Print / PDF</button>
       {% endif %}
       {% if !acknowledged %}
       <button hx-post="/warnings/{{ id }}/acknowledge"
@@ -119,7 +119,7 @@
         {% if !annotations.is_empty() %}
         <div class="mt-4 space-y-3">
           {% for annotation in annotations %}
-          <article class="rounded-rams-sm border border-rams-line bg-rams-panel/30 p-3">
+          <article class="rounded-rams-sm border border-rams-line bg-rams-panel p-3">
             <div class="flex items-center justify-between gap-3">
               <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">{{ annotation.author }} · {{ annotation.visibility }}</p>
               <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ annotation.created_at }}</p>
@@ -148,11 +148,20 @@
     </div>
     <div class="apex-module-body">
       <div class="flex flex-wrap gap-2">
+        {# B309: companies/persons paths — the old `{{ kind }}s` pluralization
+           produced `/companys/{id}` (404) for company entities. #}
         {% for entity in related_entities %}
-        <a href="/{{ entity.kind }}s/{{ entity.id }}" class="inline-flex items-center gap-1.5 rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-1.5 text-sm font-medium text-rams-foreground hover:bg-rams-panel">
-          {% if entity.kind == "company" %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Co</span>{% else %}<span class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">P</span>{% endif %}
+        {% if entity.kind == "company" %}
+        <a href="/companies/{{ entity.id }}" class="inline-flex items-center gap-1.5 rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-1.5 text-sm font-medium text-rams-foreground hover:bg-rams-panel">
+          <span class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Co</span>
           {{ entity.name }}
         </a>
+        {% else %}
+        <a href="/persons/{{ entity.id }}" class="inline-flex items-center gap-1.5 rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-1.5 text-sm font-medium text-rams-foreground hover:bg-rams-panel">
+          <span class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">P</span>
+          {{ entity.name }}
+        </a>
+        {% endif %}
         {% endfor %}
       </div>
     </div>

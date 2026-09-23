@@ -58,18 +58,35 @@ impl PredictivePattern {
         }
     }
 
-    /// Format the prediction statement with calibrated confidence.
+    /// Format the prediction statement.
+    ///
+    /// B338: the predefined patterns shipped invented statistics ("95% CI
+    /// … based on 150 historical observations") with no historical data
+    /// anywhere in the codebase. Patterns with `observation_count == 0` are
+    /// now labeled as heuristic priors; only data-derived patterns (built
+    /// via `build_patterns`/`pattern_from_observations`) print calibrated
+    /// confidence intervals.
     pub fn prediction_statement(&self) -> String {
-        format!(
-            "When {} fires, {} follows within {} days with {:.0}% precision (95% CI: {:.0}%-{:.0}%), based on {} historical observations.",
-            self.triggers.join(" + "),
-            self.predicted_outcome,
-            self.prediction_window_days,
-            self.precision * 100.0,
-            self.precision_ci_lower * 100.0,
-            self.precision_ci_upper * 100.0,
-            self.observation_count
-        )
+        if self.observation_count == 0 {
+            format!(
+                "Heuristic prior (uncalibrated): when {} fires, {} often follows within {} days. Analyst estimate: {:.0}% likelihood — validate against your own deal history before acting.",
+                self.triggers.join(" + "),
+                self.predicted_outcome,
+                self.prediction_window_days,
+                self.precision * 100.0,
+            )
+        } else {
+            format!(
+                "When {} fires, {} follows within {} days with {:.0}% precision (95% CI: {:.0}%-{:.0}%), based on {} historical observations.",
+                self.triggers.join(" + "),
+                self.predicted_outcome,
+                self.prediction_window_days,
+                self.precision * 100.0,
+                self.precision_ci_lower * 100.0,
+                self.precision_ci_upper * 100.0,
+                self.observation_count
+            )
+        }
     }
 }
 
@@ -802,6 +819,7 @@ pub fn pattern_category_from_observation_type(obs_type: &ObservationType) -> &'s
         ObservationType::CompetitorEvent => "competitive_threat",
         ObservationType::DarkWebPost => "cyber_risk",
         ObservationType::SecFiling => "regulatory_compliance",
+        ObservationType::SocialPost => "social_intelligence",
     }
 }
 
@@ -1102,106 +1120,98 @@ pub fn build_patterns(
 
 /// Get predefined predictive patterns based on historical analysis.
 pub fn predefined_patterns() -> Vec<PredictivePattern> {
+    // B338: heuristic priors, NOT calibrated statistics. The previous values
+    // invented precision/recall/CI numbers and observation counts that no
+    // dataset in this codebase supports; downstream text printed them to
+    // users as verified forecasts. `observation_count == 0` now marks a
+    // pattern as uncalibrated everywhere it is rendered. Real calibrated
+    // patterns come from `build_patterns` over actual observation history.
+    let prior = |id: &str,
+                 description: &str,
+                 triggers: &[&str],
+                 predicted_outcome: &str,
+                 window: u32,
+                 prior_probability: f64|
+     -> PredictivePattern {
+        PredictivePattern {
+            id: id.to_string(),
+            description: description.to_string(),
+            triggers: triggers.iter().map(|t| t.to_string()).collect(),
+            predicted_outcome: predicted_outcome.to_string(),
+            prediction_window_days: window,
+            precision: prior_probability,
+            precision_ci_lower: prior_probability * 0.7,
+            precision_ci_upper: (prior_probability * 1.25).min(0.95),
+            recall: 0.0,
+            observation_count: 0,
+        }
+    };
+
     vec![
-        PredictivePattern {
-            id: "pattern_exec_departure_reorg".to_string(),
-            description: "Executive departure followed by reorganization".to_string(),
-            triggers: vec![
-                "executive_departure".to_string(),
-                "board_change".to_string(),
-            ],
-            predicted_outcome: "reorganization_announcement".to_string(),
-            prediction_window_days: 45,
-            precision: 0.72,
-            precision_ci_lower: 0.65,
-            precision_ci_upper: 0.79,
-            recall: 0.60,
-            observation_count: 150,
-        },
-        PredictivePattern {
-            id: "pattern_tariff_sourcing".to_string(),
-            description: "Tariff change triggers dual-sourcing initiative".to_string(),
-            triggers: vec!["tariff_change".to_string()],
-            predicted_outcome: "dual_sourcing_initiative".to_string(),
-            prediction_window_days: 30,
-            precision: 0.70,
-            precision_ci_lower: 0.62,
-            precision_ci_upper: 0.78,
-            recall: 0.55,
-            observation_count: 85,
-        },
-        PredictivePattern {
-            id: "pattern_commodity_supply".to_string(),
-            description: "Commodity price spike leads to supply disruption".to_string(),
-            triggers: vec!["commodity_price_spike".to_string()],
-            predicted_outcome: "supplier_disruption".to_string(),
-            prediction_window_days: 14,
-            precision: 0.68,
-            precision_ci_lower: 0.58,
-            precision_ci_upper: 0.78,
-            recall: 0.72,
-            observation_count: 120,
-        },
-        PredictivePattern {
-            id: "pattern_breach_enforcement".to_string(),
-            description: "Data breach triggers regulatory investigation".to_string(),
-            triggers: vec!["data_breach".to_string()],
-            predicted_outcome: "regulatory_investigation".to_string(),
-            prediction_window_days: 7,
-            precision: 0.85,
-            precision_ci_lower: 0.78,
-            precision_ci_upper: 0.92,
-            recall: 0.80,
-            observation_count: 95,
-        },
-        PredictivePattern {
-            id: "pattern_patent_partnership".to_string(),
-            description: "Patent filing surge attracts partnership".to_string(),
-            triggers: vec!["patent_filing".to_string(), "patent_grant".to_string()],
-            predicted_outcome: "technology_partnership".to_string(),
-            prediction_window_days: 60,
-            precision: 0.50,
-            precision_ci_lower: 0.40,
-            precision_ci_upper: 0.60,
-            recall: 0.45,
-            observation_count: 200,
-        },
-        PredictivePattern {
-            id: "pattern_layoff_closure".to_string(),
-            description: "Mass layoffs precede facility closure".to_string(),
-            triggers: vec!["layoffs".to_string()],
-            predicted_outcome: "facility_closure".to_string(),
-            prediction_window_days: 90,
-            precision: 0.35,
-            precision_ci_lower: 0.25,
-            precision_ci_upper: 0.45,
-            recall: 0.70,
-            observation_count: 180,
-        },
-        PredictivePattern {
-            id: "pattern_quality_recall".to_string(),
-            description: "Quality issue leads to product recall".to_string(),
-            triggers: vec!["quality_issue".to_string()],
-            predicted_outcome: "product_recall".to_string(),
-            prediction_window_days: 21,
-            precision: 0.40,
-            precision_ci_lower: 0.30,
-            precision_ci_upper: 0.50,
-            recall: 0.65,
-            observation_count: 110,
-        },
-        PredictivePattern {
-            id: "pattern_sanction_contract".to_string(),
-            description: "Sanction designation leads to contract termination".to_string(),
-            triggers: vec!["sanction_imposed".to_string()],
-            predicted_outcome: "contract_termination".to_string(),
-            prediction_window_days: 30,
-            precision: 0.90,
-            precision_ci_lower: 0.82,
-            precision_ci_upper: 0.98,
-            recall: 0.85,
-            observation_count: 45,
-        },
+        prior(
+            "pattern_exec_departure_reorg",
+            "Executive departure followed by reorganization (heuristic prior)",
+            &["executive_departure", "board_change"],
+            "reorganization_announcement",
+            45,
+            0.55,
+        ),
+        prior(
+            "pattern_tariff_sourcing",
+            "Tariff change triggers dual-sourcing initiative (heuristic prior)",
+            &["tariff_change"],
+            "dual_sourcing_initiative",
+            30,
+            0.50,
+        ),
+        prior(
+            "pattern_commodity_supply",
+            "Commodity price spike leads to supply disruption (heuristic prior)",
+            &["commodity_price_spike"],
+            "supplier_disruption",
+            14,
+            0.45,
+        ),
+        prior(
+            "pattern_breach_enforcement",
+            "Data breach triggers regulatory investigation (heuristic prior)",
+            &["data_breach"],
+            "regulatory_investigation",
+            7,
+            0.60,
+        ),
+        prior(
+            "pattern_patent_partnership",
+            "Patent filing surge attracts partnership (heuristic prior)",
+            &["patent_filing", "patent_grant"],
+            "technology_partnership",
+            60,
+            0.35,
+        ),
+        prior(
+            "pattern_layoff_closure",
+            "Mass layoffs precede facility closure (heuristic prior)",
+            &["layoffs"],
+            "facility_closure",
+            90,
+            0.30,
+        ),
+        prior(
+            "pattern_quality_recall",
+            "Quality issue leads to product recall (heuristic prior)",
+            &["quality_issue"],
+            "product_recall",
+            21,
+            0.35,
+        ),
+        prior(
+            "pattern_sanction_contract",
+            "Sanction designation leads to contract termination (heuristic prior)",
+            &["sanction_imposed"],
+            "contract_termination",
+            30,
+            0.65,
+        ),
     ]
 }
 
@@ -1313,7 +1323,10 @@ mod tests {
             assert!(pattern.precision >= 0.0 && pattern.precision <= 1.0);
             assert!(pattern.precision_ci_lower <= pattern.precision);
             assert!(pattern.precision_ci_upper >= pattern.precision);
-            assert!(pattern.observation_count > 0);
+            // B338: predefined patterns are heuristic priors — they must be
+            // explicitly uncalibrated (observation_count == 0) so downstream
+            // rendering never presents invented statistics as data.
+            assert_eq!(pattern.observation_count, 0);
         }
     }
 

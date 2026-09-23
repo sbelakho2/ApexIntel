@@ -144,6 +144,16 @@ pub async fn executive_dashboard(
             vec![]
         });
 
+    // B312: competitor names come from the tracked competitor set, not a
+    // hardcoded demo list that only matched one specific deployment.
+    let competitor_names: Vec<String> = store
+        .list_competitors(50, 0)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+
     let unack_warnings = stats_data.unacknowledged_warnings as i64;
     let ctx = PageContext::from_session(&session, "/executive", unack_warnings);
 
@@ -218,22 +228,22 @@ pub async fn executive_dashboard(
             }
         }
     }
-    // Fallback: if no tag-based mentions, extract from insight titles for common names
-    let competitor_keywords = [
-        "Foxconn", "Hon Hai", "Pegatron", "Wistron", "Compal",
-        "Quanta", "Inventec", "BYD", "Samsung", "LG",
-    ];
-    for name in &competitor_keywords {
+    // Fallback: if no tag-based mentions, extract from insight titles using
+    // the tracked competitor set (B312 — previously a hardcoded demo list).
+    for name in &competitor_names {
+        if name.trim().is_empty() {
+            continue;
+        }
         let count = recent_insights
             .iter()
             .filter(|i| {
-                i.title.contains(name)
-                    || i.summary.contains(name)
-                    || i.tags.as_ref().is_some_and(|t| t.iter().any(|tag| tag.contains(name)))
+                i.title.contains(name.as_str())
+                    || i.summary.contains(name.as_str())
+                    || i.tags.as_ref().is_some_and(|t| t.iter().any(|tag| tag.contains(name.as_str())))
             })
             .count() as i64;
         if count > 0 {
-            *mention_counts.entry(name.to_string()).or_default() += count;
+            *mention_counts.entry(name.clone()).or_default() += count;
         }
     }
 
@@ -254,10 +264,14 @@ pub async fn executive_dashboard(
             CompetitorMention {
                 name,
                 mention_count: count,
-                trend_direction: "up".into(),
-                risk_level: if count > 80 {
+                // B313: no fabricated trend — direction is unknown without a
+                // comparison window; the template renders a neutral state.
+                trend_direction: "flat".into(),
+                // Relative-to-top volume bands (share of the noisiest
+                // competitor), not absolute mention counts.
+                risk_level: if raw_pct >= 67 {
                     "high".into()
-                } else if count > 40 {
+                } else if raw_pct >= 34 {
                     "medium".into()
                 } else {
                     "low".into()
@@ -299,7 +313,7 @@ pub async fn executive_dashboard(
     for insight in &recent_insights {
         if let Some(ref tags) = insight.tags {
             for tag in tags {
-                if !competitor_keywords.iter().any(|k| tag.contains(k)) {
+                if !competitor_names.iter().any(|k| tag.contains(k.as_str())) {
                     *topic_counts.entry(tag.clone()).or_default() += 1;
                 }
             }
@@ -316,12 +330,47 @@ pub async fn executive_dashboard(
     sorted_topics.sort_by(|a, b| b.1.cmp(&a.1));
     sorted_topics.truncate(5);
 
+    // B313: honest week-over-week change — count this week's mentions against
+    // the previous week's from the same loaded window, instead of the
+    // fabricated `count × 7.5%` figure that always rendered an upward trend.
+    let now = chrono::Utc::now();
+    let week_ago = now - chrono::Duration::days(7);
+    let two_weeks_ago = now - chrono::Duration::days(14);
     let trending_topics: Vec<TrendingTopic> = sorted_topics
         .into_iter()
-        .map(|(topic, count)| TrendingTopic {
-            topic,
-            mention_count: count,
-            change_pct: format!("+{}%", (count as f64 * 7.5).round() as i64),
+        .map(|(topic, count)| {
+            let topic_matches =
+                |i: &apex_store::postgres::InsightRow, t: &str| -> bool {
+                    i.tags.as_ref().is_some_and(|tags| tags.iter().any(|tag| tag == t))
+                        || i.insight_type.as_deref() == Some(t)
+                };
+            let this_week = recent_insights
+                .iter()
+                .filter(|i| i.created_at.is_some_and(|ts| ts >= week_ago) && topic_matches(i, &topic))
+                .count() as i64;
+            let prev_week = recent_insights
+                .iter()
+                .filter(|i| {
+                    i.created_at.is_some_and(|ts| ts >= two_weeks_ago && ts < week_ago)
+                        && topic_matches(i, &topic)
+                })
+                .count() as i64;
+            let change_pct = if prev_week == 0 {
+                if this_week == 0 {
+                    "±0%".to_string()
+                } else {
+                    "new".to_string()
+                }
+            } else {
+                let delta = ((this_week - prev_week) as f64 / prev_week as f64 * 100.0).round() as i64;
+                format!("{}{}%", if delta >= 0 { "+" } else { "" }, delta)
+            };
+            let _ = count;
+            TrendingTopic {
+                topic,
+                mention_count: this_week.max(count),
+                change_pct,
+            }
         })
         .collect();
 
@@ -350,9 +399,12 @@ pub async fn executive_dashboard(
 
     // ── Build recommended actions from high-priority items ───────────────
 
+    // B313: priority_score is validated to [0,1] on write, so the previous
+    // `>= 7.0` / `>= 8.0` cutoffs filtered out every opportunity and the
+    // recommended-actions module was permanently empty.
     let high_priority_opps: Vec<_> = opportunities
         .iter()
-        .filter(|o| o.priority_score >= 7.0)
+        .filter(|o| o.priority_score >= 0.7)
         .take(3)
         .collect();
 
@@ -361,7 +413,7 @@ pub async fn executive_dashboard(
         .map(|o| RecommendedAction {
             id: o.id.to_string(),
             title: o.title.clone(),
-            priority: if o.priority_score >= 8.0 {
+            priority: if o.priority_score >= 0.8 {
                 "critical".into()
             } else {
                 "high".into()

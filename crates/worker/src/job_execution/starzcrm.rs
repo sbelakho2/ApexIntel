@@ -205,9 +205,22 @@ pub(super) async fn run_starzcrm_sync(store: &Arc<PgStore>) -> JobRun {
         error_count += 1;
     }
 
+    // ── Outbound write-back: push top ICP targets as CRM leads ──────────────
+    // Previously this job was strictly one-way (MySQL→PG). This closes the loop
+    // by surfacing ApexIntel's highest-fit sales targets back into the CRM where
+    // reps actually work. Gated behind STARZCRM_WRITEBACK (default off) so the
+    // read-only behavior is preserved unless explicitly enabled.
+    let pushed = match write_back_icp_targets(store, &pool).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(error = %e, "starzcrm write-back failed (continuing)");
+            0
+        }
+    };
+
     let notes = format!(
-        "pulled {} deals, upserted {}, errors {}",
-        deal_count, upserted_count, error_count
+        "pulled {} deals, upserted {}, pushed {} ICP targets, errors {}",
+        deal_count, upserted_count, pushed, error_count
     );
 
     if error_count > 0 {
@@ -424,14 +437,18 @@ fn extract_competitors(description: &Option<String>, notes: &Option<String>) -> 
 
     // Extract company-like names mentioned near competitor keywords
     // This is a simple heuristic — in production, use NER or the embeddings (§5.2)
-    for sentence in lower.split(&['.', '!', '?', '\n', '\r'][..]) {
+    // B330: iterate the ORIGINAL-CASE text — the previous loop checked
+    // `is_uppercase()` against words from the lowercased copy, which is never
+    // true, so `competitors_mentioned` was always empty.
+    for sentence in combined.split(&['.', '!', '?', '\n', '\r'][..]) {
         let sentence = sentence.trim();
         if sentence.is_empty() {
             continue;
         }
 
         // If sentence mentions a competitor keyword, try to extract company names
-        if COMPETITOR_KEYWORDS.iter().any(|kw| sentence.contains(kw)) {
+        let sentence_lower = sentence.to_lowercase();
+        if COMPETITOR_KEYWORDS.iter().any(|kw| sentence_lower.contains(kw)) {
             // Look for capitalized words or phrases that might be company names
             let words: Vec<&str> = sentence.split_whitespace().collect();
             for (i, _word) in words.iter().enumerate() {
@@ -439,7 +456,16 @@ fn extract_competitors(description: &Option<String>, notes: &Option<String>) -> 
                 if let Some(next) = words.get(i + 1) {
                     if next.chars().next().map_or(false, |c| c.is_uppercase()) {
                         let candidate = next.trim_matches(|c: char| c.is_ascii_punctuation());
-                        if !candidate.is_empty() && candidate.len() > 1 {
+                        // Skip pure stopwords that happen to be capitalized
+                        // (sentence starts, common words).
+                        const STOPWORDS: [&str; 12] = [
+                            "The", "A", "An", "And", "But", "We", "They", "Our", "Their",
+                            "This", "That", "It",
+                        ];
+                        if !candidate.is_empty()
+                            && candidate.len() > 1
+                            && !STOPWORDS.contains(&candidate)
+                        {
                             let name = candidate.to_string();
                             if !found.contains(&name) {
                                 found.push(name);
@@ -561,4 +587,98 @@ async fn upsert_deal_observation(
     .await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Outbound write-back (MySQL INSERT)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Push the highest-ICP-fit target accounts into StarzCRM as leads, if
+/// `STARZCRM_WRITEBACK=true`. Idempotent via the `crm_sync_state` table: each
+/// company is pushed at most once. Returns the number of leads pushed.
+///
+/// The CRM `leads` schema is probed defensively (column names vary across CRM
+/// installs); if the expected table/columns are absent the write-back is a
+/// no-op rather than an error, so a schema mismatch never breaks the inbound sync.
+pub(crate) async fn write_back_icp_targets(
+    store: &Arc<PgStore>,
+    mysql_pool: &sqlx::MySqlPool,
+) -> Result<u64, anyhow::Error> {
+    let enabled = std::env::var("STARZCRM_WRITEBACK")
+        .unwrap_or_else(|_| "false".to_string())
+        .to_lowercase()
+        == "true";
+    if !enabled {
+        return Ok(0);
+    }
+
+    // Load top ICP targets not yet pushed to the CRM.
+    let targets: Vec<(uuid::Uuid, String, Option<String>, Option<String>, Option<f64>)> =
+        sqlx::query_as(
+            r#"
+            SELECT id, name, domain, region, icp_fit_score
+            FROM companies
+            WHERE is_competitor IS DISTINCT FROM TRUE
+              AND icp_fit_score >= 0.6
+              AND NOT EXISTS (
+                  SELECT 1 FROM crm_sync_state
+                  WHERE crm_system = 'starzcrm'
+                    AND entity_type = 'lead'
+                    AND local_id = companies.id::text
+              )
+            ORDER BY icp_fit_score DESC
+            LIMIT 50
+            "#,
+        )
+        .fetch_all(&store.pool)
+        .await?;
+
+    if targets.is_empty() {
+        return Ok(0);
+    }
+
+    // Verify the CRM has a `leads` table before inserting.
+    let has_leads: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM information_schema.TABLES \
+         WHERE TABLE_SCHEMA = 'starz_crm' AND TABLE_NAME = 'leads'",
+    )
+    .fetch_one(mysql_pool)
+    .await
+    .unwrap_or(false);
+
+    if !has_leads {
+        tracing::info!("starzcrm write-back: no 'leads' table in CRM; skipping");
+        return Ok(0);
+    }
+
+    let mut pushed = 0u64;
+    for (company_id, name, domain, region, fit) in &targets {
+        // Insert into CRM leads (graceful on missing columns).
+        let inserted = sqlx::query(
+            "INSERT IGNORE INTO leads (company_name, website, region, source, score, notes, created_at) \
+             VALUES (?, ?, ?, 'ApexIntel-ICP', ?, ?, NOW())",
+        )
+        .bind(name)
+        .bind(domain.as_deref().unwrap_or(""))
+        .bind(region.as_deref().unwrap_or(""))
+        .bind(fit.unwrap_or(0.0) as f64)
+        .bind(format!("Auto-generated by ApexIntel ICP scoring (fit={:.2}). High-priority sales target.", fit.unwrap_or(0.0)))
+        .execute(mysql_pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+
+        if inserted > 0 {
+            pushed += 1;
+        }
+        // Record the mapping idempotently so we never re-push the same company.
+        let _ = store
+            .record_crm_sync("lead", &company_id.to_string(), &name, "starzcrm", "outbound", None)
+            .await;
+    }
+
+    if pushed > 0 {
+        tracing::info!(pushed, "starzcrm write-back: pushed ICP leads to CRM");
+    }
+    Ok(pushed)
 }

@@ -16,158 +16,103 @@
 {% block content %}
 {% call m::page_header("Admin Panel", "settings", "System administration — data quality, jobs, and platform status.", "") %}
 
+{# B316: real process/database statistics — the previous tiles were hardcoded
+   demo values (12 connections, 87% cache hit, 4 workers). #}
 <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   <div class="apex-card p-4">
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">API Uptime</p>
-    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ stats.api_uptime_pct }}%</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">API Process Uptime</p>
+    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ uptime }}</p>
   </div>
   <div class="apex-card p-4">
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">DB Connections</p>
-    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ stats.db_connections }}</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">DB Pool Size</p>
+    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ stats.pool_size }}</p>
   </div>
   <div class="apex-card p-4">
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Cache Hit Rate</p>
-    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ stats.cache_hit_rate }}%</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Database Size</p>
+    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ db_size }}</p>
   </div>
   <div class="apex-card p-4">
-    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Active Workers</p>
-    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ stats.active_workers }}</p>
+    <p class="text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Observations Stored</p>
+    <p class="mt-1.5 text-2xl font-black tabular-nums">{{ total_observations }}</p>
   </div>
 </div>
 
+{% if !observation_sources.is_empty() %}
 <div class="apex-card mb-6">
   <div class="border-b border-rams-line px-4 py-3 flex items-center justify-between gap-3">
     <div>
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Active Sources</h2>
-      <p class="text-[11px] text-rams-muted mt-1">Recent ingestion activity by source</p>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Ingestion by Source</h2>
+      <p class="text-[11px] text-rams-muted mt-1">Live observation volume and freshness per source type</p>
     </div>
   </div>
-  <div class="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2">
-    <div class="apex-panel">
-      <h3 class="text-[10px] font-black uppercase tracking-[0.12em]">{{ sources.primary.label }}</h3>
-      <div class="mt-3 space-y-2">
-        {% for item in sources.primary.items %}
-        <div class="rounded-sm border border-rams-line/60 px-3 py-2">
-          <div class="flex flex-wrap items-start justify-between gap-2">
-            <span class="text-xs font-semibold">{{ item.name }}</span>
-            <span class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">{{ item.status }}</span>
-          </div>
-          <div class="mt-1 flex items-center justify-between gap-3 text-[11px] text-rams-muted">
-            <span>{{ item.records }} records</span>
-            <span class="tabular-nums">{{ item.last_ingested }}</span>
-          </div>
-        </div>
-        {% endfor %}
+  <div class="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
+    {% for item in observation_sources %}
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <div class="flex flex-wrap items-start justify-between gap-2">
+        <span class="text-xs font-semibold">{{ item.name }}</span>
+        <span class="text-[10px] font-black uppercase tracking-[0.08em] {{ item.status_class }}">{{ item.status }}</span>
+      </div>
+      <div class="mt-1 flex items-center justify-between gap-3 text-[11px] text-rams-muted">
+        <span>{{ item.records }} records</span>
+        <span class="tabular-nums">{{ item.last_ingested }}</span>
       </div>
     </div>
-    <div class="apex-panel">
-      <h3 class="text-[10px] font-black uppercase tracking-[0.12em]">{{ sources.secondary.label }}</h3>
-      <div class="mt-3 space-y-2">
-        {% for item in sources.secondary.items %}
-        <div class="rounded-sm border border-rams-line/60 px-3 py-2">
-          <div class="flex flex-wrap items-start justify-between gap-2">
-            <span class="text-xs font-semibold">{{ item.name }}</span>
-            <span class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">{{ item.status }}</span>
-          </div>
-          <div class="mt-1 flex items-center justify-between gap-3 text-[11px] text-rams-muted">
-            <span>{{ item.records }} records</span>
-            <span class="tabular-nums">{{ item.last_ingested }}</span>
-          </div>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
-    <div class="apex-panel">
-      <h3 class="text-[10px] font-black uppercase tracking-[0.12em]">{{ sources.tertiary.label }}</h3>
-      <div class="mt-3 space-y-2">
-        {% for item in sources.tertiary.items %}
-        <div class="rounded-sm border border-rams-line/60 px-3 py-2">
-          <div class="flex flex-wrap items-start justify-between gap-2">
-            <span class="text-xs font-semibold">{{ item.name }}</span>
-            <span class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">{{ item.status }}</span>
-          </div>
-          <div class="mt-1 flex items-center justify-between gap-3 text-[11px] text-rams-muted">
-            <span>{{ item.records }} records</span>
-            <span class="tabular-nums">{{ item.last_ingested }}</span>
-          </div>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
-    <div class="apex-panel">
-      <h3 class="text-[10px] font-black uppercase tracking-[0.12em]">{{ sources.quad.label }}</h3>
-      <div class="mt-3 space-y-2">
-        {% for item in sources.quad.items %}
-        <div class="rounded-sm border border-rams-line/60 px-3 py-2">
-          <div class="flex flex-wrap items-start justify-between gap-2">
-            <span class="text-xs font-semibold">{{ item.name }}</span>
-            <span class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">{{ item.status }}</span>
-          </div>
-          <div class="mt-1 flex items-center justify-between gap-3 text-[11px] text-rams-muted">
-            <span>{{ item.records }} records</span>
-            <span class="tabular-nums">{{ item.last_ingested }}</span>
-          </div>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
+    {% endfor %}
   </div>
 </div>
+{% endif %}
 
 <div class="apex-card mb-6">
-  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">System Status</h2>
+  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">Component Health</h2>
   <div class="divide-y divide-rams-line">
+    {% for metric in system_metrics %}
     <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm">Database Migrations</span>
+      <span class="text-sm">{{ metric.name }}</span>
       <div class="flex items-center gap-2">
-        <span class="text-[10px] font-black uppercase tracking-[0.08em] apex-text-positive">Up to date</span>
+        <span class="text-[10px] font-black uppercase tracking-[0.08em] {% if metric.status == "ok" %}apex-text-positive{% else if metric.status == "warning" %}apex-text-warning{% else %}apex-text-negative{% endif %}">{{ metric.value }}</span>
       </div>
     </div>
-    <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm">Last Backup</span>
-      <span class="text-[10px] tabular-nums text-rams-muted">{{ system_status.last_backup }}</span>
-    </div>
-    <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm">LLM Provider</span>
-      <div class="flex items-center gap-2">
-        <span class="text-[10px] font-black uppercase tracking-[0.08em] apex-text-positive">Online</span>
-      </div>
-    </div>
-    <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm">Scheduler</span>
-      <div class="flex items-center gap-2">
-        <span class="text-[10px] font-black uppercase tracking-[0.08em] apex-text-warning">Running (next: {{ system_status.next_schedule }})</span>
-      </div>
-    </div>
-    <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm">Webhook Delivery</span>
-      <div class="flex items-center gap-2">
-        <span class="text-[10px] font-black uppercase tracking-[0.08em] apex-text-positive">Healthy</span>
-      </div>
-    </div>
+    {% endfor %}
   </div>
 </div>
 
-{% if !audit_log.is_empty() %}
+{% if !crawl_statuses.is_empty() %}
 <div class="apex-card mb-6">
-  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">Recent Audit Log</h2>
+  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">Crawl Status</h2>
+  <div class="divide-y divide-rams-line">
+    {% for cs in crawl_statuses %}
+    <div class="px-4 py-3 flex items-center justify-between">
+      <span class="text-sm">{{ cs.source }}</span>
+      <div class="flex gap-4 text-[11px] tabular-nums text-rams-muted">
+        <span>{{ cs.items_crawled }} pages</span>
+        <span>last run {{ cs.last_run }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if !recipe_performance.is_empty() %}
+<div class="apex-card mb-6">
+  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">Recipe Performance</h2>
   <div class="overflow-x-auto">
-  <table class="w-full min-w-[42rem]">
+  <table class="w-full min-w-[40rem]">
     <thead>
       <tr class="border-b border-rams-line">
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Time</th>
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Action</th>
-        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">User</th>
-        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">IP</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Recipe</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Runs</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Successes</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Last Fired</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-rams-line">
-      {% for entry in audit_log %}
+      {% for r in recipe_performance %}
       <tr>
-        <td class="px-4 py-2 tabular-nums text-xs text-rams-muted">{{ entry.timestamp }}</td>
-        <td class="px-4 py-2 text-xs font-semibold">{{ entry.action }}</td>
-        <td class="px-4 py-2 text-xs text-rams-muted">{{ entry.user }}</td>
-        <td class="px-4 py-2 text-xs tabular-nums text-rams-muted text-right">{{ entry.ip_address }}</td>
+        <td class="px-4 py-2 text-xs font-semibold">{{ r.name }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.total_runs }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.success_count }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ r.last_run }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -176,33 +121,50 @@
 </div>
 {% endif %}
 
-<div class="apex-card">
-  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">API Endpoints</h2>
+{% if !poi_coverage.is_empty() %}
+<div class="apex-card mb-6">
+  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">POI Coverage</h2>
   <div class="divide-y divide-rams-line">
+    {% for p in poi_coverage %}
     <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm font-semibold">GET /api/health</span>
+      <span class="text-sm">{{ p.category }}</span>
       <div class="flex gap-4 text-[11px] tabular-nums text-rams-muted">
-        <span>{{ endpoint_metrics.health_hits }} hits</span>
-        <span>{{ endpoint_metrics.health_avg_ms }}ms avg</span>
-        <span class="apex-text-positive">{{ endpoint_metrics.health_ok_pct }}% OK</span>
+        <span>{{ p.covered }} / {{ p.total }}</span>
+        <span>{{ p.coverage_pct.round() }}%</span>
       </div>
     </div>
-    <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm font-semibold">GET /api/events</span>
-      <div class="flex gap-4 text-[11px] tabular-nums text-rams-muted">
-        <span>{{ endpoint_metrics.events_hits }} hits</span>
-        <span>{{ endpoint_metrics.events_avg_ms }}ms avg</span>
-        <span class="apex-text-positive">{{ endpoint_metrics.events_ok_pct }}% OK</span>
-      </div>
-    </div>
-    <div class="px-4 py-3 flex items-center justify-between">
-      <span class="text-sm font-semibold">POST /api/trigger/ingest</span>
-      <div class="flex gap-4 text-[11px] tabular-nums text-rams-muted">
-        <span>{{ endpoint_metrics.ingest_hits }} hits</span>
-        <span>{{ endpoint_metrics.ingest_avg_ms }}ms avg</span>
-        <span class="apex-text-positive">{{ endpoint_metrics.ingest_ok_pct }}% OK</span>
-      </div>
-    </div>
+    {% endfor %}
   </div>
 </div>
+{% endif %}
+
+{% if !workflow_runs.is_empty() %}
+<div class="apex-card">
+  <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">Recent LLM Workflow Runs</h2>
+  <div class="overflow-x-auto">
+  <table class="w-full min-w-[46rem]">
+    <thead>
+      <tr class="border-b border-rams-line">
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Workflow</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Prompt</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Model</th>
+        <th class="px-4 py-2 text-left text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Gate</th>
+        <th class="px-4 py-2 text-right text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Duration</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-rams-line">
+      {% for w in workflow_runs %}
+      <tr>
+        <td class="px-4 py-2 text-xs font-semibold">{{ w.workflow }}</td>
+        <td class="px-4 py-2 text-xs text-rams-muted">{{ w.prompt_label }}</td>
+        <td class="px-4 py-2 text-xs text-rams-muted">{{ w.model_name }}</td>
+        <td class="px-4 py-2 text-xs {% if w.gate_status == "passed" %}apex-text-positive{% else %}apex-text-negative{% endif %}">{{ w.gate_status }}</td>
+        <td class="px-4 py-2 text-xs tabular-nums text-right text-rams-muted">{{ w.duration_ms }}ms</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
 {% endblock %}

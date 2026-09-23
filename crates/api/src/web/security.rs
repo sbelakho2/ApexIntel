@@ -517,8 +517,8 @@ pub async fn post_trigger_scan_html(
         return (
             StatusCode::BAD_REQUEST,
             Html(format!(
-                "<div class=\"rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700\">Unknown scan type: {}</div>",
-                requested_kind
+                "<div class=\"rounded border border-rams-red/30 bg-rams-red/10 px-3 py-2 text-xs font-semibold text-rams-red\">Unknown scan type: {}</div>",
+                super::escape_html(&requested_kind)
             )),
         );
     }
@@ -529,12 +529,12 @@ pub async fn post_trigger_scan_html(
             (
                 StatusCode::ACCEPTED,
                 Html(format!(
-                    "<div class=\"apex-card p-4 border-green-500/30 bg-green-500/5\">\
+                    "<div class=\"apex-card p-4 border-rams-green/30 bg-rams-green/5\">\
                      <div class=\"flex items-center gap-2\">\
-                     <span class=\"h-2 w-2 rounded-full bg-green-500 animate-pulse\"></span>\
-                     <p class=\"text-sm font-bold text-green-600\">{}</p>\
+                     <span class=\"h-2 w-2 rounded-full bg-rams-green animate-pulse\"></span>\
+                     <p class=\"text-sm font-bold text-rams-green\">{}</p>\
                      </div>\
-                     <p class=\"mt-1 text-[11px] text-green-700\">Trigger ID: {}</p>\
+                     <p class=\"mt-1 text-[11px] text-rams-green\">Trigger ID: {}</p>\
                      </div>",
                     requested_kind, short_id
                 )),
@@ -544,7 +544,7 @@ pub async fn post_trigger_scan_html(
             tracing::error!(job_kind = %requested_kind, "queue_job_trigger failed: {err:#}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<div class=\"rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-700\">Failed to queue security scan</div>".to_string()),
+                Html("<div class=\"rounded border border-rams-red/30 bg-rams-red/10 px-3 py-2 text-xs font-semibold text-rams-red\">Failed to queue security scan</div>".to_string()),
             )
         }
     }

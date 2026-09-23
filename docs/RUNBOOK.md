@@ -1,7 +1,7 @@
 # ApexIntel Operational Runbook
 
 > Comprehensive operational guide for ApexIntel competitive intelligence platform.
-> Last updated: 2026-03-01
+> Last updated: 2026-08-27
 
 ---
 
@@ -17,6 +17,78 @@
 8. [Security Checklist](#security-checklist)
 9. [Incident Playbook](#incident-playbook)
 10. [Monitoring & Alerting](#monitoring--alerting)
+
+---
+
+## Scheduler behavior (2026-08 audit batch — read before operating)
+
+- **Job timeouts are enforced.** Each job kind declares a timeout
+  (`JobDef::timeout_secs`, hard ceiling 6 h). A job that exceeds it is
+  recorded as `failed` with `job timed out after Ns (enforced by scheduler)`
+  and trips the consecutive-failure circuit breaker like any other failure.
+- **Jobs run concurrently.** Due jobs execute in parallel under
+  `WORKER_MAX_CONCURRENT_JOBS` permits (default 4, clamp 1–16). Raise it on
+  large boxes; lower it when the DB pool is the bottleneck.
+- **Scheduled fires claim a lease.** Before running a due job the worker
+  atomically claims it in `worker_job_state` (lease = 2× declared timeout +
+  60 s). Two worker replicas will not double-fire a schedule, and a crashed
+  run stops blocking the job once the lease expires. Log line to expect when
+  another replica owns a job: `job leased elsewhere; skipping`.
+- **SIGTERM drains gracefully.** Container stop signals now break the main
+  loop and close the DB pool; in-flight tick tasks finish their current work.
+- **Observation IDs are content-derived.** Recurring fetches of the same
+  fact (same CVE, same unchanged page, same post) store one row. If you
+  re-ingest historical data manually, expect `ON CONFLICT (id) DO NOTHING`
+  to deduplicate rather than duplicate.
+- **`/metrics` requires an API key** (Prometheus `authorization` block) and
+  `POI_LLM_ENRICH_PER_RUN` now defaults to 40 (bound it explicitly if you
+  want more).
+
+## Deploying (routine update — see DEPLOYMENT.md §8)
+
+```bash
+# Local: build ARM64 release binaries and upload
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-api --features llm
+cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
+scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-api  root@77.42.65.89:/tmp/apex-api-new
+scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-worker root@77.42.65.89:/tmp/apex-worker-new
+
+# Server: backup DB first, then swap + restart + verify
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 '
+set -e
+sudo -u postgres pg_dump apexintel | gzip > /opt/apexintel/backups/db_$(date +%Y%m%d_%H%M%S).sql.gz
+systemctl stop apexintel-worker apexintel-api
+cp /opt/apexintel/bin/apex-api  /opt/apexintel/bin/apex-api.prev   # rollback copy
+cp /opt/apexintel/bin/apex-worker /opt/apexintel/bin/apex-worker.prev
+cp /tmp/apex-api-new  /opt/apexintel/bin/apex-api
+cp /tmp/apex-worker-new /opt/apexintel/bin/apex-worker
+chmod 700 /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker
+chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-worker
+systemctl start apexintel-api apexintel-worker
+sleep 5
+curl -sf http://127.0.0.1:8080/api/health
+journalctl -u apexintel-api --since "1 minute ago" --no-pager | grep -E "listening|Error" | tail -5
+journalctl -u apexintel-worker --since "1 minute ago" --no-pager | grep -E "worker started|ERROR" | tail -5'
+
+# Rollback if anything fails:
+# systemctl stop apexintel-worker apexintel-api
+# cp /opt/apexintel/bin/apex-api.prev /opt/apexintel/bin/apex-api   (etc.)
+# systemctl start apexintel-api apexintel-worker
+```
+
+**Static assets** update independently (`scp crates/api/static/* →
+/opt/apexintel/static/`, no restart; nginx serves them). **Migrations** run
+automatically on API boot — the API validates checksums, so never modify an
+applied migration file (see DEPLOYMENT.md Appendix D for the 2026-08-27
+lineage reconciliation and the schema-sync procedure used).
+
+**To force an immediate job run** (rather than waiting for cadence):
+```sql
+UPDATE worker_job_state SET last_run = now() - interval '7 hours', last_status='pending'
+WHERE job_kind='insight_generation';
+```
+then `systemctl restart apexintel-worker` (the scheduler restores `last_run`
+from this table at boot; the job fires on the next 60 s tick).
 
 ---
 
@@ -143,6 +215,55 @@ sudo nginx -t && sudo systemctl reload nginx
 | `recipes` | Signal detection | Recipe engine, scoring |
 | `llm` | LLM integration | Prompt building, response parsing |
 | `learning` | ML features | Feature store, model serving |
+
+---
+
+## Sales Activation Layer
+
+The OSINT → sales-activation layer closes the gap between "what we know" and
+"which companies/persons to target and how". It is backed by migration
+`20260701_sales_activation_layer.sql` (8 new tables + ICP columns).
+
+### Sales OSINT API endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/icp/targets` | Top target accounts ranked by ICP fit (which companies to target) |
+| `POST /api/icp/companies/:id/score` | Score/re-score a single account against the ICP |
+| `GET /api/persons/:id/contacts` | Verified email/phone/LinkedIn for a person (how to reach them) |
+| `GET /api/persons/:id/outreach` | Outreach history + response rate (feedback loop) |
+| `POST /api/persons/:id/outreach` | Record a contact attempt + outcome |
+| `GET /api/companies/:id/buying-center` | Decision-unit graph for an account (champion/EB/DM/…) |
+| `POST /api/companies/:id/buying-center/members` | Add a committee member |
+| `POST /api/battlecards/:id/regenerate` | Regenerate a battlecard from real deals + pricing + LLM |
+
+### Sales jobs (auto-scheduled)
+
+| Job | Interval | What it does |
+|-----|----------|--------------|
+| `contact_enrichment` | 1h | Discovers verified contacts for persons lacking them (Apollo/Hunter/Clearbit/website waterfall) |
+| `icp_scoring` | 6h | Batch-scores all non-competitor companies against the ICP; writes `icp_fit_score` + `icp_breakdown` |
+| `engagement_refresh` | 15m | Recomputes per-person outreach response rates from `engagement_events` |
+
+### New environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `APOLLO_API_KEY` | unset | Enables Apollo contact enrichment (highest yield) |
+| `HUNTER_API_KEY` | unset | Enables Hunter email finder/verifier |
+| `CLEARBIT_API_KEY` | unset | Enables Clearbit enrichment |
+| `STARZCRM_WRITEBACK` | `false` | When `true`, the StarzCRM sync pushes top ICP targets back to the CRM as leads |
+
+If no provider key is set, contact enrichment falls back to the company-website
+scrape (lower confidence, always available). The ICP scorer and battlecard
+engine require no API keys.
+
+### New database tables (`20260701_sales_activation_layer.sql`)
+
+`closed_deals`, `competitor_pricing`, `contact_methods`, `engagement_events`,
+`buying_centers`, `buying_center_members`, `crawl_metrics`, `crm_sync_state`
+— plus `companies.icp_fit_score` / `icp_breakdown` / `intent_signal_score` /
+`tech_stack` / `funding_stage` / `headcount_growth_pct` and `pipeline_opportunities.company_id` / `competitor_id`.
 
 ---
 

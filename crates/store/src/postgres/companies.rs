@@ -351,7 +351,7 @@ impl PgStore {
             "SELECT id, name, legal_name, domain, country_code, region, company_type,
                     industry_tags, employee_estimate, revenue_estimate_usd,
                     risk_score, threat_score, overlap_score, strategic_relevance,
-                    metadata, created_at, updated_at
+                    is_competitor, metadata, created_at, updated_at
              FROM companies WHERE region = $1 ORDER BY name",
         )
         .bind(region)
@@ -365,7 +365,7 @@ impl PgStore {
             "SELECT id, name, legal_name, domain, country_code, region, company_type,
                     industry_tags, employee_estimate, revenue_estimate_usd,
                     risk_score, threat_score, overlap_score, strategic_relevance,
-                    metadata, created_at, updated_at
+                    is_competitor, metadata, created_at, updated_at
              FROM companies WHERE company_type = $1 ORDER BY name",
         )
         .bind(company_type)
@@ -387,7 +387,7 @@ impl PgStore {
             "SELECT id, name, legal_name, domain, country_code, region, company_type,
                     industry_tags, employee_estimate, revenue_estimate_usd,
                     risk_score, threat_score, overlap_score, strategic_relevance,
-                    metadata, created_at, updated_at
+                    is_competitor, metadata, created_at, updated_at
              FROM companies",
         );
 

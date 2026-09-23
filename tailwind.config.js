@@ -22,10 +22,13 @@ module.exports = {
           "line-strong": "var(--rams-line-strong)",
           muted: "var(--rams-muted)",
           foreground: "var(--rams-foreground)",
-          orange: "var(--rams-orange)",
-          green: "var(--rams-green)",
-          red: "var(--rams-red)",
-          steel: "var(--rams-steel)",
+          /* Accents use RGB triplets so Tailwind's /alpha modifier works */
+          orange: "rgb(var(--rams-orange--rgb) / <alpha-value>)",
+          green: "rgb(var(--rams-green--rgb) / <alpha-value>)",
+          red: "rgb(var(--rams-red--rgb) / <alpha-value>)",
+          steel: "rgb(var(--rams-steel--rgb) / <alpha-value>)",
+          violet: "rgb(var(--rams-violet--rgb) / <alpha-value>)",
+          teal: "rgb(var(--rams-teal--rgb) / <alpha-value>)",
         },
         /* ── Legacy shadcn-style names (mapped to Rams) ──────────────── */
         border: "rgb(var(--border) / <alpha-value>)",

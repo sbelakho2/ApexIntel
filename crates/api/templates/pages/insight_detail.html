@@ -17,9 +17,9 @@
 
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1>{{ title }}</h1>
+  <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between lg:gap-4">
+    <div class="min-w-0">
+      <h1 class="break-words">{{ title }}</h1>
       <div class="mt-2 flex flex-wrap items-center gap-2">
         <span class="mobile-inline-chip inline-flex items-center rounded-rams-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ category_css }}">{{ category_label }}</span>
         <span class="inline-flex items-center rounded-rams-sm px-2 py-0.5 text-[10px] font-bold uppercase {{ impact_css }}">{{ impact_tier }}</span>
@@ -44,7 +44,7 @@
         Analyze
         <span id="analyze-spinner" class="htmx-indicator ml-1 apex-spinner-sm"></span>
       </button>
-      <a href="/api/insights/{{ id }}/pdf"
+      <a href="/insights/{{ id }}/pdf"
          class="apex-btn apex-btn-secondary"
          download>Export PDF</a>
     </div>
@@ -54,9 +54,9 @@
   <div class="apex-module">
     <div class="apex-module-body">
       {% if !summary.is_empty() && summary != body %}
-      <div class="text-sm font-semibold mb-2">{{ summary|safe }}</div>
+      <p class="text-sm font-semibold mb-2 max-w-[65ch]">{{ summary|safe }}</p>
       {% endif %}
-      <div class="text-sm leading-relaxed">{{ body|safe }}</div>
+      <div class="text-sm leading-relaxed max-w-[65ch]">{{ body|safe }}</div>
       <div class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-[11px]">
         <div><span class="font-black uppercase text-rams-muted">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline">{{ company_name }}</a></div>
         <div><span class="font-black uppercase text-rams-muted">Created</span><br>{{ created_at }}{% if !age_label.is_empty() %} <span class="text-rams-muted">({{ age_label }})</span>{% endif %}</div>
@@ -66,10 +66,10 @@
       {% if information_gain_bits.is_some() || quality_score_pct.is_some() %}
       <div class="mt-3 flex flex-wrap gap-3 text-[10px]">
         {% if let Some(ig) = information_gain_bits %}
-        <span class="rounded-rams-sm border border-rams-line bg-rams-panel/30 px-2 py-0.5 font-bold tabular-nums" title="Information gain measures how much this insight narrows your uncertainty">IG {{ ig }} bits</span>
+        <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-0.5 font-bold tabular-nums" title="Information gain measures how much this insight narrows your uncertainty">IG {{ ig }} bits</span>
         {% endif %}
         {% if let Some(qs) = quality_score_pct %}
-        <span class="rounded-rams-sm border border-rams-line bg-rams-panel/30 px-2 py-0.5 font-bold tabular-nums" title="Quality score based on analyst feedback (actioned/dismissed ratio)">Quality {{ qs }}%</span>
+        <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-0.5 font-bold tabular-nums" title="Quality score based on analyst feedback (actioned/dismissed ratio)">Quality {{ qs }}%</span>
         {% endif %}
       </div>
       {% endif %}
@@ -111,7 +111,7 @@
         {% else %}
         <div class="space-y-3">
           {% for annotation in annotations %}
-          <article class="rounded-rams-sm border border-rams-line bg-rams-panel/30 p-3">
+          <article class="rounded-rams-sm border border-rams-line bg-rams-panel p-3">
             <div class="flex items-center justify-between gap-3">
               <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">{{ annotation.author }} · {{ annotation.visibility }}</p>
               <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ annotation.created_at }}</p>
@@ -140,8 +140,8 @@
     <div class="divide-y divide-rams-line">
       {% for e in evidence %}
       <div class="px-4 py-3">
-        <p class="text-sm font-semibold"><a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="hover:underline">{{ e.snippet }} · {{ e.source }}</a></p>
-        <p class="mt-1 break-words text-[10px] text-rams-muted">{{ e.url }}</p>
+        <p class="text-sm font-semibold"><a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="hover:underline focus-visible:underline">{{ e.snippet }} · {{ e.source }}</a></p>
+        <code class="mt-1 block break-all text-[10px] text-rams-muted">{{ e.url }}</code>
         <p class="mt-1 text-[10px] text-rams-muted">Relevance: {{ e.relevance }}%</p>
       </div>
       {% endfor %}

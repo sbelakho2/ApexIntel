@@ -617,7 +617,11 @@ mod agent_tests {
         ] {
             let prompt = agent_type.system_prompt();
             assert!(!prompt.is_empty());
-            assert!(prompt.contains("expert"));
+            // B351: prompts were hardened from "expert persona" to grounded
+            // analytical system personas — assert the grounding contract
+            // every prompt must carry instead of the retired wording.
+            assert!(prompt.contains("ONLY"), "prompt must constrain to source data");
+            assert!(prompt.contains("NEVER"), "prompt must forbid fabrication");
             assert!(prompt.len() > 100);
         }
     }

@@ -9,7 +9,7 @@ use apex_threat_intel::{
     models::{ConfidenceLevel, GeoRegion, IndustrySector, PaginationParams, RiskScore, SeverityLevel},
     supply_chain_threats::{
         Component, ComponentRiskLevel, DisruptionScenario, ScenarioType,
-        Severity, Supplier, SupplierRiskScore, SupplierTier, SupplyChainThreatModel,
+        Severity, Supplier, SupplierCapacity, SupplierRiskScore, SupplierTier, SupplyChainThreatModel,
     },
     threat_actor_database::{
         ActorMotivation, ActorStatus, AttackPattern, Campaign, ThreatActor, ThreatActorDatabase,
@@ -307,7 +307,7 @@ mod supply_chain_tests {
 
     #[test]
     fn test_supplier_creation() {
-        let supplier = Supplier::new("Test Supplier", "US", SupplierTier::Tier1)
+        let supplier = Supplier::new("Test Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
             .with_category("Electronics")
             .with_criticality(0.8);
 
@@ -353,11 +353,11 @@ mod supply_chain_tests {
     fn test_geo_concentration_risk() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("CN Supplier 1", "CN", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("CN Supplier 1", "CN", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::EastAsia));
-        model.add_supplier(Supplier::new("CN Supplier 2", "CN", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("CN Supplier 2", "CN", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::EastAsia));
 
         let risks = model.calculate_geo_concentration();
@@ -372,7 +372,7 @@ mod supply_chain_tests {
     fn test_single_manufacturer_identification() {
         let mut model = SupplyChainThreatModel::new();
         
-        model.add_supplier(Supplier::new("Primary Mfr", "CN", SupplierTier::Tier2));
+        model.add_supplier(Supplier::new("Primary Mfr", "CN", SupplierTier::Tier2, SupplierCapacity::default()));
         model.add_component(Component::new("PART-001", "Single Source Part"));
 
         let risks = model.identify_single_manufacturer();
@@ -383,11 +383,11 @@ mod supply_chain_tests {
     fn test_resilience_calculation() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("US Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::NorthAmerica));
-        model.add_supplier(Supplier::new("EU Supplier", "DE", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("EU Supplier", "DE", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::Europe));
-        model.add_supplier(Supplier::new("APAC Supplier", "JP", SupplierTier::Tier1)
+        model.add_supplier(Supplier::new("APAC Supplier", "JP", SupplierTier::Tier1, SupplierCapacity::default())
             .with_region(GeoRegion::AsiaPacific));
 
         let resilience = model.calculate_resilience();
@@ -410,8 +410,8 @@ mod supply_chain_tests {
     fn test_tier_filtering() {
         let mut model = SupplyChainThreatModel::new();
 
-        model.add_supplier(Supplier::new("T1 Supplier", "US", SupplierTier::Tier1));
-        model.add_supplier(Supplier::new("T2 Supplier", "CN", SupplierTier::Tier2));
+        model.add_supplier(Supplier::new("T1 Supplier", "US", SupplierTier::Tier1, SupplierCapacity::default()));
+        model.add_supplier(Supplier::new("T2 Supplier", "CN", SupplierTier::Tier2, SupplierCapacity::default()));
 
         let tier1 = model.get_suppliers_by_tier(SupplierTier::Tier1);
         assert_eq!(tier1.len(), 1);

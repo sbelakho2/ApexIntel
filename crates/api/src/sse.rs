@@ -342,6 +342,52 @@ impl SseManager {
                 .text("keepalive"),
         )
     }
+
+    /// Build an SSE stream that unregisters its subscriber slot when the
+    /// client disconnects (B296). The guard is moved into the stream's map
+    /// closure, so it drops exactly when axum drops the response body —
+    /// closing the tab or terminating the fetch releases the `SseManager`
+    /// entry instead of leaking it until process restart.
+    pub fn build_sse_stream_with_cleanup(
+        rx: mpsc::UnboundedReceiver<SseEvent>,
+        manager: Arc<Self>,
+        user_id: uuid::Uuid,
+        tx: mpsc::UnboundedSender<SseEvent>,
+    ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+        struct UnregisterGuard {
+            manager: Arc<SseManager>,
+            user_id: uuid::Uuid,
+            tx: mpsc::UnboundedSender<SseEvent>,
+        }
+        impl Drop for UnregisterGuard {
+            fn drop(&mut self) {
+                let manager = self.manager.clone();
+                let user_id = self.user_id;
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    manager.unregister(user_id, &tx).await;
+                });
+            }
+        }
+
+        let guard = UnregisterGuard {
+            manager,
+            user_id,
+            tx,
+        };
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(
+            move |event| {
+                let _guard = &guard;
+                Ok::<_, std::convert::Infallible>(event.into_axum_event())
+            },
+        );
+
+        Sse::new(stream).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(30))
+                .text("keepalive"),
+        )
+    }
 }
 
 impl Default for SseManager {

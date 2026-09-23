@@ -408,6 +408,14 @@ pub(crate) async fn delete_warning(
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
+    // B292: destructive warning operations are documented admin-only — the
+    // route catalog (`routes/mod.rs`) says so but nothing enforced it.
+    if !auth_ctx.role.can_admin() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(error_response(ApiError::forbidden("Admin role required"))),
+        );
+    }
     let id_parsed = match validate_warning_id(&id) {
         Ok(uuid) => uuid,
         Err(msg) => {
@@ -474,6 +482,14 @@ pub(crate) async fn delete_warnings_bulk(
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
+
+    // B292: admin-only per the route catalog.
+    if !auth_ctx.role.can_admin() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(error_response(ApiError::forbidden("Admin role required"))),
+        );
+    }
 
     let (parsed_ids, requested_count) = match parse_bulk_delete_ids(&body) {
         Ok(result) => result,

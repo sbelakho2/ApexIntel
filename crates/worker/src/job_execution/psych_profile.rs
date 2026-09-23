@@ -31,7 +31,7 @@ struct ArtifactRow {
     title: String,
     content_summary: Option<String>,
     ts_utc: Option<chrono::DateTime<Utc>>,
-    source_url: Option<String>,
+    url: Option<String>,
 }
 
 /// Execute PsychProfileCompute job: recalculate psych profiles for all POIs.
@@ -60,22 +60,36 @@ async fn run_psych_profile_compute_inner(kind: &JobKind, store: &Arc<PgStore>) -
     run.start();
     let total_start = Instant::now();
 
-    let persons = store
-        .list_persons(
-            &apex_store::postgres::PersonListFilters {
-                regions: vec![],
-                roles: vec![],
-                search: None,
-                min_priority: None,
-                max_priority: None,
-            },
-            Some(apex_store::postgres::PersonOrderBy::Name),
-            false,
-            1000,
-            0,
-        )
-        .await
-        .unwrap_or_default();
+    // Load persons that HAVE poi_artifacts (the psych engine needs artifacts to
+    // compute a profile). Prioritize persons without an existing profile so the
+    // job makes forward progress each run rather than re-computing the same ones.
+    // Previously this used list_persons(name, 1000) which, after PersonMention
+    // materialization grew the corpus to thousands, loaded mostly artifact-less
+    // persons and skipped them all — stranding 86 artifact-rich persons unprofiled.
+    let persons: Vec<apex_store::postgres::PersonListRow> = sqlx::query_as(
+        "SELECT p.id, p.name, \
+                COALESCE(p.current_role, '') AS role, \
+                COALESCE(p.role_family, '') AS role_family, \
+                COALESCE(p.country_code, '') AS country, \
+                COALESCE(c.name, '') AS organization, \
+                COALESCE(p.region, '') AS region, \
+                COALESCE(p.influence_score, 0) AS priority_score, \
+                COALESCE(p.pain_index, 0) AS pain_index, \
+                COALESCE(p.change_risk, 0) AS change_risk, \
+                COALESCE(p.role_drift_score, 0) AS role_drift_score, \
+                COALESCE('', '') AS engagement_status, \
+                COALESCE(p.updated_at, NOW()) AS updated_at \
+         FROM persons p \
+         LEFT JOIN companies c ON c.id = p.primary_org_id \
+         WHERE EXISTS (SELECT 1 FROM poi_artifacts pa WHERE pa.person_id = p.id) \
+         ORDER BY (CASE WHEN EXISTS \
+             (SELECT 1 FROM psychological_profiles pp WHERE pp.person_id = p.id::text) \
+             THEN 1 ELSE 0 END), p.influence_score DESC NULLS LAST \
+         LIMIT 500",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap_or_default();
 
     if persons.is_empty() {
         run.skip("psych_profile_compute: no persons found in database");
@@ -91,16 +105,32 @@ async fn run_psych_profile_compute_inner(kind: &JobKind, store: &Arc<PgStore>) -
     let mut profiles_skipped: u64 = 0;
 
     for person in &persons {
-        // Load the person's recent artifacts (title, summary, timestamp, source URL).
-        let artifacts: Vec<ArtifactRow> = sqlx::query_as(
-            "SELECT title, content_summary, ts_utc, source_url \
+        // Load the person's recent artifacts. NOTE: the poi_artifacts table has
+        // a `url` column (NOT `source_url` — that's a different table). The
+        // previous query selected a non-existent column, which sqlx turned into
+        // an Err that `.unwrap_or_default()` silently swallowed → every person
+        // was skipped as "no artifacts" → psych_profiles stayed at 0. Now we
+        // log the error so column drift can never silently zero this out again.
+        let artifacts: Vec<ArtifactRow> = match sqlx::query_as(
+            "SELECT title, content_summary, ts_utc, url \
              FROM poi_artifacts WHERE person_id = $1 \
              ORDER BY ts_utc DESC LIMIT 200",
         )
         .bind(person.id)
         .fetch_all(&store.pool)
         .await
-        .unwrap_or_default();
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(
+                    person_id = %person.id,
+                    error = %e,
+                    "psych_profile_compute: failed to load poi_artifacts; skipping person"
+                );
+                profiles_failed += 1;
+                continue;
+            }
+        };
 
         if artifacts.is_empty() {
             profiles_skipped += 1;
@@ -112,8 +142,8 @@ async fn run_psych_profile_compute_inner(kind: &JobKind, store: &Arc<PgStore>) -
             .iter()
             .map(|a| PsychObservation {
                 text: format!("{} {}", a.title, a.content_summary.as_deref().unwrap_or("")),
-                source_url: a.source_url.clone(),
-                source_domain: a.source_url.as_deref().and_then(extract_domain),
+                source_url: a.url.clone(),
+                source_domain: a.url.as_deref().and_then(extract_domain),
                 observed_at: a.ts_utc.unwrap_or_else(Utc::now),
                 sentiment_score: None,
             })

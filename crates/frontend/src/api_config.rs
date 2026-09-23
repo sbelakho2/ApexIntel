@@ -32,8 +32,13 @@ pub const API_BASE_URL: &str = {
 ///
 /// # Examples
 /// ```
-/// assert_eq!(api_url("/api/insights"), "http://localhost:8080/api/insights");
-/// assert_eq!(api_url("insights"), "http://localhost:8080/api/insights");
+/// use apex_frontend::api_config::api_url;
+/// // B351: doctests compile as an external crate — the function must be
+/// // referenced by path (the bare-name form never resolved).
+/// let joined = api_url("/api/insights");
+/// assert!(joined.ends_with("/api/insights"));
+/// let joined = api_url("insights");
+/// assert!(joined.ends_with("/api/insights"));
 /// ```
 pub fn api_url(path: &str) -> String {
     if API_BASE_URL.is_empty() {

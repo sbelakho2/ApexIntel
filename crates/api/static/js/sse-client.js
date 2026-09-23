@@ -258,16 +258,21 @@ class ApexIntelSSE {
    * Update the notification badge count in the navigation.
    */
   updateBadge(alert) {
-    const badge = document.getElementById('notification-badge');
-    if (!badge) {
+    // B310: the badge is rendered twice (mobile drawer + desktop sidebar) —
+    // update every instance by class instead of only the first by id.
+    const badges = document.querySelectorAll('.warning-badge');
+    if (!badges.length) {
       return;
     }
 
-    const currentCount = parseInt(badge.getAttribute('data-count') || '0', 10);
+    const first = badges[0];
+    const currentCount = parseInt(first.textContent || '0', 10) || 0;
     const newCount = currentCount + 1;
-    badge.setAttribute('data-count', String(newCount));
-    badge.textContent = String(newCount);
-    badge.style.display = 'inline';
+    badges.forEach((badge) => {
+      badge.textContent = String(newCount);
+      badge.classList.remove('hidden');
+      badge.style.display = 'inline';
+    });
   }
 
   /**

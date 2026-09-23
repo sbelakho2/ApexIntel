@@ -159,7 +159,13 @@ async fn assess_supply_chain_heuristic(
 
     if disruption_count > 0 {
         let now = chrono::Utc::now();
-        let obs_id = Uuid::new_v4();
+        // B326: stable ID per (company, signal count) — this self-feeding
+        // heuristic no longer inserts a fresh row every 6h for the same
+        // underlying observations.
+        let obs_id = apex_core::entities::Observation::deterministic_id(
+            "supply_heuristic",
+            &format!("{}|{}", company.id, disruption_count),
+        );
         #[allow(clippy::disallowed_methods)]
         let value = serde_json::json!({
             "company_name": company.name,
@@ -175,7 +181,8 @@ async fn assess_supply_chain_heuristic(
         let _ = sqlx::query(
             r#"INSERT INTO observations
                (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
-               VALUES ($1, 'supply_chain_heuristic', $2, 'company', $3, $4::jsonb, $5::jsonb, $6)"#,
+               VALUES ($1, 'supply_chain_heuristic', $2, 'company', $3, $4::jsonb, $5::jsonb, $6)
+               ON CONFLICT (id) DO NOTHING"#,
         )
         .bind(obs_id)
         .bind(company.id)
@@ -199,7 +206,7 @@ async fn assess_supply_chain_heuristic(
                     Some(&description),
                     if disruption_count >= 5 { "high" } else { "medium" },
                     company.region.as_deref(),
-                    Some("worker_threat_intel_refresh"),
+                    None,
                     None,
                     None,
                     Some(0.65),
@@ -412,7 +419,12 @@ async fn assess_threat_actor_matches(
         };
 
         let now = chrono::Utc::now();
-        let obs_id = Uuid::new_v4();
+        // B326: stable ID per (company, actor) — matches re-computed every
+        // 6h previously re-inserted identical rows.
+        let obs_id = apex_core::entities::Observation::deterministic_id(
+            "threat_match",
+            &format!("{}|{}", company.id, actor.alias),
+        );
         let threat_actor_label = match &actor.name {
             Some(n) => format!("{} ({})", actor.alias, n),
             None => actor.alias.clone(),
@@ -441,7 +453,8 @@ async fn assess_threat_actor_matches(
         let _ = sqlx::query(
             r#"INSERT INTO observations
                (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
-               VALUES ($1, 'threat_actor_match', $2, 'company', $3, $4::jsonb, $5::jsonb, $6)"#,
+               VALUES ($1, 'threat_actor_match', $2, 'company', $3, $4::jsonb, $5::jsonb, $6)
+               ON CONFLICT (id) DO NOTHING"#,
         )
         .bind(obs_id)
         .bind(company.id)
@@ -473,7 +486,7 @@ async fn assess_threat_actor_matches(
                     Some(&description),
                     "high",
                     company.region.as_deref(),
-                    Some("worker_threat_intel_refresh"),
+                    None,
                     None,
                     None,
                     Some(0.6),

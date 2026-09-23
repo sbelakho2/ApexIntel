@@ -14,14 +14,25 @@
     --rams-panel: #ECECEC;
     --rams-line: #C0C0C0;
     --rams-line-strong: #A8A8A8;
-    --rams-muted: #7A7A7A;
+    --rams-muted: #6B6B6B;
     --rams-foreground: #1A1A1A;
 
-    /* ── Functional Accents (light) ────────────────────────────────────── */
-    --rams-orange: #E69400;
-    --rams-green: #2D8C3C;
-    --rams-red: #C42424;
-    --rams-steel: #3B6FB0;
+    /* ── Functional Accents (light) ──────────────────────────────────────
+       Hex values are the canonical color; the matching --rams-*--rgb
+       triplets let Tailwind's alpha modifier (bg-rams-red/10) work
+       correctly via rgb(var(--rams-red--rgb) / <alpha>). */
+    --rams-orange: #D97706;
+    --rams-orange--rgb: 217 119 6;
+    --rams-green: #059669;
+    --rams-green--rgb: 5 150 105;
+    --rams-red: #DC2626;
+    --rams-red--rgb: 220 38 38;
+    --rams-steel: #2563EB;
+    --rams-steel--rgb: 37 99 235;
+    --rams-violet: #7C3AED;
+    --rams-violet--rgb: 124 58 237;
+    --rams-teal: #0891B2;
+    --rams-teal--rgb: 8 145 178;
 
     /* ── Shadows (structural only) ─────────────────────────────────────── */
     --rams-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.5);
@@ -35,25 +46,25 @@
     --card-foreground: 26 26 26;
     --popover: 255 255 255;
     --popover-foreground: 26 26 26;
-    --primary: 230 148 0;            /* → --rams-orange #E69400 */
+    --primary: 217 119 6;            /* → --rams-orange #D97706 */
     --primary-foreground: 255 255 255;
     --secondary: 236 236 236;        /* → --rams-panel #ECECEC */
     --secondary-foreground: 26 26 26;
     --muted: 236 236 236;            /* → --rams-panel #ECECEC (surface) */
-    --muted-foreground: 122 122 122; /* → --rams-muted #7A7A7A */
-    --accent: 59 111 176;            /* → --rams-steel #3B6FB0 */
+    --muted-foreground: 107 107 107; /* → --rams-muted #6B6B6B */
+    --accent: 124 58 237;            /* → --rams-violet #7C3AED */
     --accent-foreground: 255 255 255;
-    --destructive: 196 36 36;        /* → --rams-red #C42424 */
+    --destructive: 220 38 38;        /* → --rams-red #DC2626 */
     --destructive-foreground: 255 255 255;
-    --error: 196 36 36;              /* → --rams-red #C42424 */
-    --border: 217 217 217;           /* → --rams-line #D9D9D9 */
-    --input: 217 217 217;            /* → --rams-line #D9D9D9 */
-    --ring: 230 148 0;               /* → --rams-orange #E69400 */
+    --error: 220 38 38;              /* → --rams-red #DC2626 */
+    --border: 192 192 192;           /* → --rams-line #C0C0C0 */
+    --input: 192 192 192;            /* → --rams-line #C0C0C0 */
+    --ring: 217 119 6;               /* → --rams-orange #D97706 */
 
-    --success: 45 140 60;            /* → --rams-green #2D8C3C */
-    --warning: 230 148 0;            /* → --rams-orange #E69400 */
-    --danger: 196 36 36;             /* → --rams-red #C42424 */
-    --info: 59 111 176;              /* → --rams-steel #3B6FB0 */
+    --success: 5 150 105;            /* → --rams-green #059669 */
+    --warning: 217 119 6;            /* → --rams-orange #D97706 */
+    --danger: 220 38 38;             /* → --rams-red #DC2626 */
+    --info: 37 99 235;               /* → --rams-steel #2563EB */
 
     /* ── Radii (micro only) ────────────────────────────────────────────── */
     --radius-sm: 2px;
@@ -94,16 +105,16 @@
     --chart-label: 108 118 138;
     --chart-shadow: 15 23 42;
     --chart-spotlight: 255 255 255;
-    --chart-series-blue: 59 130 246;
-    --chart-series-green: 34 197 94;
-    --chart-series-amber: 245 158 11;
-    --chart-series-orange: 249 115 22;
-    --chart-series-red: 239 68 68;
-    --chart-series-slate: 148 163 184;
-    --chart-series-violet: 139 92 246;
-    --chart-series-cyan: 6 182 212;
-    --chart-series-pink: 236 72 153;
-    --chart-series-teal: 20 184 166;
+    --chart-series-blue: 37 99 235;     /* = --rams-steel #2563EB (vibrant) */
+    --chart-series-green: 5 150 105;    /* = --rams-green #059669 (vibrant) */
+    --chart-series-amber: 217 119 6;    /* = --rams-orange-600 amber family (B344) */
+    --chart-series-orange: 217 119 6;   /* = --rams-orange #D97706 (vibrant, NOT brown) */
+    --chart-series-red: 220 38 38;      /* = --rams-red #DC2626 (vibrant) */
+    --chart-series-slate: 71 85 105;    /* = slate-700 (deeper for contrast) */
+    --chart-series-violet: 124 58 237;  /* = --rams-violet #7C3AED */
+    --chart-series-cyan: 6 182 212;     /* = cyan-500 */
+    --chart-series-pink: 219 39 119;    /* = pink-600 (deeper) */
+    --chart-series-teal: 8 145 178;     /* = --rams-teal #0891B2 */
 
     /* ── Spacing (4px grid) ────────────────────────────────────────────── */
     --space-1: 4px;
@@ -128,10 +139,18 @@
     --rams-foreground: #ECEFF3;
 
     /* ── Functional Accents (dark) ─────────────────────────────────────── */
-    --rams-orange: #FFBE00;
-    --rams-green: #4ADE80;
+    --rams-orange: #FBBF24;
+    --rams-orange--rgb: 251 191 36;
+    --rams-green: #34D399;
+    --rams-green--rgb: 52 211 153;
     --rams-red: #F87171;
-    --rams-steel: #7AB0F0;
+    --rams-red--rgb: 248 113 113;
+    --rams-steel: #60A5FA;
+    --rams-steel--rgb: 96 165 250;
+    --rams-violet: #A78BFA;
+    --rams-violet--rgb: 167 139 250;
+    --rams-teal: #22D3EE;
+    --rams-teal--rgb: 34 211 238;
 
     /* ── Shadows (dark) ────────────────────────────────────────────────── */
     --rams-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -145,25 +164,25 @@
     --card-foreground: 236 239 243;
     --popover: 23 25 28;
     --popover-foreground: 236 239 243;
-    --primary: 255 190 0;            /* → --rams-orange #FFBE00 */
+    --primary: 251 191 36;            /* → --rams-orange #FBBF24 */
     --primary-foreground: 14 15 17;
     --secondary: 31 34 39;           /* → --rams-panel #1F2227 */
     --secondary-foreground: 236 239 243;
     --muted: 31 34 39;               /* → --rams-panel #1F2227 (surface) */
     --muted-foreground: 154 161 171; /* → --rams-muted #9AA1AB */
-    --accent: 122 176 240;           /* → --rams-steel #7AB0F0 */
+    --accent: 167 139 250;           /* → --rams-violet #A78BFA */
     --accent-foreground: 14 15 17;
     --destructive: 248 113 113;      /* → --rams-red #F87171 */
     --destructive-foreground: 14 15 17;
     --error: 248 113 113;            /* → --rams-red #F87171 */
     --border: 42 46 52;              /* → --rams-line #2A2E34 */
     --input: 42 46 52;               /* → --rams-line #2A2E34 */
-    --ring: 255 190 0;               /* → --rams-orange #FFBE00 */
+    --ring: 251 191 36;              /* → --rams-orange #FBBF24 */
 
-    --success: 74 222 128;           /* → --rams-green #4ADE80 */
-    --warning: 255 190 0;            /* → --rams-orange #FFBE00 */
+    --success: 52 211 153;           /* → --rams-green #34D399 */
+    --warning: 251 191 36;           /* → --rams-orange #FBBF24 */
     --danger: 248 113 113;           /* → --rams-red #F87171 */
-    --info: 122 176 240;             /* → --rams-steel #7AB0F0 */
+    --info: 96 165 250;              /* → --rams-steel #60A5FA */
 
     /* ── Surface scale (dark) ──────────────────────────────────────────── */
     --surface-50: 14 15 17;
@@ -236,16 +255,22 @@
     @apply font-display font-black leading-[1.1] tracking-[-0.02em] uppercase;
     font-size: clamp(1.9rem, 2.8vw + 1rem, 3.5rem);
     font-family: var(--font-apex), ui-sans-serif, system-ui, sans-serif;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   h2 {
     @apply font-display font-black leading-[1.2] tracking-[-0.015em] uppercase;
     font-size: clamp(1.35rem, 1.4vw + 0.95rem, 2.25rem);
     font-family: var(--font-apex), ui-sans-serif, system-ui, sans-serif;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   h3 {
     @apply font-display font-black leading-[1.2] tracking-[-0.01em] uppercase;
     font-size: clamp(1.05rem, 0.8vw + 0.9rem, 1.5rem);
     font-family: var(--font-apex), ui-sans-serif, system-ui, sans-serif;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   p { @apply max-w-[65ch]; overflow-wrap: anywhere; }
@@ -547,7 +572,7 @@
   .apex-chart-frame-tall {
     position: relative;
     isolation: isolate;
-    overflow: visible;
+    overflow: hidden;
     border: 1px solid var(--rams-line);
     border-radius: var(--radius-md, 4px);
     background: var(--rams-module);
@@ -782,8 +807,8 @@
   .apex-compare-chart {
     width: 100%;
     height: 100%;
-    min-width: 320px;
-    overflow: visible;
+    max-width: 100%;
+    overflow: hidden;
     display: block;
   }
 
@@ -1040,7 +1065,8 @@
     @apply border-rams-foreground bg-rams-foreground text-rams-module;
   }
   .apex-chip-accent {
-    @apply border-rams-orange bg-rams-orange/15 text-rams-foreground;
+    @apply border-rams-orange text-rams-foreground;
+    background: color-mix(in srgb, var(--rams-orange) 15%, transparent);
   }
 
   /* ── Legacy alias ──────────────────────────────────────────────────── */
@@ -1054,7 +1080,8 @@
     @apply border-rams-foreground bg-rams-foreground text-rams-module;
   }
   .apex-filter-chip-accent {
-    @apply border-rams-orange bg-rams-orange/15 text-rams-foreground;
+    @apply border-rams-orange text-rams-foreground;
+    background: color-mix(in srgb, var(--rams-orange) 15%, transparent);
   }
   .apex-filter-chip-muted {
     @apply border-rams-line bg-rams-panel text-rams-muted;
@@ -1090,7 +1117,8 @@
   }
 
   .apex-mini-kind-warning {
-    @apply bg-orange-500/15 text-orange-600;
+    background: color-mix(in srgb, var(--rams-orange) 15%, transparent);
+    color: var(--rams-orange);
   }
 
   .apex-mini-kind-insight {
@@ -1215,31 +1243,31 @@
   }
 
   .metric-rail-blue { background-color: var(--rams-steel); }
-  .metric-rail-navy { background-color: #1A384F; }
-  .metric-rail-gold { background-color: var(--rams-orange); }
+  .metric-rail-navy { background-color: var(--rams-steel); }
+  .metric-rail-gold { background-color: var(--rams-teal); }
   .metric-rail-red { background: var(--rams-red); }
   .metric-rail-orange { background: var(--rams-orange); }
-  .metric-rail-amber { background: var(--rams-orange); }
+  .metric-rail-amber { background: #F59E0B; } /* B344: real amber, previously violet */
   .metric-rail-green { background: var(--rams-green); }
   .metric-rail-steel { background-color: var(--rams-steel); }
-  .metric-rail-violet { background: rgb(var(--chart-series-violet)); }
+  .metric-rail-violet { background: var(--rams-violet); }
 
   .metric-swatch-blue { background-color: var(--rams-steel); }
-  .metric-swatch-navy { background-color: #1A384F; }
-  .metric-swatch-gold { background-color: var(--rams-orange); }
+  .metric-swatch-navy { background-color: var(--rams-steel); }
+  .metric-swatch-gold { background-color: var(--rams-teal); }
   .metric-swatch-red { background: var(--rams-red); }
   .metric-swatch-orange { background: var(--rams-orange); }
-  .metric-swatch-amber { background: var(--rams-orange); }
+  .metric-swatch-amber { background: var(--rams-violet); }
   .metric-swatch-green { background: var(--rams-green); }
   .metric-swatch-steel { background-color: var(--rams-steel); }
   .metric-swatch-slate { background: rgb(var(--chart-series-slate)); }
-  .metric-swatch-violet { background: rgb(var(--chart-series-violet)); }
+  .metric-swatch-violet { background: var(--rams-violet); }
   .metric-swatch-cyan { background: rgb(var(--chart-series-cyan)); }
-  .metric-swatch-teal { background: rgb(var(--chart-series-teal)); }
+  .metric-swatch-teal { background: var(--rams-teal); }
 
   .metric-text-red { color: var(--rams-red); }
   .metric-text-orange { color: var(--rams-orange); }
-  .metric-text-amber { color: var(--rams-orange); }
+  .metric-text-amber { color: var(--rams-violet); }
   .metric-text-green { color: var(--rams-green); }
   .metric-text-steel { color: var(--rams-steel); }
   .metric-text-blue { color: var(--rams-steel); }
@@ -1538,8 +1566,8 @@
     border-color: var(--rams-orange);
   }
   .apex-btn-primary:hover:not(:disabled) {
-    background: #C47D00;
-    border-color: #C47D00;
+    background: color-mix(in srgb, var(--rams-orange) 85%, black);
+    border-color: color-mix(in srgb, var(--rams-orange) 85%, black);
   }
   .apex-btn-secondary {
     background: var(--rams-panel);
@@ -1564,7 +1592,7 @@
     border-color: var(--rams-red);
   }
   .apex-btn-danger:hover:not(:disabled) {
-    background: #A01D1D;
+    background: color-mix(in srgb, var(--rams-red) 85%, black);
   }
 
   /* ── Input Component ────────────────────────────────────────────────────── */
@@ -2019,4 +2047,200 @@
 }
 .trends-entity-table tr:hover td {
   background: rgb(var(--rams-panel));
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Standalone layout (login, error pages) — was missing, causing unstyled pages
+   ════════════════════════════════════════════════════════════════════════════ */
+.apex-standalone-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(var(--rams-chassis));
+  padding: 1.5rem;
+}
+
+.apex-standalone-frame {
+  width: 100%;
+  max-width: 28rem;
+}
+
+.apex-standalone-card {
+  background: rgb(var(--rams-module));
+  border: 1px solid rgb(var(--rams-line));
+  border-radius: var(--radius-md);
+  padding: 1.5rem;
+  box-shadow: var(--rams-shadow-inset);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Touch target enforcement for link-based controls (chips, action links,
+   pagination) — extends the @media (pointer: coarse) rule to cover <a> elements
+   styled as buttons, which the original rule missed.
+   ════════════════════════════════════════════════════════════════════════════ */
+@media (pointer: coarse) {
+  a.apex-chip,
+  a.apex-action-link,
+  a.apex-filter-chip,
+  .apex-pagination a {
+    min-height: 36px;
+    min-width: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Focus-visible parity for interactive list rows and cards
+   ════════════════════════════════════════════════════════════════════════════ */
+a[href]:focus-visible {
+  @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   BROWN/AMBER PURGE — unscoped overrides (highest cascade priority)
+   These rules live OUTSIDE all @layer blocks so they override Tailwind's
+   utility classes (.text-amber-500 etc.) which live in @layer utilities.
+   This guarantees NO brown/gold/amber color ever renders anywhere.
+   ════════════════════════════════════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════════════
+   BROWN/AMBER PURGE — unscoped overrides (highest cascade priority)
+   These rules live OUTSIDE all @layer blocks so they override Tailwind's
+   utility classes (.text-amber-500 etc.) which live in @layer utilities.
+   This guarantees NO brown/gold/amber color ever renders anywhere.
+   Attribute selectors catch every shade AND every /opacity variant.
+   ════════════════════════════════════════════════════════════════════════════ */
+[class*="text-amber-"], [class*="text-yellow-"],
+[class*="text-orange-"]:not([class*="text-orange-r"]) {
+  color: var(--rams-orange) !important;
+}
+[class*="bg-amber-"], [class*="bg-yellow-"],
+[class*="bg-orange-"]:not([class*="bg-orange-r"]) {
+  background-color: var(--rams-orange) !important;
+}
+[class*="border-amber-"], [class*="border-yellow-"],
+[class*="border-orange-"]:not([class*="border-orange-r"]) {
+  border-color: var(--rams-orange) !important;
+}
+
+/* Ring color override */
+[class*="ring-amber-"], [class*="ring-yellow-"],
+[class*="ring-orange-"]:not([class*="ring-orange-r"]) {
+  --tw-ring-color: var(--rams-orange) !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   COMPREHENSIVE TAILWIND DEFAULT COLOR PURGE (unscoped, !important)
+   Redirects ALL remaining Tailwind default palette colors to Rams tokens.
+   This catches alpha variants (green-500/30, red-500/10) and any stragglers.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* Greens → --rams-green. Attribute selectors catch every shade AND every
+   /opacity variant (bg-green-500/30 etc.), which literal class lists cannot. */
+[class*="text-green-"]:not([class*="text-green-r"]),
+[class*="text-emerald-"],
+[class*="text-teal-"]:not([class*="text-teal-r"]) {
+  color: var(--rams-green) !important;
+}
+[class*="bg-green-"]:not([class*="bg-green-r"]),
+[class*="bg-emerald-"] {
+  background-color: var(--rams-green) !important;
+}
+[class*="border-green-"]:not([class*="border-green-r"]),
+[class*="border-emerald-"] {
+  border-color: var(--rams-green) !important;
+}
+
+/* Reds → --rams-red */
+[class*="text-red-"]:not([class*="text-red-r"]),
+[class*="text-rose-"] {
+  color: var(--rams-red) !important;
+}
+[class*="bg-red-"]:not([class*="bg-red-r"]),
+[class*="bg-rose-"] {
+  background-color: var(--rams-red) !important;
+}
+[class*="border-red-"]:not([class*="border-red-r"]),
+[class*="border-rose-"] {
+  border-color: var(--rams-red) !important;
+}
+
+/* Blues → --rams-steel */
+[class*="text-blue-"]:not([class*="text-blue-r"]),
+[class*="text-sky-"],
+[class*="text-indigo-"] {
+  color: var(--rams-steel) !important;
+}
+[class*="bg-blue-"]:not([class*="bg-blue-r"]),
+[class*="bg-sky-"] {
+  background-color: var(--rams-steel) !important;
+}
+[class*="border-blue-"]:not([class*="border-blue-r"]) {
+  border-color: var(--rams-steel) !important;
+}
+
+/* Violets/purples → --rams-violet (catches indigo/purple/fuchsia bg too) */
+[class*="text-purple-"], [class*="text-fuchsia-"] {
+  color: var(--rams-violet) !important;
+}
+[class*="bg-purple-"], [class*="bg-fuchsia-"] {
+  background-color: var(--rams-violet) !important;
+}
+
+/* Grays → Rams neutrals (line/muted) */
+[class*="text-gray-"], [class*="text-slate-"], [class*="text-zinc-"] {
+  color: var(--rams-muted) !important;
+}
+.bg-gray-50, .bg-gray-100, .bg-slate-50, .bg-slate-100, .bg-zinc-50, .bg-zinc-100 {
+  background-color: var(--rams-panel) !important;
+}
+.bg-gray-200, .bg-slate-200, .bg-zinc-200 {
+  background-color: var(--rams-line) !important;
+}
+
+
+/* ── B345: classes referenced by templates but previously undefined ───────── */
+.apex-select {
+  appearance: none;
+  border-radius: var(--rams-radius-sm, 0.25rem);
+  border: 1px solid var(--rams-line);
+  background-color: var(--rams-chassis);
+  color: var(--rams-foreground);
+  padding: 0.375rem 1.75rem 0.375rem 0.625rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+}
+
+.apex-panel {
+  border: 1px solid var(--rams-line);
+  border-radius: var(--rams-radius, 0.375rem);
+  padding: 0.875rem;
+  background: color-mix(in srgb, var(--rams-chassis) 60%, transparent);
+}
+
+.apex-state-panel {
+  border: 1px solid var(--rams-line);
+  border-radius: var(--rams-radius, 0.375rem);
+  padding: 1.25rem;
+  background: color-mix(in srgb, var(--rams-chassis) 60%, transparent);
+}
+
+/* Toast variants emitted by sse-client.js (B345). */
+.apex-toast-critical { border-left: 3px solid var(--rams-red); }
+.apex-toast-warning { border-left: 3px solid #F59E0B; }
+.apex-toast-info { border-left: 3px solid var(--rams-steel); }
+.apex-toast-success { border-left: 3px solid var(--rams-green); }
+.apex-toast-error { border-left: 3px solid var(--rams-red); }
+
+/* Keyboard-selected row highlight for [data-dense-table] navigation (B346). */
+.apex-row-selected {
+  outline: 2px solid var(--rams-orange);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--rams-orange) 8%, transparent);
 }

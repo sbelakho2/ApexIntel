@@ -1136,6 +1136,43 @@ fn format_sources_footer(evidence_signals: &[EvidenceSignal], max_sources: usize
 /// Generate insight narrative and headline using LLM with rich context.
 /// Returns (headline, narrative, recommendation, confidence).
 #[cfg(feature = "llm")]
+/// Strip forbidden certification claims from LLM insight output. Called when
+/// the model persists in claiming certifications our company does not hold
+/// (AS9100, IATF 16949, ISO 13485) despite corrective retry guidance. Rather
+/// than discarding the entire insight, we remove the offending phrases so the
+/// rest of the (potentially valuable) analysis survives.
+fn sanitize_certification_claims(text: &str) -> String {
+    let mut out = text.to_string();
+    // Replace possessive certification claim patterns with neutral language.
+    let replacements = [
+        ("our AS9100", "a potential AS9100 gap in"),
+        ("our IATF 16949", "a potential IATF 16949 gap in"),
+        ("our ISO 13485", "a potential ISO 13485 gap in"),
+        ("we hold AS9100", "we do not currently hold AS9100"),
+        ("we hold IATF 16949", "we do not currently hold IATF 16949"),
+        ("we hold ISO 13485", "we do not currently hold ISO 13485"),
+        ("we are AS9100", "we are not yet AS9100"),
+        ("we are IATF 16949", "we are not yet IATF 16949"),
+        ("we are ISO 13485", "we are not yet ISO 13485"),
+        ("we have AS9100", "we lack AS9100"),
+        ("we have IATF 16949", "we lack IATF 16949"),
+        ("we have ISO 13485", "we lack ISO 13485"),
+        ("with our AS9100", "noting our AS9100 gap relative to"),
+        ("with our IATF 16949", "noting our IATF 16949 gap relative to"),
+        ("with our ISO 13485", "noting our ISO 13485 gap relative to"),
+        ("AS9100 certification", "AS9100 (which we do not hold)"),
+        ("IATF 16949 certification", "IATF 16949 (which we do not hold)"),
+        ("ISO 13485 certification", "ISO 13485 (which we do not hold)"),
+        ("AS9100 certified", "AS9100-adjacent (unverified)"),
+        ("IATF certified", "IATF 16949-adjacent (unverified)"),
+        ("13485 certified", "ISO 13485-adjacent (unverified)"),
+    ];
+    for (from, to) in &replacements {
+        out = out.replace(from, to);
+    }
+    out
+}
+
 async fn generate_llm_insight(
     llm_client: &InferenceLlmClient,
     entity_ctx: &EntityContext,
@@ -1467,7 +1504,7 @@ tracked globally regardless of their location."
         .to_string()
     );
 
-    let system = format!("You are a competitive intelligence operator. Your task is to convert raw OSINT signals about a company into specific, commercially actionable intelligence for the following organization:
+    let system = format!("You are a competitive intelligence analyst at an OSINT firm. Your job is to read raw signal evidence and report what it actually shows — nothing more, nothing less. You write for C-suite executives and procurement leadership who will act on your words, so accuracy matters more than narrative flair.
 
 --- OUR COMPANY ---
 {our_profile}
@@ -1479,30 +1516,29 @@ tracked globally regardless of their location."
 
 {brief_outcome_instruction}
 
-Rules:
-- Every claim must cite a numbered evidence reference [1], [2], etc.
-- Our company profile is context, not proof of fit. Do not claim our certifications, footprint, or EMS capabilities are relevant unless the evidence explicitly names a matching procurement, hardware/equipment program, supplier qualification need, or manufacturing requirement.
+EVIDENCE DISCIPLINE — THESE RULES OVERRIDE ALL OTHER INSTRUCTIONS:
+- Calibrate your claims to the evidence strength. One weak or single source can only support a tentative observation. A firm conclusion requires two or more independent, corroborating sources. If the evidence is thin, say so plainly and keep the insight narrow.
+- Distinguish OBSERVED FACTS (directly stated in the evidence, cited as [1], [2]) from your INFERENCES. Mark inferences with words like 'suggests', 'may', 'appears to'. Never present an inference as a fact.
+- Do NOT invent. Every proper noun in your output — company names, people, part numbers, customer relationships, locations, dollar figures, deadlines — MUST appear in the evidence signals or the entity profile above. If you cannot find a real name in the evidence, do not name one. Write 'the procurement lead' or 'an engineering contact' rather than inventing 'the VP of Procurement at Siemens Munich'.
+- Do NOT extrapolate a commercial consequence unless the causal chain is supported by the evidence. A single social-media post about a topic does not establish a 'strategic pivot', a 'BOM risk', a 'redesign urgency', or a supply disruption. State what was observed and, at most, what it MIGHT imply — clearly marked as speculative.
+- Do NOT force a causal or counterfactual structure. Write naturally. Use 'because' only when the evidence genuinely shows causation. Use 'if' only when exploring a real risk, and only when the evidence makes it plausible. Do not pad with mandatory cause-effect or counterfactual sentences.
+- It is correct and expected to conclude 'insufficient evidence to recommend a specific action' when the evidence does not support one. A restrained, honest insight is more valuable than a confident-sounding fabrication.
+- Every claim must cite a numbered evidence reference [1], [2], etc. that actually supports THAT claim — not a reference to a different topic.
+- Our company profile is context, not proof of fit. Do not claim our certifications, footprint, or capabilities are relevant unless the evidence explicitly names a matching procurement, hardware/equipment program, supplier qualification need, or manufacturing requirement.
 - Keep direct evidence separate from inference. Do not turn minor hygiene findings such as DNS posture, missing DKIM/SPF/DMARC, or isolated lookalike domains into claims about defense-program exclusion, medical-device qualification failure, customer churn, or supply disruption unless the evidence explicitly links them.
 - Do not turn generic certification or accreditation warnings, stale certificate dates, reaffirmation notices, or unspecified compliance page updates into claims about qualification failure, customer churn, tender exclusion, or switching urgency unless the evidence explicitly names a failed audit, revoked/expired certificate, regulator action, affected customer, or impacted program.
-- Do not recommend targeting unnamed customer cohorts such as 'their medical clients' or 'aerospace customers'. If the evidence does not name a downstream company or program, keep the action on assurance, verification, remediation, or direct account mapping rather than invented switching outreach.
 - For government and public-sector entities, do not invent hardware demand, manufacturing demand, quantity assumptions, or supplier-fit claims from innovation, media, diplomatic, or policy signals alone. Direct PCBA, box build, EMS, or certification-led outreach requires explicit procurement or program evidence.
-- Never write passive analysis. Every paragraph must drive toward a commercial action.
-- Reason hard: explicitly explain causality (what changed -> why it matters -> who is impacted -> what action follows).
-- Include second-order effects and at least one counterfactual scenario ('if X worsens / if Y reverses, then ...').
-- Name specific companies, people, facilities, certifications, dates, and dollar figures from the evidence.
 - ALL target companies in recommendations MUST come from: (a) the entity being analyzed, (b) companies or people named in the evidence signals, (c) competitors listed in the entity's competitive profile. DO NOT invent or generalize target names.
-- When a competitor has a weakness (delayed project, lost cert, supply problem), immediately name which of their customers from the evidence we should approach.
 - GEOGRAPHIC GO-TO-MARKET: Starz sells battery packs PRIMARILY in Morocco, Tunisia and Egypt, and SECONDARILY (smaller focus) in the European Union — and nowhere else. When the analyzed entity is a potential pack BUYER or customer in these markets, direct sales, qualification, or partnership outreach is appropriate; weight Moroccan, Tunisian and Egyptian opportunities highest, then EU. When a potential buyer sits OUTSIDE these markets, do NOT pitch direct battery-pack sales — treat it as market intelligence, competitive monitoring, or supply-chain context instead.
-- Competitors (rival pack/BMS makers) and suppliers (cell manufacturers, distributors, component vendors) are monitored GLOBALLY regardless of location; geographic targeting never limits competitor or supplier intelligence. For any non-domestic entity, state plainly whether it is a competitor to monitor, a supplier to track, or an out-of-market buyer.
-- FORBIDDEN phrases: 'continue monitoring', 'monitor the situation', 'remains to be seen', 'time will tell', 'various developments', 'warranting focused analysis', 'further developments', 'stay informed'
-- NEVER use bracket placeholders like [Company X], [specific service], [date], [competitor weakness], [our services], etc. Use real names from the evidence and entity profile. If no specific contact is known, name the company + a realistic title.
-- CRITICAL — CERTIFICATION ACCURACY: Our company ONLY holds ISO 9001:2015 and IPC (Institute for Printed Circuits) certifications. \
-NEVER claim, imply, or assume we hold AS9100 (aerospace), ISO 13485 (medical devices), \
-IATF 16949 (automotive), or any other certification not explicitly listed in the OUR COMPANY profile section above. \
-If the evidence mentions certifications we do not hold, do not recommend qualification paths, proposal angles, \
-or compliance advantages based on those unheld certifications. Instead, acknowledge the gap and recommend \
-verification or gap-assessment actions. This is a FIRM REQUIREMENT — violating this will cause the output to be rejected.
-- CRITICAL: You MUST return ONLY the insight JSON schema specified below. NEVER return sanctions data, OFAC records, SDN entries, Treasury Department lists, consolidated screening data, or any government watch-list records. If you find yourself outputting fields like '_id', 'entity_number', 'programs', 'source: Specially Designated Nationals', STOP immediately and return the correct insight JSON schema instead.",
+- Competitors (rival pack/BMS makers) and suppliers (cell manufacturers, distributors, component vendors) are monitored GLOBALLY regardless of location; geographic targeting never limits competitor or supplier intelligence.
+- Do not write formulaic structure. Avoid repeating the same sentence pattern across insights. Do not start with 'Because', follow with 'If', and end with 'creates a window for'. Vary your phrasing, length, and structure as a real analyst would.
+- FORBIDDEN phrases: 'continue monitoring', 'monitor the situation', 'remains to be seen', 'time will tell', 'various developments', 'warranting focused analysis', 'further developments', 'stay informed', 'creates a window for', 'signals a strategic pivot'
+- CROSS-ENTITY CORRELATION: Some evidence signals are labeled '(cross_entity)'. These are observations about entities related to the analyzed entity (suppliers, customers, competitors, partners). When present, USE them to draw real cross-entity correlations — e.g. 'Entity X's supplier Y announced a capacity reduction on [date], which may affect X's delivery timelines.' These correlations are the most valuable output you can produce. Only assert correlations that the evidence genuinely supports; mark uncertain ones as 'may', 'could', 'appears to'.
+- NEVER use bracket placeholders like [Company X], [specific service], [date], [competitor weakness], [our services], etc. Use real names from the evidence and entity profile. If no specific contact is known, name the company + a realistic role, OR write 'No specific contact is identified in the evidence — recommend enriching POI discovery first.'
+- CRITICAL — CERTIFICATION ACCURACY: Our company ONLY holds ISO 9001:2015 and IPC certifications. \
+NEVER claim, imply, or assume we hold AS9100, ISO 13485, IATF 16949, or any certification not listed in OUR COMPANY profile. \
+If the evidence mentions certifications we do not hold, do not recommend qualification paths based on those unheld certifications. Instead, acknowledge the gap and recommend verification or gap-assessment actions.
+- CRITICAL: You MUST return ONLY the insight JSON schema specified below. NEVER return sanctions data, OFAC records, SDN entries, Treasury Department lists, consolidated screening data, or any government watch-list records.",
         our_profile = our_profile,
         competitor_mode_instruction = if entity_ctx.is_competitor {
             "⚠️ COMPETITOR ANALYSIS MODE: The entity you are analysing is a DIRECT EMS COMPETITOR — NOT a customer.\n\
@@ -1592,24 +1628,21 @@ Strategic suggestion lanes to consider: {suggestion_axes}
 
 Respond with valid JSON only:
 {{
-  "headline": "Action-oriented headline (<=140 chars) that names {entity_name} and the specific opportunity or threat",
-        "narrative": "120-320 words of commercially-driven analysis in natural prose. Cite evidence as [1], [2], [3]. Explain what changed, why it matters, the causal chain, and which commercial choices are opened or constrained now. Do not use section labels or template headings.",
-        "recommendation": "2-4 strategic suggestions in plain prose spanning at least two distinct lanes from {suggestion_axes}. Suggestions should be option-oriented rather than canned playbook text. Name REAL companies, roles, facilities, or programs from the evidence when possible, explain why each lane fits now, include timing when the evidence supports it, and cite at least one supporting evidence reference such as [1] or [2].",
+  "headline": "A factual, specific headline (<=140 chars) naming {entity_name} and stating WHAT WAS OBSERVED. Do not write an action verb ('Act on', 'Seize', 'Capture') in the headline — describe the finding.",
+        "narrative": "80-280 words of evidence-grounded analysis in natural prose, written as a real analyst would. Cite evidence as [1], [2], [3]. Report what the evidence actually shows. Calibrate every claim: a single weak source supports only a tentative observation; two+ corroborating sources support a firmer conclusion; if the evidence is thin, say so. Mark inferences clearly ('suggests', 'may', 'appears'). Do NOT pad with a mandatory cause-effect or counterfactual sentence. Do NOT use section labels, template headings, or the phrases 'Because... therefore', 'If... would/could', or 'creates a window for'. Vary your sentence structure.",
+        "recommendation": "1-3 suggestions in plain prose. Each must be justified by specific evidence you cite as [1], [2]. If the evidence does not support a specific commercial action, write 'Insufficient evidence to recommend a specific commercial action at this time; recommend enriching data collection on this entity before outreach.' Name ONLY companies, people, and programs that appear in the evidence or entity profile. Do not invent target names, part numbers, locations, or deadlines.",
     "confidence": 0.0,
     "severity": "<critical|high|medium|low based on likely business impact>"
 }}
 
-MANDATORY:
+REQUIREMENTS:
 - Reference at least 2 evidence items as [1], [2], etc.
-- Recommendation text must also cite at least 1 supporting evidence item as [1], [2], etc.
-- Include at least 3 concrete facts from the evidence (names, dates, numbers, places, standards).
-- Include at least one explicit cause-effect statement (for example, 'because ... therefore ...').
-- Include at least one counterfactual statement using 'if ... would/could ...'.
-- Every recommendation target MUST be drawn from the evidence signals, entity profile, or competitive profile — never from your general knowledge. The entity being analyzed ({entity_name}) is always a valid target.
-- Focus on what to DO, not what to observe.
-- Treat any recurring action playbooks or operating patterns as suggestion sources, not scripts to be copied.
-- READABILITY GATE: write plain business prose with complete sentences, no templates, no boilerplate labels, no heading prefixes like 'Assessment:' or 'Additional source reporting:'.
-- USEFULNESS GATE: every sentence must add new information (fact, implication, or action); do not repeat the same claim with paraphrases.
+- Each recommendation must cite at least 1 supporting evidence item as [1], [2], etc.
+- Every proper noun (company, person, part number, location, standard, dollar figure, date) in your output MUST exist in the evidence or entity profile. Inventing names or figures is the most serious error you can make.
+- Calibrate confidence to the actual evidence strength. One source = at most 0.4. Two corroborating sources = up to 0.6. Three or more independent sources = up to 0.85. Never claim confidence above what the evidence supports.
+- Write plain business prose with complete sentences. No templates, no boilerplate labels, no heading prefixes.
+- Every sentence must add new information (fact, implication, or action); do not repeat the same claim with paraphrases.
+- If the evidence genuinely supports a strong commercial action, make it. If it does not, restraint is the correct answer — say so.
 "#,
         category_label = category_label,
         entity_name = entity_ctx.name,
@@ -1797,7 +1830,7 @@ MANDATORY:
         if let Some(guidance) = retry_guidance.as_deref() {
             messages.push(ChatMessage::user(guidance));
         }
-        let resp = llm_client
+        let mut resp = llm_client
             .complete_with_config(messages, &config)
             .await
             .with_context(|| format!("LLM insight generation failed for {}", entity_ctx.name))?;
@@ -1860,15 +1893,31 @@ MANDATORY:
         };
 
         if is_cert_invented {
-            tracing::warn!(
-                entity = %entity_ctx.name,
-                attempt,
-                raw_preview = %crate::truncate_text(&resp.text, 200),
-                "LLM certification invention detected — model claimed certifications our company does not hold"
-            );
-            previous_failure_reasons.push("certification_invention");
-            crate::observability::WORKER_METRICS.record_llm_retry();
-            continue;
+            if attempt < *crate::config::LLM_MAX_RETRIES {
+                // First violation: give the model one corrective retry.
+                tracing::warn!(
+                    entity = %entity_ctx.name,
+                    attempt,
+                    raw_preview = %crate::truncate_text(&resp.text, 200),
+                    "LLM certification invention detected — retrying with corrective guidance"
+                );
+                previous_failure_reasons.push("certification_invention");
+                crate::observability::WORKER_METRICS.record_llm_retry();
+                continue;
+            } else {
+                // Final attempt still violates: sanitize the forbidden
+                // certification claims from the response text and proceed,
+                // rather than discarding the entire insight. This avoids the
+                // wasteful retry loop that blocked recipe-fire throughput on
+                // entities (e.g. Sanmina) where the LLM persistently invented
+                // certification claims despite corrective guidance.
+                tracing::warn!(
+                    entity = %entity_ctx.name,
+                    attempt,
+                    "LLM certification invention persists after retries — sanitizing forbidden claims and accepting output"
+                );
+                resp.text = sanitize_certification_claims(&resp.text);
+            }
         }
 
         let parsed: LlmInsightResponse = match resp.parse_json() {
@@ -2421,6 +2470,22 @@ fn parse_signal_str(s: &str) -> SignalSpec {
 }
 
 /// Convert a seed recipe definition into an engine-ready [`Recipe`].
+/// Map the PascalCase transform type names used in `recipes_seed.yaml`
+/// (e.g. `Lag`, `Count`, `ZScore`) to the lowercase snake-case identifiers
+/// the recipe engine's `apply_transforms` dispatcher matches against.
+/// Unknown inputs are passed through lowercased so the engine's identity
+/// branch handles them gracefully.
+fn normalize_transform_type(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "zscore" | "z_score" => "zscore".to_string(),
+        "pctchange" | "pct_change" | "percentchange" => "pct_change".to_string(),
+        "rollingmean" | "rolling_mean" => "rolling_mean".to_string(),
+        "count" => "count".to_string(),
+        "diff" | "difference" | "lag" => "diff".to_string(),
+        other => other.to_ascii_lowercase(),
+    }
+}
+
 fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::SeedRecipe) -> Recipe {
     let signals: Vec<SignalSpec> = sr
         .signals
@@ -2445,6 +2510,85 @@ fn seed_recipe_to_engine_recipe(sr: &apex_worker::recipe_loader::SeedRecipe) -> 
     r.description = sr.category.clone();
     r.status = RecipeStatus::Seed;
     r.signals = signals;
+
+    // ── Wire the statistical core from the seed YAML ───────────────────────
+    // Previously transforms/test/thresholds were silently dropped, leaving the
+    // engine to run every recipe with default (identity) transforms and a flat
+    // 1.5× uplift floor. The FisherExact test type is carried through so the
+    // engine and any downstream calibration know the intended test family.
+    r.transforms = sr
+        .transforms
+        .iter()
+        .map(|raw| apex_core::schemas::TransformSpec {
+            // YAML uses PascalCase (Lag, Count, ZScore, PctChange, RollingMean);
+            // the engine matches lowercase snake-case names. Normalize so the
+            // known transforms actually apply; unknown ones fall through to the
+            // engine's identity (keep-as-is) branch, which is safe.
+            transform_type: normalize_transform_type(
+                raw.get("type")
+                    .and_then(serde_yaml::Value::as_str)
+                    .unwrap_or(""),
+            ),
+            field: raw
+                .get("field")
+                .and_then(serde_yaml::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            window_days: raw
+                .get("window_days")
+                .and_then(serde_yaml::Value::as_i64)
+                .map(|d| d as i32)
+                .or_else(|| {
+                    raw.get("days")
+                        .and_then(serde_yaml::Value::as_i64)
+                        .map(|d| d as i32)
+                })
+                .unwrap_or(0),
+            params: serde_json::to_value(raw).unwrap_or(serde_json::Value::Null),
+        })
+        .collect();
+
+    r.statistical_test = sr
+        .test
+        .get("type")
+        .and_then(serde_yaml::Value::as_str)
+        .map(|test_type| apex_core::schemas::StatisticalTest {
+            // Carry the declared test family (e.g. "fisher_exact",
+            // "cross_correlation"). Normalized to snake_case so the engine's
+            // downstream consumers can dispatch on it consistently.
+            test_type: test_type.trim().to_ascii_lowercase(),
+            params: serde_json::to_value(&sr.test).unwrap_or(serde_json::Value::Null),
+        });
+
+    // Thresholds: lift the recipe-specific floor/gate from the YAML so the
+    // engine respects per-recipe quality bars instead of the 1.5× default.
+    if let Some(min_effect) = sr
+        .thresholds
+        .get("min_effect")
+        .and_then(serde_yaml::Value::as_f64)
+    {
+        // Gate validation requires min_uplift > 1.0. Guard against YAML
+        // recipes that declare a min_effect at or below the baseline.
+        if min_effect > 1.0 {
+            r.min_uplift = min_effect;
+        }
+    }
+    if let Some(max_p) = sr
+        .thresholds
+        .get("max_p_value")
+        .and_then(serde_yaml::Value::as_f64)
+    {
+        r.max_p_value = max_p;
+    }
+    if let Some(min_slices) = sr
+        .thresholds
+        .get("min_stability")
+        .and_then(serde_yaml::Value::as_f64)
+        .map(|s| (s * 10.0).round() as i32)
+    {
+        r.min_time_slices = min_slices;
+    }
+
     r.insight_template = sr.narrative_template.clone();
     r.action_template = action;
     r.severity = severity.to_string();
@@ -2587,6 +2731,13 @@ async fn main() -> Result<()> {
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
     let mut trigger_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    // B324: SIGTERM is the signal Docker/K8s/systemd send on stop — the
+    // previous loop only listened for SIGINT (ctrl_c), so containerized
+    // workers were killed outright mid-job with no drain.
+    let mut sigterm = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate()).expect("failed to install SIGTERM handler")
+    };
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -2600,7 +2751,10 @@ async fn main() -> Result<()> {
                     };
 
                     let mut scheduler = scheduler.lock().await;
-                    tick_scheduler(&mut scheduler, &store).await;
+                    // Job-level panics are contained inside tick_scheduler
+                    // (each job runs in an observed spawn, B325), so the tick
+                    // body itself only does bookkeeping.
+                    runtime::tick_scheduler(&mut scheduler, &store).await;
                 });
             }
             _ = trigger_interval.tick() => {
@@ -2623,7 +2777,11 @@ async fn main() -> Result<()> {
                 });
             }
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received shutdown signal, exiting gracefully");
+                tracing::info!("received SIGINT, exiting gracefully");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, exiting gracefully");
                 break;
             }
         }
@@ -3180,8 +3338,16 @@ async fn run_update_email_digest_job(store: &Arc<PgStore>) -> Result<(u64, u64)>
         let html = build_digest_html(&base_url, &top, &category_label);
         let text = build_digest_text(&base_url, &top, &category_label);
 
-        send_digest_email(&recipients, &subject, html, text).await?;
-        store.mark_email_digest_sent(&user_id, now_utc).await?;
+        // B333: one failing recipient previously aborted the whole loop —
+        // every user after the failure lost their digest that cycle. Log and
+        // continue; only a send that succeeded marks the digest as sent.
+        if let Err(error) = send_digest_email(&recipients, &subject, html, text).await {
+            tracing::error!(user_id = %user_id, %error, "email digest send failed");
+            continue;
+        }
+        if let Err(error) = store.mark_email_digest_sent(&user_id, now_utc).await {
+            tracing::warn!(user_id = %user_id, %error, "mark_email_digest_sent failed (digest may re-send)");
+        }
         sent_count += 1;
         tracing::info!(user_id = %user_id, recipients = recipients.len(), insights = top.len(), "email digest sent");
     }
@@ -3767,10 +3933,30 @@ If invalid/non-target: {"is_person":false,"target_fit":false}"#;
 
     // Return validated/enriched candidate
     let mut validated = candidate.clone();
+    let name_rewritten = if let Some(ref name) = parsed.name {
+        !name.is_empty() && name.trim() != candidate.name.trim()
+    } else {
+        false
+    };
     if let Some(name) = parsed.name {
         if !name.is_empty() {
             validated.name = name;
         }
+    }
+    // Post-LLM backstop: the model can rewrite the name (correcting spelling,
+    // expanding initials, etc.), but it can also produce a non-person string
+    // (a role title, a place name, a transliterated phrase). Re-run the
+    // deterministic junk check on the final name before accepting it. This
+    // guards against LLM hallucination/over-correction that reintroduces the
+    // exact junk classes the pre-LLM filter is designed to reject.
+    if !apex_core::person_names::looks_like_person_name(&validated.name) {
+        tracing::info!(
+            original_name = %candidate.name,
+            final_name = %validated.name,
+            name_rewritten,
+            "poi_validation: post-LLM backstop rejected non-person-like name"
+        );
+        return Ok(None);
     }
     let sanitized_org = sanitize_validated_org(candidate, parsed.org);
     if let Some(role) = sanitize_validated_role(candidate, parsed.role, sanitized_org.as_deref()) {

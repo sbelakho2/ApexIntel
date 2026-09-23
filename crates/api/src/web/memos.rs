@@ -111,3 +111,58 @@ pub async fn list_memos(
 
     super::render_template(&tpl)
 }
+
+/// HTMX partial: GET /memos/_list — renders just the memo list fragment.
+/// Called by the memos page on load via `hx-get="/memos/_list"`.
+pub async fn list_memos_partial(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+) -> impl IntoResponse {
+    let unack = store
+        .count_warnings(&WarningListFilters {
+            acknowledged: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or(0);
+    let ctx = PageContext::from_session(&session, "/memos", unack);
+
+    let (memo_rows, total) = store.list_weekly_memos(50, 0).await.unwrap_or_else(|e| {
+        tracing::error!("Failed to list weekly memos: {e}");
+        (vec![], 0)
+    });
+
+    let memos: Vec<MemoListItem> = memo_rows
+        .iter()
+        .map(|m| MemoListItem {
+            id: m.id.to_string(),
+            title: m.title.clone(),
+            week_start: m.week_start.clone(),
+            week_end: m.week_end.clone(),
+            summary: m.executive_summary.clone(),
+            key_findings: m.action_items.iter().map(|a| a.text.clone()).collect(),
+            sections: m
+                .sections
+                .iter()
+                .map(|s| MemoSection {
+                    heading: s.title.clone(),
+                    body: s.content.clone(),
+                })
+                .collect(),
+            warning_count: m.key_metrics.warnings_total,
+            insight_count: m.key_metrics.insights_generated,
+            created_at: m.generated_at.clone(),
+        })
+        .collect();
+
+    let tpl = MemosListPartial { memos, total };
+    super::render_template(&tpl)
+}
+
+/// Template for the HTMX partial fragment.
+#[derive(Template)]
+#[template(path = "pages/memos/_list.html")]
+pub struct MemosListPartial {
+    pub memos: Vec<MemoListItem>,
+    pub total: i64,
+}

@@ -92,7 +92,7 @@ pub struct TrendComparisonView {
     pub change_pct: String,
     pub change_abs: String,
     pub direction: String, // "up", "down", "flat"
-    pub direction_class: String, // "text-green-600", "text-red-600", "text-muted-foreground"
+    pub direction_class: String, // "text-rams-green", "text-rams-red", "text-muted-foreground"
     pub icon: String, // "trending-up", "trending-down", "minus"
 }
 
@@ -302,8 +302,8 @@ pub async fn trends_page(
             change_abs: format_number(c.absolute_change.abs()),
             direction: c.direction.clone(),
             direction_class: match c.direction.as_str() {
-                "up" => "text-green-600".to_string(),
-                "down" => "text-red-600".to_string(),
+                "up" => "text-rams-green".to_string(),
+                "down" => "text-rams-red".to_string(),
                 _ => "text-muted-foreground".to_string(),
             },
             icon: match c.direction.as_str() {
@@ -339,8 +339,8 @@ pub async fn trends_page(
             change_abs: format_number(c.absolute_change.abs()),
             direction: c.direction.clone(),
             direction_class: match c.direction.as_str() {
-                "up" => "text-green-600".to_string(),
-                "down" => "text-red-600".to_string(),
+                "up" => "text-rams-green".to_string(),
+                "down" => "text-rams-red".to_string(),
                 _ => "text-muted-foreground".to_string(),
             },
             icon: match c.direction.as_str() {

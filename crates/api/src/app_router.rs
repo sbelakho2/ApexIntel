@@ -18,7 +18,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/api/openapi.json", get(openapi_json))
         .route("/api/docs", get(api_docs))
         .route("/api/features", get(api_features))
-        .route("/metrics", get(runtime_metrics::metrics))
         .route(
             "/login",
             get(apex_api::web::auth::login_page).post(apex_api::web::auth::login_submit),
@@ -28,6 +27,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/sw.js", get(sw_js));
 
     let protected = Router::new()
+        // /metrics exposes platform scale (companies, persons, warnings) and
+        // runs DB aggregates per scrape — served behind API auth (B299). Point
+        // Prometheus at it with an `Authorization: Bearer <key>` header.
+        .route("/metrics", get(runtime_metrics::metrics))
         // Existing endpoints...
         .route(
             "/api/warnings",
@@ -142,6 +145,16 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/persons/:id/changes",
             get(dossiers_handlers::get_person_changes_api),
         )
+        // ─── Sales activation: contacts + outreach feedback loop ──────────
+        .route(
+            "/api/persons/:id/contacts",
+            get(sales_handlers::list_person_contacts),
+        )
+        .route(
+            "/api/persons/:id/outreach",
+            get(sales_handlers::list_person_engagement)
+                .post(sales_handlers::record_engagement),
+        )
         .route(
             "/api/persons/:id/dossier-entries",
             get(dossiers_handlers::get_person_dossier_entries),
@@ -153,6 +166,15 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route(
             "/api/companies/:id/dossier-entries",
             get(dossiers_handlers::get_company_dossier_entries),
+        )
+        // ─── Sales activation: buying center graph ───────────────────────
+        .route(
+            "/api/companies/:id/buying-center",
+            get(sales_handlers::list_company_buying_center),
+        )
+        .route(
+            "/api/companies/:id/buying-center/members",
+            post(sales_handlers::add_buying_member),
         )
         .route(
             "/api/dossier-entries/:id/verify",
@@ -285,16 +307,23 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             put(alert_settings_handlers::upsert_global_alert_defaults),
         )
 
-        .route("/api/admin/crawl-status", get(get_admin_crawl_status))
-        .route(
-            "/api/admin/recipe-performance",
-            get(get_admin_recipe_performance),
-        )
-        .route("/api/admin/poi-coverage", get(get_admin_poi_coverage))
-        .route("/api/admin/trigger-scan", post(post_trigger_scan))
-        .route(
-            "/api/admin/search/rebuild-autocomplete",
-            post(post_rebuild_autocomplete),
+        // B292: admin-only surface. Registered as a separate router so the
+        // `require_admin` layer scopes to exactly these routes — a layer in
+        // the main chain would also gate every route registered above it.
+        .merge(
+            Router::new()
+                .route("/api/admin/crawl-status", get(get_admin_crawl_status))
+                .route(
+                    "/api/admin/recipe-performance",
+                    get(get_admin_recipe_performance),
+                )
+                .route("/api/admin/poi-coverage", get(get_admin_poi_coverage))
+                .route("/api/admin/trigger-scan", post(post_trigger_scan))
+                .route(
+                    "/api/admin/search/rebuild-autocomplete",
+                    post(post_rebuild_autocomplete),
+                )
+                .route_layer(middleware::from_fn(require_admin)),
         )
         .route(
             "/api/llm/extract-entities",
@@ -403,6 +432,13 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(psych_profiles_handlers::get_psych_profiles),
         )
 
+        // ─── ICP Sales Targeting API ──────────────────────────────────────
+        .route("/api/icp/targets", get(icp_handlers::list_icp_targets))
+        .route(
+            "/api/icp/companies/:id/score",
+            post(icp_handlers::score_company_icp),
+        )
+
         // ─── Phase 4.3: Daily Priority Queue ─────────────────────────────
         .route(
             "/api/queue",
@@ -501,7 +537,13 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(trends_handlers::entity_trends),
         )
 
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
+        // B300: `/api/trends*` handlers extract `Extension<Arc<PgStore>>`, which
+        // was previously provided only to the web-page router — every trends
+        // request failed with "Missing request extension" (500). Provide the
+        // store (and search index) extensions to the JSON API router as well.
+        .layer(Extension(state.store.clone()))
+        .layer(Extension(state.search_index.clone()));
 
     let web_pages = Router::new()
         .route("/", get(apex_api::web::dashboard::dashboard))
@@ -529,6 +571,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route("/insights", get(apex_api::web::insights::list_insights))
         .route("/insights/:id", get(apex_api::web::insights::get_insight))
+        .route(
+            "/insights/:id/pdf",
+            get(apex_api::web::insights::export_insight_pdf_html),
+        )
         .route(
             "/insights/:id/bookmark",
             post(apex_api::web::insights::bookmark_insight_html),
@@ -568,6 +614,12 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/graph", get(apex_api::web::graph::graph_page))
         .route("/recipes", get(apex_api::web::recipes::list_recipes))
         .route("/recipes/new", get(apex_api::web::recipes::new_recipe))
+        // B307: the creation form's action target — previously unregistered,
+        // so the only creation flow in the product 404'd on submit.
+        .route(
+            "/recipes/create-form",
+            post(apex_api::web::recipes::create_recipe_form),
+        )
         .route("/search", get(apex_api::web::search::search_page))
         .route(
             "/search/suggestions",
@@ -580,6 +632,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route("/admin", get(apex_api::web::admin::admin_page))
         .route("/memos", get(apex_api::web::memos::list_memos))
+        .route("/memos/_list", get(apex_api::web::memos::list_memos_partial))
         .route(
             "/notifications",
             get(apex_api::web::notifications::list_notifications_page),

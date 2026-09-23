@@ -43,6 +43,8 @@ use apex_core::entities::RoleFamily;
 ///
 /// # Examples
 /// ```
+/// use apex_poi::role_classifier::classify_role;
+/// use apex_core::entities::RoleFamily;
 /// assert_eq!(classify_role("VP Procurement"), RoleFamily::Procurement);
 /// assert_eq!(classify_role("Chief Technology Officer"), RoleFamily::Executive);
 /// assert_eq!(classify_role("Quality Assurance Manager"), RoleFamily::SupplierQuality);

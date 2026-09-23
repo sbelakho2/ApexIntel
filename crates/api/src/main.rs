@@ -9,8 +9,9 @@ use apex_api::filters::{
 };
 use apex_api::middleware::auth::{
     auth_error_response, authenticate_api_request, extract_websocket_token,
-    WebSocketAuthOptions,
+    validate_websocket_token, WebSocketAuthOptions,
 };
+use apex_api::middleware::session::{api_session_csrf_ok, current_session_secret, validate_session};
 use apex_api::rate_limit::RateLimiter;
 use apex_api::responses::{
     aggregate_health, error_response, success, success_with_meta, ApiError, ApiResponse,
@@ -57,7 +58,7 @@ use apex_store::postgres::{
 };
 use apex_store::tantivy_index::SearchIndex;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{header, Method, StatusCode},
     response::{Html, IntoResponse, Response},
     Extension, Json,
@@ -122,10 +123,14 @@ mod alert_settings_handlers;
 mod activity_handlers;
 #[path = "api_handlers/battlecards.rs"]
 mod battlecards_handlers;
+#[path = "api_handlers/icp.rs"]
+mod icp_handlers;
 #[path = "api_handlers/psych_profiles.rs"]
 mod psych_profiles_handlers;
 #[path = "api_handlers/supply_risk.rs"]
 mod supply_risk_handlers;
+#[path = "api_handlers/sales.rs"]
+mod sales_handlers;
 #[path = "api_handlers/threat_intel.rs"]
 mod threat_intel_handlers;
 #[path = "api_handlers/triage.rs"]
@@ -192,19 +197,26 @@ async fn main() -> Result<()> {
                 .parse::<axum::http::HeaderValue>()
                 .unwrap_or_else(|_| axum::http::HeaderValue::from_static("http://localhost:3000")),
         )
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+        // PATCH is used by 13 registered routes (executive opportunities/threats,
+        // queue, supplier-risk, pipeline) — omitting it broke every cross-origin
+        // PATCH preflight (B297).
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::HeaderName::from_static("x-csrf-token")]);
 
     let app = app_router::build_app_router(state.clone(), cors);
     let address = format!("{}:{}", state.config.server.host, state.config.server.port);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(address = %address, "API server listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-            tracing::info!("received shutdown signal, draining connections");
-        })
-        .await?;
+    axum::serve(
+        listener,
+        // ConnectInfo powers the rate limiter's per-client identity (B298).
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("received shutdown signal, draining connections");
+    })
+    .await?;
     state.store.pool.close().await;
     tracing::info!("database pool closed, shutdown complete");
     Ok(())
@@ -371,7 +383,9 @@ fn build_llm_runtime(_config: &ApiRuntimeConfig) -> Result<Option<()>> {
 }
 
 fn load_api_keys() -> HashMap<String, ApiKey> {
-    apex_api::api_keys::load_api_keys_from_env(16)
+    // B317: 50 slots to match the documented API_KEYS_ENV_SLOTS default —
+    // keys 17..50 were silently ignored with the previous hardcoded 16.
+    apex_api::api_keys::load_api_keys_from_env(50)
 }
 
 #[cfg(feature = "llm")]
@@ -415,23 +429,91 @@ async fn require_auth(
             request.extensions_mut().insert(auth.auth_context);
             next.run(request).await
         }
-        Err(api_err) => auth_error_response(api_err),
+        Err(api_err) => {
+            // B291: browser-session fallback. The web UI links and scripts call
+            // `/api/*` endpoints (charts, CSV/PDF exports, graph expansion,
+            // alert settings, battlecard regeneration) with the ambient
+            // `apex_session` cookie rather than a Bearer key. Accept a valid web
+            // session as an Analyst-level principal — but only when no
+            // Authorization header was presented (an invalid key must fail, not
+            // silently downgrade) and, for unsafe methods, only when the
+            // double-submit CSRF check passes.
+            if let Some(ctx) = session_fallback_context(&request) {
+                request.extensions_mut().insert(ctx);
+                return next.run(request).await;
+            }
+            auth_error_response(api_err)
+        }
     }
+}
+
+/// Build an Analyst-level `ApiAuthContext` from the browser session cookie.
+/// Returns `None` when a Bearer key was presented (handled above), the session
+/// is missing/expired, or an unsafe method fails the CSRF check.
+fn session_fallback_context(request: &axum::extract::Request) -> Option<ApiAuthContext> {
+    if request.headers().contains_key(axum::http::header::AUTHORIZATION) {
+        return None;
+    }
+    let secret = current_session_secret();
+    if secret.is_empty() {
+        return None;
+    }
+    let session = validate_session(request.headers(), secret)?;
+    if !api_session_csrf_ok(request.headers(), request.method()) {
+        tracing::warn!(
+            username = %session.username,
+            "session-authenticated API request rejected: CSRF verification failed"
+        );
+        return None;
+    }
+    Some(ApiAuthContext {
+        key_id: "web-session".to_string(),
+        user_id: session.username,
+        role: apex_api::auth::ApiRole::Analyst,
+    })
+}
+
+/// Admin-only route guard: `/api/admin/*` and destructive bulk operations are
+/// restricted to Admin/Service keys (B292). `require_auth` has already run and
+/// inserted the `ApiAuthContext` extension by the time this executes.
+async fn require_admin(
+    Extension(auth): Extension<ApiAuthContext>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !auth.role.can_admin() {
+        return auth_error_response(ApiError::forbidden("Admin role required"));
+    }
+    next.run(request).await
 }
 
 async fn add_rate_limit_headers(
     Extension(limiter): Extension<Arc<RateLimiter>>,
+    ConnectInfo(connect_info): ConnectInfo<std::net::SocketAddr>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     // Apply rate limit check
     let tier = apex_api::rate_limit::classify_endpoint(request.uri().path(), request.method().as_str());
-    let identifier = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown");
-    let result = limiter.check(identifier, tier);
+    // B298: identify clients by their socket address. The previous scheme
+    // trusted the client-supplied `x-forwarded-for` header (rotate it to bypass
+    // limits entirely) and lumped everyone else into one shared "unknown"
+    // bucket. `X-Forwarded-For` is honored only when API_TRUST_PROXY=1, for
+    // deployments behind a reverse proxy that overwrites the header.
+    let identifier = if std::env::var("API_TRUST_PROXY").map(|v| v == "1").unwrap_or(false) {
+        request
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| connect_info.ip().to_string())
+    } else {
+        connect_info.ip().to_string()
+    };
+    let result = limiter.check(&identifier, tier);
     if !result.allowed {
         let api_err = ApiError::rate_limited(result.retry_after_secs as u32);
         let resp = (
@@ -829,7 +911,12 @@ async fn post_rebuild_autocomplete(
     })?;
 
     let entry_count = new_index.len();
-    *state.autocomplete_index.write().unwrap() = new_index;
+    // B305: recover from lock poisoning instead of panicking — one poisoned
+    // write lock previously 500'd every subsequent suggest/rebuild request.
+    *state
+        .autocomplete_index
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_index;
 
     let duration_ms = start.elapsed().as_millis() as u64;
     tracing::info!(entries = %entry_count, duration_ms = %duration_ms, "autocomplete index rebuilt");
@@ -870,14 +957,27 @@ fn ws_upgrade_required_response() -> axum::response::Response {
     .into_response()
 }
 
-fn validate_ws_origin(_state: &AppState, headers: &axum::http::HeaderMap) -> bool {
-    if let Some(origin) = headers.get("origin") {
-        if let Ok(_origin_str) = origin.to_str() {
-            // Use an empty key lookup — origin check with no restriction key
-            return true;
-        }
-    }
-    true
+fn validate_ws_origin(headers: &axum::http::HeaderMap) -> bool {
+    // B293: same-origin policy for browser WebSocket clients. Non-browser
+    // clients (curl, automation) send no Origin header and are authenticated by
+    // token instead.
+    let Some(origin) = headers.get("origin").and_then(|value| value.to_str().ok()) else {
+        return true;
+    };
+    let Some(host) = headers.get("host").and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    let origin_host = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+        .unwrap_or(origin);
+    // Compare including port when the origin carries one.
+    origin_host == host
+        || origin_host
+            .split(':')
+            .next()
+            .zip(host.split(':').next())
+            .is_some_and(|(o, h)| o == h && (host.contains(':') || !origin_host.contains(':')))
 }
 
 async fn warnings_ws(
@@ -889,11 +989,27 @@ async fn warnings_ws(
     let auth_options = WebSocketAuthOptions::default();
 
     let token_result = extract_websocket_token(&headers, query.token.as_deref(), auth_options);
-    if let Err(err) = token_result {
-        return auth_error_response(err);
+    let token = match token_result {
+        Ok(token) => token,
+        Err(err) => return auth_error_response(err),
+    };
+
+    // B294: the extracted token must actually be validated — previously any
+    // non-empty `?token=` value granted a live alert stream. API keys are
+    // checked first; browser dashboards fall back to the session cookie.
+    let key_auth = validate_websocket_token(&token, &state.api_keys, Utc::now());
+    let session_auth = || {
+        let secret = current_session_secret();
+        (!secret.is_empty())
+            .then(|| validate_session(&headers, secret))
+            .flatten()
+    };
+    if key_auth.is_err() && session_auth().is_none() {
+        tracing::warn!("WebSocket connection rejected: invalid token");
+        return ws_unauthorized_response("Invalid token");
     }
 
-    if !validate_ws_origin(&state, &headers) {
+    if !validate_ws_origin(&headers) {
         return ws_unauthorized_response("Origin not allowed");
     }
 
@@ -913,10 +1029,10 @@ async fn warnings_ws_stream(mut socket: axum::extract::ws::WebSocket, state: App
 
     // If SSE manager is available, subscribe to events
     if let Some(ref sse_manager) = state.sse_manager {
-        // Register for alerts as a specific user (using a placeholder user_id
-        // since WS auth doesn't extract user_id — in production the auth
-        // middleware would set this from the session/JWT)
-        let user_id = uuid::Uuid::default();
+        // B295: each connection registers under its own UUID. The previous
+        // nil-UUID-for-everyone scheme meant `unregister` could never cleanly
+        // remove a dropped client and cross-user routing was impossible.
+        let user_id = uuid::Uuid::new_v4();
         let (tx, mut rx) = sse_manager.register(user_id).await;
         let sse_clone = sse_manager.clone();
 
@@ -1035,12 +1151,13 @@ async fn alert_sse_handler(
             .into_response();
     };
 
-    // In production, extract user_id from the authenticated session.
-    // For now, use a connection-scoped UUID so each browser tab gets its own stream.
-    let user_id = uuid::Uuid::default();
-    let (_tx, rx) = sse_manager.register(user_id).await;
+    // B295: connection-scoped identity — see `warnings_ws_stream`. The guard
+    // unregisters the sender when the stream is dropped so disconnected
+    // clients no longer leak subscriber slots.
+    let user_id = uuid::Uuid::new_v4();
+    let (tx, rx) = sse_manager.register(user_id).await;
 
-    let stream = apex_api::sse::SseManager::build_sse_stream(rx);
+    let stream = apex_api::sse::SseManager::build_sse_stream_with_cleanup(rx, sse_manager.clone(), user_id, tx);
     stream.into_response()
 }
 

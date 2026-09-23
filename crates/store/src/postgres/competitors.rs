@@ -60,7 +60,7 @@ impl PgStore {
             .await
             .unwrap_or((0,));
 
-        let rows: Vec<(Uuid, Uuid, String, String, String, String, DateTime<Utc>, Option<String>, f32)> = sqlx::query_as(
+        let rows: Vec<(Uuid, Uuid, String, String, String, String, DateTime<Utc>, Option<String>, f64)> = sqlx::query_as(
             r#"SELECT cc.id, cc.competitor_id, c.name, cc.change_type, cc.title, cc.description, cc.detected_at, cc.source_url, cc.impact_score
                FROM competitor_changes cc
                JOIN companies c ON c.id = cc.competitor_id
@@ -94,7 +94,7 @@ impl PgStore {
                     description,
                     detected_at: detected_at.to_rfc3339(),
                     source_url,
-                    impact_score: impact_score as f64,
+                    impact_score,
                 },
             )
             .collect();
@@ -117,7 +117,7 @@ impl PgStore {
                 .await
                 .unwrap_or((0,));
 
-        let rows: Vec<(Uuid, Uuid, String, String, String, String, DateTime<Utc>, Option<String>, f32)> = sqlx::query_as(
+        let rows: Vec<(Uuid, Uuid, String, String, String, String, DateTime<Utc>, Option<String>, f64)> = sqlx::query_as(
             r#"SELECT cc.id, cc.competitor_id, c.name, cc.change_type, cc.title, cc.description, cc.detected_at, cc.source_url, cc.impact_score
                FROM competitor_changes cc
                JOIN companies c ON c.id = cc.competitor_id
@@ -153,7 +153,7 @@ impl PgStore {
                     description,
                     detected_at: detected_at.to_rfc3339(),
                     source_url,
-                    impact_score: impact_score as f64,
+                    impact_score,
                 },
             )
             .collect();

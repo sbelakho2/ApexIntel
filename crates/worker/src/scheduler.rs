@@ -191,6 +191,37 @@ pub enum JobKind {
     OsintEnrichment,
     /// Adversarial analysis — runs placement clustering, source entropy detection, and quarantine management.
     AdversarialAnalysis,
+    /// Dynamic anomaly scan — runs real statistical analysis on observation
+    /// volume trends and signal diversity shifts to generate data-driven
+    /// warnings that aren't tied to recipe templates.
+    AnomalyScan,
+    /// High-velocity social media ingestion — Reddit, Telegram, Twitter/Nitter,
+    /// and Hacker News. Produces real SocialPost observations linked to entities.
+    SocialScan,
+    /// Tender / procurement crawler — scrapes MENA public procurement portals
+    /// (Tunisia, Morocco, Egypt, UAE, KSA), filters postings for EMS/BESS
+    /// relevance, and emits TenderPosted observations. Idempotent via
+    /// content-hashed observation IDs.
+    TenderScan,
+    /// Contact-data enrichment — discovers verified email/phone/LinkedIn for
+    /// tracked persons lacking contact methods, via the multi-provider
+    /// (Apollo/Hunter/Clearbit/website) waterfall.
+    ContactEnrichment,
+    /// ICP scoring — batch-scores all non-competitor companies against the
+    /// Ideal Customer Profile definition and persists fit scores + breakdowns
+    /// for sales targeting ("which companies to target").
+    IcpScoring,
+    /// Engagement refresh — recomputes per-person outreach response rates and
+    /// next-best-channel from `engagement_events`, wiring the closed feedback
+    /// loop ("we contacted X, they replied Y → adjust approach").
+    EngagementRefresh,
+    /// Buying-center derivation — auto-builds the buying committee per account
+    /// from each person's role, so "which person at the company" is populated.
+    BuyingCenterDerivation,
+    /// PersonMention materialization — turns PersonMention observations (OpenAlex
+    /// authors, news mentions) into real `persons` rows. Bridges the gap between
+    /// thousands of observed people and zero persons created.
+    PersonMentionMaterialization,
     Custom(String),
 }
 
@@ -229,6 +260,14 @@ impl JobKind {
             Self::PoiRoleReclassify => "poi_role_reclassify",
             Self::OsintEnrichment => "osint_enrichment",
             Self::AdversarialAnalysis => "adversarial_analysis",
+            Self::AnomalyScan => "anomaly_scan",
+            Self::SocialScan => "social_scan",
+            Self::TenderScan => "tender_scan",
+            Self::ContactEnrichment => "contact_enrichment",
+            Self::IcpScoring => "icp_scoring",
+            Self::EngagementRefresh => "engagement_refresh",
+            Self::BuyingCenterDerivation => "buying_center_derivation",
+            Self::PersonMentionMaterialization => "person_mention_materialization",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -268,6 +307,14 @@ impl JobKind {
             "poi_role_reclassify" => Self::PoiRoleReclassify,
             "osint_enrichment" => Self::OsintEnrichment,
             "adversarial_analysis" => Self::AdversarialAnalysis,
+            "anomaly_scan" => Self::AnomalyScan,
+            "social_scan" => Self::SocialScan,
+            "tender_scan" => Self::TenderScan,
+            "contact_enrichment" => Self::ContactEnrichment,
+            "icp_scoring" => Self::IcpScoring,
+            "engagement_refresh" => Self::EngagementRefresh,
+            "buying_center_derivation" => Self::BuyingCenterDerivation,
+            "person_mention_materialization" => Self::PersonMentionMaterialization,
             other => Self::Custom(other.to_string()),
         }
     }
@@ -1322,6 +1369,80 @@ pub fn default_scheduler() -> Scheduler {
             .with_timeout(3600), // 1 h — clustering + entropy + quarantine
     );
 
+    // ── Dynamic Anomaly Scan ───────────────────────────────────────────
+
+    // Anomaly scan: every 4 hours — runs statistical analysis on observation
+    // volume trends, signal diversity shifts, and source reliability to
+    // generate dynamic, data-driven warnings that aren't recipe-gated.
+    s.register(
+        JobDef::new(JobKind::AnomalyScan, Schedule::IntervalSecs(14400))
+            .with_jitter(600) // +10 min spread
+            .with_timeout(1800), // 30 min — SQL queries + analysis
+    );
+
+    // ── Social Media Scan ──────────────────────────────────────────────
+
+    // Social scan: every 2 hours — ingests from Reddit, Telegram, Twitter
+    // (Nitter), and Hacker News. These are the highest-velocity OSINT sources
+    // and should produce real-time SocialPost observations for the insight
+    // engine. Previously the system had ZERO real social media ingestion.
+    s.register(
+        JobDef::new(JobKind::SocialScan, Schedule::IntervalSecs(7200))
+            .with_jitter(300) // +5 min spread
+            .with_timeout(1800), // 30 min — multiple HTTP sources with rate limiting
+    );
+
+    // ── Tender / Procurement Crawler ──────────────────────────────────
+
+    // Tender scan: every 6 hours — scrapes MENA public procurement portals
+    // (Tunisia TUNEPS, Morocco ARP, Egypt EPS, UAE, KSA Etimad), filters for
+    // EMS/BESS relevance, and emits TenderPosted observations. Lower velocity
+    // than social media but directly actionable for targeting. Idempotent via
+    // content-hashed observation IDs.
+    s.register(
+        JobDef::new(JobKind::TenderScan, Schedule::IntervalSecs(21600))
+            .with_jitter(900) // +15 min spread — avoid overlap with other 6h jobs
+            .with_timeout(1800), // 30 min — multiple portal fetches with rate limiting
+    );
+
+    // ─── Sales activation jobs ──────────────────────────────────────────────
+    // Contact enrichment: discover verified email/phone/LinkedIn for tracked
+    // persons. Runs hourly; the waterfall self-throttles and skips persons that
+    // already have contacts.
+    s.register(
+        JobDef::new(JobKind::ContactEnrichment, Schedule::IntervalSecs(3600))
+            .with_jitter(300)
+            .with_timeout(1800),
+    );
+    // ICP scoring: batch-score every non-competitor company against the ICP.
+    // Runs every 6h so newly crawled companies are prioritized for sales.
+    s.register(
+        JobDef::new(JobKind::IcpScoring, Schedule::IntervalSecs(21600))
+            .with_jitter(600)
+            .with_timeout(1800),
+    );
+    // Engagement refresh: recompute outreach response rates from engagement_events.
+    // Runs every 15 min so the feedback loop stays current after each contact.
+    s.register(
+        JobDef::new(JobKind::EngagementRefresh, Schedule::IntervalSecs(900))
+            .with_jitter(120)
+            .with_timeout(300),
+    );
+    // Buying-center derivation: rebuild the committee per account from roles.
+    // Runs every 6h so newly discovered/classified persons appear in committees.
+    s.register(
+        JobDef::new(JobKind::BuyingCenterDerivation, Schedule::IntervalSecs(21600))
+            .with_jitter(600)
+            .with_timeout(1800),
+    );
+    // PersonMention materialization: turn observed-people (OpenAlex/news) into
+    // real persons rows. Runs hourly so the person corpus grows continuously.
+    s.register(
+        JobDef::new(JobKind::PersonMentionMaterialization, Schedule::IntervalSecs(3600))
+            .with_jitter(300)
+            .with_timeout(1800),
+    );
+
     s
 }
 
@@ -1818,6 +1939,14 @@ mod tests {
             "threat_intel_refresh",
             "psych_profile_compute",
             "adversarial_analysis",
+            "anomaly_scan",
+            "social_scan",
+            "tender_scan",
+            "contact_enrichment",
+            "icp_scoring",
+            "engagement_refresh",
+            "buying_center_derivation",
+            "person_mention_materialization",
         ];
 
         assert_eq!(s.jobs.len(), expected_jobs.len());

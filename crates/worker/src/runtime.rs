@@ -134,8 +134,111 @@ pub(crate) async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStor
         return;
     }
 
+    // B320: execute due jobs concurrently under a global semaphore. The
+    // previous strictly-sequential loop let one long job (e.g. an unbounded
+    // POI LLM pass) starve SLA enforcement, triage processing, and digest
+    // delivery for hours.
+    let max_concurrent = std::env::var("WORKER_MAX_CONCURRENT_JOBS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 16);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+
+    let mut handles = Vec::with_capacity(due.len());
     for kind in due {
-        let run = execute_job(&kind, store).await;
+        // B321: lease claim — a second worker replica must not double-fire
+        // the same schedule, and a crashed run must not block the job
+        // forever. Lease covers 2x the declared timeout plus slack.
+        let declared_timeout = scheduler
+            .jobs
+            .get(kind.as_str())
+            .and_then(|def| def.timeout_secs)
+            .unwrap_or(1800);
+        let lease_secs = (declared_timeout as i64 * 2 + 60).max(120);
+        match store
+            .try_claim_scheduled_job(kind.as_str(), lease_secs)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(job = kind.as_str(), "job leased elsewhere; skipping");
+                scheduler.record_run(JobRun {
+                    status: JobStatus::Skipped {
+                        reason: "leased by another worker".to_string(),
+                    },
+                    ..JobRun::new(kind)
+                });
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(job = kind.as_str(), %error, "lease claim failed; executing anyway");
+            }
+        }
+
+        let permit = match Arc::clone(&semaphore).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => continue,
+        };
+        let store = Arc::clone(store);
+        let timeout = std::time::Duration::from_secs(
+            scheduler
+                .jobs
+                .get(kind.as_str())
+                .and_then(|def| def.timeout_secs)
+                // B322: hard ceiling so a job with no declared timeout can
+                // never wedge the scheduler indefinitely.
+                .unwrap_or(7200)
+                .clamp(60, 21_600),
+        );
+        let run_kind = kind.clone();
+        let fail_kind = kind.clone();
+        handles.push((
+            kind,
+            tokio::spawn(async move {
+                let _permit = permit;
+                // B323: timeouts declared in JobDef are now enforced — a
+                // hung LLM/HTTP/DB call records a failure instead of
+                // blocking forever. The inner task also contains panics:
+                // a JoinError becomes a Failed run rather than silently
+                // vanishing (which previously left no history record).
+                match tokio::time::timeout(
+                    timeout,
+                    tokio::spawn(async move {
+                        execute_job(&run_kind, &store).await
+                    }),
+                )
+                .await
+                {
+                    Ok(Ok(run)) => run,
+                    Ok(Err(join_error)) => {
+                        let mut run = JobRun::new(fail_kind);
+                        run.fail(&format!("job panicked: {join_error}"));
+                        run
+                    }
+                    Err(_) => {
+                        let mut run = JobRun::new(fail_kind);
+                        run.fail(&format!(
+                            "job timed out after {}s (enforced by scheduler)",
+                            timeout.as_secs()
+                        ));
+                        run
+                    }
+                }
+            }),
+        ));
+    }
+
+    for (kind, handle) in handles {
+        let run = match handle.await {
+            Ok(run) => run,
+            Err(join_error) => {
+                tracing::error!(job = kind.as_str(), %join_error, "scheduler task panicked");
+                let mut run = JobRun::new(kind.clone());
+                run.fail(&format!("scheduler task panicked: {join_error}"));
+                run
+            }
+        };
         tracing::info!(
             job = kind.as_str(),
             status = format_status(&run),

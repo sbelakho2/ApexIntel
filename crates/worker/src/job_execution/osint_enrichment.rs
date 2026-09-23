@@ -27,7 +27,8 @@ use tracing;
 use crate::{JobKind, JobRun, PgStore};
 
 /// Maximum number of companies to enrich per invocation.
-const MAX_COMPANIES_PER_RUN: usize = 30;
+/// Set high — every company with a domain should get enriched.
+const MAX_COMPANIES_PER_RUN: usize = 500;
 
 /// Load tracked companies, invoke all OSINT source fetchers, store observations.
 pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
@@ -77,7 +78,10 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
         Ok(cves) if !cves.is_empty() => {
             let count = cves.len();
             for cve in &cves {
-                let obs = cve.to_observation(None);
+                let mut obs = cve.to_observation(None);
+                // B326: content-derived ID — re-fetching the same CVE every
+                // 6h no longer inserts a duplicate row.
+                obs.stabilize_id("cve");
                 if let Err(e) = store.insert_observation(&obs).await {
                     tracing::warn!(error = %e, "osint_enrichment: failed to insert CVE observation");
                 }
@@ -102,7 +106,9 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
             let rdap_client = apex_crawl::rdap::RdapClient::new();
             match rdap_client.lookup(domain).await {
                 Ok(Some(record)) => {
-                    let obs = record.to_observation(Some(company.id));
+                    let mut obs = record.to_observation(Some(company.id));
+                    // B326: stable ID per (company, registration data).
+                    obs.stabilize_id("rdap");
                     if let Err(e) = store.insert_observation(&obs).await {
                         tracing::warn!(error = %e, "osint_enrichment: RDAP insert failed");
                     } else {
@@ -121,7 +127,10 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
         match openalex_client.search_works(&company.name, 5).await {
             Ok(works) if !works.is_empty() => {
                 for work in &works {
-                    let obs = work.to_observation(Some(company.id));
+                    let mut obs = work.to_observation(Some(company.id));
+                    // B326: stable ID per (company, work) — the same five
+                    // OpenAlex works were re-inserted every 6h.
+                    obs.stabilize_id("openalex");
                     if let Err(e) = store.insert_observation(&obs).await {
                         tracing::warn!(error = %e, "osint_enrichment: OpenAlex insert failed");
                     } else {
@@ -153,9 +162,11 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                 .fetch_filings_as_observations(ticker, Some(company.id), 10)
                 .await
             {
-                Ok(filings) if !filings.is_empty() => {
+                Ok(mut filings) if !filings.is_empty() => {
                     let count = filings.len();
-                    for filing in &filings {
+                    for filing in filings.iter_mut() {
+                        // B326: stable ID per filing accession number.
+                        filing.stabilize_id("sec_edgar");
                         if let Err(e) = store.insert_observation(filing).await {
                             tracing::warn!(error = %e, "osint_enrichment: SEC filing insert failed");
                         }
@@ -186,6 +197,9 @@ pub(super) async fn run_osint_enrichment(kind: &JobKind, store: &Arc<PgStore>) -
                     let mut obs = obs;
                     obs.entity_id = Some(company.id);
                     obs.entity_type = Some("company".to_string());
+                    // B326: stable ID per (domain, posture snapshot) — a new
+                    // row only when the posture actually changes.
+                    obs.stabilize_id("dns_posture");
                     if let Err(e) = store.insert_observation(&obs).await {
                         tracing::warn!(error = %e, "osint_enrichment: DNS posture insert failed");
                     } else {

@@ -344,6 +344,21 @@ pub async fn list_companies(
             vec![]
         });
 
+    // B315: real per-entity warning/insight counts (two GROUP BY queries)
+    // instead of hardcoded zeros on every company row.
+    let warning_counts: std::collections::HashMap<uuid::Uuid, i64> = store
+        .get_warning_counts_by_entity()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let insight_counts: std::collections::HashMap<uuid::Uuid, i64> = store
+        .get_insight_counts_by_entity()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
     let mut all_companies: Vec<CompanyListItem> = company_rows
         .iter()
         .map(|c| {
@@ -360,8 +375,8 @@ pub async fn list_companies(
                 sector: c.company_type.clone().unwrap_or_default(),
                 region: canonical_region(c.region.as_deref().unwrap_or("")),
                 risk_score,
-                warning_count: 0,
-                insight_count: 0,
+                warning_count: warning_counts.get(&c.id).copied().unwrap_or(0),
+                insight_count: insight_counts.get(&c.id).copied().unwrap_or(0),
                 is_competitor: is_comp,
                 updated_at: c
                     .updated_at

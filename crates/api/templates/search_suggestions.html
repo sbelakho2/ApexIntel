@@ -4,7 +4,7 @@
     <li role="option" aria-selected="false">
       <a href="{{ s.url }}"
          class="flex items-center gap-3 px-3 py-2 text-sm hover:bg-rams-panel"
-         onclick="event.stopPropagation(); document.getElementById('search-input').value='{{ s.text|escape }}';">
+         data-suggest-text="{{ s.text }}">
         <span class="inline-flex items-center rounded-sm bg-rams-panel px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted shrink-0">
           {{ s.entity_type }}
         </span>

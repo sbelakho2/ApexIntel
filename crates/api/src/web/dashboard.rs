@@ -665,11 +665,11 @@ pub async fn dashboard(
                 .sum::<i64>() as f64;
             let ratio = critical_high / total_entities;
             if ratio < 0.1 {
-                "text-green-500".into()
+                "text-rams-green".into()
             } else if ratio < 0.3 {
-                "text-amber-500".into()
+                "text-rams-orange".into()
             } else {
-                "text-red-500".into()
+                "text-rams-red".into()
             }
         },
     };

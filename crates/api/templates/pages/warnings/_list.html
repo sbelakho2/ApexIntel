@@ -108,7 +108,7 @@
       </thead>
       <tbody>
         {% for w in warnings %}
-        <tr class="border-t border-rams-line/70 hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/warnings/{{ w.id }}">
+        <tr class="border-t border-rams-line hover:bg-rams-panel focus-within:bg-rams-panel" tabindex="0" data-row-link="/warnings/{{ w.id }}">
           <td class="px-4 py-3">{% call m::severity_badge(w.severity) %}</td>
           <td class="px-4 py-3 font-semibold">{{ w.title }}</td>
           <td class="px-4 py-3 text-rams-muted">{{ w.warning_type }}</td>

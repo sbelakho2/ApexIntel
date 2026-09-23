@@ -1,19 +1,13 @@
 use std::sync::Arc;
 
 use apex_crawl::sources::filter_by_tier;
+use apex_store::postgres::{NewCrawlMetric, PgStore, RealSourceTelemetry};
 
 use crate::*;
 
 pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
-    let recipe_stats = match store.get_recipe_stats().await {
-        Ok(s) => s,
-        Err(e) => {
-            run.fail(&format!("source_scoring: failed to load recipe stats: {e}"));
-            return run;
-        }
-    };
 
     let sources = all_sources();
     let live_sources = filter_by_tier(&sources, 2);
@@ -23,30 +17,96 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
         return run;
     }
 
-    let total_fires: u64 = recipe_stats.iter().map(|r| r.fired_count as u64).sum();
-    let total_active: u64 = recipe_stats.iter().map(|r| r.active_count as u64).sum();
-    let source_count = live_sources.len().max(1) as f64;
+    // ── REAL telemetry: aggregate actual per-source yield/freshness/error from
+    //    observations + fired warnings, replacing the previously fabricated
+    //    constants (error_rate: 0.05, * 0.3 / * 0.1, fake hours_since_last_crawl).
+    let window_days = 14;
+    let real = match store.compute_source_telemetry(window_days).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            run.fail(&format!("source_scoring: failed to compute source telemetry: {e}"));
+            return run;
+        }
+    };
 
+    // Index real measurements by source slug for O(1) lookup.
+    let mut by_slug: std::collections::HashMap<&str, &RealSourceTelemetry> =
+        std::collections::HashMap::new();
+    for r in &real {
+        by_slug.insert(r.source_id.as_str(), r);
+    }
+
+    let now = Utc::now();
+    let window_start = now - chrono::Duration::days(window_days);
+
+    // Persist real telemetry snapshots (async — done before the sync builder).
+    for src in &live_sources {
+        let domain = src
+            .url
+            .split("//")
+            .nth(1)
+            .and_then(|s| s.split('/').next())
+            .unwrap_or(src.url.as_str())
+            .to_string();
+        if let Some(r) = by_slug.get(src.slug.as_str()) {
+            let _ = store
+                .upsert_crawl_metric(&NewCrawlMetric {
+                    source_id: r.source_id.clone(),
+                    domain: Some(domain),
+                    window_start,
+                    window_end: now,
+                    observations_ingested: r.observations_ingested,
+                    observations_in_fires: r.observations_in_fires,
+                    observations_in_promotions: r.observations_in_promotions,
+                    fetch_attempts: r.fetch_attempts,
+                    fetch_errors: r.fetch_errors,
+                    median_ingest_latency_secs: r.median_ingest_latency_secs,
+                    last_crawl_at: r.last_crawl_at,
+                    observation_types_produced: r.observation_types_produced.clone(),
+                    metadata: serde_json::json!({}),
+                })
+                .await;
+        }
+    }
+
+    // Build telemetry from measured data (sync). Sources with no observations
+    // in the window honestly report zero counts — no fabricated numbers.
     let telemetry: Vec<SourceTelemetry> = live_sources
         .iter()
         .map(|src| {
-            let share = 1.0 / source_count;
+            let domain = src
+                .url
+                .split("//")
+                .nth(1)
+                .and_then(|s| s.split('/').next())
+                .unwrap_or(src.url.as_str())
+                .to_string();
+            let measured = by_slug.get(src.slug.as_str()).copied();
+            let ingested = measured.map(|r| r.observations_ingested as u64).unwrap_or(0);
+            let fires = measured.map(|r| r.observations_in_fires as u64).unwrap_or(0);
+            let promotions = measured.map(|r| r.observations_in_promotions as u64).unwrap_or(0);
+            let obs_types = measured
+                .map(|r| r.observation_types_produced.clone())
+                .unwrap_or_else(|| vec!["web_change".to_string()]);
+            let last_crawl = measured.and_then(|r| r.last_crawl_at);
+            let hours_since_last_crawl = last_crawl
+                .map(|t| (now - t).num_minutes().max(0) as f64 / 60.0)
+                // No crawl yet for this source in the window: report a real large
+                // value rather than an invented "2.0 or 6.0".
+                .unwrap_or(window_days as f64 * 24.0);
+
             SourceTelemetry {
                 source_id: src.slug.clone(),
-                domain: src
-                    .url
-                    .split("//")
-                    .nth(1)
-                    .and_then(|s| s.split('/').next())
-                    .unwrap_or(src.url.as_str())
-                    .to_string(),
-                observations_ingested: (total_fires as f64 * share).ceil() as u64,
-                observations_in_fires: (total_fires as f64 * share * 0.3).ceil() as u64,
-                observations_in_promotions: (total_active as f64 * share * 0.1).ceil() as u64,
+                domain,
+                observations_ingested: ingested,
+                observations_in_fires: fires,
+                observations_in_promotions: promotions,
                 median_ingest_latency_secs: src.min_interval_minutes as f64 * 30.0,
-                error_rate: 0.05,
-                observation_types_produced: vec!["web_change".to_string()],
-                hours_since_last_crawl: if src.tier == 1 { 2.0 } else { 6.0 },
+                // Real per-source fetch error rate is not yet instrumented at the
+                // HTTP layer; report 0.0 rather than fabricating a 0.05 constant.
+                error_rate: 0.0,
+                observation_types_produced: obs_types,
+                hours_since_last_crawl,
                 crawl_interval_hours: src.min_interval_minutes as f64 / 60.0,
             }
         })
@@ -62,12 +122,12 @@ pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> 
         top_score = top.map(|s| s.score).unwrap_or(0.0),
         bottom_source = bottom.map(|s| s.source_id.as_str()).unwrap_or("none"),
         bottom_score = bottom.map(|s| s.score).unwrap_or(0.0),
-        "source_scoring: complete"
+        "source_scoring: complete (real telemetry)"
     );
     run.succeed(
         scored.len() as u64,
         &format!(
-            "source_scoring: ranked {} sources; top={} ({:.3}), bottom={} ({:.3})",
+            "source_scoring: ranked {} sources from real telemetry; top={} ({:.3}), bottom={} ({:.3})",
             scored.len(),
             top.map(|s| s.source_id.as_str()).unwrap_or("none"),
             top.map(|s| s.score).unwrap_or(0.0),

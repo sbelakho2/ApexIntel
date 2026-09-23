@@ -18,11 +18,13 @@ pub mod distribution;
 pub mod feature_matrix;
 pub mod generator;
 pub mod kill_shot;
+pub mod llm_sections;
 pub mod objection_handler;
 pub mod win_loss_analyzer;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::entity_relevance::EntityProfile;
 use crate::Insight;
@@ -31,7 +33,7 @@ use crate::Insight;
 
 pub use distribution::BattlecardDistributor;
 pub use feature_matrix::{Advantage, FeatureComparison, FeatureMatrixBuilder, FeatureSupport};
-pub use generator::BattlecardGenerator;
+pub use generator::{BattlecardContext, BattlecardGenerator, PricingObservation};
 pub use kill_shot::{KillShot, KillShotAnalyzer};
 pub use objection_handler::{
     Objection, ObjectionHandler, ObjectionHandlerPair, ObjectionSeverity,
@@ -61,15 +63,19 @@ impl BattlecardEngine {
         }
     }
 
-    /// Generate a complete battlecard from entity profiles and recent insights.
+    /// Generate a complete battlecard from entity profiles, recent insights,
+    /// and a real-data context (closed deals + competitor pricing).
     pub async fn generate_full_battlecard(
         &self,
         competitor: &EntityProfile,
         our_company: &EntityProfile,
         recent_insights: &[Insight],
+        ctx: &BattlecardContext,
+        our_company_id: Uuid,
+        competitor_id: Uuid,
     ) -> BattlecardData {
         let positioning = self.generator.generate_positioning(competitor, our_company);
-        let pricing = self.generator.generate_pricing(competitor, our_company);
+        let pricing = self.generator.generate_pricing(competitor, our_company, ctx);
         let feature_matrix = self.generator.generate_feature_matrix(competitor, our_company);
         let strengths = self.generator.generate_strengths(competitor, our_company);
         let weaknesses = self.generator.generate_weaknesses(competitor, our_company);
@@ -77,7 +83,9 @@ impl BattlecardEngine {
             self.generator.generate_objection_handlers(competitor, our_company, recent_insights);
         let kill_shots = self.generator.generate_kill_shots(competitor, our_company);
         let recent_news = self.generator.generate_recent_news(recent_insights);
-        let win_loss = self.generator.generate_win_loss(competitor, our_company);
+        let win_loss = self
+            .generator
+            .generate_win_loss(competitor, our_company, ctx, our_company_id, competitor_id);
 
         BattlecardData {
             positioning,
@@ -99,6 +107,9 @@ impl BattlecardEngine {
         competitor: &EntityProfile,
         our_company: &EntityProfile,
         recent_insights: &[Insight],
+        ctx: &BattlecardContext,
+        our_company_id: Uuid,
+        competitor_id: Uuid,
         _existing: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         match section {
@@ -107,7 +118,7 @@ impl BattlecardEngine {
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "pricing" => {
-                let data = self.generator.generate_pricing(competitor, our_company);
+                let data = self.generator.generate_pricing(competitor, our_company, ctx);
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "feature_matrix" => {
@@ -136,7 +147,9 @@ impl BattlecardEngine {
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             "win_loss" => {
-                let data = self.generator.generate_win_loss(competitor, our_company);
+                let data = self
+                    .generator
+                    .generate_win_loss(competitor, our_company, ctx, our_company_id, competitor_id);
                 serde_json::to_value(data).map_err(|e| e.to_string())
             }
             _ => Err(format!("unknown section: {}", section)),

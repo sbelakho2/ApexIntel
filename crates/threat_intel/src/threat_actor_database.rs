@@ -304,6 +304,12 @@ impl Campaign {
     pub fn duration_days(&self) -> Option<i64> {
         self.end_date.map(|end| (end - self.start_date).num_days())
     }
+
+    /// Set the campaign end date (builder).
+    pub fn with_end_date(mut self, end_date: NaiveDate) -> Self {
+        self.end_date = Some(end_date);
+        self
+    }
 }
 
 /// Attack pattern in the MITRE ATT&CK style.

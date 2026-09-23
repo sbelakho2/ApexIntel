@@ -95,59 +95,17 @@ pub struct TrainingDatasetItem {
 
 #[derive(Clone, Debug)]
 pub struct AdminStats {
-    pub api_uptime_pct: i64,
-    pub db_connections: i64,
-    pub cache_hit_rate: i64,
-    pub active_workers: i64,
+    /// Live sqlx pool size for this API process.
+    pub pool_size: u32,
 }
 
 #[derive(Clone, Debug)]
 pub struct SourceItem {
     pub name: String,
     pub status: String,
+    pub status_class: String,
     pub records: i64,
     pub last_ingested: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct SourceGroup {
-    pub label: String,
-    pub items: Vec<SourceItem>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SourceData {
-    pub primary: SourceGroup,
-    pub secondary: SourceGroup,
-    pub tertiary: SourceGroup,
-    pub quad: SourceGroup,
-}
-
-#[derive(Clone, Debug)]
-pub struct SystemStatusInfo {
-    pub last_backup: String,
-    pub next_schedule: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct AuditEntry {
-    pub timestamp: String,
-    pub action: String,
-    pub user: String,
-    pub ip_address: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct EndpointMetrics {
-    pub health_hits: i64,
-    pub health_avg_ms: i64,
-    pub health_ok_pct: i64,
-    pub events_hits: i64,
-    pub events_avg_ms: i64,
-    pub events_ok_pct: i64,
-    pub ingest_hits: i64,
-    pub ingest_avg_ms: i64,
-    pub ingest_ok_pct: i64,
 }
 
 // ─── Template ───────────────────────────────────────────────────────────────
@@ -174,14 +132,30 @@ pub struct AdminPage {
     pub total_observations: i64,
     pub total_entities: i64,
     pub stats: AdminStats,
-    pub sources: SourceData,
-    pub system_status: SystemStatusInfo,
-    pub audit_log: Vec<AuditEntry>,
-    pub endpoint_metrics: EndpointMetrics,
+    /// Real per-source ingestion stats (B316).
+    pub observation_sources: Vec<SourceItem>,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
     ts.format("%Y-%m-%d %H:%M").to_string()
+}
+
+/// Process start time — powers the real uptime tile (B316).
+static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn fmt_process_uptime() -> String {
+    let start = PROCESS_START.get_or_init(std::time::Instant::now);
+    let secs = start.elapsed().as_secs();
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let minutes = (secs % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 fn validation_issue_count(value: &serde_json::Value) -> usize {
@@ -271,8 +245,44 @@ pub async fn admin_page(
     // Totals
     let total_observations = crawl.as_ref().map(|c| c.total_fingerprints).unwrap_or(0);
     let total_entities = poi_cov.as_ref().map(|p| p.total_persons).unwrap_or(0);
-    let db_size = "—".to_string();
-    let uptime = "—".to_string();
+
+    // B316: real database/process statistics.
+    let db_size = store.get_database_size().await.unwrap_or_else(|e| {
+        tracing::error!("Failed to fetch database size: {e}");
+        "—".to_string()
+    });
+    let uptime = fmt_process_uptime();
+
+    // B316: real ingestion panel — observation volume/freshness per source
+    // type replaces the hardcoded SEC EDGAR / DNS DB / News Crawler list.
+    let observation_sources: Vec<SourceItem> = store
+        .get_observation_source_stats()
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to fetch observation source stats: {e}");
+            vec![]
+        })
+        .into_iter()
+        .map(|(kind, records, latest)| {
+            let stale = latest
+                .as_ref()
+                .is_some_and(|ts| chrono::Utc::now() - *ts > chrono::Duration::hours(48));
+            let (status, status_class) = if stale {
+                ("stale".to_string(), "apex-text-warning".to_string())
+            } else {
+                ("active".to_string(), "apex-text-positive".to_string())
+            };
+            SourceItem {
+                name: kind,
+                status,
+                status_class,
+                records,
+                last_ingested: latest
+                    .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "—".to_string()),
+            }
+        })
+        .collect();
 
     let governance = store.get_admin_llm_governance_overview(10).await.ok();
     let prompt_versions = governance
@@ -373,85 +383,9 @@ pub async fn admin_page(
         total_observations,
         total_entities,
         stats: AdminStats {
-            api_uptime_pct: 100,
-            db_connections: 12,
-            cache_hit_rate: 87,
-            active_workers: 4,
+            pool_size: store.pool.size(),
         },
-        sources: SourceData {
-            primary: SourceGroup {
-                label: "Primary — Structured Feeds".into(),
-                items: vec![
-                    SourceItem {
-                        name: "SEC EDGAR".into(),
-                        status: "🟢 Active".into(),
-                        records: 1523,
-                        last_ingested: "2026-06-20 14:00".into(),
-                    },
-                    SourceItem {
-                        name: "DNS DB".into(),
-                        status: "🟢 Active".into(),
-                        records: 8902,
-                        last_ingested: "2026-06-20 14:00".into(),
-                    },
-                ],
-            },
-            secondary: SourceGroup {
-                label: "Secondary — Web Crawl".into(),
-                items: vec![
-                    SourceItem {
-                        name: "News Crawler".into(),
-                        status: "🟢 Active".into(),
-                        records: 445,
-                        last_ingested: "2026-06-20 13:45".into(),
-                    },
-                    SourceItem {
-                        name: "Social Monitor".into(),
-                        status: "🟡 Throttled".into(),
-                        records: 1203,
-                        last_ingested: "2026-06-20 12:30".into(),
-                    },
-                ],
-            },
-            tertiary: SourceGroup {
-                label: "Tertiary — Threat Intel".into(),
-                items: vec![
-                    SourceItem {
-                        name: "MITRE ATT&CK".into(),
-                        status: "🟢 Active".into(),
-                        records: 678,
-                        last_ingested: "2026-06-20 08:00".into(),
-                    },
-                ],
-            },
-            quad: SourceGroup {
-                label: "Other".into(),
-                items: vec![
-                    SourceItem {
-                        name: "Custom API".into(),
-                        status: "🔴 Error".into(),
-                        records: 89,
-                        last_ingested: "2026-06-19 22:00".into(),
-                    },
-                ],
-            },
-        },
-        system_status: SystemStatusInfo {
-            last_backup: "2026-06-20 03:00 UTC".into(),
-            next_schedule: "2026-06-21 03:00 UTC".into(),
-        },
-        audit_log: vec![],
-        endpoint_metrics: EndpointMetrics {
-            health_hits: 2845,
-            health_avg_ms: 12,
-            health_ok_pct: 100,
-            events_hits: 892,
-            events_avg_ms: 34,
-            events_ok_pct: 99,
-            ingest_hits: 410,
-            ingest_avg_ms: 156,
-            ingest_ok_pct: 97,
-        },
+        observation_sources,
     };
 
     super::render_template(&tpl)

@@ -112,6 +112,32 @@ fn requires_csrf(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+/// The process-wide session secret (empty string when `SESSION_SECRET` is unset).
+pub fn current_session_secret() -> &'static str {
+    &*SESSION_SECRET
+}
+
+/// Double-submit CSRF check for cookie-authenticated `/api/*` requests.
+///
+/// The JSON API accepts web-session cookies as a fallback principal (see
+/// `require_auth` in main.rs). Bearer tokens are immune to CSRF, cookies are
+/// not, so unsafe methods must echo the `apex_csrf` cookie in the
+/// `x-csrf-token` header before the session fallback may be used.
+pub fn api_session_csrf_ok(headers: &HeaderMap, method: &Method) -> bool {
+    if !requires_csrf(method) {
+        return true;
+    }
+    let Some(cookie_token) = extract_cookie_value(headers, CSRF_COOKIE_NAME) else {
+        return false;
+    };
+    let header_token = headers
+        .get(CSRF_HEADER_NAME)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    !header_token.is_empty()
+        && cookie_token.as_bytes().ct_eq(header_token.as_bytes()).unwrap_u8() == 1
+}
+
 fn extract_form_csrf_token(body: &[u8]) -> Option<String> {
     url::form_urlencoded::parse(body)
         .find(|(key, _)| key == CSRF_FORM_FIELD)

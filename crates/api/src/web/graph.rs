@@ -734,21 +734,30 @@ pub async fn graph_page(
         }
     }
 
-    let edge_rows: Vec<GraphEdgeRow> = edges
-        .iter()
-        .take(50)
-        .map(|e| GraphEdgeRow {
-            source_short: short_id(&e.source),
-            target_short: short_id(&e.target),
-            edge_type: e.edge_type.clone(),
-            weight: format!("{:.2}", e.weight),
-        })
-        .collect();
-
+    // Build a label lookup BEFORE the edge rows so we can resolve entity names
+    // instead of showing raw truncated UUIDs ("a1b2c3d4… → e5f6a7b8…").
     let node_label_lookup: HashMap<String, String> = node_slice
         .iter()
         .map(|node| (node.id.clone(), node.label.clone()))
         .collect();
+
+    let edge_rows: Vec<GraphEdgeRow> = edges
+        .iter()
+        .take(50)
+        .map(|e| GraphEdgeRow {
+            source_short: node_label_lookup
+                .get(&e.source)
+                .cloned()
+                .unwrap_or_else(|| short_id(&e.source)),
+            target_short: node_label_lookup
+                .get(&e.target)
+                .cloned()
+                .unwrap_or_else(|| short_id(&e.target)),
+            edge_type: normalize_edge_type(&e.edge_type),
+            weight: format!("{:.2}", e.weight),
+        })
+        .collect();
+
 
     // Serialize for client
     let graph_json = serde_json::json!({
@@ -815,6 +824,40 @@ fn short_id(value: &str) -> String {
         value.to_string()
     } else {
         format!("{}…", value.chars().take(8).collect::<String>())
+    }
+}
+
+/// Normalize inconsistent edge_type values from the database into the canonical
+/// vocabulary that graph.js understands (related_to, supplier_of, competes_with,
+/// subsidiary_of, associated_with). This fixes the "nonsense edges" where raw
+/// seed values like "CompanyPerson", "CompanyCompany", "leads", "regulates"
+/// were shown verbatim.
+fn normalize_edge_type(raw: &str) -> String {
+    match raw.to_lowercase().as_str() {
+        "companyperson" | "company_person" | "leads" | "led_by" | "manages"
+        | "affiliated_with" | "affiliated" => "associated_with".to_string(),
+        "companycompany" | "company_company" | "competes_with" | "competitor" => {
+            "competes_with".to_string()
+        }
+        "supplier_of" | "supplier" | "supplies" | "customer_of" | "customer" => {
+            "supplier_of".to_string()
+        }
+        "subsidiary_of" | "subsidiary" | "parent_of" | "owned_by" => {
+            "subsidiary_of".to_string()
+        }
+        "regulates" | "regulated_by" | "governs" => "associated_with".to_string(),
+        "related_to" | "related" => "related_to".to_string(),
+        "" => "related_to".to_string(),
+        other => {
+            // Pass through already-canonical types; unknown types default to related_to.
+            if ["related_to", "supplier_of", "competes_with", "subsidiary_of", "associated_with"]
+                .contains(&other)
+            {
+                other.to_string()
+            } else {
+                "related_to".to_string()
+            }
+        }
     }
 }
 

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>kiwi-wasm-test</title></head>
+<body>
+<pre id="result">pending</pre>
+<script>
+var ASSET = window.location.search.indexOf("old") !== -1 ? "kiwicaptcha-wasm-old.js" : "kiwicaptcha-wasm-new.js";
+var PREFIX = "kiwitest-prefix-42";
+var SALT = [1, 2, 3, 4, 5, 6, 7, 8];
+var TARGET_BITS = 4;
+var CHUNK = 100000;
+
+function result(obj) {
+  document.title = "RESULT:" + JSON.stringify(obj);
+  document.getElementById("result").textContent = JSON.stringify(obj, null, 2);
+}
+
+async function main() {
+  try {
+    var resp = await fetch(ASSET);
+    var code = await resp.text();
+    (0, eval)(code);
+    if (!window.__kiwiCaptchaWasm || typeof window.__kiwiCaptchaWasm.load !== "function") {
+      result({ asset: ASSET, error: "window.__kiwiCaptchaWasm.load missing" });
+      return;
+    }
+    var w = await window.__kiwiCaptchaWasm.load();
+    var hasSolve = typeof w.solve_sha256_chunk === "function";
+    var hasMalloc = typeof w.__wbindgen_malloc === "function";
+    var encoder = new TextEncoder();
+    var prefixBytes = encoder.encode(PREFIX);
+    var saltBytes = new Uint8Array(SALT);
+    var pp = w.__wbindgen_malloc(prefixBytes.length, 1);
+    var sp = w.__wbindgen_malloc(saltBytes.length, 1);
+    new Uint8Array(w.memory.buffer).set(prefixBytes, pp);
+    new Uint8Array(w.memory.buffer).set(saltBytes, sp);
+    var t0 = performance.now();
+    var counter = w.solve_sha256_chunk(pp, prefixBytes.length, sp, saltBytes.length, TARGET_BITS, 0, CHUNK);
+    var elapsed = Math.round(performance.now() - t0);
+    w.__wbindgen_free(pp, prefixBytes.length, 1);
+    w.__wbindgen_free(sp, saltBytes.length, 1);
+    result({
+      asset: ASSET,
+      loadOk: true,
+      hasSolve: hasSolve,
+      hasMalloc: hasMalloc,
+      counter: counter,
+      counterOk: counter >= 0,
+      targetBits: TARGET_BITS,
+      elapsedMs: elapsed
+    });
+  } catch (e) {
+    result({ asset: ASSET, error: String(e && e.stack || e) });
+  }
+}
+main();
+</script>
+</body>
+</html>

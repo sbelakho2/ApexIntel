@@ -60,6 +60,7 @@ pub mod dynamic_poi_discovery;
 pub mod evidence_chain;
 pub mod gap_analyzer;
 pub mod generator_orchestrator;
+pub mod icp_scorer;
 pub mod insight_feedback;
 pub mod llm_enricher;
 pub mod news_digest;

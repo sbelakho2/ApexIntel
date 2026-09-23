@@ -355,3 +355,138 @@ pub async fn new_recipe(
     let _ = is_htmx_request(&headers);
     super::render_template(&tpl)
 }
+
+// ─── Recipe creation (B307) ─────────────────────────────────────────────────
+//
+// The form on /recipes/new posted to `/recipes/create-form`, a route that was
+// never registered — the only user-facing creation flow in the product 404'd
+// on submit. The parsing/derivation logic mirrors the (unwired)
+// `api_handlers/html_mutations.rs` implementation so both paths agree.
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RecipeCreateForm {
+    pub name: String,
+    pub description: Option<String>,
+    pub severity: Option<String>,
+    pub cooldown_hours: Option<i64>,
+    pub enabled: Option<String>,
+    pub narrative_template: Option<String>,
+    pub signals_json: Option<String>,
+    pub transforms_json: Option<String>,
+    pub thresholds_json: Option<String>,
+    pub actions_json: Option<String>,
+}
+
+fn slugify_recipe_code(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_dash = false;
+    for ch in input.chars() {
+        let c = ch.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('_');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        "recipe".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn parse_recipe_section(raw: Option<&str>, field_name: &str) -> Result<serde_json::Value, String> {
+    let source = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("[]");
+    serde_json::from_str(source).map_err(|error| format!("{field_name}: {error}"))
+}
+
+/// POST /recipes/create-form — validate the submitted definition and persist
+/// it as a `staging` recipe (promoted explicitly via POST /api/recipes/:id/promote).
+pub async fn create_recipe_form(
+    Extension(store): Extension<Arc<PgStore>>,
+    axum::Form(form): axum::Form<RecipeCreateForm>,
+) -> axum::response::Response {
+    let name = form.name.trim().to_string();
+    if name.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Html(
+                r#"<div class="rounded border border-rams-red/30 bg-rams-red/10 px-3 py-2 text-xs font-semibold text-rams-red">Recipe name is required.</div>"#.to_string(),
+            ),
+        )
+            .into_response();
+    }
+
+    let mut sections = std::collections::BTreeMap::new();
+    for (field, raw) in [
+        ("signals", form.signals_json.as_deref()),
+        ("transforms", form.transforms_json.as_deref()),
+        ("thresholds", form.thresholds_json.as_deref()),
+        ("actions", form.actions_json.as_deref()),
+    ] {
+        match parse_recipe_section(raw, &format!("{field}_json")) {
+            Ok(v) => {
+                sections.insert(field, v);
+            }
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::response::Html(format!(
+                        r#"<div class="rounded border border-rams-red/30 bg-rams-red/10 px-3 py-2 text-xs font-semibold text-rams-red">Invalid recipe payload: {}</div>"#,
+                        super::escape_html(&e)
+                    )),
+                )
+                    .into_response()
+            }
+        }
+    }
+
+    let severity = form
+        .severity
+        .filter(|s| ["critical", "high", "medium", "low", "info"].contains(&s.as_str()))
+        .unwrap_or_else(|| "medium".to_string());
+
+    let mut code = slugify_recipe_code(&name);
+    if code.len() > 56 {
+        code.truncate(56);
+    }
+    // Unique suffix keeps repeated submissions from overwriting each other.
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    code = format!("{}_{}", code, &suffix[..8]);
+
+    let definition = serde_json::json!({
+        "name": name,
+        "description": form.description.unwrap_or_default(),
+        "severity": severity,
+        "cooldown_hours": form.cooldown_hours.filter(|h| (1..=720).contains(h)).unwrap_or(24),
+        "enabled": form.enabled.is_some(),
+        "narrative_template": form.narrative_template.unwrap_or_default(),
+        "signals": sections.get("signals").cloned().unwrap_or(serde_json::json!([])),
+        "transforms": sections.get("transforms").cloned().unwrap_or(serde_json::json!([])),
+        "thresholds": sections.get("thresholds").cloned().unwrap_or(serde_json::json!([])),
+        "actions": sections.get("actions").cloned().unwrap_or(serde_json::json!([])),
+    });
+
+    match store
+        .upsert_recipe_definition(&code, definition["name"].as_str().unwrap_or("Recipe"), "staging", &definition)
+        .await
+    {
+        Ok(()) => axum::response::Redirect::to("/recipes?created=1").into_response(),
+        Err(err) => {
+            tracing::error!("recipe create form failed: {err:#}");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::response::Html(
+                    r#"<div class="rounded border border-rams-red/30 bg-rams-red/10 px-3 py-2 text-xs font-semibold text-rams-red">Failed to create recipe — see server logs.</div>"#.to_string(),
+                ),
+            )
+                .into_response()
+        }
+    }
+}

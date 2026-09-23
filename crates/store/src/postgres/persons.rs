@@ -449,7 +449,7 @@ impl PgStore {
                )
                SELECT id,
                       name,
-                      current_role,
+                      "current_role",
                       role_family,
                       region,
                       country_code,

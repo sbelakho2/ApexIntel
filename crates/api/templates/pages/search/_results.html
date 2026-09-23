@@ -1,0 +1,50 @@
+{# HTMX partial: facets + result list + pager (B302).
+   Rendered for both full-page loads (included below) and live-search swaps. #}
+{% import "macros.html" as m %}
+<div class="flex items-center gap-2 mb-4 flex-wrap">
+  {% for f in facets %}
+  <a href="/search?q={{ query|urlencode }}&entity_type={{ f.slug }}"
+    class="rounded-rams-sm border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] {% if f.active %}border-rams-orange bg-rams-orange/10 text-rams-orange{% else %}border-rams-line text-rams-muted hover:text-rams-foreground{% endif %}">
+    {{ f.label }} ({{ f.count }})
+  </a>
+  {% endfor %}
+</div>
+
+<div class="space-y-2">
+  {% for r in results %}
+  <a href="{{ r.url }}" class="apex-card block px-4 py-3 hover:bg-rams-panel">
+    <div class="flex items-center gap-2">
+      <span class="inline-flex items-center rounded-rams-sm bg-rams-panel px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ r.entity_type }}</span>
+      <span class="text-sm font-semibold">{{ r.title }}</span>
+    </div>
+    <p class="mt-1 text-[11px] text-rams-muted">{{ r.subtitle }}</p>
+    {% if !r.snippet.is_empty() %}
+    <p class="mt-1 text-[11px]">{{ r.snippet }}</p>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+
+{% if results.is_empty() %}
+{% call m::empty_state("No Results", "No results found for your search query.") %}
+{% endif %}
+
+{% if total_pages > 1 %}
+<nav class="mt-4 flex items-center justify-between" aria-label="Search results pages">
+  {% if page > 1 %}
+  <a href="/search?q={{ query|urlencode }}&entity_type={{ active_type }}&page={{ page - 1 }}&per_page={{ per_page }}"
+     class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em]">← Prev</a>
+  {% else %}
+  <span class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] opacity-40">← Prev</span>
+  {% endif %}
+  <span class="text-[10px] text-rams-muted uppercase tracking-[0.1em] font-bold">Page {{ page }} / {{ total_pages }}</span>
+  {% if page < total_pages %}
+  <a href="/search?q={{ query|urlencode }}&entity_type={{ active_type }}&page={{ page + 1 }}&per_page={{ per_page }}"
+     class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em]">Next →</a>
+  {% else %}
+  <span class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] opacity-40">Next →</span>
+  {% endif %}
+</nav>
+{% endif %}
+
+<p class="mt-4 text-[10px] text-rams-muted text-right">{{ total }} results in {{ took_ms }}ms</p>

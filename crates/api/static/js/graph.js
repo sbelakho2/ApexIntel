@@ -4,34 +4,58 @@
   "use strict";
 
   const NODE_COLORS = {
-    company: "#3C78B5",
-    person: "#2F8E67",
-    country: "#C39A2B",
-    region: "#A87E28",
-    cert: "#5C8FD6",
-    tender: "#C75C4A",
-    domain: "#8B6AB8",
-    warning: "#B94B4B",
-    insight: "#D4A63A",
+    company: "#2563EB",
+    person: "#059669",
+    country: "#D97706",
+    region: "#D97706",
+    cert: "#7C3AED",
+    tender: "#DC2626",
+    domain: "#0891B2",
+    warning: "#DC2626",
+    insight: "#7C3AED",
   };
 
+  // B350: theme-aware stage colors. The previous constants hardcoded a white
+  // board with dark strokes, rendering an unreadable white panel in dark
+  // mode regardless of the Rams tokens.
+  const DARK_MODE_QUERY = window.matchMedia
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+
+  function isDarkMode() {
+    if (document.documentElement.classList.contains("dark")) {
+      return true;
+    }
+    return !!(DARK_MODE_QUERY && DARK_MODE_QUERY.matches);
+  }
+
   const GRAPH_THEME = {
-    stageTop: "rgba(255,255,255,0.96)",
-    stageBottom: "rgba(236,242,248,0.95)",
+    get stageTop() {
+      return isDarkMode() ? "rgba(11,16,24,0.96)" : "rgba(255,255,255,0.96)";
+    },
+    get stageBottom() {
+      return isDarkMode() ? "rgba(17,24,37,0.95)" : "rgba(236,242,248,0.95)";
+    },
     neutralStroke: "#5B6878",
-    subduedLabel: "#526071",
-    selectedStroke: "#17212B",
-    hoverStroke: "#FFFFFF",
-    matchStroke: "#FFBE00",
+    get subduedLabel() {
+      return isDarkMode() ? "#8B99AC" : "#526071";
+    },
+    get selectedStroke() {
+      return isDarkMode() ? "#F2F5F9" : "#17212B";
+    },
+    get hoverStroke() {
+      return isDarkMode() ? "#F2F5F9" : "#FFFFFF";
+    },
+    matchStroke: "#D97706",
     defaultNode: "#8A96A8",
   };
 
   const EDGE_STYLES = {
     related_to: { color: "#718096", dash: "" },
-    supplier_of: { color: "#2F8E67", dash: "" },
-    competes_with: { color: "#B94B4B", dash: "6 4" },
-    subsidiary_of: { color: "#3C78B5", dash: "" },
-    associated_with: { color: "#9C7A2B", dash: "2 4" },
+    supplier_of: { color: "#059669", dash: "" },
+    competes_with: { color: "#DC2626", dash: "6 4" },
+    subsidiary_of: { color: "#2563EB", dash: "" },
+    associated_with: { color: "#2563EB", dash: "2 4" },
   };
 
   const CLUSTER_LAYOUT = {

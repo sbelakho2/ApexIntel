@@ -87,7 +87,7 @@ pub(super) async fn run_breach_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
                     Some(&description),
                     if count > 5 { "critical" } else { "high" },
                     None,
-                    Some("breach_scan"),
+                    None,
                     None,
                     breach_urls_opt,
                     Some(0.9),
@@ -223,7 +223,7 @@ pub(super) async fn run_sanctions_screen(kind: &JobKind, store: &Arc<PgStore>) -
                         Some(&description),
                         severity,
                         None,
-                        Some("sanctions_screen"),
+                        None,
                         None,
                         Some(vec![list_url.to_string()]),
                         Some(m.similarity),
@@ -644,7 +644,7 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
                 Some(&description),
                 severity,
                 result.region.as_deref(),
-                Some("worker_dns_posture_scan"),
+                None,
                 None,
                 None,
                 Some(0.85),
@@ -678,7 +678,7 @@ fn compute_dns_score(has_spf: bool, has_dkim: bool, has_dmarc: bool) -> f64 {
     score
 }
 
-pub(super) async fn run_kev_catalog_fetch(kind: &JobKind) -> JobRun {
+pub(super) async fn run_kev_catalog_fetch(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     let url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
@@ -733,17 +733,53 @@ pub(super) async fn run_kev_catalog_fetch(kind: &JobKind) -> JobRun {
     match body {
         Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(catalog) => {
-                let count = catalog["vulnerabilities"]
-                    .as_array()
-                    .map(|v| v.len())
-                    .unwrap_or(0);
+                let vulnerabilities = catalog["vulnerabilities"].as_array().cloned().unwrap_or_default();
+                let count = vulnerabilities.len();
+                // B328: the downloaded catalog was previously parsed, counted,
+                // and discarded — no KEV observation was ever produced, yet
+                // cross-domain mining consumes `kev_match` observations. Store
+                // each entry with a deterministic ID so re-fetches dedup.
+                let mut stored = 0u64;
+                for vuln in &vulnerabilities {
+                    let cve_id = vuln["cveID"].as_str().unwrap_or_default().to_string();
+                    if cve_id.is_empty() {
+                        continue;
+                    }
+                    let mut obs = apex_core::entities::Observation::new(
+                        apex_core::entities::ObservationType::VulnNotice,
+                        chrono::Utc::now(),
+                        serde_json::json!({
+                            "cve_id": cve_id,
+                            "vendor": vuln["vendorProject"].as_str().unwrap_or(""),
+                            "product": vuln["product"].as_str().unwrap_or(""),
+                            "vulnerability_name": vuln["vulnerabilityName"].as_str().unwrap_or(""),
+                            "date_added": vuln["dateAdded"].as_str().unwrap_or(""),
+                            "known_ransomware_use":
+                                vuln["knownRansomwareCampaignUse"].as_str().unwrap_or("unknown"),
+                            "required_action": vuln["requiredAction"].as_str().unwrap_or(""),
+                            "due_date": vuln["dueDate"].as_str().unwrap_or(""),
+                        }),
+                        serde_json::json!({
+                            "source": "cisa_kev",
+                            "source_id": cve_id,
+                        }),
+                    );
+                    obs.stabilize_id("kev");
+                    match store.insert_observation(&obs).await {
+                        Ok(_) => stored += 1,
+                        Err(e) => {
+                            tracing::warn!(cve = %cve_id, error = %e, "kev_catalog_fetch: insert failed");
+                        }
+                    }
+                }
                 tracing::info!(
                     cve_count = count,
+                    stored,
                     "kev_catalog_fetch: catalog downloaded successfully"
                 );
                 run.succeed(
-                    count as u64,
-                    &format!("kev_catalog_fetch: downloaded {} CVEs from CISA KEV", count),
+                    stored,
+                    &format!("kev_catalog_fetch: downloaded {count} CVEs from CISA KEV, stored {stored} new"),
                 );
             }
             Err(e) => run.fail(&format!("kev_catalog_fetch: failed to parse JSON: {e}")),
@@ -772,6 +808,17 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
         .unwrap_or_default();
     let mut domains_scanned = 0u64;
     let mut total_variants = 0u64;
+    // B329: verify DNS registration before persisting a lookalike. The
+    // previous version asserted every generated typosquat variant was an
+    // active 0.8-confidence threat — thousands of false positives presented
+    // as real findings. Unregistered domains cannot host anything.
+    let dns_checker = apex_crawl::dns::DnsChecker::new();
+    // Cap DNS checks per domain: typosquat generators can emit dozens of
+    // variants and each check is a resolver round-trip.
+    let max_checks_per_domain: usize = std::env::var("LOOKALIKE_MAX_CHECKS_PER_DOMAIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15);
     for company in &companies {
         if let Some(domain) = &company.domain {
             let variants: Vec<String> = generate_typosquat_variants(domain);
@@ -781,7 +828,15 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
                 company = %company.name,
                 "lookalike_domain_scan: variants generated"
             );
-            for variant in &variants {
+            for variant in variants.iter().take(max_checks_per_domain) {
+                let is_registered = dns_checker
+                    .check_lookalike_registration(variant)
+                    .await
+                    .unwrap_or(false);
+                if !is_registered {
+                    continue;
+                }
+
                 // Persist to dedicated lookalike_domains table
                 if let Err(e) = store
                     .insert_lookalike_domain(
@@ -824,6 +879,7 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
                     "distance": 1,
                     "threat_type": "typosquat",
                     "active": true,
+                    "dns_verified": true,
                 });
                 #[allow(clippy::disallowed_methods)]
                 let provenance = serde_json::json!({
@@ -852,7 +908,7 @@ pub(super) async fn run_lookalike_domain_scan(kind: &JobKind, store: &Arc<PgStor
     run.succeed(
         total_variants,
         &format!(
-            "lookalike_domain_scan: scanned {} domains, persisted {} lookalike variants",
+            "lookalike_domain_scan: scanned {} domains, {} registered lookalike variants confirmed via DNS",
             domains_scanned, total_variants
         ),
     );

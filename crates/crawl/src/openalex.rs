@@ -96,8 +96,16 @@ impl OpenAlexClient {
     pub async fn search_works(&self, query: &str, limit: usize) -> Result<Vec<OpenAlexWork>> {
         let per_page = limit.clamp(1, 200);
 
+        // Filter to only recent publications (last 90 days) so the system
+        // generates intelligence from current research, not historical papers.
+        // The user explicitly flagged old articles as a problem.
+        let since_date = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(90))
+            .unwrap_or_else(chrono::Utc::now)
+            .format("%Y-%m-%d");
+
         let url = format!(
-            "{OPENALEX_API}?search={}&per-page={per_page}&mailto={OPENALEX_MAILTO}",
+            "{OPENALEX_API}?search={}&per-page={per_page}&mailto={OPENALEX_MAILTO}&filter=from_publication_date:{since_date}",
             urlencoding::encode(query)
         );
 

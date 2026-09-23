@@ -83,10 +83,10 @@
   </script>
 
   <!-- CSS (compiled via Tailwind standalone CLI from globals.css) -->
-  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260315-insight-depth">
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260827-batch2">
   <script src="/static/js/htmx.min.js?v=20260312-runtime-sweep-2" defer></script>
-  <script src="/static/js/app.js?v=20260312-runtime-sweep-1" defer></script>
-  <script src="/static/js/sse-client.js?v=20260614-realtime-alerts" defer></script>
+  <script src="/static/js/app.js?v=20260827-b2" defer></script>
+  <script src="/static/js/sse-client.js?v=20260827-b2" defer></script>
   <style>
     /* ── Mobile Navigation Drawer — slide transition, structural shadow only ── */
     #mobile-nav {
@@ -243,6 +243,7 @@
           {% call nav_item("/recipes", "Recipes") %}
           {% call nav_item("/search", "Search") %}
           {% call nav_item("/settings", "Settings") %}
+          {% call nav_item("/admin", "Admin") %}
         </nav>
         <div class="border-t border-rams-line p-3">
           <div class="space-y-3 px-2">
@@ -287,6 +288,7 @@
           {% call nav_item("/recipes", "Recipes") %}
           {% call nav_item("/search", "Search") %}
           {% call nav_item("/settings", "Settings") %}
+          {% call nav_item("/admin", "Admin") %}
         </nav>
         <div class="border-t border-rams-line p-3">
           <div class="px-2">
@@ -297,7 +299,7 @@
       </aside>
 
       <main id="main-content" class="flex-1 min-w-0 pb-24 md:pb-10 lg:pb-8" tabindex="-1">
-        <header class="sticky top-0 z-20 bg-rams-chassis/95">
+        <header class="sticky top-0 z-20 bg-rams-chassis border-b border-rams-line">
           <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <!-- Mobile header: hamburger only -->
             <div class="flex min-h-12 items-center justify-end border-b border-rams-line py-2 lg:hidden">
@@ -744,9 +746,10 @@
    class="sidebar-item {% if current_path == href || current_path.starts_with(href) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
   {{ label }}
-  <span id="notification-badge"
-    data-count="{{ warning_count }}"
-    class="ml-auto rounded-rams-sm bg-rams-red px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}">
+  {# B310: class, not id — the badge is rendered twice (mobile + desktop
+     sidebars) and duplicate ids meant getElementById always found the
+     hidden mobile one, so live updates never reached the visible badge. #}
+  <span class="warning-badge ml-auto rounded-rams-sm bg-rams-red px-1.5 py-0 text-[9px] font-black text-white min-w-[18px] text-center {% if warning_count == 0 %}hidden{% endif %}">
     {{ warning_count }}
   </span>
 </a>

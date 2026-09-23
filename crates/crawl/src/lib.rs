@@ -5,6 +5,7 @@ pub mod browser;
 pub mod browser_renderer;
 pub mod change_detection;
 pub mod client;
+pub mod contact_enrichment;
 pub mod ct;
 pub mod cve;
 pub mod diff_engine;

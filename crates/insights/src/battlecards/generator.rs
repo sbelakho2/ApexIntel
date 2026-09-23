@@ -1,7 +1,14 @@
-//! LLM-driven / algorithmic synthesis of battlecard sections.
+//! Algorithmic synthesis of battlecard sections from entity + deal/pricing data.
 //!
-//! The primary path is **algorithmic** (rule-based from entity data).
-//! LLM enhancement is available as a feature-gated option.
+//! The primary path is **algorithmic** (rule-based from entity profiles and
+//! structured intelligence). The win/loss and pricing sections consume REAL
+//! data via [`BattlecardContext`]: closed-deal outcomes from the `closed_deals`
+//! table and competitor pricing from `competitor_pricing`.
+//!
+//! LLM-grounded narrative enrichment is provided separately in
+//! [`crate::battlecards::llm_sections`], which wraps this generator and
+//! synthesizes positioning / objection-handlers from evidence using the
+//! anti-hallucination-gated `apex_llm` client.
 
 use crate::battlecards::kill_shot::{KillShot, KillShotAnalyzer};
 use crate::battlecards::objection_handler::{ObjectionHandler, ObjectionHandlerPair};
@@ -9,8 +16,39 @@ use crate::battlecards::{
     FeatureCategory, FeatureComparisonData, FeatureMatrixSection, NewsItem, PositioningSection,
     PricingSection, StrengthItem, WeaknessItem, WinLossSection,
 };
+use crate::battlecards::{ClosedDeal, WinLossAnalyzer};
 use crate::entity_relevance::EntityProfile;
 use crate::Insight;
+
+use uuid::Uuid;
+
+/// Real data the generator consumes to ground the win/loss and pricing sections.
+///
+/// Populated by the caller (API handler / worker) from `PgStore` before invoking
+/// the generator, so these sections reflect measured outcomes rather than the
+/// empty defaults that were returned before.
+#[derive(Debug, Clone, Default)]
+pub struct BattlecardContext {
+    /// Closed deals against this competitor (won + lost) — drives win/loss.
+    pub closed_deals: Vec<ClosedDeal>,
+    /// Latest competitor pricing observations — drives the pricing section.
+    pub pricing: Vec<PricingObservation>,
+}
+
+/// A single competitor pricing observation, mirroring `competitor_pricing` rows.
+#[derive(Debug, Clone)]
+pub struct PricingObservation {
+    pub product_category: String,
+    pub pricing_model: String,
+    pub price_range_low: Option<f64>,
+    pub price_range_high: Option<f64>,
+    pub currency: String,
+    pub average_contract_value: Option<f64>,
+    pub discounting_behavior: String,
+    pub competitive_position: String,
+    pub confidence: f64,
+    pub evidence_url: Option<String>,
+}
 
 /// Synthesizes structured battlecard sections from competitor intelligence.
 pub struct BattlecardGenerator;
@@ -50,20 +88,61 @@ impl BattlecardGenerator {
         }
     }
 
-    /// Generate the pricing section.
+    /// Generate the pricing section from REAL competitor-pricing observations.
+    ///
+    /// When no pricing intelligence has been collected yet, the section honestly
+    /// reports that gap rather than inventing numbers. When observations exist,
+    /// the lowest/highest ranges and the dominant pricing model / positioning
+    /// are aggregated across product categories.
     pub fn generate_pricing(
         &self,
-        _competitor: &EntityProfile,
+        competitor: &EntityProfile,
         _our_company: &EntityProfile,
+        ctx: &BattlecardContext,
     ) -> PricingSection {
-        // Algorithmic pricing — in production this would consult a pricing DB
+        if ctx.pricing.is_empty() {
+            return PricingSection {
+                pricing_model: "Unknown — no pricing intelligence collected".to_string(),
+                price_range_low: 0.0,
+                price_range_high: 0.0,
+                average_contract_value: None,
+                discounting_behavior: "Unknown".to_string(),
+                competitive_position: "Unknown".to_string(),
+            };
+        }
+
+        // Confidence-weighted aggregation across categories (same currency).
+        let (low, high) = confidence_weighted_range(&ctx.pricing);
+        let avg_acv = ctx
+            .pricing
+            .iter()
+            .filter_map(|p| p.average_contract_value)
+            .reduce(|acc, v| acc.max(v));
+
+        // Dominant pricing model + positioning by observation count.
+        let models: Vec<&str> = ctx.pricing.iter().map(|p| p.pricing_model.as_str()).collect();
+        let positions: Vec<&str> = ctx
+            .pricing
+            .iter()
+            .map(|p| p.competitive_position.as_str())
+            .collect();
+        let discounts: Vec<&str> = ctx
+            .pricing
+            .iter()
+            .map(|p| p.discounting_behavior.as_str())
+            .collect();
+        let pricing_model = most_frequent(&models).unwrap_or("mixed").to_string();
+        let competitive_position = most_frequent(&positions).unwrap_or("unknown").to_string();
+        let discounting_behavior = most_frequent(&discounts).unwrap_or("unknown").to_string();
+
+        let _ = competitor; // entity retained for future capability-gap pricing logic
         PricingSection {
-            pricing_model: "Unknown — no pricing intelligence collected".to_string(),
-            price_range_low: 0.0,
-            price_range_high: 0.0,
-            average_contract_value: None,
-            discounting_behavior: "Unknown".to_string(),
-            competitive_position: "Unknown".to_string(),
+            pricing_model,
+            price_range_low: low,
+            price_range_high: high,
+            average_contract_value: avg_acv,
+            discounting_behavior: humanize_discounting(&discounting_behavior),
+            competitive_position: humanize_position(&competitive_position),
         }
     }
 
@@ -73,37 +152,52 @@ impl BattlecardGenerator {
         competitor: &EntityProfile,
         our_company: &EntityProfile,
     ) -> FeatureMatrixSection {
-        let all_keywords: Vec<&str> = competitor
+        // B337: symmetric support levels. The previous logic derived the
+        // competitor's support from the competitor's own keyword lists and
+        // could never produce "Not Supported" — so the "Us" advantage arm was
+        // dead code and every battlecard summary read "0 advantage us".
+        let support_level = |product: &[String], topics: &[String], kw: &str| -> &'static str {
+            if product.iter().any(|k| k == kw) {
+                "Supported"
+            } else if topics.iter().any(|k| k == kw) {
+                "Partial"
+            } else {
+                "Not Supported"
+            }
+        };
+
+        let mut all_keywords: Vec<&str> = competitor
             .product_keywords
             .iter()
             .chain(competitor.topic_keywords.iter())
-            .map(String::as_str)
-            .collect();
-
-        let our_keywords: std::collections::HashSet<&str> = our_company
-            .product_keywords
-            .iter()
+            .chain(our_company.product_keywords.iter())
             .chain(our_company.topic_keywords.iter())
             .map(String::as_str)
             .collect();
+        all_keywords.sort_unstable();
+        all_keywords.dedup();
+
+        let rank = |support: &str| -> u8 {
+            match support {
+                "Supported" => 2,
+                "Partial" => 1,
+                _ => 0,
+            }
+        };
 
         let mut features = Vec::new();
         for kw in all_keywords {
-            let competitor_support = if competitor.product_keywords.contains(&kw.to_string()) {
-                "Supported"
-            } else {
-                "Partial"
-            };
-            let our_support = if our_keywords.contains(kw) {
-                "Supported"
-            } else {
-                "Not Supported"
-            };
-            let advantage = match (our_support, competitor_support) {
-                ("Supported", "Not Supported") => "Us",
-                ("Not Supported", "Supported") => "Them",
-                (a, b) if a == b => "Tie",
-                _ => "Unknown",
+            let competitor_support = support_level(
+                &competitor.product_keywords,
+                &competitor.topic_keywords,
+                kw,
+            );
+            let our_support =
+                support_level(&our_company.product_keywords, &our_company.topic_keywords, kw);
+            let advantage = match (rank(our_support), rank(competitor_support)) {
+                (ours, theirs) if ours > theirs => "Us",
+                (ours, theirs) if theirs > ours => "Them",
+                _ => "Tie",
             };
             features.push(FeatureComparisonData {
                 feature_name: kw.to_string(),
@@ -258,14 +352,107 @@ impl BattlecardGenerator {
             .collect()
     }
 
-    /// Generate win/loss analysis.
+    /// Generate win/loss analysis from REAL closed-deal outcomes.
+    ///
+    /// Replaces the previous stub that returned `WinLossSection::default()`.
+    /// When no deal history exists yet, the section is empty-but-honest (0
+    /// deals) rather than fabricated. The `our_company_id` / `competitor_id`
+    /// are passed through to the analyzer for provenance only (the math is
+    /// driven entirely by the deal records in `ctx`).
     pub fn generate_win_loss(
         &self,
         _competitor: &EntityProfile,
         _our_company: &EntityProfile,
+        ctx: &BattlecardContext,
+        our_company_id: Uuid,
+        competitor_id: Uuid,
     ) -> WinLossSection {
-        // Algorithmic default; real data comes from CRM integration
-        WinLossSection::default()
+        if ctx.closed_deals.is_empty() {
+            return WinLossSection::default();
+        }
+        let analysis = WinLossAnalyzer::analyze(our_company_id, competitor_id, &ctx.closed_deals);
+        WinLossSection {
+            win_rate: analysis.win_rate,
+            total_deals: analysis.total_deals,
+            won: analysis.won,
+            lost: analysis.lost,
+            total_value_won: analysis.total_value_won,
+            total_value_lost: analysis.total_value_lost,
+            top_loss_reasons: analysis.top_loss_reasons,
+            trends: analysis.trends,
+        }
+    }
+}
+
+// ─── pricing aggregation helpers ───────────────────────────────────────────
+
+/// Confidence-weighted min/max price range across observations.
+fn confidence_weighted_range(pricing: &[PricingObservation]) -> (f64, f64) {
+    let lows: Vec<(f64, f64)> = pricing
+        .iter()
+        .filter_map(|p| p.price_range_low.map(|v| (v, p.confidence)))
+        .collect();
+    let highs: Vec<(f64, f64)> = pricing
+        .iter()
+        .filter_map(|p| p.price_range_high.map(|v| (v, p.confidence)))
+        .collect();
+    let low = weighted_min(&lows);
+    let high = weighted_max(&highs);
+    (low, high)
+}
+
+fn weighted_min(values: &[(f64, f64)]) -> f64 {
+    // Prefer the lowest value weighted by confidence (favor high-confidence lows).
+    values
+        .iter()
+        .min_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map(|(v, _)| *v)
+        .unwrap_or(0.0)
+}
+
+fn weighted_max(values: &[(f64, f64)]) -> f64 {
+    values
+        .iter()
+        .max_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map(|(v, _)| *v)
+        .unwrap_or(0.0)
+}
+
+fn most_frequent<'a>(items: &[&'a str]) -> Option<&'a str> {
+    let mut counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for it in items {
+        *counts.entry(it).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(k, _)| k)
+}
+
+fn humanize_discounting(raw: &str) -> String {
+    match raw {
+        "aggressive" => "Aggressive — heavy discounting to win deals".to_string(),
+        "moderate" => "Moderate — standard volume discounts".to_string(),
+        "conservative" => "Conservative — holds price / limited discounting".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn humanize_position(raw: &str) -> String {
+    match raw {
+        "premium" => "Premium — prices above market".to_string(),
+        "value" => "Value — market-average pricing".to_string(),
+        "low_cost" => "Low-cost — undercuts market".to_string(),
+        other => other.to_string(),
     }
 }
 

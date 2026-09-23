@@ -14,8 +14,8 @@
 {% endblock %}
 
 {% block content %}
-<div id="main-results"
-     hx-get="/competitors/_list?page=1{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}"
+<div id="competitors-list-zone"
+     hx-get="/competitors?page=1{% if !active_status.is_empty() %}&status={{ active_status }}{% endif %}"
      hx-trigger="load once, refreshCompetitors from:body">
 </div>
 {% endblock %}

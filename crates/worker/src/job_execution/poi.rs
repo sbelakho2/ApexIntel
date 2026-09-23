@@ -8,6 +8,8 @@ use apex_core::entities::{Company, CompanyType};
 #[cfg(feature = "llm")]
 use apex_core::env::parse_truthy_flag;
 #[cfg(feature = "llm")]
+use apex_core::person_names::is_place_name;
+#[cfg(feature = "llm")]
 use apex_parse::{
     award::{classify_award_relevance, extract_award, is_award_content},
     directory::{extract_directory, is_directory_content},
@@ -138,6 +140,15 @@ fn is_discoverable_company_name(name: &str) -> bool {
     ];
     let token_count = normalized.split_whitespace().count();
     if token_count == 1 && generic_single_words.iter().any(|w| lower == *w) {
+        return false;
+    }
+
+    // Reject bare place names that slipped through as org candidates
+    // (e.g. "Casablanca", "Ho Chi Minh", "Rabat Sale Kenitra"). The gazetteer
+    // matches the whole name, so legitimate companies that merely contain a
+    // place word ("Ho Chi Minh Electronics") still pass — only names that ARE
+    // a place are blocked.
+    if is_place_name(&normalized) {
         return false;
     }
 
@@ -599,6 +610,19 @@ mod tests {
     }
 
     #[test]
+    fn discoverable_company_name_rejects_bare_place_names() {
+        // Bare place names that slipped through as org candidates must be
+        // rejected, but legitimate companies that merely contain a place word
+        // still pass.
+        assert!(!is_discoverable_company_name("Casablanca"));
+        assert!(!is_discoverable_company_name("Ho Chi Minh"));
+        assert!(!is_discoverable_company_name("Istanbul"));
+        assert!(!is_discoverable_company_name("Rabat Sale Kenitra"));
+        assert!(is_discoverable_company_name("Ho Chi Minh Electronics"));
+        assert!(is_discoverable_company_name("Sagemcom"));
+    }
+
+    #[test]
     fn org_discovery_extracts_and_deduplicates_trade_show_candidates() {
         let observation = make_observation(serde_json::json!({
             "title": "IPC APEX Expo 2026 exhibitors",
@@ -639,6 +663,7 @@ struct DiscoveryBatchStats {
     inserted: u64,
     artifacts_ingested: u64,
     skipped_dup: u64,
+    llm_failures: u64,
     errors: Vec<String>,
 }
 
@@ -855,11 +880,13 @@ async fn process_discovery_batch(
     let mut discoveries: Vec<_> = raw_discoveries
         .into_iter()
         .filter(|discovery| {
-            let already_structured_person = matches!(
-                discovery.discovery_method.as_str(),
-                "org_leadership" | "opencorporates_board"
-            );
-            if !already_structured_person && !looks_like_person_name(&discovery.name) {
+            // Deterministic junk rejection applies to ALL discovery methods, including
+            // structured sources (org_leadership, opencorporates_board). Structured
+            // sources are higher *priority* (sorted first below) but they are not
+            // immune to place names, role strings, or project names leaking through
+            // — e.g. "Chief Procurement Officer" (a title, not a person) or "Thai
+            // Nguyen" (a Vietnamese province) were traced to structured seed data.
+            if !looks_like_person_name(&discovery.name) {
                 tracing::debug!(
                     batch = %batch_label,
                     name = %discovery.name,
@@ -953,12 +980,56 @@ async fn process_discovery_batch(
                 );
             }
             Err(error) => {
+                // LLM unreachable (network/timeout/down). Retry with backoff a few
+                // times within this run; if still down, skip the candidate — it will
+                // be re-extracted and re-validated on the next scheduled discovery
+                // run (daily). We do NOT guess-accept: person validation must be
+                // LLM-confirmed to avoid polluting the persons table with junk.
                 tracing::warn!(
                     batch = %batch_label,
                     name = %discovery.name,
                     error = %error,
-                    "poi_discovery: LLM validation failed, skipping"
+                    "poi_discovery: LLM validation failed (LLM unreachable) — retrying with backoff"
                 );
+                let mut accepted = false;
+                for attempt in 1..=3 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                    match validate_person_via_llm(llm, &discovery).await {
+                        Ok(Some(validated)) => {
+                            tracing::info!(
+                                batch = %batch_label,
+                                name = %validated.name,
+                                attempt,
+                                "poi_discovery: LLM recovered, candidate validated"
+                            );
+                            validated_discoveries.push(validated);
+                            accepted = true;
+                            break;
+                        }
+                        Ok(None) => {
+                            // LLM came back and cleanly rejected — honor it.
+                            accepted = true;
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                batch = %batch_label,
+                                name = %discovery.name,
+                                attempt,
+                                error = %e,
+                                "poi_discovery: LLM retry failed"
+                            );
+                        }
+                    }
+                }
+                if !accepted {
+                    tracing::warn!(
+                        batch = %batch_label,
+                        name = %discovery.name,
+                        "poi_discovery: LLM unreachable after 3 retries — deferring candidate to next scheduled run"
+                    );
+                    stats.llm_failures += 1;
+                }
             }
         }
     }
@@ -1240,6 +1311,39 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         let mut enriched_pois: u64 = 0;
         let mut role_history_backfilled: u64 = 0;
 
+        // Construct the LLM client once for the whole refresh so the dormant
+        // LLM entity-extraction path (extract_entities_llm / PoiLlmEnricher) is
+        // actually switched ON. Previously this refresh passed `None`, leaving
+        // the real LLM extraction code dead. Degrades to None if unreachable.
+        let refresh_llm_client: Option<InferenceLlmClient> =
+            match std::env::var("LLM_BASE_URL") {
+                Ok(base_url) if !base_url.trim().is_empty() => {
+                    let api_key = std::env::var("LLM_API_KEY").ok();
+                    let cfg = apex_llm::inference::InferenceConfig {
+                        model: std::env::var("LLM_MODEL")
+                            .unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into()),
+                        max_tokens: 900,
+                        temperature: 0.35,
+                        json_mode: true,
+                        suppress_thinking: false,
+                        timeout: std::time::Duration::from_secs(90),
+                        ..Default::default()
+                    };
+                    let client = InferenceLlmClient::new(base_url, api_key, cfg);
+                    if client.health_check().await {
+                        tracing::info!("poi_refresh: LLM client reachable — entity extraction enabled");
+                        Some(client)
+                    } else {
+                        tracing::warn!("poi_refresh: LLM client unreachable — falling back to heuristic extraction");
+                        None
+                    }
+                }
+                _ => {
+                    tracing::debug!("poi_refresh: LLM_BASE_URL not set — heuristic-only extraction");
+                    None
+                }
+            };
+
         for row in &persons {
             let mut profile = PoiProfile {
                 person_id: row.id.to_string(),
@@ -1269,7 +1373,7 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 profile_completeness: 0.0,
             };
 
-            apex_poi::updater::update_profile(&mut profile, vec![], None);
+            apex_poi::updater::update_profile_with_llm(&mut profile, vec![], None, refresh_llm_client.as_ref());
             refreshed += 1;
             tracing::debug!(
                 person = %row.name,
@@ -1435,11 +1539,15 @@ pub(super) async fn run_poi_refresh(kind: &JobKind, store: &Arc<PgStore>) -> Job
         }
         // ── End heuristic psych enrichment ──────────────────────────────
 
+        // B332: bounded default. The previous i64::MAX default made the
+        // nightly job a sequential LLM pass over every profiled person
+        // (worst case days at 90s/call) inside a job whose declared timeout
+        // is one hour.
         let enrichment_limit = std::env::var("POI_LLM_ENRICH_PER_RUN")
             .ok()
             .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(i64::MAX)
-            .clamp(0, 10000);
+            .unwrap_or(40)
+            .clamp(0, 10_000);
         let batch_size = std::env::var("POI_LLM_ENRICH_BATCH_SIZE")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())

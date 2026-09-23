@@ -1027,7 +1027,15 @@ impl FeedbackController {
             }
         }
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by score descending; break ties on entity name for determinism.
+        // Without the tiebreaker, equal-scored entities (common when coverage is
+        // sparse) are ordered by HashMap iteration order, which is randomized per
+        // process — making priority selection (and downstream tests) flaky.
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         scored.truncate(count);
         scored.into_iter().map(|(e, _)| e).collect()
     }

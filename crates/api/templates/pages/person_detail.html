@@ -36,7 +36,10 @@
 <div class="mb-3 flex items-center gap-2 text-xs text-rams-muted">
   <span class="font-bold uppercase tracking-[0.1em]">ID:</span>
   <span id="person-id-value" class="max-w-[320px] truncate font-mono" title="{{ id }}">{{ id }}</span>
-  <button type="button" class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] hover:text-rams-foreground">Copy</button>
+  <button type="button"
+          aria-label="Copy person ID to clipboard"
+          class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] hover:text-rams-foreground"
+          onclick="navigator.clipboard.writeText(document.getElementById('person-id-value').textContent).then(()=>{this.textContent='✓ Copied'; setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
 </div>
 
 <nav aria-label="In-page sections" class="mb-4 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.1em] text-rams-muted">

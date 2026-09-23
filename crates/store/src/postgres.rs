@@ -243,10 +243,18 @@ mod alert_configs;
 mod persons;
 mod preferences;
 mod recipes;
+mod sales;
 mod security;
 mod warnings;
 pub mod embeddings;
 pub mod trends;
+
+// Sales-activation row types (re-exported for handlers/workers).
+pub use sales::{
+    BuyingCenterMemberRow, BuyingCenterRow, ClosedDealRow, CompetitorPricingRow,
+    ContactMethodRow, CrawlMetricRow, EngagementEventRow, IcpTargetRow, NewBuyingMember,
+    NewClosedDeal, NewContactMethod, NewCrawlMetric, NewEngagementEvent, RealSourceTelemetry,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct WarningListFilters {

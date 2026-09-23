@@ -444,7 +444,19 @@ pub async fn list_workspaces(
     render_template(&page)
 }
 
-/// GET /workspaces/new — new workspace form page.
+/// GET /workspaces/new — new workspace form page (B308).
+///
+/// Previously re-rendered the empty workspace list, so the "New Workspace"
+/// navigation dead-ended on an empty state and creation was impossible.
+#[derive(Template)]
+#[template(path = "pages/collaboration/workspace_new.html")]
+pub struct WorkspaceNewPage {
+    pub current_path: String,
+    pub username: String,
+    pub warning_count: i64,
+    pub theme: String,
+}
+
 pub async fn new_workspace_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
@@ -458,16 +470,11 @@ pub async fn new_workspace_page(
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/workspaces/new", warning_count);
 
-    // We use the workspaces template with an empty list and a create flag
-    let page = WorkspacesPage {
+    let page = WorkspaceNewPage {
         current_path: ctx.current_path,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
-        workspaces: vec![],
-        total: 0,
-        open_count: 0,
-        current_status: "all".to_string(),
     };
 
     render_template(&page)

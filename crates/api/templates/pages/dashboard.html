@@ -48,8 +48,8 @@
       <div class="divide-y divide-rams-line">
         {% for w in recent_warnings %}
         <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-rams-panel">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-sm font-semibold truncate text-rams-foreground">{{ w.title }}</span>
+          <div class="flex items-start justify-between gap-2">
+            <span class="text-sm font-semibold line-clamp-2 text-rams-foreground">{{ w.title }}</span>
             {% call m::severity_badge(w.severity) %}
           </div>
           <p class="mt-1 text-[11px] text-rams-muted">{{ w.company_name }} · {{ w.created_at }}</p>
@@ -125,8 +125,8 @@
         <p class="mt-3 text-[11px] text-rams-muted" data-chart-detail>Tap or focus a bar for exact values.</p>
         <div class="apex-chart-legend">
           {% call m::legend_item("Critical", "metric-swatch-red", "small") %}
-          {% call m::legend_item("High", "metric-swatch-amber", "small") %}
-          {% call m::legend_item("Medium", "metric-swatch-orange", "small") %}
+          {% call m::legend_item("High", "metric-swatch-orange", "small") %}
+          {% call m::legend_item("Medium", "metric-swatch-amber", "small") %}
           {% call m::legend_item("Low", "metric-swatch-steel", "small") %}
         </div>
       </div>
@@ -167,7 +167,7 @@
               <span class="text-[10px] text-rams-muted">· {{ a.actor }}</span>
               {% endif %}
             </div>
-            <p class="text-[12px] text-rams-foreground/90 truncate">{{ a.description }}</p>
+            <p class="text-[12px] text-rams-foreground truncate">{{ a.description }}</p>
           </div>
         </div>
         {% if !a.timestamp.is_empty() %}
@@ -194,9 +194,9 @@
     <div class="divide-y divide-rams-line">
       {% for i in top_insights %}
       <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-rams-panel">
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-sm font-semibold truncate text-rams-foreground">{{ i.title }}</span>
-          <span class="text-[10px] font-bold tabular-nums text-rams-muted">{{ i.confidence_pct }}%</span>
+        <div class="flex items-start justify-between gap-2">
+          <span class="text-sm font-semibold line-clamp-2 text-rams-foreground">{{ i.title }}</span>
+          <span class="text-[10px] font-bold tabular-nums text-rams-muted shrink-0">{{ i.confidence_pct }}%</span>
         </div>
         <p class="mt-1 text-[11px] text-rams-muted">{{ i.category }} · {{ i.created_at }}</p>
       </a>
