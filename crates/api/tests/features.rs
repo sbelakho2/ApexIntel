@@ -24,11 +24,18 @@ async fn api_feature_matrix_matches_documented_llm_modes() {
     let payload: Value = serde_json::from_slice(&body).expect("feature json");
 
     assert_eq!(payload["llm"], apex_api::API_LLM_FEATURE_ENABLED);
-    assert_eq!(payload["experimental_llm_tool_calling"], false);
+    assert_eq!(
+        payload["experimental_llm_tool_calling"],
+        apex_api::API_EXPERIMENTAL_LLM_TOOL_CALLING_ENABLED
+    );
     assert_eq!(payload["openapi"], true);
     assert_eq!(payload["versioned_api_alias"], true);
 }
 
+/// The experimental flag is only *off* when the `llm-tool-calling` feature is
+/// not compiled in; under `--all-features` the capability is intentionally
+/// available, so this test does not apply.
+#[cfg(not(feature = "llm-tool-calling"))]
 #[tokio::test]
 async fn experimental_only_capabilities_are_unavailable_without_flag() {
     let (app, _) = support::build_test_router();

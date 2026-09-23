@@ -12,8 +12,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-#[cfg(feature = "llm")]
-use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 use crate::AppState;

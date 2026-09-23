@@ -366,7 +366,7 @@ fn build_llm_runtime(config: &ApiRuntimeConfig) -> Result<Option<LlmRuntime>> {
         .app
         .llm_api_key
         .as_ref()
-        .map(|secret| apex_llm::ApiKeySecret::from(secret.expose_secret().clone()));
+        .map(|secret| apex_llm::ApiKeySecret::from(secret.expose_secret()));
 
     let primary = ModelConfig {
         model_name: model_name.to_string(),
@@ -602,7 +602,9 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
         Err(_) => HealthStatus::Unhealthy,
     };
 
-    let checks = vec![ComponentHealth {
+    // Only mutated when the `llm` feature adds an extra component.
+    #[cfg_attr(not(feature = "llm"), allow(unused_mut))]
+    let mut checks = vec![ComponentHealth {
         name: "database".to_string(),
         status,
         message: store_check.err().map(|e| e.to_string()),

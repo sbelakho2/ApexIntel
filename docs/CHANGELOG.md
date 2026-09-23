@@ -102,6 +102,31 @@ pipeline (`.woodpecker.yml`) enforces all four.
   input order like `["abc", "abcdef"]` replaced the short prefix and left
   `def` of the longer secret visible in logs.
 
+### Feature-matrix and CI hardening (second pass)
+
+- **B383** The workspace did **not** compile with `--all-features`: six errors
+  in `crates/api` (`llm` / `llm-tool-calling` paths) — a non-mutable `llm_used`
+  and `data` in `battlecards.rs` and a non-mutable `checks` in the
+  `/api/health` handler in `main.rs` — plus a stray unused import in
+  `vector_search.rs` and a `redundant_closure` clippy error in
+  `apex-llm::function_calling` under the `experimental` feature. All fixed;
+  the crate now builds, lints and tests under both the default and full
+  feature sets.
+- **B384** `crates/api/tests/features.rs` hardcoded `false` for
+  `experimental_llm_tool_calling`, so the feature-matrix suite failed under
+  `--all-features`. The assertions now compare against the compile-time
+  constants, and the "unavailable without flag" test is gated to the
+  configurations where it is meaningful.
+- **B385** Woodpecker CI now runs clippy and tests for the **default and full
+  feature matrices**, uses `--locked` on every cargo invocation (so a stale
+  `Cargo.lock` fails the build), and isolates the wasm step in its own target
+  directory. The pipeline was validated with the real `woodpecker-cli lint`
+  (v3.18.1) and every referenced image tag was confirmed to exist on Docker
+  Hub (`rust:bookworm`, `node:20-bookworm`).
+- Removed committed transient artifacts (`clippy_output.txt`,
+  `clippy_result.txt`) and a stray `" in text: "` file; ignored
+  `clippy_*.txt`.
+
 ### Build, lint, and CI
 
 - Removed redundant `unsafe impl Send/Sync` on `TitleGenerator`.

@@ -520,7 +520,7 @@ fn parse_tool_calls(text: &str) -> Vec<FunctionCall> {
 
     // Convention 1: array under tool_calls.
     if let Some(arr) = value.get("tool_calls").and_then(|v| v.as_array()) {
-        return arr.iter().filter_map(|c| parse_one_call(c)).collect();
+        return arr.iter().filter_map(parse_one_call).collect();
     }
     // Convention 2: a single call at the top level.
     if let Some(call) = parse_one_call(&value) {

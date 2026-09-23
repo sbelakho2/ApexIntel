@@ -115,3 +115,6 @@ tmp/
 *.tfstate
 *.tfstate.*
 .vagrant/
+
+# Transient audit/tool output
+clippy_*.txt

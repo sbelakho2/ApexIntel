@@ -541,7 +541,7 @@ pub(crate) async fn analyze_insight(
             .unwrap_or_default();
         all_observations.extend(obs);
     }
-    all_observations.sort_by(|a, b| b.ts_utc.cmp(&a.ts_utc));
+    all_observations.sort_by_key(|a| std::cmp::Reverse(a.ts_utc));
     all_observations.truncate(40);
 
     {
@@ -1034,7 +1034,7 @@ pub(crate) async fn analyze_warning(
             .unwrap_or_default();
         all_observations.extend(obs);
     }
-    all_observations.sort_by(|a, b| b.ts_utc.cmp(&a.ts_utc));
+    all_observations.sort_by_key(|a| std::cmp::Reverse(a.ts_utc));
     all_observations.truncate(40);
 
     {

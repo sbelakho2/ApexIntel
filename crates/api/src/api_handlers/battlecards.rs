@@ -521,7 +521,9 @@ pub(crate) async fn regenerate_battlecard(
     let comp_profile = entity_profile_from_company(&competitor);
     let our_profile = entity_profile_from_company(&our_company);
     let engine = apex_insights::battlecards::BattlecardEngine::new();
-    let data = engine
+    // Mutated below only when the `llm` feature is enabled.
+    #[cfg_attr(not(feature = "llm"), allow(unused_mut))]
+    let mut data = engine
         .generate_full_battlecard(
             &comp_profile,
             &our_profile,
@@ -533,7 +535,8 @@ pub(crate) async fn regenerate_battlecard(
         .await;
 
     // 5. Optional LLM-grounded narrative enrichment.
-    let llm_used = false;
+    #[cfg_attr(not(feature = "llm"), allow(unused_mut))]
+    let mut llm_used = false;
     #[cfg(feature = "llm")]
     {
         if let Ok(client) = apex_llm::inference::LlmClient::from_env() {
