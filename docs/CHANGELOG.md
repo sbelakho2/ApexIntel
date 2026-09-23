@@ -130,6 +130,23 @@ pipeline (`.woodpecker.yml`) enforces all four.
   `node_modules` happened to contain them. The three plugins are now declared
   as devDependencies (lockfile updated); a regenerated stylesheet is
   byte-identical to the committed `tailwind.css`.
+- **B387** The `docker-compose.yml` database image tag
+  `timescale/timescaledb:2.17-pg16` **does not exist on Docker Hub** (HTTP
+  404), so `docker compose up` failed before the database started. Pinned to
+  the existing `2.30.1-pg16`, which ships the `vector`, `pg_trgm`,
+  `btree_gist` and `uuid-ossp` extensions the migrations require. Also removed
+  the `./migrations:/docker-entrypoint-initdb.d` mount: migrations are owned by
+  the application (`sqlx::migrate!` records checksums), and applying them raw
+  first left a database sqlx could not reconcile.
+- **B388** Migrations had never been applied to a real database (the unit
+  suite uses in-memory fakes). Added `crates/store/tests/migrations_integration.rs`
+  (opt-in, `--ignored`), which applies every migration to a fresh PostgreSQL
+  twice (idempotence), asserts the core and sales tables/columns exist, and
+  round-trips an `f64` `contact_methods.confidence` while asserting the
+  `<= 1.0` CHECK still rejects out-of-range values. All three tests pass
+  against `timescale/timescaledb:2.30.1-pg16`. The Woodpecker pipeline now
+  runs them against a `database` service so a fresh-deployment bootstrap is a
+  first-class CI gate.
 - The full pipeline was executed through Woodpecker itself
   (`woodpecker-cli exec --backend-engine docker` against a real
   `woodpeckerci/woodpecker-server` v3.18.1 + `rust:bookworm`): the `rust` step

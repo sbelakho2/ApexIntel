@@ -5,9 +5,13 @@
 version: "3.9"
 
 services:
-  # ─── PostgreSQL with TimescaleDB ──────────────────────────────────────
+  # ─── PostgreSQL with TimescaleDB + pgvector ───────────────────────────
   postgres:
-    image: timescale/timescaledb:2.17-pg16
+    # Pinned to an existing tag. The previous `2.17-pg16` tag does not exist
+    # on Docker Hub, so `docker compose up` failed before starting. This image
+    # ships the `vector`, `pg_trgm`, `btree_gist` and `uuid-ossp` extensions
+    # required by migrations/000 and migrations/024.
+    image: timescale/timescaledb:2.30.1-pg16
     environment:
       POSTGRES_DB: apexintel
       POSTGRES_USER: apexintel
@@ -17,7 +21,10 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
+      # Migrations are owned by the application (`sqlx::migrate!` runs at API
+      # startup and records checksums in `_sqlx_migrations`). Mounting them into
+      # /docker-entrypoint-initdb.d as well would apply them raw first and leave
+      # the DB in a state sqlx cannot reconcile.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U apexintel"]
       interval: 5s
