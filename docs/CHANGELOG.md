@@ -123,6 +123,20 @@ pipeline (`.woodpecker.yml`) enforces all four.
   directory. The pipeline was validated with the real `woodpecker-cli lint`
   (v3.18.1) and every referenced image tag was confirmed to exist on Docker
   Hub (`rust:bookworm`, `node:20-bookworm`).
+- **B386** The `frontend-assets` gate failed on a clean checkout:
+  `tailwind.config.js` requires `@tailwindcss/forms`,
+  `@tailwindcss/typography` and `tailwindcss-animate`, none of which were
+  declared in `package.json`. Local runs passed only because a stale
+  `node_modules` happened to contain them. The three plugins are now declared
+  as devDependencies (lockfile updated); a regenerated stylesheet is
+  byte-identical to the committed `tailwind.css`.
+- The full pipeline was executed through Woodpecker itself
+  (`woodpecker-cli exec --backend-engine docker` against a real
+  `woodpeckerci/woodpecker-server` v3.18.1 + `rust:bookworm`): the `rust` step
+  ran `fmt`, both clippy matrices, and **both test matrices to completion with
+  0 failures** (8,379 test results) before the pre-fix `frontend-assets`
+  failure surfaced the missing-plugin defect above. Every gate also passes on
+  the host with the identical commands.
 - Removed committed transient artifacts (`clippy_output.txt`,
   `clippy_result.txt`) and a stray `" in text: "` file; ignored
   `clippy_*.txt`.
