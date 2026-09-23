@@ -1150,4 +1150,90 @@ mod tests {
         assert_eq!(flat.direction, "flat");
         assert_eq!(flat.percent_change, 0.0);
     }
+
+    #[test]
+    fn bucket_start_rollovers_and_idempotence() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+
+        // Monthly: any day maps to the first of that month, including year end.
+        assert_eq!(
+            BucketType::Monthly.bucket_start(d(2026, 12, 31)),
+            d(2026, 12, 1)
+        );
+
+        // Quarterly boundaries (Jan/Apr/Jul/Oct).
+        assert_eq!(
+            BucketType::Quarterly.bucket_start(d(2026, 1, 1)),
+            d(2026, 1, 1)
+        );
+        assert_eq!(
+            BucketType::Quarterly.bucket_start(d(2026, 3, 31)),
+            d(2026, 1, 1)
+        );
+        assert_eq!(
+            BucketType::Quarterly.bucket_start(d(2026, 4, 1)),
+            d(2026, 4, 1)
+        );
+        assert_eq!(
+            BucketType::Quarterly.bucket_start(d(2026, 12, 31)),
+            d(2026, 10, 1)
+        );
+
+        // Yearly.
+        assert_eq!(
+            BucketType::Yearly.bucket_start(d(2026, 7, 4)),
+            d(2026, 1, 1)
+        );
+
+        // Idempotence: bucketing a bucket start is a no-op.
+        for bucket in [
+            BucketType::Daily,
+            BucketType::Weekly,
+            BucketType::Monthly,
+            BucketType::Quarterly,
+            BucketType::Yearly,
+        ] {
+            let start = bucket.bucket_start(d(2026, 8, 17));
+            assert_eq!(
+                bucket.bucket_start(start),
+                start,
+                "not idempotent for {bucket:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_bucket_start_crosses_year_boundaries() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert_eq!(
+            BucketType::Monthly.next_bucket_start(d(2026, 12, 1)),
+            d(2027, 1, 1)
+        );
+        assert_eq!(
+            BucketType::Quarterly.next_bucket_start(d(2026, 10, 1)),
+            d(2027, 1, 1)
+        );
+        assert_eq!(
+            BucketType::Yearly.next_bucket_start(d(2026, 1, 1)),
+            d(2027, 1, 1)
+        );
+        assert_eq!(
+            BucketType::Daily.next_bucket_start(d(2026, 2, 28)),
+            d(2026, 3, 1)
+        );
+        assert_eq!(
+            BucketType::Weekly.next_bucket_start(d(2026, 12, 28)),
+            d(2027, 1, 4)
+        );
+    }
+
+    #[test]
+    fn weekly_bucket_start_is_a_monday_not_after_the_date() {
+        use chrono::{Datelike, Weekday};
+        let date = NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(); // Thursday
+        let start = BucketType::Weekly.bucket_start(date);
+        assert_eq!(start.weekday(), Weekday::Mon);
+        assert!(start <= date);
+        assert_eq!((date - start).num_days(), 3);
+    }
 }

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,6 +82,10 @@ impl SseEvent {
 // SseManager
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Maximum events buffered per client. A slow client that fills its buffer has
+/// newer events dropped rather than growing memory without bound.
+const SSE_CHANNEL_CAPACITY: usize = 1024;
+
 /// Manages per-user SSE connections and dispatches alerts to connected clients.
 ///
 /// Each authenticated user may have multiple browser tabs open, each of which
@@ -89,7 +93,7 @@ impl SseEvent {
 /// to all senders registered for the target users.
 pub struct SseManager {
     /// Active SSE connections keyed by user_id.
-    connections: Arc<RwLock<HashMap<Uuid, Vec<mpsc::UnboundedSender<SseEvent>>>>>,
+    connections: Arc<RwLock<HashMap<Uuid, Vec<mpsc::Sender<SseEvent>>>>>,
 }
 
 impl SseManager {
@@ -108,11 +112,8 @@ impl SseManager {
     pub async fn register(
         &self,
         user_id: Uuid,
-    ) -> (
-        mpsc::UnboundedSender<SseEvent>,
-        mpsc::UnboundedReceiver<SseEvent>,
-    ) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    ) -> (mpsc::Sender<SseEvent>, mpsc::Receiver<SseEvent>) {
+        let (tx, rx) = mpsc::channel(SSE_CHANNEL_CAPACITY);
 
         let mut conns = self.connections.write().await;
         conns.entry(user_id).or_default().push(tx.clone());
@@ -127,7 +128,7 @@ impl SseManager {
     }
 
     /// Remove a disconnected SSE connection for a user.
-    pub async fn unregister(&self, user_id: Uuid, tx: &mpsc::UnboundedSender<SseEvent>) {
+    pub async fn unregister(&self, user_id: Uuid, tx: &mpsc::Sender<SseEvent>) {
         let mut conns = self.connections.write().await;
 
         if let Some(senders) = conns.get_mut(&user_id) {
@@ -148,7 +149,8 @@ impl SseManager {
     /// targeted users. If `user_ids` is empty, the alert is broadcast to all
     /// connected users.
     ///
-    /// Returns the number of clients the event was sent to.
+    /// Returns the number of clients the event was sent to. Events are dropped
+    /// for clients whose buffer is full (slow consumers).
     pub async fn dispatch_alert(&self, alert: &crate::alert_router::AlertEvent) -> usize {
         let event = SseEvent::new(
             alert.event_type.as_str(),
@@ -158,28 +160,30 @@ impl SseManager {
         let conns = self.connections.read().await;
         let mut sent_count = 0usize;
 
+        let deliver = |senders: &[mpsc::Sender<SseEvent>], event: &SseEvent, sent: &mut usize| {
+            for sender in senders {
+                match sender.try_send(event.clone()) {
+                    Ok(()) => *sent += 1,
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        debug!("SSE client buffer full — dropping event");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        // Channel closed — will be cleaned up on next unregister
+                    }
+                }
+            }
+        };
+
         if alert.user_ids.is_empty() {
             // Broadcast to all connected users
             for senders in conns.values() {
-                for sender in senders {
-                    if sender.send(event.clone()).is_err() {
-                        // Channel closed — will be cleaned up on next unregister
-                    } else {
-                        sent_count += 1;
-                    }
-                }
+                deliver(senders, &event, &mut sent_count);
             }
         } else {
             // Send only to specified users
             for user_id in &alert.user_ids {
                 if let Some(senders) = conns.get(user_id) {
-                    for sender in senders {
-                        if sender.send(event.clone()).is_err() {
-                            // Channel closed — will be cleaned up on next unregister
-                        } else {
-                            sent_count += 1;
-                        }
-                    }
+                    deliver(senders, &event, &mut sent_count);
                 }
             }
         }
@@ -338,9 +342,9 @@ impl SseManager {
 
     /// Build the SSE response stream for a user's receiver.
     pub fn build_sse_stream(
-        rx: mpsc::UnboundedReceiver<SseEvent>,
+        rx: mpsc::Receiver<SseEvent>,
     ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
             .map(|event| Ok::<_, std::convert::Infallible>(event.into_axum_event()));
 
         Sse::new(stream).keep_alive(
@@ -356,15 +360,15 @@ impl SseManager {
     /// closing the tab or terminating the fetch releases the `SseManager`
     /// entry instead of leaking it until process restart.
     pub fn build_sse_stream_with_cleanup(
-        rx: mpsc::UnboundedReceiver<SseEvent>,
+        rx: mpsc::Receiver<SseEvent>,
         manager: Arc<Self>,
         user_id: uuid::Uuid,
-        tx: mpsc::UnboundedSender<SseEvent>,
+        tx: mpsc::Sender<SseEvent>,
     ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
         struct UnregisterGuard {
             manager: Arc<SseManager>,
             user_id: uuid::Uuid,
-            tx: mpsc::UnboundedSender<SseEvent>,
+            tx: mpsc::Sender<SseEvent>,
         }
         impl Drop for UnregisterGuard {
             fn drop(&mut self) {
@@ -382,7 +386,7 @@ impl SseManager {
             user_id,
             tx,
         };
-        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(move |event| {
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(move |event| {
             let _guard = &guard;
             Ok::<_, std::convert::Infallible>(event.into_axum_event())
         });
@@ -513,5 +517,57 @@ mod tests {
 
         assert!(rx_a.try_recv().is_ok());
         assert!(rx_b.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn dispatch_drops_for_full_buffer_without_blocking_or_panicking() {
+        let manager = SseManager::new();
+        let user_id = Uuid::new_v4();
+        let (_tx, mut rx) = manager.register(user_id).await;
+
+        let alert = crate::alert_router::AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::NewWarning,
+            severity: apex_core::alert_config::AlertSeverity::High,
+            title: "Slow consumer".to_string(),
+            description: "Buffer pressure".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![user_id],
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
+
+        // Never consume: the bounded buffer must absorb exactly its capacity
+        // and then drop the rest instead of growing without bound.
+        let mut delivered = 0usize;
+        for _ in 0..(SSE_CHANNEL_CAPACITY + 25) {
+            delivered += manager.dispatch_alert(&alert).await;
+        }
+        assert_eq!(delivered, SSE_CHANNEL_CAPACITY);
+
+        let mut drained = 0usize;
+        while rx.try_recv().is_ok() {
+            drained += 1;
+        }
+        assert_eq!(drained, SSE_CHANNEL_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn dispatch_to_unknown_user_sends_nothing() {
+        let manager = SseManager::new();
+        let alert = crate::alert_router::AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::SystemAlert,
+            severity: apex_core::alert_config::AlertSeverity::Info,
+            title: "Nobody".to_string(),
+            description: "no subscribers".to_string(),
+            entity_id: None,
+            entity_name: None,
+            user_ids: vec![Uuid::new_v4()],
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
+        assert_eq!(manager.dispatch_alert(&alert).await, 0);
     }
 }

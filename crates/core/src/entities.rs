@@ -1095,6 +1095,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn truncate_to_never_panics_on_multibyte_boundaries() {
+        // 200 bytes of two-byte characters, cut at an odd byte offset.
+        let out = truncate_to("é".repeat(100), 5);
+        assert!(out.ends_with('…'));
+        // The kept prefix must be valid UTF-8 with no broken character.
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        assert_eq!(truncate_to("abcdef".to_string(), 3), "abc…");
+        assert_eq!(truncate_to("hello".to_string(), 0), "…");
+        assert_eq!(truncate_to("hello".to_string(), 5), "hello");
+        // A single multibyte char larger than the budget degrades to the marker.
+        assert_eq!(truncate_to("é".to_string(), 1), "…");
+    }
+
+    #[test]
+    fn deterministic_id_is_stable_and_content_sensitive() {
+        let a = Observation::deterministic_id("ns", "key-1");
+        let b = Observation::deterministic_id("ns", "key-1");
+        let c = Observation::deterministic_id("ns", "key-2");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn stabilize_id_ignores_json_key_order() {
+        let mut a = Observation::new(
+            ObservationType::WebChange,
+            Utc::now(),
+            serde_json::json!({"alpha": 1, "beta": 2}),
+            serde_json::json!({"source": "s", "url": "u"}),
+        );
+        a.stabilize_id("web");
+        let mut b = Observation::new(
+            ObservationType::WebChange,
+            Utc::now(),
+            serde_json::json!({"beta": 2, "alpha": 1}),
+            serde_json::json!({"source": "s", "url": "u"}),
+        );
+        b.stabilize_id("web");
+        assert_eq!(a.id, b.id);
+    }
+
+    #[test]
     fn stabilize_id_ignores_volatile_engagement() {
         // Same content and provenance must map to the same observation id even
         // when the engagement counter changed between scans.

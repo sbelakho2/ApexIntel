@@ -713,6 +713,35 @@ mod tests {
     }
 
     #[test]
+    fn strip_prefix_chars_handles_multibyte_prefixes() {
+        // Arabic prefix: stripped by character count, never byte count.
+        let hay = "المشتري: شركة النور";
+        assert_eq!(strip_prefix_chars(hay, "المشتري:").trim(), "شركة النور");
+        // Empty prefix returns the whole (trimmed) string.
+        assert_eq!(strip_prefix_chars("abc", ""), "abc");
+        // Prefix longer than the haystack cannot panic.
+        assert_eq!(strip_prefix_chars("ab", "abcdef"), "");
+    }
+
+    #[test]
+    fn extract_buyer_handles_unicode_and_rejects_noise() {
+        // Turkish dotted capital I changes byte length under lowercase but must
+        // not panic; this line has no buyer prefix.
+        assert_eq!(extract_buyer_from_text("İSTANBUL BUYER: Acme"), None);
+        assert_eq!(
+            extract_buyer_from_text("Awarded to: Şirket A.Ş."),
+            Some("Şirket A.Ş.".to_string())
+        );
+        // Values shorter than three characters are ignored.
+        assert_eq!(extract_buyer_from_text("Buyer: Ab"), None);
+        // First matching line wins.
+        assert_eq!(
+            extract_buyer_from_text("intro\nBuyer: One\nBuyer: Two"),
+            Some("One".to_string())
+        );
+    }
+
+    #[test]
     fn relevance_gate_accepts_bess_and_ems_terms() {
         assert!(is_relevant_tender(
             "Supply of Battery Energy Storage System",

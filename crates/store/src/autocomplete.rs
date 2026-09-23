@@ -646,4 +646,45 @@ mod tests {
         assert!(!results.is_empty());
         assert!(results.iter().any(|r| r.text == "Apple Inc."));
     }
+
+    #[test]
+    fn suggest_rejects_short_prefixes_and_ranks_by_score() {
+        let idx = AutocompleteIndex::build(&sample_entries()).unwrap();
+
+        // Prefixes shorter than two characters yield nothing (incl. blank).
+        assert!(idx.suggest("a", 10).is_empty());
+        assert!(idx.suggest(" ", 10).is_empty());
+        assert!(idx.suggest("", 10).is_empty());
+
+        // Case-insensitive prefix match, ranked by score descending.
+        let res = idx.suggest("APP", 10);
+        assert!(res.len() >= 2);
+        assert_eq!(res[0].text, "Apple Inc.");
+
+        // A zero limit returns nothing; an over-large limit is clamped but safe.
+        assert!(idx.suggest("app", 0).is_empty());
+        let _ = idx.suggest("app", usize::MAX);
+
+        // Non-matching prefix.
+        assert!(idx.suggest("zzzz", 10).is_empty());
+    }
+
+    #[test]
+    fn suggest_handles_multibyte_prefixes_without_panicking() {
+        let idx = AutocompleteIndex::build(&[AutocompleteEntry {
+            text: "Zürich Instruments".to_string(),
+            entity_type: "company".to_string(),
+            id: Uuid::parse_str("550e8400-e29b-41d4-a716-4466554400ff").unwrap(),
+            score: 1.0,
+            subtext: None,
+        }])
+        .unwrap();
+
+        // Must not slice mid-character for multibyte prefixes.
+        let _ = idx.suggest("zü", 10);
+        let _ = idx.suggest("ü", 10);
+        let _ = idx.suggest("漢", 10);
+        let hits = idx.suggest("zür", 10);
+        assert!(hits.iter().any(|h| h.text == "Zürich Instruments"));
+    }
 }

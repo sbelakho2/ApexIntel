@@ -897,4 +897,101 @@ mod tests {
             assert_eq!(state.as_str(), expected);
         }
     }
+
+    #[tokio::test]
+    async fn execute_with_retry_fails_fast_when_circuit_open() {
+        // Regression (B364): an open breaker used to sleep for the full
+        // recovery window (up to 5 minutes) inside the caller. It must now
+        // return an error essentially immediately.
+        let engine = RetryEngine::with_default_config();
+        for _ in 0..CIRCUIT_BREAKER_FAILURE_THRESHOLD {
+            engine.record_failure("troubled.example.com").await;
+        }
+        assert!(!engine.is_domain_available("troubled.example.com").await);
+
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.execute_with_retry("troubled.example.com", || async {
+                // Must not even be called: the breaker is open.
+                Err(CrawlError::Transport {
+                    url: "https://troubled.example.com".to_string(),
+                    message: "still failing".to_string(),
+                    category: crate::errors::CrawlFailureCategory::Network,
+                })
+            }),
+        )
+        .await
+        .expect("execute_with_retry must not block on an open circuit breaker");
+
+        assert!(matches!(
+            result,
+            Err(RetryEngineError::CircuitBreakerOpen { .. })
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_retry_stops_on_non_retryable_error_without_looping() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let engine = RetryEngine::with_default_config();
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_clone = calls.clone();
+
+        let result = engine
+            .execute_with_retry("example.com", move || {
+                let calls = calls_clone.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err(CrawlError::InvalidUrl {
+                        url: "not a url".to_string(),
+                        message: "malformed".to_string(),
+                    })
+                }
+            })
+            .await;
+
+        assert!(result.is_err());
+        // A non-retryable error must be attempted exactly once.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn calculate_delay_is_bounded_and_monotonic_in_expectation() {
+        let engine = RetryEngine::with_default_config();
+        // The jittered delay must never exceed max_delay.
+        for attempt in 0..12u32 {
+            let delay = engine.calculate_delay(attempt);
+            assert!(
+                delay <= engine.config.max_delay,
+                "attempt {attempt} delay {delay:?} exceeds max"
+            );
+        }
+        // Larger attempts must not produce systematically tiny delays compared
+        // to attempt 0; the exponential base dominates the +/-30% jitter.
+        let max_attempt = engine.calculate_delay(10);
+        assert!(max_attempt >= engine.config.base_delay);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_stats_track_state_and_count() {
+        let engine = RetryEngine::with_default_config();
+        engine.record_failure("stats.example.com").await;
+        let stats = engine.circuit_stats().await;
+        let entry = stats.get("stats.example.com").expect("stats entry present");
+        assert_eq!(entry.failure_count, 1);
+        assert_eq!(entry.state, CircuitState::Closed);
+
+        // Recording a success resets the failure count.
+        engine.record_success("stats.example.com").await;
+        let stats = engine.circuit_stats().await;
+        let entry = stats.get("stats.example.com").unwrap();
+        assert_eq!(entry.failure_count, 0);
+    }
 }

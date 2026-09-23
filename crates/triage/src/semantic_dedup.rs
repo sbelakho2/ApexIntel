@@ -718,4 +718,57 @@ mod tests {
         assert!((result.best_match_score - 0.0).abs() < 0.001);
         assert!(result.best_match_id.is_none());
     }
+
+    #[test]
+    fn in_memory_store_survives_a_poisoned_lock() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let store = InMemoryDedupStore::new(10);
+
+        // Poison the internal mutex by panicking while holding the lock.
+        let poisoned = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = store.items.lock().unwrap();
+            panic!("poison the mutex");
+        }));
+        assert!(poisoned.is_err());
+        assert!(store.items.is_poisoned());
+
+        // Every operation must recover from poisoning rather than panic.
+        store
+            .store_item(&TriageItemType::Warning, "id-1", "Title", "some text body")
+            .unwrap();
+        let hits = store
+            .find_similar(&TriageItemType::Warning, "some text body", 5)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(
+            store
+                .find_similar_by_vector(&TriageItemType::Warning, &[1.0, 0.0], 5)
+                .is_ok(),
+            "vector search must not panic on a poisoned lock"
+        );
+    }
+
+    #[test]
+    fn in_memory_store_dedups_by_id_and_evicts_oldest() {
+        let store = InMemoryDedupStore::new(2);
+        let t = TriageItemType::Insight;
+        store
+            .store_item(&t, "a", "A", "alpha content here")
+            .unwrap();
+        // Same id again must not create a second row.
+        store
+            .store_item(&t, "a", "A", "alpha content here")
+            .unwrap();
+        store.store_item(&t, "b", "B", "beta content here").unwrap();
+        // Capacity 2: inserting a third evicts the oldest ("a").
+        store
+            .store_item(&t, "c", "C", "gamma content here")
+            .unwrap();
+
+        let all = store.find_similar(&t, "gamma content here", 10).unwrap();
+        let ids: Vec<&str> = all.iter().map(|h| h.id.as_str()).collect();
+        assert!(!ids.contains(&"a"), "oldest entry should be evicted");
+        assert!(ids.contains(&"c"));
+    }
 }

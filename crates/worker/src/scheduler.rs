@@ -2772,4 +2772,93 @@ mod tests {
             "expected regular firing despite drift, got {fired}"
         );
     }
+
+    #[test]
+    fn interval_is_due_boundaries_and_future_last_run() {
+        let now = utc(2026, 8, 20, 12, 0, 0);
+        let sched = Schedule::IntervalSecs(3600);
+        assert!(is_due(&sched, None, now));
+        // Exactly one interval elapsed is due.
+        assert!(is_due(
+            &sched,
+            Some(now - chrono::Duration::seconds(3600)),
+            now
+        ));
+        // One second short is not.
+        assert!(!is_due(
+            &sched,
+            Some(now - chrono::Duration::seconds(3599)),
+            now
+        ));
+        // A last_run in the future (clock skew) is not due.
+        assert!(!is_due(
+            &sched,
+            Some(now + chrono::Duration::seconds(10)),
+            now
+        ));
+    }
+
+    #[test]
+    fn daily_is_due_at_and_around_target_time() {
+        let sched = Schedule::DailyAt {
+            hour: 2,
+            minute: 30,
+        };
+        let at = utc(2026, 8, 20, 2, 30, 0);
+        // Never run and exactly at the target: due.
+        assert!(is_due(&sched, None, at));
+        assert!(!is_due(&sched, None, at - chrono::Duration::minutes(1)));
+        // Same day, last run before target: due.
+        assert!(is_due(&sched, Some(at - chrono::Duration::hours(1)), at));
+        // Same day, already ran after target: not due.
+        assert!(!is_due(&sched, Some(at + chrono::Duration::minutes(5)), at));
+        // Previous day, past today's target: due.
+        assert!(is_due(&sched, Some(at - chrono::Duration::days(1)), at));
+        // Previous day, but today's target has not arrived yet: not due.
+        let before = at - chrono::Duration::hours(3);
+        assert!(!is_due(
+            &sched,
+            Some(at - chrono::Duration::days(1)),
+            before
+        ));
+    }
+
+    #[test]
+    fn next_fire_time_rolls_over_day_and_month() {
+        let sched = Schedule::DailyAt { hour: 2, minute: 0 };
+        let before = utc(2026, 12, 31, 1, 0, 0);
+        assert_eq!(next_fire_time(&sched, before), utc(2026, 12, 31, 2, 0, 0));
+        let after = utc(2026, 12, 31, 3, 0, 0);
+        assert_eq!(next_fire_time(&sched, after), utc(2027, 1, 1, 2, 0, 0));
+        assert_eq!(
+            next_fire_time(&Schedule::IntervalSecs(60), before),
+            before + chrono::Duration::seconds(60)
+        );
+    }
+
+    #[test]
+    fn weekly_is_due_respects_already_run_this_week() {
+        let sched = Schedule::WeeklyOn {
+            day: IsoWeekday::Mon,
+            hour: 6,
+            minute: 0,
+        };
+        let monday_0600 = utc(2026, 8, 24, 6, 0, 0);
+        assert!(is_due(&sched, None, monday_0600));
+        // Already ran at the target time: not due again.
+        assert!(!is_due(
+            &sched,
+            Some(monday_0600),
+            monday_0600 + chrono::Duration::hours(1)
+        ));
+        // Never ran and it is later in the week: catch-up fire.
+        let wednesday = utc(2026, 8, 26, 12, 0, 0);
+        assert!(is_due(&sched, None, wednesday));
+        // Ran last week: due again this week.
+        assert!(is_due(
+            &sched,
+            Some(monday_0600 - chrono::Duration::days(7)),
+            wednesday
+        ));
+    }
 }

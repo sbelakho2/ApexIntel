@@ -115,9 +115,16 @@ pub fn normalize_url(raw: &str) -> Option<String> {
 }
 
 pub fn redact_secrets(message: &str, secrets: &[&str]) -> String {
+    // Redact the longest secrets first. Otherwise a short secret that is a
+    // prefix/substring of a longer one is replaced first, leaving a fragment
+    // of the longer secret (e.g. secrets ["abc", "abcdef"] applied in that
+    // order leave "def" visible).
+    let mut ordered: Vec<&str> = secrets.iter().copied().filter(|s| !s.is_empty()).collect();
+    ordered.sort_by_key(|s| std::cmp::Reverse(s.len()));
+
     let mut redacted = message.to_string();
-    for secret in secrets {
-        if !secret.is_empty() {
+    for secret in ordered {
+        if redacted.contains(secret) {
             redacted = redacted.replace(secret, "[REDACTED]");
         }
     }
@@ -838,5 +845,75 @@ mod tests {
         // IMPORTANT: the implementation returns 0.0 for ANY non-finite value,
         // including +∞.  Callers expecting +∞ → 1.0 should use clamp_range instead.
         assert_eq!(clamp_ratio(f64::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn normalize_url_normalizes_and_rejects_hostile_input() {
+        assert_eq!(
+            normalize_url("HTTPS://Example.COM:443/path?b=2&a=1#frag").as_deref(),
+            Some("https://example.com/path?a=1&b=2")
+        );
+        // Parsed-but-unusual schemes must not panic.
+        let js = normalize_url("javascript:alert(1)");
+        assert!(js.is_none() || js.as_deref().unwrap().starts_with("javascript"));
+        assert!(normalize_url("").is_none());
+        assert!(normalize_url("   ").is_none());
+        assert!(normalize_url("not a url").is_none());
+        assert!(normalize_url("http://").is_none());
+    }
+
+    #[test]
+    fn safe_concat_enforces_char_budget_for_multibyte_input() {
+        // Three two-byte chars are three *characters*, within a budget of 3.
+        assert_eq!(safe_concat(&["é", "é", "é"], "", 3).unwrap(), "ééé");
+        assert!(safe_concat(&["é", "é", "é", "é"], "", 3).is_err());
+        assert_eq!(safe_concat(&[], ",", 0).unwrap(), "");
+        // A separator counts toward the budget: 4 chars + 1 separator = 5.
+        assert!(safe_concat(&["ab", "cd"], ":", 4).is_err());
+        assert_eq!(safe_concat(&["ab", "cd"], ":", 5).unwrap(), "ab:cd");
+    }
+
+    #[test]
+    fn safe_div_and_clamp_range_handle_non_finite() {
+        assert_eq!(safe_div(1.0, 0.0), 0.0);
+        assert_eq!(safe_div(f64::NAN, 2.0), 0.0);
+        assert_eq!(safe_div(4.0, 2.0), 2.0);
+        // clamp_range maps any non-finite value to the minimum bound.
+        assert_eq!(clamp_range(f64::NAN, 0.1, 0.9), 0.1);
+        assert_eq!(clamp_range(f64::INFINITY, 0.1, 0.9), 0.1);
+        assert_eq!(clamp_range(-5.0, 0.0, 1.0), 0.0);
+        assert_eq!(clamp_range(5.0, 0.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn round_to_dp_handles_extremes_and_halfway_cases() {
+        assert_eq!(round_to_dp(0.9999, 2), 1.0);
+        assert_eq!(round_to_dp(-0.5, 0), -1.0);
+        assert_eq!(round_to_dp(0.0, 5), 0.0);
+        assert!(round_to_dp(f64::NAN, 3).is_nan());
+        assert!(round_to_dp(f64::INFINITY, 3).is_infinite());
+    }
+
+    #[test]
+    fn redact_secrets_is_order_independent_and_leaves_no_fragments() {
+        // A shorter secret that is a prefix of a longer one must not leave a
+        // fragment of the longer secret visible, regardless of input order.
+        assert_eq!(
+            redact_secrets("key=abcdef", &["abc", "abcdef"]),
+            "key=[REDACTED]"
+        );
+        assert_eq!(
+            redact_secrets("key=abcdef", &["abcdef", "abc"]),
+            "key=[REDACTED]"
+        );
+        // Empty secrets are ignored rather than corrupting the message.
+        assert_eq!(redact_secrets("plain", &[""]), "plain");
+        // Multiple distinct secrets are all removed.
+        assert_eq!(
+            redact_secrets("a=1 b=2", &["1", "2"]),
+            "a=[REDACTED] b=[REDACTED]"
+        );
+        // Unicode secrets.
+        assert_eq!(redact_secrets("clé=αβγ", &["αβγ"]), "clé=[REDACTED]");
     }
 }

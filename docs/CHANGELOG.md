@@ -95,6 +95,12 @@ pipeline (`.woodpecker.yml`) enforces all four.
   it now shows the unacknowledged warning count like every other page.
 - **B380** `base_standalone.html` pinned a stale stylesheet cache-bust version;
   synced with `base.html`.
+- **B381** SSE client channels are bounded (1024 events) with drop-on-full
+  instead of unbounded, so a slow/blocked client can no longer grow API memory
+  without limit; dispatching uses non-blocking `try_send`.
+- **B382** `redact_secrets` now redacts the longest secret first; previously an
+  input order like `["abc", "abcdef"]` replaced the short prefix and left
+  `def` of the longer secret visible in logs.
 
 ### Build, lint, and CI
 
@@ -110,6 +116,12 @@ pipeline (`.woodpecker.yml`) enforces all four.
 - Added `.woodpecker.yml`: rustfmt check, clippy (`-D warnings`), full test
   suite, release build, Tailwind asset build, and a wasm32 `apex-shared`
   check.
+- Added an adversarial test battery covering boundary and degenerate band
+  scoring, non-finite/extreme numeric inputs, Unicode and byte-boundary
+  truncation and prefix extraction (Arabic, Turkish dotted I), poisoned-mutex
+  recovery, bounded-channel overflow with drop, schedule boundary/rollover
+  logic, circuit-breaker fail-fast timing, secret-redaction ordering, and
+  autocomplete prefix/limit/Unicode handling.
 
 ---
 

@@ -339,6 +339,7 @@ fn band_score(value: f64, min: f64, max: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
 
     fn ideal_account() -> IcpInput {
@@ -410,5 +411,123 @@ mod tests {
     #[test]
     fn band_score_inside_is_one() {
         assert!((band_score(500.0, 100.0, 1000.0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn band_score_boundaries_and_degenerate_ranges() {
+        // Both edges are inclusive.
+        assert_eq!(band_score(100.0, 100.0, 1000.0), 1.0);
+        assert_eq!(band_score(1000.0, 100.0, 1000.0), 1.0);
+        // Degenerate band (min == max) must not divide by zero.
+        assert_eq!(band_score(0.0, 0.0, 0.0), 1.0);
+        // Astronomically large values decay to the documented 0.7 floor.
+        let huge = band_score(f64::MAX, 1.0, 10.0);
+        assert!((0.7..=1.0).contains(&huge), "huge={huge}");
+        // NaN must not panic and must stay finite and in range.
+        let nan = band_score(f64::NAN, 1.0, 10.0);
+        assert!(nan.is_finite() && (0.0..=1.0).contains(&nan), "nan={nan}");
+        // Infinity is handled like a very large value.
+        let inf = band_score(f64::INFINITY, 1.0, 10.0);
+        assert!((0.0..=1.0).contains(&inf), "inf={inf}");
+    }
+
+    #[test]
+    fn technographics_is_proportional_to_target_matches() {
+        let def = IcpDefinition::default(); // sap, oracle, salesforce
+        let mut input = ideal_account();
+
+        input.tech_stack = vec!["SAP".into()];
+        let one = IcpScorer::score(&input, &def);
+        let one_tech = one
+            .components
+            .iter()
+            .find(|c| c.dimension == "technographics")
+            .unwrap()
+            .raw;
+        assert!((one_tech - 1.0 / 3.0).abs() < 1e-9, "one_tech={one_tech}");
+
+        input.tech_stack = vec!["SAP".into(), "Oracle".into(), "Salesforce".into()];
+        let all = IcpScorer::score(&input, &def);
+        let all_tech = all
+            .components
+            .iter()
+            .find(|c| c.dimension == "technographics")
+            .unwrap()
+            .raw;
+        assert!((all_tech - 1.0).abs() < 1e-9, "all_tech={all_tech}");
+
+        // No configured targets => no division by zero, no credit.
+        let mut empty_def = IcpDefinition::default();
+        empty_def.target_technologies.clear();
+        let empty = IcpScorer::score(&input, &empty_def);
+        let empty_tech = empty
+            .components
+            .iter()
+            .find(|c| c.dimension == "technographics")
+            .unwrap()
+            .raw;
+        assert_eq!(empty_tech, 0.0);
+
+        // Empty stack scores nothing either.
+        input.tech_stack.clear();
+        let none = IcpScorer::score(&input, &def);
+        let none_tech = none
+            .components
+            .iter()
+            .find(|c| c.dimension == "technographics")
+            .unwrap()
+            .raw;
+        assert_eq!(none_tech, 0.0);
+    }
+
+    #[test]
+    fn intent_is_clamped_and_growth_saturates() {
+        let mut input = IcpInput::default();
+        input.intent_signal_score = 1.5; // out of range
+        input.headcount_growth_pct = Some(10_000.0); // absurd growth
+        let score = IcpScorer::score(&input, &IcpDefinition::default());
+        assert!(score.intent_signal_score <= 1.0);
+        let intent = score
+            .components
+            .iter()
+            .find(|c| c.dimension == "intent")
+            .unwrap()
+            .raw;
+        assert!((intent - 1.0).abs() < 1e-9, "intent={intent}");
+
+        input.intent_signal_score = -5.0;
+        input.headcount_growth_pct = Some(-100.0);
+        let score = IcpScorer::score(&input, &IcpDefinition::default());
+        assert_eq!(score.intent_signal_score, 0.0);
+        let intent = score
+            .components
+            .iter()
+            .find(|c| c.dimension == "intent")
+            .unwrap()
+            .raw;
+        assert!((0.0..=1.0).contains(&intent), "intent={intent}");
+    }
+
+    #[test]
+    fn weights_are_scale_invariant() {
+        let input = ideal_account();
+        let base = IcpScorer::score(&input, &IcpDefinition::default());
+        let mut scaled = IcpDefinition::default();
+        scaled.weight_firmographics *= 7.0;
+        scaled.weight_technographics *= 7.0;
+        scaled.weight_intent *= 7.0;
+        scaled.weight_strategic *= 7.0;
+        let scaled_score = IcpScorer::score(&input, &scaled);
+        assert!((base.icp_fit_score - scaled_score.icp_fit_score).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extreme_numeric_inputs_do_not_panic() {
+        let mut input = ideal_account();
+        input.employee_estimate = Some(i32::MAX);
+        input.revenue_estimate_usd = Some(i64::MAX);
+        let score = IcpScorer::score(&input, &IcpDefinition::default());
+        assert!(score.icp_fit_score.is_finite());
+        assert!((0.0..=1.0).contains(&score.icp_fit_score));
     }
 }
