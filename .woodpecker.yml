@@ -36,8 +36,8 @@ steps:
       - cargo test --workspace --locked --no-fail-fast
       # Tests: full feature matrix
       - cargo test --workspace --all-features --locked --no-fail-fast
-      # Release build
-      - cargo build --release --workspace --locked
+      # Release build of the deployable binaries (the Docker images ship these).
+      - cargo build --release --bins -p apex-api -p apex-worker --locked
 
   - name: frontend-assets
     image: node:20-bookworm
