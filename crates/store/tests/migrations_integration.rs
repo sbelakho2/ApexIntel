@@ -123,6 +123,46 @@ async fn core_and_feature_tables_exist() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
+async fn freshly_migrated_schema_contains_no_fixture_intelligence() {
+    // migration 004 inserted deterministic demo rows into intelligence tables;
+    // migration 046 removes them. A fresh migration run must contain none.
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+
+    for (table, prefix) in [
+        (
+            "strategic_opportunities",
+            "11111111-1111-1111-1111-1111111111",
+        ),
+        ("critical_threats", "22222222-2222-2222-2222-2222222222"),
+        (
+            "investigation_workspaces",
+            "33333333-3333-3333-3333-3333333333",
+        ),
+        ("priority_queue", "44444444-4444-4444-4444-4444444444"),
+        ("supplier_risk", "55555555-5555-5555-5555-5555555555"),
+        (
+            "pipeline_opportunities",
+            "66666666-6666-6666-6666-6666666666",
+        ),
+        ("team_assignments", "77777777-7777-7777-7777-7777777777"),
+        ("source_evidence", "88888888-8888-8888-8888-8888888888"),
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {table} WHERE id::text LIKE $1 || '%'"
+        ))
+        .bind(prefix)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "{table} still contains {count} fixture row(s)");
+    }
+
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
 async fn sales_layer_inserts_round_trip() {
     let pool = connect().await;
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();

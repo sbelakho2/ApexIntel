@@ -540,14 +540,22 @@ impl EnhancedBrowserRenderer {
             return Err(anyhow!("URL exceeds maximum length (8192): {:.50}", url));
         }
 
-        if !url.starts_with("http://")
-            && !url.starts_with("https://")
-            && !url.starts_with("file://")
-        {
+        // Only web URLs may be rendered; `file://`, `ftp://`, `data:`,
+        // `javascript:`, `chrome:` and `about:` are rejected (SSRF/local-file
+        // protection), and private/loopback hosts are refused.
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(anyhow!(
-                "URL must start with http://, https://, or file://: {:.50}",
+                "URL must use the http:// or https:// scheme: {:.50}",
                 url
             ));
+        }
+        if let Some(host) = crate::browser::BoundedBrowserRunner::host_from_url(url) {
+            if crate::browser::BoundedBrowserRunner::is_private_host(&host) {
+                return Err(anyhow!(
+                    "refusing to render private/loopback host {host}: {:.50}",
+                    url
+                ));
+            }
         }
 
         Ok(url.to_string())

@@ -50,7 +50,7 @@ steps:
       # Tests: full feature matrix
       - cargo test --workspace --all-features --locked --no-fail-fast
       # Release build of the deployable binaries (the Docker images ship these)
-      - cargo build --release --bins -p apex-api -p apex-worker --locked
+      - cargo build --release --bins -p apex-api -p apex-worker --features llm --locked
 
   - name: frontend-assets
     image: node:20-bookworm
@@ -95,7 +95,9 @@ steps:
       - npm ci
       - npx playwright install --with-deps chromium
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
-      - cargo build --release --bin apex-api --locked
+      - cargo build --release --bin apex-api --features llm --locked
       - ./target/release/apex-api & sleep 6
       - curl -sf http://127.0.0.1:9095/api/health
+      # Production artifact must advertise the LLM capability.
+      - curl -sf http://127.0.0.1:9095/api/features | grep -q '"llm_enabled":true'
       - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs

@@ -19,16 +19,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sabelakhoua/ApexIntel.git"
+    "url": "git+https://github.com/sbelakho2/ApexIntel.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/sabelakhoua/ApexIntel/issues"
+    "url": "https://github.com/sbelakho2/ApexIntel/issues"
   },
-  "homepage": "https://github.com/sabelakhoua/ApexIntel#readme",
+  "homepage": "https://github.com/sbelakho2/ApexIntel#readme",
   "dependencies": {
     "tailwindcss": "^3.4.17"
   },

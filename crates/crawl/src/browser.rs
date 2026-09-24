@@ -95,6 +95,8 @@ impl BoundedBrowserRunner {
     async fn fetch_with_chrome(&self, binary: &PathBuf, url: &str) -> Result<BrowserFetchResult> {
         // Validate URL to prevent command injection via malicious URLs
         let sanitized_url = Self::validate_browser_url(url)?;
+        // Re-resolve and block private/loopback targets (SSRF / rebinding).
+        Self::assert_public_resolution(&sanitized_url).await?;
 
         let mut command = Command::new(binary);
         command
@@ -165,16 +167,98 @@ impl BoundedBrowserRunner {
                 "URL exceeds maximum allowed length (8192): {url:.50}"
             ));
         }
-        if !url.starts_with("http://")
-            && !url.starts_with("https://")
-            && !url.starts_with("file://")
-        {
+        // Only web URLs may be browsed. `file://`, `ftp://`, `data:`,
+        // `javascript:`, `chrome:` and `about:` are rejected: this service
+        // follows discovered URLs and must not read local files or browser
+        // internals.
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(anyhow!(
-                "URL must start with http://, https://, or file:// scheme: {url:.50}"
+                "URL must use the http:// or https:// scheme: {url:.50}"
             ));
+        }
+        if let Some(host) = Self::host_from_url(url) {
+            if Self::is_private_host(&host) {
+                return Err(anyhow!(
+                    "refusing to browse private/loopback/metadata host {host}: {url:.50}"
+                ));
+            }
         }
 
         Ok(url.to_string())
+    }
+
+    /// Extract the lowercased host from an http(s) URL (no DNS).
+    pub fn host_from_url(url: &str) -> Option<String> {
+        let rest = url.split_once("://")?.1;
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let authority = authority.rsplit('@').next().unwrap_or(authority);
+        if authority.starts_with('[') {
+            // IPv6 literal: [::1]:8080
+            let end = authority.find(']')?;
+            return Some(authority[1..end].to_ascii_lowercase());
+        }
+        let host = authority.split(':').next().unwrap_or("");
+        if host.is_empty() {
+            None
+        } else {
+            Some(host.to_ascii_lowercase())
+        }
+    }
+
+    /// True for loopback/private/link-local/CGNAT/metadata addresses and
+    /// `localhost` names. Used to block SSRF from discovered URLs.
+    pub fn is_private_host(host: &str) -> bool {
+        if host == "localhost" || host.ends_with(".localhost") {
+            return true;
+        }
+        match host.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(v4)) => {
+                v4.is_private()
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+                    // 100.64.0.0/10 carrier-grade NAT
+                    || (v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1]))
+            }
+            Ok(std::net::IpAddr::V6(v6)) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Re-resolve the host immediately before browsing and reject any private
+    /// address, reducing DNS-rebinding exposure.
+    async fn assert_public_resolution(url: &str) -> Result<()> {
+        let Some(host) = Self::host_from_url(url) else {
+            return Ok(());
+        };
+        if Self::is_private_host(&host) {
+            return Err(anyhow!("refusing to browse private host {host}"));
+        }
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            return Ok(());
+        }
+        // Owned tuple keeps the lookup future independent of `host`'s borrow.
+        match tokio::net::lookup_host((host.clone(), 443)).await {
+            Ok(addrs) => {
+                for addr in addrs {
+                    if Self::is_private_host(&addr.ip().to_string()) {
+                        return Err(anyhow!(
+                            "host {host} resolves to private address {} — refusing",
+                            addr.ip()
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            // Resolution failure is handled by the browser itself.
+            Err(_) => Ok(()),
+        }
     }
 }
 

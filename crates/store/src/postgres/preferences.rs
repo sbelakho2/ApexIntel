@@ -18,7 +18,6 @@ impl PgStore {
         &self,
         user_id: &str,
     ) -> Result<Option<UserSettingsPrefs>> {
-        self.ensure_user_preferences_table().await?;
         let row = sqlx::query("SELECT preferences FROM user_preferences WHERE user_id = $1")
             .bind(user_id)
             .fetch_optional(&self.pool)
@@ -44,7 +43,6 @@ impl PgStore {
         &self,
         user_id: &str,
     ) -> Result<Option<UserPreferencesRecord>> {
-        self.ensure_user_preferences_table().await?;
         let row = sqlx::query(
             "SELECT theme, locale, preferences, updated_at FROM user_preferences WHERE user_id = $1",
         )
@@ -76,7 +74,6 @@ impl PgStore {
         locale: &str,
         preferences: &Value,
     ) -> Result<()> {
-        self.ensure_user_preferences_table().await?;
         sqlx::query(
             r#"INSERT INTO user_preferences (user_id, theme, locale, preferences, updated_at)
                VALUES ($1, $2, $3, $4, NOW())
@@ -101,7 +98,6 @@ impl PgStore {
         user_id: &str,
         prefs: &UserSettingsPrefs,
     ) -> Result<()> {
-        self.ensure_user_preferences_table().await?;
         let row = sqlx::query(
             "SELECT preferences, theme, locale FROM user_preferences WHERE user_id = $1",
         )
@@ -147,7 +143,6 @@ impl PgStore {
     pub async fn list_user_settings_prefs_for_email_digest(
         &self,
     ) -> Result<Vec<(String, UserSettingsPrefs)>> {
-        self.ensure_user_preferences_table().await?;
         let rows = sqlx::query(
             "SELECT user_id, preferences->'settings_page' AS settings FROM user_preferences WHERE preferences ? 'settings_page'",
         )
@@ -176,7 +171,6 @@ impl PgStore {
         user_id: &str,
         sent_at: DateTime<Utc>,
     ) -> Result<()> {
-        self.ensure_user_preferences_table().await?;
         let sent_at_s = sent_at.to_rfc3339();
         sqlx::query(
             r#"UPDATE user_preferences
@@ -191,21 +185,6 @@ impl PgStore {
         )
         .bind(user_id)
         .bind(sent_at_s)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn ensure_user_preferences_table(&self) -> Result<()> {
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS user_preferences (
-                   user_id TEXT PRIMARY KEY,
-                   theme TEXT DEFAULT 'system',
-                   locale TEXT DEFAULT 'en',
-                   preferences JSONB DEFAULT '{}',
-                   updated_at TIMESTAMPTZ DEFAULT now()
-               )"#,
-        )
         .execute(&self.pool)
         .await?;
         Ok(())

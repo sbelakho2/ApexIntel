@@ -9,7 +9,7 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-RUN cargo build --release --bin apex-worker --features llm 2>&1
+RUN cargo build --release --bin apex-worker --features llm --locked 2>&1
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && \

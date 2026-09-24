@@ -135,33 +135,9 @@ fn is_valid_locale(locale: &str) -> bool {
     )
 }
 
-// ─── SQL generators ─────────────────────────────────────────────────────
-
-/// Generate the SQL to upsert a user preference.
-pub fn upsert_sql() -> &'static str {
-    r#"
-    INSERT INTO user_preferences (user_id, prefs, updated_at)
-    VALUES ($1, $2, NOW())
-    ON CONFLICT (user_id) DO UPDATE
-    SET prefs = $2, updated_at = NOW()
-    RETURNING user_id, prefs, updated_at
-    "#
-}
-
-/// Generate the SQL to fetch a user's preferences.
-pub fn fetch_sql() -> &'static str {
-    "SELECT user_id, prefs, updated_at FROM user_preferences WHERE user_id = $1"
-}
-
-/// Generate the SQL to delete a user's preferences (reset to defaults).
-pub fn delete_sql() -> &'static str {
-    "DELETE FROM user_preferences WHERE user_id = $1"
-}
-
 // ─── Path constants ─────────────────────────────────────────────────────
 
 pub const PREFERENCES_PATH: &str = "/api/preferences";
-pub const PREFERENCES_DETAIL: &str = "/api/preferences/:user_id";
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
@@ -244,12 +220,5 @@ mod tests {
         assert!(notifs.email_enabled);
         assert!(!notifs.slack_enabled);
         assert_eq!(notifs.min_severity, "medium");
-    }
-
-    #[test]
-    fn test_sql_not_empty() {
-        assert!(!upsert_sql().is_empty());
-        assert!(!fetch_sql().is_empty());
-        assert!(!delete_sql().is_empty());
     }
 }
