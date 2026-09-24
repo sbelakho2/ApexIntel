@@ -5,17 +5,17 @@
 {% endmacro %}
 
 {% macro page_header(title, icon_name, subtitle, actions) %}
-<div class="apex-card p-4 mb-6 flex items-start justify-between gap-4">
+<div class="apex-card page-header p-4 mb-6 flex items-start justify-between gap-4">
   <div class="page-header-main flex items-start gap-3">
-    <div class="mt-1 rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-foreground">
+    <div class="mt-1 shrink-0 rounded-rams-sm border border-rams-line bg-rams-panel p-2 text-rams-foreground">
       {% call icon(icon_name, "h-4 w-4") %}
     </div>
-    <div>
+    <div class="min-w-0">
       <h1>{{ title }}</h1>
       {% if !subtitle.is_empty() %}<p class="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-rams-muted">{{ subtitle }}</p>{% endif %}
     </div>
   </div>
-  <div class="page-header-actions">{{ actions|safe }}</div>
+  {% if !actions.is_empty() %}<div class="page-header-actions">{{ actions|safe }}</div>{% endif %}
 </div>
 {% endmacro %}
 

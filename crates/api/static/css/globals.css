@@ -318,6 +318,44 @@
     }
   }
 
+  /* Page-header layout: the title takes the available width and the actions
+     never squeeze it (an empty actions block previously collapsed the H1 to
+     ~140px, breaking "WARNING" mid-word into vertical text). */
+  .page-header-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .page-header-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .page-header-actions > * {
+    max-width: 100%;
+  }
+
+  /* Final guard: never allow a stray absolutely-positioned/off-canvas node to
+     create page-level horizontal scrolling. `clip` (unlike `hidden`) does not
+     create a scroll container, so sticky positioning and inner
+     `overflow-x: auto` regions (data tables, charts) keep working. */
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  .graph-detail-list,
+  .graph-detail-item,
+  .graph-neighbor-list,
+  .graph-stage,
+  .graph-stage svg,
+  #graph-container {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   @media (max-width: 640px) {
     body {
       letter-spacing: 0;
@@ -396,6 +434,68 @@
 
     .overflow-x-auto {
       -webkit-overflow-scrolling: touch;
+    }
+
+    /* Data tables scroll horizontally on small screens; keeping each cell on
+       one line stops titles collapsing into one-word-per-line "vertical text". */
+    .apex-table th,
+    .apex-table td {
+      white-space: nowrap;
+    }
+
+    /* Long unbroken company names / URLs in module bodies must wrap rather
+       than overflow the card. */
+    .apex-module,
+    .apex-module-body {
+      min-width: 0;
+    }
+    .apex-module-body span,
+    .apex-module-body a,
+    .apex-module-body p {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    /* Layout safety net: long unbroken tokens (entity names, URLs, hashes) and
+       intrinsically-wide media must never widen the page on small screens. */
+    .apex-card,
+    .apex-module,
+    .apex-module-body,
+    .graph-detail-item,
+    .graph-neighbor-list,
+    .apex-detail-grid,
+    .grid,
+    .flex {
+      min-width: 0;
+    }
+    .apex-card div,
+    .apex-card span,
+    .apex-card p,
+    .apex-card a,
+    .apex-card li,
+    .apex-module div,
+    .apex-module span,
+    .apex-module p,
+    .apex-module a,
+    .graph-detail-item *,
+    .graph-chip {
+      min-width: 0;
+    }
+    .apex-card,
+    .apex-module,
+    .graph-detail-item,
+    .graph-chip,
+    .apex-card p,
+    .apex-card span,
+    .apex-card a {
+      overflow-wrap: anywhere;
+    }
+    svg,
+    img,
+    canvas,
+    video {
+      max-width: 100%;
+      height: auto;
     }
 
     .apex-card.p-3 > form.flex.flex-wrap.items-center.gap-2,

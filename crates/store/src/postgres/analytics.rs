@@ -64,13 +64,16 @@ impl PgStore {
         since: DateTime<Utc>,
     ) -> Result<Vec<(Uuid, i64, i64)>> {
         let rows = sqlx::query(
-            r#"SELECT unnest(entity_ids) AS entity_id,
+            r#"SELECT entity_id,
                       DATE_PART('day', date_trunc('day', created_at) - date_trunc('day', $1))::BIGINT AS day_offset,
                       COUNT(*)::BIGINT AS cnt
-               FROM insights
-               WHERE entity_ids IS NOT NULL
-                 AND array_length(entity_ids, 1) > 0
-                 AND created_at >= $1
+               FROM (
+                   SELECT unnest(entity_ids) AS entity_id, created_at
+                   FROM insights
+                   WHERE entity_ids IS NOT NULL
+                     AND array_length(entity_ids, 1) > 0
+                     AND created_at >= $1
+               ) AS expanded
                GROUP BY entity_id, day_offset
                ORDER BY entity_id, day_offset"#,
         )

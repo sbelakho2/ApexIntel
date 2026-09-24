@@ -3,24 +3,26 @@
 # Contract — every step must be green:
 #   1. rustfmt check
 #   2. clippy over all targets with warnings denied, for the default feature
-#      set AND the full feature matrix (`--all-features`: llm,
-#      llm-tool-calling, experimental, full, parse)
+#      set AND the full feature matrix
 #   3. full workspace test suite for both feature sets
-#   4. release build
-#   5. Tailwind asset build
-#   6. wasm32 check of the shared crate used by the browser UI
+#   4. release build of the deployable binaries
+#   5. database migrations applied to a real PostgreSQL service (bootstraps a
+#      fresh database)
+#   6. Tailwind asset build
+#   7. wasm32 check of the shared crate used by the browser UI
+#   8. server-rendered UI end-to-end (Playwright): logs in and sweeps EVERY
+#      navigation route at mobile + desktop, asserting HTTP 2xx, no console /
+#      page errors, no horizontal overflow (the "vertical text" class of bug),
+#      data-table cells stay on one line on mobile, the styled 404 works, and
+#      every rendered link resolves.
 #
-# All cargo invocations use `--locked` so a stale Cargo.lock fails the build
-# instead of being silently regenerated. Tests require no external services:
-# the store layer is exercised through fakes, so no `services:` block is
-# needed. If a future test needs PostgreSQL/Redis/NATS, add one here.
+# All cargo invocations use `--locked` so a stale Cargo.lock fails the build.
 
 when:
   - event: [push, pull_request, tag, manual]
 
-# PostgreSQL service used to validate that migrations bootstrap a fresh
-# database. The image must provide `vector`, `pg_trgm`, `btree_gist` and
-# `uuid-ossp` (used by migrations 000 and 024).
+# PostgreSQL used to validate migrations bootstrap a fresh database and by the
+# UI e2e run. Must provide `vector`, `pg_trgm`, `btree_gist`, `uuid-ossp`.
 services:
   database:
     image: timescale/timescaledb:2.30.1-pg16
@@ -47,7 +49,7 @@ steps:
       - cargo test --workspace --locked --no-fail-fast
       # Tests: full feature matrix
       - cargo test --workspace --all-features --locked --no-fail-fast
-      # Release build of the deployable binaries (the Docker images ship these).
+      # Release build of the deployable binaries (the Docker images ship these)
       - cargo build --release --bins -p apex-api -p apex-worker --locked
 
   - name: frontend-assets
@@ -58,10 +60,7 @@ steps:
       # config and source CSS still produce output.
       - npx tailwindcss -i crates/api/static/css/globals.css -o /tmp/tailwind.css --minify
 
-  # Bootstraps a real, empty PostgreSQL and applies every migration via
-  # sqlx, then asserts the schema and a sales-layer round-trip. The unit suite
-  # uses fakes and never exercises migrations, so this is the only gate that
-  # proves a fresh deployment can start.
+  # Bootstraps a real, empty PostgreSQL and applies every migration via sqlx.
   - name: migrations
     image: rust:bookworm
     depends_on: [rust]
@@ -73,9 +72,30 @@ steps:
 
   - name: wasm-shared
     image: rust:bookworm
-    environment:
-      # Isolated target dir so this step never contends with the native build.
-      CARGO_TARGET_DIR: /woodpecker/target-wasm
     commands:
       - rustup target add wasm32-unknown-unknown
       - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
+
+  # Server-rendered UI end-to-end. Builds the API (rust image also has Node),
+  # starts it against the database service, and drives a real browser.
+  - name: e2e-server-ui
+    image: rust:bookworm
+    depends_on: [rust, migrations]
+    environment:
+      DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
+      APEX_ADMIN_USERNAME: admin
+      APEX_ADMIN_PASSWORD_HASH: 749f09bade8aca755660eeb17792da880218d4fbdc4e25fbec279d7fe9f65d70
+      SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      SEARCH_INDEX_PATH: /tmp/apex-index
+      RATE_LIMIT_DISABLED: "true"
+      HOST: 127.0.0.1
+      PORT: "9095"
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends nodejs npm
+      - npm ci
+      - npx playwright install --with-deps chromium
+      - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
+      - cargo build --release --bin apex-api --locked
+      - ./target/release/apex-api & sleep 6
+      - curl -sf http://127.0.0.1:9095/api/health
+      - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs

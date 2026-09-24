@@ -130,6 +130,9 @@ impl TokenBucket {
 #[derive(Clone)]
 pub struct RateLimiter {
     inner: Arc<Mutex<RateLimiterInner>>,
+    /// Test/dev escape hatch. Set `RATE_LIMIT_DISABLED=true` to allow all
+    /// requests; used by the UI e2e suite which sweeps every route rapidly.
+    disabled: bool,
 }
 
 struct RateLimiterInner {
@@ -151,6 +154,9 @@ pub struct RateLimitResult {
 
 impl RateLimiter {
     pub fn new() -> Self {
+        let disabled = std::env::var("RATE_LIMIT_DISABLED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         Self {
             inner: Arc::new(Mutex::new(RateLimiterInner {
                 buckets: HashMap::new(),
@@ -158,6 +164,7 @@ impl RateLimiter {
                 blocklist: Vec::new(),
                 last_cleanup: Instant::now(),
             })),
+            disabled,
         }
     }
 
@@ -186,6 +193,14 @@ impl RateLimiter {
         max_requests: u32,
         window: Duration,
     ) -> RateLimitResult {
+        if self.disabled {
+            return RateLimitResult {
+                allowed: true,
+                remaining: max_requests,
+                limit: max_requests,
+                retry_after_secs: 0,
+            };
+        }
         let mut inner = self.inner.lock();
 
         if inner.allowlist.iter().any(|allowed| allowed == identifier) {
