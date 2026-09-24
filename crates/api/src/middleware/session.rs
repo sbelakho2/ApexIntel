@@ -56,6 +56,8 @@ pub struct WebSession {
     pub username: String,
     pub role: ApiRole,
     pub session_version: u32,
+    /// Stable principal UUID used to key real-time connections and to address alerts.
+    pub principal_id: Uuid,
     pub issued_at: i64,
     /// Signed expiry (`exp`) claim; `None` for legacy sessions that predate it.
     pub expires_at: Option<i64>,
@@ -189,11 +191,15 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
         }),
     };
 
+    let username = payload.sub;
+    let principal_id = apex_core::alert_config::user_principal_id(&username);
+
     Some(WebSession {
-        user_id: payload.uid.unwrap_or_else(|| payload.sub.clone()),
-        username: payload.sub,
+        user_id: payload.uid.unwrap_or_else(|| username.clone()),
+        username,
         role,
         session_version: payload.sv,
+        principal_id,
         issued_at: payload.iat,
         expires_at: payload.exp,
     })
@@ -595,6 +601,11 @@ mod tests {
         let session = validate_session(&headers, secret).expect("session should validate");
 
         assert_eq!(session.username, "alice");
+        assert_eq!(
+            session.principal_id,
+            apex_core::alert_config::user_principal_id("alice"),
+            "session must carry the stable principal ID"
+        );
     }
 
     #[test]

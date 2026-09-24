@@ -5,6 +5,50 @@
 //! Configuration can be persisted as JSONB and exposed through the API.
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Principal identity
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fixed namespace for deriving in-app principal IDs from the authenticated
+/// user name (`user_preferences.user_id` / `analyst_users.id`).
+///
+/// The SSE/WebSocket layers key connections by `Uuid`, while the database
+/// stores user identities as `TEXT`. Deriving the UUID deterministically
+/// (UUIDv5) keeps the mapping stable across API restarts and instances without
+/// adding a users table, so alerts addressed to `Users([id])` resolve to the
+/// same principal that registered its event stream.
+const USER_PRINCIPAL_NAMESPACE: Uuid = Uuid::from_u128(0x1b4e28ba_2ee5_5f0e_b2a1_8f3d6c9a7e41);
+
+/// Derive the stable principal UUID for an authenticated user name.
+///
+/// The same input always produces the same UUID; distinct user names produce
+/// distinct UUIDs (collision probability of UUIDv5/SHA-1).
+pub fn user_principal_id(username: &str) -> Uuid {
+    Uuid::new_v5(&USER_PRINCIPAL_NAMESPACE, username.as_bytes())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AlertAudience
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Who an alert event is addressed to.
+///
+/// This replaces the legacy `user_ids: Vec<Uuid>` field whose empty value was
+/// overloaded to mean "broadcast": an alert with no resolved subscribers was
+/// silently fanned out to every connected user, and a targeted alert could not
+/// express "nobody". The tagged representation makes the NATS payload
+/// unambiguous: an empty [`AlertAudience::Users`] list addresses nobody, and
+/// only a deliberate [`AlertAudience::Broadcast`] reaches every connected user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "user_ids", rename_all = "snake_case")]
+pub enum AlertAudience {
+    /// Deliver only to these principals. An empty list addresses nobody.
+    Users(Vec<Uuid>),
+    /// Deliberate system-wide alert delivered to every connected user.
+    Broadcast,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AlertSeverity
@@ -356,5 +400,46 @@ mod tests {
         assert_eq!(d.cooldown_minutes, 30);
         assert_eq!(d.max_daily_alerts, 100);
         assert!(d.enabled_channels.contains(&AlertChannel::Email));
+    }
+
+    // ── AlertAudience ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn audience_serde_is_tagged_and_unambiguous() {
+        let broadcast = serde_json::to_value(AlertAudience::Broadcast).unwrap();
+        assert_eq!(broadcast, serde_json::json!({"kind": "broadcast"}));
+
+        let user_a = Uuid::nil();
+        let users = serde_json::to_value(AlertAudience::Users(vec![user_a])).unwrap();
+        assert_eq!(
+            users,
+            serde_json::json!({"kind": "users", "user_ids": [user_a]})
+        );
+
+        // An empty user list is a distinct, explicit payload — not a broadcast.
+        let nobody = serde_json::to_value(AlertAudience::Users(vec![])).unwrap();
+        assert_eq!(nobody, serde_json::json!({"kind": "users", "user_ids": []}));
+    }
+
+    #[test]
+    fn audience_serde_roundtrip() {
+        for audience in [
+            AlertAudience::Broadcast,
+            AlertAudience::Users(vec![Uuid::new_v4(), Uuid::new_v4()]),
+            AlertAudience::Users(vec![]),
+        ] {
+            let json = serde_json::to_string(&audience).unwrap();
+            let back: AlertAudience = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, audience);
+        }
+    }
+
+    // ── user_principal_id ─────────────────────────────────────────────────────
+
+    #[test]
+    fn principal_id_is_deterministic_and_distinct() {
+        let alice = user_principal_id("alice");
+        assert_eq!(alice, user_principal_id("alice"));
+        assert_ne!(alice, user_principal_id("bob"));
     }
 }

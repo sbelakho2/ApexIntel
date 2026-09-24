@@ -280,7 +280,11 @@ impl AlertEvaluator {
                 ),
                 entity_id: event.entity_id,
                 entity_name: event.entity_name.clone(),
-                user_ids: vec![], // broadcast
+                // Rule firings are not system-wide: leave the audience empty so
+                // the API router resolves the entity's real subscribers. An
+                // unresolved alert reaches nobody — only deliberate
+                // system-wide alerts use `AlertAudience::Broadcast`.
+                audience: apex_core::alert_config::AlertAudience::Users(vec![]),
                 metadata: serde_json::json!({
                     "rule_name": rule.name,
                     "rule_source": rule.source,

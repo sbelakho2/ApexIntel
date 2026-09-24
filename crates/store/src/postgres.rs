@@ -229,6 +229,7 @@ mod artifacts;
 mod battlecards;
 pub use battlecards::BattlecardRow;
 mod alert_configs;
+mod alert_subscriptions;
 mod collaboration;
 mod companies;
 mod company_assets;

@@ -387,9 +387,15 @@ impl NotificationDispatcher {
                 .llm_narrative
                 .clone()
                 .unwrap_or_else(|| alert.body.clone()),
-            entity_id: None, // PendingAlert uses String IDs; we'd need conversion
+            // PendingAlert carries the entity as a string; parse the UUID so
+            // the API router can resolve the entity's real subscribers. A
+            // non-UUID entity yields None and the alert reaches nobody rather
+            // than everyone.
+            entity_id: uuid::Uuid::parse_str(&alert.entity_id).ok(),
             entity_name: Some(alert.entity_name.clone()),
-            user_ids: vec![],
+            // Resolve real subscribers in the API alert router; never
+            // broadcast implicitly.
+            audience: apex_core::alert_config::AlertAudience::Users(vec![]),
             metadata: serde_json::json!({
                 "source_id": alert.source_id,
                 "category": alert.category,
