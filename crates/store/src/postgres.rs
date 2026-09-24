@@ -240,6 +240,7 @@ mod heartbeats;
 pub use heartbeats::ServiceHeartbeatRow;
 mod history;
 mod insights;
+mod learning_eval;
 mod llm_governance;
 mod logistics;
 mod memos;

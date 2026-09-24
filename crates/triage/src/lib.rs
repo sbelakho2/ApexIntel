@@ -20,5 +20,6 @@ pub mod semantic_dedup;
 pub mod types;
 
 pub use config::TriageConfig;
-pub use queue::TriageQueue;
+pub use queue::{QueueEnqueueRequest, TriageQueue};
+pub use router_integration::TriageAlertRequest;
 pub use scoring::TriageScorer;

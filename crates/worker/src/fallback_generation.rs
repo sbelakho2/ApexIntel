@@ -711,20 +711,31 @@ pub(super) fn detect_strategy_signal_flags(
     }
 }
 
+/// Inputs for template-based fallback summary synthesis.
+pub(crate) struct FallbackSummaryRequest<'a> {
+    pub(crate) analytical_narrative: &'a str,
+    pub(crate) rendered_action: &'a str,
+    pub(crate) signal_details: &'a [String],
+    pub(crate) evidence_urls: &'a [String],
+    pub(crate) entity_label: &'a str,
+    pub(crate) entity_region: &'a str,
+    pub(crate) entity_type: Option<&'a str>,
+    pub(crate) category: &'a str,
+}
+
 /// Build template-based fallback summary when LLM is unavailable.
-pub(super) fn build_fallback_summary(
-    analytical_narrative: &str,
-    rendered_action: &str,
-    signal_details: &[String],
-    evidence_urls: &[String],
-    entity_label: &str,
-    entity_region: &str,
-    entity_type: Option<&str>,
-    category: &str,
-    _severity: &str,
-    _confidence: f64,
-    _evidence_count: usize,
-) -> String {
+pub(crate) fn build_fallback_summary(request: FallbackSummaryRequest<'_>) -> String {
+    let FallbackSummaryRequest {
+        analytical_narrative,
+        rendered_action,
+        signal_details,
+        evidence_urls,
+        entity_label,
+        entity_region,
+        entity_type,
+        category,
+    } = request;
+
     let mut summary_parts: Vec<String> = Vec::new();
     let concrete_details = category_relevant_signal_details(category, signal_details);
     let concrete_signals = concrete_details.len();

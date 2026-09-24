@@ -54,7 +54,6 @@ pub async fn generate_pdf(report: &PdfReport, config: &PdfExportConfig) -> Resul
     let margin_top = Mm(20.0_f32);
     let margin_bottom = Mm(20.0_f32);
     let usable_width = width_mm - 30.0; // 15mm each side
-    let usable_height = height_mm - 40.0; // 20mm each side
 
     // Fonts: use built-in fonts for portability
     let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
@@ -65,21 +64,22 @@ pub async fn generate_pdf(report: &PdfReport, config: &PdfExportConfig) -> Resul
     let _layer = current_page.add_layer("Content");
 
     // Draw report
-    render_report(
-        &doc,
-        page_idx,
+    let render_context = PdfRenderContext {
+        doc: &doc,
         report,
-        &font_bold,
-        &font_regular,
-        &font_mono,
-        pt_width,
-        pt_height,
+        fonts: PdfFonts {
+            bold: &font_bold,
+            regular: &font_regular,
+            mono: &font_mono,
+        },
+        page_width: pt_width,
+        page_height: pt_height,
         margin_left,
         margin_top,
         margin_bottom,
-        usable_width as f32,
-        usable_height as f32,
-    )?;
+        usable_width: usable_width as f32,
+    };
+    render_report(&render_context, page_idx)?;
 
     // Generate filename
     let safe_title: String = report
@@ -110,53 +110,54 @@ pub async fn generate_pdf(report: &PdfReport, config: &PdfExportConfig) -> Resul
     Ok(output_path)
 }
 
-/// Render the full report onto PDF pages.
-#[allow(clippy::too_many_arguments)]
-fn render_report(
-    doc: &PdfDocumentReference,
-    mut current_page_idx: PdfPageIndex,
-    report: &PdfReport,
-    font_bold: &IndirectFontRef,
-    font_regular: &IndirectFontRef,
-    font_mono: &IndirectFontRef,
+/// Fonts used across a rendered PDF report.
+#[derive(Clone, Copy)]
+struct PdfFonts<'a> {
+    bold: &'a IndirectFontRef,
+    regular: &'a IndirectFontRef,
+    mono: &'a IndirectFontRef,
+}
+
+/// Shared layout context for rendering one PDF report.
+///
+/// Bundling the document, report, fonts and page geometry keeps the drawing
+/// helpers' signatures narrow (and prevents same-typed argument swaps).
+#[derive(Clone, Copy)]
+struct PdfRenderContext<'a> {
+    doc: &'a PdfDocumentReference,
+    report: &'a PdfReport,
+    fonts: PdfFonts<'a>,
     page_width: Mm,
     page_height: Mm,
     margin_left: Mm,
     margin_top: Mm,
     margin_bottom: Mm,
     usable_width: f32,
-    _usable_height: f32,
-) -> Result<()> {
+}
+
+/// Render the full report onto PDF pages.
+fn render_report(context: &PdfRenderContext<'_>, mut current_page_idx: PdfPageIndex) -> Result<()> {
+    let PdfRenderContext {
+        doc,
+        report,
+        fonts: _,
+        page_width,
+        page_height,
+        margin_left: _,
+        margin_top,
+        margin_bottom,
+        usable_width: _,
+    } = *context;
     let mut y_cursor: f32 = page_height.0 - margin_top.0 - 5.0_f32;
 
     // ── Header block ──────────────────────────────────────────────────────
-    y_cursor = draw_header(
-        doc,
-        current_page_idx,
-        report,
-        font_bold,
-        font_regular,
-        font_mono,
-        margin_left,
-        &mut y_cursor,
-        usable_width,
-    )?;
+    y_cursor = draw_header(context, current_page_idx, &mut y_cursor)?;
 
     y_cursor -= 8.0_f32; // spacing after header
 
     // ── Table of Contents ─────────────────────────────────────────────────
     if report.sections.len() > 1 {
-        y_cursor = draw_toc(
-            doc,
-            current_page_idx,
-            report,
-            font_bold,
-            font_regular,
-            margin_left,
-            &mut y_cursor,
-            usable_width,
-            page_height.0 - margin_bottom.0,
-        )?;
+        y_cursor = draw_toc(context, current_page_idx, &mut y_cursor)?;
         y_cursor -= 5.0_f32;
     }
 
@@ -169,32 +170,11 @@ fn render_report(
             y_cursor = page_height.0 - margin_top.0 - 5.0_f32;
 
             // Draw header on new page too
-            y_cursor = draw_header(
-                doc,
-                current_page_idx,
-                report,
-                font_bold,
-                font_regular,
-                font_mono,
-                margin_left,
-                &mut y_cursor,
-                usable_width,
-            )?;
+            y_cursor = draw_header(context, current_page_idx, &mut y_cursor)?;
             y_cursor -= 8.0_f32;
         }
 
-        y_cursor = draw_section(
-            doc,
-            current_page_idx,
-            section,
-            font_bold,
-            font_regular,
-            font_mono,
-            margin_left,
-            &mut y_cursor,
-            usable_width,
-            page_height.0 - margin_bottom.0,
-        )?;
+        y_cursor = draw_section(context, current_page_idx, section, &mut y_cursor)?;
         y_cursor -= 4.0_f32;
     }
 
@@ -202,13 +182,9 @@ fn render_report(
     // Note: printpdf requires us to track pages manually. For simplicity,
     // we draw a footer on the last page.
     draw_footer(
-        doc,
+        context,
         current_page_idx,
-        report,
-        font_regular,
-        margin_left,
         page_height.0 - margin_bottom.0,
-        usable_width,
         1, // page number
     )?;
 
@@ -216,17 +192,23 @@ fn render_report(
 }
 
 /// Draw the report header on a page.
-fn draw_header(
-    doc: &PdfDocumentReference,
-    page_idx: PdfPageIndex,
-    report: &PdfReport,
-    font_bold: &IndirectFontRef,
-    font_regular: &IndirectFontRef,
-    _font_mono: &IndirectFontRef,
-    margin_left: Mm,
-    y: &mut f32,
-    usable_width: f32,
-) -> Result<f32> {
+fn draw_header(context: &PdfRenderContext<'_>, page_idx: PdfPageIndex, y: &mut f32) -> Result<f32> {
+    let PdfRenderContext {
+        doc,
+        report,
+        fonts,
+        page_width: _,
+        page_height: _,
+        margin_left,
+        margin_top: _,
+        margin_bottom: _,
+        usable_width,
+    } = *context;
+    let PdfFonts {
+        bold: font_bold,
+        regular: font_regular,
+        mono: _font_mono,
+    } = fonts;
     let page = doc.get_page(page_idx);
     let layer = page.add_layer("Header");
 
@@ -291,17 +273,23 @@ fn draw_line(doc: &PdfDocumentReference, page_idx: PdfPageIndex, x1: Mm, y1: Mm,
 }
 
 /// Draw a table of contents.
-fn draw_toc(
-    doc: &PdfDocumentReference,
-    page_idx: PdfPageIndex,
-    report: &PdfReport,
-    font_bold: &IndirectFontRef,
-    font_regular: &IndirectFontRef,
-    margin_left: Mm,
-    y: &mut f32,
-    _usable_width: f32,
-    _bottom_margin: f32,
-) -> Result<f32> {
+fn draw_toc(context: &PdfRenderContext<'_>, page_idx: PdfPageIndex, y: &mut f32) -> Result<f32> {
+    let PdfRenderContext {
+        doc,
+        report,
+        fonts,
+        page_width: _,
+        page_height: _,
+        margin_left,
+        margin_top: _,
+        margin_bottom: _,
+        usable_width: _,
+    } = *context;
+    let PdfFonts {
+        bold: font_bold,
+        regular: font_regular,
+        mono: _font_mono,
+    } = fonts;
     let page = doc.get_page(page_idx);
     let layer = page.add_layer("TOC");
 
@@ -322,17 +310,28 @@ fn draw_toc(
 
 /// Draw a report section.
 fn draw_section(
-    doc: &PdfDocumentReference,
+    context: &PdfRenderContext<'_>,
     page_idx: PdfPageIndex,
     section: &ReportSection,
-    font_bold: &IndirectFontRef,
-    font_regular: &IndirectFontRef,
-    font_mono: &IndirectFontRef,
-    margin_left: Mm,
     y: &mut f32,
-    usable_width: f32,
-    bottom_margin: f32,
 ) -> Result<f32> {
+    let PdfRenderContext {
+        doc,
+        report: _,
+        fonts,
+        page_width: _,
+        page_height,
+        margin_left,
+        margin_top: _,
+        margin_bottom,
+        usable_width,
+    } = *context;
+    let bottom_margin = page_height.0 - margin_bottom.0;
+    let PdfFonts {
+        bold: font_bold,
+        regular: font_regular,
+        mono: font_mono,
+    } = fonts;
     let page = doc.get_page(page_idx);
     let layer = page.add_layer("Content");
 
@@ -413,17 +412,28 @@ fn draw_section(
 }
 
 /// Draw the footer with page number and classification.
-#[allow(unused_variables)]
 fn draw_footer(
-    doc: &PdfDocumentReference,
+    context: &PdfRenderContext<'_>,
     page_idx: PdfPageIndex,
-    report: &PdfReport,
-    font_regular: &IndirectFontRef,
-    margin_left: Mm,
     y_position: f32,
-    usable_width: f32,
     page_num: u32,
 ) -> Result<()> {
+    let PdfRenderContext {
+        doc,
+        report,
+        fonts,
+        page_width: _,
+        page_height: _,
+        margin_left,
+        margin_top: _,
+        margin_bottom: _,
+        usable_width,
+    } = *context;
+    let PdfFonts {
+        bold: _,
+        regular: font_regular,
+        mono: _,
+    } = fonts;
     let page = doc.get_page(page_idx);
     let layer = page.add_layer("Footer");
 

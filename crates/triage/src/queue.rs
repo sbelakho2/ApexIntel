@@ -35,6 +35,22 @@ pub struct TriageQueue {
     thresholds: TriageThresholds,
 }
 
+/// Payload for [`TriageQueue::enqueue`] (and [`TriageQueueProvider::enqueue`]).
+///
+/// Bundles the item fields so the enqueue API stays within the clippy
+/// argument-count limit.
+#[derive(Debug)]
+pub struct QueueEnqueueRequest<'a> {
+    pub item_type: TriageItemType,
+    pub source_id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub entity_id: Option<Uuid>,
+    pub entity_name: Option<&'a str>,
+    pub static_severity: Option<&'a str>,
+    pub dimensions: Option<&'a TriageDimensions>,
+}
+
 impl TriageQueue {
     /// Create a new [`TriageQueue`] backed by the given pool.
     pub fn new(pool: PgPool) -> Self {
@@ -59,17 +75,18 @@ impl TriageQueue {
     /// Enqueue a new item, or update the score of an existing one (by
     /// `(item_type, source_id)` UNIQUE constraint).
     #[instrument(skip(self))]
-    pub async fn enqueue(
-        &self,
-        item_type: TriageItemType,
-        source_id: &str,
-        title: &str,
-        description: &str,
-        entity_id: Option<Uuid>,
-        entity_name: Option<&str>,
-        static_severity: Option<&str>,
-        dimensions: Option<&TriageDimensions>,
-    ) -> Result<TriageQueueItem> {
+    pub async fn enqueue(&self, request: QueueEnqueueRequest<'_>) -> Result<TriageQueueItem> {
+        let QueueEnqueueRequest {
+            item_type,
+            source_id,
+            title,
+            description,
+            entity_id,
+            entity_name,
+            static_severity,
+            dimensions,
+        } = request;
+
         let item_type_str = item_type.as_str();
         let now = Utc::now();
 
@@ -483,17 +500,7 @@ impl TriageQueue {
 /// Abstract interface for triage queue operations, enabling mock testing.
 #[async_trait]
 pub trait TriageQueueProvider: Send + Sync {
-    async fn enqueue(
-        &self,
-        item_type: TriageItemType,
-        source_id: &str,
-        title: &str,
-        description: &str,
-        entity_id: Option<Uuid>,
-        entity_name: Option<&str>,
-        static_severity: Option<&str>,
-        dimensions: Option<&TriageDimensions>,
-    ) -> Result<TriageQueueItem>;
+    async fn enqueue(&self, request: QueueEnqueueRequest<'_>) -> Result<TriageQueueItem>;
 
     async fn peek_top(&self, limit: usize) -> Result<Vec<TriageQueueItem>>;
 
@@ -530,28 +537,8 @@ pub trait TriageQueueProvider: Send + Sync {
 
 #[async_trait]
 impl TriageQueueProvider for TriageQueue {
-    async fn enqueue(
-        &self,
-        item_type: TriageItemType,
-        source_id: &str,
-        title: &str,
-        description: &str,
-        entity_id: Option<Uuid>,
-        entity_name: Option<&str>,
-        static_severity: Option<&str>,
-        dimensions: Option<&TriageDimensions>,
-    ) -> Result<TriageQueueItem> {
-        self.enqueue(
-            item_type,
-            source_id,
-            title,
-            description,
-            entity_id,
-            entity_name,
-            static_severity,
-            dimensions,
-        )
-        .await
+    async fn enqueue(&self, request: QueueEnqueueRequest<'_>) -> Result<TriageQueueItem> {
+        self.enqueue(request).await
     }
 
     async fn peek_top(&self, limit: usize) -> Result<Vec<TriageQueueItem>> {

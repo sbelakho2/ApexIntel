@@ -176,7 +176,7 @@ pub(crate) async fn list_warnings(
     .await
     {
         Ok(rows) => rows,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     if rows.is_empty() && total > 0 && resolved_page > 1 {
@@ -210,7 +210,7 @@ pub(crate) async fn list_warnings(
             .await
             {
                 Ok(rows) => rows,
-                Err(response) => return response,
+                Err(response) => return *response,
             };
             if !rows.is_empty() || resolved_page == 1 {
                 break;
@@ -236,6 +236,11 @@ pub(crate) async fn list_warnings(
     (StatusCode::OK, Json(success_with_meta(payload, meta)))
 }
 
+type WarningPageError = (
+    StatusCode,
+    Json<ApiResponse<PagedResponse<WarningResponse>>>,
+);
+
 async fn fetch_warning_page(
     state: &AppState,
     filters: &WarningListFilters,
@@ -244,13 +249,7 @@ async fn fetch_warning_page(
     per_page: u32,
     page: u32,
     request_id: &str,
-) -> Result<
-    Vec<WarningRow>,
-    (
-        StatusCode,
-        Json<ApiResponse<PagedResponse<WarningResponse>>>,
-    ),
-> {
+) -> Result<Vec<WarningRow>, Box<WarningPageError>> {
     let offset = ((page - 1) as i64).saturating_mul(per_page as i64);
     match tracing::info_span!("db.list_warnings", request_id = %request_id, page = page)
         .in_scope(|| {
@@ -264,11 +263,11 @@ async fn fetch_warning_page(
         Err(err) => {
             tracing::error!(request_id = %request_id, page = page, "list warnings failed: {err:#}");
             let api_err = ApiError::internal("Failed to list warnings");
-            Err((
+            Err(Box::new((
                 StatusCode::from_u16(api_err.http_status())
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 Json(error_response(api_err)),
-            ))
+            )))
         }
     }
 }

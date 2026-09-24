@@ -643,6 +643,16 @@ async fn upsert_deal_observation(
 /// The CRM `leads` schema is probed defensively (column names vary across CRM
 /// installs); if the expected table/columns are absent the write-back is a
 /// no-op rather than an error, so a schema mismatch never breaks the inbound sync.
+///
+/// `(id, name, domain, region, icp_fit_score)` as returned by the ICP query.
+type IcpTargetRow = (
+    uuid::Uuid,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+);
+
 pub(crate) async fn write_back_icp_targets(
     store: &Arc<PgStore>,
     mysql_pool: &sqlx::MySqlPool,
@@ -656,13 +666,7 @@ pub(crate) async fn write_back_icp_targets(
     }
 
     // Load top ICP targets not yet pushed to the CRM.
-    let targets: Vec<(
-        uuid::Uuid,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<f64>,
-    )> = sqlx::query_as(
+    let targets: Vec<IcpTargetRow> = sqlx::query_as(
         r#"
             SELECT id, name, domain, region, icp_fit_score
             FROM companies

@@ -618,67 +618,6 @@ pub(super) fn has_confidence_boilerplate(text: &str) -> bool {
         .any(|p| lower.contains(p))
 }
 
-/// Determine failure reasons for retry guidance.
-#[cfg(feature = "llm")]
-pub(super) fn determine_failure_reasons(
-    has_reasoning_depth: bool,
-    recommendation_has_deadline: bool,
-    readable_narrative: bool,
-    readable_recommendation: bool,
-    is_generic: bool,
-    malformed: bool,
-    unnamed_customer_targeting: bool,
-    unsupported_named_target_provenance: bool,
-    unsupported_public_sector_commercialization: bool,
-    low_usefulness_public_sector_analysis: bool,
-    unsupported_certification_commercialization: bool,
-    topic_alignment_violation: bool,
-    role_guidance_violation: bool,
-    unsupported_certification_escalation: bool,
-    unsupported_security_escalation: bool,
-) -> Vec<&'static str> {
-    let mut reasons = Vec::new();
-
-    if !has_reasoning_depth {
-        reasons.push("reasoning");
-    }
-    if !recommendation_has_deadline {
-        reasons.push("timing");
-    }
-    if !readable_narrative || !readable_recommendation || is_generic || malformed {
-        reasons.push("readability");
-    }
-    if unnamed_customer_targeting {
-        reasons.push("unnamed_customer_targeting");
-    }
-    if unsupported_named_target_provenance {
-        reasons.push("named_target_provenance");
-    }
-    if unsupported_public_sector_commercialization {
-        reasons.push("public_sector_commercialization");
-    }
-    if low_usefulness_public_sector_analysis {
-        reasons.push("public_sector_low_usefulness");
-    }
-    if unsupported_certification_commercialization {
-        reasons.push("certification_commercialization");
-    }
-    if topic_alignment_violation {
-        reasons.push("topic_alignment");
-    }
-    if role_guidance_violation {
-        reasons.push("role_guidance");
-    }
-    if unsupported_certification_escalation {
-        reasons.push("certification_escalation");
-    }
-    if unsupported_security_escalation {
-        reasons.push("security_escalation");
-    }
-
-    reasons
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Retry Guidance
 // ─────────────────────────────────────────────────────────────────────────────

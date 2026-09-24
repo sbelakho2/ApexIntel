@@ -898,21 +898,39 @@ fn build_discovery_source_artifact(
 }
 
 #[cfg(feature = "llm")]
-async fn process_discovery_batch(
-    store: &Arc<PgStore>,
-    raw_discoveries: Vec<DiscoveredPoi>,
-    known_name_keys: &mut HashSet<String>,
-    seed_lookup: &HashMap<String, &apex_store::postgres::ExpansionSeedRow>,
-    company_seed_lookup: &HashMap<String, CompanyPoiSeedRow>,
-    llm: &OpenAiCompatibleClient,
-    person_scraper: Option<&PersonOsintScraper>,
-    tor_client: Option<&TorClient>,
+/// Immutable dependencies shared by every discovery batch in one POI
+/// expansion run. Bundled so the batch entry point stays readable.
+struct DiscoveryBatchContext<'a> {
+    store: &'a Arc<PgStore>,
+    seed_lookup: &'a HashMap<String, &'a apex_store::postgres::ExpansionSeedRow>,
+    company_seed_lookup: &'a HashMap<String, CompanyPoiSeedRow>,
+    llm: &'a OpenAiCompatibleClient,
+    person_scraper: Option<&'a PersonOsintScraper>,
+    tor_client: Option<&'a TorClient>,
     max_onion_people: usize,
-    onion_enriched_people: &mut usize,
     now: DateTime<Utc>,
     max_llm_candidates: usize,
-    batch_label: &str,
+    batch_label: &'a str,
+}
+
+async fn process_discovery_batch(
+    context: DiscoveryBatchContext<'_>,
+    raw_discoveries: Vec<DiscoveredPoi>,
+    known_name_keys: &mut HashSet<String>,
+    onion_enriched_people: &mut usize,
 ) -> DiscoveryBatchStats {
+    let DiscoveryBatchContext {
+        store,
+        seed_lookup,
+        company_seed_lookup,
+        llm,
+        person_scraper,
+        tor_client,
+        max_onion_people,
+        now,
+        max_llm_candidates,
+        batch_label,
+    } = context;
     let mut stats = DiscoveryBatchStats {
         raw_candidates: raw_discoveries.len(),
         raw_signals: BuyerSignalCounts::from_discoveries(&raw_discoveries),
@@ -2184,19 +2202,21 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
                 .await;
             let batch_label = format!("company_coverage_{}", company_batches_processed);
             let batch_stats = process_discovery_batch(
-                store,
+                DiscoveryBatchContext {
+                    store,
+                    seed_lookup: &seed_lookup,
+                    company_seed_lookup: &company_seed_lookup,
+                    llm: &llm,
+                    person_scraper: person_scraper.as_ref(),
+                    tor_client: tor_client.as_ref(),
+                    max_onion_people,
+                    now,
+                    max_llm_candidates,
+                    batch_label: &batch_label,
+                },
                 batch_discoveries,
                 &mut known_name_keys,
-                &seed_lookup,
-                &company_seed_lookup,
-                &llm,
-                person_scraper.as_ref(),
-                tor_client.as_ref(),
-                max_onion_people,
                 &mut onion_enriched_people,
-                now,
-                max_llm_candidates,
-                &batch_label,
             )
             .await;
 
@@ -2240,19 +2260,21 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
                     .await;
                 let batch_label = format!("person_network_{}", person_batches_processed);
                 let batch_stats = process_discovery_batch(
-                    store,
+                    DiscoveryBatchContext {
+                        store,
+                        seed_lookup: &seed_lookup,
+                        company_seed_lookup: &company_seed_lookup,
+                        llm: &llm,
+                        person_scraper: person_scraper.as_ref(),
+                        tor_client: tor_client.as_ref(),
+                        max_onion_people,
+                        now,
+                        max_llm_candidates,
+                        batch_label: &batch_label,
+                    },
                     batch_discoveries,
                     &mut known_name_keys,
-                    &seed_lookup,
-                    &company_seed_lookup,
-                    &llm,
-                    person_scraper.as_ref(),
-                    tor_client.as_ref(),
-                    max_onion_people,
                     &mut onion_enriched_people,
-                    now,
-                    max_llm_candidates,
-                    &batch_label,
                 )
                 .await;
 

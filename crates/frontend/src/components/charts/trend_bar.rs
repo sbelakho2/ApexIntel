@@ -17,6 +17,12 @@ impl BarSeries {
     }
 }
 
+/// A rendered bar rectangle: `(x, y, width, height, fill color, value)`.
+type BarRect = (f64, f64, f64, f64, &'static str, f64);
+
+/// A single x-axis group of rendered bars.
+type BarGroup = Vec<BarRect>;
+
 /// Simple bar chart for weekly/monthly counts.
 ///
 /// Renders SVG rect elements for each bar with optional Y-axis labels
@@ -231,7 +237,7 @@ impl TrendBarChart {
         }
 
         // ── Multi-group bar chart ─────────────────────────────────────
-        let mut groups: Vec<Vec<(f64, f64, f64, f64, &'static str, f64)>> = Vec::new();
+        let mut groups: Vec<BarGroup> = Vec::new();
 
         for gi in 0..n_groups {
             let group_x = pad_left + gi as f64 * group_width + 2.0;

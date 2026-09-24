@@ -40,6 +40,26 @@ pub use win_loss_analyzer::{
     ClosedDeal, LossReason, WinLossAnalysis, WinLossAnalyzer, WinLossTrend,
 };
 
+/// Inputs shared by battlecard section generation and regeneration calls.
+///
+/// Bundles the entity profiles, evidence, and identifiers so the engine entry
+/// points stay within the clippy argument-count limit.
+#[derive(Debug, Clone, Copy)]
+pub struct BattlecardGenerationContext<'a> {
+    /// The competitor being compared against.
+    pub competitor: &'a EntityProfile,
+    /// The company the battlecard is generated for.
+    pub our_company: &'a EntityProfile,
+    /// Recent insights mentioning the competitor (evidence for synthesis).
+    pub recent_insights: &'a [Insight],
+    /// Real-data context (closed deals + competitor pricing).
+    pub ctx: &'a BattlecardContext,
+    /// Persisted identifier of `our_company`.
+    pub our_company_id: Uuid,
+    /// Persisted identifier of `competitor`.
+    pub competitor_id: Uuid,
+}
+
 /// The top-level battlecard engine: orchestrates generation of all sections.
 pub struct BattlecardEngine {
     generator: BattlecardGenerator,
@@ -111,14 +131,18 @@ impl BattlecardEngine {
     pub fn regenerate_section(
         &self,
         section: &str,
-        competitor: &EntityProfile,
-        our_company: &EntityProfile,
-        recent_insights: &[Insight],
-        ctx: &BattlecardContext,
-        our_company_id: Uuid,
-        competitor_id: Uuid,
+        context: BattlecardGenerationContext<'_>,
         _existing: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
+        let BattlecardGenerationContext {
+            competitor,
+            our_company,
+            recent_insights,
+            ctx,
+            our_company_id,
+            competitor_id,
+        } = context;
+
         match section {
             "positioning" => {
                 let data = self.generator.generate_positioning(competitor, our_company);

@@ -23,6 +23,12 @@ pub(crate) const CDP_CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Response channels for in-flight commands, keyed by command id.
+type PendingResponses = Arc<AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+
+/// Network trackers for flattened sessions, keyed by session id.
+type SessionTrackers = Arc<AsyncMutex<HashMap<String, Arc<NetworkTracker>>>>;
+
 /// Counts network requests that Chrome reported but has not finished.
 #[derive(Debug, Default)]
 pub(crate) struct NetworkTracker {
@@ -65,8 +71,8 @@ impl NetworkTracker {
 /// Connected CDP browser endpoint.
 pub(crate) struct CdpClient {
     commands: mpsc::UnboundedSender<Message>,
-    pending: Arc<AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
-    sessions: Arc<AsyncMutex<HashMap<String, Arc<NetworkTracker>>>>,
+    pending: PendingResponses,
+    sessions: SessionTrackers,
     next_id: AtomicU64,
 }
 
@@ -76,10 +82,8 @@ impl CdpClient {
             .await
             .with_context(|| format!("connecting to Chromium DevTools endpoint {ws_url}"))?;
 
-        let pending: Arc<AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>> =
-            Arc::new(AsyncMutex::new(HashMap::new()));
-        let sessions: Arc<AsyncMutex<HashMap<String, Arc<NetworkTracker>>>> =
-            Arc::new(AsyncMutex::new(HashMap::new()));
+        let pending: PendingResponses = Arc::new(AsyncMutex::new(HashMap::new()));
+        let sessions: SessionTrackers = Arc::new(AsyncMutex::new(HashMap::new()));
 
         let (sink, mut source) = stream.split();
         let (commands, command_rx) = mpsc::unbounded_channel::<Message>();
@@ -193,11 +197,7 @@ async fn writer_loop(
     let _ = sink.close().await;
 }
 
-async fn dispatch(
-    value: &Value,
-    pending: &Arc<AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
-    sessions: &Arc<AsyncMutex<HashMap<String, Arc<NetworkTracker>>>>,
-) {
+async fn dispatch(value: &Value, pending: &PendingResponses, sessions: &SessionTrackers) {
     if let Some(id) = value.get("id").and_then(Value::as_u64) {
         if let Some(sender) = pending.lock().await.remove(&id) {
             let _ = sender.send(Ok(value.clone()));
@@ -216,10 +216,7 @@ async fn dispatch(
     }
 }
 
-async fn fail_pending(
-    pending: &Arc<AsyncMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
-    reason: &str,
-) {
+async fn fail_pending(pending: &PendingResponses, reason: &str) {
     let mut pending = pending.lock().await;
     for (_, sender) in pending.drain() {
         let _ = sender.send(Err(reason.to_string()));
