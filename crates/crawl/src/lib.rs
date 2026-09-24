@@ -1,9 +1,9 @@
 pub mod academic;
 pub mod breach;
 pub mod browser;
-pub mod browser_renderer;
 pub mod change_detection;
 pub mod client;
+pub mod concurrency;
 pub mod contact_enrichment;
 pub mod ct;
 pub mod cve;
@@ -37,9 +37,16 @@ pub mod tor_client;
 pub mod trade_shows;
 
 // Re-export commonly used types for convenience
-pub use browser_renderer::{
-    BrowserRendererConfig, CacheStats, EnhancedBrowserRenderer, LazyLoadingDetector, RenderResult,
-    ScreenshotVerifier,
+pub use browser::{
+    from_env as browser_from_env, host_from_url, is_private_host, supports_url,
+    validate_browser_url, BrowserConfig, BrowserFetcher, BrowserPage, BrowserRequest, PageSample,
+    PersistentChromiumBrowser, ReadinessDecision, ReadinessReport, ReadinessTracker, RenderPolicy,
+    WaitReason,
+};
+pub use concurrency::{
+    clamp_http_concurrency, BrowserConcurrencyGate, BROWSER_CONTEXTS, BROWSER_PROCESSES,
+    DEFAULT_HTTP_CONCURRENCY, GLOBAL_BROWSER_CONCURRENCY, MAX_HTTP_CONCURRENCY,
+    MIN_HTTP_CONCURRENCY,
 };
 pub use errors::{CrawlError, CrawlFailureCategory};
 pub use retry_engine::{

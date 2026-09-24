@@ -20,7 +20,7 @@ use secrecy::{ExposeSecret, SecretString};
 /// | `MINIO_BUCKET`            | `apexintel`                   | Default bucket name                  |
 /// | `LLM_MODEL`               | `Qwen3-30B-A3B-Q4_K_M`        | Locally deployed quantized model     |
 /// | `ENABLE_PROXY_ROTATION`   | `false`                       | Enable only in production            |
-/// | `ENABLE_HEADLESS_BROWSER` | `false`                       | Enable only when scraping JS pages   |
+/// | `ENABLE_HEADLESS_BROWSER` | `false`                       | Enable only when scraping JS pages; requires Chromium under the non-root `apexintel` service account (no `--no-sandbox`) |
 /// | `ENABLE_WASM_PREVIEW`     | `true`                        | Gate the Rust/WASM preview UI        |
 /// | `CRAWL_INTERVAL_SECS`     | `21600` (6 h)                 | How often to re-crawl domains        |
 /// | `NIGHTLY_HOUR_UTC`        | `2`                           | UTC hour for the nightly pipeline    |
