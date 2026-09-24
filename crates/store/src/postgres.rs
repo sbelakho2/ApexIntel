@@ -346,39 +346,28 @@ pub enum AcknowledgeWarningResult {
     NotFound,
 }
 
-/// User settings preferences — persisted as a JSON blob in `user_settings.prefs`.
+/// User settings preferences — persisted as a JSON blob in the
+/// `user_preferences.preferences` JSON object under the `settings_page` key
+/// (see `crates/store/src/postgres/preferences.rs`).
+///
+/// Personal preferences only. System configuration (crawl scheduling, LLM,
+/// SMTP, source budgets, retention, alert policy, integrations) is owned by
+/// the services that read it from the environment at startup and is rendered
+/// read-only — it must never be duplicated here as a pretend control.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UserSettingsPrefs {
-    #[serde(default = "default_api_key_display")]
-    pub api_key_display: String,
-    #[serde(default = "default_backend_url_display")]
-    pub backend_url_display: String,
     #[serde(default = "default_session_timeout")]
     pub session_timeout_hours: i64,
     #[serde(default = "default_region_val")]
     pub default_region: String,
-    #[serde(default)]
-    pub auto_include_neighbors: bool,
-    #[serde(default)]
-    pub daily_crawl_enabled: bool,
-    #[serde(default = "default_crawl_window")]
-    pub crawl_window: String,
-    #[serde(default)]
-    pub slack_enabled: bool,
     #[serde(default = "default_min_severity")]
     pub minimum_severity: String,
     #[serde(default)]
-    pub auto_cleanup_enabled: bool,
-    #[serde(default = "default_export_format")]
-    pub export_format: String,
-    #[serde(default = "default_retention_period")]
-    pub retention_period: String,
+    pub critical_only_enabled: bool,
     #[serde(default)]
     pub email_digest_enabled: bool,
     #[serde(default = "default_notification_frequency")]
     pub notification_frequency: String,
-    #[serde(default)]
-    pub critical_only_enabled: bool,
     #[serde(default)]
     pub email_digest_recipients: String,
     #[serde(default)]
@@ -389,31 +378,19 @@ pub struct UserSettingsPrefs {
     pub email_digest_weekday: String,
     #[serde(default)]
     pub email_digest_last_sent_at: Option<DateTime<Utc>>,
+    /// Data table density: "comfortable" | "compact".
+    #[serde(default = "default_table_layout")]
+    pub table_layout: String,
 }
 
-fn default_api_key_display() -> String {
-    "(not configured)".into()
-}
-fn default_backend_url_display() -> String {
-    "direct Axum service".into()
-}
 fn default_session_timeout() -> i64 {
     24
 }
 fn default_region_val() -> String {
     "Global".into()
 }
-fn default_crawl_window() -> String {
-    "00:00-06:00 UTC".into()
-}
 fn default_min_severity() -> String {
     "high".into()
-}
-fn default_export_format() -> String {
-    "JSON".into()
-}
-fn default_retention_period() -> String {
-    "90 days".into()
 }
 fn default_notification_frequency() -> String {
     "Daily".into()
@@ -424,30 +401,25 @@ fn default_digest_time() -> String {
 fn default_digest_weekday() -> String {
     "Mon".into()
 }
+fn default_table_layout() -> String {
+    "comfortable".into()
+}
 
 impl Default for UserSettingsPrefs {
     fn default() -> Self {
         Self {
-            api_key_display: default_api_key_display(),
-            backend_url_display: default_backend_url_display(),
             session_timeout_hours: default_session_timeout(),
             default_region: default_region_val(),
-            auto_include_neighbors: false,
-            daily_crawl_enabled: true,
-            crawl_window: default_crawl_window(),
-            slack_enabled: false,
             minimum_severity: default_min_severity(),
-            auto_cleanup_enabled: false,
-            export_format: default_export_format(),
-            retention_period: default_retention_period(),
+            critical_only_enabled: false,
             email_digest_enabled: false,
             notification_frequency: default_notification_frequency(),
-            critical_only_enabled: false,
             email_digest_recipients: String::new(),
             email_digest_categories: Vec::new(),
             email_digest_time_cet: default_digest_time(),
             email_digest_weekday: default_digest_weekday(),
             email_digest_last_sent_at: None,
+            table_layout: default_table_layout(),
         }
     }
 }

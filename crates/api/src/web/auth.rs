@@ -20,8 +20,8 @@ use subtle::ConstantTimeEq;
 
 use crate::auth::ApiRole;
 use crate::middleware::session::{
-    clear_session_cookie_headers, create_session_token, session_cookie_header, SessionClaims,
-    SESSION_TTL_MS, SESSION_VERSION,
+    clear_session_cookie_headers, create_session_token, session_cookie_header,
+    session_ttl_ms_for_hours, SessionClaims, SESSION_TTL_MS, SESSION_VERSION,
 };
 
 #[derive(Template)]
@@ -161,7 +161,15 @@ pub async fn login_page() -> impl IntoResponse {
 }
 
 /// POST /login — validate credentials, set session cookie, redirect.
-pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
+///
+/// The session lifetime comes from the user's persisted personal preferences
+/// (`user_preferences.settings_page.session_timeout_hours`): both the signed
+/// `exp` claim and the cookie `Max-Age` derive from it, so the setting is
+/// enforced server-side instead of being a display-only control.
+pub async fn login_submit(
+    parts: axum::http::request::Parts,
+    Form(form): Form<LoginForm>,
+) -> Response {
     let session_secret = std::env::var("SESSION_SECRET").unwrap_or_default();
     let users = load_web_users();
 
@@ -191,13 +199,27 @@ pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
         .into_response();
     }
 
+    let session_ttl_ms = match parts
+        .extensions
+        .get::<std::sync::Arc<apex_store::postgres::PgStore>>()
+    {
+        Some(store) => store
+            .get_user_settings_prefs(&user.username)
+            .await
+            .ok()
+            .flatten()
+            .map(|prefs| session_ttl_ms_for_hours(prefs.session_timeout_hours))
+            .unwrap_or(SESSION_TTL_MS),
+        None => SESSION_TTL_MS,
+    };
+
     let now_ms = chrono::Utc::now().timestamp_millis();
     let claims = SessionClaims {
         user_id: user.user_id().to_string(),
         username: user.username.clone(),
         role: user.api_role(),
         issued_at: now_ms,
-        expires_at: now_ms + SESSION_TTL_MS,
+        expires_at: now_ms + session_ttl_ms,
         session_version: SESSION_VERSION,
     };
 
@@ -208,7 +230,8 @@ pub async fn login_submit(Form(form): Form<LoginForm>) -> Response {
 
     let mut headers = HeaderMap::new();
     headers.insert(header::LOCATION, HeaderValue::from_static("/"));
-    if let Ok(cookie) = HeaderValue::from_str(&session_cookie_header(&token)) {
+    if let Ok(cookie) = HeaderValue::from_str(&session_cookie_header(&token, session_ttl_ms / 1000))
+    {
         headers.append(header::SET_COOKIE, cookie);
     }
     (StatusCode::SEE_OTHER, headers).into_response()
