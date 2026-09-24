@@ -256,6 +256,7 @@ pub(crate) struct WorkspacesPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub workspaces: Vec<WorkspaceItem>,
     pub total: usize,
     pub open_count: usize,
@@ -270,6 +271,7 @@ pub(crate) struct WorkspaceDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub workspace: WorkspaceItem,
     pub assignments: Vec<AssignmentItem>,
     pub shares: Vec<ShareItem>,
@@ -286,6 +288,7 @@ pub(crate) struct QueuePage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub items: Vec<QueueItem>,
     pub total: usize,
     pub pending_count: usize,
@@ -300,6 +303,7 @@ pub(crate) struct ActivityPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub items: Vec<ActivityItem>,
 }
 
@@ -311,6 +315,7 @@ pub(crate) struct SupplierRiskPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub entries: Vec<SupplierRiskItem>,
     pub total: usize,
     pub active_count: usize,
@@ -324,6 +329,7 @@ pub(crate) struct PipelinePage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub opportunities: Vec<PipelineOpportunityItem>,
     pub total: usize,
 }
@@ -336,6 +342,7 @@ pub(crate) struct EvidencePage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub items: Vec<EvidenceItem>,
     pub total: usize,
 }
@@ -348,6 +355,7 @@ pub(crate) struct TeamAssignmentsPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub assignments: Vec<TeamAssignmentItem>,
     pub total: usize,
 }
@@ -439,6 +447,7 @@ pub async fn list_workspaces(
     let page = WorkspacesPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -463,6 +472,7 @@ pub struct WorkspaceNewPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 }
 
 pub async fn new_workspace_page(
@@ -481,6 +491,7 @@ pub async fn new_workspace_page(
     let page = WorkspaceNewPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -615,6 +626,7 @@ pub async fn get_workspace(
     let page = WorkspaceDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -745,6 +757,7 @@ pub async fn list_queue(
     let page = QueuePage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -833,6 +846,7 @@ pub async fn list_activity(
     let page = ActivityPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -887,6 +901,7 @@ pub async fn list_supplier_risks(
     let page = SupplierRiskPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -968,6 +983,7 @@ pub async fn list_pipeline(
     let page = PipelinePage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -1060,6 +1076,7 @@ pub async fn list_evidence(
     let page = EvidencePage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -1136,6 +1153,7 @@ pub async fn list_team_assignments(
     let page = TeamAssignmentsPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

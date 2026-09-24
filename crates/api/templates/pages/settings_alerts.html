@@ -24,6 +24,9 @@
 {% if let Some(message) = save_error %}
 <div class="apex-alert apex-alert-danger mb-4 text-xs font-semibold">{{ message }}</div>
 {% endif %}
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card border border-rams-red/40 p-4 mb-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
 
 <div class="grid gap-6">
   {# ── Global Defaults ─────────────────────────────────────────────────── #}
@@ -79,7 +82,7 @@
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Entity Overrides</h2>
       <span class="text-[10px] text-rams-muted">{{ entity_count }} configured</span>
     </div>
-    {% if entity_configs.is_empty() %}
+    {% if entity_configs.is_empty() && degraded_notice.is_none() %}
     <div class="p-8 text-center">
       <p class="text-xs text-rams-muted">No entity-specific overrides yet. All entities use global defaults.</p>
       <p class="text-xs text-rams-muted mt-1">Set an override via the entity detail page or the API.</p>

@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use crate::system_status::{format_age, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS};
 use apex_store::postgres::{PgStore, UserSettingsPrefs, WarningListFilters};
 
 // ─── Template data ──────────────────────────────────────────────────────────
@@ -48,6 +49,96 @@ pub struct HealthCheckInfo {
     pub status: String,
 }
 
+/// Measured health for the settings page — replaces the previously
+/// hard-coded "Healthy" status and health-check list.
+#[derive(Clone, Debug)]
+pub struct SystemHealthView {
+    pub api_status: String,
+    pub health_checks: Vec<HealthCheckInfo>,
+}
+
+impl SystemHealthView {
+    pub async fn probe(store: &PgStore) -> Self {
+        let database_ok = store.get_database_size().await.is_ok();
+        let mut checks = vec![HealthCheckInfo {
+            name: "api".into(),
+            status: if database_ok {
+                "Healthy".into()
+            } else {
+                "Unhealthy".into()
+            },
+        }];
+
+        match store.latest_service_heartbeat("worker").await {
+            Ok(Some(row)) => {
+                let age = chrono::Utc::now().signed_duration_since(row.last_seen_at);
+                let stale = age.num_seconds() > WORKER_HEARTBEAT_STALE_AFTER_SECS;
+                checks.push(HealthCheckInfo {
+                    name: "worker".into(),
+                    status: if stale {
+                        format!("Degraded · heartbeat {} ago", format_age(age))
+                    } else {
+                        format!("Healthy · heartbeat {} ago", format_age(age))
+                    },
+                });
+            }
+            Ok(None) => checks.push(HealthCheckInfo {
+                name: "worker".into(),
+                status: "Degraded · no heartbeat recorded".into(),
+            }),
+            Err(error) => checks.push(HealthCheckInfo {
+                name: "worker".into(),
+                status: format!("Unavailable · {error}"),
+            }),
+        }
+
+        match store.newest_observation_ts().await {
+            Ok(Some(ts)) => {
+                let age = chrono::Utc::now().signed_duration_since(ts);
+                let stale = age.num_seconds() > DATA_FRESH_WITHIN_SECS;
+                checks.push(HealthCheckInfo {
+                    name: "data_freshness".into(),
+                    status: if stale {
+                        format!("Stale · newest observation {} ago", format_age(age))
+                    } else {
+                        format!("Fresh · newest observation {} ago", format_age(age))
+                    },
+                });
+            }
+            Ok(None) => checks.push(HealthCheckInfo {
+                name: "data_freshness".into(),
+                status: "Unknown · no observations recorded".into(),
+            }),
+            Err(error) => checks.push(HealthCheckInfo {
+                name: "data_freshness".into(),
+                status: format!("Unavailable · {error}"),
+            }),
+        }
+
+        let check_is_healthy = |name: &str, prefix: &str| {
+            checks
+                .iter()
+                .find(|check| check.name == name)
+                .is_some_and(|check| check.status.starts_with(prefix))
+        };
+        let worker_ok = check_is_healthy("worker", "Healthy");
+        let data_ok = check_is_healthy("data_freshness", "Fresh");
+        let api_status = if !database_ok {
+            "Unhealthy"
+        } else if worker_ok && data_ok {
+            "Healthy"
+        } else {
+            "Degraded"
+        }
+        .to_string();
+
+        Self {
+            api_status,
+            health_checks: checks,
+        }
+    }
+}
+
 // ─── Template ───────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -58,6 +149,7 @@ pub struct SettingsPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub notifications: Vec<NotificationSetting>,
     pub retention_policies: Vec<RetentionPolicy>,
@@ -240,6 +332,7 @@ fn render_settings_page(
     save_success: Option<String>,
     save_error: Option<String>,
     prefs: &UserSettingsPrefs,
+    health: &SystemHealthView,
 ) -> SettingsPage {
     SettingsPage {
         current_path: ctx.current_path,
@@ -247,27 +340,19 @@ fn render_settings_page(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        status_strip: ctx.status_strip,
         notifications: vec![],
         retention_policies: vec![],
         api_keys: vec![],
         data_freshness_interval: 300,
         session_timeout_hours: prefs.session_timeout_hours,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        api_status: "Healthy".to_string(),
-        endpoints_count: 45,
+        api_status: health.api_status.clone(),
+        endpoints_count: crate::routes::all_endpoints().len() as i64,
         uptime_hours: None,
         api_key_display: prefs.api_key_display.clone(),
         backend_url_display: prefs.backend_url_display.clone(),
-        health_checks: vec![
-            HealthCheckInfo {
-                name: "api".into(),
-                status: "Healthy".into(),
-            },
-            HealthCheckInfo {
-                name: "routes".into(),
-                status: "Healthy".into(),
-            },
-        ],
+        health_checks: health.health_checks.clone(),
         default_region: prefs.default_region.clone(),
         auto_include_neighbors: prefs.auto_include_neighbors,
         daily_crawl_enabled: prefs.daily_crawl_enabled,
@@ -335,8 +420,9 @@ pub async fn settings_page(
         .ok()
         .flatten()
         .unwrap_or_default();
+    let health = SystemHealthView::probe(&store).await;
 
-    super::render_template(&render_settings_page(ctx, None, None, &prefs))
+    super::render_template(&render_settings_page(ctx, None, None, &prefs, &health))
 }
 
 /// POST /settings — validate and save settings changes.
@@ -353,6 +439,7 @@ pub async fn save_settings(
         .await
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/settings", unack);
+    let health = SystemHealthView::probe(&store).await;
 
     let mut prefs = settings_from_form(&form);
     let backend_url = prefs.backend_url_display.clone();
@@ -362,6 +449,7 @@ pub async fn save_settings(
             None,
             Some("Backend URL cannot be empty.".to_string()),
             &prefs,
+            &health,
         ));
     }
 
@@ -373,6 +461,7 @@ pub async fn save_settings(
                 None,
                 Some("Add at least one digest recipient when email digest is enabled.".to_string()),
                 &prefs,
+                &health,
             ));
         }
         let invalid: Vec<String> = recipients
@@ -389,6 +478,7 @@ pub async fn save_settings(
                     invalid.join(", ")
                 )),
                 &prefs,
+                &health,
             ));
         }
         if !is_valid_hhmm(&prefs.email_digest_time_cet) {
@@ -397,6 +487,7 @@ pub async fn save_settings(
                 None,
                 Some("Digest send time must use HH:MM format (CET).".to_string()),
                 &prefs,
+                &health,
             ));
         }
         if prefs.notification_frequency.eq_ignore_ascii_case("weekly")
@@ -407,6 +498,7 @@ pub async fn save_settings(
                 None,
                 Some("For weekly digest, select a valid weekday.".to_string()),
                 &prefs,
+                &health,
             ));
         }
     }
@@ -428,6 +520,7 @@ pub async fn save_settings(
             None,
             Some("Failed to save settings. Please retry.".to_string()),
             &prefs,
+            &health,
         ));
     }
 
@@ -436,5 +529,6 @@ pub async fn save_settings(
         Some("Settings saved successfully.".to_string()),
         None,
         &prefs,
+        &health,
     ))
 }

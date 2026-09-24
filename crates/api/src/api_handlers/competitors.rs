@@ -39,14 +39,39 @@ pub(crate) async fn list_competitors(
         Ok(pagination) => pagination,
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
-    let total = state.store.count_competitors().await.unwrap_or(0).max(0) as u64;
+    let total_state = DataState::from_result(
+        state.store.count_competitors().await,
+        "failed to count competitors",
+        |_| false,
+    );
+    if total_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to count competitors",
+                &total_state,
+            ))),
+        );
+    }
+    let total = total_state.into_loaded_or(0).max(0) as u64;
+
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
-        .store
-        .list_competitors(per_page as i64, offset)
-        .await
-        .unwrap_or_default();
+    let items_state = DataState::from_result(
+        state.store.list_competitors(per_page as i64, offset).await,
+        "failed to list competitors",
+        |rows| rows.is_empty(),
+    );
+    if items_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to list competitors",
+                &items_state,
+            ))),
+        );
+    }
+    let items = items_state.into_items();
     let payload = PagedResponse {
         items,
         total,
@@ -153,6 +178,7 @@ pub(crate) async fn list_all_competitor_changes(
 #[cfg(test)]
 mod tests {
     use super::{normalize_all_competitor_changes_pagination, parse_competitor_uuid};
+    use crate::DataState;
 
     #[test]
     fn test_normalize_all_competitor_changes_pagination_defaults() {
@@ -176,5 +202,15 @@ mod tests {
 
         assert_eq!(err.http_status(), 400);
         assert_eq!(err.message, "Invalid UUID");
+    }
+
+    #[test]
+    fn degraded_repository_load_maps_to_incident_error_not_empty_list() {
+        let state: DataState<Vec<serde_json::Value>> = DataState::degraded("inc-abcd1234");
+        let err = crate::degraded_api_error("Failed to list competitors", &state);
+
+        assert_eq!(err.http_status(), 500);
+        assert!(err.message.contains("incident inc-abcd1234"));
+        assert!(err.message.contains("data unavailable"));
     }
 }

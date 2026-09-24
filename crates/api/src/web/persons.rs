@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PersonListFilters, PersonOrderBy, PgStore, WarningListFilters};
 
 fn normalize_percent(value: f64) -> f64 {
@@ -361,6 +362,7 @@ pub struct PersonDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub briefing_mode: bool,
 
     pub id: String,
@@ -379,6 +381,8 @@ pub struct PersonDetailPage {
     pub insight_count: i64,
     pub created_at: String,
     pub updated_at: String,
+    /// Rendered when person queries failed, instead of "no results".
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -394,6 +398,7 @@ pub struct PersonsPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub persons: Vec<PersonListCard>,
     pub total_persons: i64,
@@ -406,6 +411,8 @@ pub struct PersonsPage {
     pub active_filters: i64,
     pub reset_href: String,
     pub search_query: String,
+    /// Rendered when person queries failed, instead of "no results".
+    pub degraded_notice: Option<String>,
 }
 
 fn url_encode_component(input: &str) -> String {
@@ -463,19 +470,22 @@ pub async fn list_persons(
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/persons", unack);
 
-    let all_rows = store
-        .list_persons(
-            &PersonListFilters::default(),
-            Some(PersonOrderBy::UpdatedAt),
-            true,
-            500,
-            0,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to list persons for web page: {e}");
-            vec![]
-        });
+    let mut degraded_notice: Option<String> = None;
+    let all_rows_state = DataState::from_result(
+        store
+            .list_persons(
+                &PersonListFilters::default(),
+                Some(PersonOrderBy::UpdatedAt),
+                true,
+                500,
+                0,
+            )
+            .await,
+        "failed to list persons for web page",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&all_rows_state, &mut degraded_notice);
+    let all_rows = all_rows_state.into_items();
 
     let selected_region = query.region.clone().unwrap_or_default();
     let selected_priority = query.priority.clone().unwrap_or_default();
@@ -653,9 +663,11 @@ pub async fn list_persons(
     let tpl = PersonsPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        degraded_notice,
         persons,
         total_persons,
         priority_a,
@@ -731,11 +743,16 @@ pub async fn get_person(
         None => String::new(),
     };
 
+    let mut degraded_notice: Option<String> = None;
+
     // Fetch role history
-    let rh_rows = store
-        .get_role_history_for_person(uuid)
-        .await
-        .unwrap_or_default();
+    let role_history_state = DataState::from_result(
+        store.get_role_history_for_person(uuid).await,
+        "failed to fetch person role history",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&role_history_state, &mut degraded_notice);
+    let rh_rows = role_history_state.into_items();
     let mut role_history: Vec<PersonRoleHistory> = rh_rows
         .iter()
         .map(|rh| PersonRoleHistory {
@@ -807,10 +824,13 @@ pub async fn get_person(
     // Fetch peers
     let rf = person.role_family.as_deref().unwrap_or("Unknown");
     let region = person.region.as_deref().unwrap_or("");
-    let peer_rows = store
-        .get_person_peers(uuid, rf, region, 10)
-        .await
-        .unwrap_or_default();
+    let peers_state = DataState::from_result(
+        store.get_person_peers(uuid, rf, region, 10).await,
+        "failed to fetch person peers",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&peers_state, &mut degraded_notice);
+    let peer_rows = peers_state.into_items();
     let peers: Vec<PersonPeer> = peer_rows
         .iter()
         .map(|p| PersonPeer {
@@ -821,24 +841,36 @@ pub async fn get_person(
         })
         .collect();
 
-    let warning_count_person = store
-        .get_warnings_by_entity_ids(&[uuid], 200)
-        .await
-        .map(|rows| rows.len() as i64)
-        .unwrap_or(0);
-    let insight_count = store
-        .get_insights_by_entity_ids(&[uuid], 200)
-        .await
-        .map(|rows| rows.len() as i64)
-        .unwrap_or(0);
+    let warning_count_state = DataState::from_result(
+        store.get_warnings_by_entity_ids(&[uuid], 200).await,
+        "failed to fetch person warning count",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&warning_count_state, &mut degraded_notice);
+    let warning_count_person = warning_count_state.into_loaded_or_default().len() as i64;
+    let insight_count_state = DataState::from_result(
+        store.get_insights_by_entity_ids(&[uuid], 200).await,
+        "failed to fetch person insight count",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&insight_count_state, &mut degraded_notice);
+    let insight_count = insight_count_state.into_loaded_or_default().len() as i64;
 
-    let artifact_count = store
-        .get_artifacts_for_person(uuid, 200)
-        .await
-        .map(|rows| rows.len())
-        .unwrap_or(0);
+    let artifact_count_state = DataState::from_result(
+        store.get_artifacts_for_person(uuid, 200).await,
+        "failed to fetch person artifacts",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&artifact_count_state, &mut degraded_notice);
+    let artifact_count = artifact_count_state.into_loaded_or_default().len();
 
-    let person_changes = store.get_person_changes(uuid, 10).await.unwrap_or_default();
+    let person_changes_state = DataState::from_result(
+        store.get_person_changes(uuid, 10).await,
+        "failed to fetch person changes",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&person_changes_state, &mut degraded_notice);
+    let person_changes = person_changes_state.into_items();
     let recent_change_count = person_changes.len();
 
     let pv = derive_profile_priority_vector(
@@ -930,9 +962,11 @@ pub async fn get_person(
     let tpl = PersonDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        degraded_notice,
         briefing_mode: query.briefing.unwrap_or(false),
         id: person.id.to_string(),
         name: person.name.clone(),

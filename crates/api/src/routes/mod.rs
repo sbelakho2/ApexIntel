@@ -9,6 +9,7 @@ use serde_json::{json, Map, Value};
 
 pub mod admin;
 pub mod battlecards;
+pub mod capabilities;
 pub mod collaboration;
 pub mod companies;
 pub mod dossiers;
@@ -39,6 +40,7 @@ pub mod paths {
     pub const HEALTH_LIVE: &str = "/api/health/live";
     pub const HEALTH_READY: &str = "/api/health/ready";
     pub const HEALTH_DEEP: &str = "/api/health/deep";
+    pub const HEALTH_CAPABILITIES: &str = "/api/health/capabilities";
     pub const ENDPOINTS: &str = "/api/endpoints";
     pub const OPENAPI_JSON: &str = "/api/openapi.json";
     pub const DOCS: &str = "/api/docs";
@@ -397,6 +399,13 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             description: "Deep health checks for dependent services",
             auth_required: true,
             min_role: "admin",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::HEALTH_CAPABILITIES,
+            description: "Probed capability health for the UI and operations",
+            auth_required: false,
+            min_role: "public",
         },
         // LLM
         EndpointDef {
@@ -1013,7 +1022,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 99);
+        assert_eq!(eps.len(), 100);
     }
 
     #[test]

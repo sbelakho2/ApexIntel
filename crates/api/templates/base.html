@@ -358,16 +358,16 @@
         <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 hidden lg:block">
           <div class="apex-status-strip">
             <div class="apex-status-strip-item">
-              <span class="apex-status-strip-dot apex-status-strip-dot-ok"></span>
-              <span>System Online</span>
+              <span class="apex-status-strip-dot {% if status_strip.system_ok %}apex-status-strip-dot-ok{% else %}apex-status-strip-dot-warn{% endif %}"></span>
+              <span data-system-status="{% if status_strip.system_ok %}ok{% else %}degraded{% endif %}">{{ status_strip.system_status }}</span>
             </div>
             <div class="apex-status-strip-item">
               <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-rams-muted">Operator:</span>
               <span class="text-rams-foreground">{{ username }}</span>
             </div>
             <div class="apex-status-strip-item">
-              <span id="data-freshness-indicator" class="apex-status-strip-dot apex-status-strip-dot-ok"></span>
-              <span id="data-freshness-text">Data Fresh</span>
+              <span id="data-freshness-indicator" class="apex-status-strip-dot {% if status_strip.data_fresh %}apex-status-strip-dot-ok{% else %}apex-status-strip-dot-warn{% endif %}"></span>
+              <span id="data-freshness-text" data-freshness="{% if status_strip.data_fresh %}fresh{% else %}stale{% endif %}">{{ status_strip.data_freshness }}</span>
             </div>
           </div>
         </div>

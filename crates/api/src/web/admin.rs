@@ -14,8 +14,11 @@ use axum::{
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use crate::system_status::{format_age, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS};
+use apex_core::data_state::DataState;
 use apex_crawl::sources::{all_sources, source_coverage_summary, SourceCoverageSummary};
 use apex_store::postgres::{PgStore, WarningListFilters};
+use apex_store::tantivy_index::SearchIndex;
 
 // ─── Template data ──────────────────────────────────────────────────────────
 
@@ -123,6 +126,7 @@ pub struct AdminPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub crawl_statuses: Vec<CrawlStatus>,
     pub poi_coverage: Vec<PoiCoverage>,
@@ -180,6 +184,7 @@ fn validation_issue_count(value: &serde_json::Value) -> usize {
 pub async fn admin_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
+    Extension(search_index): Extension<Arc<SearchIndex>>,
 ) -> Response {
     if !session.can_admin() {
         tracing::warn!(
@@ -266,11 +271,96 @@ pub async fn admin_page(
     let total_observations = crawl.as_ref().map(|c| c.total_fingerprints).unwrap_or(0);
     let total_entities = poi_cov.as_ref().map(|p| p.total_persons).unwrap_or(0);
 
-    // B316: real database/process statistics.
-    let db_size = store.get_database_size().await.unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch database size: {e}");
-        "—".to_string()
-    });
+    // B316: real database/process statistics. Each system metric is measured
+    // from a probe instead of being hard-coded to "Connected"/"Ready".
+    let db_size_state = DataState::from_result(
+        store.get_database_size().await,
+        "failed to fetch database size",
+        |_| false,
+    );
+    let db_size = match &db_size_state {
+        DataState::Loaded(size) => size.clone(),
+        DataState::Empty | DataState::Degraded { .. } => "—".to_string(),
+    };
+    let database_metric = SystemMetric {
+        name: "Database".into(),
+        value: if db_size_state.is_loaded() {
+            "Connected".into()
+        } else {
+            "Unreachable".into()
+        },
+        status: if db_size_state.is_loaded() {
+            "ok".into()
+        } else {
+            "error".into()
+        },
+    };
+
+    let docs = search_index.num_docs();
+    let search_index_metric = SystemMetric {
+        name: "Search Index".into(),
+        value: format!("{docs} documents"),
+        status: if docs > 0 {
+            "ok".into()
+        } else {
+            "warning".into()
+        },
+    };
+
+    let heartbeat_state = DataState::from_result(
+        store.latest_service_heartbeat("worker").await,
+        "failed to fetch worker heartbeat",
+        |row| row.is_none(),
+    );
+    let worker_metric = match &heartbeat_state {
+        DataState::Loaded(Some(row)) => {
+            let age = chrono::Utc::now().signed_duration_since(row.last_seen_at);
+            let stale = age.num_seconds() > WORKER_HEARTBEAT_STALE_AFTER_SECS;
+            SystemMetric {
+                name: "Worker Heartbeat".into(),
+                value: format!("{} ago", format_age(age)),
+                status: if stale { "warning".into() } else { "ok".into() },
+            }
+        }
+        DataState::Loaded(None) | DataState::Empty => SystemMetric {
+            name: "Worker Heartbeat".into(),
+            value: "No heartbeat recorded".into(),
+            status: "warning".into(),
+        },
+        DataState::Degraded { .. } => SystemMetric {
+            name: "Worker Heartbeat".into(),
+            value: "Unavailable".into(),
+            status: "error".into(),
+        },
+    };
+
+    let freshness_state = DataState::from_result(
+        store.newest_observation_ts().await,
+        "failed to fetch newest observation timestamp",
+        |ts| ts.is_none(),
+    );
+    let freshness_metric = match &freshness_state {
+        DataState::Loaded(Some(ts)) => {
+            let age = chrono::Utc::now().signed_duration_since(*ts);
+            let stale = age.num_seconds() > DATA_FRESH_WITHIN_SECS;
+            SystemMetric {
+                name: "Data Freshness".into(),
+                value: format!("newest {} ago", format_age(age)),
+                status: if stale { "warning".into() } else { "ok".into() },
+            }
+        }
+        DataState::Loaded(None) | DataState::Empty => SystemMetric {
+            name: "Data Freshness".into(),
+            value: "No observations".into(),
+            status: "warning".into(),
+        },
+        DataState::Degraded { .. } => SystemMetric {
+            name: "Data Freshness".into(),
+            value: "Unavailable".into(),
+            status: "error".into(),
+        },
+    };
+
     let uptime = fmt_process_uptime();
 
     // B316: real ingestion panel — observation volume/freshness per source
@@ -388,6 +478,7 @@ pub async fn admin_page(
     let tpl = AdminPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -395,16 +486,10 @@ pub async fn admin_page(
         poi_coverage,
         recipe_performance,
         system_metrics: vec![
-            SystemMetric {
-                name: "Database".into(),
-                value: "Connected".into(),
-                status: "ok".into(),
-            },
-            SystemMetric {
-                name: "Search Index".into(),
-                value: "Ready".into(),
-                status: "ok".into(),
-            },
+            database_metric,
+            search_index_metric,
+            worker_metric,
+            freshness_metric,
         ],
         queues: vec![],
         prompt_versions,

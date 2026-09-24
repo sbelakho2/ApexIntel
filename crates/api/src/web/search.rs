@@ -61,6 +61,7 @@ pub struct SearchPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub query: String,
     pub results: Vec<SearchResultItem>,
@@ -233,6 +234,7 @@ pub async fn search_page(
         let tpl = SearchPage {
             current_path: ctx.current_path,
             can_admin: ctx.can_admin,
+            status_strip: crate::system_status::StatusStrip::current(),
             username: ctx.username,
             warning_count: ctx.warning_count,
             theme: ctx.theme,

@@ -25,19 +25,42 @@ pub(crate) async fn list_staging_recipes(
         Ok(pagination) => pagination,
         Err(err) => return (StatusCode::BAD_REQUEST, Json(error_response(err))),
     };
-    let total = state
-        .store
-        .count_staging_recipes()
-        .await
-        .unwrap_or(0)
-        .max(0) as u64;
+    let total_state = DataState::from_result(
+        state.store.count_staging_recipes().await,
+        "failed to count staging recipes",
+        |_| false,
+    );
+    if total_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to count staging recipes",
+                &total_state,
+            ))),
+        );
+    }
+    let total = total_state.into_loaded_or(0).max(0) as u64;
+
     let clamped_page = clamp_page(page, per_page, total);
     let offset = ((clamped_page - 1) as i64) * (per_page as i64);
-    let items = state
-        .store
-        .list_staging_recipes(per_page as i64, offset)
-        .await
-        .unwrap_or_default();
+    let items_state = DataState::from_result(
+        state
+            .store
+            .list_staging_recipes(per_page as i64, offset)
+            .await,
+        "failed to list staging recipes",
+        |rows| rows.is_empty(),
+    );
+    if items_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to list staging recipes",
+                &items_state,
+            ))),
+        );
+    }
+    let items = items_state.into_items();
     let payload = PagedResponse {
         items,
         total,

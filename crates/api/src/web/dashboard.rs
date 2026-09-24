@@ -12,6 +12,8 @@ use axum::{response::IntoResponse, Extension};
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use crate::system_status::StatusStrip;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{InsightListFilters, PgStore, WarningListFilters};
 
 fn dashboard_reference_now() -> DateTime<Utc> {
@@ -195,8 +197,12 @@ pub struct DashboardPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: StatusStrip,
 
     // ── dashboard-specific ──
+    /// Rendered when any repository-backed load failed, so a failed query is
+    /// never presented as "no results".
+    pub degraded_notice: Option<String>,
     pub stats: Vec<StatCard>,
     pub recent_warnings: Vec<RecentWarning>,
     pub top_insights: Vec<TopInsight>,
@@ -221,24 +227,33 @@ pub async fn dashboard(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    // Fetch dashboard stats from DB (graceful degradation on error)
-    let stats_data = store.get_dashboard_stats().await.unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch dashboard stats: {e}");
-        Default::default()
-    });
+    // Fetch dashboard stats from DB. A failed query renders an explicit
+    // degraded marker instead of a silently zeroed dashboard.
+    let mut degraded_notice: Option<String> = None;
+    let stats_state = DataState::from_result(
+        store.get_dashboard_stats().await,
+        "failed to fetch dashboard stats",
+        |_| false,
+    );
+    DegradedNotice::capture(&stats_state, &mut degraded_notice);
+    let stats_data = stats_state.into_loaded_or_default();
 
     let unack_warnings = stats_data.unacknowledged_warnings as i64;
     let ctx = PageContext::from_session(&session, "/", unack_warnings);
+    let status_strip = ctx.status_strip.clone();
+    let data_freshness_text = status_strip.data_freshness.clone();
 
     // Fetch recent warnings (last 5)
     let warning_filters = WarningListFilters::default();
-    let recent_warning_rows = store
-        .list_warnings(&warning_filters, None, true, 5, 0)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to fetch recent warnings: {e}");
-            vec![]
-        });
+    let recent_warnings_state = DataState::from_result(
+        store
+            .list_warnings(&warning_filters, None, true, 5, 0)
+            .await,
+        "failed to fetch recent warnings",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&recent_warnings_state, &mut degraded_notice);
+    let recent_warning_rows = recent_warnings_state.into_items();
     let recent_warnings: Vec<RecentWarning> = recent_warning_rows
         .iter()
         .map(|w| RecentWarning {
@@ -255,13 +270,13 @@ pub async fn dashboard(
         exclude_internal: true,
         ..Default::default()
     };
-    let top_insight_rows = store
-        .list_insights(&insight_filters, 5, 0)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to fetch top insights: {e}");
-            vec![]
-        });
+    let top_insights_state = DataState::from_result(
+        store.list_insights(&insight_filters, 5, 0).await,
+        "failed to fetch top insights",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&top_insights_state, &mut degraded_notice);
+    let top_insight_rows = top_insights_state.into_items();
     let top_insights: Vec<TopInsight> = top_insight_rows
         .iter()
         .map(|i| TopInsight {
@@ -319,10 +334,15 @@ pub async fn dashboard(
     let new_warnings_24h = stats_data.new_warnings_24h;
     let new_insights_24h = stats_data.new_insights_24h;
 
-    let warning_rows = store
-        .list_warnings(&WarningListFilters::default(), None, true, 300, 0)
-        .await
-        .unwrap_or_default();
+    let warning_trend_state = DataState::from_result(
+        store
+            .list_warnings(&WarningListFilters::default(), None, true, 300, 0)
+            .await,
+        "failed to fetch warning trend",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&warning_trend_state, &mut degraded_notice);
+    let warning_rows = warning_trend_state.into_items();
     let mut daily: BTreeMap<String, WarningTrendDay> = BTreeMap::new();
     for warning in warning_rows {
         let day = warning.ts_utc.format("%m-%d").to_string();
@@ -428,8 +448,9 @@ pub async fn dashboard(
     }
 
     // Use page_fingerprints (pages crawled) + observations (pipeline events) as crawl proxy
-    let crawl_activity_rows: Vec<CrawlActivityRow> = sqlx::query_as::<_, CrawlActivityRow>(
-        r#"SELECT
+    let crawl_activity_result: Result<Vec<CrawlActivityRow>, sqlx::Error> =
+        sqlx::query_as::<_, CrawlActivityRow>(
+            r#"SELECT
                to_char(date_trunc('hour', h.hour), 'HH24:00') AS hour_label,
                COALESCE(pf.cnt, 0)::bigint AS success,
                COALESCE(obs.cnt, 0)::bigint AS errors
@@ -454,12 +475,18 @@ pub async fn dashboard(
            ) obs ON obs.hr = h.hour
            ORDER BY h.hour ASC
            LIMIT 24"#,
-    )
-    .bind(crawl_window_start)
-    .bind(reference_now)
-    .fetch_all(&store.pool)
-    .await
-    .unwrap_or_default();
+        )
+        .bind(crawl_window_start)
+        .bind(reference_now)
+        .fetch_all(&store.pool)
+        .await;
+    let crawl_activity_state = DataState::from_result(
+        crawl_activity_result,
+        "failed to fetch crawl activity",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&crawl_activity_state, &mut degraded_notice);
+    let crawl_activity_rows = crawl_activity_state.into_items();
     let crawl_max = crawl_activity_rows
         .iter()
         .map(|row| row.success.max(row.errors))
@@ -496,7 +523,7 @@ pub async fn dashboard(
         created_at: DateTime<Utc>,
     }
 
-    let activity_rows: Vec<ActivityRow> = sqlx::query_as::<_, ActivityRow>(
+    let activity_result: Result<Vec<ActivityRow>, sqlx::Error> = sqlx::query_as::<_, ActivityRow>(
         r#"SELECT action_type,
                   actor_name,
                   entity_type,
@@ -509,8 +536,13 @@ pub async fn dashboard(
             LIMIT 12"#,
     )
     .fetch_all(&store.pool)
-    .await
-    .unwrap_or_default();
+    .await;
+    let activity_state =
+        DataState::from_result(activity_result, "failed to fetch activity feed", |rows| {
+            rows.is_empty()
+        });
+    DegradedNotice::capture(&activity_state, &mut degraded_notice);
+    let activity_rows = activity_state.into_items();
 
     let activity: Vec<ActivityEvent> = activity_rows
         .into_iter()
@@ -575,6 +607,8 @@ pub async fn dashboard(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        status_strip,
+        degraded_notice,
 
         stats: vec![
             StatCard {
@@ -637,7 +671,7 @@ pub async fn dashboard(
         companies_tracked: stats_data.total_companies as i64,
         persons_tracked: stats_data.total_persons as i64,
         recipes_active: stats_data.active_recipes as i64,
-        data_freshness: "Live".into(),
+        data_freshness: data_freshness_text,
         portfolio_health: {
             let total_entities =
                 (stats_data.total_companies + stats_data.total_persons).max(1) as f64;
@@ -708,4 +742,78 @@ fn palette_color(index: usize) -> &'static str {
         "#E94F87", "#A3E635", "#6366F1", "#10B981",
     ];
     PALETTE[index % PALETTE.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system_status::StatusStrip;
+
+    fn degraded_page(notice: &str) -> DashboardPage {
+        DashboardPage {
+            current_path: "/".into(),
+            can_admin: false,
+            username: "analyst".into(),
+            warning_count: 0,
+            theme: String::new(),
+            status_strip: StatusStrip::unknown(),
+            degraded_notice: Some(notice.to_string()),
+            stats: vec![],
+            recent_warnings: vec![],
+            top_insights: vec![],
+            activity: vec![],
+            severity_breakdown: vec![],
+            donut_segments: vec![],
+            warning_trend: vec![],
+            crawl_activity: vec![],
+            region_slices: vec![],
+            companies_tracked: 0,
+            persons_tracked: 0,
+            recipes_active: 0,
+            data_freshness: "Data freshness unknown".into(),
+            portfolio_health: "Healthy".into(),
+            portfolio_health_class: String::new(),
+        }
+    }
+
+    #[test]
+    fn degraded_query_renders_degraded_marker_not_empty_states() {
+        let page =
+            degraded_page("Data unavailable — query failed at 14:03 UTC · incident inc-test123");
+        let html = page.render().expect("dashboard renders");
+
+        assert!(html.contains("incident inc-test123"));
+        assert!(html.contains("data-degraded=\"true\""));
+        assert!(!html.contains("No recent warnings"));
+        assert!(!html.contains("No recent insights"));
+        assert!(!html.contains("No activity yet"));
+        assert!(!html.contains("No regional coverage data"));
+    }
+
+    #[test]
+    fn empty_result_still_renders_empty_states() {
+        let mut page = degraded_page("unused");
+        page.degraded_notice = None;
+        let html = page.render().expect("dashboard renders");
+
+        assert!(!html.contains("incident inc-test123"));
+        assert!(html.contains("No recent warnings"));
+        assert!(html.contains("No recent insights"));
+    }
+
+    #[test]
+    fn status_strip_shows_measured_freshness_not_hardcoded_live() {
+        let mut page = degraded_page("unused");
+        page.degraded_notice = None;
+        page.status_strip = StatusStrip::from_parts(
+            true,
+            Some(chrono::Duration::seconds(15)),
+            Some(chrono::Duration::minutes(4)),
+        );
+        let html = page.render().expect("dashboard renders");
+
+        assert!(html.contains("Data current · newest observation 4m ago"));
+        assert!(html.contains("System Online"));
+        assert!(!html.contains(">Data Fresh<"));
+    }
 }

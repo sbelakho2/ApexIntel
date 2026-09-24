@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{CompanyListFilters, CompanyOrderBy, PgStore, WarningListFilters};
 
 // ─── Query params ───────────────────────────────────────────────────────────
@@ -156,6 +157,7 @@ pub struct CompaniesListPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub companies: Vec<CompanyListItem>,
     pub total: i64,
@@ -178,6 +180,8 @@ pub struct CompaniesListPage {
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
+    /// Rendered when the company query failed, instead of "no results".
+    pub degraded_notice: Option<String>,
 }
 
 /// HTMX partial — just the results fragment.
@@ -205,6 +209,8 @@ pub struct CompaniesListPartial {
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
+    /// Rendered when the company query failed, instead of "no results".
+    pub degraded_notice: Option<String>,
 }
 
 fn url_encode_component(input: &str) -> String {
@@ -271,6 +277,7 @@ pub struct CompanyDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub briefing_mode: bool,
 
     pub id: String,
@@ -294,6 +301,8 @@ pub struct CompanyDetailPage {
     pub financials: Vec<CompanyFinancial>,
     pub total_warnings: i64,
     pub total_insights: i64,
+    /// Rendered when company detail queries failed, instead of "no results".
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -338,26 +347,39 @@ pub async fn list_companies(
     };
     let desc = sort_dir_str != "asc";
 
-    let company_rows = store
-        .list_companies(&filters, order_by, desc, 2000, 0)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to list companies: {e}");
-            vec![]
-        });
+    let mut degraded_notice: Option<String> = None;
+
+    let company_rows_state = DataState::from_result(
+        store
+            .list_companies(&filters, order_by, desc, 2000, 0)
+            .await,
+        "failed to list companies",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&company_rows_state, &mut degraded_notice);
+    let company_rows = company_rows_state.into_items();
 
     // B315: real per-entity warning/insight counts (two GROUP BY queries)
-    // instead of hardcoded zeros on every company row.
-    let warning_counts: std::collections::HashMap<uuid::Uuid, i64> = store
-        .get_warning_counts_by_entity()
-        .await
-        .unwrap_or_default()
+    // instead of hardcoded zeros on every company row. Failures surface as a
+    // degraded marker — never as silently-zeroed counts.
+    let warning_counts_state = DataState::from_result(
+        store.get_warning_counts_by_entity().await,
+        "failed to fetch warning counts by entity",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&warning_counts_state, &mut degraded_notice);
+    let warning_counts: std::collections::HashMap<uuid::Uuid, i64> = warning_counts_state
+        .into_loaded_or_default()
         .into_iter()
         .collect();
-    let insight_counts: std::collections::HashMap<uuid::Uuid, i64> = store
-        .get_insight_counts_by_entity()
-        .await
-        .unwrap_or_default()
+    let insight_counts_state = DataState::from_result(
+        store.get_insight_counts_by_entity().await,
+        "failed to fetch insight counts by entity",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&insight_counts_state, &mut degraded_notice);
+    let insight_counts: std::collections::HashMap<uuid::Uuid, i64> = insight_counts_state
+        .into_loaded_or_default()
         .into_iter()
         .collect();
 
@@ -567,9 +589,11 @@ pub async fn list_companies(
     let tpl = CompaniesListPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        degraded_notice: degraded_notice.clone(),
         companies,
         total,
         page,
@@ -595,6 +619,7 @@ pub async fn list_companies(
 
     if is_htmx_request(&headers) {
         let partial = CompaniesListPartial {
+            degraded_notice,
             companies: tpl.companies.clone(),
             total: tpl.total,
             page: tpl.page,
@@ -714,8 +739,16 @@ pub async fn get_company(
         }
     };
 
+    let mut degraded_notice: Option<String> = None;
+
     // Fetch sites for this company
-    let site_rows = store.get_sites_for_company(uuid).await.unwrap_or_default();
+    let sites_state = DataState::from_result(
+        store.get_sites_for_company(uuid).await,
+        "failed to fetch company sites",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&sites_state, &mut degraded_notice);
+    let site_rows = sites_state.into_items();
     let sites: Vec<CompanySite> = site_rows
         .iter()
         .map(|s| CompanySite {
@@ -730,7 +763,13 @@ pub async fn get_company(
         .collect();
 
     // Fetch persons for this company
-    let person_rows = store.list_persons_by_org(uuid).await.unwrap_or_default();
+    let persons_state = DataState::from_result(
+        store.list_persons_by_org(uuid).await,
+        "failed to fetch company persons",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&persons_state, &mut degraded_notice);
+    let person_rows = persons_state.into_items();
     let key_persons: Vec<CompanyKeyPerson> = person_rows
         .iter()
         .take(10)
@@ -753,10 +792,13 @@ pub async fn get_company(
         .collect();
 
     // Fetch product families
-    let product_rows = store
-        .list_product_families(Some(uuid), 50, 0)
-        .await
-        .unwrap_or_default();
+    let products_state = DataState::from_result(
+        store.list_product_families(Some(uuid), 50, 0).await,
+        "failed to fetch company product families",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&products_state, &mut degraded_notice);
+    let product_rows = products_state.into_items();
     let products: Vec<CompanyProduct> = product_rows
         .iter()
         .map(|pf| CompanyProduct {
@@ -770,10 +812,14 @@ pub async fn get_company(
         })
         .collect();
 
-    let recent_events = store
-        .get_company_changes(uuid, 50)
-        .await
-        .unwrap_or_default()
+    let changes_state = DataState::from_result(
+        store.get_company_changes(uuid, 50).await,
+        "failed to fetch company changes",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&changes_state, &mut degraded_notice);
+    let recent_events = changes_state
+        .into_items()
         .into_iter()
         .map(|c| CompanyEvent {
             kind: c.change_type,
@@ -790,10 +836,14 @@ pub async fn get_company(
         })
         .collect::<Vec<_>>();
 
-    let dossier_entries = store
-        .get_dossier_entries("company", uuid, None, 100)
-        .await
-        .unwrap_or_default()
+    let dossier_state = DataState::from_result(
+        store.get_dossier_entries("company", uuid, None, 100).await,
+        "failed to fetch company dossier entries",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&dossier_state, &mut degraded_notice);
+    let dossier_entries = dossier_state
+        .into_items()
         .into_iter()
         .map(|e| DossierEntry {
             field_name: e.title,
@@ -807,10 +857,13 @@ pub async fn get_company(
         .collect::<Vec<_>>();
 
     // Related warnings for this company (entity_ids array overlap on company id).
-    let warning_rows = store
-        .get_warnings_by_entity_ids(&[uuid], 50)
-        .await
-        .unwrap_or_default();
+    let warnings_state = DataState::from_result(
+        store.get_warnings_by_entity_ids(&[uuid], 50).await,
+        "failed to fetch company warnings",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&warnings_state, &mut degraded_notice);
+    let warning_rows = warnings_state.into_items();
     let total_warnings = warning_rows.len() as i64;
     let warnings: Vec<CompanyWarning> = warning_rows
         .iter()
@@ -825,10 +878,13 @@ pub async fn get_company(
         .collect();
 
     // Related insights for this company (entity_ids array overlap on company id).
-    let insight_rows = store
-        .get_insights_by_entity_ids(&[uuid], 50)
-        .await
-        .unwrap_or_default();
+    let insights_state = DataState::from_result(
+        store.get_insights_by_entity_ids(&[uuid], 50).await,
+        "failed to fetch company insights",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&insights_state, &mut degraded_notice);
+    let insight_rows = insights_state.into_items();
     let total_insights = insight_rows.len() as i64;
     let insights: Vec<CompanyInsight> = insight_rows
         .iter()
@@ -858,9 +914,11 @@ pub async fn get_company(
     let tpl = CompanyDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
+        status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        degraded_notice,
         briefing_mode: query.briefing.unwrap_or(false),
         id: company.id.to_string(),
         name: company.name.clone(),
@@ -967,4 +1025,57 @@ pub async fn company_dossier_tab(
 
     let partial = CompanyDossierTabPartial { dossier_entries };
     super::render_template(&partial)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn partial(degraded_notice: Option<String>) -> CompaniesListPartial {
+        CompaniesListPartial {
+            degraded_notice,
+            companies: vec![],
+            total: 0,
+            page: 1,
+            per_page: 25,
+            total_pages: 0,
+            active_region: String::new(),
+            active_sector: String::new(),
+            search_query: String::new(),
+            sort_field: "name".into(),
+            sort_dir: "asc".into(),
+            competitor_count: 0,
+            high_risk_count: 0,
+            regions_count: 0,
+            avg_risk: 0,
+            region_slices: vec![],
+            quick_links: vec![],
+            region_filters: vec![],
+            tier_filters: vec![],
+            active_filters: 0,
+            reset_href: "/companies".into(),
+            page_base_href: "/companies?".into(),
+        }
+    }
+
+    #[test]
+    fn degraded_company_query_renders_degraded_marker_not_no_results() {
+        let html = partial(Some(
+            "Data unavailable — query failed at 14:03 UTC · incident inc-co123456".into(),
+        ))
+        .render()
+        .expect("companies partial renders");
+
+        assert!(html.contains("incident inc-co123456"));
+        assert!(html.contains("data-degraded=\"true\""));
+        assert!(!html.contains("No companies found"));
+    }
+
+    #[test]
+    fn empty_company_result_keeps_empty_state_when_query_succeeded() {
+        let html = partial(None).render().expect("companies partial renders");
+
+        assert!(html.contains("No companies found"));
+        assert!(!html.contains("data-degraded=\"true\""));
+    }
 }

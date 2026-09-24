@@ -17,6 +17,9 @@
 
 {% block content %}
 <div class="briefing-page space-y-6">
+  {% if let Some(notice) = degraded_notice %}
+  <div class="apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+  {% endif %}
   <div class="flex items-start justify-between gap-4">
     <div>
       <h1>{{ name }}</h1>
@@ -156,7 +159,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>{% endif %}
     {% endif %}
   </div>
 
@@ -184,7 +187,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>{% endif %}
     {% endif %}
   </div>
   {% else %}
@@ -207,7 +210,7 @@
         {% endfor %}
       </div>
       {% else %}
-      <p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>
+      {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>{% endif %}
       {% endif %}
     </div>
 
@@ -236,7 +239,7 @@
         {% endfor %}
       </div>
       {% else %}
-      <p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>
+      {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>{% endif %}
       {% endif %}
     </div>
   </div>

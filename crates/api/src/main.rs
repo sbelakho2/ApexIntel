@@ -139,6 +139,7 @@ mod vector_search_handlers;
 #[path = "api_handlers/warnings.rs"]
 mod warnings_handlers;
 pub(crate) use apex_api::destructive_actions::ApiAuthContext;
+pub(crate) use apex_core::data_state::DataState;
 pub(crate) use apex_store::autocomplete::AutocompleteIndex;
 pub(crate) use apex_store::postgres::{
     CompanyDossier, CompetitorChange, PersonDossier, PersonEngagement,
@@ -186,6 +187,17 @@ async fn main() -> Result<()> {
     runtime_metrics::init_metrics();
 
     let state = build_state().await?;
+    // Measure liveness/freshness from startup: an API heartbeat row now, then
+    // refreshed every ~30s together with the UI status snapshot.
+    if let Err(error) = state
+        .store
+        .record_service_heartbeat("api", &process_instance_id(), env!("CARGO_PKG_VERSION"))
+        .await
+    {
+        tracing::warn!(error = %error, "failed to record startup API heartbeat");
+    }
+    start_status_heartbeat(state.clone());
+
     let cors = CorsLayer::new()
         .allow_origin(
             state
@@ -528,6 +540,17 @@ async fn add_rate_limit_headers(
     response
 }
 
+/// Build an explicit API error for a failed repository load so the client
+/// never receives a failure shaped like an empty result set.
+fn degraded_api_error<T>(context: &str, state: &DataState<T>) -> ApiError {
+    match state.error_id() {
+        Some(error_id) => ApiError::internal(format!(
+            "{context} — data unavailable · incident {error_id}"
+        )),
+        None => ApiError::internal(context),
+    }
+}
+
 fn llm_service_unavailable<T: Serialize>(message: &str) -> (StatusCode, Json<ApiResponse<T>>) {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -542,18 +565,91 @@ fn llm_service_unavailable<T: Serialize>(message: &str) -> (StatusCode, Json<Api
 // Health & Metadata
 // ──────────────────────────────────────────────────────────────────────────────
 
-async fn health() -> Json<HealthResponse> {
+fn nats_url_from_env() -> String {
+    std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string())
+}
+
+/// Stable per-process instance id for `service_heartbeats`.
+fn process_instance_id() -> String {
+    std::env::var("APEX_INSTANCE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
+            format!("{host}-{}", std::process::id())
+        })
+}
+
+/// Record API heartbeats and refresh the UI status snapshot every ~30s.
+/// The first tick runs immediately, so startup liveness is measured too.
+fn start_status_heartbeat(state: AppState) {
+    let instance_id = process_instance_id();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+
+            let nats_url = nats_url_from_env();
+            let capabilities = apex_api::routes::capabilities::probe_capabilities(
+                &state.store.pool,
+                &state.search_index,
+                Some(nats_url.as_str()),
+            )
+            .await;
+            apex_api::system_status::StatusStrip::publish(capabilities.status_strip());
+
+            if let Err(error) = state
+                .store
+                .record_service_heartbeat("api", &instance_id, env!("CARGO_PKG_VERSION"))
+                .await
+            {
+                tracing::warn!(error = %error, "failed to record API heartbeat");
+            }
+        }
+    });
+}
+
+/// `/api/health` — overall health with capability checks derived from real
+/// probes (database, NATS, embeddings, search index, worker heartbeat, data
+/// freshness, browser renderer, LLM feature set).
+async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let uptime_secs = STARTED_AT
         .get()
         .map(|started| (Utc::now() - started).num_seconds() as u64)
         .unwrap_or(0);
 
+    let nats_url = nats_url_from_env();
+    let capabilities = apex_api::routes::capabilities::probe_capabilities(
+        &state.store.pool,
+        &state.search_index,
+        Some(nats_url.as_str()),
+    )
+    .await;
+    let checks = capabilities.health_checks();
+    let overall = aggregate_health(&checks);
+
     Json(HealthResponse {
-        status: HealthStatus::Healthy,
+        status: overall,
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_secs,
-        checks: vec![],
+        checks,
     })
+}
+
+/// `/api/health/capabilities` — per-capability probe report for the UI,
+/// dashboards, and operational tooling.
+async fn health_capabilities(
+    State(state): State<AppState>,
+) -> Json<apex_api::routes::capabilities::Capabilities> {
+    let nats_url = nats_url_from_env();
+    Json(
+        apex_api::routes::capabilities::probe_capabilities(
+            &state.store.pool,
+            &state.search_index,
+            Some(nats_url.as_str()),
+        )
+        .await,
+    )
 }
 
 async fn health_live() -> StatusCode {
@@ -671,6 +767,7 @@ async fn endpoints() -> Json<Vec<serde_json::Value>> {
         serde_json::json!({ "method": "GET", "path": "/api/health/live", "desc": "Liveness probe" }),
         serde_json::json!({ "method": "GET", "path": "/api/health/ready", "desc": "Readiness probe" }),
         serde_json::json!({ "method": "GET", "path": "/api/health/deep", "desc": "Deep health check" }),
+        serde_json::json!({ "method": "GET", "path": "/api/health/capabilities", "desc": "Probed capability health" }),
         serde_json::json!({ "method": "GET", "path": "/api/warnings", "desc": "List warnings" }),
         serde_json::json!({ "method": "GET", "path": "/api/warnings/:id", "desc": "Get warning detail" }),
         serde_json::json!({ "method": "POST", "path": "/api/warnings/:id/acknowledge", "desc": "Acknowledge warning" }),
