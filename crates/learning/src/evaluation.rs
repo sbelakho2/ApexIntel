@@ -263,6 +263,9 @@ pub struct MetricDelta {
     /// Signed in the metric's improvement direction (positive = better).
     pub improvement: f64,
     pub z_score: Option<f64>,
+    /// True when the change is statistically significant *in the improvement
+    /// direction* (i.e. `improvement > 0`). Regressions are detected separately
+    /// by [`is_significant_regression`].
     pub significant: bool,
 }
 
@@ -372,6 +375,24 @@ fn build_delta(
     }
 }
 
+/// True when the candidate is significantly *worse* in the metric's direction.
+///
+/// [`MetricDelta::significant`] only covers the improvement direction, so this
+/// check is computed independently from the raw z-score.
+fn is_significant_regression(
+    metric: LearningMetric,
+    delta: &MetricDelta,
+    significance_z: f64,
+) -> bool {
+    match delta.z_score {
+        Some(z) => match metric.direction() {
+            MetricDirection::HigherIsBetter => z <= -significance_z,
+            MetricDirection::LowerIsBetter => z >= significance_z,
+        },
+        None => false,
+    }
+}
+
 /// Compare a candidate run against its baseline on the same frozen set.
 ///
 /// Promotes only when at least one gating metric improves by at least
@@ -437,7 +458,8 @@ pub fn evaluate_promotion(
             return PromotionDecision::Reject(PromotionRejection::CriticalRegression { delta });
         }
 
-        if !metric.is_critical() && delta.significant && delta.improvement < 0.0 {
+        if !metric.is_critical() && is_significant_regression(metric, &delta, config.significance_z)
+        {
             return PromotionDecision::Reject(PromotionRejection::SignificantRegression { delta });
         }
 
@@ -785,6 +807,36 @@ mod tests {
         let decision = evaluate_promotion(&candidate, &baseline, &PromotionGateConfig::default());
 
         assert!(matches!(decision, PromotionDecision::Promote { .. }));
+    }
+
+    #[test]
+    fn significant_regression_on_noncritical_metric_is_rejected() {
+        let baseline = run(
+            "base-9",
+            "insight_prompt",
+            3,
+            base_observations(0.70, 0.10, 0.05, 200),
+        );
+        let mut observations = base_observations(0.82, 0.09, 0.05, 200);
+        for obs in observations.iter_mut() {
+            if obs.metric == LearningMetric::DuplicateRate {
+                obs.value = 0.20;
+            }
+        }
+        let candidate = run("cand-9", "insight_prompt", 3, observations);
+
+        let decision = evaluate_promotion(&candidate, &baseline, &PromotionGateConfig::default());
+
+        match decision {
+            PromotionDecision::Reject(PromotionRejection::SignificantRegression { delta }) => {
+                assert_eq!(delta.metric, LearningMetric::DuplicateRate);
+                assert!(delta.improvement < 0.0);
+                // `significant` covers the improvement direction only; the
+                // regression is detected from the raw z-score instead.
+                assert!(!delta.significant);
+            }
+            other => panic!("expected significant-regression rejection, got {other:?}"),
+        }
     }
 
     #[test]

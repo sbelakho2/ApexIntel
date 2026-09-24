@@ -337,6 +337,31 @@ async fn learning_eval_metrics_schema_round_trips() {
     .unwrap();
     assert_eq!(truth_rows, 1);
 
+    // The store helper must fetch an existing frozen version on a repeat call
+    // instead of tripping the freeze trigger with an UPDATE arm.
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+    let store_set_id = store
+        .upsert_learning_eval_set(
+            "store_round_trip_set",
+            1,
+            None,
+            10,
+            &serde_json::json!({"source": "integration_test"}),
+        )
+        .await
+        .expect("first upsert creates the frozen set");
+    let repeat_id = store
+        .upsert_learning_eval_set(
+            "store_round_trip_set",
+            1,
+            None,
+            10,
+            &serde_json::json!({"source": "integration_test"}),
+        )
+        .await
+        .expect("repeat upsert fetches the existing frozen set");
+    assert_eq!(store_set_id, repeat_id);
+
     // Cleanup: runs cascade to metrics. Frozen set rows are intentionally
     // immutable and are left behind (the CI database is ephemeral).
     sqlx::query("DELETE FROM learning_eval_runs WHERE id = $1")

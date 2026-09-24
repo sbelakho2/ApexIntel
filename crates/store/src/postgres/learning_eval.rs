@@ -70,7 +70,9 @@ impl PgStore {
     /// Create (or fetch) a frozen evaluation set version.
     ///
     /// `learning_eval_sets` rows are immutable in the database: callers must
-    /// create a new version instead of mutating an existing one.
+    /// create a new version instead of mutating an existing one. A repeat call
+    /// for an existing `(name, version)` therefore returns the existing id
+    /// rather than updating the row (which the freeze trigger would reject).
     pub async fn upsert_learning_eval_set(
         &self,
         name: &str,
@@ -80,10 +82,16 @@ impl PgStore {
         metadata: &Value,
     ) -> Result<Uuid> {
         let id: Uuid = sqlx::query_scalar(
-            r#"INSERT INTO learning_eval_sets (name, version, description, example_count, metadata)
-               VALUES ($1, $2, $3, $4, $5)
-               ON CONFLICT (name, version) DO UPDATE SET name = EXCLUDED.name
-               RETURNING id"#,
+            r#"WITH inserted AS (
+                   INSERT INTO learning_eval_sets (name, version, description, example_count, metadata)
+                   VALUES ($1, $2, $3, $4, $5)
+                   ON CONFLICT (name, version) DO NOTHING
+                   RETURNING id
+               )
+               SELECT id FROM inserted
+               UNION ALL
+               SELECT id FROM learning_eval_sets WHERE name = $1 AND version = $2
+               LIMIT 1"#,
         )
         .bind(name.trim())
         .bind(version)
