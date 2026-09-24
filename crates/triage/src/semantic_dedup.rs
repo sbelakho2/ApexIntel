@@ -12,11 +12,14 @@
 //! everything).
 
 use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::HashSet;
 
-use apex_core::triage::TriageItemType;
+use apex_core::triage::{TriageDimensions, TriageItemType};
 use apex_llm::embeddings::EmbeddingClient;
 use apex_store::postgres::embeddings::VectorSearchHit;
+use chrono::{DateTime, Duration, Utc};
+use uuid::Uuid;
 
 /// Configuration for semantic deduplication.
 #[derive(Debug, Clone)]
@@ -455,6 +458,465 @@ impl SemanticDedup {
     }
 }
 
+// ─── Triage ingress with semantic dedup ───────────────────────────────────────
+
+/// Default occurrence count at which repeated merges raise severity to `high`.
+pub const DEFAULT_ESCALATE_HIGH_AT: i64 = 3;
+/// Default occurrence count at which repeated merges raise severity to `critical`.
+pub const DEFAULT_ESCALATE_CRITICAL_AT: i64 = 5;
+
+/// A candidate triage item submitted to the ingress.
+#[derive(Debug, Clone)]
+pub struct TriageSubmission {
+    /// insight / warning / alert.
+    pub item_type: TriageItemType,
+    /// Deterministic producer id (e.g. the warning or insight UUID). Two
+    /// submissions with the same `(item_type, source_id)` are duplicates by
+    /// definition.
+    pub source_id: String,
+    pub title: String,
+    pub description: String,
+    pub entity_id: Option<Uuid>,
+    pub entity_name: Option<String>,
+    pub static_severity: Option<String>,
+    pub dimensions: Option<TriageDimensions>,
+    /// Observation ids backing this submission (merged, never discarded).
+    pub observation_ids: Vec<Uuid>,
+    /// Source urls backing this submission (merged, never discarded).
+    pub source_urls: Vec<String>,
+}
+
+impl TriageSubmission {
+    /// Text used for lexical / embedding similarity.
+    pub fn text(&self) -> String {
+        format!("{}: {}", self.title, self.description)
+    }
+}
+
+/// An existing triage queue row as seen by the ingress, including the merge
+/// bookkeeping added by migration `053_triage_merge_fields.sql`.
+#[derive(Debug, Clone)]
+pub struct IngestQueueItem {
+    pub id: Uuid,
+    pub item_type: TriageItemType,
+    pub source_id: String,
+    pub title: String,
+    pub description: String,
+    pub entity_id: Option<Uuid>,
+    pub entity_name: Option<String>,
+    pub static_severity: Option<String>,
+    pub occurrence_count: i64,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub merged_observation_ids: Vec<Uuid>,
+    pub merged_source_urls: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl IngestQueueItem {
+    /// Text used for similarity comparisons.
+    pub fn text(&self) -> String {
+        format!("{}: {}", self.title, self.description)
+    }
+}
+
+/// Narrow queue interface used by [`TriageIngestor`].
+///
+/// The production implementation is `TriageQueue` (SQL-backed, with the
+/// `ON CONFLICT (item_type, source_id)` unique constraint as the concurrency
+/// guard); tests use an in-memory implementation to prove the pipeline
+/// without a database.
+#[async_trait]
+pub trait IngestQueue: Send + Sync {
+    /// Exact dedup by the deterministic `(item_type, source_id)` key.
+    async fn find_by_source_id(
+        &self,
+        item_type: &TriageItemType,
+        source_id: &str,
+    ) -> Result<Option<IngestQueueItem>>;
+
+    /// Look up a queue row by its primary key.
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<IngestQueueItem>>;
+
+    /// Rows of this item type seen within the trailing `window`.
+    async fn find_recent(
+        &self,
+        item_type: &TriageItemType,
+        window: Duration,
+    ) -> Result<Vec<IngestQueueItem>>;
+
+    /// Insert a new row. Implementations MUST guarantee that two concurrent
+    /// submissions with the same `(item_type, source_id)` result in a single
+    /// row whose `occurrence_count` reflects both submissions, and that the
+    /// stored severity never falls below the level implied by the resulting
+    /// occurrence count (`high_at` / `critical_at` thresholds).
+    async fn insert_submission(
+        &self,
+        submission: &TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<IngestQueueItem>;
+
+    /// Merge a duplicate into `target_id`: increments `occurrence_count`,
+    /// unions the observation ids / source urls, updates `last_seen_at`, and
+    /// atomically raises `static_severity` when the post-increment occurrence
+    /// count (or the incoming severity) justifies it. Implementations MUST
+    /// compute the escalation from the updated row, not from a stale snapshot.
+    async fn merge_submission(
+        &self,
+        target_id: Uuid,
+        submission: &TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<IngestQueueItem>;
+}
+
+/// Why two submissions were merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeReason {
+    /// Same deterministic `(item_type, source_id)`.
+    ExactDeterministicId,
+    /// Lexical near-duplicate (trigram similarity above threshold).
+    LexicalNearDuplicate,
+    /// Embedding similarity above threshold.
+    EmbeddingSimilarity,
+    /// Same entity within the configured time window.
+    SameEntityTimeWindow,
+}
+
+/// Blanket delegation so `Arc<Q>` can be used as an ingress queue (needed to
+/// share one ingestor across concurrent producers).
+#[async_trait]
+impl<T: IngestQueue + ?Sized> IngestQueue for std::sync::Arc<T> {
+    async fn find_by_source_id(
+        &self,
+        item_type: &TriageItemType,
+        source_id: &str,
+    ) -> Result<Option<IngestQueueItem>> {
+        (**self).find_by_source_id(item_type, source_id).await
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<IngestQueueItem>> {
+        (**self).find_by_id(id).await
+    }
+
+    async fn find_recent(
+        &self,
+        item_type: &TriageItemType,
+        window: Duration,
+    ) -> Result<Vec<IngestQueueItem>> {
+        (**self).find_recent(item_type, window).await
+    }
+
+    async fn insert_submission(
+        &self,
+        submission: &TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<IngestQueueItem> {
+        (**self)
+            .insert_submission(submission, high_at, critical_at)
+            .await
+    }
+
+    async fn merge_submission(
+        &self,
+        target_id: Uuid,
+        submission: &TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<IngestQueueItem> {
+        (**self)
+            .merge_submission(target_id, submission, high_at, critical_at)
+            .await
+    }
+}
+
+impl MergeReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ExactDeterministicId => "exact_deterministic_id",
+            Self::LexicalNearDuplicate => "lexical_near_duplicate",
+            Self::EmbeddingSimilarity => "embedding_similarity",
+            Self::SameEntityTimeWindow => "same_entity_time_window",
+        }
+    }
+}
+
+/// Result of a submission.
+#[derive(Debug, Clone)]
+pub enum IngestOutcome {
+    /// A new queue row was created.
+    Enqueued(IngestQueueItem),
+    /// The submission was merged into an existing row.
+    Merged {
+        item: IngestQueueItem,
+        reason: MergeReason,
+    },
+}
+
+impl IngestOutcome {
+    /// The resulting queue row (new or merged).
+    pub fn item(&self) -> &IngestQueueItem {
+        match self {
+            Self::Enqueued(item) => item,
+            Self::Merged { item, .. } => item,
+        }
+    }
+
+    /// Whether the submission merged into an existing row.
+    pub fn merged(&self) -> bool {
+        matches!(self, Self::Merged { .. })
+    }
+}
+
+/// Configuration for [`TriageIngestor`].
+#[derive(Debug, Clone)]
+pub struct IngestConfig {
+    /// Trigram similarity above which two items are lexical near-duplicates.
+    pub lexical_threshold: f64,
+    /// How far back to look for merge candidates.
+    pub entity_window: Duration,
+    /// Occurrence count at which repeated merges raise severity to `high`.
+    pub escalate_high_at: i64,
+    /// Occurrence count at which repeated merges raise severity to `critical`.
+    pub escalate_critical_at: i64,
+}
+
+impl Default for IngestConfig {
+    fn default() -> Self {
+        Self {
+            lexical_threshold: 0.45,
+            entity_window: Duration::hours(24),
+            escalate_high_at: DEFAULT_ESCALATE_HIGH_AT,
+            escalate_critical_at: DEFAULT_ESCALATE_CRITICAL_AT,
+        }
+    }
+}
+
+/// Numeric severity ranking; unknown severities rank below `low`.
+pub fn severity_rank(severity: &str) -> i32 {
+    match severity.trim().to_lowercase().as_str() {
+        "critical" => 3,
+        "high" => 2,
+        "medium" => 1,
+        "low" => 0,
+        _ => -1,
+    }
+}
+
+/// Escalate a severity based on the incoming severity and repeat count.
+///
+/// Returns the effective severity name, or `None` when neither the existing
+/// nor the incoming severity is known and the repeat count does not justify
+/// an escalation.
+pub fn escalate_severity(
+    current: Option<&str>,
+    incoming: Option<&str>,
+    occurrence_count: i64,
+    high_at: i64,
+    critical_at: i64,
+) -> Option<String> {
+    let base = current
+        .map(severity_rank)
+        .unwrap_or(-1)
+        .max(incoming.map(severity_rank).unwrap_or(-1));
+    let repeat_floor = if occurrence_count >= critical_at {
+        3
+    } else if occurrence_count >= high_at {
+        2
+    } else {
+        -1
+    };
+    match base.max(repeat_floor) {
+        3 => Some("critical".to_string()),
+        2 => Some("high".to_string()),
+        1 => Some("medium".to_string()),
+        0 => Some("low".to_string()),
+        _ => None,
+    }
+}
+
+/// The triage ingress: exact → lexical → embedding → entity/time-window
+/// dedup, then enqueue or merge.
+///
+/// All stages run before a row is inserted. Merges never discard evidence:
+/// the target row accumulates observation ids and source urls, stores the
+/// occurrence count and last-seen timestamp, and can be escalated in
+/// severity when repeats justify it.
+pub struct TriageIngestor<Q: IngestQueue> {
+    queue: Q,
+    dedup: SemanticDedup,
+    config: IngestConfig,
+}
+
+impl<Q: IngestQueue> TriageIngestor<Q> {
+    /// Create an ingestor over the given queue and dedup engine.
+    pub fn new(queue: Q, dedup: SemanticDedup) -> Self {
+        Self {
+            queue,
+            dedup,
+            config: IngestConfig::default(),
+        }
+    }
+
+    /// Create an ingestor with a custom config.
+    pub fn with_config(queue: Q, dedup: SemanticDedup, config: IngestConfig) -> Self {
+        Self {
+            queue,
+            dedup,
+            config,
+        }
+    }
+
+    /// Borrow the underlying queue.
+    pub fn queue(&self) -> &Q {
+        &self.queue
+    }
+
+    /// The active configuration.
+    pub fn config(&self) -> &IngestConfig {
+        &self.config
+    }
+
+    /// Submit an item to the triage queue.
+    ///
+    /// Pipeline: exact deterministic-id dedup → lexical near-duplicate →
+    /// embedding similarity → same-entity/time-window → enqueue or merge.
+    pub async fn submit(&self, submission: TriageSubmission) -> Result<IngestOutcome> {
+        let item_type = submission.item_type.clone();
+        let text = submission.text();
+
+        // Stage 1 — exact deterministic id.
+        if let Some(existing) = self
+            .queue
+            .find_by_source_id(&item_type, &submission.source_id)
+            .await?
+        {
+            return self
+                .merge(existing, &submission, MergeReason::ExactDeterministicId)
+                .await;
+        }
+
+        let recent = self
+            .queue
+            .find_recent(&item_type, self.config.entity_window)
+            .await?;
+
+        // Stage 2 — lexical near-duplicate.
+        let normalized = text.to_lowercase();
+        let lexical = recent
+            .iter()
+            .map(|item| {
+                (
+                    jaccard_trigram_similarity(&normalized, &item.text().to_lowercase()),
+                    item,
+                )
+            })
+            .filter(|(score, _)| *score >= self.config.lexical_threshold)
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some((_, target)) = lexical {
+            return self
+                .merge(
+                    target.clone(),
+                    &submission,
+                    MergeReason::LexicalNearDuplicate,
+                )
+                .await;
+        }
+
+        // Stage 3 — embedding similarity.
+        if let Ok(dedup_result) = self
+            .dedup
+            .check_duplicate(&item_type, &submission.title, &submission.description)
+            .await
+        {
+            if dedup_result.is_duplicate {
+                let target_id = dedup_result
+                    .best_match_id
+                    .as_deref()
+                    .and_then(|id| Uuid::parse_str(id).ok());
+                if let Some(target_id) = target_id {
+                    if let Some(target) = self.queue.find_by_id(target_id).await? {
+                        return self
+                            .merge(target, &submission, MergeReason::EmbeddingSimilarity)
+                            .await;
+                    }
+                }
+            }
+        }
+
+        // Stage 4 — same entity within the time window.
+        if let Some(entity_id) = submission.entity_id {
+            if let Some(target) = recent.iter().find(|item| item.entity_id == Some(entity_id)) {
+                return self
+                    .merge(
+                        target.clone(),
+                        &submission,
+                        MergeReason::SameEntityTimeWindow,
+                    )
+                    .await;
+            }
+        }
+
+        // Stage 5 — new item. A concurrent submission with the same
+        // deterministic id may have won the insert; the queue's conflict path
+        // then merges this submission into that row, which is reported as a
+        // merge (occurrence_count > 1) rather than a fresh enqueue.
+        let item = self
+            .queue
+            .insert_submission(
+                &submission,
+                self.config.escalate_high_at,
+                self.config.escalate_critical_at,
+            )
+            .await?;
+        if item.occurrence_count > 1 {
+            return Ok(IngestOutcome::Merged {
+                item,
+                reason: MergeReason::ExactDeterministicId,
+            });
+        }
+        if let Err(e) = self
+            .dedup
+            .store_triaged_item(
+                &item_type,
+                &item.id.to_string(),
+                &submission.title,
+                &submission.description,
+            )
+            .await
+        {
+            tracing::debug!(error = %e, "triage ingress: failed to store item for future dedup");
+        }
+        Ok(IngestOutcome::Enqueued(item))
+    }
+
+    /// Merge a duplicate into an existing row. Severity escalation is
+    /// computed by the queue from the post-increment occurrence count, so
+    /// concurrent merges cannot leave the stored severity below the level the
+    /// final count requires.
+    async fn merge(
+        &self,
+        existing: IngestQueueItem,
+        submission: &TriageSubmission,
+        reason: MergeReason,
+    ) -> Result<IngestOutcome> {
+        let merged = self
+            .queue
+            .merge_submission(
+                existing.id,
+                submission,
+                self.config.escalate_high_at,
+                self.config.escalate_critical_at,
+            )
+            .await?;
+        Ok(IngestOutcome::Merged {
+            item: merged,
+            reason,
+        })
+    }
+}
+
 // ─── Text similarity (trigram Jaccard) ───
 
 /// Compute Jaccard similarity between two strings using character trigrams.
@@ -770,5 +1232,355 @@ mod tests {
         let ids: Vec<&str> = all.iter().map(|h| h.id.as_str()).collect();
         assert!(!ids.contains(&"a"), "oldest entry should be evicted");
         assert!(ids.contains(&"c"));
+    }
+
+    // ─── Triage ingress ───────────────────────────────────────────────────
+
+    #[derive(Default)]
+    struct InMemoryIngestQueue {
+        rows: std::sync::Mutex<Vec<IngestQueueItem>>,
+    }
+
+    impl InMemoryIngestQueue {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn len(&self) -> usize {
+            self.rows.lock().unwrap_or_else(|e| e.into_inner()).len()
+        }
+
+        fn snapshot(&self) -> Vec<IngestQueueItem> {
+            self.rows.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+
+        fn merge_row(
+            row: &mut IngestQueueItem,
+            submission: &TriageSubmission,
+            severity: Option<String>,
+        ) -> IngestQueueItem {
+            row.occurrence_count += 1;
+            row.last_seen_at = Some(Utc::now());
+            for obs in &submission.observation_ids {
+                if !row.merged_observation_ids.contains(obs) {
+                    row.merged_observation_ids.push(*obs);
+                }
+            }
+            for url in &submission.source_urls {
+                if !row.merged_source_urls.contains(url) {
+                    row.merged_source_urls.push(url.clone());
+                }
+            }
+            if severity.is_some() {
+                row.static_severity = severity;
+            }
+            row.clone()
+        }
+    }
+
+    #[async_trait]
+    impl IngestQueue for InMemoryIngestQueue {
+        async fn find_by_source_id(
+            &self,
+            item_type: &TriageItemType,
+            source_id: &str,
+        ) -> Result<Option<IngestQueueItem>> {
+            let rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(rows
+                .iter()
+                .find(|r| &r.item_type == item_type && r.source_id == source_id)
+                .cloned())
+        }
+
+        async fn find_by_id(&self, id: Uuid) -> Result<Option<IngestQueueItem>> {
+            let rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(rows.iter().find(|r| r.id == id).cloned())
+        }
+
+        async fn find_recent(
+            &self,
+            item_type: &TriageItemType,
+            window: Duration,
+        ) -> Result<Vec<IngestQueueItem>> {
+            let cutoff = Utc::now() - window;
+            let rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(rows
+                .iter()
+                .filter(|r| &r.item_type == item_type)
+                .filter(|r| r.last_seen_at.unwrap_or(r.created_at) >= cutoff)
+                .cloned()
+                .collect())
+        }
+
+        async fn insert_submission(
+            &self,
+            submission: &TriageSubmission,
+            high_at: i64,
+            critical_at: i64,
+        ) -> Result<IngestQueueItem> {
+            let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(pos) = rows.iter().position(|r| {
+                r.item_type == submission.item_type && r.source_id == submission.source_id
+            }) {
+                let severity = escalate_severity(
+                    rows[pos].static_severity.as_deref(),
+                    submission.static_severity.as_deref(),
+                    rows[pos].occurrence_count + 1,
+                    high_at,
+                    critical_at,
+                );
+                return Ok(Self::merge_row(&mut rows[pos], submission, severity));
+            }
+
+            let now = Utc::now();
+            let item = IngestQueueItem {
+                id: Uuid::new_v4(),
+                item_type: submission.item_type.clone(),
+                source_id: submission.source_id.clone(),
+                title: submission.title.clone(),
+                description: submission.description.clone(),
+                entity_id: submission.entity_id,
+                entity_name: submission.entity_name.clone(),
+                static_severity: submission.static_severity.clone(),
+                occurrence_count: 1,
+                last_seen_at: Some(now),
+                merged_observation_ids: submission.observation_ids.clone(),
+                merged_source_urls: submission.source_urls.clone(),
+                created_at: now,
+            };
+            rows.push(item.clone());
+            Ok(item)
+        }
+
+        async fn merge_submission(
+            &self,
+            target_id: Uuid,
+            submission: &TriageSubmission,
+            high_at: i64,
+            critical_at: i64,
+        ) -> Result<IngestQueueItem> {
+            let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+            let pos = rows
+                .iter()
+                .position(|r| r.id == target_id)
+                .ok_or_else(|| anyhow::anyhow!("no row {target_id}"))?;
+            let severity = escalate_severity(
+                rows[pos].static_severity.as_deref(),
+                submission.static_severity.as_deref(),
+                rows[pos].occurrence_count + 1,
+                high_at,
+                critical_at,
+            );
+            Ok(Self::merge_row(&mut rows[pos], submission, severity))
+        }
+    }
+
+    fn submission(source_id: &str, title: &str, description: &str) -> TriageSubmission {
+        TriageSubmission {
+            item_type: TriageItemType::Warning,
+            source_id: source_id.to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            entity_id: None,
+            entity_name: None,
+            static_severity: Some("low".to_string()),
+            dimensions: None,
+            observation_ids: Vec::new(),
+            source_urls: Vec::new(),
+        }
+    }
+
+    fn ingestor(queue: InMemoryIngestQueue) -> TriageIngestor<InMemoryIngestQueue> {
+        TriageIngestor::new(queue, SemanticDedup::with_in_memory_fallback())
+    }
+
+    #[tokio::test]
+    async fn duplicate_submit_merges_single_row_and_keeps_evidence() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+
+        let obs_a = Uuid::new_v4();
+        let obs_b = Uuid::new_v4();
+
+        let mut first = submission(
+            "warning-1",
+            "Volume spike for Acme Corp",
+            "Observation volume spiked 300% versus baseline",
+        );
+        first.observation_ids = vec![obs_a];
+        first.source_urls = vec!["https://news-a.example/story".to_string()];
+        let first_outcome = ingestor.submit(first).await.unwrap();
+        assert!(!first_outcome.merged());
+        assert_eq!(first_outcome.item().occurrence_count, 1);
+
+        // Same deterministic id (source_id) but fresh evidence arrays.
+        let mut second = submission(
+            "warning-1",
+            "Volume spike for Acme Corp",
+            "Observation volume spiked 300% versus baseline",
+        );
+        second.observation_ids = vec![obs_b];
+        second.source_urls = vec!["https://news-b.example/story".to_string()];
+        let second_outcome = ingestor.submit(second).await.unwrap();
+        assert!(second_outcome.merged());
+        assert_eq!(second_outcome.item().occurrence_count, 2);
+
+        let rows = ingestor.queue().snapshot();
+        assert_eq!(rows.len(), 1, "duplicate submit must not double-insert");
+        let row = &rows[0];
+        assert_eq!(row.occurrence_count, 2);
+        assert_eq!(row.merged_observation_ids.len(), 2);
+        assert!(row.merged_observation_ids.contains(&obs_a));
+        assert!(row.merged_observation_ids.contains(&obs_b));
+        assert_eq!(row.merged_source_urls.len(), 2);
+        assert!(row.last_seen_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn lexical_near_duplicate_with_new_id_merges() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+
+        let mut first = submission(
+            "warning-1",
+            "Foxconn quality crisis",
+            "Quality defect recall at Foxconn Tunisia manufacturing plant",
+        );
+        first.observation_ids = vec![Uuid::new_v4()];
+        ingestor.submit(first).await.unwrap();
+
+        // Different deterministic id, near-identical text.
+        let mut duplicate = submission(
+            "warning-2",
+            "Foxconn quality crisis",
+            "Quality defect recall at Foxconn Tunisia manufacturing plant",
+        );
+        duplicate.observation_ids = vec![Uuid::new_v4()];
+        let outcome = ingestor.submit(duplicate).await.unwrap();
+
+        assert!(outcome.merged(), "near-identical text must merge");
+        assert_eq!(outcome.item().occurrence_count, 2);
+        assert_eq!(ingestor.queue().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn same_entity_within_window_merges() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+        let entity = Uuid::new_v4();
+
+        let mut first = submission(
+            "warning-1",
+            "Export control change",
+            "New export control rule affects shipments",
+        );
+        first.entity_id = Some(entity);
+        first.observation_ids = vec![Uuid::new_v4()];
+        ingestor.submit(first).await.unwrap();
+
+        let mut second = submission(
+            "warning-2",
+            "Completely different headline about the same company",
+            "A totally unrelated sentence that shares almost no trigrams",
+        );
+        second.entity_id = Some(entity);
+        second.observation_ids = vec![Uuid::new_v4()];
+        let outcome = ingestor.submit(second).await.unwrap();
+
+        assert!(outcome.merged(), "same entity in window must merge");
+        assert_eq!(outcome.item().occurrence_count, 2);
+        assert_eq!(ingestor.queue().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn distinct_items_enqueue_separately() {
+        let queue = InMemoryIngestQueue::new();
+        let ingestor = ingestor(queue);
+
+        let first = submission(
+            "warning-1",
+            "Foxconn quality crisis",
+            "Quality defect recall at Foxconn Tunisia manufacturing plant",
+        );
+        let second = submission(
+            "warning-2",
+            "Samsung expansion",
+            "Samsung announces new semiconductor fab investment in Korea",
+        );
+
+        assert!(!ingestor.submit(first).await.unwrap().merged());
+        assert!(!ingestor.submit(second).await.unwrap().merged());
+        assert_eq!(ingestor.queue().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_submits_do_not_double_insert() {
+        use std::sync::Arc;
+
+        let queue = Arc::new(InMemoryIngestQueue::new());
+        let ingestor = Arc::new(TriageIngestor::new(
+            Arc::clone(&queue),
+            SemanticDedup::with_in_memory_fallback(),
+        ));
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let ingestor = Arc::clone(&ingestor);
+            handles.push(tokio::spawn(async move {
+                let mut sub = submission(
+                    "warning-concurrent",
+                    "Concurrent duplicate",
+                    "Eight identical submissions racing into the ingress",
+                );
+                sub.observation_ids = vec![Uuid::new_v4()];
+                sub.source_urls = vec![format!("https://news-{i}.example/story")];
+                ingestor.submit(sub).await
+            }));
+        }
+
+        let mut merged = 0;
+        for handle in handles {
+            let outcome = handle.await.unwrap().unwrap();
+            if outcome.merged() {
+                merged += 1;
+            }
+        }
+
+        let rows = queue.snapshot();
+        assert_eq!(rows.len(), 1, "concurrent duplicates must insert once");
+        assert_eq!(rows[0].occurrence_count, 8);
+        assert_eq!(rows[0].merged_observation_ids.len(), 8);
+        assert_eq!(rows[0].merged_source_urls.len(), 8);
+        assert_eq!(merged, 7, "all but the first submission merge");
+    }
+
+    #[test]
+    fn escalation_raises_severity_on_repeats() {
+        assert_eq!(
+            escalate_severity(Some("low"), Some("low"), 2, 3, 5).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            escalate_severity(Some("low"), Some("low"), 3, 3, 5).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            escalate_severity(Some("low"), None, 5, 3, 5).as_deref(),
+            Some("critical")
+        );
+        assert_eq!(
+            escalate_severity(Some("critical"), None, 1, 3, 5).as_deref(),
+            Some("critical")
+        );
+        assert_eq!(escalate_severity(None, None, 1, 3, 5), None);
+    }
+
+    #[test]
+    fn severity_rank_maps_known_values() {
+        assert_eq!(severity_rank("low"), 0);
+        assert_eq!(severity_rank("Medium"), 1);
+        assert_eq!(severity_rank("HIGH"), 2);
+        assert_eq!(severity_rank("critical"), 3);
+        assert_eq!(severity_rank("unknown"), -1);
     }
 }

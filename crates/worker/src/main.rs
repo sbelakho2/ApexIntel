@@ -2718,6 +2718,19 @@ async fn main() -> Result<()> {
     let store = Arc::new(PgStore::from_pool(pool.clone()));
     tracing::info!("store initialized");
 
+    // Migrations normally run at API startup, but the worker can start first
+    // (independent systemd units) and job handlers now write to schema added
+    // by late migrations (e.g. triage_queue merge fields, migration 053).
+    // Best-effort: a failure (permissions, checksum mismatch with
+    // APEX_SKIP_MIGRATIONS semantics) must not take the worker down.
+    match store.run_migrations().await {
+        Ok(()) => tracing::info!("worker startup: database migrations applied"),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "worker startup: database migrations failed; continuing (some features may be degraded)"
+        ),
+    }
+
     // ─── Liveness heartbeat (migration 049) ───────────────────────────────
     // Health checks read `service_heartbeats.last_seen_at` to distinguish a
     // live worker from one that silently stopped; write every ~30s so

@@ -96,13 +96,30 @@ impl TriageQueue {
                  static_severity, urgency, impact, actionability, novelty, confidence,
                  composite_score, status, created_at)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14)
+                ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14)
             ON CONFLICT (item_type, source_id) DO UPDATE SET
                 title             = EXCLUDED.title,
                 description       = EXCLUDED.description,
                 entity_id         = COALESCE(EXCLUDED.entity_id, triage_queue.entity_id),
                 entity_name       = COALESCE(EXCLUDED.entity_name, triage_queue.entity_name),
-                static_severity   = EXCLUDED.static_severity,
+                static_severity   = (
+                    CASE GREATEST(
+                        CASE lower(coalesce(triage_queue.static_severity, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE lower(coalesce(EXCLUDED.static_severity, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE WHEN triage_queue.occurrence_count + 1 >= $16 THEN 3
+                             WHEN triage_queue.occurrence_count + 1 >= $15 THEN 2
+                             ELSE -1 END
+                    )
+                    WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
+                    WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
+                    ELSE triage_queue.static_severity END
+                ),
+                occurrence_count  = triage_queue.occurrence_count + 1,
+                last_seen_at      = NOW(),
                 urgency           = EXCLUDED.urgency,
                 impact            = EXCLUDED.impact,
                 actionability     = EXCLUDED.actionability,
@@ -132,6 +149,8 @@ impl TriageQueue {
         .bind(confidence)
         .bind(composite)
         .bind(now)
+        .bind(crate::semantic_dedup::DEFAULT_ESCALATE_HIGH_AT)
+        .bind(crate::semantic_dedup::DEFAULT_ESCALATE_CRITICAL_AT)
         .fetch_one(&self.pool)
         .await?;
 
@@ -478,6 +497,245 @@ impl TriageQueue {
     }
 }
 
+// ─── IngestQueue implementation (semantic dedup ingress) ─────────────────────
+
+const INGEST_SELECT_COLUMNS: &str = r#"
+    id, item_type, source_id::text, title, description, entity_id, entity_name,
+    static_severity, occurrence_count::bigint, last_seen_at, merged_observation_ids,
+    merged_source_urls, created_at
+"#;
+
+#[async_trait]
+impl crate::semantic_dedup::IngestQueue for TriageQueue {
+    async fn find_by_source_id(
+        &self,
+        item_type: &TriageItemType,
+        source_id: &str,
+    ) -> Result<Option<crate::semantic_dedup::IngestQueueItem>> {
+        let sql = format!(
+            "SELECT {INGEST_SELECT_COLUMNS} FROM triage_queue \
+             WHERE item_type = $1 AND source_id = $2::uuid"
+        );
+        let row = sqlx::query_as::<_, IngestQueueRow>(&sql)
+            .bind(item_type.as_str())
+            .bind(source_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(IngestQueueRow::into_ingest_item))
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<crate::semantic_dedup::IngestQueueItem>> {
+        let sql = format!("SELECT {INGEST_SELECT_COLUMNS} FROM triage_queue WHERE id = $1");
+        let row = sqlx::query_as::<_, IngestQueueRow>(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(IngestQueueRow::into_ingest_item))
+    }
+
+    async fn find_recent(
+        &self,
+        item_type: &TriageItemType,
+        window: chrono::Duration,
+    ) -> Result<Vec<crate::semantic_dedup::IngestQueueItem>> {
+        // Only active rows are merge candidates: a new signal must never be
+        // absorbed by a resolved/dismissed item and become invisible.
+        let sql = format!(
+            "SELECT {INGEST_SELECT_COLUMNS} FROM triage_queue \
+             WHERE item_type = $1 \
+               AND status IN ('pending', 'triaged', 'acknowledged') \
+               AND COALESCE(last_seen_at, created_at) >= NOW() - $2::interval \
+             ORDER BY COALESCE(last_seen_at, created_at) DESC \
+             LIMIT 200"
+        );
+        let interval = format!("{} seconds", window.num_seconds().max(0));
+        let rows = sqlx::query_as::<_, IngestQueueRow>(&sql)
+            .bind(item_type.as_str())
+            .bind(interval)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(IngestQueueRow::into_ingest_item)
+            .collect())
+    }
+
+    async fn insert_submission(
+        &self,
+        submission: &crate::semantic_dedup::TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<crate::semantic_dedup::IngestQueueItem> {
+        let item_type_str = submission.item_type.as_str();
+        let now = Utc::now();
+
+        let (urgency, impact, actionability, novelty, confidence, composite) =
+            if let Some(dims) = &submission.dimensions {
+                let score = composite_score(dims, &self.weights);
+                (
+                    dims.urgency,
+                    dims.impact,
+                    dims.actionability,
+                    dims.novelty,
+                    dims.confidence,
+                    score,
+                )
+            } else {
+                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            };
+
+        let sql = format!(
+            r#"
+            INSERT INTO triage_queue
+                (item_type, source_id, title, description, entity_id, entity_name,
+                 static_severity, urgency, impact, actionability, novelty, confidence,
+                 composite_score, status, created_at, occurrence_count, last_seen_at,
+                 merged_observation_ids, merged_source_urls)
+            VALUES
+                ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                 'pending', $14, 1, $14, $15, $16)
+            ON CONFLICT (item_type, source_id) DO NOTHING
+            RETURNING {INGEST_SELECT_COLUMNS}
+            "#
+        );
+
+        let row = sqlx::query_as::<_, IngestQueueRow>(&sql)
+            .bind(item_type_str)
+            .bind(&submission.source_id)
+            .bind(&submission.title)
+            .bind(&submission.description)
+            .bind(submission.entity_id)
+            .bind(submission.entity_name.as_deref())
+            .bind(submission.static_severity.as_deref())
+            .bind(urgency)
+            .bind(impact)
+            .bind(actionability)
+            .bind(novelty)
+            .bind(confidence)
+            .bind(composite)
+            .bind(now)
+            .bind(&submission.observation_ids)
+            .bind(&submission.source_urls)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(row) = row {
+            return Ok(row.into_ingest_item());
+        }
+
+        // Conflict: a concurrent (or repeated) submission won the insert.
+        // Merge into it so the duplicate is counted, not dropped. The merge
+        // recomputes severity from the post-increment count.
+        let existing = self
+            .find_by_source_id(&submission.item_type, &submission.source_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "triage queue conflict for {}/{} but no existing row found",
+                    item_type_str,
+                    submission.source_id
+                )
+            })?;
+        self.merge_submission(existing.id, submission, high_at, critical_at)
+            .await
+    }
+
+    async fn merge_submission(
+        &self,
+        target_id: Uuid,
+        submission: &crate::semantic_dedup::TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<crate::semantic_dedup::IngestQueueItem> {
+        // Severity is escalated from the post-increment occurrence count in a
+        // single UPDATE, so concurrent merges cannot persist a level below the
+        // one the final count requires.
+        let sql = format!(
+            r#"
+            UPDATE triage_queue
+            SET occurrence_count = triage_queue.occurrence_count + 1,
+                last_seen_at = NOW(),
+                updated_at = NOW(),
+                merged_observation_ids = (
+                    SELECT COALESCE(array_agg(DISTINCT obs), ARRAY[]::uuid[])
+                    FROM unnest(triage_queue.merged_observation_ids || $2::uuid[]) AS obs
+                ),
+                merged_source_urls = (
+                    SELECT COALESCE(array_agg(DISTINCT url), ARRAY[]::text[])
+                    FROM unnest(triage_queue.merged_source_urls || $3::text[]) AS url
+                ),
+                static_severity = (
+                    CASE GREATEST(
+                        CASE lower(coalesce(triage_queue.static_severity, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE lower(coalesce($4, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE WHEN triage_queue.occurrence_count + 1 >= $5 THEN 3
+                             WHEN triage_queue.occurrence_count + 1 >= $6 THEN 2
+                             ELSE -1 END
+                    )
+                    WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
+                    WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
+                    ELSE triage_queue.static_severity END
+                )
+            WHERE id = $1
+            RETURNING {INGEST_SELECT_COLUMNS}
+            "#
+        );
+
+        let row = sqlx::query_as::<_, IngestQueueRow>(&sql)
+            .bind(target_id)
+            .bind(&submission.observation_ids)
+            .bind(&submission.source_urls)
+            .bind(&submission.static_severity)
+            .bind(critical_at)
+            .bind(high_at)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(row.into_ingest_item())
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct IngestQueueRow {
+    id: Uuid,
+    item_type: String,
+    source_id: String,
+    title: String,
+    description: String,
+    entity_id: Option<Uuid>,
+    entity_name: Option<String>,
+    static_severity: Option<String>,
+    occurrence_count: i64,
+    last_seen_at: Option<DateTime<Utc>>,
+    merged_observation_ids: Vec<Uuid>,
+    merged_source_urls: Vec<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl IngestQueueRow {
+    fn into_ingest_item(self) -> crate::semantic_dedup::IngestQueueItem {
+        crate::semantic_dedup::IngestQueueItem {
+            id: self.id,
+            item_type: TriageItemType::from_str(&self.item_type),
+            source_id: self.source_id,
+            title: self.title,
+            description: self.description,
+            entity_id: self.entity_id,
+            entity_name: self.entity_name,
+            static_severity: self.static_severity,
+            occurrence_count: self.occurrence_count,
+            last_seen_at: self.last_seen_at,
+            merged_observation_ids: self.merged_observation_ids,
+            merged_source_urls: self.merged_source_urls,
+            created_at: self.created_at,
+        }
+    }
+}
+
 // ─── Trait for mockable queue operations ──────────────────────────────────────
 
 /// Abstract interface for triage queue operations, enabling mock testing.
@@ -615,7 +873,7 @@ impl TriageQueueProvider for TriageQueue {
 struct TriageQueueItemRow {
     id: Uuid,
     item_type: String,
-    source_id: String,
+    source_id: Uuid,
     title: String,
     description: String,
     entity_id: Option<Uuid>,
@@ -643,7 +901,7 @@ impl TriageQueueItemRow {
         TriageQueueItem {
             id: self.id,
             item_type: TriageItemType::from_str(&self.item_type),
-            source_id: self.source_id,
+            source_id: self.source_id.to_string(),
             title: self.title,
             description: self.description,
             entity_id: self.entity_id,
@@ -799,7 +1057,7 @@ mod tests {
         let row = TriageQueueItemRow {
             id: Uuid::new_v4(),
             item_type: "insight".to_string(),
-            source_id: "src-1".to_string(),
+            source_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap_or_default(),
             title: "Test Insight".to_string(),
             description: "A test triage item".to_string(),
             entity_id: None,
