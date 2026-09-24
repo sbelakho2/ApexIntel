@@ -19,6 +19,7 @@ pub mod rate_limit;
 pub mod responses;
 pub mod routes;
 pub mod sse;
+pub mod system_status;
 pub mod validation;
 pub mod web;
 

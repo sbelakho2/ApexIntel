@@ -34,6 +34,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/api/health/live", get(health_live))
         .route("/api/health/ready", get(health_ready))
         .route("/api/health/deep", get(health_deep))
+        .route("/api/health/capabilities", get(health_capabilities))
         .route("/api/endpoints", get(endpoints))
         .route("/api/openapi.json", get(openapi_json))
         .route("/api/docs", get(api_docs))

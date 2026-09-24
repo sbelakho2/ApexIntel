@@ -16,6 +16,10 @@
 {% block content %}
 {% call m::page_header("POI Browser", "users", "Searchable person-of-interest profiles filtered by region and role.", "") %}
 
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card border border-rams-red/40 p-4 mb-6 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Persons Tracked", total_persons.to_string(), "metric-rail-steel") %}
   {% call m::metric_card("Priority A", priority_a.to_string(), "metric-rail-red") %}
@@ -108,9 +112,9 @@
 </div>
 
 <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-  {% if persons.is_empty() %}
+  {% if persons.is_empty() && degraded_notice.is_none() %}
     {% call m::empty_state("No persons match current filters", "Try broadening region/priority filters or reset filters to review all tracked POIs.") %}
-  {% else %}
+  {% else if !persons.is_empty() %}
     <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
     {% for p in persons %}
     <a href="/persons/{{ p.id }}" class="apex-card p-4 hover:bg-rams-panel block">

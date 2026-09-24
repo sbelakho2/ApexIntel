@@ -124,9 +124,12 @@
 </div>
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-  {% if companies.is_empty() %}
+  {% if let Some(notice) = degraded_notice %}
+    <div class="col-span-full apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+  {% endif %}
+  {% if companies.is_empty() && degraded_notice.is_none() %}
     <div class="col-span-full">{% call m::empty_state("No companies found", "Try broadening your filter or adjusting the region/sector selection. Companies are added automatically via monitoring recipes and manual seeding.") %}</div>
-  {% else %}
+  {% else if !companies.is_empty() %}
     <div class="col-span-full text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Narrative cards</div>
     {% for c in companies %}
     <a href="/companies/{{ c.id }}" class="apex-card p-4 hover:bg-rams-panel block">

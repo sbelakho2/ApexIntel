@@ -31,6 +31,7 @@ pub struct NotificationsPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub unread_count: i64,
     pub total: i64,
     pub notifications: Vec<NotificationItem>,
@@ -60,6 +61,7 @@ pub async fn list_notifications_page(
 
     let page = NotificationsPage {
         current_path: ctx.current_path,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

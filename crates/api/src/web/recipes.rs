@@ -68,6 +68,7 @@ pub struct RecipesListPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub recipes: Vec<RecipeListItem>,
     pub total: i64,
@@ -124,6 +125,7 @@ pub struct RecipeNewPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -276,6 +278,7 @@ pub async fn list_recipes(
 
     let tpl = RecipesListPage {
         current_path: ctx.current_path,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -347,6 +350,7 @@ pub async fn new_recipe(
 
     let tpl = RecipeNewPage {
         current_path: ctx.current_path,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

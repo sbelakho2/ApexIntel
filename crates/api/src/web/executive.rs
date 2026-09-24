@@ -91,6 +91,7 @@ pub struct ExecutiveDashboardPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     // Executive dashboard data
     pub stat_cards: Vec<ExecutiveStatCard>,
@@ -438,6 +439,7 @@ pub async fn executive_dashboard(
 
     let page = ExecutiveDashboardPage {
         current_path: ctx.current_path,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

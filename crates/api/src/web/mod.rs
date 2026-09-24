@@ -83,6 +83,9 @@ pub struct PageContext {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    /// Measured system/data status for the `base.html` status strip. Replaces
+    /// the previously hard-coded "System Online" / "Data Fresh" labels.
+    pub status_strip: crate::system_status::StatusStrip,
 }
 
 impl PageContext {
@@ -92,6 +95,7 @@ impl PageContext {
             username: session.username.clone(),
             warning_count,
             theme: String::new(), // client-side via JS
+            status_strip: crate::system_status::StatusStrip::current(),
         }
     }
 }

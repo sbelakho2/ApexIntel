@@ -59,6 +59,7 @@ pub struct BattlecardsListPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub battlecards: Vec<BattlecardListItem>,
     pub total: i64,
@@ -74,6 +75,7 @@ pub struct BattlecardDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub battlecard: BattlecardResponse,
     pub sections: Vec<BattlecardSectionRow>,
@@ -164,6 +166,7 @@ pub async fn list_battlecards(
 
     let template = BattlecardsListPage {
         current_path: "/battlecards".to_string(),
+        status_strip: crate::system_status::StatusStrip::current(),
         username: session.username.clone(),
         warning_count,
         theme: String::new(),
@@ -267,6 +270,7 @@ pub async fn get_battlecard(
 
             let template = BattlecardDetailPage {
                 current_path: format!("/battlecards/{}", id),
+                status_strip: crate::system_status::StatusStrip::current(),
                 username: session.username.clone(),
                 warning_count: 0,
                 theme: String::new(),
@@ -280,6 +284,7 @@ pub async fn get_battlecard(
         Ok(None) => {
             let tpl = super::errors::NotFoundPage {
                 current_path: format!("/battlecards/{}", id),
+                status_strip: crate::system_status::StatusStrip::current(),
                 username: session.username.clone(),
                 warning_count: 0,
                 theme: String::new(),
@@ -291,6 +296,7 @@ pub async fn get_battlecard(
             tracing::error!("Failed to fetch battlecard {id}: {e:#}");
             let tpl = super::errors::InternalErrorPage {
                 current_path: format!("/battlecards/{}", id),
+                status_strip: crate::system_status::StatusStrip::current(),
                 username: session.username.clone(),
                 warning_count: 0,
                 theme: String::new(),

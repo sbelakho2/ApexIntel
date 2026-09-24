@@ -2718,6 +2718,36 @@ async fn main() -> Result<()> {
     let store = Arc::new(PgStore::from_pool(pool.clone()));
     tracing::info!("store initialized");
 
+    // ─── Liveness heartbeat (migration 049) ───────────────────────────────
+    // Health checks read `service_heartbeats.last_seen_at` to distinguish a
+    // live worker from one that silently stopped; write every ~30s so
+    // staleness is a measurement, not an assumption. The first tick fires
+    // immediately, recording a heartbeat at startup.
+    {
+        let heartbeat_store = Arc::clone(&store);
+        tokio::spawn(async move {
+            let instance_id = std::env::var("APEX_INSTANCE_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| {
+                    let host =
+                        std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
+                    format!("{host}-{}", std::process::id())
+                });
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                if let Err(error) = heartbeat_store
+                    .record_service_heartbeat("worker", &instance_id, env!("CARGO_PKG_VERSION"))
+                    .await
+                {
+                    tracing::warn!(error = %error, "failed to record worker heartbeat");
+                }
+            }
+        });
+        tracing::info!("worker heartbeat task started");
+    }
+
     // Create the shared ActivityLogger for recording system events
     // to the activity_feed table across all pipeline stages.
     let _activity_logger = ActivityLogger::new(pool.clone());

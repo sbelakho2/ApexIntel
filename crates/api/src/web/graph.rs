@@ -12,6 +12,7 @@ use chrono::Utc;
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{
     CompanyListFilters, InsightListFilters, PersonListFilters, PgStore, WarningListFilters,
 };
@@ -82,6 +83,9 @@ pub struct GraphPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
+    /// Rendered when graph queries failed, instead of "no results".
+    pub degraded_notice: Option<String>,
 
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
@@ -116,20 +120,38 @@ pub async fn graph_page(
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/graph", unack);
 
-    let edge_rows = store.list_all_edges(500).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to list graph edges: {e}");
-        vec![]
-    });
-    let _edges_total = store.count_edges().await.unwrap_or(edge_rows.len() as i64);
+    let mut degraded_notice: Option<String> = None;
 
-    let companies_total = store
-        .count_companies(&CompanyListFilters::default())
-        .await
-        .unwrap_or(0);
-    let persons_total = store
-        .count_persons(&PersonListFilters::default())
-        .await
-        .unwrap_or(0);
+    let edges_state = DataState::from_result(
+        store.list_all_edges(500).await,
+        "failed to list graph edges",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&edges_state, &mut degraded_notice);
+    let edge_rows = edges_state.into_items();
+
+    let edges_total_state = DataState::from_result(
+        store.count_edges().await,
+        "failed to count graph edges",
+        |_| false,
+    );
+    DegradedNotice::capture(&edges_total_state, &mut degraded_notice);
+    let _edges_total = edges_total_state.into_loaded_or(edge_rows.len() as i64);
+
+    let companies_total_state = DataState::from_result(
+        store.count_companies(&CompanyListFilters::default()).await,
+        "failed to count companies",
+        |_| false,
+    );
+    DegradedNotice::capture(&companies_total_state, &mut degraded_notice);
+    let companies_total = companies_total_state.into_loaded_or(0);
+    let persons_total_state = DataState::from_result(
+        store.count_persons(&PersonListFilters::default()).await,
+        "failed to count persons",
+        |_| false,
+    );
+    DegradedNotice::capture(&persons_total_state, &mut degraded_notice);
+    let persons_total = persons_total_state.into_loaded_or(0);
     let _warnings_total = store
         .count_warnings(&WarningListFilters::default())
         .await
@@ -160,8 +182,9 @@ pub async fn graph_page(
     let entity_activity: HashMap<String, i64> = if node_ids.is_empty() {
         HashMap::new()
     } else {
-        sqlx::query_as::<_, EntityActivityRow>(
-            r#"SELECT entity_id, MAX(last_activity) AS last_activity
+        let activity_state = DataState::from_result(
+            sqlx::query_as::<_, EntityActivityRow>(
+                r#"SELECT entity_id, MAX(last_activity) AS last_activity
                FROM (
                    SELECT unnest(entity_ids)::text AS entity_id, ts_utc AS last_activity
                    FROM warnings
@@ -173,22 +196,29 @@ pub async fn graph_page(
                ) activity
                WHERE entity_id = ANY($1)
                GROUP BY entity_id"#,
-        )
-        .bind(node_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>())
-        .fetch_all(&store.pool)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| {
-            (
-                row.entity_id,
-                Utc::now()
-                    .signed_duration_since(row.last_activity)
-                    .num_days()
-                    .max(0),
             )
-        })
-        .collect()
+            .bind(node_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>())
+            .fetch_all(&store.pool)
+            .await,
+            "failed to fetch entity activity",
+            |rows| rows.is_empty(),
+        );
+        DegradedNotice::capture(&activity_state, &mut degraded_notice);
+        activity_state
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| {
+                        (
+                            row.entity_id,
+                            Utc::now()
+                                .signed_duration_since(row.last_activity)
+                                .num_days()
+                                .max(0),
+                        )
+                    })
+                    .collect()
+            })
+            .into_loaded_or_default()
     };
 
     let node_labels_by_id: HashMap<String, String> = if node_ids.is_empty() {
@@ -200,18 +230,26 @@ pub async fn graph_page(
             label: String,
         }
 
-        sqlx::query_as::<_, NodeNameRow>(
-            r#"SELECT id, name AS label FROM companies WHERE id = ANY($1)
+        let labels_state = DataState::from_result(
+            sqlx::query_as::<_, NodeNameRow>(
+                r#"SELECT id, name AS label FROM companies WHERE id = ANY($1)
                UNION ALL
                SELECT id, name AS label FROM persons WHERE id = ANY($1)"#,
-        )
-        .bind(&node_ids)
-        .fetch_all(&store.pool)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| (row.id.to_string(), row.label))
-        .collect()
+            )
+            .bind(&node_ids)
+            .fetch_all(&store.pool)
+            .await,
+            "failed to fetch graph node labels",
+            |rows| rows.is_empty(),
+        );
+        DegradedNotice::capture(&labels_state, &mut degraded_notice);
+        labels_state
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| (row.id.to_string(), row.label))
+                    .collect()
+            })
+            .into_loaded_or_default()
     };
 
     #[derive(sqlx::FromRow)]
@@ -236,22 +274,33 @@ pub async fn graph_page(
     let mut company_rows: Vec<GraphCompanyRow> = if company_ids_from_edges.is_empty() {
         Vec::new()
     } else {
-        sqlx::query_as::<_, GraphCompanyRow>(
-            r#"SELECT id, name, region, country_code, domain
+        let company_rows_state = DataState::from_result(
+            sqlx::query_as::<_, GraphCompanyRow>(
+                r#"SELECT id, name, region, country_code, domain
                FROM companies
                WHERE id = ANY($1)"#,
-        )
-        .bind(company_ids_from_edges.into_iter().collect::<Vec<_>>())
-        .fetch_all(&store.pool)
-        .await
-        .unwrap_or_default()
+            )
+            .bind(company_ids_from_edges.into_iter().collect::<Vec<_>>())
+            .fetch_all(&store.pool)
+            .await,
+            "failed to fetch graph companies",
+            |rows| rows.is_empty(),
+        );
+        DegradedNotice::capture(&company_rows_state, &mut degraded_notice);
+        company_rows_state.into_items()
     };
 
     if company_rows.is_empty() {
-        company_rows = store
-            .list_companies(&CompanyListFilters::default(), None, true, 1200, 0)
-            .await
-            .unwrap_or_default()
+        let listed_companies = DataState::from_result(
+            store
+                .list_companies(&CompanyListFilters::default(), None, true, 1200, 0)
+                .await,
+            "failed to list companies for graph",
+            |rows| rows.is_empty(),
+        );
+        DegradedNotice::capture(&listed_companies, &mut degraded_notice);
+        company_rows = listed_companies
+            .into_items()
             .into_iter()
             .map(|company| GraphCompanyRow {
                 id: company.id,
@@ -262,14 +311,22 @@ pub async fn graph_page(
             })
             .collect();
     }
-    let cert_rows = store
-        .list_certifications(None, 400, 0)
-        .await
-        .unwrap_or_default();
-    let warning_rows = store
-        .list_warnings(&WarningListFilters::default(), None, true, 400, 0)
-        .await
-        .unwrap_or_default();
+    let cert_rows_state = DataState::from_result(
+        store.list_certifications(None, 400, 0).await,
+        "failed to list certifications for graph",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&cert_rows_state, &mut degraded_notice);
+    let cert_rows = cert_rows_state.into_items();
+    let warning_rows_state = DataState::from_result(
+        store
+            .list_warnings(&WarningListFilters::default(), None, true, 400, 0)
+            .await,
+        "failed to list warnings for graph",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&warning_rows_state, &mut degraded_notice);
+    let warning_rows = warning_rows_state.into_items();
 
     #[derive(sqlx::FromRow)]
     struct SiteCountryRow {
@@ -281,16 +338,21 @@ pub async fn graph_page(
     let site_country_rows: Vec<SiteCountryRow> = if company_ids.is_empty() {
         Vec::new()
     } else {
-        sqlx::query_as::<_, SiteCountryRow>(
-            r#"SELECT company_id, country_code
+        let sites_state = DataState::from_result(
+            sqlx::query_as::<_, SiteCountryRow>(
+                r#"SELECT company_id, country_code
                FROM sites
                WHERE company_id = ANY($1)
                  AND country_code IS NOT NULL"#,
-        )
-        .bind(&company_ids)
-        .fetch_all(&store.pool)
-        .await
-        .unwrap_or_default()
+            )
+            .bind(&company_ids)
+            .fetch_all(&store.pool)
+            .await,
+            "failed to fetch site countries",
+            |rows| rows.is_empty(),
+        );
+        DegradedNotice::capture(&sites_state, &mut degraded_notice);
+        sites_state.into_items()
     };
 
     // Build nodes from edges
@@ -795,9 +857,11 @@ pub async fn graph_page(
 
     let tpl = GraphPage {
         current_path: ctx.current_path,
+        status_strip: ctx.status_strip,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        degraded_notice,
         companies_total: if companies_total_graph > 0 {
             companies_total_graph
         } else {

@@ -235,6 +235,8 @@ mod company_assets;
 mod competitors;
 pub mod embeddings;
 mod graph;
+mod heartbeats;
+pub use heartbeats::ServiceHeartbeatRow;
 mod history;
 mod insights;
 mod llm_governance;

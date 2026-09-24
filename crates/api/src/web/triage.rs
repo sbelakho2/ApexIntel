@@ -15,6 +15,7 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_core::triage::{TriageQueueItem, TriageStatus, TriageThresholds};
 use apex_store::postgres::{PgStore, WarningListFilters};
 use apex_triage::TriageQueue;
@@ -45,12 +46,15 @@ pub(crate) struct TriageQueuePage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub items: Vec<TriageQueueItem>,
     pub stats: QueueStats,
     pub current_status: String,
     pub page: u32,
     pub total_pages: u32,
     pub thresholds: TriageThresholds,
+    /// Rendered when the triage queue query failed.
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Template)]
@@ -60,12 +64,15 @@ pub(crate) struct TriageQueuePartial {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub items: Vec<TriageQueueItem>,
     pub stats: QueueStats,
     pub current_status: String,
     pub page: u32,
     pub total_pages: u32,
     pub thresholds: TriageThresholds,
+    /// Rendered when the triage queue query failed.
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Template)]
@@ -75,6 +82,7 @@ pub(crate) struct TriageDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub item: TriageQueueItem,
     pub thresholds: TriageThresholds,
     // Pre-computed display values (Askama 0.12 compatibility)
@@ -120,9 +128,9 @@ fn page_from_ctx(ctx: &PageContext) -> (String, String, i64, String) {
     )
 }
 
-async fn fetch_stats(queue: &TriageQueue) -> QueueStats {
+async fn fetch_stats(queue: &TriageQueue) -> Result<QueueStats, String> {
     match queue.stats().await {
-        Ok(s) => QueueStats {
+        Ok(s) => Ok(QueueStats {
             total: s.total,
             pending: s.pending,
             triaged: s.triaged,
@@ -135,21 +143,29 @@ async fn fetch_stats(queue: &TriageQueue) -> QueueStats {
             low_count: s.low_count,
             override_rate: s.override_rate,
             resolution_rate: s.resolution_rate,
-        },
-        Err(_) => QueueStats {
-            total: 0,
-            pending: 0,
-            triaged: 0,
-            acknowledged: 0,
-            resolved: 0,
-            dismissed: 0,
-            critical_count: 0,
-            high_count: 0,
-            medium_count: 0,
-            low_count: 0,
-            override_rate: 0.0,
-            resolution_rate: 0.0,
-        },
+        }),
+        Err(error) => {
+            let error_id = apex_core::data_state::new_incident_id();
+            tracing::error!(incident_id = %error_id, "failed to fetch triage stats: {error}");
+            Err(error_id)
+        }
+    }
+}
+
+fn empty_stats() -> QueueStats {
+    QueueStats {
+        total: 0,
+        pending: 0,
+        triaged: 0,
+        acknowledged: 0,
+        resolved: 0,
+        dismissed: 0,
+        critical_count: 0,
+        high_count: 0,
+        medium_count: 0,
+        low_count: 0,
+        override_rate: 0.0,
+        resolution_rate: 0.0,
     }
 }
 
@@ -169,17 +185,37 @@ pub async fn list_triage(
     let offset = ((page - 1) * per_page as u32) as u64;
 
     let status_filter = parse_status(params.status.as_deref());
-    let items = queue
-        .list(status_filter.clone(), per_page, offset)
-        .await
-        .unwrap_or_default();
-    let total = queue.count(status_filter.clone()).await.unwrap_or(0);
+    let mut degraded_notice: Option<String> = None;
+
+    let items_state = DataState::from_result(
+        queue.list(status_filter.clone(), per_page, offset).await,
+        "failed to list triage queue",
+        |items| items.is_empty(),
+    );
+    DegradedNotice::capture(&items_state, &mut degraded_notice);
+    let items = items_state.into_items();
+
+    let total_state = DataState::from_result(
+        queue.count(status_filter.clone()).await,
+        "failed to count triage queue",
+        |_| false,
+    );
+    DegradedNotice::capture(&total_state, &mut degraded_notice);
+    let total = total_state.into_loaded_or(0);
+
     let total_pages = if per_page > 0 {
         (total as f64 / per_page as f64).ceil() as u32
     } else {
         0
     };
-    let stats = fetch_stats(&queue).await;
+
+    let stats = match fetch_stats(&queue).await {
+        Ok(stats) => stats,
+        Err(error_id) => {
+            DegradedNotice::capture(&DataState::<()>::degraded(error_id), &mut degraded_notice);
+            empty_stats()
+        }
+    };
 
     let current_status = params.status.unwrap_or_else(|| "all".to_string());
 
@@ -200,6 +236,8 @@ pub async fn list_triage(
             username,
             warning_count,
             theme,
+            status_strip: pctx.status_strip.clone(),
+            degraded_notice: degraded_notice.clone(),
             items,
             stats,
             current_status,
@@ -214,6 +252,8 @@ pub async fn list_triage(
             username,
             warning_count,
             theme,
+            status_strip: pctx.status_strip.clone(),
+            degraded_notice,
             items,
             stats,
             current_status,
@@ -244,6 +284,7 @@ pub async fn get_triage_item(
                 username,
                 warning_count,
                 theme,
+                status_strip: pctx.status_strip.clone(),
                 score_pct: (item.composite_score * 100.0) as i64,
                 urgency_pct: (dims.map(|d| d.urgency).unwrap_or(0.0) * 100.0) as i64,
                 impact_pct: (dims.map(|d| d.impact).unwrap_or(0.0) * 100.0) as i64,
@@ -348,5 +389,62 @@ pub async fn override_triage_html(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system_status::StatusStrip;
+
+    fn empty_stats() -> QueueStats {
+        super::empty_stats()
+    }
+
+    #[test]
+    fn degraded_queue_renders_marker_instead_of_no_results() {
+        let page = TriageQueuePage {
+            current_path: "/triage".into(),
+            username: "analyst".into(),
+            warning_count: 0,
+            theme: String::new(),
+            status_strip: StatusStrip::unknown(),
+            items: vec![],
+            stats: empty_stats(),
+            current_status: "all".into(),
+            page: 1,
+            total_pages: 0,
+            thresholds: TriageThresholds::default(),
+            degraded_notice: Some(
+                "Data unavailable — query failed at 14:03 UTC · incident inc-queue777".into(),
+            ),
+        };
+        let html = page.render().expect("triage queue renders");
+
+        assert!(html.contains("incident inc-queue777"));
+        assert!(html.contains("data-degraded=\"true\""));
+        assert!(!html.contains("No triage items found."));
+    }
+
+    #[test]
+    fn empty_queue_still_renders_no_results_when_healthy() {
+        let page = TriageQueuePage {
+            current_path: "/triage".into(),
+            username: "analyst".into(),
+            warning_count: 0,
+            theme: String::new(),
+            status_strip: StatusStrip::unknown(),
+            items: vec![],
+            stats: empty_stats(),
+            current_status: "all".into(),
+            page: 1,
+            total_pages: 0,
+            thresholds: TriageThresholds::default(),
+            degraded_notice: None,
+        };
+        let html = page.render().expect("triage queue renders");
+
+        assert!(html.contains("No triage items found."));
+        assert!(!html.contains("data-degraded=\"true\""));
     }
 }

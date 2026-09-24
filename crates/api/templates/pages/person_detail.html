@@ -16,6 +16,9 @@
 {% endblock %}
 
 {% block content %}
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card border border-rams-red/40 p-4 mb-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
 {% if briefing_mode %}
 <div class="mb-4 flex items-center justify-between gap-4 no-print">
   <div>

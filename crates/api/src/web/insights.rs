@@ -281,6 +281,7 @@ pub struct InsightsListPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub insights: Vec<InsightListItem>,
     pub total: i64,
@@ -341,6 +342,7 @@ pub struct InsightDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub id: String,
     pub title: String,
@@ -841,6 +843,7 @@ pub async fn list_insights(
 
     let tpl = InsightsListPage {
         current_path: ctx.current_path,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -970,6 +973,7 @@ pub async fn get_insight(
 
     let tpl = InsightDetailPage {
         current_path: ctx.current_path,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

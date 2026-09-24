@@ -17,6 +17,7 @@ pub struct NotFoundPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub requested_path: String,
 }
 
@@ -27,6 +28,7 @@ pub struct InternalErrorPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub error_message: String,
     pub request_id: String,
 }
@@ -37,6 +39,7 @@ pub struct InternalErrorPage {
 pub async fn not_found() -> impl IntoResponse {
     let tpl = NotFoundPage {
         current_path: String::new(),
+        status_strip: crate::system_status::StatusStrip::current(),
         username: "anonymous".into(),
         warning_count: 0,
         theme: String::new(),
@@ -51,6 +54,7 @@ pub async fn not_found() -> impl IntoResponse {
 pub async fn internal_error(error_message: &str, request_id: &str) -> Response {
     let tpl = InternalErrorPage {
         current_path: String::new(),
+        status_strip: crate::system_status::StatusStrip::current(),
         username: "anonymous".into(),
         warning_count: 0,
         theme: String::new(),
@@ -65,6 +69,7 @@ pub async fn internal_error(error_message: &str, request_id: &str) -> Response {
 pub fn not_found_with_context(username: &str, path: &str, warning_count: i64) -> Response {
     let tpl = NotFoundPage {
         current_path: path.to_string(),
+        status_strip: crate::system_status::StatusStrip::current(),
         username: username.to_string(),
         warning_count,
         theme: String::new(),
@@ -83,6 +88,7 @@ pub fn internal_error_with_context(
 ) -> Response {
     let tpl = InternalErrorPage {
         current_path: String::new(),
+        status_strip: crate::system_status::StatusStrip::current(),
         username: username.to_string(),
         warning_count,
         theme: String::new(),

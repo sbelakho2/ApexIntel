@@ -176,6 +176,7 @@ pub struct WarningsListPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     // list-specific
     pub warnings: Vec<WarningListItem>,
     pub total: i64,
@@ -245,6 +246,7 @@ pub struct WarningDetailPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
     pub briefing_mode: bool,
     // detail-specific
     pub id: String,
@@ -769,6 +771,7 @@ pub async fn list_warnings(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        status_strip: ctx.status_strip,
         warnings,
         total,
         page,
@@ -949,6 +952,7 @@ pub async fn get_warning(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        status_strip: ctx.status_strip,
         briefing_mode: query.briefing.unwrap_or(false),
         id: warning.id.to_string(),
         title: warning.title.clone(),

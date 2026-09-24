@@ -112,6 +112,7 @@ pub struct SecurityPage {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    pub status_strip: crate::system_status::StatusStrip,
 
     pub overall_score: i64,
     pub dns_posture: Vec<DnsPostureItem>,
@@ -460,6 +461,7 @@ pub async fn security_page(
 
     let tpl = SecurityPage {
         current_path: ctx.current_path,
+        status_strip: crate::system_status::StatusStrip::current(),
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

@@ -604,21 +604,39 @@ pub(crate) async fn list_graph(
         }
     };
 
-    let edges_total = match state.store.count_edges().await {
-        Ok(value) => value.max(0) as u64,
-        Err(err) => {
-            tracing::warn!(request_id = %request_id, "count edges failed: {err:#}");
-            0
-        }
-    };
+    // Graph loads are measured: a failed count or edge query must surface as
+    // an explicit incident, never as a graph with zero edges.
+    let edges_total_state = DataState::from_result(
+        state.store.count_edges().await,
+        "failed to count graph edges",
+        |_| false,
+    );
+    if edges_total_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to count graph edges",
+                &edges_total_state,
+            ))),
+        );
+    }
+    let edges_total = edges_total_state.into_loaded_or(0).max(0) as u64;
 
-    let edge_rows = match state.store.list_all_edges(200).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            tracing::warn!(request_id = %request_id, "list edges failed: {err:#}");
-            Vec::new()
-        }
-    };
+    let edge_rows_state = DataState::from_result(
+        state.store.list_all_edges(200).await,
+        "failed to list graph edges",
+        |rows| rows.is_empty(),
+    );
+    if edge_rows_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to list graph edges",
+                &edge_rows_state,
+            ))),
+        );
+    }
+    let edge_rows = edge_rows_state.into_items();
 
     let edges: Vec<GraphEdge> = edge_rows.iter().map(edge_row_to_graph_edge).collect();
     let edge_type_counts = compute_edge_type_counts(&edge_rows);
@@ -641,22 +659,36 @@ pub(crate) async fn list_graph(
             label: String,
             node_type: String,
         }
-        sqlx::query_as::<_, NodeNameRow>(
-            r#"SELECT id, name AS label, 'company' AS node_type FROM companies WHERE id = ANY($1)
+        let node_labels_state = DataState::from_result(
+            sqlx::query_as::<_, NodeNameRow>(
+                r#"SELECT id, name AS label, 'company' AS node_type FROM companies WHERE id = ANY($1)
                UNION ALL
                SELECT id, name AS label, 'person' AS node_type FROM persons WHERE id = ANY($1)"#,
-        )
-        .bind(&node_ids)
-        .fetch_all(&state.store.pool)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| GraphNodeLabel {
-            id: row.id.to_string(),
-            label: row.label,
-            node_type: row.node_type,
-        })
-        .collect()
+            )
+            .bind(&node_ids)
+            .fetch_all(&state.store.pool)
+            .await,
+            "failed to fetch graph node labels",
+            |rows| rows.is_empty(),
+        );
+        if node_labels_state.is_degraded() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(degraded_api_error(
+                    "Failed to fetch graph node labels",
+                    &node_labels_state,
+                ))),
+            );
+        }
+        node_labels_state
+            .into_items()
+            .into_iter()
+            .map(|row| GraphNodeLabel {
+                id: row.id.to_string(),
+                label: row.label,
+                node_type: row.node_type,
+            })
+            .collect()
     };
 
     let payload = GraphOverviewWithEdges {
@@ -794,17 +826,53 @@ pub(crate) async fn list_security(
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
 
-    let dns_rows = state
-        .store
-        .get_dns_posture_entries(500)
-        .await
-        .unwrap_or_default();
-    let lookalike_rows = state
-        .store
-        .get_lookalike_domains(5000)
-        .await
-        .unwrap_or_default();
-    let kev_rows = state.store.get_kev_relevance(200).await.unwrap_or_default();
+    // Security posture is measured: a failed query must not be summarized as
+    // "0 domains monitored / 0 lookalikes / 0 KEV matches".
+    let dns_state = DataState::from_result(
+        state.store.get_dns_posture_entries(500).await,
+        "failed to fetch DNS posture entries",
+        |rows| rows.is_empty(),
+    );
+    if dns_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to load DNS posture",
+                &dns_state,
+            ))),
+        );
+    }
+    let dns_rows = dns_state.into_items();
+    let lookalike_state = DataState::from_result(
+        state.store.get_lookalike_domains(5000).await,
+        "failed to fetch lookalike domains",
+        |rows| rows.is_empty(),
+    );
+    if lookalike_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to load lookalike domains",
+                &lookalike_state,
+            ))),
+        );
+    }
+    let lookalike_rows = lookalike_state.into_items();
+    let kev_state = DataState::from_result(
+        state.store.get_kev_relevance(200).await,
+        "failed to fetch KEV relevance",
+        |rows| rows.is_empty(),
+    );
+    if kev_state.is_degraded() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response(degraded_api_error(
+                "Failed to load KEV relevance",
+                &kev_state,
+            ))),
+        );
+    }
+    let kev_rows = kev_state.into_items();
 
     let domains_monitored = dns_rows.len() as u64;
     let dns_scores: Vec<f64> = dns_rows
