@@ -169,9 +169,10 @@ pub struct ApiKey {
     pub allowed_origins: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum ApiRole {
     Admin,
+    #[default]
     Analyst,
     Viewer,
     Service,
@@ -214,6 +215,47 @@ impl FromStr for ApiRole {
             "service" => Ok(Self::Service),
             _ => Err(()),
         }
+    }
+}
+
+// ────────────────────────────────────────────
+// Principal
+// ────────────────────────────────────────────
+
+/// Unified authenticated principal — whoever a request acts as, independent of
+/// the transport that authenticated it (API key or browser session).
+///
+/// Browser sessions are signed with this data in the cookie payload
+/// (`uid`/`sub`/`role`/`iat`/`exp`/`sv`); API keys map onto it via
+/// [`AuthResult`]. `session_version` starts at
+/// [`crate::middleware::session::SESSION_VERSION`] and exists so sessions can
+/// be invalidated by bumping the version in the future.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Principal {
+    pub user_id: String,
+    pub username: String,
+    pub role: ApiRole,
+    pub session_version: u32,
+}
+
+impl Principal {
+    pub fn new(
+        user_id: impl Into<String>,
+        username: impl Into<String>,
+        role: ApiRole,
+        session_version: u32,
+    ) -> Self {
+        Self {
+            user_id: user_id.into(),
+            username: username.into(),
+            role,
+            session_version,
+        }
+    }
+
+    /// Can this principal access admin-only surfaces?
+    pub fn can_admin(&self) -> bool {
+        self.role.can_admin()
     }
 }
 

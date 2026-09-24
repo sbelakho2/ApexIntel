@@ -357,6 +357,7 @@ pub struct PriorityFilterChip {
 #[template(path = "pages/person_detail.html")]
 pub struct PersonDetailPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -389,6 +390,7 @@ pub struct PersonDetailQuery {
 #[template(path = "pages/persons.html")]
 pub struct PersonsPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -650,6 +652,7 @@ pub async fn list_persons(
 
     let tpl = PersonsPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -926,6 +929,7 @@ pub async fn get_person(
 
     let tpl = PersonDetailPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

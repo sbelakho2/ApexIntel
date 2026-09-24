@@ -6,7 +6,11 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::{response::IntoResponse, Extension};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Extension,
+};
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
@@ -114,6 +118,7 @@ pub struct SourceItem {
 #[template(path = "pages/admin.html")]
 pub struct AdminPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -165,10 +170,21 @@ fn validation_issue_count(value: &serde_json::Value) -> usize {
 // ─── Handler ────────────────────────────────────────────────────────────────
 
 /// GET /admin — admin system dashboard.
+///
+/// The `/admin` route is also guarded by `require_web_admin` at the router
+/// level; this check is defense in depth for direct handler invocation.
 pub async fn admin_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
-) -> impl IntoResponse {
+) -> Response {
+    if !session.can_admin() {
+        tracing::warn!(
+            username = %session.username,
+            role = %session.role.as_str(),
+            "admin page access denied: admin role required"
+        );
+        return (StatusCode::FORBIDDEN, "Admin role required").into_response();
+    }
     let unack = store
         .count_warnings(&WarningListFilters {
             acknowledged: Some(false),
@@ -355,6 +371,7 @@ pub async fn admin_page(
 
     let tpl = AdminPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

@@ -42,6 +42,7 @@ pub struct OverrideForm {
 #[template(path = "pages/triage_queue.html")]
 pub(crate) struct TriageQueuePage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -57,6 +58,7 @@ pub(crate) struct TriageQueuePage {
 #[template(path = "pages/triage_queue.html")]
 pub(crate) struct TriageQueuePartial {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -72,6 +74,7 @@ pub(crate) struct TriageQueuePartial {
 #[template(path = "pages/triage_detail.html")]
 pub(crate) struct TriageDetailPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -111,12 +114,13 @@ fn parse_status(s: Option<&str>) -> Option<TriageStatus> {
     s.map(TriageStatus::from_str)
 }
 
-fn page_from_ctx(ctx: &PageContext) -> (String, String, i64, String) {
+fn page_from_ctx(ctx: &PageContext) -> (String, String, i64, String, bool) {
     (
         ctx.current_path.clone(),
         ctx.username.clone(),
         ctx.warning_count,
         ctx.theme.clone(),
+        ctx.can_admin,
     )
 }
 
@@ -192,7 +196,7 @@ pub async fn list_triage(
         .await
         .unwrap_or(0);
     let pctx = PageContext::from_session(&session, "/triage", unack);
-    let (current_path, username, warning_count, theme) = page_from_ctx(&pctx);
+    let (current_path, username, warning_count, theme, can_admin) = page_from_ctx(&pctx);
 
     if is_htmx_request(&headers) {
         let partial = TriageQueuePartial {
@@ -200,6 +204,7 @@ pub async fn list_triage(
             username,
             warning_count,
             theme,
+            can_admin,
             items,
             stats,
             current_status,
@@ -214,6 +219,7 @@ pub async fn list_triage(
             username,
             warning_count,
             theme,
+            can_admin,
             items,
             stats,
             current_status,
@@ -237,13 +243,14 @@ pub async fn get_triage_item(
     match queue.get_by_id(id).await {
         Ok(Some(item)) => {
             let pctx = PageContext::from_session(&session, &format!("/triage/{}", id), 0);
-            let (current_path, username, warning_count, theme) = page_from_ctx(&pctx);
+            let (current_path, username, warning_count, theme, can_admin) = page_from_ctx(&pctx);
             let dims = item.dimensions.as_ref();
             render_template(&TriageDetailPage {
                 current_path,
                 username,
                 warning_count,
                 theme,
+                can_admin,
                 score_pct: (item.composite_score * 100.0) as i64,
                 urgency_pct: (dims.map(|d| d.urgency).unwrap_or(0.0) * 100.0) as i64,
                 impact_pct: (dims.map(|d| d.impact).unwrap_or(0.0) * 100.0) as i64,

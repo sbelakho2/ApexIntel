@@ -1,6 +1,6 @@
 use crate::*;
 
-use apex_api::middleware::session::require_session;
+use apex_api::middleware::session::{require_admin, require_session, require_web_admin};
 use axum::{
     middleware,
     routing::{delete, get, patch, post, put},
@@ -542,6 +542,14 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .layer(Extension(state.store.clone()))
         .layer(Extension(state.search_index.clone()));
 
+    // The HTML /admin page carries the same `can_admin()` authorization as
+    // `/api/admin/*`: a browser session without an admin role gets 403, while
+    // unauthenticated requests are still redirected to /login by
+    // `require_session` (registered on `web_pages` below).
+    let admin_pages = Router::new()
+        .route("/admin", get(apex_api::web::admin::admin_page))
+        .route_layer(middleware::from_fn(require_web_admin));
+
     let web_pages = Router::new()
         .route("/", get(apex_api::web::dashboard::dashboard))
         .route("/warnings", get(apex_api::web::warnings::list_warnings))
@@ -627,7 +635,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/security/trigger-scan",
             post(apex_api::web::security::post_trigger_scan_html),
         )
-        .route("/admin", get(apex_api::web::admin::admin_page))
         .route("/memos", get(apex_api::web::memos::list_memos))
         .route(
             "/memos/_list",
@@ -751,6 +758,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/triage/:id/override",
             post(apex_api::web::triage::override_triage_html),
         )
+        .merge(admin_pages)
         .route_layer(middleware::from_fn(require_session))
         .layer(Extension(state.store.clone()))
         .layer(Extension(state.search_index.clone()))

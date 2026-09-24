@@ -40,6 +40,7 @@ pub struct TrendsPageParams {
 pub struct TrendsPage {
     // ── base layout fields ──
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -362,6 +363,7 @@ pub async fn trends_page(
 
     let page = TrendsPage {
         current_path: "/trends".to_string(),
+        can_admin: ctx.can_admin,
         max_val,
         max_val_half,
         chart_w,

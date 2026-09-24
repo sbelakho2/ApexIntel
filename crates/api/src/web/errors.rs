@@ -14,6 +14,7 @@ use axum::{
 #[template(path = "pages/404.html")]
 pub struct NotFoundPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -24,6 +25,7 @@ pub struct NotFoundPage {
 #[template(path = "pages/500.html")]
 pub struct InternalErrorPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -40,6 +42,7 @@ pub async fn not_found() -> impl IntoResponse {
         username: "anonymous".into(),
         warning_count: 0,
         theme: String::new(),
+        can_admin: false,
         requested_path: String::new(),
     };
 
@@ -54,6 +57,7 @@ pub async fn internal_error(error_message: &str, request_id: &str) -> Response {
         username: "anonymous".into(),
         warning_count: 0,
         theme: String::new(),
+        can_admin: false,
         error_message: error_message.to_string(),
         request_id: request_id.to_string(),
     };
@@ -68,6 +72,7 @@ pub fn not_found_with_context(username: &str, path: &str, warning_count: i64) ->
         username: username.to_string(),
         warning_count,
         theme: String::new(),
+        can_admin: false,
         requested_path: path.to_string(),
     };
 
@@ -86,9 +91,38 @@ pub fn internal_error_with_context(
         username: username.to_string(),
         warning_count,
         theme: String::new(),
+        can_admin: false,
         error_message: error_message.to_string(),
         request_id: request_id.to_string(),
     };
 
     super::render_template_with_status(StatusCode::INTERNAL_SERVER_ERROR, &tpl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(can_admin: bool) -> NotFoundPage {
+        NotFoundPage {
+            current_path: "/missing".to_string(),
+            username: "tester".to_string(),
+            warning_count: 0,
+            theme: String::new(),
+            can_admin,
+            requested_path: "/missing".to_string(),
+        }
+    }
+
+    #[test]
+    fn admin_nav_is_hidden_without_admin_role() {
+        let html = page(false).render().expect("render 404 page");
+        assert!(!html.contains("href=\"/admin\""));
+    }
+
+    #[test]
+    fn admin_nav_is_visible_for_admin_principal() {
+        let html = page(true).render().expect("render 404 page");
+        assert!(html.contains("href=\"/admin\""));
+    }
 }

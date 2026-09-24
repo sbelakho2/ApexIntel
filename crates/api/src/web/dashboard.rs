@@ -191,6 +191,7 @@ pub fn compute_donut_segments(counts: &[SeverityCount], radius: f64) -> Vec<Donu
 pub struct DashboardPage {
     // ── base layout fields ──
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -570,6 +571,7 @@ pub async fn dashboard(
 
     let page = DashboardPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

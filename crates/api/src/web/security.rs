@@ -109,6 +109,7 @@ fn signal_label(signal: &str) -> &'static str {
 #[template(path = "pages/security.html")]
 pub struct SecurityPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -460,6 +461,7 @@ pub async fn security_page(
 
     let tpl = SecurityPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

@@ -56,6 +56,7 @@ pub struct BattlecardSectionRow {
 #[template(path = "pages/battlecards/list.html")]
 pub struct BattlecardsListPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -71,6 +72,7 @@ pub struct BattlecardsListPage {
 #[template(path = "pages/battlecards/detail.html")]
 pub struct BattlecardDetailPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -97,7 +99,7 @@ pub async fn list_battlecards(
         .await
         .unwrap_or(0);
 
-    let _ctx = PageContext::from_session(&session, "/battlecards", warning_count);
+    let ctx = PageContext::from_session(&session, "/battlecards", warning_count);
 
     let page_u32 = query.page.unwrap_or(1).max(1);
     let per_page_u32 = query.per_page.unwrap_or(50).clamp(1, 100);
@@ -167,6 +169,7 @@ pub async fn list_battlecards(
         username: session.username.clone(),
         warning_count,
         theme: String::new(),
+        can_admin: ctx.can_admin,
         battlecards,
         total,
         page,
@@ -270,6 +273,7 @@ pub async fn get_battlecard(
                 username: session.username.clone(),
                 warning_count: 0,
                 theme: String::new(),
+                can_admin: session.can_admin(),
                 battlecard: response,
                 sections,
                 competitor_name: String::new(),
@@ -283,6 +287,7 @@ pub async fn get_battlecard(
                 username: session.username.clone(),
                 warning_count: 0,
                 theme: String::new(),
+                can_admin: session.can_admin(),
                 requested_path: format!("/battlecards/{}", id),
             };
             super::render_template_with_status(axum::http::StatusCode::NOT_FOUND, &tpl)
@@ -294,6 +299,7 @@ pub async fn get_battlecard(
                 username: session.username.clone(),
                 warning_count: 0,
                 theme: String::new(),
+                can_admin: session.can_admin(),
                 error_message: "Failed to load battlecard".to_string(),
                 request_id: String::new(),
             };

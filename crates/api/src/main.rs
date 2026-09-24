@@ -8,9 +8,7 @@ use apex_api::middleware::auth::{
     auth_error_response, authenticate_api_request, extract_websocket_token,
     validate_websocket_token, WebSocketAuthOptions,
 };
-use apex_api::middleware::session::{
-    api_session_csrf_ok, current_session_secret, validate_session,
-};
+use apex_api::middleware::session::{current_session_secret, validate_session};
 use apex_api::rate_limit::RateLimiter;
 use apex_api::responses::{
     aggregate_health, error_response, success, success_with_meta, ApiError, ApiResponse,
@@ -464,47 +462,15 @@ async fn require_auth(
     }
 }
 
-/// Build an Analyst-level `ApiAuthContext` from the browser session cookie.
+/// Build an `ApiAuthContext` from the browser session cookie.
 /// Returns `None` when a Bearer key was presented (handled above), the session
 /// is missing/expired, or an unsafe method fails the CSRF check.
+///
+/// The context carries the role from the signed session payload (via
+/// `session_api_context`), so an admin web session keeps admin capabilities on
+/// `/api/admin/*` instead of being downgraded to `ApiRole::Analyst`.
 fn session_fallback_context(request: &axum::extract::Request) -> Option<ApiAuthContext> {
-    if request
-        .headers()
-        .contains_key(axum::http::header::AUTHORIZATION)
-    {
-        return None;
-    }
-    let secret = current_session_secret();
-    if secret.is_empty() {
-        return None;
-    }
-    let session = validate_session(request.headers(), secret)?;
-    if !api_session_csrf_ok(request.headers(), request.method()) {
-        tracing::warn!(
-            username = %session.username,
-            "session-authenticated API request rejected: CSRF verification failed"
-        );
-        return None;
-    }
-    Some(ApiAuthContext {
-        key_id: "web-session".to_string(),
-        user_id: session.username,
-        role: apex_api::auth::ApiRole::Analyst,
-    })
-}
-
-/// Admin-only route guard: `/api/admin/*` and destructive bulk operations are
-/// restricted to Admin/Service keys (B292). `require_auth` has already run and
-/// inserted the `ApiAuthContext` extension by the time this executes.
-async fn require_admin(
-    Extension(auth): Extension<ApiAuthContext>,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    if !auth.role.can_admin() {
-        return auth_error_response(ApiError::forbidden("Admin role required"));
-    }
-    next.run(request).await
+    apex_api::middleware::session::session_api_context(request.headers(), request.method())
 }
 
 async fn add_rate_limit_headers(

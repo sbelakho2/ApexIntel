@@ -243,7 +243,7 @@
           {% call nav_item("/recipes", "Recipes") %}
           {% call nav_item("/search", "Search") %}
           {% call nav_item("/settings", "Settings") %}
-          {% call nav_item("/admin", "Admin") %}
+          {% if can_admin %}{% call nav_item("/admin", "Admin") %}{% endif %}
         </nav>
         <div class="border-t border-rams-line p-3">
           <div class="space-y-3 px-2">
@@ -288,7 +288,7 @@
           {% call nav_item("/recipes", "Recipes") %}
           {% call nav_item("/search", "Search") %}
           {% call nav_item("/settings", "Settings") %}
-          {% call nav_item("/admin", "Admin") %}
+          {% if can_admin %}{% call nav_item("/admin", "Admin") %}{% endif %}
         </nav>
         <div class="border-t border-rams-line p-3">
           <div class="px-2">
