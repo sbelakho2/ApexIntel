@@ -53,18 +53,18 @@ async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogge
     });
 
     logger
-        .insert(
-            "system",
-            "Worker Engine",
-            action,
-            Some("job"),
-            Some(&run.run_id),
-            Some(kind.as_str()),
-            &details,
-            None,
-            None,
-            "team",
-        )
+        .insert(apex_worker::activity_logger::ActivityEvent {
+            actor_id: "system",
+            actor_name: "Worker Engine",
+            action_type: action,
+            entity_type: Some("job"),
+            entity_id: Some(&run.run_id),
+            entity_name: Some(kind.as_str()),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
 }
 

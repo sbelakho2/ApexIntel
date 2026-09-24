@@ -244,3 +244,131 @@ async fn sales_layer_inserts_round_trip() {
 
     pool.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn learning_eval_metrics_schema_round_trips() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+
+    assert!(table_exists(&pool, "learning_eval_sets").await);
+    assert!(table_exists(&pool, "learning_eval_runs").await);
+    assert!(table_exists(&pool, "learning_eval_metrics").await);
+
+    let view_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.views \
+         WHERE table_schema = 'public' AND table_name = 'learning_training_truth_metrics')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(view_exists, "training-truth view must exist");
+
+    let set_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO learning_eval_sets (id, name, version, example_count) VALUES ($1, $2, 1, 500)",
+    )
+    .bind(set_id)
+    .bind(format!("golden_set_{set_id}"))
+    .execute(&pool)
+    .await
+    .expect("insert frozen evaluation set");
+
+    // Frozen sets are append-only: updates must be rejected by the trigger.
+    let update = sqlx::query("UPDATE learning_eval_sets SET example_count = 999 WHERE id = $1")
+        .bind(set_id)
+        .execute(&pool)
+        .await;
+    assert!(
+        update.is_err(),
+        "frozen evaluation sets must reject updates"
+    );
+
+    let run_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO learning_eval_runs (id, eval_set_id, candidate_kind, candidate_ref, metrics_version) \
+         VALUES ($1, $2, 'prompt', 'insight_prompt', 1)",
+    )
+    .bind(run_id)
+    .bind(set_id)
+    .execute(&pool)
+    .await
+    .expect("insert evaluation run");
+
+    // Positive confirmation is training truth.
+    sqlx::query(
+        "INSERT INTO learning_eval_metrics (run_id, metric, value, sample_size, signal_class, is_training_truth) \
+         VALUES ($1, 'precision', 0.72, 200, 'positive_confirmation', TRUE)",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .expect("insert confirmed precision metric");
+
+    // Workflow convenience must never be marked as training truth.
+    let forged_truth = sqlx::query(
+        "INSERT INTO learning_eval_metrics (run_id, metric, value, sample_size, signal_class, is_training_truth) \
+         VALUES ($1, 'source_yield', 0.40, 200, 'workflow_convenience', TRUE)",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await;
+    assert!(
+        forged_truth.is_err(),
+        "non-confirmed analyst signals must not be stored as training truth"
+    );
+
+    // One metric per (run, metric, signal class).
+    let duplicate = sqlx::query(
+        "INSERT INTO learning_eval_metrics (run_id, metric, value, sample_size, signal_class) \
+         VALUES ($1, 'precision', 0.70, 180, 'positive_confirmation')",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await;
+    assert!(duplicate.is_err(), "duplicate metric rows must be rejected");
+
+    let truth_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_training_truth_metrics WHERE run_id = $1",
+    )
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(truth_rows, 1);
+
+    // The store helper must fetch an existing frozen version on a repeat call
+    // instead of tripping the freeze trigger with an UPDATE arm.
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+    let store_set_id = store
+        .upsert_learning_eval_set(
+            "store_round_trip_set",
+            1,
+            None,
+            10,
+            &serde_json::json!({"source": "integration_test"}),
+        )
+        .await
+        .expect("first upsert creates the frozen set");
+    let repeat_id = store
+        .upsert_learning_eval_set(
+            "store_round_trip_set",
+            1,
+            None,
+            10,
+            &serde_json::json!({"source": "integration_test"}),
+        )
+        .await
+        .expect("repeat upsert fetches the existing frozen set");
+    assert_eq!(store_set_id, repeat_id);
+
+    // Cleanup: runs cascade to metrics. Frozen set rows are intentionally
+    // immutable and are left behind (the CI database is ephemeral).
+    sqlx::query("DELETE FROM learning_eval_runs WHERE id = $1")
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    pool.close().await;
+}

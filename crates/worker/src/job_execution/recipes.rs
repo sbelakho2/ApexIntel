@@ -4076,19 +4076,16 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 .get(&c.entity_id)
                 .cloned()
                 .unwrap_or_default();
-            let summary = build_fallback_summary(
-                &analytical_narrative,
-                &warning_action,
-                &signal_details,
-                &evidence_urls,
-                &entity_label,
-                &entity_region,
-                entity_type.as_deref(),
-                &c.category,
-                &c.severity,
-                effective_candidate_confidence,
-                c.evidence_ids.len(),
-            );
+            let summary = build_fallback_summary(FallbackSummaryRequest {
+                analytical_narrative: &analytical_narrative,
+                rendered_action: &warning_action,
+                signal_details: &signal_details,
+                evidence_urls: &evidence_urls,
+                entity_label: &entity_label,
+                entity_region: &entity_region,
+                entity_type: entity_type.as_deref(),
+                category: &c.category,
+            });
             crate::observability::WORKER_METRICS.record_insight_fallback();
             (title, summary)
         };

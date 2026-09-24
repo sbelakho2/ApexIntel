@@ -7,6 +7,7 @@
 //! 4. Run negative controls to verify signal validity (negative_control)
 
 pub mod backtest;
+pub mod evaluation;
 pub mod miner;
 
 // ─────────────────────────────────────────────────────────────────────────────

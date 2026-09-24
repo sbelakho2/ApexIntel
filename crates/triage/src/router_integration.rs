@@ -12,6 +12,21 @@ use apex_core::triage::TriageItemType;
 
 // ─── Alert Dispatcher Trait ───────────────────────────────────────────────────
 
+/// Payload for [`AlertDispatcher::dispatch_triage_alert`].
+///
+/// Bundles the alert fields so the dispatch API stays within the clippy
+/// argument-count limit.
+#[derive(Debug)]
+pub struct TriageAlertRequest<'a> {
+    pub item_type: &'a TriageItemType,
+    pub source_id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub composite_score: f64,
+    pub entity_id: Option<Uuid>,
+    pub entity_name: Option<&'a str>,
+}
+
 /// A dispatch target for triage-generated alerts.
 ///
 /// The API crate provides a real implementation that routes through
@@ -22,16 +37,7 @@ pub trait AlertDispatcher: Send + Sync {
     /// Dispatch a high-priority triage item to the alert system.
     ///
     /// Returns the list of user IDs who were notified.
-    async fn dispatch_triage_alert(
-        &self,
-        item_type: &TriageItemType,
-        source_id: &str,
-        title: &str,
-        description: &str,
-        composite_score: f64,
-        entity_id: Option<Uuid>,
-        entity_name: Option<&str>,
-    ) -> Vec<Uuid>;
+    async fn dispatch_triage_alert(&self, request: TriageAlertRequest<'_>) -> Vec<Uuid>;
 
     /// Send a triage queue update notification.
     async fn notify_queue_update(&self, stats_json: &str);
@@ -64,16 +70,17 @@ impl LoggingAlertDispatcher {
 
 #[async_trait]
 impl AlertDispatcher for LoggingAlertDispatcher {
-    async fn dispatch_triage_alert(
-        &self,
-        item_type: &TriageItemType,
-        source_id: &str,
-        title: &str,
-        description: &str,
-        composite_score: f64,
-        _entity_id: Option<Uuid>,
-        entity_name: Option<&str>,
-    ) -> Vec<Uuid> {
+    async fn dispatch_triage_alert(&self, request: TriageAlertRequest<'_>) -> Vec<Uuid> {
+        let TriageAlertRequest {
+            item_type,
+            source_id,
+            title,
+            description,
+            composite_score,
+            entity_id: _,
+            entity_name,
+        } = request;
+
         let severity = if composite_score >= 0.80 {
             "critical"
         } else if composite_score >= 0.60 {
@@ -179,27 +186,8 @@ impl RouterIntegration {
     /// Dispatch a high-priority triage item to the alert system.
     ///
     /// Returns the list of user IDs who were notified.
-    pub async fn dispatch_triage_alert(
-        &self,
-        item_type: &TriageItemType,
-        source_id: &str,
-        title: &str,
-        description: &str,
-        composite_score: f64,
-        entity_id: Option<Uuid>,
-        entity_name: Option<&str>,
-    ) -> Vec<Uuid> {
-        self.dispatcher
-            .dispatch_triage_alert(
-                item_type,
-                source_id,
-                title,
-                description,
-                composite_score,
-                entity_id,
-                entity_name,
-            )
-            .await
+    pub async fn dispatch_triage_alert(&self, request: TriageAlertRequest<'_>) -> Vec<Uuid> {
+        self.dispatcher.dispatch_triage_alert(request).await
     }
 
     /// Send a general triage queue update via the dispatcher.
@@ -246,16 +234,7 @@ mod tests {
 
     #[async_trait]
     impl AlertDispatcher for TestDispatcher {
-        async fn dispatch_triage_alert(
-            &self,
-            _item_type: &TriageItemType,
-            _source_id: &str,
-            _title: &str,
-            _description: &str,
-            _composite_score: f64,
-            _entity_id: Option<Uuid>,
-            _entity_name: Option<&str>,
-        ) -> Vec<Uuid> {
+        async fn dispatch_triage_alert(&self, _request: TriageAlertRequest<'_>) -> Vec<Uuid> {
             self.alerted.store(true, Ordering::SeqCst);
             vec![Uuid::nil()]
         }
@@ -280,15 +259,15 @@ mod tests {
         let integration = RouterIntegration::new(Box::new(dispatcher));
 
         let user_ids = integration
-            .dispatch_triage_alert(
-                &TriageItemType::Insight,
-                "insight-1",
-                "Critical finding",
-                "Something important",
-                0.95,
-                None,
-                Some("Acme Corp"),
-            )
+            .dispatch_triage_alert(TriageAlertRequest {
+                item_type: &TriageItemType::Insight,
+                source_id: "insight-1",
+                title: "Critical finding",
+                description: "Something important",
+                composite_score: 0.95,
+                entity_id: None,
+                entity_name: Some("Acme Corp"),
+            })
             .await;
 
         assert!(alerted.load(Ordering::SeqCst));
@@ -300,15 +279,15 @@ mod tests {
         let integration = RouterIntegration::new(Box::new(LoggingAlertDispatcher::console_only()));
 
         let user_ids = integration
-            .dispatch_triage_alert(
-                &TriageItemType::Warning,
-                "warn-1",
-                "Test",
-                "Testing noop",
-                0.5,
-                None,
-                None,
-            )
+            .dispatch_triage_alert(TriageAlertRequest {
+                item_type: &TriageItemType::Warning,
+                source_id: "warn-1",
+                title: "Test",
+                description: "Testing noop",
+                composite_score: 0.5,
+                entity_id: None,
+                entity_name: None,
+            })
             .await;
 
         assert!(user_ids.is_empty());

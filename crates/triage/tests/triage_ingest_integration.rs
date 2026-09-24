@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use apex_core::triage::TriageItemType;
 use apex_triage::semantic_dedup::SemanticDedup;
-use apex_triage::{TriageIngestor, TriageQueue, TriageSubmission};
+use apex_triage::{QueueEnqueueRequest, TriageIngestor, TriageQueue, TriageSubmission};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -351,16 +351,16 @@ async fn enqueue_records_repeats_like_the_ingress_in_the_database() {
 
     for _ in 0..3 {
         queue
-            .enqueue(
-                item_type.clone(),
-                &source_id,
-                "Enqueue repeat check",
-                "body",
-                None,
-                None,
-                Some("low"),
-                None,
-            )
+            .enqueue(QueueEnqueueRequest {
+                item_type: item_type.clone(),
+                source_id: &source_id,
+                title: "Enqueue repeat check",
+                description: "body",
+                entity_id: None,
+                entity_name: None,
+                static_severity: Some("low"),
+                dimensions: None,
+            })
             .await
             .unwrap();
     }

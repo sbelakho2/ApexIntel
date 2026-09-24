@@ -84,6 +84,23 @@ pub struct SentimentSnapshotRecord {
 // Upsert / insert helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Inputs for [`upsert_psychological_profile`].
+///
+/// Bundles the profile fields so the persistence API stays within the clippy
+/// argument-count limit.
+#[derive(Debug, Clone)]
+pub struct PsychProfileUpsertRequest<'a> {
+    pub person_id: &'a str,
+    pub decision_style: &'a str,
+    pub change_appetite: &'a str,
+    pub pain_index: f64,
+    pub risk_tolerance: f64,
+    pub preferred_proof: &'a [String],
+    pub enrichment_quality: f64,
+    pub evidence_sources: &'a [String],
+    pub metadata: &'a serde_json::Value,
+}
+
 /// Upsert a psychological profile snapshot for a person.
 ///
 /// Since `psychological_profiles` is a time-series table (no UNIQUE on
@@ -91,16 +108,20 @@ pub struct SentimentSnapshotRecord {
 /// This preserves history for trend analysis.
 pub async fn upsert_psychological_profile(
     pool: &PgPool,
-    person_id: &str,
-    decision_style: &str,
-    change_appetite: &str,
-    pain_index: f64,
-    risk_tolerance: f64,
-    preferred_proof: &[String],
-    enrichment_quality: f64,
-    evidence_sources: &[String],
-    metadata: &serde_json::Value,
+    request: PsychProfileUpsertRequest<'_>,
 ) -> Result<Uuid, sqlx::Error> {
+    let PsychProfileUpsertRequest {
+        person_id,
+        decision_style,
+        change_appetite,
+        pain_index,
+        risk_tolerance,
+        preferred_proof,
+        enrichment_quality,
+        evidence_sources,
+        metadata,
+    } = request;
+
     let id = Uuid::new_v4();
     sqlx::query(
         r#"INSERT INTO psychological_profiles
@@ -155,20 +176,39 @@ pub async fn record_behavioral_pattern(
     Ok(id)
 }
 
+/// Inputs for [`upsert_engagement_profile`].
+///
+/// Bundles the engagement fields so the persistence API stays within the
+/// clippy argument-count limit.
+#[derive(Debug, Clone)]
+pub struct EngagementProfileUpsertRequest<'a> {
+    pub person_id: &'a str,
+    pub talking_points: &'a [String],
+    pub opening_topics: &'a [String],
+    pub avoid_topics: &'a [String],
+    pub best_channel: &'a str,
+    pub best_timing: Option<&'a str>,
+    pub proof_pack: &'a serde_json::Value,
+}
+
 /// Upsert an engagement profile for a person.
 ///
 /// Since there may be multiple engagement profiles over time, this INSERTs a
 /// new row. The latest profile is always the one with the highest `generated_at`.
 pub async fn upsert_engagement_profile(
     pool: &PgPool,
-    person_id: &str,
-    talking_points: &[String],
-    opening_topics: &[String],
-    avoid_topics: &[String],
-    best_channel: &str,
-    best_timing: Option<&str>,
-    proof_pack: &serde_json::Value,
+    request: EngagementProfileUpsertRequest<'_>,
 ) -> Result<Uuid, sqlx::Error> {
+    let EngagementProfileUpsertRequest {
+        person_id,
+        talking_points,
+        opening_topics,
+        avoid_topics,
+        best_channel,
+        best_timing,
+        proof_pack,
+    } = request;
+
     let id = Uuid::new_v4();
     sqlx::query(
         r#"INSERT INTO engagement_profiles
@@ -190,21 +230,44 @@ pub async fn upsert_engagement_profile(
     Ok(id)
 }
 
+/// Inputs for [`record_sentiment_snapshot`].
+///
+/// Bundles the snapshot fields so the persistence API stays within the clippy
+/// argument-count limit.
+#[derive(Debug, Clone)]
+pub struct SentimentSnapshotRequest<'a> {
+    pub entity_id: &'a str,
+    pub entity_type: &'a str,
+    pub mean_score: f64,
+    pub median_score: f64,
+    pub std_deviation: f64,
+    pub sample_count: i32,
+    pub positive_count: i32,
+    pub neutral_count: i32,
+    pub negative_count: i32,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+}
+
 /// Record a sentiment snapshot for an entity in a given time window.
 pub async fn record_sentiment_snapshot(
     pool: &PgPool,
-    entity_id: &str,
-    entity_type: &str,
-    mean_score: f64,
-    median_score: f64,
-    std_deviation: f64,
-    sample_count: i32,
-    positive_count: i32,
-    neutral_count: i32,
-    negative_count: i32,
-    window_start: DateTime<Utc>,
-    window_end: DateTime<Utc>,
+    request: SentimentSnapshotRequest<'_>,
 ) -> Result<Uuid, sqlx::Error> {
+    let SentimentSnapshotRequest {
+        entity_id,
+        entity_type,
+        mean_score,
+        median_score,
+        std_deviation,
+        sample_count,
+        positive_count,
+        neutral_count,
+        negative_count,
+        window_start,
+        window_end,
+    } = request;
+
     let id = Uuid::new_v4();
     sqlx::query(
         r#"INSERT INTO sentiment_time_series

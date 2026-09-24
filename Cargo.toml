@@ -31,15 +31,17 @@ dead_code = "allow"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
-# Structural lints intentionally allowed: fixing these would require churning
-# large, stable APIs (public store/worker signatures) or renaming public
-# inherent `from_str` helpers used across crates, with no functional benefit.
-too_many_arguments = "allow"
-type_complexity = "allow"
-large_enum_variant = "allow"
-result_large_err = "allow"
+# Structural lints intentionally allowed: renaming public inherent `from_str`
+# helpers used across crates has no functional benefit.
 should_implement_trait = "allow"
 doc_overindented_list_items = "allow"
+
+# Complexity lints are intentionally NOT blanket-allowed: `too_many_arguments`,
+# `type_complexity`, `large_enum_variant`, and `result_large_err` are enforced
+# (clippy default = warn), so wide signatures must take request/config structs
+# and large payloads must be boxed. Local, justified `#[allow]` attributes are
+# acceptable only where a struct refactor is genuinely impossible, and each
+# one must carry a comment explaining why.
 
 [workspace.dependencies]
 # Async runtime

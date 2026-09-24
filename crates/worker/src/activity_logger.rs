@@ -22,6 +22,23 @@ pub struct ActivityLogger {
     pool: PgPool,
 }
 
+/// Payload for one activity-feed event.
+///
+/// Bundled into a struct (instead of ten positional parameters) so append-only
+/// call sites cannot silently swap two same-typed string arguments.
+pub struct ActivityEvent<'a> {
+    pub actor_id: &'a str,
+    pub actor_name: &'a str,
+    pub action_type: &'a str,
+    pub entity_type: Option<&'a str>,
+    pub entity_id: Option<&'a str>,
+    pub entity_name: Option<&'a str>,
+    pub details: &'a Value,
+    pub workspace_id: Option<Uuid>,
+    pub team_id: Option<&'a str>,
+    pub visibility: &'a str,
+}
+
 impl ActivityLogger {
     /// Create a new activity logger backed by the given connection pool.
     pub fn new(pool: PgPool) -> Self {
@@ -41,19 +58,19 @@ impl ActivityLogger {
     }
 
     /// Insert a row and swallow any errors, logging them at `warn` level.
-    pub async fn insert(
-        &self,
-        actor_id: &str,
-        actor_name: &str,
-        action_type: &str,
-        entity_type: Option<&str>,
-        entity_id: Option<&str>,
-        entity_name: Option<&str>,
-        details: &Value,
-        workspace_id: Option<Uuid>,
-        team_id: Option<&str>,
-        visibility: &str,
-    ) {
+    pub async fn insert(&self, event: ActivityEvent<'_>) {
+        let ActivityEvent {
+            actor_id,
+            actor_name,
+            action_type,
+            entity_type,
+            entity_id,
+            entity_name,
+            details,
+            workspace_id,
+            team_id,
+            visibility,
+        } = event;
         let result = sqlx::query(
             r#"INSERT INTO activity_feed
                  (actor_id, actor_name, action_type, entity_type, entity_id, entity_name,
@@ -98,18 +115,18 @@ impl ActivityLogger {
             ("confidence", json!(confidence)),
             ("category", json!(category)),
         ]);
-        self.insert(
-            "system",
-            "ApexIntel Engine",
-            "insight_generated",
-            Some("company"),
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "ApexIntel Engine",
+            action_type: "insight_generated",
+            entity_type: Some("company"),
             entity_id,
-            Some(entity_name),
-            &details,
-            None,
-            None,
-            "team",
-        )
+            entity_name: Some(entity_name),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -127,18 +144,18 @@ impl ActivityLogger {
             ("role", json!(role_title)),
             ("role_family", json!(role_family)),
         ]);
-        self.insert(
-            "system",
-            "POI Discovery",
-            "poi_discovered",
-            Some("person"),
-            person_id,
-            Some(person_name),
-            &details,
-            None,
-            None,
-            "team",
-        )
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "POI Discovery",
+            action_type: "poi_discovered",
+            entity_type: Some("person"),
+            entity_id: person_id,
+            entity_name: Some(person_name),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -155,18 +172,18 @@ impl ActivityLogger {
             ("new_observations", json!(new_observations)),
             ("duration_secs", json!(duration_secs)),
         ]);
-        self.insert(
-            "system",
-            "Crawl Worker",
-            "crawl_completed",
-            Some("source"),
-            None,
-            Some(source_domain),
-            &details,
-            None,
-            None,
-            "team",
-        )
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Crawl Worker",
+            action_type: "crawl_completed",
+            entity_type: Some("source"),
+            entity_id: None,
+            entity_name: Some(source_domain),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -183,18 +200,18 @@ impl ActivityLogger {
             fields.push(("region", json!(r)));
         }
         let details = Self::make_details(&fields);
-        self.insert(
-            "system",
-            "Company Discovery",
-            "company_detected",
-            Some("company"),
-            company_id,
-            Some(company_name),
-            &details,
-            None,
-            None,
-            "team",
-        )
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Company Discovery",
+            action_type: "company_detected",
+            entity_type: Some("company"),
+            entity_id: company_id,
+            entity_name: Some(company_name),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -211,18 +228,18 @@ impl ActivityLogger {
             ("threat_type", json!(threat_type)),
             ("severity", json!(severity)),
         ]);
-        self.insert(
-            "system",
-            "Threat Intel",
-            "threat_detected",
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Threat Intel",
+            action_type: "threat_detected",
             entity_type,
             entity_id,
-            Some(entity_name),
-            &details,
-            None,
-            None,
-            "team",
-        )
+            entity_name: Some(entity_name),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -234,18 +251,18 @@ impl ActivityLogger {
         person_id: Option<&str>,
     ) {
         let details = Self::make_details(&[("profile_quality", json!(profile_quality))]);
-        self.insert(
-            "system",
-            "Psych Profiler",
-            "psych_profile_updated",
-            Some("person"),
-            person_id,
-            Some(person_name),
-            &details,
-            None,
-            None,
-            "team",
-        )
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Psych Profiler",
+            action_type: "psych_profile_updated",
+            entity_type: Some("person"),
+            entity_id: person_id,
+            entity_name: Some(person_name),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -257,18 +274,18 @@ impl ActivityLogger {
         entity_id: Option<&str>,
     ) {
         let details = Self::make_details(&[("competitor", json!(competitor_name))]);
-        self.insert(
-            "system",
-            "Battlecard Generator",
-            "battlecard_generated",
-            Some("company"),
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Battlecard Generator",
+            action_type: "battlecard_generated",
+            entity_type: Some("company"),
             entity_id,
-            Some(entity_name),
-            &details,
-            None,
-            None,
-            "team",
-        )
+            entity_name: Some(entity_name),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -278,18 +295,18 @@ impl ActivityLogger {
             ("title", json!(memo_title)),
             ("entity_count", json!(entity_count)),
         ]);
-        self.insert(
-            "system",
-            "Memo Generator",
-            "memo_generated",
-            None,
-            None,
-            Some("Weekly Memo"),
-            &details,
-            None,
-            None,
-            "team",
-        )
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Memo Generator",
+            action_type: "memo_generated",
+            entity_type: None,
+            entity_id: None,
+            entity_name: Some("Weekly Memo"),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 
@@ -299,18 +316,18 @@ impl ActivityLogger {
             ("recipe_code", json!(recipe_code)),
             ("category", json!(category)),
         ]);
-        self.insert(
-            "system",
-            "Recipe Engine",
-            "recipe_promoted",
-            Some("recipe"),
-            None,
-            Some(recipe_code),
-            &details,
-            None,
-            None,
-            "team",
-        )
+        self.insert(ActivityEvent {
+            actor_id: "system",
+            actor_name: "Recipe Engine",
+            action_type: "recipe_promoted",
+            entity_type: Some("recipe"),
+            entity_id: None,
+            entity_name: Some(recipe_code),
+            details: &details,
+            workspace_id: None,
+            team_id: None,
+            visibility: "team",
+        })
         .await;
     }
 }

@@ -342,15 +342,17 @@ impl PsychComputeEngine {
 
         let profile_id = super::psych_store::upsert_psychological_profile(
             &self.pool,
-            &snapshot.person_id,
-            db_decision,
-            db_appetite,
-            pain_index,
-            risk_tolerance,
-            &preferred_proof_strings,
-            enrichment_quality,
-            &evidence_sources,
-            &metadata,
+            super::psych_store::PsychProfileUpsertRequest {
+                person_id: &snapshot.person_id,
+                decision_style: db_decision,
+                change_appetite: db_appetite,
+                pain_index,
+                risk_tolerance,
+                preferred_proof: &preferred_proof_strings,
+                enrichment_quality,
+                evidence_sources: &evidence_sources,
+                metadata: &metadata,
+            },
         )
         .await
         .map_err(|e| format!("Failed to persist psych profile: {}", e))?;
@@ -381,13 +383,15 @@ impl PsychComputeEngine {
             });
             if let Err(e) = super::psych_store::upsert_engagement_profile(
                 &self.pool,
-                &snapshot.person_id,
-                &eng.talking_points,
-                &eng.opening_topics,
-                &eng.avoid_topics,
-                &eng.best_channel,
-                eng.best_timing.as_deref(),
-                &proof_pack,
+                super::psych_store::EngagementProfileUpsertRequest {
+                    person_id: &snapshot.person_id,
+                    talking_points: &eng.talking_points,
+                    opening_topics: &eng.opening_topics,
+                    avoid_topics: &eng.avoid_topics,
+                    best_channel: &eng.best_channel,
+                    best_timing: eng.best_timing.as_deref(),
+                    proof_pack: &proof_pack,
+                },
             )
             .await
             {
