@@ -1,0 +1,40 @@
+{# ── Command palette (⌘K / Ctrl+K) ─────────────────────────────────────────
+   Server-rendered shell; command-palette.js augments it using the existing
+   /api/search/suggest, /api/search, /api/workspaces and /api/battlecards
+   endpoints, and reuses /api/queue, /api/workspaces and
+   /api/executive/opportunities for the result actions. #}
+<div id="command-palette-backdrop" class="apex-modal-backdrop hidden" hidden>
+  <div id="command-palette" class="apex-modal" role="dialog" aria-modal="true" aria-labelledby="command-palette-label">
+    <div class="apex-modal-header">
+      <label id="command-palette-label" class="apex-toolbar-label" for="command-palette-input">Command palette</label>
+      <button type="button" id="command-palette-close" class="apex-chip apex-chip-idle" aria-label="Close command palette">Esc</button>
+    </div>
+    <div class="apex-modal-body">
+      <div class="flex items-center gap-2">
+        <input id="command-palette-input"
+               class="apex-input"
+               type="text"
+               role="combobox"
+               aria-expanded="false"
+               aria-controls="command-palette-results"
+               aria-autocomplete="list"
+               aria-activedescendant=""
+               aria-describedby="command-palette-hint"
+               placeholder="Search companies, persons, warnings, insights, workspaces, battlecards, or type a command…"
+               autocomplete="off"
+               spellcheck="false">
+      </div>
+      <p id="command-palette-status" class="sr-only" role="status" aria-live="polite"></p>
+      <ul id="command-palette-results" class="mt-3 max-h-[50vh] space-y-1 overflow-y-auto" role="listbox" aria-label="Command palette results">
+        <li class="apex-empty-state" role="presentation">
+          <p class="apex-empty-state-title">Type to search</p>
+          <p class="apex-empty-state-body">Recent entities and navigation commands appear here. Use ↑ ↓ to move, Enter to open, Esc to close.</p>
+        </li>
+      </ul>
+      <div class="apex-popover mt-3" id="command-palette-hint">
+        <p class="apex-popover-title">Actions</p>
+        <p class="text-xs text-rams-muted">Open · Watch · Investigate · Add to pipeline — available on entity results. ⇧Tab cycles actions backwards.</p>
+      </div>
+    </div>
+  </div>
+</div>

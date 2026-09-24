@@ -389,13 +389,43 @@ fn edge_matches_filters(
 }
 
 fn edge_row_to_route_edge(edge: EdgeRow) -> RouteGraphEdge {
+    let weight = edge.weight.unwrap_or(1.0);
     RouteGraphEdge {
         source: edge.source_id.to_string(),
         target: edge.target_id.to_string(),
         edge_type: edge.edge_type,
-        weight: edge.weight.unwrap_or(1.0),
+        weight,
         label: None,
+        confidence: Some(edge.confidence.unwrap_or(weight).clamp(0.0, 1.0)),
+        first_seen: edge.first_seen.map(|ts| ts.to_rfc3339()),
+        last_confirmed: edge.last_seen.map(|ts| ts.to_rfc3339()),
+        evidence_count: Some(
+            edge.evidence_ids
+                .as_ref()
+                .map(|ids| ids.len() as i64)
+                .unwrap_or(0),
+        ),
+        source_name: graph_edge_source_name(edge.metadata.as_ref()),
     }
+}
+
+/// Best-effort provenance label for a stored edge (mirrors the /graph page).
+fn graph_edge_source_name(metadata: Option<&serde_json::Value>) -> Option<String> {
+    let metadata = metadata?;
+    for key in [
+        "source_name",
+        "source",
+        "source_url",
+        "provenance",
+        "origin",
+    ] {
+        if let Some(text) = metadata.get(key).and_then(|value| value.as_str()) {
+            if !text.trim().is_empty() {
+                return Some(text.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 async fn resolve_graph_labels(

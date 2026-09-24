@@ -20,15 +20,15 @@
 {% endmacro %}
 
 {% macro metric_card(label, value, rail_class) %}
-<div class="apex-metric-card">
-  <div class="apex-metric-rail {{ rail_class }}"></div>
-  <p class="apex-metric-label">{{ label }}</p>
+<div class="apex-stat">
+  <div class="apex-stat-rail {{ rail_class }}"></div>
+  <p class="apex-stat-label">{{ label }}</p>
   <p class="mt-1.5 apex-metric-number text-2xl">{{ value }}</p>
 </div>
 {% endmacro %}
 
 {% macro filter_chip(label, href, active, variant, extra_attrs) %}
-<a href="{{ href }}" {{ extra_attrs|safe }} class="apex-filter-chip {% if active %}{% if variant == "accent" %}apex-filter-chip-accent{% else %}apex-filter-chip-active{% endif %}{% else %}apex-filter-chip-idle{% endif %}">{{ label }}</a>
+<a href="{{ href }}" {{ extra_attrs|safe }} class="apex-chip {% if active %}{% if variant == "accent" %}apex-chip-accent{% else %}apex-chip-active{% endif %}{% else %}apex-chip-idle{% endif %}">{{ label }}</a>
 {% endmacro %}
 
 {% macro legend_item(label, swatch_class, size) %}
@@ -98,12 +98,12 @@
 {% endmacro %}
 
 {% macro empty_state(title, description) %}
-<div class="apex-card p-8 text-center">
-  <div class="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel text-rams-muted">
+<div class="apex-empty-state">
+  <div class="apex-empty-state-icon">
     {% call icon("boxes", "h-5 w-5") %}
   </div>
-  <p class="text-lg font-black uppercase tracking-[0.08em]">{{ title }}</p>
-  <p class="mx-auto mt-2 max-w-xl text-sm text-rams-muted">{{ description }}</p>
+  <p class="apex-empty-state-title">{{ title }}</p>
+  <p class="apex-empty-state-body">{{ description }}</p>
 </div>
 {% endmacro %}
 
@@ -364,15 +364,15 @@
   <div class="apex-card-header flex items-center justify-between gap-4">
     <h3 class="text-xs font-black uppercase tracking-[0.12em]">Activity — Last {{ days }} Days</h3>
     <div class="flex gap-1">
-      <a href="/api/charts/entity/{{ entity_id }}/activity?days=7" class="apex-filter-chip apex-filter-chip-idle text-[10px]"
+      <a href="/api/charts/entity/{{ entity_id }}/activity?days=7" class="apex-chip apex-chip-idle text-[10px]"
          hx-get="/api/charts/entity/{{ entity_id }}/activity?days=7"
          hx-target="#entity-activity-chart-{{ entity_id }}"
          hx-swap="innerHTML">7d</a>
-      <a href="/api/charts/entity/{{ entity_id }}/activity?days=30" class="apex-filter-chip apex-filter-chip-active text-[10px]"
+      <a href="/api/charts/entity/{{ entity_id }}/activity?days=30" class="apex-chip apex-chip-active text-[10px]"
          hx-get="/api/charts/entity/{{ entity_id }}/activity?days=30"
          hx-target="#entity-activity-chart-{{ entity_id }}"
          hx-swap="innerHTML">30d</a>
-      <a href="/api/charts/entity/{{ entity_id }}/activity?days=90" class="apex-filter-chip apex-filter-chip-idle text-[10px]"
+      <a href="/api/charts/entity/{{ entity_id }}/activity?days=90" class="apex-chip apex-chip-idle text-[10px]"
          hx-get="/api/charts/entity/{{ entity_id }}/activity?days=90"
          hx-target="#entity-activity-chart-{{ entity_id }}"
          hx-swap="innerHTML">90d</a>

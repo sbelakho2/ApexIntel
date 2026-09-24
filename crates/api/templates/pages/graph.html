@@ -20,7 +20,10 @@
 {% call m::page_header("Graph Explorer", "radio", "Interactive relationship map with pan, zoom, search, and node inspection.", "") %}
 
 {% if let Some(notice) = degraded_notice %}
-<div class="apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+<div class="apex-error-state" role="alert" data-degraded="true">
+  <p class="apex-error-state-title">Graph data degraded</p>
+  <p class="apex-error-state-body">{{ notice }}</p>
+</div>
 {% endif %}
 
 <div class="space-y-6">
@@ -105,13 +108,30 @@
           <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted whitespace-nowrap">Entity type</span>
         </div>
         <div class="flex flex-wrap items-center gap-2 overflow-x-auto">
-          <button type="button" data-type="company" class="graph-filter-chip rounded-rams-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] border-rams-line bg-rams-panel text-rams-muted hover:text-rams-foreground">company</button>
-          <button type="button" data-type="person" class="graph-filter-chip rounded-rams-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] border-rams-line bg-rams-panel text-rams-muted hover:text-rams-foreground">person</button>
-          <button type="button" data-type="country" class="graph-filter-chip rounded-rams-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] border-rams-line bg-rams-panel text-rams-muted hover:text-rams-foreground">country</button>
-          <button type="button" data-type="region" class="graph-filter-chip rounded-rams-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] border-rams-line bg-rams-panel text-rams-muted hover:text-rams-foreground">region</button>
-          <button type="button" data-type="domain" class="graph-filter-chip rounded-rams-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] border-rams-line bg-rams-panel text-rams-muted hover:text-rams-foreground">domain</button>
-          <button type="button" data-type="cert" class="graph-filter-chip rounded-rams-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] border-rams-line bg-rams-panel text-rams-muted hover:text-rams-foreground">cert</button>
-          <button type="button" data-type="tender" class="graph-filter-chip rounded-rams-sm border px-2.5 py-2 text-[10px] font-black uppercase tracking-[0.1em] border-rams-line bg-rams-panel text-rams-muted hover:text-rams-foreground">tender</button>
+          <button type="button" data-type="company" class="apex-chip apex-chip-idle graph-filter-chip" aria-pressed="false">company</button>
+          <button type="button" data-type="person" class="apex-chip apex-chip-idle graph-filter-chip" aria-pressed="false">person</button>
+          <button type="button" data-type="country" class="apex-chip apex-chip-idle graph-filter-chip" aria-pressed="false">country</button>
+          <button type="button" data-type="region" class="apex-chip apex-chip-idle graph-filter-chip" aria-pressed="false">region</button>
+          <button type="button" data-type="domain" class="apex-chip apex-chip-idle graph-filter-chip" aria-pressed="false">domain</button>
+          <button type="button" data-type="cert" class="apex-chip apex-chip-idle graph-filter-chip" aria-pressed="false">cert</button>
+          <button type="button" data-type="tender" class="apex-chip apex-chip-idle graph-filter-chip" aria-pressed="false">tender</button>
+        </div>
+      </div>
+
+      <div class="xl:col-span-2 flex flex-col gap-2 border-t border-rams-line pt-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="apex-toolbar-label">Progressive disclosure</span>
+          <span class="text-[10px] font-bold uppercase text-rams-muted">Default: selected entity + first-degree high-confidence links + recent changes</span>
+        </div>
+        <div class="apex-toolbar" id="graph-expansion-controls" role="group" aria-label="Expand graph relations">
+          <span class="apex-toolbar-label">Expand</span>
+          <button type="button" data-expansion="suppliers" class="apex-chip apex-chip-idle" aria-pressed="false">Suppliers</button>
+          <button type="button" data-expansion="customers" class="apex-chip apex-chip-idle" aria-pressed="false">Customers</button>
+          <button type="button" data-expansion="people" class="apex-chip apex-chip-idle" aria-pressed="false">People</button>
+          <button type="button" data-expansion="competitors" class="apex-chip apex-chip-idle" aria-pressed="false">Competitors</button>
+          <button type="button" data-expansion="weak" class="apex-chip apex-chip-idle" aria-pressed="false">Weak edges</button>
+          <span class="apex-toolbar-divider" aria-hidden="true"></span>
+          <span id="graph-expansion-summary" class="text-[10px] font-bold uppercase text-rams-muted">Collapsed</span>
         </div>
       </div>
 
@@ -186,6 +206,37 @@
     </a>
   </div>
 
+  <div id="graph-edge-detail" class="apex-card p-4 hidden" aria-live="polite">
+    <p class="text-xs font-bold uppercase text-rams-muted mb-1">Edge Details</p>
+    <p id="graph-edge-summary" class="font-bold"></p>
+    <div class="mt-3 graph-detail-list">
+      <div class="graph-detail-item">
+        <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Relationship</span>
+        <span id="graph-edge-relationship" class="text-sm font-semibold"></span>
+      </div>
+      <div class="graph-detail-item">
+        <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Confidence</span>
+        <span id="graph-edge-confidence" class="text-sm font-semibold"></span>
+      </div>
+      <div class="graph-detail-item">
+        <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">First seen</span>
+        <span id="graph-edge-first-seen" class="text-sm font-semibold"></span>
+      </div>
+      <div class="graph-detail-item">
+        <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Last confirmed</span>
+        <span id="graph-edge-last-confirmed" class="text-sm font-semibold"></span>
+      </div>
+      <div class="graph-detail-item">
+        <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Evidence count</span>
+        <span id="graph-edge-evidence" class="text-sm font-semibold"></span>
+      </div>
+      <div class="graph-detail-item">
+        <span class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted">Source</span>
+        <span id="graph-edge-source" class="text-sm font-semibold"></span>
+      </div>
+    </div>
+  </div>
+
   <div id="graph-analytics-panel" class="apex-card p-4">
     <p class="text-xs font-bold uppercase text-rams-muted mb-1">Graph Analytics</p>
     <p id="graph-analytics-mode" class="font-bold">Overview slice</p>
@@ -230,7 +281,14 @@
       {% for edge in edge_rows %}
       <div class="flex items-center justify-between gap-3 py-2 text-sm">
         <span class="font-semibold">{{ edge.source_short }} → {{ edge.target_short }}</span>
-        <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ edge.edge_type }}</span>
+        <span class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">
+          <span>{{ edge.edge_type }}</span>
+          <span class="apex-chip apex-chip-idle">{{ edge.confidence }}</span>
+          <span title="First seen">{{ edge.first_seen }}</span>
+          <span title="Last confirmed">{{ edge.last_confirmed }}</span>
+          <span title="Evidence count">{{ edge.evidence_count }} ev.</span>
+          <span title="Source">{{ edge.source }}</span>
+        </span>
       </div>
       {% endfor %}
     </div>
@@ -239,5 +297,5 @@
 {% endblock %}
 
 {% block body_end %}
-<script src="/static/js/graph.js?v=20260623-color-purge-v6" defer></script>
+<script src="/static/js/graph.js?v=20260924-progressive-disclosure-1" defer></script>
 {% endblock %}

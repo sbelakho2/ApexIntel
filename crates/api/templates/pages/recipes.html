@@ -85,10 +85,10 @@
 <div class="mb-4 apex-card p-3">
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Status:</span>
-    <a href="/recipes" class="apex-filter-chip {% if active_status.is_empty() %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">All</a>
-    <a href="/recipes?status=production" class="apex-filter-chip {% if active_status == "production" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">production</a>
-    <a href="/recipes?status=staging" class="apex-filter-chip {% if active_status == "staging" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">staging</a>
-    <a href="/recipes?status=deprecated" class="apex-filter-chip {% if active_status == "deprecated" %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">deprecated</a>
+    <a href="/recipes" class="apex-chip {% if active_status.is_empty() %}apex-chip-active{% else %}apex-chip-idle{% endif %}">All</a>
+    <a href="/recipes?status=production" class="apex-chip {% if active_status == "production" %}apex-chip-active{% else %}apex-chip-idle{% endif %}">production</a>
+    <a href="/recipes?status=staging" class="apex-chip {% if active_status == "staging" %}apex-chip-active{% else %}apex-chip-idle{% endif %}">staging</a>
+    <a href="/recipes?status=deprecated" class="apex-chip {% if active_status == "deprecated" %}apex-chip-active{% else %}apex-chip-idle{% endif %}">deprecated</a>
     <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {% if active_status.is_empty() %}0{% else %}1{% endif %}</span>
     <a href="/recipes" class="apex-action-link">Reset</a>
   </div>

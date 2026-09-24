@@ -34,6 +34,14 @@ pub struct GraphEdge {
     pub target: String,
     pub edge_type: String,
     pub weight: f64,
+    /// Confidence of the relationship (0.0–1.0). Derived/synthetic edges carry
+    /// a high confidence because they are structural facts from the catalog.
+    pub confidence: f64,
+    pub first_seen: Option<String>,
+    pub last_confirmed: Option<String>,
+    pub evidence_count: i64,
+    /// Human-readable provenance of the edge (metadata source / derived label).
+    pub source_label: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +66,12 @@ pub struct GraphRenderEdge {
     pub x2: i64,
     pub y2: i64,
     pub edge_type: String,
+    pub confidence: f64,
+    pub first_seen: Option<String>,
+    pub last_confirmed: Option<String>,
+    pub evidence_count: i64,
+    /// Human-readable provenance of the edge (metadata source / derived label).
+    pub source_label: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +86,11 @@ pub struct GraphEdgeRow {
     pub target_short: String,
     pub edge_type: String,
     pub weight: String,
+    pub confidence: String,
+    pub first_seen: String,
+    pub last_confirmed: String,
+    pub evidence_count: i64,
+    pub source: String,
 }
 
 // ─── Template ───────────────────────────────────────────────────────────────
@@ -417,12 +436,7 @@ pub async fn graph_page(
                 });
 
             if synthetic_edge_seen.insert((company_id.clone(), region_id.clone())) {
-                synthetic_edges.push(GraphEdge {
-                    source: company_id.clone(),
-                    target: region_id,
-                    edge_type: "operates_in".to_string(),
-                    weight: 1.0,
-                });
+                synthetic_edges.push(synthetic_edge(company_id.clone(), region_id, "operates_in"));
             }
         }
 
@@ -447,12 +461,7 @@ pub async fn graph_page(
                 });
 
             if synthetic_edge_seen.insert((company_id.clone(), domain_id.clone())) {
-                synthetic_edges.push(GraphEdge {
-                    source: company_id.clone(),
-                    target: domain_id,
-                    edge_type: "has_domain".to_string(),
-                    weight: 1.0,
-                });
+                synthetic_edges.push(synthetic_edge(company_id.clone(), domain_id, "has_domain"));
             }
         }
 
@@ -478,12 +487,7 @@ pub async fn graph_page(
                 });
 
             if synthetic_edge_seen.insert((company_id.clone(), country_id.clone())) {
-                synthetic_edges.push(GraphEdge {
-                    source: company_id.clone(),
-                    target: country_id,
-                    edge_type: "located_in".to_string(),
-                    weight: 1.0,
-                });
+                synthetic_edges.push(synthetic_edge(company_id.clone(), country_id, "located_in"));
             }
         }
     }
@@ -519,12 +523,7 @@ pub async fn graph_page(
             });
 
         if synthetic_edge_seen.insert((company_id.clone(), country_id.clone())) {
-            synthetic_edges.push(GraphEdge {
-                source: company_id,
-                target: country_id,
-                edge_type: "located_in".to_string(),
-                weight: 1.0,
-            });
+            synthetic_edges.push(synthetic_edge(company_id, country_id, "located_in"));
         }
     }
 
@@ -553,12 +552,7 @@ pub async fn graph_page(
             });
 
         if synthetic_edge_seen.insert((company_id.clone(), cert_id.clone())) {
-            synthetic_edges.push(GraphEdge {
-                source: company_id,
-                target: cert_id,
-                edge_type: "certified_for".to_string(),
-                weight: 1.0,
-            });
+            synthetic_edges.push(synthetic_edge(company_id, cert_id, "certified_for"));
         }
     }
 
@@ -622,12 +616,7 @@ pub async fn graph_page(
 
         if let Some(anchor_id) = anchor_id {
             if synthetic_edge_seen.insert((anchor_id.clone(), tender_id.clone())) {
-                synthetic_edges.push(GraphEdge {
-                    source: anchor_id,
-                    target: tender_id,
-                    edge_type: "tender_signal".to_string(),
-                    weight: 1.0,
-                });
+                synthetic_edges.push(synthetic_edge(anchor_id, tender_id, "tender_signal"));
             }
         }
     }
@@ -635,11 +624,23 @@ pub async fn graph_page(
     let nodes: Vec<GraphNode> = node_map.into_values().collect();
     let mut edges: Vec<GraphEdge> = edge_rows
         .iter()
-        .map(|er| GraphEdge {
-            source: er.source_id.to_string(),
-            target: er.target_id.to_string(),
-            edge_type: er.edge_type.clone(),
-            weight: er.weight.unwrap_or(1.0),
+        .map(|er| {
+            let weight = er.weight.unwrap_or(1.0);
+            GraphEdge {
+                source: er.source_id.to_string(),
+                target: er.target_id.to_string(),
+                edge_type: er.edge_type.clone(),
+                weight,
+                confidence: er.confidence.unwrap_or(weight).clamp(0.0, 1.0),
+                first_seen: er.first_seen.map(|ts| ts.to_rfc3339()),
+                last_confirmed: er.last_seen.map(|ts| ts.to_rfc3339()),
+                evidence_count: er
+                    .evidence_ids
+                    .as_ref()
+                    .map(|ids| ids.len() as i64)
+                    .unwrap_or(0),
+                source_label: edge_source_label(er.metadata.as_ref()),
+            }
         })
         .collect();
     edges.extend(synthetic_edges);
@@ -793,6 +794,11 @@ pub async fn graph_page(
                 x2: *x2,
                 y2: *y2,
                 edge_type: edge.edge_type.clone(),
+                confidence: edge.confidence,
+                first_seen: edge.first_seen.clone(),
+                last_confirmed: edge.last_confirmed.clone(),
+                evidence_count: edge.evidence_count,
+                source_label: edge.source_label.clone(),
             });
         }
     }
@@ -818,6 +824,14 @@ pub async fn graph_page(
                 .unwrap_or_else(|| short_id(&e.target)),
             edge_type: normalize_edge_type(&e.edge_type),
             weight: format!("{:.2}", e.weight),
+            confidence: format!("{:.0}%", e.confidence * 100.0),
+            first_seen: short_timestamp(e.first_seen.as_deref()),
+            last_confirmed: short_timestamp(e.last_confirmed.as_deref()),
+            evidence_count: e.evidence_count,
+            source: e
+                .source_label
+                .clone()
+                .unwrap_or_else(|| "graph_edges".to_string()),
         })
         .collect();
 
@@ -841,6 +855,16 @@ pub async fn graph_page(
             "type": e.edge_type,
             "edge_type": e.edge_type,
             "weight": 1.0,
+            "relationship": normalize_edge_type(&e.edge_type).replace('_', " "),
+            "confidence": e.confidence,
+            "first_seen": e.first_seen,
+            "firstSeen": e.first_seen,
+            "last_confirmed": e.last_confirmed,
+            "lastConfirmed": e.last_confirmed,
+            "evidence_count": e.evidence_count,
+            "evidenceCount": e.evidence_count,
+            "source_name": e.source_label,
+            "source_label": e.source_label,
         })).collect::<Vec<_>>(),
         "catalog": nodes.iter().map(|node| serde_json::json!({
             "id": node.id,
@@ -895,6 +919,53 @@ fn short_id(value: &str) -> String {
         value.to_string()
     } else {
         format!("{}…", value.chars().take(8).collect::<String>())
+    }
+}
+
+/// Derived (catalog) edges: structurally certain, so they carry full confidence
+/// and a stable provenance label instead of null metadata.
+fn synthetic_edge(source: String, target: String, edge_type: &str) -> GraphEdge {
+    GraphEdge {
+        source,
+        target,
+        edge_type: edge_type.to_string(),
+        weight: 1.0,
+        confidence: 1.0,
+        first_seen: None,
+        last_confirmed: None,
+        evidence_count: 1,
+        source_label: Some("catalog".to_string()),
+    }
+}
+
+/// Best-effort provenance label for a stored edge. `graph_edges.metadata` is
+/// JSONB, so different producers store different keys.
+fn edge_source_label(metadata: Option<&serde_json::Value>) -> Option<String> {
+    let metadata = metadata?;
+    for key in [
+        "source_name",
+        "source",
+        "source_url",
+        "provenance",
+        "origin",
+    ] {
+        if let Some(value) = metadata.get(key) {
+            if let Some(text) = value.as_str() {
+                if !text.trim().is_empty() {
+                    return Some(text.trim().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `YYYY-MM-DD` for compact display of RFC3339 timestamps.
+fn short_timestamp(value: Option<&str>) -> String {
+    match value {
+        Some(value) if value.len() >= 10 => value.chars().take(10).collect(),
+        Some(value) => value.to_string(),
+        None => "—".to_string(),
     }
 }
 

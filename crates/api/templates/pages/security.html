@@ -115,16 +115,16 @@
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Refine security findings:</span>
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Signal:</span>
-    <a href="/security?signal=dns{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-filter-chip {% if active_signal == "dns" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">DNS posture</a>
-    <a href="/security?signal=lookalike{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-filter-chip {% if active_signal == "lookalike" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Lookalike domain</a>
-    <a href="/security?signal=kev{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-filter-chip {% if active_signal == "kev" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Known exploited vulnerabilities</a>
-    <a href="/security?signal=security{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-filter-chip {% if active_signal == "security" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">General security</a>
+    <a href="/security?signal=dns{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-chip {% if active_signal == "dns" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">DNS posture</a>
+    <a href="/security?signal=lookalike{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-chip {% if active_signal == "lookalike" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Lookalike domain</a>
+    <a href="/security?signal=kev{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-chip {% if active_signal == "kev" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Known exploited vulnerabilities</a>
+    <a href="/security?signal=security{% if !active_risk.is_empty() %}&risk={{ active_risk }}{% endif %}" class="apex-chip {% if active_signal == "security" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">General security</a>
     <span class="mx-2 h-4 w-px bg-rams-line"></span>
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Risk:</span>
-    <a href="/security?risk=critical{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-filter-chip {% if active_risk == "critical" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">critical</a>
-    <a href="/security?risk=high{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-filter-chip {% if active_risk == "high" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">high</a>
-    <a href="/security?risk=medium{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-filter-chip {% if active_risk == "medium" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">medium</a>
-    <a href="/security?risk=low{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-filter-chip {% if active_risk == "low" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">low</a>
+    <a href="/security?risk=critical{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-chip {% if active_risk == "critical" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">critical</a>
+    <a href="/security?risk=high{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-chip {% if active_risk == "high" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">high</a>
+    <a href="/security?risk=medium{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-chip {% if active_risk == "medium" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">medium</a>
+    <a href="/security?risk=low{% if !active_signal.is_empty() %}&signal={{ active_signal }}{% endif %}" class="apex-chip {% if active_risk == "low" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">low</a>
     <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {% if !active_signal.is_empty() && !active_risk.is_empty() %}2{% else if !active_signal.is_empty() || !active_risk.is_empty() %}1{% else %}0{% endif %}</span>
     <a href="/security" class="apex-action-link">Reset Filters</a>
   </div>

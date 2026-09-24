@@ -97,6 +97,17 @@ pub struct GraphEdge {
     pub edge_type: String,
     pub weight: f64,
     pub label: Option<String>,
+    /// Relationship confidence (0.0–1.0) when the producer supplies it.
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub first_seen: Option<String>,
+    #[serde(default)]
+    pub last_confirmed: Option<String>,
+    #[serde(default)]
+    pub evidence_count: Option<i64>,
+    #[serde(default)]
+    pub source_name: Option<String>,
 }
 
 /// Shortest path response.
@@ -232,6 +243,11 @@ mod tests {
             edge_type: edge_type.to_string(),
             weight,
             label: None,
+            confidence: None,
+            first_seen: None,
+            last_confirmed: None,
+            evidence_count: None,
+            source_name: None,
         }
     }
 

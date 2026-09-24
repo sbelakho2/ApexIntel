@@ -250,6 +250,11 @@
       target: String(edge.target),
       weight: Number(edge.weight || 1),
       type: String(edge.type || edge.edge_type || "related_to"),
+      confidence: Number.isFinite(Number(edge.confidence)) ? Number(edge.confidence) : 1,
+      firstSeen: edge.firstSeen || edge.first_seen || null,
+      lastConfirmed: edge.lastConfirmed || edge.last_confirmed || null,
+      evidenceCount: Number(edge.evidenceCount || edge.evidence_count || 0),
+      sourceName: edge.source_name || edge.source_label || edge.sourceName || null,
     }));
 
     return { nodes, edges, nodeMap };
@@ -360,12 +365,9 @@
     if (activeFilterEl) activeFilterEl.textContent = "Active: " + (activeType ? "1" : "0");
     filterChips.forEach((chip) => {
       const isActive = chip.getAttribute("data-type") === activeType;
-      chip.classList.toggle("border-primary", isActive);
-      chip.classList.toggle("bg-primary/10", isActive);
-      chip.classList.toggle("text-foreground", isActive);
-      chip.classList.toggle("border-border", !isActive);
-      chip.classList.toggle("bg-secondary", !isActive);
-      chip.classList.toggle("text-muted-foreground", !isActive);
+      chip.classList.toggle("apex-chip-active", isActive);
+      chip.classList.toggle("apex-chip-idle", !isActive);
+      chip.setAttribute("aria-pressed", String(isActive));
     });
   }
 
@@ -423,6 +425,147 @@
       connectors,
       edgeTypeCounts,
     };
+  }
+
+  // ── Progressive disclosure ──────────────────────────────────────────────
+  // Default view: the selected entity and its first-degree HIGH-CONFIDENCE
+  // relations, or (with nothing selected) recent changes only. The expansion
+  // controls reveal supplier / customer / people / competitor relations and
+  // weak (low-confidence) edges that the default slice hides.
+  const HIGH_CONFIDENCE = 0.6;
+  const DEFAULT_RECENT_DAYS = 30;
+  const FALLBACK_RECENT_DAYS = 90;
+
+  function edgeConfidence(edge) {
+    const value = Number(edge && edge.confidence);
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+  }
+
+  function isWeakEdge(edge) {
+    return edgeConfidence(edge) < HIGH_CONFIDENCE;
+  }
+
+  function edgeRelationshipLabel(edge) {
+    return String((edge && edge.type) || "related_to").replace(/_/g, " ");
+  }
+
+  function edgeMatchesExpansion(edge, category, focusId, nodeMap) {
+    const type = normalizeType(edge.type);
+    switch (category) {
+      case "suppliers":
+        return type === "supplier_of" && (!focusId || edge.target === focusId);
+      case "customers":
+        return type === "supplier_of" && (!focusId || edge.source === focusId);
+      case "people": {
+        if (type !== "associated_with") return false;
+        const source = nodeMap[edge.source];
+        const target = nodeMap[edge.target];
+        if (!source || !target) return false;
+        return source.type === "person" || target.type === "person";
+      }
+      case "competitors":
+        return type === "competes_with";
+      case "weak":
+        return isWeakEdge(edge);
+      default:
+        return false;
+    }
+  }
+
+  function recentWindowDays(nodes) {
+    const recent = nodes.filter((node) => Number(node.activityDays || 3650) <= DEFAULT_RECENT_DAYS).length;
+    return recent >= 4 ? DEFAULT_RECENT_DAYS : FALLBACK_RECENT_DAYS;
+  }
+
+  function computeDisclosure(graph, focusId, expansions) {
+    const enabled = Object.keys(expansions || {}).filter((key) => expansions[key]);
+    const recentWindow = recentWindowDays(graph.nodes);
+    const baseIds = new Set(
+      graph.nodes
+        .filter((node) => Number(node.activityDays || 3650) <= recentWindow)
+        .map((node) => node.id),
+    );
+    if (focusId) baseIds.add(focusId);
+
+    const visibleIds = new Set(baseIds);
+    graph.edges.forEach((edge) => {
+      if (!baseIds.has(edge.source) && !baseIds.has(edge.target)) return;
+      const highConfidence = !isWeakEdge(edge);
+      const expanded = enabled.some((category) => edgeMatchesExpansion(edge, category, focusId, graph.nodeMap));
+      if (!highConfidence && !expanded) return;
+      visibleIds.add(edge.source);
+      visibleIds.add(edge.target);
+    });
+
+    // A graph whose entities all sit outside the recent window must not render
+    // empty on first paint — fall back to the full slice.
+    let modeLabel;
+    if (visibleIds.size < Math.min(4, graph.nodes.length)) {
+      graph.nodes.forEach((node) => visibleIds.add(node.id));
+      modeLabel = "Overview slice";
+    } else if (focusId) {
+      const focusNode = graph.nodeMap[focusId];
+      modeLabel = `Focus: ${focusNode ? focusNode.label : "selected"} + 1st-degree`;
+    } else {
+      modeLabel = `Focus: recent changes (${recentWindow}d)`;
+    }
+
+    const hint = focusId
+      ? `Focused on ${graph.nodeMap[focusId] ? graph.nodeMap[focusId].label : "selected entity"} with first-degree high-confidence relations. Expand the controls to reveal more relation classes.`
+      : `Default view shows recent changes (${recentWindow}d) and their high-confidence relations. Select an entity to focus, or expand the controls for suppliers, customers, people, competitors, and weak edges.`;
+
+    return {
+      visibleNodes: graph.nodes.filter((node) => visibleIds.has(node.id)),
+      modeLabel,
+      hint,
+      recentWindow,
+      enabled,
+    };
+  }
+
+  function updateExpansionUI(graph, focusId) {
+    const buttons = Array.from(document.querySelectorAll("#graph-expansion-controls [data-expansion]"));
+    if (!buttons.length) return;
+    const enabled = buttons.filter((button) => button.getAttribute("aria-pressed") === "true");
+    buttons.forEach((button) => {
+      const category = button.getAttribute("data-expansion");
+      const applicable = graph.edges.some((edge) => edgeMatchesExpansion(edge, category, focusId, graph.nodeMap));
+      button.disabled = !applicable;
+      button.title = applicable ? `Toggle ${category} relations` : `No ${category} relations in this slice`;
+    });
+    const summary = document.getElementById("graph-expansion-summary");
+    if (summary) {
+      summary.textContent = enabled.length
+        ? `Expanded: ${enabled.map((button) => button.getAttribute("data-expansion")).join(", ")}`
+        : "Collapsed";
+    }
+  }
+
+  function edgeEndpointLabel(graph, id) {
+    const node = graph.nodeMap[id];
+    return node ? node.label : String(id);
+  }
+
+  function showEdgeDetail(graph, edge) {
+    const panel = document.getElementById("graph-edge-detail");
+    if (!panel) return;
+    const set = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    };
+    set("graph-edge-summary", `${edgeEndpointLabel(graph, edge.source)} → ${edgeEndpointLabel(graph, edge.target)}`);
+    set("graph-edge-relationship", edgeRelationshipLabel(edge));
+    set("graph-edge-confidence", `${Math.round(edgeConfidence(edge) * 100)}%`);
+    set("graph-edge-first-seen", edge.firstSeen || "Unknown");
+    set("graph-edge-last-confirmed", edge.lastConfirmed || "Unknown");
+    set("graph-edge-evidence", String(Number.isFinite(Number(edge.evidenceCount)) ? Number(edge.evidenceCount) : 0));
+    set("graph-edge-source", edge.sourceName || "graph_edges");
+    panel.classList.remove("hidden");
+  }
+
+  function clearEdgeDetail() {
+    const panel = document.getElementById("graph-edge-detail");
+    if (panel) panel.classList.add("hidden");
   }
 
   function updateAnalyticsPanel(state) {
@@ -494,8 +637,10 @@
     let clusterMode = false;
     let activityWindow = "all";
     let selectedId = null;
+    const expansions = { suppliers: false, customers: false, people: false, competitors: false, weak: false };
     let viewportState = { scale: 1, panX: 0, panY: 0 };
     let modeLabel = "Overview slice";
+    let disclosureLabel = "Overview slice";
     let pathSummary = "No active path query.";
     let loadingRemote = false;
 
@@ -513,6 +658,7 @@
     const exportJsonBtn = document.getElementById("graph-export-json");
     const exportSvgBtn = document.getElementById("graph-export-svg");
     const visibleCountEl = document.getElementById("graph-visible-count");
+    const expansionButtons = Array.from(document.querySelectorAll("#graph-expansion-controls [data-expansion]"));
 
     if (pathDatalist) {
       pathDatalist.innerHTML = "";
@@ -528,6 +674,12 @@
 
     function currentSelectedNode() {
       return activeGraph.nodeMap[selectedId] || baseGraph.nodeMap[selectedId] || catalogById[selectedId] || null;
+    }
+
+    function displayModeLabel() {
+      if (modeLabel !== "Overview slice") return modeLabel;
+      if (searchText) return "Search results";
+      return disclosureLabel;
     }
 
     function canUseServerGraph(node) {
@@ -553,7 +705,7 @@
       if (neighborhoodBtn) neighborhoodBtn.disabled = !selectedSupported || loadingRemote;
       if (pathBtn) pathBtn.disabled = !selectedSupported || !targetId || targetId === selectedId || loadingRemote;
       if (overviewBtn) overviewBtn.disabled = modeLabel === "Overview slice" || loadingRemote;
-      if (modeBadge) modeBadge.textContent = `Mode: ${modeLabel.toLowerCase()}`;
+      if (modeBadge) modeBadge.textContent = `Mode: ${displayModeLabel().toLowerCase()}`;
     }
 
     function setActiveGraph(nextPayload, nextModeLabel, nextPathSummary) {
@@ -613,10 +765,18 @@
         graphDegreeIndex[edge.target] = (graphDegreeIndex[edge.target] || 0) + 1;
       });
 
-      let nodes = activeType ? graph.nodes.filter((node) => node.type === activeType) : graph.nodes.slice();
+      const focusId = selectedId && graph.nodeMap[selectedId] ? selectedId : null;
+      const disclosure = computeDisclosure(graph, focusId, expansions);
+      disclosureLabel = disclosure.modeLabel;
+
+      let nodes = disclosure.visibleNodes;
       let matchedNodes = [];
       let matchedIds = new Set();
       let contextNeighborCount = 0;
+
+      if (activeType) {
+        nodes = nodes.filter((node) => node.type === activeType);
+      }
 
       if (activityWindow !== "all") {
         const maxDays = Number(activityWindow);
@@ -625,7 +785,10 @@
 
       if (searchText) {
         const lowered = searchText.toLowerCase();
-        matchedNodes = nodes.filter((node) => {
+        // Searching widens the pool past the collapsed disclosure slice so
+        // users can still reach entities that the default view hides.
+        const searchBase = activeType ? graph.nodes.filter((node) => node.type === activeType) : graph.nodes;
+        matchedNodes = searchBase.filter((node) => {
           const matches = node.label.toLowerCase().includes(lowered) || node.id.toLowerCase().includes(lowered);
           if (matches) matchedIds.add(node.id);
           return matches;
@@ -648,6 +811,7 @@
       const edges = graph.edges.filter((edge) => nodeSet.has(edge.source) && nodeSet.has(edge.target));
       if (visibleCountEl) visibleCountEl.textContent = "Visible: " + nodes.length;
       updateFilterUI(activeType);
+      updateExpansionUI(graph, focusId);
 
       if (selectedId && !nodeSet.has(selectedId)) {
         selectedId = null;
@@ -658,7 +822,7 @@
       } else if (searchText) {
         updateSearchStatus(`Matched ${matchedIds.size} node${matchedIds.size === 1 ? "" : "s"} and kept ${contextNeighborCount} connected neighbor${contextNeighborCount === 1 ? "" : "s"} for context.`, false);
       } else {
-        updateSearchStatus("Search, hover, tap, or pinch to inspect neighborhoods without resetting the canvas.", false);
+        updateSearchStatus(disclosure.hint, false);
       }
 
       if (searchText && !selectedId && matchedIds.size > 0) {
@@ -668,7 +832,7 @@
       }
 
       updateAnalyticsPanel({
-        modeLabel,
+        modeLabel: displayModeLabel(),
         pathSummary,
         analytics: computeGraphAnalytics(nodes, edges),
       });
@@ -700,6 +864,18 @@
       });
     });
 
+    expansionButtons.forEach((button) => {
+      button.addEventListener("click", function () {
+        const category = button.getAttribute("data-expansion");
+        if (!category || !Object.prototype.hasOwnProperty.call(expansions, category)) return;
+        expansions[category] = !expansions[category];
+        button.setAttribute("aria-pressed", String(expansions[category]));
+        button.classList.toggle("apex-chip-active", expansions[category]);
+        button.classList.toggle("apex-chip-idle", !expansions[category]);
+        rerender();
+      });
+    });
+
     if (resetBtn) {
       resetBtn.addEventListener("click", function () {
         activeType = null;
@@ -715,6 +891,15 @@
         if (activityFilter) activityFilter.value = "all";
         if (pathInput) pathInput.value = "";
         if (clusterToggle) clusterToggle.textContent = "Relationship Layout";
+        Object.keys(expansions).forEach((category) => {
+          expansions[category] = false;
+        });
+        expansionButtons.forEach((button) => {
+          button.setAttribute("aria-pressed", "false");
+          button.classList.remove("apex-chip-active");
+          button.classList.add("apex-chip-idle");
+        });
+        clearEdgeDetail();
         updateSelectedPanel(null);
         rerender();
       });
@@ -972,7 +1157,23 @@
       line.setAttribute("stroke", style.color);
       line.setAttribute("stroke-width", String(Math.max(1, edge.weight * 0.5)));
       line.setAttribute("opacity", "0.45");
+      line.setAttribute("class", "graph-edge");
+      line.setAttribute("tabindex", "0");
+      line.setAttribute("role", "button");
+      line.setAttribute("aria-label", `Relationship ${edgeRelationshipLabel(edge)} between ${edgeEndpointLabel({ nodeMap: nodeById }, edge.source)} and ${edgeEndpointLabel({ nodeMap: nodeById }, edge.target)}, confidence ${Math.round(edgeConfidence(edge) * 100)} percent`);
       if (style.dash) line.setAttribute("stroke-dasharray", style.dash);
+      line.addEventListener("mouseenter", () => showEdgeDetail({ nodeMap: nodeById }, edge));
+      line.addEventListener("focus", () => showEdgeDetail({ nodeMap: nodeById }, edge));
+      line.addEventListener("click", (event) => {
+        event.stopPropagation();
+        showEdgeDetail({ nodeMap: nodeById }, edge);
+      });
+      line.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          showEdgeDetail({ nodeMap: nodeById }, edge);
+        }
+      });
       edgeG.appendChild(line);
       return { el: line, data: edge };
     });
