@@ -3,6 +3,7 @@
 pub mod alert_config;
 pub mod analysis;
 pub mod bounded_queue;
+pub mod claims;
 pub mod company_names;
 pub mod config;
 pub mod data_state;

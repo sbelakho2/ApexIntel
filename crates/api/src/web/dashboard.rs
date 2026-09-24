@@ -4,11 +4,12 @@
 //! and activity timeline.
 
 use chrono::{DateTime, Duration, Utc};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use askama::Template;
 use axum::{response::IntoResponse, Extension};
+use uuid::Uuid;
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
@@ -161,6 +162,129 @@ pub struct DonutSegment {
     pub dash_offset: String,
 }
 
+// ─── Decisions-first dashboard models (audit P0 #22) ────────────────────────
+
+/// A "what changed since last look" row: a count plus the link that shows it.
+#[derive(Clone, Debug)]
+pub struct ChangeItem {
+    pub label: String,
+    pub count: i64,
+    pub detail: String,
+    pub href: String,
+}
+
+/// An item in the "what requires action" priority queue.
+#[derive(Clone, Debug)]
+pub struct PriorityItem {
+    pub id: String,
+    /// "warning" | "insight"
+    pub kind: String,
+    pub title: String,
+    pub severity: String,
+    pub confidence_pct: Option<i64>,
+    pub entity_name: String,
+    pub entity_href: String,
+    pub reason: String,
+    pub age_label: String,
+    pub assigned_analyst: String,
+    /// Warnings have a one-click acknowledge endpoint; insights link to review.
+    pub can_acknowledge: bool,
+    pub acknowledge_url: String,
+    pub investigate_url: String,
+}
+
+/// A newly actionable opportunity: a real account with why-now and next move.
+#[derive(Clone, Debug)]
+pub struct OpportunityCard {
+    pub insight_id: String,
+    pub company_id: String,
+    pub company_name: String,
+    pub region: String,
+    pub domain: String,
+    pub why_now: String,
+    pub evidence_count: i64,
+    pub confidence_pct: i64,
+    pub next_move: String,
+    pub buyer_name: String,
+    pub buyer_role: String,
+    pub href: String,
+}
+
+/// An ingestion coverage / freshness row for "what is stale or broken".
+#[derive(Clone, Debug)]
+pub struct HealthItem {
+    pub label: String,
+    pub detail: String,
+    /// "ok" | "warn" | "bad"
+    pub state: String,
+    pub state_label: String,
+    pub href: String,
+}
+
+fn age_label(dt: DateTime<Utc>) -> String {
+    let delta = Utc::now().signed_duration_since(dt);
+    let minutes = delta.num_minutes();
+    if minutes < 1 {
+        "just now".to_string()
+    } else if minutes < 60 {
+        format!("{minutes}m ago")
+    } else if delta.num_hours() < 24 {
+        format!("{}h ago", delta.num_hours())
+    } else if delta.num_days() < 14 {
+        format!("{}d ago", delta.num_days())
+    } else {
+        format!("{}w ago", delta.num_weeks())
+    }
+}
+
+fn humanize_token(raw: &str) -> String {
+    let cleaned = raw.trim().replace(['_', '-'], " ");
+    let mut chars = cleaned.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => "Signal".to_string(),
+    }
+}
+
+/// Extract the recommended next move from a stored insight summary.
+///
+/// The worker stores `narrative + "\n\n" + recommendation(+contact block)`.
+/// With multiple sections we take the section after the narrative; otherwise
+/// we return the summary itself, truncated for card rendering.
+fn recommended_next_move(summary: &str) -> String {
+    let sections: Vec<&str> = summary
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|section| !section.is_empty())
+        .collect();
+    let candidate = if sections.len() > 1 {
+        sections[sections.len() - 1]
+    } else {
+        sections.first().copied().unwrap_or("")
+    };
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return "Review this insight and assign an owner.".to_string();
+    }
+    let mut truncated: String = candidate.chars().take(320).collect();
+    if candidate.chars().count() > 320 {
+        truncated.push('…');
+    }
+    truncated
+}
+
+fn insight_queue_severity(confidence: f64) -> &'static str {
+    if confidence >= 0.8 {
+        "critical"
+    } else if confidence >= 0.7 {
+        "high"
+    } else if confidence >= 0.4 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
 /// Compute donut chart segments with SVG stroke-dasharray/offset values.
 pub fn compute_donut_segments(counts: &[SeverityCount], radius: f64) -> Vec<DonutSegment> {
     let circumference = 2.0 * std::f64::consts::PI * radius;
@@ -203,6 +327,14 @@ pub struct DashboardPage {
     /// Rendered when any repository-backed load failed, so a failed query is
     /// never presented as "no results".
     pub degraded_notice: Option<String>,
+
+    // Decisions-first sections (audit P0 #22), in render order.
+    pub changes_since: Vec<ChangeItem>,
+    pub priority_queue: Vec<PriorityItem>,
+    pub opportunities: Vec<OpportunityCard>,
+    pub health_items: Vec<HealthItem>,
+
+    // Vanity/funnel counts (kept below the actionable sections).
     pub stats: Vec<StatCard>,
     pub recent_warnings: Vec<RecentWarning>,
     pub top_insights: Vec<TopInsight>,
@@ -439,6 +571,493 @@ pub async fn dashboard(
 
     let reference_now = dashboard_reference_now();
     let crawl_window_start = reference_now - Duration::hours(24);
+    let change_window_start = reference_now - Duration::hours(24);
+    let opportunity_window_start = reference_now - Duration::days(30);
+
+    // ─── 1. What changed since last look (audit P0 #22) ───────────────────
+    // Counts with links. Each load goes through DataState so a failed query
+    // renders as degraded with a notice, never as a truthful-looking zero.
+    #[derive(sqlx::FromRow)]
+    struct ChangeCountsRow {
+        new_signals: i64,
+        companies_changed: i64,
+        new_contacts: i64,
+        warnings_requiring_action: i64,
+    }
+
+    let change_counts_state = DataState::from_result(
+        sqlx::query_as::<_, ChangeCountsRow>(
+            r#"SELECT
+                 (SELECT COUNT(*)::bigint FROM insights
+                   WHERE created_at >= $1 AND COALESCE(confidence, 0) >= 0.7
+                     AND COALESCE(insight_type, '') NOT LIKE 'llm_%') AS new_signals,
+                 (SELECT COUNT(DISTINCT entity_id)::bigint FROM observations
+                   WHERE ts_utc >= $1 AND entity_id IS NOT NULL
+                     AND entity_type = 'company') AS companies_changed,
+                 (SELECT COUNT(*)::bigint FROM persons
+                   WHERE created_at >= $1) AS new_contacts,
+                 (SELECT COUNT(*)::bigint FROM warnings
+                   WHERE acknowledged = false AND deleted_at IS NULL
+                     AND lower(severity) IN ('critical', 'high')) AS warnings_requiring_action"#,
+        )
+        .bind(change_window_start)
+        .fetch_one(&store.pool)
+        .await,
+        "failed to fetch change counts",
+        |_| false,
+    );
+    DegradedNotice::capture(&change_counts_state, &mut degraded_notice);
+    let change_counts = change_counts_state.into_loaded_or(ChangeCountsRow {
+        new_signals: 0,
+        companies_changed: 0,
+        new_contacts: 0,
+        warnings_requiring_action: 0,
+    });
+
+    let changes_since = vec![
+        ChangeItem {
+            label: "New high-confidence signals".into(),
+            count: change_counts.new_signals,
+            detail: "Insights at 70%+ confidence created in the last 24h".into(),
+            href: "/insights?min_confidence=0.7".into(),
+        },
+        ChangeItem {
+            label: "Companies changed materially".into(),
+            count: change_counts.companies_changed,
+            detail: "Companies with new observations in the last 24h".into(),
+            href: "/companies".into(),
+        },
+        ChangeItem {
+            label: "New buyer contacts".into(),
+            count: change_counts.new_contacts,
+            detail: "Persons added to the contact graph in the last 24h".into(),
+            href: "/persons".into(),
+        },
+        ChangeItem {
+            label: "Warnings requiring action".into(),
+            count: change_counts.warnings_requiring_action,
+            detail: "Unacknowledged critical/high warnings right now".into(),
+            href: "/warnings?status=active".into(),
+        },
+    ];
+
+    // ─── 2. What requires action: priority queue ──────────────────────────
+    #[derive(sqlx::FromRow)]
+    struct WarningQueueRow {
+        id: Uuid,
+        title: String,
+        warning_type: Option<String>,
+        severity: String,
+        confidence: Option<f64>,
+        entity_ids: Option<Vec<Uuid>>,
+        ts_utc: DateTime<Utc>,
+        acknowledged_by: Option<String>,
+    }
+
+    let warning_queue_state = DataState::from_result(
+        sqlx::query_as::<_, WarningQueueRow>(
+            r#"SELECT id, title, warning_type, severity, confidence,
+                      entity_ids, ts_utc, acknowledged_by
+               FROM warnings
+               WHERE acknowledged = false AND deleted_at IS NULL
+                 AND lower(severity) IN ('critical', 'high')
+               ORDER BY CASE lower(severity) WHEN 'critical' THEN 0 ELSE 1 END,
+                        ts_utc DESC
+               LIMIT 8"#,
+        )
+        .fetch_all(&store.pool)
+        .await,
+        "failed to fetch priority warnings",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&warning_queue_state, &mut degraded_notice);
+    let warning_queue_rows = warning_queue_state.into_items();
+
+    #[derive(sqlx::FromRow)]
+    struct InsightQueueRow {
+        id: Uuid,
+        title: String,
+        insight_type: Option<String>,
+        confidence: Option<f64>,
+        entity_ids: Option<Vec<Uuid>>,
+        created_at: Option<DateTime<Utc>>,
+    }
+
+    let insight_queue_state = DataState::from_result(
+        sqlx::query_as::<_, InsightQueueRow>(
+            r#"SELECT id, title, insight_type, confidence, entity_ids, created_at
+               FROM insights
+               WHERE created_at >= $1
+                 AND COALESCE(confidence, 0) >= 0.7
+                 AND COALESCE(insight_type, '') NOT LIKE 'llm_%'
+               ORDER BY confidence DESC NULLS LAST, created_at DESC
+               LIMIT 4"#,
+        )
+        .bind(change_window_start)
+        .fetch_all(&store.pool)
+        .await,
+        "failed to fetch priority insights",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&insight_queue_state, &mut degraded_notice);
+    let insight_queue_rows = insight_queue_state.into_items();
+
+    // Resolve entity names for both queues in one batch query. A failed name
+    // lookup must not blank the queue; it falls back to an explicit label.
+    let mut queue_entity_ids: Vec<Uuid> = warning_queue_rows
+        .iter()
+        .flat_map(|w| w.entity_ids.clone().unwrap_or_default())
+        .chain(
+            insight_queue_rows
+                .iter()
+                .flat_map(|i| i.entity_ids.clone().unwrap_or_default()),
+        )
+        .collect();
+    queue_entity_ids.sort();
+    queue_entity_ids.dedup();
+    let queue_company_names: HashMap<Uuid, String> = store
+        .get_company_names_by_ids(&queue_entity_ids)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(id, name, _, _)| (id, name))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut priority_queue: Vec<PriorityItem> =
+        Vec::with_capacity(warning_queue_rows.len() + insight_queue_rows.len());
+    for warning in &warning_queue_rows {
+        let entity_id = warning
+            .entity_ids
+            .as_ref()
+            .and_then(|ids| ids.first())
+            .copied();
+        priority_queue.push(PriorityItem {
+            id: warning.id.to_string(),
+            kind: "warning".into(),
+            title: warning.title.clone(),
+            severity: warning.severity.to_ascii_lowercase(),
+            confidence_pct: warning.confidence.map(|c| (c * 100.0).round() as i64),
+            entity_name: entity_id
+                .and_then(|id| queue_company_names.get(&id).cloned())
+                .unwrap_or_else(|| {
+                    if entity_id.is_some() {
+                        "Linked entity".into()
+                    } else {
+                        "No company linked".into()
+                    }
+                }),
+            entity_href: entity_id
+                .map(|id| format!("/companies/{id}"))
+                .unwrap_or_default(),
+            reason: warning
+                .warning_type
+                .as_deref()
+                .map(humanize_token)
+                .unwrap_or_else(|| {
+                    format!("{} severity warning", humanize_token(&warning.severity))
+                }),
+            age_label: age_label(warning.ts_utc),
+            assigned_analyst: warning
+                .acknowledged_by
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| "Unassigned".into()),
+            can_acknowledge: true,
+            acknowledge_url: format!("/warnings/{}/acknowledge", warning.id),
+            investigate_url: format!("/warnings/{}", warning.id),
+        });
+    }
+    for insight in &insight_queue_rows {
+        let confidence = insight.confidence.unwrap_or(0.0);
+        let entity_id = insight
+            .entity_ids
+            .as_ref()
+            .and_then(|ids| ids.first())
+            .copied();
+        priority_queue.push(PriorityItem {
+            id: insight.id.to_string(),
+            kind: "insight".into(),
+            title: insight.title.clone(),
+            severity: insight_queue_severity(confidence).into(),
+            confidence_pct: Some((confidence * 100.0).round() as i64),
+            entity_name: entity_id
+                .and_then(|id| queue_company_names.get(&id).cloned())
+                .unwrap_or_else(|| {
+                    if entity_id.is_some() {
+                        "Linked entity".into()
+                    } else {
+                        "No company linked".into()
+                    }
+                }),
+            entity_href: entity_id
+                .map(|id| format!("/companies/{id}"))
+                .unwrap_or_default(),
+            reason: format!(
+                "{} signal at {:.0}% confidence",
+                humanize_token(insight.insight_type.as_deref().unwrap_or("analysis")),
+                confidence * 100.0
+            ),
+            age_label: insight
+                .created_at
+                .map(age_label)
+                .unwrap_or_else(|| "unknown age".into()),
+            assigned_analyst: "Unassigned".into(),
+            can_acknowledge: false,
+            acknowledge_url: String::new(),
+            investigate_url: format!("/insights/{}", insight.id),
+        });
+    }
+
+    // ─── 3. Newly actionable opportunities ────────────────────────────────
+    #[derive(sqlx::FromRow)]
+    struct OpportunityRow {
+        insight_id: Uuid,
+        title: String,
+        summary: Option<String>,
+        confidence: Option<f64>,
+        evidence_count: i64,
+        company_id: Uuid,
+        company_name: String,
+        company_region: Option<String>,
+        company_domain: Option<String>,
+    }
+
+    let opportunity_state = DataState::from_result(
+        sqlx::query_as::<_, OpportunityRow>(
+            r#"SELECT i.id AS insight_id,
+                      i.title,
+                      i.summary,
+                      i.confidence,
+                      COALESCE(array_length(i.evidence_urls, 1), 0)::bigint AS evidence_count,
+                      c.id AS company_id,
+                      c.name AS company_name,
+                      c.region AS company_region,
+                      c.domain AS company_domain
+               FROM insights i
+               JOIN companies c ON c.id = i.entity_ids[1]
+               WHERE i.created_at >= $1
+                 AND COALESCE(i.confidence, 0) >= 0.6
+                 AND COALESCE(i.insight_type, '') NOT LIKE 'llm_%'
+               ORDER BY i.confidence DESC NULLS LAST, i.created_at DESC
+               LIMIT 4"#,
+        )
+        .bind(opportunity_window_start)
+        .fetch_all(&store.pool)
+        .await,
+        "failed to fetch actionable opportunities",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&opportunity_state, &mut degraded_notice);
+    let opportunity_rows = opportunity_state.into_items();
+
+    // Buyer-side contact per account, preferring procurement/supply-chain
+    // roles over generic executives. Loaded in one batch query.
+    let opportunity_company_ids: Vec<Uuid> =
+        opportunity_rows.iter().map(|row| row.company_id).collect();
+
+    #[derive(sqlx::FromRow)]
+    struct BuyerRow {
+        primary_org_id: Uuid,
+        name: String,
+        role: Option<String>,
+    }
+
+    let buyer_state = DataState::from_result(
+        if opportunity_company_ids.is_empty() {
+            Ok(Vec::new())
+        } else {
+            sqlx::query_as::<_, BuyerRow>(
+                r#"SELECT primary_org_id, name, "current_role" AS role
+                   FROM persons
+                   WHERE primary_org_id = ANY($1)
+                   ORDER BY name ASC
+                   LIMIT 200"#,
+            )
+            .bind(&opportunity_company_ids)
+            .fetch_all(&store.pool)
+            .await
+        },
+        "failed to fetch opportunity buyer contacts",
+        |rows| rows.is_empty(),
+    );
+    DegradedNotice::capture(&buyer_state, &mut degraded_notice);
+    let buyer_rows = buyer_state.into_items();
+
+    fn buyer_role_score(role: &str) -> i32 {
+        let lower = role.to_ascii_lowercase();
+        if lower.contains("procure") || lower.contains("purchas") || lower.contains("sourc") {
+            3
+        } else if lower.contains("supply") || lower.contains("buyer") {
+            2
+        } else if lower.contains("director") || lower.contains("head") || lower.contains("vp") {
+            1
+        } else {
+            0
+        }
+    }
+
+    let mut best_buyers: HashMap<Uuid, (i32, String, String)> = HashMap::new();
+    for row in buyer_rows {
+        let role = row.role.unwrap_or_default();
+        let score = buyer_role_score(&role);
+        let entry = best_buyers
+            .entry(row.primary_org_id)
+            .or_insert_with(|| (score, row.name.clone(), role.clone()));
+        if score > entry.0 {
+            *entry = (score, row.name, role);
+        }
+    }
+
+    let opportunities: Vec<OpportunityCard> = opportunity_rows
+        .iter()
+        .map(|row| {
+            let (buyer_name, buyer_role) = best_buyers
+                .get(&row.company_id)
+                .map(|(_, name, role)| (name.clone(), role.clone()))
+                .unwrap_or_else(|| ("No buyer contact recorded".into(), String::new()));
+            OpportunityCard {
+                insight_id: row.insight_id.to_string(),
+                company_id: row.company_id.to_string(),
+                company_name: row.company_name.clone(),
+                region: row.company_region.clone().unwrap_or_default(),
+                domain: row.company_domain.clone().unwrap_or_default(),
+                why_now: row.title.clone(),
+                evidence_count: row.evidence_count,
+                confidence_pct: (row.confidence.unwrap_or(0.0) * 100.0).round() as i64,
+                next_move: recommended_next_move(row.summary.as_deref().unwrap_or("")),
+                buyer_name,
+                buyer_role,
+                href: format!("/insights/{}", row.insight_id),
+            }
+        })
+        .collect();
+
+    // ─── 4. What is stale or broken: coverage + freshness ─────────────────
+    #[derive(sqlx::FromRow)]
+    struct IngestionCoverageRow {
+        total: i64,
+        ever_succeeded: i64,
+        never_attempted: i64,
+        circuit_open: i64,
+        newest_success: Option<DateTime<Utc>>,
+    }
+
+    let ingestion_state = DataState::from_result(
+        sqlx::query_as::<_, IngestionCoverageRow>(
+            r#"SELECT COUNT(*)::bigint AS total,
+                      COUNT(*) FILTER (WHERE last_success_at IS NOT NULL)::bigint AS ever_succeeded,
+                      COUNT(*) FILTER (WHERE last_attempt_at IS NULL)::bigint AS never_attempted,
+                      COUNT(*) FILTER (WHERE circuit_open_until > NOW())::bigint AS circuit_open,
+                      MAX(last_success_at) AS newest_success
+               FROM source_runtime_state"#,
+        )
+        .fetch_one(&store.pool)
+        .await,
+        "failed to fetch ingestion coverage",
+        |_| false,
+    );
+    DegradedNotice::capture(&ingestion_state, &mut degraded_notice);
+    let ingestion = ingestion_state.into_loaded_or(IngestionCoverageRow {
+        total: 0,
+        ever_succeeded: 0,
+        never_attempted: 0,
+        circuit_open: 0,
+        newest_success: None,
+    });
+
+    let stale_services_state = DataState::from_result(
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*)::bigint FROM (
+                   SELECT service, MAX(last_seen_at) AS last_seen
+                   FROM service_heartbeats
+                   GROUP BY service
+               ) latest
+               WHERE latest.last_seen < NOW() - INTERVAL '10 minutes'"#,
+        )
+        .fetch_one(&store.pool)
+        .await,
+        "failed to fetch service heartbeats",
+        |_| false,
+    );
+    DegradedNotice::capture(&stale_services_state, &mut degraded_notice);
+    let stale_services = stale_services_state.into_loaded_or(0);
+
+    let coverage_detail = if ingestion.total == 0 {
+        "No ingestion sources are configured — nothing is being crawled.".to_string()
+    } else {
+        let newest = ingestion
+            .newest_success
+            .map(age_label)
+            .unwrap_or_else(|| "never".to_string());
+        format!(
+            "{} sources · {} ever succeeded · {} never attempted · {} circuit open · newest success {}",
+            ingestion.total,
+            ingestion.ever_succeeded,
+            ingestion.never_attempted,
+            ingestion.circuit_open,
+            newest
+        )
+    };
+    let coverage_stale = ingestion
+        .newest_success
+        .map(|newest| reference_now.signed_duration_since(newest) > Duration::hours(48))
+        .unwrap_or(true);
+    let coverage_state = if ingestion.total == 0 || ingestion.circuit_open > 0 {
+        "bad"
+    } else if ingestion.ever_succeeded == 0 || ingestion.never_attempted > 0 || coverage_stale {
+        "warn"
+    } else {
+        "ok"
+    };
+    let coverage_state_label = match coverage_state {
+        "bad" => "Broken",
+        "warn" => "Degraded",
+        _ => "Covered",
+    };
+
+    let health_items = vec![
+        HealthItem {
+            label: "Data freshness".into(),
+            detail: status_strip.data_freshness.clone(),
+            state: if status_strip.data_fresh { "ok" } else { "bad" }.into(),
+            state_label: if status_strip.data_fresh {
+                "Fresh"
+            } else {
+                "Stale"
+            }
+            .into(),
+            href: "/settings".into(),
+        },
+        HealthItem {
+            label: "Ingestion coverage".into(),
+            detail: coverage_detail,
+            state: coverage_state.into(),
+            state_label: coverage_state_label.into(),
+            href: "/admin".into(),
+        },
+        HealthItem {
+            label: "Service heartbeats".into(),
+            detail: format!(
+                "{} · {} service(s) last seen more than 10 minutes ago",
+                status_strip.system_status, stale_services
+            ),
+            state: if status_strip.system_ok && stale_services == 0 {
+                "ok"
+            } else {
+                "bad"
+            }
+            .into(),
+            state_label: if status_strip.system_ok && stale_services == 0 {
+                "Healthy"
+            } else {
+                "Stale"
+            }
+            .into(),
+            href: "/admin".into(),
+        },
+    ];
 
     #[derive(sqlx::FromRow)]
     struct CrawlActivityRow {
@@ -610,6 +1229,11 @@ pub async fn dashboard(
         status_strip,
         degraded_notice,
 
+        changes_since,
+        priority_queue,
+        opportunities,
+        health_items,
+
         stats: vec![
             StatCard {
                 label: "Active Warnings".into(),
@@ -758,6 +1382,10 @@ mod tests {
             theme: String::new(),
             status_strip: StatusStrip::unknown(),
             degraded_notice: Some(notice.to_string()),
+            changes_since: vec![],
+            priority_queue: vec![],
+            opportunities: vec![],
+            health_items: vec![],
             stats: vec![],
             recent_warnings: vec![],
             top_insights: vec![],
@@ -815,5 +1443,102 @@ mod tests {
         assert!(html.contains("Data current · newest observation 4m ago"));
         assert!(html.contains("System Online"));
         assert!(!html.contains(">Data Fresh<"));
+    }
+
+    #[test]
+    fn degraded_dashboard_omits_new_section_empty_states() {
+        let page =
+            degraded_page("Data unavailable — query failed at 14:03 UTC · incident inc-test123");
+        let html = page.render().expect("dashboard renders");
+
+        assert!(!html.contains("Nothing requires action"));
+        assert!(!html.contains("No newly actionable opportunities"));
+    }
+
+    #[test]
+    fn priority_queue_renders_acknowledge_and_investigate_actions() {
+        let mut page = degraded_page("unused");
+        page.degraded_notice = None;
+        page.priority_queue = vec![PriorityItem {
+            id: "w-1".into(),
+            kind: "warning".into(),
+            title: "Supplier insolvency risk".into(),
+            severity: "critical".into(),
+            confidence_pct: Some(91),
+            entity_name: "Acme EMS".into(),
+            entity_href: "/companies/acme".into(),
+            reason: "Supply risk".into(),
+            age_label: "2h ago".into(),
+            assigned_analyst: "Unassigned".into(),
+            can_acknowledge: true,
+            acknowledge_url: "/warnings/w-1/acknowledge".into(),
+            investigate_url: "/warnings/w-1".into(),
+        }];
+        let html = page.render().expect("dashboard renders");
+
+        assert!(html.contains("data-section=\"priority-queue\""));
+        assert!(html.contains("hx-post=\"/warnings/w-1/acknowledge\""));
+        assert!(html.contains("href=\"/warnings/w-1\""));
+        assert!(html.contains("Analyst: Unassigned"));
+        assert!(html.contains("91% conf"));
+    }
+
+    #[test]
+    fn changes_and_health_render_counts_with_links() {
+        let mut page = degraded_page("unused");
+        page.degraded_notice = None;
+        page.changes_since = vec![ChangeItem {
+            label: "New high-confidence signals".into(),
+            count: 7,
+            detail: "Insights at 70%+ confidence created in the last 24h".into(),
+            href: "/insights?min_confidence=0.7".into(),
+        }];
+        page.health_items = vec![HealthItem {
+            label: "Ingestion coverage".into(),
+            detail: "12 sources · 9 ever succeeded · 3 never attempted".into(),
+            state: "warn".into(),
+            state_label: "Degraded".into(),
+            href: "/admin".into(),
+        }];
+        let html = page.render().expect("dashboard renders");
+
+        assert!(html.contains("data-section=\"changes\""));
+        assert!(html.contains("href=\"/insights?min_confidence=0.7\""));
+        assert!(html.contains("New high-confidence signals"));
+        assert!(html.contains("data-section=\"health\""));
+        assert!(html.contains("3 never attempted"));
+        assert!(html.contains("Degraded"));
+    }
+
+    #[test]
+    fn vanity_counts_render_below_actionable_sections() {
+        let mut page = degraded_page("unused");
+        page.degraded_notice = None;
+        page.stats = vec![StatCard {
+            label: "Active Warnings".into(),
+            value: "42".into(),
+            icon: "alert-triangle".into(),
+            accent_class: "metric-rail-orange".into(),
+            delta: None,
+            direction: "flat".into(),
+        }];
+        let html = page.render().expect("dashboard renders");
+
+        let priority = html.find("What Requires Action").expect("priority section");
+        let changes = html
+            .find("What Changed Since Last Look")
+            .expect("changes section");
+        let opportunities = html
+            .find("Newly Actionable Opportunities")
+            .expect("opportunities section");
+        let health = html
+            .find("What Is Stale Or Broken")
+            .expect("health section");
+        let vanity = html.find("Portfolio Overview").expect("vanity divider");
+
+        assert!(changes < priority);
+        assert!(priority < opportunities);
+        assert!(opportunities < health);
+        assert!(health < vanity);
     }
 }

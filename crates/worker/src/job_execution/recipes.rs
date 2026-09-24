@@ -846,7 +846,11 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         let base_url =
             std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
         let api_key = std::env::var("LLM_API_KEY").ok();
-        let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
+        // Recipe-fire synthesis uses the large tier (audit P0 #24).
+        let model = apex_llm::tiering::TieredModels::from_env()
+            .model_for(apex_llm::tiering::Workflow::FinalSynthesis)
+            .unwrap_or("Qwen3-30B-A3B-Q4_K_M")
+            .to_string();
         let mut config = apex_llm::inference::InferenceConfig::default();
         config.model = model;
         config.max_tokens = 2048;

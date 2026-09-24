@@ -26,6 +26,7 @@
 //! trait — provide a mock impl in tests.
 pub mod advanced_prompting;
 pub mod anti_hallucination;
+pub mod cache;
 pub mod evaluation;
 pub mod inference;
 pub mod insight_gen;
@@ -33,6 +34,7 @@ pub mod poi_profiler;
 pub mod prompt_registry;
 pub mod recipe_hypothesis;
 pub mod self_improvement;
+pub mod tiering;
 pub mod validators;
 
 // Re-exports from advanced_prompting
