@@ -118,3 +118,6 @@ tmp/
 
 # Transient audit/tool output
 clippy_*.txt
+
+# Local UI audit screenshots
+mobile-*.png
