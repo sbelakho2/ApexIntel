@@ -4,96 +4,151 @@
 //! blogs for mentions of monitored entities.  Matches are stored as
 //! `Observation` records (type `DarkWebPost`) and high-relevance matches
 //! trigger security warnings.
+//!
+//! # Configuration contract
+//!
+//! There is no DB-backed dark web configuration table/recipe yet, so the job
+//! reads its configuration from the environment (documented in `.env.example`):
+//!
+//! * `DARKWEB_TOR_PROXY` — optional Tor SOCKS5 proxy URL. When unset the
+//!   monitor runs clearnet-only.
+//! * `DARKWEB_FORUMS` — optional JSON array of forums. When set, it replaces
+//!   the built-in default forum list.
+//! * `DARKWEB_MONITORING_RULES` — optional JSON array of monitoring rules.
+//!   When set, it replaces the default keyword set used for matching.
+//!
+//! Unset variables fall back to the built-in defaults. A variable that is set
+//! but malformed fails the job: silently ignoring operator configuration is
+//! precisely the failure mode where configured forums/rules never took effect.
 
 use std::sync::Arc;
 
+use apex_crawl::dark_web::{DarkWebForum, DarkWebMonitor, DarkWebPost, MonitoringRule, ScanReport};
+
 use crate::*;
 
-/// Run a dark web forum scan cycle.
+/// Relevance score at or above which a match generates a security warning.
+const WARNING_RELEVANCE_THRESHOLD: f64 = 0.7;
+
+/// Parse a JSON array, attributing any parse error to the source variable.
+fn parse_json_array<T: serde::de::DeserializeOwned>(
+    variable: &str,
+    raw: &str,
+) -> anyhow::Result<Vec<T>> {
+    let parsed: Vec<T> = serde_json::from_str(raw)
+        .map_err(|e| anyhow::anyhow!("{variable}: invalid JSON array: {e}"))?;
+    tracing::info!(
+        variable,
+        count = parsed.len(),
+        "dark_web_scan: loaded configuration"
+    );
+    Ok(parsed)
+}
+
+/// Load an optional JSON-array configuration from the environment.
 ///
-/// 1. Build a [`DarkWebMonitor`] (optionally with Tor SOCKS5 proxy).
-/// 2. Load monitoring rules from environment or DB.
-/// 3. Scan all active forums.
-/// 4. Store matching posts as observations.
-/// 5. Generate warnings for high-relevance matches.
-pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
-    let mut run = JobRun::new(kind.clone());
-    run.start();
-
-    // Load Tor proxy config from environment (optional)
-    let tor_proxy_url = std::env::var("DARKWEB_TOR_PROXY").ok();
-    let monitor = match apex_crawl::dark_web::DarkWebMonitor::new(tor_proxy_url) {
-        Ok(m) => m,
-        Err(e) => {
-            run.fail(&format!("dark_web_scan: failed to build monitor: {e}"));
-            return run;
-        }
-    };
-
-    // Load monitoring rules from environment variable
-    let rules_json = std::env::var("DARKWEB_MONITORING_RULES").ok();
-    if let Some(json) = rules_json {
-        match serde_json::from_str::<Vec<apex_crawl::dark_web::MonitoringRule>>(&json) {
-            Ok(rules) => {
-                tracing::info!(
-                    count = rules.len(),
-                    "dark_web_scan: loaded rules from DARKWEB_MONITORING_RULES"
-                );
-                // We use the default forum list with custom rules
-                // In production, rules would come from a DB table
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "dark_web_scan: failed to parse DARKWEB_MONITORING_RULES, using defaults"
-                );
-            }
-        }
+/// Returns `Ok(None)` when the variable is unset or blank, and an error when it
+/// is set but cannot be parsed so that misconfiguration is never silently
+/// replaced with defaults.
+fn load_env_json_array<T: serde::de::DeserializeOwned>(
+    variable: &str,
+) -> anyhow::Result<Option<Vec<T>>> {
+    match std::env::var(variable) {
+        Ok(raw) if !raw.trim().is_empty() => parse_json_array(variable, &raw).map(Some),
+        _ => Ok(None),
     }
+}
 
-    // Load custom forums from env var (JSON array, optional)
-    let forums_json = std::env::var("DARKWEB_FORUMS").ok();
-    if let Some(json) = forums_json {
-        match serde_json::from_str::<Vec<apex_crawl::dark_web::DarkWebForum>>(&json) {
-            Ok(forums) => {
-                tracing::info!(
-                    count = forums.len(),
-                    "dark_web_scan: loaded forums from DARKWEB_FORUMS"
-                );
-                // Note: set_forums would require mutable access; we use defaults for now
-                // and the env var serves as documentation for future customization.
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "dark_web_scan: failed to parse DARKWEB_FORUMS, using defaults"
-                );
-            }
-        }
-    }
-
-    // Scan all active forums
-    let posts = monitor.scan_all().await;
-    let total_posts = posts.len() as u64;
-    let mut observations_stored = 0u64;
-    let mut warnings_generated = 0u64;
-
-    if posts.is_empty() {
-        run.succeed(
-            0,
-            "dark_web_scan: scanned all forums — no matching posts found",
+/// Apply configured forums/rules to the monitor.
+///
+/// `None` leaves the built-in default in place; `Some` replaces it.
+fn apply_monitor_config(
+    monitor: &mut DarkWebMonitor,
+    forums: Option<Vec<DarkWebForum>>,
+    rules: Option<Vec<MonitoringRule>>,
+) {
+    if let Some(forums) = forums {
+        tracing::info!(
+            count = forums.len(),
+            "dark_web_scan: applying configured forums"
         );
-        return run;
+        monitor.set_forums(forums);
     }
+    if let Some(rules) = rules {
+        tracing::info!(
+            count = rules.len(),
+            "dark_web_scan: applying configured monitoring rules"
+        );
+        monitor.set_rules(rules);
+    }
+}
 
-    tracing::info!(count = total_posts, "dark_web_scan: found matching posts");
+/// Real persistence counters for one dark web scan.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DarkWebCounters {
+    /// Matching posts returned by the monitor.
+    posts_seen: u64,
+    /// Observation rows newly inserted.
+    observations_inserted: u64,
+    /// Observation inserts that failed.
+    observation_insert_errors: u64,
+    /// Warning rows successfully inserted.
+    warnings_inserted: u64,
+    /// Warning inserts that failed.
+    warning_insert_errors: u64,
+}
 
-    let pool = &store.pool;
-    let _now = chrono::Utc::now();
+impl DarkWebCounters {
+    /// Total persistence failures (observations + warnings).
+    fn persistence_errors(self) -> u64 {
+        self.observation_insert_errors + self.warning_insert_errors
+    }
+}
 
-    for post in &posts {
-        // Build observation value
-        #[allow(clippy::unwrap_used, clippy::expect_used)]
+/// Persistence operations required by the dark web scan.
+///
+/// Implemented for [`PgStore`] in production; tests inject a failing mock so
+/// persistence-error handling is exercised without a database.
+trait DarkWebPersistence {
+    /// Store one observation. Returns `true` when a new row was created and
+    /// `false` when the deterministic id already existed.
+    async fn insert_observation(&self, post: &DarkWebPost) -> anyhow::Result<bool>;
+
+    /// Store the warning generated for a high-relevance post.
+    async fn insert_warning(&self, post: &DarkWebPost) -> anyhow::Result<()>;
+}
+
+fn warning_title(post: &DarkWebPost) -> String {
+    format!(
+        "Dark web mention: {} — {}",
+        post.forum_name, post.thread_title
+    )
+}
+
+fn warning_description(post: &DarkWebPost) -> String {
+    format!(
+        "High-relevance dark web post detected on '{}' (score: {:.2}). \
+         Author: {}. Matched keywords: {}. Entities: {}. \
+         Snippet: {}",
+        post.forum_name,
+        post.relevance_score,
+        post.author,
+        post.matched_keywords.join(", "),
+        post.entities_mentioned.join(", "),
+        post.content_snippet,
+    )
+}
+
+fn warning_severity(post: &DarkWebPost) -> &'static str {
+    if post.relevance_score >= 0.9 {
+        "critical"
+    } else {
+        "high"
+    }
+}
+
+impl DarkWebPersistence for PgStore {
+    async fn insert_observation(&self, post: &DarkWebPost) -> anyhow::Result<bool> {
         let value = serde_json::json!({
             "forum_name": post.forum_name,
             "thread_title": post.thread_title,
@@ -106,7 +161,6 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
             "entities_mentioned": post.entities_mentioned,
         });
 
-        #[allow(clippy::unwrap_used, clippy::expect_used)]
         let provenance = serde_json::json!({
             "source": "worker_dark_web_scan",
             "forum": post.forum_name,
@@ -114,17 +168,16 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
             "content_hash": format!("dw_{}", post.id),
         });
 
-        // B326: deterministic ID from (forum, post id) — the generic-scrape
-        // path generates unstable post ids, so include the content key too.
-        // Every 6h scan previously re-inserted the same posts as new rows.
+        // B326: deterministic ID from (forum, post id, thread title) — the
+        // generic-scrape path generates unstable post ids, so include the
+        // content key too. Every 6h scan previously re-inserted the same posts
+        // as new rows.
         let obs_id = apex_core::entities::Observation::deterministic_id(
             "darkweb",
             &format!("{}|{}|{}", post.forum_name, post.id, post.thread_title),
         );
 
-        // Insert observation (ON CONFLICT-free: id conflicts are impossible
-        // now that ids are content-derived and re-scans dedup upstream).
-        let insert_result = sqlx::query(
+        let result = sqlx::query(
             r#"INSERT INTO observations
                (id, observation_type, entity_id, entity_type, ts_utc, value, provenance, confidence)
                VALUES ($1, 'DarkWebPost', NULL, NULL, $2, $3::jsonb, $4::jsonb, $5)
@@ -135,81 +188,449 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
         .bind(&value)
         .bind(&provenance)
         .bind(post.relevance_score)
-        .execute(pool)
-        .await;
+        .execute(&self.pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("observation insert failed for post {}: {e}", post.id))?;
 
-        let mut newly_stored = false;
-        match insert_result {
-            Ok(result) => {
-                if result.rows_affected() > 0 {
-                    observations_stored += 1;
-                    newly_stored = true;
-                }
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn insert_warning(&self, post: &DarkWebPost) -> anyhow::Result<()> {
+        let title = warning_title(post);
+        let description = warning_description(post);
+        PgStore::insert_warning(
+            self,
+            "dark_web",
+            &title,
+            Some(&description),
+            warning_severity(post),
+            None,
+            None,
+            None,
+            Some(vec![post.url.clone()]),
+            Some(post.relevance_score),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("warning insert failed for post {}: {e}", post.id))?;
+        Ok(())
+    }
+}
+
+/// Persist matching posts and tally real outcomes.
+///
+/// `warnings_inserted` only advances after a successful insert; failed inserts
+/// are counted in `warning_insert_errors` so callers can report a degraded run
+/// instead of full success.
+async fn persist_dark_web_posts<P: DarkWebPersistence>(
+    persistence: &P,
+    posts: &[DarkWebPost],
+) -> DarkWebCounters {
+    let mut counters = DarkWebCounters {
+        posts_seen: posts.len() as u64,
+        ..DarkWebCounters::default()
+    };
+
+    for post in posts {
+        // B327: only warn on first store — the deduped re-scan previously
+        // re-warned for the same post every 6h.
+        let newly_stored = match persistence.insert_observation(post).await {
+            Ok(true) => {
+                counters.observations_inserted += 1;
+                true
             }
+            Ok(false) => false,
             Err(e) => {
+                counters.observation_insert_errors += 1;
                 tracing::warn!(
                     post_id = %post.id,
                     forum = %post.forum_name,
                     error = %e,
                     "dark_web_scan: failed to store observation"
                 );
+                false
             }
+        };
+
+        if !newly_stored || post.relevance_score < WARNING_RELEVANCE_THRESHOLD {
+            continue;
         }
 
-        // Generate warning for high-relevance matches (score >= 0.7).
-        // B327: only warn on first store — the deduped re-scan previously
-        // re-warned for the same post every 6h.
-        if newly_stored && post.relevance_score >= 0.7 {
-            let title = format!(
-                "Dark web mention: {} — {}",
-                post.forum_name, post.thread_title
-            );
-            let description = format!(
-                "High-relevance dark web post detected on '{}' (score: {:.2}). \
-                 Author: {}. Matched keywords: {}. Entities: {}. \
-                 Snippet: {}",
-                post.forum_name,
-                post.relevance_score,
-                post.author,
-                post.matched_keywords.join(", "),
-                post.entities_mentioned.join(", "),
-                post.content_snippet,
-            );
-
-            let severity = if post.relevance_score >= 0.9 {
-                "critical"
-            } else {
-                "high"
-            };
-
-            let _ = store
-                .insert_warning(
-                    "dark_web",
-                    &title,
-                    Some(&description),
-                    severity,
-                    None,
-                    None,
-                    None,
-                    Some(vec![post.url.clone()]),
-                    Some(post.relevance_score),
-                )
-                .await;
-
-            warnings_generated += 1;
+        match persistence.insert_warning(post).await {
+            Ok(()) => counters.warnings_inserted += 1,
+            Err(e) => {
+                counters.warning_insert_errors += 1;
+                tracing::warn!(
+                    post_id = %post.id,
+                    forum = %post.forum_name,
+                    error = %e,
+                    "dark_web_scan: failed to store warning"
+                );
+            }
         }
     }
 
-    run.succeed(
-        observations_stored,
-        &format!(
-            "dark_web_scan: scanned {} forums, found {} matching posts, \
-             stored {} observations, generated {} warnings",
-            monitor.forums.iter().filter(|f| f.is_active).count(),
-            total_posts,
-            observations_stored,
-            warnings_generated,
-        ),
+    counters
+}
+
+/// Human-readable summary of a scan including every real counter.
+fn scan_summary(report: &ScanReport, counters: DarkWebCounters) -> String {
+    format!(
+        "dark_web_scan: scanned {}/{} active forums ({} failed), {} posts seen, \
+         {} observations inserted ({} errors), {} warnings inserted ({} errors)",
+        report.forums_scanned,
+        report.forums_scanned + report.forums_failed,
+        report.forums_failed,
+        counters.posts_seen,
+        counters.observations_inserted,
+        counters.observation_insert_errors,
+        counters.warnings_inserted,
+        counters.warning_insert_errors,
+    )
+}
+
+/// Turn real counters into the terminal job result.
+///
+/// A run with persistence failures is reported as failed (degraded) with the
+/// error counts — never as a plain success.
+fn complete_dark_web_scan(run: &mut JobRun, report: &ScanReport, counters: DarkWebCounters) {
+    let summary = scan_summary(report, counters);
+    tracing::info!(
+        posts_seen = counters.posts_seen,
+        observations_inserted = counters.observations_inserted,
+        observation_insert_errors = counters.observation_insert_errors,
+        warnings_inserted = counters.warnings_inserted,
+        warning_insert_errors = counters.warning_insert_errors,
+        forums_scanned = report.forums_scanned,
+        forums_failed = report.forums_failed,
+        "dark_web_scan: scan complete"
     );
+
+    if counters.persistence_errors() > 0 {
+        run.items_processed = counters.observations_inserted;
+        run.fail(&format!(
+            "{summary} — persistence degraded: {} observation insert error(s), \
+             {} warning insert error(s)",
+            counters.observation_insert_errors, counters.warning_insert_errors
+        ));
+    } else {
+        run.succeed(counters.observations_inserted, &summary);
+    }
+}
+
+/// Run a dark web forum scan cycle.
+///
+/// 1. Build a [`DarkWebMonitor`] (optionally with Tor SOCKS5 proxy).
+/// 2. Apply configured forums/rules from the environment.
+/// 3. Scan all active forums.
+/// 4. Store matching posts as observations.
+/// 5. Generate warnings for high-relevance matches.
+/// 6. Report real counters; fail the run when persistence is incomplete.
+pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+    let mut run = JobRun::new(kind.clone());
+    run.start();
+
+    // Load Tor proxy config from environment (optional)
+    let tor_proxy_url = std::env::var("DARKWEB_TOR_PROXY").ok();
+    let mut monitor = match DarkWebMonitor::new(tor_proxy_url) {
+        Ok(m) => m,
+        Err(e) => {
+            run.fail(&format!("dark_web_scan: failed to build monitor: {e}"));
+            return run;
+        }
+    };
+
+    let forums = match load_env_json_array::<DarkWebForum>("DARKWEB_FORUMS") {
+        Ok(forums) => forums,
+        Err(e) => {
+            run.fail(&format!("dark_web_scan: {e}"));
+            return run;
+        }
+    };
+    let rules = match load_env_json_array::<MonitoringRule>("DARKWEB_MONITORING_RULES") {
+        Ok(rules) => rules,
+        Err(e) => {
+            run.fail(&format!("dark_web_scan: {e}"));
+            return run;
+        }
+    };
+    apply_monitor_config(&mut monitor, forums, rules);
+
+    let report = monitor.scan_all_detailed().await;
+    let counters = persist_dark_web_posts(store.as_ref(), &report.posts).await;
+    complete_dark_web_scan(&mut run, &report, counters);
     run
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_post(id: &str, relevance_score: f64) -> DarkWebPost {
+        DarkWebPost {
+            id: id.into(),
+            forum_name: "BreachForums".into(),
+            thread_title: "Acme Corp database leak".into(),
+            author: "anon".into(),
+            content_snippet: "selling a full database dump of acme corp".into(),
+            posted_at: chrono::Utc::now(),
+            url: format!("https://breachforums.st/thread/{id}"),
+            matched_keywords: vec!["database".into(), "dump".into()],
+            relevance_score,
+            entities_mentioned: vec!["dump@example.com".into()],
+        }
+    }
+
+    fn test_report(posts: Vec<DarkWebPost>, forums_scanned: u64, forums_failed: u64) -> ScanReport {
+        ScanReport {
+            posts,
+            forums_scanned,
+            forums_failed,
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct MockPersistence {
+        fail_observations: bool,
+        fail_warnings: bool,
+    }
+
+    impl DarkWebPersistence for MockPersistence {
+        async fn insert_observation(&self, _post: &DarkWebPost) -> anyhow::Result<bool> {
+            if self.fail_observations {
+                anyhow::bail!("simulated observation insert failure");
+            }
+            Ok(true)
+        }
+
+        async fn insert_warning(&self, _post: &DarkWebPost) -> anyhow::Result<()> {
+            if self.fail_warnings {
+                anyhow::bail!("simulated warning insert failure");
+            }
+            Ok(())
+        }
+    }
+
+    fn custom_forum(name: &str) -> DarkWebForum {
+        DarkWebForum {
+            name: name.into(),
+            base_url: "https://example.invalid/forum".into(),
+            forum_type: apex_crawl::dark_web::ForumType::Leak,
+            access_method: apex_crawl::dark_web::AccessMethod::Clearnet,
+            is_active: true,
+            last_checked: None,
+            topics_of_interest: vec!["leaks".into()],
+        }
+    }
+
+    fn custom_rule(id: &str, keyword: &str) -> MonitoringRule {
+        MonitoringRule {
+            id: id.into(),
+            name: format!("rule {id}"),
+            keywords: vec![keyword.into()],
+            entity_ids: vec![],
+            min_relevance: 0.5,
+            notification_channels: vec![],
+        }
+    }
+
+    // ── Configuration application ───────────────────────────────────────────
+
+    #[test]
+    fn configured_forums_and_rules_are_applied_to_monitor() {
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        assert_eq!(
+            monitor.forums.len(),
+            apex_crawl::dark_web::default_forums().len(),
+            "sanity: monitor starts with default forums"
+        );
+
+        apply_monitor_config(
+            &mut monitor,
+            Some(vec![custom_forum("Custom Forum")]),
+            Some(vec![custom_rule("r1", "acme-inc")]),
+        );
+
+        assert_eq!(
+            monitor.forums.len(),
+            1,
+            "configured forums must replace defaults"
+        );
+        assert_eq!(monitor.forums[0].name, "Custom Forum");
+        assert_eq!(monitor.rules.len(), 1, "configured rules must be applied");
+        assert_eq!(monitor.rules[0].id, "r1");
+        assert_eq!(monitor.rules[0].keywords, vec!["acme-inc".to_string()]);
+    }
+
+    #[test]
+    fn unset_configuration_keeps_monitor_defaults() {
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        let default_forums = monitor.forums.len();
+
+        apply_monitor_config(&mut monitor, None, None);
+
+        assert_eq!(monitor.forums.len(), default_forums);
+        assert!(monitor.rules.is_empty());
+    }
+
+    #[test]
+    fn parsed_forum_json_is_applied_to_monitor() {
+        let raw = r#"[{
+            "name": "Parsed Forum",
+            "base_url": "https://parsed.invalid",
+            "forum_type": "General",
+            "access_method": "Clearnet",
+            "is_active": true,
+            "last_checked": null,
+            "topics_of_interest": []
+        }]"#;
+        let forums = parse_json_array::<DarkWebForum>("DARKWEB_FORUMS", raw).unwrap();
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        apply_monitor_config(&mut monitor, Some(forums), None);
+        assert_eq!(monitor.forums.len(), 1);
+        assert_eq!(monitor.forums[0].name, "Parsed Forum");
+    }
+
+    #[test]
+    fn malformed_configuration_json_is_rejected() {
+        let err = parse_json_array::<DarkWebForum>("DARKWEB_FORUMS", "{not json}")
+            .expect_err("malformed JSON must not parse");
+        assert!(err.to_string().contains("DARKWEB_FORUMS"), "{err}");
+
+        let err = parse_json_array::<MonitoringRule>("DARKWEB_MONITORING_RULES", "[] trailing")
+            .expect_err("malformed JSON must not parse");
+        assert!(
+            err.to_string().contains("DARKWEB_MONITORING_RULES"),
+            "{err}"
+        );
+    }
+
+    // ── Persistence counters ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn warning_insert_failure_counts_error_and_not_success() {
+        let persistence = MockPersistence {
+            fail_observations: false,
+            fail_warnings: true,
+        };
+        let counters = persist_dark_web_posts(&persistence, &[test_post("post-1", 0.95)]).await;
+
+        assert_eq!(counters.posts_seen, 1);
+        assert_eq!(counters.observations_inserted, 1);
+        assert_eq!(
+            counters.warnings_inserted, 0,
+            "failed insert is not a warning"
+        );
+        assert_eq!(counters.warning_insert_errors, 1);
+        assert_eq!(counters.persistence_errors(), 1);
+    }
+
+    #[tokio::test]
+    async fn observation_insert_failure_counts_error_and_skips_warning() {
+        let persistence = MockPersistence {
+            fail_observations: true,
+            fail_warnings: false,
+        };
+        let counters = persist_dark_web_posts(&persistence, &[test_post("post-1", 0.95)]).await;
+
+        assert_eq!(counters.posts_seen, 1);
+        assert_eq!(counters.observations_inserted, 0);
+        assert_eq!(counters.observation_insert_errors, 1);
+        assert_eq!(counters.warnings_inserted, 0);
+        assert_eq!(counters.warning_insert_errors, 0);
+    }
+
+    #[tokio::test]
+    async fn successful_persistence_counts_inserted_rows() {
+        let persistence = MockPersistence::default();
+        let posts = vec![test_post("post-1", 0.95), test_post("post-2", 0.5)];
+        let counters = persist_dark_web_posts(&persistence, &posts).await;
+
+        assert_eq!(counters.posts_seen, 2);
+        assert_eq!(counters.observations_inserted, 2);
+        assert_eq!(
+            counters.warnings_inserted, 1,
+            "only the high-relevance post warns"
+        );
+        assert_eq!(counters.persistence_errors(), 0);
+    }
+
+    // ── Job result ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn job_fails_when_persistence_errors_occur() {
+        let persistence = MockPersistence {
+            fail_observations: false,
+            fail_warnings: true,
+        };
+        let report = test_report(vec![test_post("post-1", 0.95)], 1, 0);
+        let counters = persist_dark_web_posts(&persistence, &report.posts).await;
+
+        let mut run = JobRun::new(JobKind::DarkWebScan);
+        run.start();
+        complete_dark_web_scan(&mut run, &report, counters);
+
+        match &run.status {
+            JobStatus::Failed { error, .. } => {
+                assert!(
+                    error.contains("1 warning insert error(s)"),
+                    "failure must report warning insert errors: {error}"
+                );
+                assert!(
+                    error.contains("persistence degraded"),
+                    "failure must be flagged as degraded: {error}"
+                );
+            }
+            other => panic!("persistence errors must fail the job, got {other:?}"),
+        }
+        assert_eq!(run.items_processed, 1, "stored observations still counted");
+    }
+
+    #[tokio::test]
+    async fn job_succeeds_and_reports_real_counters_when_persistence_ok() {
+        let persistence = MockPersistence::default();
+        let report = test_report(
+            vec![test_post("post-1", 0.95), test_post("post-2", 0.2)],
+            2,
+            1,
+        );
+        let counters = persist_dark_web_posts(&persistence, &report.posts).await;
+
+        let mut run = JobRun::new(JobKind::DarkWebScan);
+        run.start();
+        complete_dark_web_scan(&mut run, &report, counters);
+
+        assert!(matches!(run.status, JobStatus::Succeeded { .. }));
+        assert_eq!(run.items_processed, 2);
+        assert!(
+            run.notes.contains("scanned 2/3 active forums (1 failed)"),
+            "{}",
+            run.notes
+        );
+        assert!(run.notes.contains("2 posts seen"), "{}", run.notes);
+        assert!(
+            run.notes.contains("2 observations inserted (0 errors)"),
+            "{}",
+            run.notes
+        );
+        assert!(
+            run.notes.contains("1 warnings inserted (0 errors)"),
+            "{}",
+            run.notes
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_scan_succeeds_with_zero_counters() {
+        let persistence = MockPersistence::default();
+        let report = test_report(vec![], 1, 0);
+        let counters = persist_dark_web_posts(&persistence, &report.posts).await;
+
+        let mut run = JobRun::new(JobKind::DarkWebScan);
+        run.start();
+        complete_dark_web_scan(&mut run, &report, counters);
+
+        assert!(matches!(run.status, JobStatus::Succeeded { .. }));
+        assert_eq!(run.items_processed, 0);
+        assert!(run.notes.contains("0 posts seen"), "{}", run.notes);
+    }
 }
