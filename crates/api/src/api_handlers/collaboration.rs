@@ -1510,34 +1510,17 @@ pub struct WatchlistRequest {
     pub notes: Option<String>,
 }
 
-async fn save_watchlist(
-    state: &crate::AppState,
-    auth: &ApiAuthContext,
-    id: Option<Uuid>,
-    req: &WatchlistRequest,
-) -> Result<WatchlistRecord, ApiError> {
+fn watchlist_fields(req: &WatchlistRequest) -> Result<(&str, Value, Option<&str>), ApiError> {
     let name = req.name.trim();
     if name.is_empty() {
         return Err(ApiError::validation("name", "cannot be empty"));
     }
-    let entities = req
-        .entities
-        .clone()
-        .filter(Value::is_array)
-        .unwrap_or_else(|| Value::Array(Vec::new()));
-
-    state
-        .store
-        .upsert_watchlist_scoped(
-            &auth.user_id,
-            auth.role.as_str(),
-            id,
-            name,
-            &entities,
-            req.notes.as_deref(),
-        )
-        .await
-        .map_err(store_err)
+    let entities = match &req.entities {
+        Some(value) if value.is_array() => value.clone(),
+        Some(_) => return Err(ApiError::validation("entities", "must be an array")),
+        None => Value::Array(Vec::new()),
+    };
+    Ok((name, entities, req.notes.as_deref()))
 }
 
 /// GET /api/watchlists
@@ -1562,8 +1545,22 @@ pub async fn create_watchlist(
     Extension(auth): Extension<ApiAuthContext>,
     Json(req): Json<WatchlistRequest>,
 ) -> Result<Json<ApiResponse<WatchlistRecord>>, ApiError> {
-    let id = parse_optional_uuid(&req.id, "id")?;
-    let record = save_watchlist(&state, &auth, id, &req).await?;
+    if req.id.is_some() {
+        return Err(ApiError::validation("id", "is assigned by the server"));
+    }
+    let (name, entities, notes) = watchlist_fields(&req)?;
+    let record = state
+        .store
+        .upsert_watchlist_scoped(
+            &auth.user_id,
+            auth.role.as_str(),
+            None,
+            name,
+            &entities,
+            notes,
+        )
+        .await
+        .map_err(store_err)?;
     Ok(Json(success(record)))
 }
 
@@ -1576,8 +1573,24 @@ pub async fn update_watchlist(
     Json(req): Json<WatchlistRequest>,
 ) -> Result<Json<ApiResponse<WatchlistRecord>>, ApiError> {
     let uuid = parse_uuid(&id, "id")?;
-    let record = save_watchlist(&state, &auth, Some(uuid), &req).await?;
-    Ok(Json(success(record)))
+    let (name, entities, notes) = watchlist_fields(&req)?;
+    let record = state
+        .store
+        .update_watchlist_scoped(
+            &auth.user_id,
+            auth.role.as_str(),
+            uuid,
+            name,
+            &entities,
+            notes,
+        )
+        .await
+        .map_err(store_err)?;
+
+    match record {
+        Some(record) => Ok(Json(success(record))),
+        None => Err(ApiError::not_found("watchlist", &id)),
+    }
 }
 
 /// DELETE /api/watchlists/:id

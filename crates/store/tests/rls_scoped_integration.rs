@@ -293,6 +293,36 @@ async fn scoped_access_isolates_users_but_service_path_still_works() {
         .unwrap()
         .is_some());
 
+    // Ownership is part of the write itself: even on a connection that
+    // bypasses RLS (superuser/admin/service), user A cannot upsert or update
+    // a watchlist id owned by user B.
+    let bypass = PgStore::from_pool(admin.clone());
+    let overwrite = bypass
+        .upsert_watchlist_scoped(
+            user_a,
+            "analyst",
+            Some(watch_b.id),
+            "hacked",
+            &json!([]),
+            None,
+        )
+        .await;
+    assert!(
+        overwrite.is_err(),
+        "cross-user watchlist upsert must be rejected even without RLS"
+    );
+    let updated_other = bypass
+        .update_watchlist_scoped(user_a, "analyst", watch_b.id, "hacked", &json!([]), None)
+        .await
+        .unwrap();
+    assert!(
+        updated_other.is_none(),
+        "updating another user's watchlist must not match a row"
+    );
+    let b_lists = service.list_watchlists(user_b).await.unwrap();
+    assert_eq!(b_lists.len(), 1);
+    assert_eq!(b_lists[0].name, "B list");
+
     cleanup(&admin, &[user_a, user_b, user_c]).await;
     scoped.pool.close().await;
     admin.close().await;
@@ -312,8 +342,6 @@ async fn user_private_tables_force_row_level_security() {
         "user_preferences",
         "watchlists",
         "saved_searches",
-        "annotations",
-        "insight_bookmarks",
         "notifications",
     ] {
         let exists: bool = sqlx::query_scalar(
@@ -323,9 +351,7 @@ async fn user_private_tables_force_row_level_security() {
         .fetch_one(&admin)
         .await
         .unwrap();
-        if !exists {
-            continue;
-        }
+        assert!(exists, "{table} must exist after migrations");
         let (enabled, forced): (bool, bool) = sqlx::query_as(
             "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = $1",
         )
@@ -335,6 +361,23 @@ async fn user_private_tables_force_row_level_security() {
         .unwrap();
         assert!(enabled, "{table} must have RLS enabled");
         assert!(forced, "{table} must have FORCE ROW LEVEL SECURITY");
+    }
+
+    // These stay ENABLE-only until their unscoped call sites are migrated to
+    // `begin_scoped`; forcing them now would deny the owner the live web paths.
+    for table in ["annotations", "insight_bookmarks"] {
+        let (enabled, forced): (bool, bool) = sqlx::query_as(
+            "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = $1",
+        )
+        .bind(table)
+        .fetch_one(&admin)
+        .await
+        .unwrap();
+        assert!(enabled, "{table} must have RLS enabled");
+        assert!(
+            !forced,
+            "{table} must not be forced until its call sites are scoped"
+        );
     }
 
     admin.close().await;

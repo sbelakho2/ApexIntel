@@ -226,7 +226,11 @@ impl AlertRouter {
     /// never silently suppresses an alert.
     pub async fn should_notify_user(&self, user_id: Uuid, alert: &AlertEvent) -> bool {
         if let Some(username) = self.principals.username_for(user_id) {
-            match self.db.get_user_preferences_record(&username).await {
+            match self
+                .db
+                .get_user_preferences_record_scoped(&username, "viewer")
+                .await
+            {
                 Ok(Some(record)) => {
                     if !user_preferences_allow_alert(&record.preferences, alert) {
                         return false;

@@ -10,14 +10,21 @@
 --      `app.current_user_id` / `app.current_user_role` were never set by the
 --      application. `PgStore::begin_scoped` now sets both transaction-locally.
 --
--- This migration forces RLS on the user-private tables that already carry
--- policies in 020, gives the legacy `notifications` table the same
--- user-scoped policy its siblings have, and grants the application role the
--- privileges it needs. Every statement is guarded and idempotent.
+-- This migration forces RLS on the user-private tables whose application
+-- access is identity-scoped in this change (`user_preferences`, `watchlists`),
+-- plus `saved_searches` and the legacy `notifications` table, which have no
+-- live Rust call sites. `annotations` and `insight_bookmarks` stay
+-- ENABLE-only (RLS from 020 still applies to non-owner roles) until their
+-- call sites are migrated to `begin_scoped`; forcing the owner to obey their
+-- policies now would silently deny the existing unscoped web paths.
 --
--- Service/worker connections that must read across users (email digest,
--- alert routing) intentionally run without an identity set; they need a role
--- that owns the tables or has BYPASSRLS (or must be updated to scoped calls).
+-- It also gives `notifications` the user-scoped policy its siblings have and
+-- grants the application role the privileges it needs. Every statement is
+-- guarded and idempotent.
+--
+-- Service/worker connections that must read across users (email digest) run
+-- without an identity set; they need a role that owns the tables or has
+-- BYPASSRLS (or must be updated to scoped per-user calls).
 
 -- ── 1. User-scoped policy for `notifications` (no policy existed in 020) ────
 -- FORCE without a policy would deny every access; the table is user-scoped,
@@ -37,9 +44,11 @@ BEGIN
     END IF;
 END $$;
 
--- ── 2. FORCE ROW LEVEL SECURITY on user-private tables ──────────────────────
+-- ── 2. FORCE ROW LEVEL SECURITY on identity-scoped user-private tables ──────
 -- The owner (migration/admin role) must obey the policies too, so a coding
 -- mistake that skips `begin_scoped` cannot silently see another user's data.
+-- Only tables with scoped call sites (or none) are forced here; see the
+-- header for why `annotations` and `insight_bookmarks` are excluded.
 DO $$
 DECLARE
     t TEXT;
@@ -47,8 +56,6 @@ DECLARE
         'user_preferences',
         'watchlists',
         'saved_searches',
-        'annotations',
-        'insight_bookmarks',
         'notifications'
     ];
 BEGIN

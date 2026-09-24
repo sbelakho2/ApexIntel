@@ -33,6 +33,7 @@ async fn upsert_watchlist_on(
              entities = EXCLUDED.entities,
              notes = EXCLUDED.notes,
              updated_at = NOW()
+           WHERE watchlists.user_id = EXCLUDED.user_id
            RETURNING id, user_id, name, entities, notes, created_at, updated_at"#,
     )
     .bind(id)
@@ -41,6 +42,32 @@ async fn upsert_watchlist_on(
     .bind(entities)
     .bind(notes)
     .fetch_one(&mut *conn)
+    .await?)
+}
+
+async fn update_watchlist_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    id: Uuid,
+    name: &str,
+    entities: &Value,
+    notes: Option<&str>,
+) -> Result<Option<WatchlistRecord>> {
+    Ok(sqlx::query_as::<_, WatchlistRecord>(
+        r#"UPDATE watchlists
+           SET name = $3,
+               entities = $4,
+               notes = $5,
+               updated_at = NOW()
+           WHERE id = $1 AND user_id = $2
+           RETURNING id, user_id, name, entities, notes, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(name)
+    .bind(entities)
+    .bind(notes)
+    .fetch_optional(&mut *conn)
     .await?)
 }
 
@@ -353,6 +380,21 @@ impl PgStore {
     ) -> Result<WatchlistRecord> {
         let mut tx = self.begin_scoped(user_id, role).await?;
         let record = upsert_watchlist_on(&mut tx, id, user_id, name, entities, notes).await?;
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    pub async fn update_watchlist_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Uuid,
+        name: &str,
+        entities: &Value,
+        notes: Option<&str>,
+    ) -> Result<Option<WatchlistRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record = update_watchlist_on(&mut tx, user_id, id, name, entities, notes).await?;
         tx.commit().await?;
         Ok(record)
     }
