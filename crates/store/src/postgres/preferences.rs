@@ -95,47 +95,22 @@ async fn upsert_user_preferences_record_on(
 async fn upsert_user_settings_prefs_on(
     conn: &mut sqlx::PgConnection,
     user_id: &str,
+    theme: &str,
+    locale: &str,
     prefs: &UserSettingsPrefs,
 ) -> Result<()> {
-    let row =
-        sqlx::query("SELECT preferences, theme, locale FROM user_preferences WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let row = sqlx::query("SELECT preferences FROM user_preferences WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?;
 
-    let (theme, locale, existing_preferences): (String, String, Option<Value>) =
-        if let Some(row) = row {
-            let theme: Option<String> = row.try_get("theme")?;
-            let locale: Option<String> = row.try_get("locale")?;
-            let preferences: Option<Value> = row.try_get("preferences")?;
-            (
-                theme.unwrap_or_else(|| "system".to_string()),
-                locale.unwrap_or_else(|| "en".to_string()),
-                preferences,
-            )
-        } else {
-            ("system".to_string(), "en".to_string(), None)
-        };
+    let existing_preferences: Option<Value> = match row {
+        Some(row) => row.try_get("preferences")?,
+        None => None,
+    };
 
     let preferences = merge_settings_page_preferences(existing_preferences, prefs)?;
-
-    sqlx::query(
-        r#"INSERT INTO user_preferences (user_id, theme, locale, preferences, updated_at)
-           VALUES ($1, $2, $3, $4, NOW())
-           ON CONFLICT (user_id) DO UPDATE SET
-             theme = EXCLUDED.theme,
-             locale = EXCLUDED.locale,
-             preferences = EXCLUDED.preferences,
-             updated_at = NOW()"#,
-    )
-    .bind(user_id)
-    .bind(theme)
-    .bind(locale)
-    .bind(preferences)
-    .execute(&mut *conn)
-    .await?;
-
-    Ok(())
+    upsert_user_preferences_record_on(conn, user_id, theme, locale, &preferences).await
 }
 
 impl PgStore {
@@ -202,23 +177,34 @@ impl PgStore {
         Ok(())
     }
 
+    /// Persist the personal preferences for one user in a single
+    /// `user_preferences` write: the `theme` and `locale` columns plus the
+    /// merged `preferences` JSONB (`settings_page` sub-object).
+    ///
+    /// This is the one contract the settings page and the appearance
+    /// middleware read from; all personal preferences live here and nowhere
+    /// else.
     pub async fn upsert_user_settings_prefs(
         &self,
         user_id: &str,
+        theme: &str,
+        locale: &str,
         prefs: &UserSettingsPrefs,
     ) -> Result<()> {
         let mut conn = self.pool.acquire().await?;
-        upsert_user_settings_prefs_on(&mut conn, user_id, prefs).await
+        upsert_user_settings_prefs_on(&mut conn, user_id, theme, locale, prefs).await
     }
 
     pub async fn upsert_user_settings_prefs_scoped(
         &self,
         user_id: &str,
         role: &str,
+        theme: &str,
+        locale: &str,
         prefs: &UserSettingsPrefs,
     ) -> Result<()> {
         let mut tx = self.begin_scoped(user_id, role).await?;
-        upsert_user_settings_prefs_on(&mut tx, user_id, prefs).await?;
+        upsert_user_settings_prefs_on(&mut tx, user_id, theme, locale, prefs).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -311,5 +297,61 @@ mod tests {
         assert!(merged.is_object());
         assert_eq!(merged["settings_page"]["email_digest_time_cet"], "08:00");
         assert_eq!(merged["settings_page"]["email_digest_weekday"], "Mon");
+    }
+
+    #[test]
+    fn test_personal_preferences_defaults_include_table_layout() {
+        let prefs = UserSettingsPrefs::default();
+        assert_eq!(prefs.table_layout, "comfortable");
+        assert_eq!(prefs.session_timeout_hours, 24);
+        assert_eq!(prefs.default_region, "Global");
+    }
+
+    #[test]
+    fn test_legacy_settings_page_json_with_removed_system_keys_still_loads() {
+        // Pre-split settings blobs carried fake system controls
+        // (backend_url_display, daily_crawl_enabled, ...). They must keep
+        // deserializing so existing users are not locked out of their
+        // personal preferences.
+        let legacy = serde_json::json!({
+            "api_key_display": "masked",
+            "backend_url_display": "https://example.test",
+            "session_timeout_hours": 8,
+            "default_region": "EU",
+            "auto_include_neighbors": true,
+            "daily_crawl_enabled": true,
+            "crawl_window": "06:00-12:00 UTC",
+            "slack_enabled": true,
+            "minimum_severity": "medium",
+            "auto_cleanup_enabled": false,
+            "export_format": "CSV",
+            "retention_period": "1 year",
+            "email_digest_enabled": true,
+            "email_digest_categories": ["warnings"],
+            "email_digest_time_cet": "07:30",
+            "email_digest_weekday": "Fri",
+            "table_layout": "compact"
+        });
+
+        let prefs: UserSettingsPrefs =
+            serde_json::from_value(legacy).expect("legacy blob must keep deserializing");
+
+        assert_eq!(prefs.session_timeout_hours, 8);
+        assert_eq!(prefs.default_region, "EU");
+        assert_eq!(prefs.minimum_severity, "medium");
+        assert_eq!(prefs.table_layout, "compact");
+        assert!(prefs.email_digest_enabled);
+    }
+
+    #[test]
+    fn test_layout_is_merged_under_settings_page_key() {
+        let prefs = UserSettingsPrefs {
+            table_layout: "compact".to_string(),
+            ..UserSettingsPrefs::default()
+        };
+
+        let merged = merge_settings_page_preferences(None, &prefs).unwrap();
+
+        assert_eq!(merged["settings_page"]["table_layout"], "compact");
     }
 }

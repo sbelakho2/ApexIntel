@@ -197,7 +197,7 @@ async fn scoped_access_isolates_users_but_service_path_still_works() {
         ..UserSettingsPrefs::default()
     };
     scoped
-        .upsert_user_settings_prefs_scoped(user_a, "analyst", &settings)
+        .upsert_user_settings_prefs_scoped(user_a, "analyst", "system", "en", &settings)
         .await
         .unwrap();
     let loaded = scoped

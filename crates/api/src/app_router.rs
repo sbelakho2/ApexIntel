@@ -45,7 +45,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         )
         .route("/logout", post(apex_api::web::auth::logout))
         // ─── PWA: Service worker (served without auth) ─────────────────
-        .route("/sw.js", get(sw_js));
+        .route("/sw.js", get(sw_js))
+        // `/login` reads the user's persisted session-length preference from
+        // the store to sign the session cookie lifetime (`exp` + `Max-Age`).
+        .layer(Extension(state.store.clone()));
 
     let protected = Router::new()
         // /metrics exposes platform scale (companies, persons, warnings) and

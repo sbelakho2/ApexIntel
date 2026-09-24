@@ -62,7 +62,7 @@
 </div>
 {% endif %}
 
-<div class="apex-card mb-6">
+<div class="apex-card mb-6" id="source-coverage">
   <div class="border-b border-rams-line px-4 py-3">
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">Source Coverage</h2>
     <p class="text-[11px] text-rams-muted mt-1">
@@ -174,7 +174,7 @@
 {% endif %}
 
 {% if !workflow_runs.is_empty() %}
-<div class="apex-card">
+<div class="apex-card" id="workflow-runs">
   <h2 class="border-b border-rams-line px-4 py-3 text-xs font-black uppercase tracking-[0.12em]">Recent LLM Workflow Runs</h2>
   <div class="overflow-x-auto">
   <table class="w-full min-w-[46rem]">

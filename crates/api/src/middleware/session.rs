@@ -33,12 +33,34 @@ type HmacSha256 = Hmac<Sha256>;
 const CSRF_COOKIE_NAME: &str = "apex_csrf";
 const LEGACY_SESSION_COOKIE_NAME: &str = "apex_session";
 const SECURE_SESSION_COOKIE_NAME: &str = "__Host-apex_session";
+/// Appearance cookies mirror the user's persisted `user_preferences` row so
+/// the very first HTML response on a new device can apply the saved theme and
+/// table layout without a client-side round-trip.
+const THEME_COOKIE_NAME: &str = "apex_theme";
+const TABLE_LAYOUT_COOKIE_NAME: &str = "apex_table_layout";
+const APPEARANCE_COOKIE_MAX_AGE_SECS: i64 = 365 * 24 * 60 * 60;
 
 /// Session payload version signed into new cookies. Missing `sv` in old
 /// cookies means version 0.
 pub const SESSION_VERSION: u32 = 1;
-/// Lifetime of a session cookie and its signed `exp` claim (24 hours).
+/// Default lifetime of a session cookie and its signed `exp` claim (24 hours)
+/// when the user has not chosen a session length.
 pub const SESSION_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// Bounds for the per-user session length preference (8h / 24h / 72h are the
+/// offered choices; the clamp protects a tampered form post).
+pub const MIN_SESSION_HOURS: i64 = 1;
+pub const MAX_SESSION_HOURS: i64 = 168;
+/// The offered session-length choices in the personal preferences form.
+pub const SESSION_HOURS_CHOICES: [i64; 3] = [8, 24, 72];
+
+/// Signed session lifetime for a stored `session_timeout_hours` preference.
+///
+/// The login handler signs `exp` with this value and the cookie `Max-Age`
+/// derives from it, so the control is enforced server-side rather than being
+/// a display-only setting.
+pub fn session_ttl_ms_for_hours(hours: i64) -> i64 {
+    hours.clamp(MIN_SESSION_HOURS, MAX_SESSION_HOURS) * 60 * 60 * 1000
+}
 
 /// Cached session secret — read from env once at first use instead of on every request.
 static SESSION_SECRET: std::sync::LazyLock<String> =
@@ -262,14 +284,49 @@ pub fn session_cookie_name() -> &'static str {
     session_cookie_name_for(cookie_secure_enabled())
 }
 
-/// `Set-Cookie` value issuing the session cookie.
-pub fn session_cookie_header(token: &str) -> String {
+/// `Set-Cookie` value issuing the session cookie with the given lifetime
+/// (seconds). The login handler derives this from the user's persisted session
+/// length preference so `Max-Age` and the signed `exp` claim always agree.
+pub fn session_cookie_header(token: &str, max_age_secs: i64) -> String {
     format!(
-        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{}",
+        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
         session_cookie_name(),
         token,
+        max_age_secs.max(0),
         cookie_secure_suffix()
     )
+}
+
+/// `Set-Cookie` values that mirror the user's persisted appearance
+/// preferences (theme + table layout) to the browser.
+///
+/// They are deliberately readable by the client script in `base.html` so the
+/// first paint on a new device uses the saved theme/layout; they contain no
+/// secrets.
+pub fn appearance_cookie_headers(theme: &str, table_layout: &str) -> Vec<String> {
+    let suffix = cookie_secure_suffix();
+    let mut cookies = Vec::new();
+    if !theme.is_empty() {
+        cookies.push(format!(
+            "{THEME_COOKIE_NAME}={theme}; Path=/; SameSite=Lax; Max-Age={APPEARANCE_COOKIE_MAX_AGE_SECS}{suffix}"
+        ));
+    }
+    if !table_layout.is_empty() {
+        cookies.push(format!(
+            "{TABLE_LAYOUT_COOKIE_NAME}={table_layout}; Path=/; SameSite=Lax; Max-Age={APPEARANCE_COOKIE_MAX_AGE_SECS}{suffix}"
+        ));
+    }
+    cookies
+}
+
+/// Read the persisted table-layout preference out of a `user_preferences`
+/// JSON blob (`preferences.settings_page.table_layout`).
+pub fn table_layout_from_preferences(preferences: &serde_json::Value) -> Option<String> {
+    preferences
+        .get("settings_page")
+        .and_then(|page| page.get("table_layout"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
 }
 
 /// `Set-Cookie` values clearing the session cookie. Under `COOKIE_SECURE=1`
@@ -505,12 +562,48 @@ pub async fn require_session(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let csrf_cookie = extract_cookie_value(request.headers(), CSRF_COOKIE_NAME).map(str::to_string);
 
+    // Mirror the persisted personal appearance preferences (theme, table
+    // layout) into cookies on safe navigations so a new device renders the
+    // saved theme immediately. Only queried when a cookie is missing.
+    let appearance = if !requires_csrf(&method)
+        && (extract_cookie_value(request.headers(), THEME_COOKIE_NAME).is_none()
+            || extract_cookie_value(request.headers(), TABLE_LAYOUT_COOKIE_NAME).is_none())
+    {
+        match request
+            .extensions()
+            .get::<Arc<apex_store::postgres::PgStore>>()
+        {
+            Some(store) => match store.get_user_preferences_record(&session.username).await {
+                Ok(Some(record)) => Some((
+                    record.theme,
+                    table_layout_from_preferences(&record.preferences)
+                        .unwrap_or_else(|| "comfortable".to_string()),
+                )),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to load appearance preferences for session");
+                    None
+                }
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+
     let mut request = request;
     request.extensions_mut().insert(session);
 
     if !requires_csrf(&method) {
         let mut response = next.run(request).await;
         issue_csrf_cookie(&mut response, csrf_cookie.as_deref());
+        if let Some((theme, table_layout)) = appearance {
+            for cookie in appearance_cookie_headers(&theme, &table_layout) {
+                if let Ok(value) = HeaderValue::from_str(&cookie) {
+                    response.headers_mut().append(header::SET_COOKIE, value);
+                }
+            }
+        }
         return response;
     }
 
@@ -723,5 +816,46 @@ mod tests {
             extract_form_csrf_token(body).as_deref(),
             Some("known-token")
         );
+    }
+
+    #[test]
+    fn session_cookie_header_derives_max_age_from_preference() {
+        let eight_hours = session_cookie_header("token", session_ttl_ms_for_hours(8) / 1000);
+        assert!(eight_hours.contains("Max-Age=28800"));
+
+        let default = session_cookie_header("token", SESSION_TTL_MS / 1000);
+        assert!(default.contains("Max-Age=86400"));
+    }
+
+    #[test]
+    fn session_ttl_is_clamped_to_safe_bounds() {
+        assert_eq!(
+            session_ttl_ms_for_hours(0),
+            MIN_SESSION_HOURS * 60 * 60 * 1000
+        );
+        assert_eq!(
+            session_ttl_ms_for_hours(10_000),
+            MAX_SESSION_HOURS * 60 * 60 * 1000
+        );
+        assert_eq!(session_ttl_ms_for_hours(72), 72 * 60 * 60 * 1000);
+    }
+
+    #[test]
+    fn appearance_cookies_carry_theme_and_layout() {
+        let cookies = appearance_cookie_headers("dark", "compact");
+        assert_eq!(cookies.len(), 2);
+        assert!(cookies
+            .iter()
+            .any(|cookie| cookie.contains("apex_theme=dark")));
+        assert!(cookies
+            .iter()
+            .any(|cookie| cookie.contains("apex_table_layout=compact")));
+        // No HttpOnly: the base layout script must be able to read them.
+        assert!(cookies.iter().all(|cookie| !cookie.contains("HttpOnly")));
+    }
+
+    #[test]
+    fn appearance_cookies_skip_empty_values() {
+        assert!(appearance_cookie_headers("", "").is_empty());
     }
 }

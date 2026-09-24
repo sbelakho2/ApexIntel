@@ -33,6 +33,22 @@ const VIEWPORTS = [
   { name: 'desktop', width: 1280, height: 900 },
 ];
 
+// P0 #34: exactly five mobile bottom-bar items, in order.
+const MOBILE_TAB_LABELS = ['Home', 'Signals', 'Entities', 'Triage', 'More'];
+
+// P0 #34: routes whose bottom-bar active item is asserted explicitly.
+const EXPECTED_MOBILE_ACTIVE = {
+  '/': 'Home',
+  '/warnings': 'Signals',
+  '/insights': 'Signals',
+  '/trends': 'Signals',
+  '/companies': 'Entities',
+  '/persons': 'Entities',
+  '/competitors': 'Entities',
+  '/triage': 'Triage',
+  '/queue': 'Triage',
+};
+
 const violations = [];
 const v = (msg) => violations.push(msg);
 
@@ -142,6 +158,86 @@ try {
       // Mobile data tables must not squeeze titles to one word per line.
       if (vp.name === 'mobile' && metrics.titleNowrap && metrics.titleNowrap !== 'nowrap') {
         v(`[mobile] ${route} data-table cell white-space=${metrics.titleNowrap} (expected nowrap)`);
+      }
+
+      // ── P0 #21/#34: permanent command bar + user-menu settings entry ─────
+      const ia = await page.evaluate(() => ({
+        commandBar: !!document.querySelector('form[action="/search"] input[name="q"]'),
+        userMenuSettings: !!document.querySelector('details.apex-user-menu a[href="/settings"]')
+          || !!document.querySelector('a[href="/settings"]'),
+        userMenu: !!document.querySelector('details.apex-user-menu'),
+      }));
+      if (!ia.commandBar) v(`[${vp.name}] ${route} missing permanent command bar search entry`);
+      if (vp.name === 'desktop' && !ia.userMenuSettings) {
+        v(`[desktop] ${route} settings not reachable from the user menu`);
+      }
+
+      // ── P0 #34: 5-item mobile bottom bar contract ─────────────────────────
+      if (vp.name === 'mobile') {
+        const tabbar = await page.evaluate((expectedLabels) => {
+          const nav = document.querySelector('nav[aria-label="Mobile quick navigation"]');
+          if (!nav) return { error: 'mobile tab bar missing' };
+          const grid = nav.querySelector('div');
+          const items = grid ? Array.from(grid.children) : [];
+          const labelOf = (el) => {
+            const label = el.querySelector('.apex-mobile-tab-label');
+            return label ? label.textContent.trim() : '';
+          };
+          return {
+            count: items.length,
+            labels: items.map(labelOf),
+            heights: items.map((el) => Math.round(el.getBoundingClientRect().height)),
+            icons: items.map((el) => {
+              const svg = el.querySelector('svg');
+              return svg ? [Number(svg.getAttribute('width')), Number(svg.getAttribute('height'))] : null;
+            }),
+            current: items.map((el) => el.getAttribute('aria-current')),
+            indicators: items.map((el) => {
+              const ind = el.querySelector('.apex-tab-indicator');
+              if (!ind) return null;
+              const cs = getComputedStyle(ind);
+              return { opacity: cs.opacity, height: Number.parseFloat(cs.height), width: Number.parseFloat(cs.width) };
+            }),
+            expectedLabels,
+          };
+        }, MOBILE_TAB_LABELS);
+
+        if (tabbar.error) {
+          v(`[mobile] ${route} ${tabbar.error}`);
+        } else {
+          if (tabbar.count !== 5) v(`[mobile] ${route} bottom bar has ${tabbar.count} items (expected 5)`);
+          if (tabbar.labels.join('|') !== MOBILE_TAB_LABELS.join('|')) {
+            v(`[mobile] ${route} bottom bar labels [${tabbar.labels.join(', ')}] (expected [${MOBILE_TAB_LABELS.join(', ')}])`);
+          }
+          tabbar.heights.forEach((h, i) => {
+            if (h < 44) v(`[mobile] ${route} bottom bar item "${tabbar.labels[i]}" is ${h}px tall (<44px touch target)`);
+          });
+          tabbar.icons.forEach((size, i) => {
+            if (!size || size[0] < 20 || size[0] > 24 || size[1] < 20 || size[1] > 24) {
+              v(`[mobile] ${route} bottom bar item "${tabbar.labels[i]}" icon size ${size ? size.join('x') : 'missing'} (expected 20-24px)`);
+            }
+          });
+          const activeIndexes = tabbar.current
+            .map((value, index) => (value ? index : -1))
+            .filter((index) => index >= 0);
+          if (activeIndexes.length > 1) {
+            v(`[mobile] ${route} bottom bar has ${activeIndexes.length} active items (expected <= 1)`);
+          }
+          if (activeIndexes.length === 1) {
+            const index = activeIndexes[0];
+            const indicator = tabbar.indicators[index];
+            if (!indicator || indicator.opacity === '0' || !(indicator.height > 0) || !(indicator.width > 0)) {
+              v(`[mobile] ${route} active tab "${tabbar.labels[index]}" lacks a non-colour active indicator`);
+            }
+          }
+          const expectedActive = EXPECTED_MOBILE_ACTIVE[route];
+          if (expectedActive) {
+            const expectedIndex = tabbar.labels.indexOf(expectedActive);
+            if (!activeIndexes.includes(expectedIndex)) {
+              v(`[mobile] ${route} expected "${expectedActive}" to be the active bottom-bar item (aria-current)`);
+            }
+          }
+        }
       }
     }
     await page.close();
