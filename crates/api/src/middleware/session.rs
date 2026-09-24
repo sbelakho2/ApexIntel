@@ -33,6 +33,9 @@ const MAX_CSRF_FORM_BYTES: usize = 64 * 1024;
 pub struct WebSession {
     pub username: String,
     pub issued_at: i64,
+    /// Stable principal UUID for the authenticated user, used to key real-time
+    /// connections and to address alerts.
+    pub principal_id: Uuid,
 }
 
 pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<WebSession> {
@@ -71,9 +74,12 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
         return None;
     }
 
+    let principal_id = apex_core::alert_config::user_principal_id(&username);
+
     Some(WebSession {
         username,
         issued_at,
+        principal_id,
     })
 }
 
@@ -295,6 +301,11 @@ mod tests {
         let session = validate_session(&headers, secret).expect("session should validate");
 
         assert_eq!(session.username, "alice");
+        assert_eq!(
+            session.principal_id,
+            apex_core::alert_config::user_principal_id("alice"),
+            "session must carry the stable principal ID"
+        );
     }
 
     #[test]

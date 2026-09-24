@@ -46,6 +46,7 @@ use apex_api::routes::warnings::{
     validate_acknowledge, validate_warning_id, AcknowledgeRequest, ListWarningsQuery,
     SortDirection, WarningResponse, WarningSortField,
 };
+use apex_core::alert_config::user_principal_id;
 use apex_core::validation::clamp_ratio;
 use apex_store::postgres::{
     AdminCrawlStatus, AdminPoiCoverage, AdminRecipePerformance, ArtifactRow, CapabilityRow,
@@ -300,7 +301,10 @@ async fn build_state() -> Result<AppState> {
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let sse_manager = if !nats_url.is_empty() {
         let manager = Arc::new(apex_api::sse::SseManager::new());
-        let alert_router = Arc::new(apex_api::alert_router::AlertRouter::new(store.clone()));
+        let alert_router = Arc::new(apex_api::alert_router::AlertRouter::new(
+            store.clone(),
+            manager.principal_directory(),
+        ));
 
         // Start NATS consumer in background
         let nats_enabled = std::env::var("NATS_SSE_ENABLED")
@@ -1031,17 +1035,30 @@ async fn warnings_ws(
             .then(|| validate_session(&headers, secret))
             .flatten()
     };
-    let key_ok = matches!(key_auth, Some(Ok(_)));
-    if !key_ok && session_auth().is_none() {
+
+    // Register (and address) real-time connections by the authenticated
+    // principal — the API key owner or the session user — never by a random
+    // connection UUID, which made targeted delivery impossible.
+    let key_principal = match &key_auth {
+        Some(Ok(auth_context)) => Some((
+            user_principal_id(&auth_context.user_id),
+            auth_context.user_id.clone(),
+        )),
+        _ => None,
+    };
+    let principal = key_principal
+        .or_else(|| session_auth().map(|session| (session.principal_id, session.username)));
+
+    let Some((principal_id, username)) = principal else {
         tracing::warn!("WebSocket connection rejected: invalid token");
         return ws_unauthorized_response("Invalid token");
-    }
+    };
 
     if !validate_ws_origin(&headers) {
         return ws_unauthorized_response("Origin not allowed");
     }
 
-    ws.on_upgrade(move |socket| warnings_ws_stream(socket, state))
+    ws.on_upgrade(move |socket| warnings_ws_stream(socket, state, principal_id, username))
 }
 
 /// Real-time WebSocket handler that forwards SSE events to WebSocket clients.
@@ -1049,7 +1066,12 @@ async fn warnings_ws(
 /// Previously a stub (only ping/pong), now subscribes to the SSE event stream
 /// and forwards alerts as JSON messages. Falls back gracefully if SSE is not
 /// configured.
-async fn warnings_ws_stream(socket: axum::extract::ws::WebSocket, state: AppState) {
+async fn warnings_ws_stream(
+    socket: axum::extract::ws::WebSocket,
+    state: AppState,
+    principal_id: uuid::Uuid,
+    username: String,
+) {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
 
@@ -1057,11 +1079,11 @@ async fn warnings_ws_stream(socket: axum::extract::ws::WebSocket, state: AppStat
 
     // If SSE manager is available, subscribe to events
     if let Some(ref sse_manager) = state.sse_manager {
-        // B295: each connection registers under its own UUID. The previous
-        // nil-UUID-for-everyone scheme meant `unregister` could never cleanly
-        // remove a dropped client and cross-user routing was impossible.
-        let user_id = uuid::Uuid::new_v4();
-        let (tx, mut rx) = sse_manager.register(user_id).await;
+        // B295/B402: the connection is registered under the authenticated
+        // principal so alerts addressed to `Users([principal])` reach this
+        // socket and per-user preferences can be resolved.
+        let user_id = principal_id;
+        let (tx, mut rx) = sse_manager.register(user_id, &username).await;
         let sse_clone = sse_manager.clone();
         // Kept in the main scope so the connection is unregistered even when
         // the forward task is aborted (abort skips the task's own cleanup).
@@ -1175,7 +1197,10 @@ async fn warnings_ws_stream(socket: axum::extract::ws::WebSocket, state: AppStat
 ///
 /// Registers the authenticated user for real-time event streaming.
 /// Requires the SSE manager to be configured.
-async fn alert_sse_handler(State(state): State<AppState>) -> axum::response::Response {
+async fn alert_sse_handler(
+    State(state): State<AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+) -> axum::response::Response {
     let Some(ref sse_manager) = state.sse_manager else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -1184,11 +1209,14 @@ async fn alert_sse_handler(State(state): State<AppState>) -> axum::response::Res
             .into_response();
     };
 
-    // B295: connection-scoped identity — see `warnings_ws_stream`. The guard
+    // B402: the connection is keyed by the authenticated principal (API key
+    // owner or web-session user), not a random per-connection UUID, so alerts
+    // addressed to real users can actually reach them. The cleanup guard
     // unregisters the sender when the stream is dropped so disconnected
     // clients no longer leak subscriber slots.
-    let user_id = uuid::Uuid::new_v4();
-    let (tx, rx) = sse_manager.register(user_id).await;
+    let username = auth.user_id;
+    let user_id = user_principal_id(&username);
+    let (tx, rx) = sse_manager.register(user_id, &username).await;
 
     let stream = apex_api::sse::SseManager::build_sse_stream_with_cleanup(
         rx,

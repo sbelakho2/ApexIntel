@@ -12,6 +12,7 @@
 //! - Retention: interest-based (auto-cleanup when consumers acknowledge)
 
 use anyhow::{Context, Result};
+use apex_core::alert_config::AlertAudience;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -62,8 +63,9 @@ pub struct AlertEvent {
     pub description: String,
     pub entity_id: Option<Uuid>,
     pub entity_name: Option<String>,
-    /// Target user IDs (empty = broadcast to all).
-    pub user_ids: Vec<Uuid>,
+    /// Who this alert is addressed to. `Users(vec![])` addresses nobody and
+    /// only a deliberate `Broadcast` reaches every connected user.
+    pub audience: AlertAudience,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
@@ -229,7 +231,7 @@ mod tests {
             description: "A test warning event".to_string(),
             entity_id: Some(Uuid::new_v4()),
             entity_name: Some("Test Corp".to_string()),
-            user_ids: vec![],
+            audience: AlertAudience::Users(vec![]),
             metadata: serde_json::json!({}),
             created_at: Utc::now(),
         };
@@ -268,7 +270,7 @@ mod tests {
             description: "A new recipe match found".to_string(),
             entity_id: None,
             entity_name: None,
-            user_ids: vec![Uuid::new_v4()],
+            audience: AlertAudience::Users(vec![Uuid::new_v4()]),
             metadata: serde_json::json!({"score": 0.95}),
             created_at: Utc::now(),
         };
@@ -276,6 +278,6 @@ mod tests {
         let deserialized: AlertEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.id, event.id);
         assert_eq!(deserialized.event_type, event.event_type);
-        assert_eq!(deserialized.user_ids.len(), 1);
+        assert_eq!(deserialized.audience, event.audience);
     }
 }
