@@ -190,20 +190,19 @@ async fn probe_embeddings(pool: &sqlx::PgPool) -> CapabilityStatus {
              EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')
              AND EXISTS (
                  SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'observations' AND column_name = 'embedding'
+                 WHERE table_name = 'embeddings' AND column_name = 'embedding'
              )"#,
     )
     .fetch_one(pool)
     .await;
 
     match probe {
-        Ok(true) => CapabilityStatus::new(
-            "ok",
-            "pgvector extension and observations.embedding present",
-        ),
+        Ok(true) => {
+            CapabilityStatus::new("ok", "pgvector extension and embeddings.embedding present")
+        }
         Ok(false) => CapabilityStatus::new(
             "degraded",
-            "pgvector extension or observations.embedding column missing",
+            "pgvector extension or embeddings.embedding column missing",
         ),
         Err(error) => CapabilityStatus::new("degraded", format!("probe failed: {error}")),
     }
