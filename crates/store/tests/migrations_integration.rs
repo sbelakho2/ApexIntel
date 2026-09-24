@@ -99,6 +99,7 @@ async fn core_and_feature_tables_exist() {
         "crm_sync_state",
         "trend_rollups",
         "user_alert_subscriptions",
+        "source_runtime_state",
     ] {
         assert!(table_exists(&pool, table).await, "missing table {table}");
     }

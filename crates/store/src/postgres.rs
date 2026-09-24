@@ -247,8 +247,15 @@ mod preferences;
 mod recipes;
 mod sales;
 mod security;
+mod sources;
 pub mod trends;
 mod warnings;
+
+// Source-runtime scheduling row types and backoff policy (migration 047).
+pub use sources::{
+    failure_backoff, next_due_after_success, DueSourceRow, SourceRuntimeStateRow,
+    FAILURE_BACKOFF_LADDER,
+};
 
 // Sales-activation row types (re-exported for handlers/workers).
 pub use sales::{

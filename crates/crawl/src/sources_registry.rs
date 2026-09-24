@@ -20,6 +20,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use apex_store::postgres::{PgStore, SourceRuntimeStateRow};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tracing::warn;
 
@@ -46,6 +49,25 @@ pub enum Region {
     India,
 }
 
+impl Region {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::NorthAmerica => "north_america",
+            Self::Europe => "europe",
+            Self::MiddleEast => "middle_east",
+            Self::Israel => "israel",
+            Self::China => "china",
+            Self::AsiaPacific => "asia_pacific",
+            Self::LatinAmerica => "latin_america",
+            Self::Africa => "africa",
+            Self::EasternEurope => "eastern_europe",
+            Self::Russia => "russia",
+            Self::India => "india",
+        }
+    }
+}
+
 /// Content category.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Category {
@@ -67,6 +89,104 @@ pub enum Category {
     EnergyResources,
     HealthcareLife,
     LegalRegulatory,
+}
+
+impl Category {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::News => "news",
+            Self::Defence => "defence",
+            Self::Finance => "finance",
+            Self::Trade => "trade",
+            Self::Technology => "technology",
+            Self::Patents => "patents",
+            Self::Sanctions => "sanctions",
+            Self::GovernmentRegistry => "government_registry",
+            Self::Procurement => "procurement",
+            Self::AcademicResearch => "academic_research",
+            Self::SocialMedia => "social_media",
+            Self::Forum => "forum",
+            Self::GeopoliticsThinkTank => "geopolitics_think_tank",
+            Self::SupplyChain => "supply_chain",
+            Self::Cybersecurity => "cybersecurity",
+            Self::EnergyResources => "energy_resources",
+            Self::HealthcareLife => "healthcare_life",
+            Self::LegalRegulatory => "legal_regulatory",
+        }
+    }
+}
+
+/// Access mechanism an API-backed source requires.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiAdapter {
+    /// Stable adapter identifier, e.g. `sec_edgar` or `openalex`.
+    pub id: String,
+    /// Whether the adapter needs credentials before it can be called.
+    pub requires_credentials: bool,
+}
+
+/// Explicit fetch strategy for a registered source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FetchStrategy {
+    Rss,
+    Html,
+    JsonApi(ApiAdapter),
+    Browser,
+    Sitemap,
+    Search,
+}
+
+/// Operational capability of a source. Only [`SourceCapability::Operational`]
+/// sources are schedulable and counted in the admin source-coverage metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCapability {
+    #[default]
+    Operational,
+    RequiresCredentials,
+    Blocked,
+    TemporarilyFailed,
+    Unsupported,
+}
+
+impl SourceCapability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Operational => "operational",
+            Self::RequiresCredentials => "requires_credentials",
+            Self::Blocked => "blocked",
+            Self::TemporarilyFailed => "temporarily_failed",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    pub fn is_operational(self) -> bool {
+        matches!(self, Self::Operational)
+    }
+}
+
+/// Resolve the effective capability of a source by combining its declared
+/// capability with live runtime state: a source whose circuit breaker is
+/// currently open is `temporarily_failed` regardless of its declared state.
+pub fn effective_capability(
+    source: &Source,
+    runtime: Option<&SourceRuntimeStateRow>,
+    now: DateTime<Utc>,
+) -> SourceCapability {
+    if !source.capability.is_operational() {
+        return source.capability;
+    }
+    if let Some(row) = runtime {
+        if row
+            .circuit_open_until
+            .map(|until| until > now)
+            .unwrap_or(false)
+        {
+            return SourceCapability::TemporarilyFailed;
+        }
+    }
+    SourceCapability::Operational
 }
 
 /// A single crawlable intelligence source.
@@ -95,6 +215,13 @@ pub struct Source {
     pub enabled: bool,
     /// Minimum crawl interval in minutes (0 = unlimited).
     pub min_interval_minutes: u32,
+    /// Explicit fetch strategy; inferred from URL shape/category when absent.
+    #[serde(default)]
+    pub fetch_strategy: Option<FetchStrategy>,
+    /// Declared capability of the source. Sources that are not operational
+    /// are excluded from scheduling and from the operational source count.
+    #[serde(default)]
+    pub capability: SourceCapability,
     /// Notes on language, auth requirements, or special handling.
     pub notes: Option<String>,
 }
@@ -135,6 +262,8 @@ impl Source {
             rss_url: None,
             enabled: true,
             min_interval_minutes: 60,
+            fetch_strategy: None,
+            capability: SourceCapability::Operational,
             notes: None,
         }
     }
@@ -157,6 +286,38 @@ impl Source {
     fn notes(mut self, notes: &str) -> Self {
         self.notes = Some(notes.to_string());
         self
+    }
+
+    fn capability(mut self, capability: SourceCapability) -> Self {
+        self.capability = capability;
+        self
+    }
+
+    /// Explicit strategy when configured, otherwise inferred from the URL
+    /// shape and content category.
+    pub fn strategy(&self) -> FetchStrategy {
+        if let Some(explicit) = &self.fetch_strategy {
+            return explicit.clone();
+        }
+        if self.rss_url.is_some() {
+            return FetchStrategy::Rss;
+        }
+        if self.search_param.is_some() {
+            return FetchStrategy::Search;
+        }
+        match self.category {
+            Category::SocialMedia | Category::Forum => FetchStrategy::Browser,
+            _ => FetchStrategy::Html,
+        }
+    }
+
+    /// Host of the primary endpoint (RSS preferred), used for per-domain rate
+    /// limiting.
+    pub fn domain(&self) -> Option<String> {
+        let endpoint = self.rss_url.as_deref().unwrap_or(self.url.as_str());
+        url::Url::parse(endpoint)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
     }
 }
 
@@ -1177,7 +1338,8 @@ fn default_sources() -> Vec<Source> {
             1,
         )
         .interval(120)
-        .notes("Requires API key; free tier available"),
+        .notes("Requires API key; free tier available")
+        .capability(SourceCapability::RequiresCredentials),
     );
     sources.push(
         Source::new(
@@ -2182,7 +2344,8 @@ fn default_sources() -> Vec<Source> {
             1,
         )
         .interval(60)
-        .notes("Requires subscription; scrape summaries only"),
+        .notes("Requires subscription; scrape summaries only")
+        .capability(SourceCapability::RequiresCredentials),
     );
     sources.push(
         Source::new(
@@ -2324,7 +2487,8 @@ fn default_sources() -> Vec<Source> {
             2,
         )
         .notes("Bearer token required; search_param = 'query'")
-        .interval(10),
+        .interval(10)
+        .capability(SourceCapability::RequiresCredentials),
     );
     sources.push(
         Source::new(
@@ -2336,7 +2500,8 @@ fn default_sources() -> Vec<Source> {
             2,
         )
         .notes("OAuth2 required")
-        .interval(60),
+        .interval(60)
+        .capability(SourceCapability::RequiresCredentials),
     );
     sources.push(
         Source::new(
@@ -2740,33 +2905,333 @@ pub fn sources_needing_proxy(sources: &[Source]) -> Vec<&Source> {
         .collect()
 }
 
-pub fn select_sources_for_crawl<'a>(
-    sources: &'a [Source],
-    max_tier: u8,
-    crawl_limit: usize,
-    always_include_slugs: &[&str],
-) -> Vec<&'a Source> {
-    let enabled_sources: Vec<_> = sources
-        .iter()
-        .filter(|source| source.enabled && source.tier <= max_tier)
-        .collect();
-    let mut selected: Vec<_> = enabled_sources
-        .iter()
-        .copied()
-        .filter(|source| always_include_slugs.contains(&source.slug.as_str()))
-        .collect();
+// ─────────────────────────────────────────────────────────────────────────────
+// Stateful weighted-fair due-source scheduler (P0 #1)
+// ─────────────────────────────────────────────────────────────────────────────
 
-    for source in enabled_sources {
-        if selected.len() >= crawl_limit {
-            break;
+/// Score weights for the weighted-fair scheduler.
+pub const COVERAGE_DEBT_WEIGHT: f64 = 0.45;
+pub const TIER_PRIORITY_WEIGHT: f64 = 0.20;
+pub const SOURCE_QUALITY_WEIGHT: f64 = 0.15;
+pub const REGIONAL_COVERAGE_DEBT_WEIGHT: f64 = 0.10;
+pub const CATEGORY_COVERAGE_DEBT_WEIGHT: f64 = 0.10;
+
+/// Additive score boost for forced sources: they win contested budget slots
+/// while due, but do not receive permanent slots.
+pub const FORCED_SOURCE_BOOST: f64 = 0.50;
+
+/// Slugs that receive the forced-source score boost.
+pub const FORCED_SOURCE_SLUGS: [&str; 4] = [
+    "globes_il_tech",
+    "reddit_worldnews",
+    "reddit_geopolitics",
+    "telegram_channels",
+];
+
+/// Runtime scheduling state consumed by the scheduler. Implemented for
+/// [`PgStore`] and, in tests, by in-memory fakes.
+#[async_trait]
+pub trait SourceRuntimeStateProvider: Send + Sync {
+    async fn load_runtime_states(&self) -> anyhow::Result<Vec<SourceRuntimeStateRow>>;
+}
+
+#[async_trait]
+impl SourceRuntimeStateProvider for PgStore {
+    async fn load_runtime_states(&self) -> anyhow::Result<Vec<SourceRuntimeStateRow>> {
+        PgStore::load_source_runtime_states(self).await
+    }
+}
+
+/// One scored scheduling candidate.
+#[derive(Debug, Clone)]
+pub struct SourceScheduleCandidate<'a> {
+    pub source: &'a Source,
+    pub coverage_debt: f64,
+    pub priority: f64,
+    pub next_due_at: DateTime<Utc>,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub score: f64,
+}
+
+/// Outcome of one scheduling pass.
+#[derive(Debug, Clone)]
+pub struct SourceSelection {
+    /// Sources selected for this pass, highest score first.
+    pub selected: Vec<Source>,
+    /// Sources eligible at selection time (`next_due_at <= now` with a closed
+    /// circuit) — the full backlog for this pass.
+    pub due: usize,
+    /// Eligible sources left unscheduled after applying the budget.
+    pub coverage_debt_remaining: usize,
+}
+
+/// True when a source may be attempted at `now`.
+pub fn is_source_due(
+    source: &Source,
+    runtime: Option<&SourceRuntimeStateRow>,
+    now: DateTime<Utc>,
+) -> bool {
+    if !source.enabled || !effective_capability(source, runtime, now).is_operational() {
+        return false;
+    }
+    match runtime {
+        None => true,
+        Some(row) => {
+            if row.next_due_at > now {
+                return false;
+            }
+            !row.circuit_open_until
+                .map(|until| until > now)
+                .unwrap_or(false)
         }
-        if selected.iter().any(|existing| existing.slug == source.slug) {
+    }
+}
+
+fn interval_seconds(source: &Source) -> f64 {
+    f64::from(source.min_interval_minutes.max(1)) * 60.0
+}
+
+fn tier_priority(tier: u8) -> f64 {
+    (5.0 - f64::from(tier.min(5))) / 4.0
+}
+
+fn coverage_ratio(
+    last_success_at: Option<DateTime<Utc>>,
+    source: &Source,
+    now: DateTime<Utc>,
+) -> f64 {
+    match last_success_at {
+        Some(last_success) => {
+            let elapsed = (now - last_success).num_seconds().max(0) as f64;
+            elapsed / interval_seconds(source)
+        }
+        None => f64::INFINITY,
+    }
+}
+
+fn normalize_debt(raw: f64, scale: f64) -> f64 {
+    if raw.is_finite() {
+        (raw / scale).clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
+fn due_fraction(counts: &HashMap<&str, (usize, usize)>, key: &str) -> f64 {
+    match counts.get(key) {
+        Some((due, total)) if *total > 0 => *due as f64 / *total as f64,
+        _ => 0.0,
+    }
+}
+
+/// Score and rank eligible sources by coverage debt, tier priority, source
+/// quality, and regional/category coverage debt. Forced slugs receive an
+/// additive [`FORCED_SOURCE_BOOST`].
+pub fn rank_due_sources<'a>(
+    sources: &'a [Source],
+    states: &HashMap<&str, &SourceRuntimeStateRow>,
+    now: DateTime<Utc>,
+    forced_slugs: &[&str],
+) -> Vec<SourceScheduleCandidate<'a>> {
+    let mut region_counts: HashMap<&str, (usize, usize)> = HashMap::new();
+    let mut category_counts: HashMap<&str, (usize, usize)> = HashMap::new();
+    for source in sources {
+        if !source.enabled {
             continue;
         }
-        selected.push(source);
+        let runtime = states.get(source.slug.as_str()).copied();
+        if !effective_capability(source, runtime, now).is_operational() {
+            continue;
+        }
+        let due = is_source_due(source, runtime, now);
+        for (counts, key) in [
+            (&mut region_counts, source.region.as_str()),
+            (&mut category_counts, source.category.as_str()),
+        ] {
+            let entry = counts.entry(key).or_insert((0, 0));
+            entry.1 += 1;
+            if due {
+                entry.0 += 1;
+            }
+        }
     }
 
-    selected
+    let eligible: Vec<(&Source, Option<&SourceRuntimeStateRow>)> = sources
+        .iter()
+        .filter(|source| source.enabled)
+        .map(|source| (source, states.get(source.slug.as_str()).copied()))
+        .filter(|(source, runtime)| is_source_due(source, *runtime, now))
+        .collect();
+
+    let max_ratio = eligible
+        .iter()
+        .map(|(source, runtime)| {
+            coverage_ratio(runtime.and_then(|row| row.last_success_at), source, now)
+        })
+        .filter(|ratio| ratio.is_finite())
+        .fold(1.0_f64, f64::max);
+
+    let mut candidates: Vec<SourceScheduleCandidate<'a>> = eligible
+        .into_iter()
+        .map(|(source, runtime)| {
+            let raw_debt = coverage_ratio(runtime.and_then(|row| row.last_success_at), source, now);
+            let coverage_debt = normalize_debt(raw_debt, max_ratio);
+            let priority = tier_priority(source.tier);
+            let quality = runtime
+                .and_then(|row| row.rolling_success_rate)
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0);
+            let regional_debt = due_fraction(&region_counts, source.region.as_str());
+            let category_debt = due_fraction(&category_counts, source.category.as_str());
+            let mut score = coverage_debt * COVERAGE_DEBT_WEIGHT
+                + priority * TIER_PRIORITY_WEIGHT
+                + quality * SOURCE_QUALITY_WEIGHT
+                + regional_debt * REGIONAL_COVERAGE_DEBT_WEIGHT
+                + category_debt * CATEGORY_COVERAGE_DEBT_WEIGHT;
+            if forced_slugs.contains(&source.slug.as_str()) {
+                score += FORCED_SOURCE_BOOST;
+            }
+            SourceScheduleCandidate {
+                source,
+                coverage_debt,
+                priority,
+                next_due_at: runtime
+                    .map(|row| row.next_due_at)
+                    .unwrap_or(DateTime::<Utc>::MIN_UTC),
+                last_attempt_at: runtime.and_then(|row| row.last_attempt_at),
+                score,
+            }
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                b.coverage_debt
+                    .partial_cmp(&a.coverage_debt)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.last_attempt_at.cmp(&b.last_attempt_at))
+            .then_with(|| a.source.slug.cmp(&b.source.slug))
+    });
+    candidates
+}
+
+/// Select up to `budget` due sources using persisted runtime state.
+///
+/// Only sources with `next_due_at <= now` and a closed circuit
+/// (`circuit_open_until IS NULL OR <= now`) are eligible. Selected sources are
+/// returned owned so callers (e.g. concurrent crawl loops) do not hold
+/// registry borrows across awaits.
+pub async fn select_due_sources<S: SourceRuntimeStateProvider + ?Sized>(
+    store: &S,
+    sources: &[Source],
+    budget: usize,
+    now: DateTime<Utc>,
+) -> anyhow::Result<SourceSelection> {
+    let states = store.load_runtime_states().await?;
+    let state_by_slug: HashMap<&str, &SourceRuntimeStateRow> = states
+        .iter()
+        .map(|row| (row.source_slug.as_str(), row))
+        .collect();
+    let ranked = rank_due_sources(sources, &state_by_slug, now, &FORCED_SOURCE_SLUGS);
+    let due = ranked.len();
+    let selected = ranked
+        .iter()
+        .take(budget)
+        .map(|candidate| candidate.source.clone())
+        .collect();
+    Ok(SourceSelection {
+        selected,
+        due,
+        coverage_debt_remaining: due.saturating_sub(budget),
+    })
+}
+
+/// Count operational sources that are still due after a crawl pass.
+pub fn coverage_debt_remaining(
+    sources: &[Source],
+    states: &[SourceRuntimeStateRow],
+    now: DateTime<Utc>,
+) -> usize {
+    let state_by_slug: HashMap<&str, &SourceRuntimeStateRow> = states
+        .iter()
+        .map(|row| (row.source_slug.as_str(), row))
+        .collect();
+    sources
+        .iter()
+        .filter(|source| {
+            is_source_due(
+                source,
+                state_by_slug.get(source.slug.as_str()).copied(),
+                now,
+            )
+        })
+        .count()
+}
+
+/// Snapshot of the declared vs operational source universe for the admin
+/// source-coverage metric. Only `operational` sources count toward the
+/// product's source count.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceCoverageSummary {
+    pub declared: usize,
+    pub operational: usize,
+    pub due: usize,
+    pub healthy: usize,
+    pub degraded: usize,
+    pub disabled: usize,
+    pub never_crawled: usize,
+}
+
+/// Aggregate the registry + persisted runtime state into the admin
+/// source-coverage metric.
+pub fn source_coverage_summary(
+    sources: &[Source],
+    states: &[SourceRuntimeStateRow],
+    now: DateTime<Utc>,
+) -> SourceCoverageSummary {
+    let state_by_slug: HashMap<&str, &SourceRuntimeStateRow> = states
+        .iter()
+        .map(|row| (row.source_slug.as_str(), row))
+        .collect();
+    let mut summary = SourceCoverageSummary {
+        declared: sources.len(),
+        ..SourceCoverageSummary::default()
+    };
+    for source in sources {
+        if !source.enabled {
+            summary.disabled += 1;
+            continue;
+        }
+        let runtime = state_by_slug.get(source.slug.as_str()).copied();
+        if !effective_capability(source, runtime, now).is_operational() {
+            continue;
+        }
+        summary.operational += 1;
+        if is_source_due(source, runtime, now) {
+            summary.due += 1;
+        }
+        let degraded = runtime
+            .map(|row| {
+                row.consecutive_failures > 0
+                    || row
+                        .circuit_open_until
+                        .map(|until| until > now)
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if degraded {
+            summary.degraded += 1;
+        } else if runtime.and_then(|row| row.last_success_at).is_some() {
+            summary.healthy += 1;
+        } else {
+            summary.never_crawled += 1;
+        }
+    }
+    summary
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2872,40 +3337,6 @@ mod tests {
     }
 
     #[test]
-    fn select_sources_for_crawl_preserves_forced_sources() {
-        let sources = vec![
-            Source::new(
-                "forced",
-                "Forced",
-                "https://example.com/forced",
-                Region::Global,
-                Category::News,
-                2,
-            ),
-            Source::new(
-                "a",
-                "A",
-                "https://example.com/a",
-                Region::Global,
-                Category::News,
-                1,
-            ),
-            Source::new(
-                "b",
-                "B",
-                "https://example.com/b",
-                Region::Global,
-                Category::News,
-                1,
-            ),
-        ];
-
-        let selected = select_sources_for_crawl(&sources, 2, 1, &["forced"]);
-        assert_eq!(selected[0].slug, "forced");
-        assert_eq!(selected.len(), 1);
-    }
-
-    #[test]
     fn expanded_high_value_osint_classes_are_present() {
         let sources = all_sources();
         let expected = [
@@ -2928,5 +3359,252 @@ mod tests {
                 "missing expanded OSINT source {slug}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use chrono::Duration;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct FakeRuntimeStore {
+        rows: Mutex<HashMap<String, SourceRuntimeStateRow>>,
+    }
+
+    impl FakeRuntimeStore {
+        fn insert_row(&self, row: SourceRuntimeStateRow) {
+            self.rows
+                .lock()
+                .unwrap()
+                .insert(row.source_slug.clone(), row);
+        }
+
+        fn record_success(&self, slug: &str, now: DateTime<Utc>, min_interval_minutes: i64) {
+            let mut rows = self.rows.lock().unwrap();
+            let row = rows
+                .entry(slug.to_string())
+                .or_insert_with(|| blank_row(slug, now));
+            row.last_attempt_at = Some(now);
+            row.last_success_at = Some(now);
+            row.next_due_at = now + Duration::minutes(min_interval_minutes);
+            row.consecutive_failures = 0;
+            row.circuit_open_until = None;
+            row.updated_at = now;
+        }
+    }
+
+    #[async_trait]
+    impl SourceRuntimeStateProvider for FakeRuntimeStore {
+        async fn load_runtime_states(&self) -> anyhow::Result<Vec<SourceRuntimeStateRow>> {
+            let rows = self.rows.lock().unwrap();
+            let mut states: Vec<SourceRuntimeStateRow> = rows.values().cloned().collect();
+            states.sort_by(|a, b| a.source_slug.cmp(&b.source_slug));
+            Ok(states)
+        }
+    }
+
+    fn blank_row(slug: &str, now: DateTime<Utc>) -> SourceRuntimeStateRow {
+        SourceRuntimeStateRow {
+            source_slug: slug.to_string(),
+            last_attempt_at: None,
+            last_success_at: None,
+            next_due_at: now,
+            consecutive_failures: 0,
+            rolling_success_rate: None,
+            rolling_latency_ms: None,
+            last_http_status: None,
+            circuit_open_until: None,
+            etag: None,
+            last_modified: None,
+            last_error: None,
+            updated_at: now,
+        }
+    }
+
+    fn synthetic_source(slug: &str, region: Region, category: Category, tier: u8) -> Source {
+        Source::new(
+            slug,
+            slug,
+            "https://example.com/feed",
+            region,
+            category,
+            tier,
+        )
+    }
+
+    #[tokio::test]
+    async fn due_scheduler_covers_all_sources_without_repeating_before_full_sweep() {
+        let sources: Vec<Source> = (0..100)
+            .map(|index| {
+                synthetic_source(
+                    &format!("synthetic_{index:03}"),
+                    Region::Global,
+                    Category::News,
+                    1,
+                )
+            })
+            .collect();
+        let store = FakeRuntimeStore::default();
+        let now = Utc::now();
+        let interval_minutes = 60;
+        let mut scheduled: Vec<String> = Vec::new();
+
+        for cycle in 0..10 {
+            let selection = select_due_sources(&store, &sources, 10, now).await.unwrap();
+            assert_eq!(selection.selected.len(), 10, "cycle {cycle}");
+            assert_eq!(selection.due, 100 - cycle * 10, "cycle {cycle}");
+            assert_eq!(selection.coverage_debt_remaining, 100 - (cycle + 1) * 10);
+            for source in selection.selected {
+                let slug = source.slug.clone();
+                assert!(
+                    !scheduled.contains(&slug),
+                    "source {slug} was scheduled twice before every source was scheduled once"
+                );
+                scheduled.push(slug.clone());
+                store.record_success(&slug, now, interval_minutes);
+            }
+        }
+
+        assert_eq!(scheduled.len(), 100);
+        let unique: std::collections::HashSet<&String> = scheduled.iter().collect();
+        assert_eq!(unique.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn circuit_open_source_is_ineligible_until_it_closes() {
+        let sources = vec![
+            synthetic_source("circuit_open", Region::Global, Category::News, 1),
+            synthetic_source("healthy", Region::Global, Category::News, 1),
+        ];
+        let store = FakeRuntimeStore::default();
+        let now = Utc::now();
+        let mut open_row = blank_row("circuit_open", now);
+        open_row.next_due_at = now - Duration::minutes(1);
+        open_row.consecutive_failures = 3;
+        open_row.circuit_open_until = Some(now + Duration::hours(1));
+        open_row.last_attempt_at = Some(now - Duration::minutes(30));
+        store.insert_row(open_row);
+
+        let selection = select_due_sources(&store, &sources, 10, now).await.unwrap();
+        assert_eq!(selection.due, 1);
+        assert_eq!(selection.selected.len(), 1);
+        assert_eq!(selection.selected[0].slug, "healthy");
+
+        let after_circuit = now + Duration::hours(1) + Duration::minutes(1);
+        let selection = select_due_sources(&store, &sources, 10, after_circuit)
+            .await
+            .unwrap();
+        assert_eq!(selection.due, 2);
+        assert!(selection
+            .selected
+            .iter()
+            .any(|source| source.slug == "circuit_open"));
+    }
+
+    #[test]
+    fn forced_sources_get_a_boost_but_not_a_permanent_slot() {
+        let sources = vec![
+            synthetic_source("forced", Region::Global, Category::News, 5),
+            synthetic_source("rival", Region::Global, Category::News, 1),
+        ];
+        let now = Utc::now();
+        let mut forced_row = blank_row("forced", now);
+        forced_row.last_success_at = Some(now - Duration::hours(2));
+        forced_row.last_attempt_at = Some(now - Duration::hours(2));
+        forced_row.next_due_at = now - Duration::minutes(1);
+        let states = [forced_row];
+        let state_by_slug: HashMap<&str, &SourceRuntimeStateRow> = states
+            .iter()
+            .map(|row| (row.source_slug.as_str(), row))
+            .collect();
+
+        let unboosted = rank_due_sources(&sources, &state_by_slug, now, &[]);
+        assert_eq!(unboosted[0].source.slug, "rival");
+        let boosted = rank_due_sources(&sources, &state_by_slug, now, &["forced"]);
+        assert_eq!(boosted[0].source.slug, "forced");
+        assert!(boosted[0].score > boosted[1].score);
+    }
+
+    #[tokio::test]
+    async fn not_due_forced_source_does_not_consume_a_slot() {
+        let sources = vec![
+            synthetic_source("forced", Region::Global, Category::News, 1),
+            synthetic_source("a", Region::Global, Category::News, 2),
+            synthetic_source("b", Region::Global, Category::News, 2),
+        ];
+        let store = FakeRuntimeStore::default();
+        let now = Utc::now();
+        let mut forced_row = blank_row("forced", now);
+        forced_row.last_success_at = Some(now);
+        forced_row.last_attempt_at = Some(now);
+        forced_row.next_due_at = now + Duration::hours(1);
+        store.insert_row(forced_row);
+
+        let selection = select_due_sources(&store, &sources, 1, now).await.unwrap();
+        assert_eq!(selection.due, 2);
+        assert_eq!(selection.selected.len(), 1);
+        assert_ne!(selection.selected[0].slug, "forced");
+    }
+
+    #[test]
+    fn coverage_summary_counts_only_operational_sources() {
+        let mut requires_credentials =
+            synthetic_source("needs_credentials", Region::Global, Category::News, 2);
+        requires_credentials.capability = SourceCapability::RequiresCredentials;
+        let mut blocked = synthetic_source("blocked", Region::Global, Category::News, 2);
+        blocked.capability = SourceCapability::Blocked;
+        let mut unsupported = synthetic_source("unsupported", Region::Global, Category::News, 2);
+        unsupported.capability = SourceCapability::Unsupported;
+        let mut disabled = synthetic_source("disabled", Region::Global, Category::News, 2);
+        disabled.enabled = false;
+
+        let sources = vec![
+            requires_credentials,
+            blocked,
+            unsupported,
+            disabled,
+            synthetic_source("healthy", Region::Global, Category::News, 1),
+            synthetic_source("never_crawled", Region::Global, Category::News, 1),
+            synthetic_source("failing", Region::Global, Category::News, 1),
+        ];
+
+        let now = Utc::now();
+        let mut healthy_row = blank_row("healthy", now);
+        healthy_row.last_success_at = Some(now - Duration::minutes(30));
+        healthy_row.last_attempt_at = Some(now - Duration::minutes(30));
+        healthy_row.next_due_at = now + Duration::minutes(30);
+        let mut failing_row = blank_row("failing", now);
+        failing_row.last_success_at = Some(now - Duration::minutes(90));
+        failing_row.last_attempt_at = Some(now - Duration::minutes(10));
+        failing_row.consecutive_failures = 2;
+        failing_row.next_due_at = now - Duration::minutes(1);
+        let states = vec![healthy_row, failing_row];
+
+        let summary = source_coverage_summary(&sources, &states, now);
+        assert_eq!(summary.declared, 7);
+        assert_eq!(summary.operational, 3);
+        assert_eq!(summary.healthy, 1);
+        assert_eq!(summary.degraded, 1);
+        assert_eq!(summary.never_crawled, 1);
+        assert_eq!(summary.disabled, 1);
+        assert_eq!(summary.due, 2);
+    }
+
+    #[test]
+    fn covered_source_is_not_due_before_its_interval_elapses() {
+        let sources = vec![synthetic_source("daily", Region::Global, Category::News, 1)];
+        let now = Utc::now();
+        let mut row = blank_row("daily", now);
+        row.last_success_at = Some(now - Duration::minutes(30));
+        row.next_due_at = now + Duration::minutes(30);
+        let states = vec![row];
+
+        assert_eq!(coverage_debt_remaining(&sources, &states, now), 0);
+        let later = now + Duration::minutes(31);
+        assert_eq!(coverage_debt_remaining(&sources, &states, later), 1);
     }
 }

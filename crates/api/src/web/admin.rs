@@ -14,6 +14,7 @@ use axum::{
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_crawl::sources::{all_sources, source_coverage_summary, SourceCoverageSummary};
 use apex_store::postgres::{PgStore, WarningListFilters};
 
 // ─── Template data ──────────────────────────────────────────────────────────
@@ -139,6 +140,9 @@ pub struct AdminPage {
     pub stats: AdminStats,
     /// Real per-source ingestion stats (B316).
     pub observation_sources: Vec<SourceItem>,
+    /// Declared vs operational crawl-source coverage (P0 #25). Only
+    /// operational sources count toward the product's source count.
+    pub source_coverage: SourceCoverageSummary,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
@@ -369,6 +373,18 @@ pub async fn admin_page(
         })
         .unwrap_or_default();
 
+    let source_coverage = {
+        let registry = all_sources();
+        let runtime_states = store
+            .load_source_runtime_states()
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!("Failed to fetch source runtime state: {error}");
+                vec![]
+            });
+        source_coverage_summary(&registry, &runtime_states, chrono::Utc::now())
+    };
+
     let tpl = AdminPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
@@ -403,6 +419,7 @@ pub async fn admin_page(
             pool_size: store.pool.size(),
         },
         observation_sources,
+        source_coverage,
     };
 
     super::render_template(&tpl)

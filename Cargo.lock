@@ -84,6 +84,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "apex-core",
+ "apex-crawl",
  "apex-insights",
  "apex-investigation",
  "apex-llm",
@@ -160,6 +161,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "apex-core",
+ "apex-store",
  "async-trait",
  "chrono",
  "futures-util",
@@ -471,6 +473,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dotenvy",
+ "futures",
  "lazy_static",
  "lettre",
  "printpdf",

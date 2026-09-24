@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 apex-core = { path = "../core" }
+apex-store = { path = "../store" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
