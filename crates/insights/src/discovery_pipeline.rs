@@ -27,7 +27,7 @@
 
 use crate::company_discovery::{extract_company_mentions, CompanyCandidate, DiscoverySource};
 use crate::entity_relevance::EntityRegistry;
-use crate::entity_verifier::{EntityVerifier, VerificationResult};
+use crate::entity_verifier::{EntityVerifier, VerificationOutcome, VerificationResult};
 use chrono::{DateTime, Utc};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,10 +147,11 @@ impl DiscoveryPipeline {
     /// 1. Extract company mentions using pattern matching
     /// 2. Skip already-registered companies (by normalized name)
     /// 3. Add new candidates to pending verification
-    /// 4. Verify candidates and register verified ones
+    /// 4. Verify candidates against collected evidence; only candidates with
+    ///    an auto-register outcome are registered
     ///
     /// The `text_extractor` function extracts text from an observation's value.
-    pub fn process_observations(
+    pub async fn process_observations(
         &mut self,
         observations: &[serde_json::Value],
         source: DiscoverySource,
@@ -194,9 +195,9 @@ impl DiscoveryPipeline {
         let _pending_count = pending.len();
 
         for candidate in pending {
-            let verification = self.verifier.verify(&candidate);
+            let verification = self.verifier.verify(&candidate).await;
 
-            if verification.is_verified
+            if verification.outcome == VerificationOutcome::Verified
                 && verification.confidence >= self.config.min_verification_confidence
             {
                 // Step 5: Register verified company
@@ -204,19 +205,17 @@ impl DiscoveryPipeline {
                 newly_registered += 1;
                 registration_ids.push(entity_id);
             } else {
-                // Keep unverified candidates for later re-verification
-                // (only if confidence is above a lower threshold)
-                if verification.confidence > 0.1 {
-                    self.candidates.push(verification.candidate);
-                }
+                // Analyst review queue: keep the candidate for re-verification.
+                // No canonical company is created for a review outcome.
+                self.candidates.push(verification.candidate);
             }
         }
 
         DiscoveryResult {
             candidates_found,
             already_registered,
-            pending_verification: self.candidates.len(),
             newly_registered,
+            pending_verification: self.candidates.len(),
             registration_ids,
         }
     }
@@ -248,7 +247,7 @@ impl DiscoveryPipeline {
     /// 1. Re-verify entities due for reverification
     /// 2. Prune stale entities (90+ days inactive)
     /// 3. Emit discovery metrics
-    pub fn run_maintenance(&mut self) -> MaintenanceReport {
+    pub async fn run_maintenance(&mut self) -> MaintenanceReport {
         let ran_at = Utc::now();
 
         // Re-verify pending candidates (in a real system, this would check
@@ -265,16 +264,16 @@ impl DiscoveryPipeline {
         let mut to_register: Vec<VerifiedCandidate> = Vec::new();
 
         for candidate in pending {
-            let verification = self.verifier.verify(&candidate);
-            if verification.is_verified
+            let verification = self.verifier.verify(&candidate).await;
+            if verification.outcome == VerificationOutcome::Verified
                 && verification.confidence >= self.config.min_verification_confidence
             {
                 to_register.push(VerifiedCandidate {
                     candidate,
                     verification,
                 });
-            } else if verification.confidence > 0.1 {
-                re_verified.push(candidate);
+            } else {
+                re_verified.push(verification.candidate);
             }
         }
 
@@ -362,8 +361,8 @@ mod tests {
         assert_eq!(pipeline.registry.total_entities(), 0, "Should start empty");
     }
 
-    #[test]
-    fn test_process_observations_discovers_new_company() {
+    #[tokio::test]
+    async fn test_process_observations_discovers_new_company() {
         let config = DiscoveryConfig {
             use_seed_entities: false,
             ..Default::default()
@@ -375,16 +374,17 @@ mod tests {
             "text": "NVIDIA Corporation announced new H100 GPUs today. NASDAQ:NVDA."
         })];
 
-        let result =
-            pipeline.process_observations(&observations, DiscoverySource::NewsArticle, |v| {
+        let result = pipeline
+            .process_observations(&observations, DiscoverySource::NewsArticle, |v| {
                 v["text"].as_str().unwrap_or("").to_string()
-            });
+            })
+            .await;
 
         assert!(result.candidates_found > 0, "Should find candidates");
     }
 
-    #[test]
-    fn test_process_observations_skips_registered() {
+    #[tokio::test]
+    async fn test_process_observations_skips_registered() {
         let config = DiscoveryConfig {
             use_seed_entities: true, // NVIDIA is in seed entities
             ..Default::default()
@@ -406,10 +406,11 @@ mod tests {
             "text": "NVIDIA Corporation is doing great."
         })];
 
-        let result =
-            pipeline.process_observations(&observations, DiscoverySource::NewsArticle, |v| {
+        let result = pipeline
+            .process_observations(&observations, DiscoverySource::NewsArticle, |v| {
                 v["text"].as_str().unwrap_or("").to_string()
-            });
+            })
+            .await;
 
         // NVIDIA should be recognized as already registered
         assert!(
@@ -440,15 +441,15 @@ mod tests {
             .is_registered(&normalize_company_name("NewTestCorp Inc")));
     }
 
-    #[test]
-    fn test_maintenance_does_not_crash_empty_pipeline() {
+    #[tokio::test]
+    async fn test_maintenance_does_not_crash_empty_pipeline() {
         let config = DiscoveryConfig {
             use_seed_entities: false,
             ..Default::default()
         };
         let mut pipeline = DiscoveryPipeline::new(config);
 
-        let report = pipeline.run_maintenance();
+        let report = pipeline.run_maintenance().await;
         assert_eq!(report.pruned_count, 0);
         assert_eq!(report.total_entities, 0);
     }
@@ -469,8 +470,8 @@ mod tests {
         assert_eq!(pipeline.registry.total_entities(), 1);
     }
 
-    #[test]
-    fn test_pipeline_tracks_pending_candidates() {
+    #[tokio::test]
+    async fn test_pipeline_tracks_pending_candidates() {
         let config = DiscoveryConfig {
             use_seed_entities: false,
             min_verification_confidence: 0.99, // Very high — nothing will pass
@@ -483,13 +484,17 @@ mod tests {
             "text": "SomeUnknownStartupXYZ Inc announced funding."
         })];
 
-        let result =
-            pipeline.process_observations(&observations, DiscoverySource::NewsArticle, |v| {
+        let result = pipeline
+            .process_observations(&observations, DiscoverySource::NewsArticle, |v| {
                 v["text"].as_str().unwrap_or("").to_string()
-            });
+            })
+            .await;
 
-        // Some candidates may be pending if they didn't meet the high threshold
-        // (or they may have been discarded if confidence < 0.1)
+        // Candidates without sufficient evidence stay in the review queue.
         assert!(result.candidates_found > 0);
+        assert_eq!(
+            result.newly_registered, 0,
+            "no evidence means no canonical company"
+        );
     }
 }

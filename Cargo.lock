@@ -239,6 +239,7 @@ dependencies = [
  "apex-llm",
  "apex-poi",
  "apex-stats",
+ "async-trait",
  "chrono",
  "hex",
  "lru",

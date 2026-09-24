@@ -28,6 +28,63 @@ use chrono::{Duration, Utc};
 
 use crate::{JobKind, JobRun, PgStore};
 
+use apex_core::triage::TriageItemType;
+use apex_triage::semantic_dedup::SemanticDedup;
+use apex_triage::{TriageIngestor, TriageQueue, TriageSubmission};
+
+/// Build the triage ingress used by warning producers.
+///
+/// Warning insertion is the production triage ingress: every warning that is
+/// stored is submitted through [`TriageIngestor`] so semantic dedup can merge
+/// repeated signals (incrementing occurrence counts and accumulating evidence)
+/// instead of enqueuing duplicate triage rows.
+fn make_triage_ingestor(store: &Arc<PgStore>) -> TriageIngestor<TriageQueue> {
+    TriageIngestor::new(
+        TriageQueue::new(store.pool.clone()),
+        SemanticDedup::with_in_memory_fallback(),
+    )
+}
+
+/// Submit a freshly inserted warning to the triage ingress.
+///
+/// Ingress is best-effort: a failure to submit must never fail the job that
+/// produced the warning (the warning itself is already persisted).
+async fn submit_warning_to_triage(
+    ingestor: &TriageIngestor<TriageQueue>,
+    warning_id: uuid::Uuid,
+    title: &str,
+    description: &str,
+    severity: &str,
+    entity_id: Option<uuid::Uuid>,
+    entity_name: Option<&str>,
+) {
+    let submission = TriageSubmission {
+        item_type: TriageItemType::Warning,
+        source_id: warning_id.to_string(),
+        title: title.to_string(),
+        description: description.to_string(),
+        entity_id,
+        entity_name: entity_name.map(str::to_string),
+        static_severity: Some(severity.to_string()),
+        dimensions: None,
+        observation_ids: Vec::new(),
+        source_urls: Vec::new(),
+    };
+    match ingestor.submit(submission).await {
+        Ok(outcome) => tracing::debug!(
+            warning_id = %warning_id,
+            merged = outcome.merged(),
+            occurrence_count = outcome.item().occurrence_count,
+            "anomaly_scan: warning submitted to triage"
+        ),
+        Err(e) => tracing::warn!(
+            warning_id = %warning_id,
+            error = %e,
+            "anomaly_scan: failed to submit warning to triage"
+        ),
+    }
+}
+
 /// How far back to analyze observation trends.
 const ANALYSIS_WINDOW_DAYS: i64 = 30;
 
@@ -42,6 +99,7 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
     let mut run = JobRun::new(kind.clone());
     run.start();
     let start = Instant::now();
+    let triage_ingestor = make_triage_ingestor(store);
 
     use sqlx::Row;
 
@@ -151,9 +209,19 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                     )
                     .await
                 {
-                    Ok(_) => {
+                    Ok(warning_id) => {
                         warnings_generated += 1;
                         anomalies_detected += 1;
+                        submit_warning_to_triage(
+                            &triage_ingestor,
+                            warning_id,
+                            &title,
+                            &description,
+                            "medium",
+                            Some(*entity_id),
+                            Some(entity_name),
+                        )
+                        .await;
                         tracing::info!(
                             entity = %entity_name,
                             direction,
@@ -231,9 +299,19 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                 )
                 .await
             {
-                Ok(_) => {
+                Ok(warning_id) => {
                     warnings_generated += 1;
                     anomalies_detected += 1;
+                    submit_warning_to_triage(
+                        &triage_ingestor,
+                        warning_id,
+                        &title,
+                        &description,
+                        "medium",
+                        Some(*entity_id),
+                        Some(entity_name),
+                    )
+                    .await;
                     tracing::info!(
                         entity = %entity_name,
                         new_types = %types_str,
@@ -305,8 +383,18 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                 )
                 .await
             {
-                Ok(_) => {
+                Ok(warning_id) => {
                     warnings_generated += 1;
+                    submit_warning_to_triage(
+                        &triage_ingestor,
+                        warning_id,
+                        &title,
+                        &description,
+                        "high",
+                        None,
+                        None,
+                    )
+                    .await;
                     tracing::info!(
                         source = %sc.source_id,
                         days_silent,

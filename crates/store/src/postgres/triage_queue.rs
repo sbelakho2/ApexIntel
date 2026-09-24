@@ -52,7 +52,7 @@ impl PgStore {
             SELECT
                 q.id,
                 q.item_type,
-                q.source_id,
+                q.source_id::text,
                 q.title,
                 q.description,
                 q.entity_id,
@@ -121,7 +121,7 @@ impl PgStore {
             SELECT
                 q.id,
                 q.item_type,
-                q.source_id,
+                q.source_id::text,
                 q.title,
                 q.description,
                 q.entity_id,
@@ -168,7 +168,7 @@ impl PgStore {
             SELECT
                 q.id,
                 q.item_type,
-                q.source_id,
+                q.source_id::text,
                 q.title,
                 q.description,
                 q.entity_id,

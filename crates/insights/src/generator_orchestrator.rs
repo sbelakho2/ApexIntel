@@ -141,33 +141,41 @@ impl GeneratorOrchestrator {
     /// This is a bridge between the crawl/observation layer and the insight
     /// generation layer. Observations without a `"text"` field are silently
     /// skipped.
-    pub fn ingest_observations(
+    pub async fn ingest_observations(
         &mut self,
         observations: &[serde_json::Value],
         source: DiscoverySource,
     ) -> Option<DiscoveryResult> {
         let pipeline = self.discovery_pipeline.as_mut()?;
 
-        Some(pipeline.process_observations(observations, source, |v| {
-            v.get("text")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string()
-        }))
+        Some(
+            pipeline
+                .process_observations(observations, source, |v| {
+                    v.get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .await,
+        )
     }
 
     /// Ingest observations with a custom text extractor function.
     ///
     /// Useful when observations use a different JSON schema (e.g.,
     /// `"content"`, `"body"`, or nested fields).
-    pub fn ingest_observations_with(
+    pub async fn ingest_observations_with(
         &mut self,
         observations: &[serde_json::Value],
         source: DiscoverySource,
         text_extractor: impl Fn(&serde_json::Value) -> String,
     ) -> Option<DiscoveryResult> {
         let pipeline = self.discovery_pipeline.as_mut()?;
-        Some(pipeline.process_observations(observations, source, text_extractor))
+        Some(
+            pipeline
+                .process_observations(observations, source, text_extractor)
+                .await,
+        )
     }
 
     /// Select which entity to generate an insight for next.
@@ -542,9 +550,9 @@ mod tests {
         );
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::unwrap_used, clippy::expect_used)]
-    fn test_ingest_observations_flow_through_orchestrator() {
+    async fn test_ingest_observations_flow_through_orchestrator() {
         // Pipeline with seed entities disabled (no pre-loaded entities)
         let config = DiscoveryConfig {
             use_seed_entities: false,
@@ -562,7 +570,9 @@ mod tests {
         let observations = vec![serde_json::json!({
             "text": "Quantum Computing Inc announced breakthrough. NASDAQ:QCI."
         })];
-        let result = orch.ingest_observations(&observations, DiscoverySource::NewsArticle);
+        let result = orch
+            .ingest_observations(&observations, DiscoverySource::NewsArticle)
+            .await;
 
         // The pipeline should have processed the observation
         assert!(
