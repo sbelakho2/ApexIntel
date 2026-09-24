@@ -546,17 +546,27 @@ pub trait IngestQueue: Send + Sync {
 
     /// Insert a new row. Implementations MUST guarantee that two concurrent
     /// submissions with the same `(item_type, source_id)` result in a single
-    /// row whose `occurrence_count` reflects both submissions.
-    async fn insert_submission(&self, submission: &TriageSubmission) -> Result<IngestQueueItem>;
+    /// row whose `occurrence_count` reflects both submissions, and that the
+    /// stored severity never falls below the level implied by the resulting
+    /// occurrence count (`high_at` / `critical_at` thresholds).
+    async fn insert_submission(
+        &self,
+        submission: &TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<IngestQueueItem>;
 
     /// Merge a duplicate into `target_id`: increments `occurrence_count`,
     /// unions the observation ids / source urls, updates `last_seen_at`, and
-    /// optionally raises `static_severity`.
+    /// atomically raises `static_severity` when the post-increment occurrence
+    /// count (or the incoming severity) justifies it. Implementations MUST
+    /// compute the escalation from the updated row, not from a stale snapshot.
     async fn merge_submission(
         &self,
         target_id: Uuid,
         submission: &TriageSubmission,
-        severity: Option<&str>,
+        high_at: i64,
+        critical_at: i64,
     ) -> Result<IngestQueueItem>;
 }
 
@@ -597,18 +607,26 @@ impl<T: IngestQueue + ?Sized> IngestQueue for std::sync::Arc<T> {
         (**self).find_recent(item_type, window).await
     }
 
-    async fn insert_submission(&self, submission: &TriageSubmission) -> Result<IngestQueueItem> {
-        (**self).insert_submission(submission).await
+    async fn insert_submission(
+        &self,
+        submission: &TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
+    ) -> Result<IngestQueueItem> {
+        (**self)
+            .insert_submission(submission, high_at, critical_at)
+            .await
     }
 
     async fn merge_submission(
         &self,
         target_id: Uuid,
         submission: &TriageSubmission,
-        severity: Option<&str>,
+        high_at: i64,
+        critical_at: i64,
     ) -> Result<IngestQueueItem> {
         (**self)
-            .merge_submission(target_id, submission, severity)
+            .merge_submission(target_id, submission, high_at, critical_at)
             .await
     }
 }
@@ -844,7 +862,14 @@ impl<Q: IngestQueue> TriageIngestor<Q> {
         // deterministic id may have won the insert; the queue's conflict path
         // then merges this submission into that row, which is reported as a
         // merge (occurrence_count > 1) rather than a fresh enqueue.
-        let item = self.queue.insert_submission(&submission).await?;
+        let item = self
+            .queue
+            .insert_submission(
+                &submission,
+                self.config.escalate_high_at,
+                self.config.escalate_critical_at,
+            )
+            .await?;
         if item.occurrence_count > 1 {
             return Ok(IngestOutcome::Merged {
                 item,
@@ -866,25 +891,24 @@ impl<Q: IngestQueue> TriageIngestor<Q> {
         Ok(IngestOutcome::Enqueued(item))
     }
 
-    /// Merge a duplicate into an existing row, escalating severity when the
-    /// accumulated repeat count justifies it.
+    /// Merge a duplicate into an existing row. Severity escalation is
+    /// computed by the queue from the post-increment occurrence count, so
+    /// concurrent merges cannot leave the stored severity below the level the
+    /// final count requires.
     async fn merge(
         &self,
         existing: IngestQueueItem,
         submission: &TriageSubmission,
         reason: MergeReason,
     ) -> Result<IngestOutcome> {
-        let next_count = existing.occurrence_count + 1;
-        let severity = escalate_severity(
-            existing.static_severity.as_deref(),
-            submission.static_severity.as_deref(),
-            next_count,
-            self.config.escalate_high_at,
-            self.config.escalate_critical_at,
-        );
         let merged = self
             .queue
-            .merge_submission(existing.id, submission, severity.as_deref())
+            .merge_submission(
+                existing.id,
+                submission,
+                self.config.escalate_high_at,
+                self.config.escalate_critical_at,
+            )
             .await?;
         Ok(IngestOutcome::Merged {
             item: merged,
@@ -1233,7 +1257,7 @@ mod tests {
         fn merge_row(
             row: &mut IngestQueueItem,
             submission: &TriageSubmission,
-            severity: Option<&str>,
+            severity: Option<String>,
         ) -> IngestQueueItem {
             row.occurrence_count += 1;
             row.last_seen_at = Some(Utc::now());
@@ -1248,7 +1272,7 @@ mod tests {
                 }
             }
             if severity.is_some() {
-                row.static_severity = severity.map(|s| s.to_string());
+                row.static_severity = severity;
             }
             row.clone()
         }
@@ -1291,12 +1315,21 @@ mod tests {
         async fn insert_submission(
             &self,
             submission: &TriageSubmission,
+            high_at: i64,
+            critical_at: i64,
         ) -> Result<IngestQueueItem> {
             let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(pos) = rows.iter().position(|r| {
                 r.item_type == submission.item_type && r.source_id == submission.source_id
             }) {
-                return Ok(Self::merge_row(&mut rows[pos], submission, None));
+                let severity = escalate_severity(
+                    rows[pos].static_severity.as_deref(),
+                    submission.static_severity.as_deref(),
+                    rows[pos].occurrence_count + 1,
+                    high_at,
+                    critical_at,
+                );
+                return Ok(Self::merge_row(&mut rows[pos], submission, severity));
             }
 
             let now = Utc::now();
@@ -1323,13 +1356,21 @@ mod tests {
             &self,
             target_id: Uuid,
             submission: &TriageSubmission,
-            severity: Option<&str>,
+            high_at: i64,
+            critical_at: i64,
         ) -> Result<IngestQueueItem> {
             let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
             let pos = rows
                 .iter()
                 .position(|r| r.id == target_id)
                 .ok_or_else(|| anyhow::anyhow!("no row {target_id}"))?;
+            let severity = escalate_severity(
+                rows[pos].static_severity.as_deref(),
+                submission.static_severity.as_deref(),
+                rows[pos].occurrence_count + 1,
+                high_at,
+                critical_at,
+            );
             Ok(Self::merge_row(&mut rows[pos], submission, severity))
         }
     }

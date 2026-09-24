@@ -102,7 +102,24 @@ impl TriageQueue {
                 description       = EXCLUDED.description,
                 entity_id         = COALESCE(EXCLUDED.entity_id, triage_queue.entity_id),
                 entity_name       = COALESCE(EXCLUDED.entity_name, triage_queue.entity_name),
-                static_severity   = EXCLUDED.static_severity,
+                static_severity   = (
+                    CASE GREATEST(
+                        CASE lower(coalesce(triage_queue.static_severity, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE lower(coalesce(EXCLUDED.static_severity, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE WHEN triage_queue.occurrence_count + 1 >= $16 THEN 3
+                             WHEN triage_queue.occurrence_count + 1 >= $15 THEN 2
+                             ELSE -1 END
+                    )
+                    WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
+                    WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
+                    ELSE triage_queue.static_severity END
+                ),
+                occurrence_count  = triage_queue.occurrence_count + 1,
+                last_seen_at      = NOW(),
                 urgency           = EXCLUDED.urgency,
                 impact            = EXCLUDED.impact,
                 actionability     = EXCLUDED.actionability,
@@ -132,6 +149,8 @@ impl TriageQueue {
         .bind(confidence)
         .bind(composite)
         .bind(now)
+        .bind(crate::semantic_dedup::DEFAULT_ESCALATE_HIGH_AT)
+        .bind(crate::semantic_dedup::DEFAULT_ESCALATE_CRITICAL_AT)
         .fetch_one(&self.pool)
         .await?;
 
@@ -519,9 +538,12 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
         item_type: &TriageItemType,
         window: chrono::Duration,
     ) -> Result<Vec<crate::semantic_dedup::IngestQueueItem>> {
+        // Only active rows are merge candidates: a new signal must never be
+        // absorbed by a resolved/dismissed item and become invisible.
         let sql = format!(
             "SELECT {INGEST_SELECT_COLUMNS} FROM triage_queue \
              WHERE item_type = $1 \
+               AND status IN ('pending', 'triaged', 'acknowledged') \
                AND COALESCE(last_seen_at, created_at) >= NOW() - $2::interval \
              ORDER BY COALESCE(last_seen_at, created_at) DESC \
              LIMIT 200"
@@ -541,6 +563,8 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
     async fn insert_submission(
         &self,
         submission: &crate::semantic_dedup::TriageSubmission,
+        high_at: i64,
+        critical_at: i64,
     ) -> Result<crate::semantic_dedup::IngestQueueItem> {
         let item_type_str = submission.item_type.as_str();
         let now = Utc::now();
@@ -600,7 +624,8 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
         }
 
         // Conflict: a concurrent (or repeated) submission won the insert.
-        // Merge into it so the duplicate is counted, not dropped.
+        // Merge into it so the duplicate is counted, not dropped. The merge
+        // recomputes severity from the post-increment count.
         let existing = self
             .find_by_source_id(&submission.item_type, &submission.source_id)
             .await?
@@ -611,14 +636,7 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
                     submission.source_id
                 )
             })?;
-        let severity = crate::semantic_dedup::escalate_severity(
-            existing.static_severity.as_deref(),
-            submission.static_severity.as_deref(),
-            existing.occurrence_count + 1,
-            crate::semantic_dedup::DEFAULT_ESCALATE_HIGH_AT,
-            crate::semantic_dedup::DEFAULT_ESCALATE_CRITICAL_AT,
-        );
-        self.merge_submission(existing.id, submission, severity.as_deref())
+        self.merge_submission(existing.id, submission, high_at, critical_at)
             .await
     }
 
@@ -626,8 +644,12 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
         &self,
         target_id: Uuid,
         submission: &crate::semantic_dedup::TriageSubmission,
-        severity: Option<&str>,
+        high_at: i64,
+        critical_at: i64,
     ) -> Result<crate::semantic_dedup::IngestQueueItem> {
+        // Severity is escalated from the post-increment occurrence count in a
+        // single UPDATE, so concurrent merges cannot persist a level below the
+        // one the final count requires.
         let sql = format!(
             r#"
             UPDATE triage_queue
@@ -642,7 +664,22 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
                     SELECT COALESCE(array_agg(DISTINCT url), ARRAY[]::text[])
                     FROM unnest(triage_queue.merged_source_urls || $3::text[]) AS url
                 ),
-                static_severity = COALESCE($4, triage_queue.static_severity)
+                static_severity = (
+                    CASE GREATEST(
+                        CASE lower(coalesce(triage_queue.static_severity, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE lower(coalesce($4, ''))
+                            WHEN 'critical' THEN 3 WHEN 'high' THEN 2
+                            WHEN 'medium' THEN 1 WHEN 'low' THEN 0 ELSE -1 END,
+                        CASE WHEN triage_queue.occurrence_count + 1 >= $5 THEN 3
+                             WHEN triage_queue.occurrence_count + 1 >= $6 THEN 2
+                             ELSE -1 END
+                    )
+                    WHEN 3 THEN 'critical' WHEN 2 THEN 'high'
+                    WHEN 1 THEN 'medium' WHEN 0 THEN 'low'
+                    ELSE triage_queue.static_severity END
+                )
             WHERE id = $1
             RETURNING {INGEST_SELECT_COLUMNS}
             "#
@@ -652,7 +689,9 @@ impl crate::semantic_dedup::IngestQueue for TriageQueue {
             .bind(target_id)
             .bind(&submission.observation_ids)
             .bind(&submission.source_urls)
-            .bind(severity)
+            .bind(&submission.static_severity)
+            .bind(critical_at)
+            .bind(high_at)
             .fetch_one(&self.pool)
             .await?;
 

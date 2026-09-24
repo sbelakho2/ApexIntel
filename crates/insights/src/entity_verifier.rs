@@ -410,17 +410,10 @@ impl VerificationPolicy {
                 continue;
             }
 
-            if signal.confidence < self.min_signal_confidence {
-                if signal.verification_type.is_identity_anchor() {
-                    review_reasons.push(format!(
-                        "ambiguous registry evidence from {} ({:.2} < {:.2})",
-                        signal.source_name, signal.confidence, self.min_signal_confidence
-                    ));
-                }
-                continue;
-            }
-
-            // Explicit disagreement signal (e.g. address/region mismatch).
+            // Explicit disagreement signal (e.g. address/region mismatch) is
+            // checked before the confidence gate: a contradiction must route
+            // the candidate to review even when the provider is not confident
+            // enough for the signal to count as positive evidence.
             if signal.verification_type == VerificationType::AddressRegionAgreement {
                 let lower = matched.to_lowercase();
                 if lower.contains("mismatch")
@@ -433,6 +426,16 @@ impl VerificationPolicy {
                     ));
                     continue;
                 }
+            }
+
+            if signal.confidence < self.min_signal_confidence {
+                if signal.verification_type.is_identity_anchor() {
+                    review_reasons.push(format!(
+                        "ambiguous registry evidence from {} ({:.2} < {:.2})",
+                        signal.source_name, signal.confidence, self.min_signal_confidence
+                    ));
+                }
+                continue;
             }
 
             confidence += signal.verification_type.weight() * signal.confidence;
@@ -701,8 +704,20 @@ impl EntityVerifier {
             metadata,
         };
 
-        self.verification_cache.put(cache_key, result.clone());
+        // Only cache stable, fully-evaluated successes. Review outcomes (and
+        // anything collected while a provider was failing) must be
+        // re-evaluated on the next pass, otherwise a transient failure or new
+        // evidence can never change the verdict.
+        if is_verified && provider_failures.is_empty() {
+            self.verification_cache.put(cache_key, result.clone());
+        }
         result
+    }
+
+    /// Invalidate the cached verification for a candidate, forcing the next
+    /// call to re-collect evidence.
+    pub fn invalidate_cache(&mut self, normalized_name: &str) {
+        self.verification_cache.pop(normalized_name);
     }
 
     /// Check if a website/domain looks valid.
@@ -1295,6 +1310,124 @@ mod tests {
             .review_reasons
             .iter()
             .any(|r| r.contains("contradictory address/region")));
+    }
+
+    #[tokio::test]
+    async fn low_confidence_region_mismatch_still_blocks_verification() {
+        // The mismatch signal is below the positive-evidence confidence gate;
+        // explicit negative evidence must still route the candidate to review.
+        let signals = vec![
+            registry_signal("Acme Corp"),
+            domain_signal("Acme Corp"),
+            independent_sources_signal("news-a.example, news-b.example"),
+            EvidenceSignal::new(
+                VerificationType::AddressRegionAgreement,
+                "Region check",
+                Some("https://registry.example/acme"),
+                "mismatch: HQ region US vs registry DE",
+                0.2,
+            ),
+        ];
+        let mut verifier = static_verifier(signals);
+        let result = verifier.verify(&make_candidate("Acme Corp")).await;
+
+        assert_eq!(result.outcome, VerificationOutcome::AnalystReview);
+        assert!(result
+            .review_reasons
+            .iter()
+            .any(|r| r.contains("contradictory address/region")));
+    }
+
+    /// Provider that fails on the first call and succeeds afterwards.
+    struct FlakyProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EvidenceProvider for FlakyProvider {
+        fn name(&self) -> &str {
+            "flaky"
+        }
+
+        async fn collect(&self, _candidate: &CompanyCandidate) -> Result<Vec<EvidenceSignal>> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == 0 {
+                anyhow::bail!("transient provider outage");
+            }
+            Ok(vec![
+                registry_signal("Acme Corp"),
+                domain_signal("Acme Corp"),
+                independent_sources_signal("news-a.example, news-b.example"),
+            ])
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_failure_is_not_cached_and_recovers_on_retry() {
+        let mut verifier =
+            EntityVerifier::without_providers().with_provider(Box::new(FlakyProvider {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }));
+        let candidate = make_candidate("Acme Corp");
+
+        let first = verifier.verify(&candidate).await;
+        assert_eq!(first.outcome, VerificationOutcome::AnalystReview);
+        assert!(first
+            .review_reasons
+            .iter()
+            .any(|r| r.contains("provider unavailable")));
+
+        // A review outcome must never be cached: the retry re-collects
+        // evidence and can flip the verdict.
+        let second = verifier.verify(&candidate).await;
+        assert_eq!(second.outcome, VerificationOutcome::Verified);
+    }
+
+    #[tokio::test]
+    async fn verified_outcome_is_cached() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingProvider {
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl EvidenceProvider for CountingProvider {
+            fn name(&self) -> &str {
+                "counting"
+            }
+
+            async fn collect(&self, _candidate: &CompanyCandidate) -> Result<Vec<EvidenceSignal>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![
+                    registry_signal("Acme Corp"),
+                    domain_signal("Acme Corp"),
+                    independent_sources_signal("news-a.example, news-b.example"),
+                ])
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut verifier =
+            EntityVerifier::without_providers().with_provider(Box::new(CountingProvider {
+                calls: Arc::clone(&calls),
+            }));
+        let candidate = make_candidate("Acme Corp");
+
+        let first = verifier.verify(&candidate).await;
+        assert_eq!(first.outcome, VerificationOutcome::Verified);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Stable successes are cached: the second call must not re-collect.
+        let second = verifier.verify(&candidate).await;
+        assert_eq!(second.outcome, VerificationOutcome::Verified);
+        assert_eq!(second.evidence.len(), first.evidence.len());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "verified outcome should be served from cache"
+        );
     }
 
     #[tokio::test]

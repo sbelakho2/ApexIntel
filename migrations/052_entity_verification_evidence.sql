@@ -12,6 +12,11 @@
 --
 -- Idempotent (IF NOT EXISTS guards); safe to run against existing
 -- deployments. Does not touch any applied migration (<= 051).
+--
+-- NOTE (migration numbering): sibling branches in the P0 wave also claim
+-- 05x versions (e.g. 051/052 elsewhere). If a version collision appears at
+-- integration time, renumber this file after the highest applied version —
+-- the table/index names are the contract, not the number.
 
 CREATE TABLE IF NOT EXISTS entity_verification_evidence (
     id                BIGSERIAL PRIMARY KEY,
