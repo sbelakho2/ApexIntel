@@ -51,6 +51,7 @@ pub mod psych_store;
 pub mod cep;
 pub mod cert_expiry;
 pub mod cert_gap;
+pub mod claims;
 pub mod correlation;
 pub mod cross_entity_correlation;
 pub mod cross_entity_intelligence;

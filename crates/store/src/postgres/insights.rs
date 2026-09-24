@@ -1,5 +1,7 @@
 use super::*;
 
+use apex_core::claims::{backfill_claims, InsightClaim};
+
 fn normalize_insight_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
@@ -699,6 +701,96 @@ impl PgStore {
         .await?;
         Ok(filter_visible_insights(rows))
     }
+
+    // ── Claim-level evidence (audit P0 #23) ────────────────────────────────
+
+    /// Persist structured claims for an insight.
+    ///
+    /// Idempotent per `(insight_id, claim_text)`: re-running with the same
+    /// claims inserts nothing new. Returns the number of newly inserted rows.
+    pub async fn insert_insight_claims(
+        &self,
+        insight_id: Uuid,
+        claims: &[InsightClaim],
+    ) -> Result<usize> {
+        let mut inserted = 0usize;
+        for claim in claims {
+            let text = claim.claim.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let result = sqlx::query(
+                r#"INSERT INTO insight_claims
+                       (insight_id, claim, evidence_ids, confidence, claim_kind, claim_hash)
+                   VALUES ($1, $2, $3, $4, $5, md5($2))
+                   ON CONFLICT (insight_id, claim_hash) DO NOTHING"#,
+            )
+            .bind(insight_id)
+            .bind(text)
+            .bind(&claim.evidence_ids)
+            .bind(claim.confidence)
+            .bind(claim.kind.as_str())
+            .execute(&self.pool)
+            .await?;
+            inserted += result.rows_affected() as usize;
+        }
+        Ok(inserted)
+    }
+
+    /// Claims attached to an insight, ordered for rendering.
+    pub async fn list_insight_claims(&self, insight_id: Uuid) -> Result<Vec<InsightClaimRow>> {
+        let rows = sqlx::query_as::<_, InsightClaimRow>(
+            "SELECT id, insight_id, claim, evidence_ids, confidence, claim_kind, created_at
+             FROM insight_claims
+             WHERE insight_id = $1
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(insight_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Backfill claims for insights that have none.
+    ///
+    /// Re-uses structured claims from `insights.metadata` when they exist;
+    /// otherwise records a single `unknown` claim with no evidence ids. This
+    /// never fabricates claims or citations — see `apex_core::claims`.
+    /// Idempotent: insights that already have claims are skipped.
+    pub async fn backfill_insight_claims(&self, limit: i64) -> Result<u64> {
+        let limit = limit.clamp(1, 1000);
+        let rows = sqlx::query_as::<_, (Uuid, String, Option<serde_json::Value>)>(
+            r#"SELECT i.id, COALESCE(i.title, ''), i.metadata
+               FROM insights i
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM insight_claims c WHERE c.insight_id = i.id
+               )
+               ORDER BY i.created_at DESC NULLS LAST, i.id
+               LIMIT $1"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut inserted = 0u64;
+        for (insight_id, title, metadata) in rows {
+            let claims = backfill_claims(&title, metadata.as_ref());
+            inserted += self.insert_insight_claims(insight_id, &claims).await? as u64;
+        }
+        Ok(inserted)
+    }
+}
+
+/// A persisted claim attached to an insight.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct InsightClaimRow {
+    pub id: Uuid,
+    pub insight_id: Uuid,
+    pub claim: String,
+    pub evidence_ids: Vec<Uuid>,
+    pub confidence: Option<f64>,
+    pub claim_kind: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[cfg(test)]

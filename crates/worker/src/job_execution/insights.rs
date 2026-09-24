@@ -23,6 +23,7 @@ use crate::{JobKind, JobRun, PgStore};
 #[cfg(feature = "llm")]
 use {
     crate::{EntityContext, EvidenceSignal, InferenceLlmClient},
+    apex_core::claims::InsightClaim,
     apex_llm::inference::InferenceConfig,
     apex_poi::model::RoleFamily as PoiRoleFamily,
 };
@@ -64,6 +65,19 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
 
         // 1. Determine the lookback window
         let since = Utc::now() - Duration::hours(OBSERVATION_LOOKBACK_HOURS);
+
+        // 1b. Backfill claim-level evidence for insights that predate claim
+        // extraction. Bounded per run; never fabricates claims or citations
+        // (see `apex_core::claims::backfill_claims`).
+        match store.backfill_insight_claims(200).await {
+            Ok(inserted) if inserted > 0 => {
+                tracing::info!(inserted, "insight_generation: backfilled insight claims");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "insight_generation: claim backfill failed");
+            }
+        }
 
         // 2. Load recent observations grouped by company
         let company_observations = match load_recent_observations_by_company(store, since).await {
@@ -171,6 +185,7 @@ pub(super) async fn run_insight_generation(kind: &JobKind, store: &Arc<PgStore>)
 #[cfg(feature = "llm")]
 #[derive(Debug, Clone)]
 pub(super) struct ObservationText {
+    pub id: uuid::Uuid,
     pub text: String,
     pub url: Option<String>,
 }
@@ -183,6 +198,7 @@ async fn load_recent_observations_by_company(
 
     #[derive(FromRow)]
     struct ObsCompanyRow {
+        observation_id: uuid::Uuid,
         company_id: uuid::Uuid,
         content: String,
         url: Option<String>,
@@ -199,6 +215,7 @@ async fn load_recent_observations_by_company(
     // empty and insight generation silently skipped every run.
     let rows = sqlx::query_as::<_, ObsCompanyRow>(
         r#"SELECT DISTINCT ON (o.id)
+                   o.id AS observation_id,
                    o.entity_id AS company_id,
                    COALESCE(o.value->>'content', o.value->>'body', o.value->>'body_excerpt',
                             o.value->>'text', o.value->>'description', o.value->>'title', '') AS content,
@@ -222,6 +239,7 @@ async fn load_recent_observations_by_company(
         map.entry(row.company_id)
             .or_default()
             .push(ObservationText {
+                id: row.observation_id,
                 text: row.content,
                 url: row.url.filter(|u| u.starts_with("http")),
             });
@@ -233,6 +251,7 @@ async fn load_recent_observations_by_company(
 #[cfg(feature = "llm")]
 #[derive(Debug, Clone)]
 struct CompanyPoiRef {
+    id: uuid::Uuid,
     name: String,
     role: String,
     role_family: String,
@@ -244,6 +263,7 @@ struct CompanyPoiRef {
 async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<CompanyPoiRef> {
     let rows = sqlx::query(
         r#"SELECT
+               p.id,
                p.name,
                COALESCE(p.\"current_role\", 'Unknown') AS role,
                COALESCE(p.metadata->>'role_family', 'unknown') AS role_family,
@@ -262,6 +282,7 @@ async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<Comp
     rows.iter()
         .map(|row| {
             use sqlx::Row;
+            let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
             let name: String = row.try_get("name").unwrap_or_default();
             let role: String = row.try_get("role").unwrap_or_default();
             let role_family: String = row.try_get("role_family").unwrap_or_default();
@@ -282,6 +303,7 @@ async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<Comp
                 || role_lower.contains("manager");
 
             CompanyPoiRef {
+                id,
                 name,
                 role,
                 role_family,
@@ -385,6 +407,32 @@ fn return_type_label(family: &PoiRoleFamily) -> &'static str {
     }
 }
 
+/// Serialized shape of a generated insight, used as the `llm_cache` value so
+/// an identical request can be replayed without re-running the model.
+#[cfg(feature = "llm")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CachedInsightOutput {
+    headline: String,
+    narrative: String,
+    recommendation: String,
+    confidence: f64,
+    metadata: serde_json::Value,
+}
+
+/// Evidence reference for claim extraction: the stable row id plus its URL
+/// when one exists. Non-URL provenance (e.g. `person_record`) keeps its id but
+/// deliberately carries no fabricated link.
+#[cfg(feature = "llm")]
+fn claim_evidence_ref(
+    evidence_id: uuid::Uuid,
+    url: Option<&str>,
+) -> apex_insights::claims::ClaimEvidenceRef {
+    apex_insights::claims::ClaimEvidenceRef::new(
+        evidence_id,
+        url.filter(|u| u.starts_with("http")).map(str::to_string),
+    )
+}
+
 /// Generate a single grounded LLM insight for a company from its recent
 /// observations. Routes through the canonical `generate_llm_insight()`
 /// pipeline (shared with RecipeFire) so every insight carries real evidence
@@ -406,13 +454,19 @@ async fn generate_insights_for_company(
     let observation_texts: Vec<String> = observations.iter().map(|o| o.text.clone()).collect();
 
     // ── 1. Build the LLM client (same construction as RecipeFire) ──────────
+    // Final synthesis is the 30B tier (audit P0 #24): cheap dimensions run on
+    // the small model, cross-evidence synthesis runs here.
+    let tiered_models = apex_llm::tiering::TieredModels::from_env();
+    let model_name = tiered_models
+        .model_for(apex_llm::tiering::Workflow::FinalSynthesis)
+        .unwrap_or("Qwen3-30B-A3B-Q4_K_M")
+        .to_string();
     let llm_client = {
         let base_url =
             std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
         let api_key = std::env::var("LLM_API_KEY").ok();
-        let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "Qwen3-30B-A3B-Q4_K_M".into());
         let mut config = InferenceConfig::default();
-        config.model = model;
+        config.model = model_name.clone();
         config.max_tokens = 2048;
         config.timeout = crate::config::llm_timeout();
         InferenceLlmClient::new(base_url, api_key, config)
@@ -559,20 +613,106 @@ async fn generate_insights_for_company(
     let category = infer_best_category(&observation_texts);
 
     // ── 5. Call the real grounded LLM insight pipeline ─────────────────────
-    let (headline, narrative, recommendation, llm_confidence, insight_metadata) =
-        match crate::generate_llm_insight(&llm_client, &entity_ctx, &category, &evidence_signals)
+    // Cache key ingredients (audit P0 #24): same model, prompt version, and
+    // evidence ids must never re-run identical inference. Observation ids are
+    // stable, so unchanged evidence is served from `llm_cache`.
+    const INSIGHT_PROMPT_VERSION: &str = "insight_generation_v1";
+    let observation_ids: Vec<uuid::Uuid> = observations
+        .iter()
+        .take(MAX_EVIDENCE_SIGNALS)
+        .map(|o| o.id)
+        .collect();
+    let cache_evidence_ids: Vec<String> = observation_ids.iter().map(|id| id.to_string()).collect();
+    let cache_key = if cache_evidence_ids.is_empty() {
+        None
+    } else {
+        Some(apex_llm::cache::cache_key(
+            apex_llm::tiering::Workflow::FinalSynthesis.as_str(),
+            &model_name,
+            INSIGHT_PROMPT_VERSION,
+            &cache_evidence_ids,
+        ))
+    };
+
+    let cached_output: Option<CachedInsightOutput> = match cache_key.as_deref() {
+        Some(key) => store
+            .get_llm_cache(key)
             .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::warn!(
-                    company = %company_name,
-                    category = %category,
-                    error = %e,
-                    "insight_generation: LLM generation failed; skipping (no template fallback)"
-                );
-                return Ok(0);
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str(&raw).ok()),
+        None => None,
+    };
+
+    let (headline, narrative, recommendation, llm_confidence, insight_metadata) =
+        if let Some(cached) = cached_output {
+            tracing::debug!(
+                company = %company_name,
+                "insight_generation: cache hit — skipping identical inference"
+            );
+            (
+                cached.headline,
+                cached.narrative,
+                cached.recommendation,
+                cached.confidence,
+                cached.metadata,
+            )
+        } else {
+            let generated = match crate::generate_llm_insight(
+                &llm_client,
+                &entity_ctx,
+                &category,
+                &evidence_signals,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::warn!(
+                        company = %company_name,
+                        category = %category,
+                        error = %e,
+                        "insight_generation: LLM generation failed; skipping (no template fallback)"
+                    );
+                    return Ok(0);
+                }
+            };
+            if let Some(key) = cache_key.as_deref() {
+                let payload = CachedInsightOutput {
+                    headline: generated.0.clone(),
+                    narrative: generated.1.clone(),
+                    recommendation: generated.2.clone(),
+                    confidence: generated.3,
+                    metadata: generated.4.clone(),
+                };
+                match serde_json::to_string(&payload) {
+                    Ok(serialized) => {
+                        if let Err(e) = store
+                            .put_llm_cache(
+                                key,
+                                apex_llm::tiering::Workflow::FinalSynthesis.as_str(),
+                                &model_name,
+                                INSIGHT_PROMPT_VERSION,
+                                &observation_ids,
+                                &serialized,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                company = %company_name,
+                                error = %e,
+                                "insight_generation: failed to cache LLM output"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        company = %company_name,
+                        error = %e,
+                        "insight_generation: failed to serialize LLM output for cache"
+                    ),
+                }
             }
+            generated
         };
 
     // ── 6. Anti-hallucination grounding validation ────────────────────────
@@ -597,6 +737,49 @@ async fn generate_insights_for_company(
     // ── 7. Append buying-center-aware contact recommendations ─────────────
     let contact_block = build_buying_center_recommendation(company_name, company_pois);
     let full_recommendation = format!("{recommendation}{contact_block}");
+
+    // ── 7b. Claim-level evidence (audit P0 #23) ────────────────────────────
+    // Evidence refs mirror the order of `evidence_signals` so the numeric
+    // citation ordinals in the narrative resolve to the rows the model saw.
+    // Claims without resolvable citations are marked unknown, never assigned
+    // a fabricated evidence id.
+    let mut evidence_refs: Vec<apex_insights::claims::ClaimEvidenceRef> = observations
+        .iter()
+        .take(MAX_EVIDENCE_SIGNALS)
+        .map(|obs| claim_evidence_ref(obs.id, obs.url.as_deref()))
+        .collect();
+    evidence_refs.extend(
+        company_pois
+            .iter()
+            .filter(|p| p.is_buyer_relevant)
+            .take(4)
+            .map(|poi| claim_evidence_ref(poi.id, None)),
+    );
+    debug_assert_eq!(evidence_refs.len(), evidence_signals.len());
+
+    let mut claims = apex_insights::claims::extract_claims(
+        &narrative,
+        &recommendation,
+        &evidence_refs,
+        llm_confidence,
+        None,
+    );
+    if claims.is_empty() {
+        // No claim could be extracted from the generated text: record an
+        // unknown claim rather than leaving the insight without provenance.
+        claims.push(InsightClaim::unknown(headline.clone()));
+    }
+    let mut insight_metadata = insight_metadata;
+    if let Some(object) = insight_metadata.as_object_mut() {
+        object.insert(
+            "claims".to_string(),
+            apex_insights::claims::claims_to_metadata(&claims),
+        );
+        object.insert(
+            "evidence_refs".to_string(),
+            apex_insights::claims::evidence_refs_to_metadata(&evidence_refs),
+        );
+    }
 
     // ── 8. Assemble + store via insert_insight (has built-in dedup) ────────
     let summary = format!("{narrative}\n\n{full_recommendation}");
@@ -633,6 +816,15 @@ async fn generate_insights_for_company(
         .await
     {
         Ok(insight_id) => {
+            // Persist claim-level evidence so the detail page can cite each
+            // claim back to its source rows.
+            if let Err(e) = store.insert_insight_claims(insight_id, &claims).await {
+                tracing::warn!(
+                    insight_id = %insight_id,
+                    error = %e,
+                    "insight_generation: failed to persist claim-level evidence"
+                );
+            }
             // Link insight → company and insight → relevant POIs.
             if let Err(e) = store
                 .link_insight_to_entity(insight_id, company_id, "company")

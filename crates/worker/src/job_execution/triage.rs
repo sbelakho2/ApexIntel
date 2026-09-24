@@ -85,6 +85,10 @@ pub(crate) async fn run_triage_processing(_kind: &JobKind, store: &Arc<PgStore>)
 }
 
 /// Build a lightweight LLM client for triage scoring.
+///
+/// Triage dimension scoring is a small-model task (audit P0 #24). The model is
+/// resolved by tier (`LLM_SMALL_MODEL`, defaulting to the small local model),
+/// not by `LLM_MODEL`, so triage never silently runs on the 30B tier.
 #[cfg(feature = "llm")]
 fn build_triage_llm_client() -> Box<dyn apex_llm::LlmClient> {
     let mut llm_config = apex_llm::ModelConfig::llamacpp_lightweight();
@@ -93,10 +97,9 @@ fn build_triage_llm_client() -> Box<dyn apex_llm::LlmClient> {
     if let Ok(base_url) = std::env::var("LLM_BASE_URL") {
         llm_config.base_url = base_url;
     }
-    if let Ok(model) = std::env::var("LLM_MODEL") {
-        if !model.trim().is_empty() {
-            llm_config.model_name = model;
-        }
+    let tiered = apex_llm::tiering::TieredModels::from_env();
+    if let Some(model) = tiered.model_for(apex_llm::tiering::Workflow::TriageDimensions) {
+        llm_config.model_name = model.to_string();
     }
     llm_config.api_key = std::env::var("LLM_API_KEY")
         .ok()

@@ -94,6 +94,33 @@ pub struct InsightEvidence {
     pub relevance: i64,
 }
 
+/// Inline citation chip on a claim, resolving to a numbered source.
+#[derive(Clone, Debug)]
+pub struct InsightCitation {
+    pub index: usize,
+    pub url: String,
+}
+
+/// One rendered claim with its kind label and resolvable citations.
+#[derive(Clone, Debug)]
+pub struct InsightClaimView {
+    pub claim: String,
+    pub kind: String,
+    pub kind_label: String,
+    pub kind_css: String,
+    pub confidence_pct: Option<i64>,
+    pub citations: Vec<InsightCitation>,
+}
+
+fn claim_kind_css(kind: &str) -> &'static str {
+    match kind {
+        "observed" => "bg-rams-green/10 text-rams-green border-rams-green/40",
+        "inference" => "bg-rams-orange/10 text-rams-orange border-rams-orange/40",
+        "recommendation" => "bg-primary/10 text-primary border-primary/40",
+        _ => "bg-rams-panel text-rams-muted border-rams-line",
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct InsightEntity {
     pub kind: String,
@@ -367,6 +394,8 @@ pub struct InsightDetailPage {
     pub evidence: Vec<InsightEvidence>,
     pub evidence_count: usize,
     pub source_diversity: String,
+    pub claims: Vec<InsightClaimView>,
+    pub claims_degraded: bool,
     pub entities: Vec<InsightEntity>,
     pub annotations: Vec<InsightNoteItem>,
     pub ai_analysis: Option<String>,
@@ -689,6 +718,18 @@ pub async fn list_insights(
         all_insights.retain(|i| i.confidence < 0.4);
     }
 
+    // Explicit confidence floor (`?min_confidence=0.7`), as used by the
+    // dashboard's "new high-confidence signals" count link. Accepts either a
+    // 0–1 fraction or a 0–100 percentage.
+    if let Some(min_confidence) = params.min_confidence {
+        let floor = if min_confidence > 1.0 {
+            min_confidence / 100.0
+        } else {
+            min_confidence
+        };
+        all_insights.retain(|i| i.confidence >= floor);
+    }
+
     // Apply user's explicit sort preference (overrides diversification order).
     match sort_field.as_str() {
         "created_at" => {
@@ -947,12 +988,36 @@ pub async fn get_insight(
         }
     };
 
-    // Build evidence from evidence_urls
+    // Build evidence from persisted evidence refs when available: those carry
+    // the evidence row ids that claims cite. Fall back to legacy evidence_urls.
     let base_confidence_pct = confidence_to_pct(insight.confidence.unwrap_or(0.0));
-    let evidence: Vec<InsightEvidence> = insight
-        .evidence_urls
-        .as_deref()
-        .unwrap_or(&[])
+    let persisted_refs: Vec<(Uuid, String)> = insight
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("evidence_refs"))
+        .and_then(|value| value.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok())?;
+                    let url = entry.get("url").and_then(|v| v.as_str())?.to_string();
+                    Some((id, url))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let evidence_source_urls: Vec<String> = if persisted_refs.is_empty() {
+        insight.evidence_urls.clone().unwrap_or_default()
+    } else {
+        persisted_refs.iter().map(|(_, url)| url.clone()).collect()
+    };
+
+    let evidence: Vec<InsightEvidence> = evidence_source_urls
         .iter()
         .enumerate()
         .map(|(idx, url)| {
@@ -966,6 +1031,46 @@ pub async fn get_insight(
             }
         })
         .collect();
+
+    // Claim-level evidence (audit P0 #23). A failed claim query renders a
+    // degraded marker instead of silently showing the insight without claims.
+    let (claims, claims_degraded): (Vec<InsightClaimView>, bool) =
+        match store.list_insight_claims(insight.id).await {
+            Ok(rows) => {
+                let views = rows
+                    .iter()
+                    .map(|row| {
+                        let kind = apex_core::claims::ClaimKind::from_db(&row.claim_kind);
+                        let citations = row
+                            .evidence_ids
+                            .iter()
+                            .filter_map(|evidence_id| {
+                                persisted_refs
+                                    .iter()
+                                    .position(|(id, _)| id == evidence_id)
+                                    .map(|position| InsightCitation {
+                                        index: position + 1,
+                                        url: persisted_refs[position].1.clone(),
+                                    })
+                            })
+                            .collect();
+                        InsightClaimView {
+                            claim: row.claim.clone(),
+                            kind: kind.as_str().to_string(),
+                            kind_label: kind.label().to_string(),
+                            kind_css: claim_kind_css(kind.as_str()).to_string(),
+                            confidence_pct: row.confidence.map(|c| (c * 100.0).round() as i64),
+                            citations,
+                        }
+                    })
+                    .collect();
+                (views, false)
+            }
+            Err(e) => {
+                tracing::warn!(insight_id = %id, error = %e, "failed to load insight claims");
+                (Vec::new(), true)
+            }
+        };
 
     let raw_type = insight.insight_type.clone().unwrap_or_default();
     let conf = insight.confidence.unwrap_or(0.0);
@@ -1012,6 +1117,8 @@ pub async fn get_insight(
         evidence_count: evidence.len(),
         source_diversity: diversity.to_string(),
         evidence,
+        claims,
+        claims_degraded,
         entities: vec![],
         annotations: store
             .list_annotations(&session.username, Some("insight"), Some(&id))
@@ -1362,4 +1469,105 @@ pub async fn export_insight_pdf_html(
         axum::body::Body::from(pdf_bytes),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system_status::StatusStrip;
+
+    fn claim(kind: &str, label: &str, citations: Vec<InsightCitation>) -> InsightClaimView {
+        InsightClaimView {
+            claim: format!("{label} statement"),
+            kind: kind.to_string(),
+            kind_label: label.to_string(),
+            kind_css: String::new(),
+            confidence_pct: Some(80),
+            citations,
+        }
+    }
+
+    fn detail_page(claims: Vec<InsightClaimView>, claims_degraded: bool) -> InsightDetailPage {
+        InsightDetailPage {
+            current_path: "/insights/i-1".into(),
+            can_admin: false,
+            username: "analyst".into(),
+            warning_count: 0,
+            theme: String::new(),
+            status_strip: StatusStrip::unknown(),
+            id: "i-1".into(),
+            title: "Test insight".into(),
+            category: "demand_signal".into(),
+            category_label: "Demand Signal".into(),
+            category_css: String::new(),
+            confidence: 80,
+            impact_tier: "Critical".into(),
+            impact_css: String::new(),
+            summary: "Summary".into(),
+            body: "Body".into(),
+            company_name: String::new(),
+            company_id: String::new(),
+            region: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            age_label: String::new(),
+            bookmarked: false,
+            tags: vec![],
+            evidence: vec![InsightEvidence {
+                index: 1,
+                source: "x.test".into(),
+                url: "https://x.test/a".into(),
+                snippet: "Source [1]".into(),
+                relevance: 80,
+            }],
+            evidence_count: 1,
+            source_diversity: "Single".into(),
+            claims,
+            claims_degraded,
+            entities: vec![],
+            annotations: vec![],
+            ai_analysis: None,
+            information_gain_bits: None,
+            quality_score_pct: None,
+            dissenting_opinions: vec![],
+        }
+    }
+
+    #[test]
+    fn insight_detail_distinguishes_claim_kinds_and_links_citations() {
+        let page = detail_page(
+            vec![
+                claim(
+                    "observed",
+                    "Observed fact",
+                    vec![InsightCitation {
+                        index: 1,
+                        url: "https://x.test/a".into(),
+                    }],
+                ),
+                claim("inference", "System inference", vec![]),
+                claim("recommendation", "Recommendation", vec![]),
+                claim("unknown", "Evidence unknown", vec![]),
+            ],
+            false,
+        );
+        let html = page.render().expect("insight detail renders");
+
+        assert!(html.contains("Observed fact"));
+        assert!(html.contains("System inference"));
+        assert!(html.contains("Recommendation"));
+        assert!(html.contains("Evidence unknown"));
+        assert!(html.contains("href=\"#source-1\""));
+        assert!(html.contains("id=\"source-1\""));
+        assert!(html.contains("No recorded evidence for this claim"));
+    }
+
+    #[test]
+    fn insight_detail_renders_degraded_claim_notice_on_claim_failure() {
+        let page = detail_page(vec![], true);
+        let html = page.render().expect("insight detail renders");
+
+        assert!(html.contains("Claim-level evidence unavailable"));
+        assert!(html.contains("data-degraded=\"true\""));
+    }
 }

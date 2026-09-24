@@ -132,6 +132,46 @@
     </div>
   </div>
 
+  {% if claims_degraded %}
+  <div class="apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">
+    Claim-level evidence unavailable — the claim query failed. Treat this insight's claims as unverified.
+  </div>
+  {% endif %}
+
+  {% if !claims.is_empty() %}
+  <div class="apex-module">
+    <div class="apex-module-header flex flex-wrap items-center justify-between gap-2">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Claims &amp; Evidence</h2>
+      <div class="flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.09em]">
+        <span class="rounded-rams-sm border border-rams-green/40 bg-rams-green/10 px-1.5 py-0.5 text-rams-green">Observed fact</span>
+        <span class="rounded-rams-sm border border-rams-orange/40 bg-rams-orange/10 px-1.5 py-0.5 text-rams-orange">System inference</span>
+        <span class="rounded-rams-sm border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-primary">Recommendation</span>
+        <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 text-rams-muted">Evidence unknown</span>
+      </div>
+    </div>
+    <div class="divide-y divide-rams-line">
+      {% for c in claims %}
+      <div class="px-4 py-3">
+        <div class="flex items-center gap-2">
+          <span class="rounded-rams-sm border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.09em] {{ c.kind_css }}">{{ c.kind_label }}</span>
+          {% if let Some(conf) = c.confidence_pct %}
+          <span class="ml-auto text-[10px] font-bold tabular-nums text-rams-muted">{{ conf }}% conf</span>
+          {% endif %}
+        </div>
+        <p class="mt-1.5 text-sm leading-relaxed">{{ c.claim }}
+          {%- for cit in c.citations %}
+          <a href="#source-{{ cit.index }}" class="ml-0.5 align-super text-[10px] font-bold text-primary hover:underline" title="Evidence source {{ cit.index }}">[{{ cit.index }}]</a>
+          {%- endfor %}
+        </p>
+        {% if c.citations.is_empty() && c.kind == "unknown" %}
+        <p class="mt-1 text-[10px] text-rams-muted">No recorded evidence for this claim — treat as unresolved.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if !evidence.is_empty() %}
   <div class="apex-module">
     <div class="apex-module-header">
@@ -139,7 +179,7 @@
     </div>
     <div class="divide-y divide-rams-line">
       {% for e in evidence %}
-      <div class="px-4 py-3">
+      <div id="source-{{ e.index }}" class="scroll-mt-24 px-4 py-3">
         <p class="text-sm font-semibold"><a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="hover:underline focus-visible:underline">{{ e.snippet }} · {{ e.source }}</a></p>
         <code class="mt-1 block break-all text-[10px] text-rams-muted">{{ e.url }}</code>
         <p class="mt-1 text-[10px] text-rams-muted">Relevance: {{ e.relevance }}%</p>

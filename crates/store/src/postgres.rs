@@ -240,6 +240,8 @@ mod heartbeats;
 pub use heartbeats::ServiceHeartbeatRow;
 mod history;
 mod insights;
+pub use insights::InsightClaimRow;
+mod llm_cache;
 mod llm_governance;
 mod logistics;
 mod memos;

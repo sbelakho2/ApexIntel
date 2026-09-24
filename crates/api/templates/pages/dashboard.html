@@ -8,11 +8,159 @@
 
 {% block content %}
 <div class="space-y-6">
-  {% call m::page_header("Overview", "bar-chart-3", "Real-time intelligence dashboard — warnings, insights, coverage, and system health.", "") %}
+  {% call m::page_header("Decisions", "target", "What changed, what needs action, what is newly actionable, and what is stale.", "") %}
 
   {% if let Some(notice) = degraded_notice %}
   <div class="apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
   {% endif %}
+
+  {# ═══ 1. What changed since last look ═══ #}
+  <section aria-labelledby="changes-heading">
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+      <h2 id="changes-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">What Changed Since Last Look</h2>
+      <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Rolling 24h window</span>
+    </div>
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4" data-section="changes">
+      {% for change in changes_since %}
+      <a href="{{ change.href }}" class="apex-stat block transition-colors hover:bg-rams-panel focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+        <div class="apex-stat-rail apex-stat-rail-steel"></div>
+        <p class="apex-stat-label">{{ change.label }}</p>
+        <p class="apex-stat-value mt-1.5 tabular-nums">{{ change.count }}</p>
+        <p class="mt-1 text-[11px] leading-snug text-rams-muted">{{ change.detail }}</p>
+        <span class="mt-2 inline-block text-[10px] font-black uppercase tracking-[0.1em] text-primary">View →</span>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ═══ 2. What requires action: priority queue ═══ #}
+  <section aria-labelledby="priority-heading">
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+      <h2 id="priority-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">What Requires Action</h2>
+      <a href="/triage" class="text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">Open triage queue →</a>
+    </div>
+    <div class="apex-module" data-section="priority-queue">
+      <div class="divide-y divide-rams-line">
+        {% for p in priority_queue %}
+        <div id="priority-row-{{ p.id }}" class="flex flex-col gap-2 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              {% call m::severity_badge(p.severity) %}
+              <a href="{{ p.investigate_url }}" class="min-w-0 text-sm font-semibold text-rams-foreground hover:underline focus-visible:underline">{{ p.title }}</a>
+              {% if let Some(conf) = p.confidence_pct %}
+              <span class="text-[10px] font-bold tabular-nums text-rams-muted">{{ conf }}% conf</span>
+              {% endif %}
+            </div>
+            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-rams-muted">
+              {% if !p.entity_href.is_empty() %}
+              <a href="{{ p.entity_href }}" class="hover:text-rams-foreground hover:underline">{{ p.entity_name }}</a>
+              {% else %}
+              <span>{{ p.entity_name }}</span>
+              {% endif %}
+              <span>{{ p.reason }}</span>
+              <span class="tabular-nums">{{ p.age_label }}</span>
+              <span>Analyst: {{ p.assigned_analyst }}</span>
+              <span class="uppercase tracking-[0.08em]">{{ p.kind }}</span>
+            </div>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            {% if p.can_acknowledge %}
+            <button hx-post="{{ p.acknowledge_url }}"
+                    hx-target="#priority-row-{{ p.id }}"
+                    hx-swap="outerHTML"
+                    class="apex-btn apex-btn-secondary"
+                    aria-label="Acknowledge {{ p.title }}">Acknowledge</button>
+            {% endif %}
+            <a href="{{ p.investigate_url }}" class="apex-btn apex-btn-primary">Investigate</a>
+          </div>
+        </div>
+        {% endfor %}
+        {% if priority_queue.is_empty() && degraded_notice.is_none() %}
+        <div class="px-4 py-8 text-center">
+          <p class="text-sm font-semibold text-rams-foreground">Nothing requires action</p>
+          <p class="mt-1 text-[11px] text-rams-muted">No unacknowledged critical/high warnings and no new high-confidence signals in this window.</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  {# ═══ 3. Newly actionable opportunities ═══ #}
+  <section aria-labelledby="opportunities-heading">
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+      <h2 id="opportunities-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">Newly Actionable Opportunities</h2>
+      <a href="/insights" class="text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">All insights →</a>
+    </div>
+    <div class="grid grid-cols-1 gap-4 xl:grid-cols-2" data-section="opportunities">
+      {% for o in opportunities %}
+      <article class="apex-card flex flex-col gap-3 p-4">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <a href="/companies/{{ o.company_id }}" class="text-sm font-black text-rams-foreground hover:underline focus-visible:underline">{{ o.company_name }}</a>
+            <p class="mt-0.5 text-[10px] uppercase tracking-[0.1em] text-rams-muted">
+              {% if !o.region.is_empty() %}{{ o.region }}{% endif %}
+              {% if !o.domain.is_empty() %} · {{ o.domain }}{% endif %}
+            </p>
+          </div>
+          <span class="shrink-0 rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-rams-foreground">{{ o.confidence_pct }}% conf</span>
+        </div>
+        <div>
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Why now</p>
+          <p class="mt-1 text-sm font-semibold leading-snug text-rams-foreground">{{ o.why_now }}</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-rams-muted">
+          <span>{{ o.evidence_count }} source{% if o.evidence_count != 1 %}s{% endif %}</span>
+          <span>Buyer: {{ o.buyer_name }}{% if !o.buyer_role.is_empty() %} · {{ o.buyer_role }}{% endif %}</span>
+        </div>
+        <div class="rounded-rams-sm border border-rams-line bg-rams-panel p-3">
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Recommended next move</p>
+          <p class="mt-1 text-[12px] leading-relaxed text-rams-foreground">{{ o.next_move }}</p>
+        </div>
+        <a href="{{ o.href }}" class="mt-auto text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">Open insight & evidence →</a>
+      </article>
+      {% endfor %}
+      {% if opportunities.is_empty() && degraded_notice.is_none() %}
+      <div class="apex-card px-4 py-8 text-center xl:col-span-2">
+        <p class="text-sm font-semibold text-rams-foreground">No newly actionable opportunities</p>
+        <p class="mt-1 text-[11px] text-rams-muted">Account cards appear when a company gets a grounded insight at 60%+ confidence within 30 days.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ═══ 4. What is stale or broken ═══ #}
+  <section aria-labelledby="health-heading">
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+      <h2 id="health-heading" class="text-sm font-black uppercase tracking-[0.12em] text-rams-foreground">What Is Stale Or Broken</h2>
+      <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">Measured, not inferred</span>
+    </div>
+    <div class="apex-module" data-section="health">
+      <div class="divide-y divide-rams-line">
+        {% for h in health_items %}
+        <div class="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="rounded-rams-sm border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.09em]
+                {%- if h.state == "ok" %} border-rams-green/40 bg-rams-green/10 text-rams-green
+                {%- else if h.state == "warn" %} border-rams-orange/40 bg-rams-orange/10 text-rams-orange
+                {%- else %} border-rams-red/40 bg-rams-red/10 text-rams-red{% endif %}">{{ h.state_label }}</span>
+              <span class="text-sm font-semibold text-rams-foreground">{{ h.label }}</span>
+            </div>
+            <p class="mt-1 text-[11px] text-rams-muted">{{ h.detail }}</p>
+          </div>
+          {% if !h.href.is_empty() && (can_admin || h.href != "/admin") %}
+          <a href="{{ h.href }}" class="shrink-0 text-[10px] font-black uppercase tracking-[0.1em] text-primary hover:underline">Inspect →</a>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  {# ═══ Portfolio overview: vanity and volume metrics (below decisions) ═══ #}
+  <div class="border-t border-rams-line pt-6">
+    <p class="mb-3 text-[10px] font-black uppercase tracking-[0.14em] text-rams-muted">Portfolio Overview</p>
+  </div>
 
   {# ── KPI stat cards (apex-stat with top accent rail) ── #}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
