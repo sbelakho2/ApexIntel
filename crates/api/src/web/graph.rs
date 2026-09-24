@@ -639,7 +639,7 @@ pub async fn graph_page(
                     .as_ref()
                     .map(|ids| ids.len() as i64)
                     .unwrap_or(0),
-                source_label: edge_source_label(er.metadata.as_ref()),
+                source_label: crate::routes::graph::edge_source_name(er.metadata.as_ref()),
             }
         })
         .collect();
@@ -855,16 +855,11 @@ pub async fn graph_page(
             "type": e.edge_type,
             "edge_type": e.edge_type,
             "weight": 1.0,
-            "relationship": normalize_edge_type(&e.edge_type).replace('_', " "),
             "confidence": e.confidence,
             "first_seen": e.first_seen,
-            "firstSeen": e.first_seen,
             "last_confirmed": e.last_confirmed,
-            "lastConfirmed": e.last_confirmed,
             "evidence_count": e.evidence_count,
-            "evidenceCount": e.evidence_count,
             "source_name": e.source_label,
-            "source_label": e.source_label,
         })).collect::<Vec<_>>(),
         "catalog": nodes.iter().map(|node| serde_json::json!({
             "id": node.id,
@@ -936,28 +931,6 @@ fn synthetic_edge(source: String, target: String, edge_type: &str) -> GraphEdge 
         evidence_count: 1,
         source_label: Some("catalog".to_string()),
     }
-}
-
-/// Best-effort provenance label for a stored edge. `graph_edges.metadata` is
-/// JSONB, so different producers store different keys.
-fn edge_source_label(metadata: Option<&serde_json::Value>) -> Option<String> {
-    let metadata = metadata?;
-    for key in [
-        "source_name",
-        "source",
-        "source_url",
-        "provenance",
-        "origin",
-    ] {
-        if let Some(value) = metadata.get(key) {
-            if let Some(text) = value.as_str() {
-                if !text.trim().is_empty() {
-                    return Some(text.trim().to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 /// `YYYY-MM-DD` for compact display of RFC3339 timestamps.

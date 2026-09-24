@@ -46,7 +46,6 @@
 
   var state = {
     open: false,
-    query: "",
     results: [],
     activeIndex: -1,
     loading: false,
@@ -291,7 +290,6 @@
   }
 
   function refresh(query) {
-    state.query = query;
     state.token += 1;
     var token = state.token;
 
@@ -430,7 +428,8 @@
     if (action === "investigate") {
       return postJson("/api/workspaces", {
         name: "Investigation — " + item.label,
-        workspace_type: "investigation",
+        workspace_type: "structured",
+        visibility: "team",
         tags: ["command-palette"],
         entity_focus: [{ type: item.type, id: item.id, label: item.label }],
       }).then(function () {
@@ -625,6 +624,7 @@
     document.body.classList.add("overflow-hidden");
     setTriggersExpanded(true);
     refresh("");
+    loadEntityIndex();
     if (dom.input) {
       dom.input.value = "";
       dom.input.focus();
@@ -684,7 +684,8 @@
 
   function trapTab(event) {
     if (event.key !== "Tab" || !dom.dialog) return;
-    var focusables = Array.from(dom.dialog.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter(function (element) {
+    var focusables = Array.from(dom.dialog.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]')).filter(function (element) {
+      if (element.tabIndex < 0) return false;
       return element.offsetParent !== null || element === document.activeElement;
     });
     if (!focusables.length) return;
@@ -762,8 +763,6 @@
         }
       }
     });
-
-    loadEntityIndex();
   }
 
   if (document.readyState === "loading") {

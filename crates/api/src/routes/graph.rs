@@ -110,6 +110,28 @@ pub struct GraphEdge {
     pub source_name: Option<String>,
 }
 
+/// Best-effort provenance label for a stored edge. `graph_edges.metadata` is
+/// JSONB, so different producers store different keys. Shared by the /graph
+/// page, /api/graph and the neighborhood endpoint so the same edge always
+/// reports the same source.
+pub fn edge_source_name(metadata: Option<&serde_json::Value>) -> Option<String> {
+    let metadata = metadata?;
+    for key in [
+        "source_name",
+        "source",
+        "source_url",
+        "provenance",
+        "origin",
+    ] {
+        if let Some(text) = metadata.get(key).and_then(|value| value.as_str()) {
+            if !text.trim().is_empty() {
+                return Some(text.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Shortest path response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathResponse {

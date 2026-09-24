@@ -1414,9 +1414,6 @@
   .apex-toolbar {
     @apply flex flex-wrap items-center gap-2 rounded-rams-md border border-rams-line bg-rams-module px-3 py-2;
   }
-  .apex-toolbar-group {
-    @apply flex flex-wrap items-center gap-2;
-  }
   .apex-toolbar-label {
     @apply text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted whitespace-nowrap;
   }
@@ -1659,17 +1656,13 @@
   .apex-badge-info { --badge-color: var(--state-info); }
   .apex-badge-neutral { --badge-color: var(--state-neutral); }
   .apex-badge-success { --badge-color: var(--state-success); }
-  .apex-badge-warning { --badge-color: var(--state-warning); }
-  .apex-badge-error { --badge-color: var(--state-critical); }
   .apex-badge-critical,
   .apex-badge-high,
   .apex-badge-medium,
   .apex-badge-low,
   .apex-badge-info,
   .apex-badge-neutral,
-  .apex-badge-success,
-  .apex-badge-warning,
-  .apex-badge-error {
+  .apex-badge-success {
     border-color: color-mix(in srgb, var(--badge-color) 45%, transparent);
     color: var(--badge-color);
   }
@@ -1679,9 +1672,7 @@
   .apex-badge-low::before,
   .apex-badge-info::before,
   .apex-badge-neutral::before,
-  .apex-badge-success::before,
-  .apex-badge-warning::before,
-  .apex-badge-error::before {
+  .apex-badge-success::before {
     background: var(--badge-color);
   }
 

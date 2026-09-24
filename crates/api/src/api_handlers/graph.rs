@@ -6,8 +6,8 @@ use axum::extract::Query;
 
 use crate::*;
 use apex_api::routes::graph::{
-    parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode, NeighborhoodQuery,
-    NeighborhoodResponse, PathQuery, PathResponse, PathStep,
+    edge_source_name, parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode,
+    NeighborhoodQuery, NeighborhoodResponse, PathQuery, PathResponse, PathStep,
 };
 
 #[derive(sqlx::FromRow)]
@@ -405,27 +405,8 @@ fn edge_row_to_route_edge(edge: EdgeRow) -> RouteGraphEdge {
                 .map(|ids| ids.len() as i64)
                 .unwrap_or(0),
         ),
-        source_name: graph_edge_source_name(edge.metadata.as_ref()),
+        source_name: edge_source_name(edge.metadata.as_ref()),
     }
-}
-
-/// Best-effort provenance label for a stored edge (mirrors the /graph page).
-fn graph_edge_source_name(metadata: Option<&serde_json::Value>) -> Option<String> {
-    let metadata = metadata?;
-    for key in [
-        "source_name",
-        "source",
-        "source_url",
-        "provenance",
-        "origin",
-    ] {
-        if let Some(text) = metadata.get(key).and_then(|value| value.as_str()) {
-            if !text.trim().is_empty() {
-                return Some(text.trim().to_string());
-            }
-        }
-    }
-    None
 }
 
 async fn resolve_graph_labels(

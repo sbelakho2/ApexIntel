@@ -225,6 +225,38 @@
     return normalized;
   }
 
+  // Mirrors the server-side edge vocabulary (web/graph.rs normalize_edge_type)
+  // so stored legacy values ("CompanyPerson", "customer_of") still match the
+  // progressive-disclosure categories and EDGE_STYLES keys.
+  const EDGE_TYPE_ALIASES = {
+    companyperson: "associated_with",
+    company_person: "associated_with",
+    leads: "associated_with",
+    led_by: "associated_with",
+    manages: "associated_with",
+    affiliated_with: "associated_with",
+    affiliated: "associated_with",
+    companycompany: "competes_with",
+    company_company: "competes_with",
+    competitor: "competes_with",
+    supplier: "supplier_of",
+    supplies: "supplier_of",
+    customer_of: "supplier_of",
+    customer: "supplier_of",
+    subsidiary: "subsidiary_of",
+    parent_of: "subsidiary_of",
+    owned_by: "subsidiary_of",
+    regulated_by: "associated_with",
+    governs: "associated_with",
+    related: "related_to",
+  };
+
+  function normalizeEdgeType(value) {
+    const normalized = String(value || "related_to").toLowerCase();
+    if (!normalized) return "related_to";
+    return EDGE_TYPE_ALIASES[normalized] || normalized;
+  }
+
   function normalizePayload(payload) {
     const nodeMap = {};
     const nodes = (payload.nodes || []).map((node, index) => {
@@ -249,7 +281,7 @@
       source: String(edge.source),
       target: String(edge.target),
       weight: Number(edge.weight || 1),
-      type: String(edge.type || edge.edge_type || "related_to"),
+      type: normalizeEdgeType(edge.type || edge.edge_type || "related_to"),
       confidence: Number.isFinite(Number(edge.confidence)) ? Number(edge.confidence) : 1,
       firstSeen: edge.firstSeen || edge.first_seen || null,
       lastConfirmed: edge.lastConfirmed || edge.last_confirmed || null,
@@ -518,8 +550,6 @@
       visibleNodes: graph.nodes.filter((node) => visibleIds.has(node.id)),
       modeLabel,
       hint,
-      recentWindow,
-      enabled,
     };
   }
 
