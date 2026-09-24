@@ -6,16 +6,133 @@ use aho_corasick::AhoCorasick;
 #[cfg(feature = "llm")]
 use apex_core::entities::{Company, CompanyType};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
-use apex_crawl::sources::select_sources_for_crawl;
+use apex_crawl::errors::CrawlError;
+use apex_crawl::governor_limiter::CrawlGovernor;
+use apex_crawl::sources::{
+    coverage_debt_remaining as remaining_due_sources, select_due_sources, FetchStrategy, Source,
+    FORCED_SOURCE_SLUGS,
+};
 #[cfg(feature = "llm")]
 use apex_insights::dynamic_poi_discovery::{
     DiscoveredEntity, DynamicPoiDiscovery, EntityType, PoiCandidate, Recommendation,
 };
+use futures::future::BoxFuture;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use tokio::sync::Semaphore;
 
 use crate::*;
 
 const NIGHTLY_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const NIGHTLY_STAGE_ATTEMPTS: usize = 3;
+
+/// Maximum concurrent in-flight HTTP fetches for the crawl cycle.
+const GLOBAL_HTTP_CONCURRENCY: usize = 12;
+/// Maximum concurrent browser-driven fetches (headless Chromium is expensive).
+const BROWSER_CONCURRENCY: usize = 2;
+/// Per-domain request rate enforced on top of the concurrency caps.
+const CRAWL_DOMAIN_RPS: u32 = 1;
+
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const CRAWL_USER_AGENT: &str = "ApexIntelBot/1.0 (+https://apex-intel.io/bot)";
+
+/// Result of fetching one scheduled source.
+struct SourceFetchOutcome {
+    source_index: usize,
+    result: Result<FetchedSource, FailedSource>,
+}
+
+struct FetchedSource {
+    body: String,
+    http_status: i32,
+    latency_ms: f64,
+}
+
+struct FailedSource {
+    message: String,
+    http_status: Option<i32>,
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+async fn fetch_source(
+    crawl_client: &CrawlClient,
+    governor: &CrawlGovernor,
+    browser_permits: &Arc<Semaphore>,
+    source: &Source,
+    source_index: usize,
+) -> SourceFetchOutcome {
+    let endpoint = source.rss_url.as_deref().unwrap_or(source.url.as_str());
+    let prefers_browser_ua = source.slug == "globes_il_tech";
+    let browser_strategy =
+        prefers_browser_ua || matches!(source.strategy(), FetchStrategy::Browser);
+    let _browser_permit = if browser_strategy {
+        Some(
+            browser_permits
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("browser concurrency semaphore is never closed"),
+        )
+    } else {
+        None
+    };
+
+    if let Some(domain) = source.domain() {
+        governor.wait_for_slot(&domain).await;
+    }
+
+    let request = CrawlRequest::new(endpoint)
+        .source_id(&source.slug)
+        .requires_proxy(source.needs_proxy)
+        .prefer_browser_user_agent(prefers_browser_ua)
+        .override_user_agent(if prefers_browser_ua {
+            BROWSER_USER_AGENT
+        } else {
+            CRAWL_USER_AGENT
+        });
+
+    let started = std::time::Instant::now();
+    match crawl_client.fetch_text(&request).await {
+        Ok(response) => SourceFetchOutcome {
+            source_index,
+            result: Ok(FetchedSource {
+                body: response.body,
+                http_status: i32::from(response.status),
+                latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+            }),
+        },
+        Err(error) => SourceFetchOutcome {
+            source_index,
+            result: Err(FailedSource {
+                http_status: match &error {
+                    CrawlError::HttpStatus { status, .. } => Some(i32::from(*status)),
+                    _ => None,
+                },
+                message: error.to_string(),
+            }),
+        },
+    }
+}
+
+async fn persist_source_failure(
+    store: &PgStore,
+    source_slug: &str,
+    message: &str,
+    http_status: Option<i32>,
+    min_interval: chrono::Duration,
+    now: chrono::DateTime<Utc>,
+) {
+    if let Err(error) = store
+        .record_source_attempt_failure(source_slug, message, http_status, min_interval, now)
+        .await
+    {
+        tracing::warn!(
+            source = %source_slug,
+            error = %error,
+            "crawl_cycle: failed to persist source failure state"
+        );
+    }
+}
 
 /// Precomputed entity matching index combining Aho-Corasick automaton with
 /// a UUID lookup table.  The automaton matches all known entity names in a
@@ -302,25 +419,34 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
 
-    // Include tier 3 (Reddit, Telegram, niche feeds) — previously capped at 2,
-    // which silently excluded all high-velocity social/aggregator sources.
-    let always_include_slugs = [
-        "globes_il_tech",
-        "reddit_worldnews",
-        "reddit_geopolitics",
-        "telegram_channels",
-    ];
-    let fetch_sources = select_sources_for_crawl(&sources, 3, crawl_limit, &always_include_slugs);
+    let selection =
+        match select_due_sources(store.as_ref(), &sources, crawl_limit, Utc::now()).await {
+            Ok(selection) => selection,
+            Err(error) => {
+                run.fail(&format!(
+                    "crawl_cycle: failed to load source runtime state: {error}"
+                ));
+                return run;
+            }
+        };
+    let sources_due = selection.due;
+    let selection_debt_remaining = selection.coverage_debt_remaining;
+    let fetch_sources = selection.selected;
 
     if fetch_sources.is_empty() {
-        run.skip("crawl_cycle: no enabled tier-1/2 sources configured");
+        run.skip(&format!(
+            "crawl_cycle: no due sources (due={sources_due}, declared={}, enabled={})",
+            sources.len(),
+            sources.iter().filter(|source| source.enabled).count(),
+        ));
         return run;
     }
 
     tracing::info!(
+        sources_due,
         selected = fetch_sources.len(),
         limit = crawl_limit,
-        forced_sources = always_include_slugs.join(","),
+        forced_sources = %FORCED_SOURCE_SLUGS.join(","),
         "crawl_cycle: source selection complete"
     );
 
@@ -364,26 +490,50 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     #[allow(unused_mut)]
     let mut dynamically_discovered_companies: u64 = 0;
     let mut errors: u64 = 0;
+    let mut sources_attempted: u64 = 0;
+    let mut sources_succeeded: u64 = 0;
+    let mut sources_failed: u64 = 0;
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
     let mut companies_with_new_obs: HashSet<Uuid> = HashSet::new();
 
-    for src in &fetch_sources {
-        let url = src.rss_url.as_deref().unwrap_or(src.url.as_str());
-        let prefers_browser_ua = src.slug == "globes_il_tech";
-        let request = CrawlRequest::new(url)
-            .source_id(&src.slug)
-            .requires_proxy(src.needs_proxy)
-            .prefer_browser_user_agent(prefers_browser_ua)
-            .override_user_agent(if prefers_browser_ua {
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            } else {
-                "ApexIntelBot/1.0 (+https://apex-intel.io/bot)"
-            });
+    let governor = CrawlGovernor::with_limits(CRAWL_DOMAIN_RPS, GLOBAL_HTTP_CONCURRENCY as u32);
+    let browser_permits = Arc::new(Semaphore::new(BROWSER_CONCURRENCY));
+    let mut in_flight: FuturesUnordered<BoxFuture<'_, SourceFetchOutcome>> =
+        FuturesUnordered::new();
+    let mut pending = fetch_sources.iter().enumerate().peekable();
+    while in_flight.len() < GLOBAL_HTTP_CONCURRENCY {
+        let Some((source_index, source)) = pending.next() else {
+            break;
+        };
+        in_flight.push(Box::pin(fetch_source(
+            &crawl_client,
+            &governor,
+            &browser_permits,
+            source,
+            source_index,
+        )));
+    }
 
-        match crawl_client.fetch_text(&request).await {
-            Ok(response) => {
-                let body = response.body;
+    while let Some(outcome) = in_flight.next().await {
+        if let Some((source_index, source)) = pending.next() {
+            in_flight.push(Box::pin(fetch_source(
+                &crawl_client,
+                &governor,
+                &browser_permits,
+                source,
+                source_index,
+            )));
+        }
+
+        let src = &fetch_sources[outcome.source_index];
+        let url = src.rss_url.as_deref().unwrap_or(src.url.as_str());
+        let min_interval = chrono::Duration::minutes(i64::from(src.min_interval_minutes));
+        sources_attempted += 1;
+
+        match outcome.result {
+            Ok(fetched) => {
+                let body = fetched.body;
                 #[cfg(any(feature = "parse", feature = "llm"))]
                 let obs_value = match extract_page(&body) {
                     Ok(page) => {
@@ -510,7 +660,30 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                                 }
                             }
                         }
-                        successful_sources.insert(src.slug.clone());
+                        match store
+                            .record_source_success(
+                                &src.slug,
+                                min_interval,
+                                Some(fetched.latency_ms),
+                                Some(fetched.http_status),
+                                Utc::now(),
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                sources_succeeded += 1;
+                                successful_sources.insert(src.slug.clone());
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    source = %src.slug,
+                                    error = %error,
+                                    "crawl_cycle: failed to persist source success state"
+                                );
+                                sources_failed += 1;
+                                failed_sources.insert(src.slug.clone());
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -519,25 +692,45 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                             "crawl_cycle: failed to store observation"
                         );
                         errors += 1;
+                        sources_failed += 1;
                         failed_sources.insert(src.slug.clone());
+                        persist_source_failure(
+                            store.as_ref(),
+                            &src.slug,
+                            &e.to_string(),
+                            None,
+                            min_interval,
+                            Utc::now(),
+                        )
+                        .await;
                     }
                 }
             }
-            Err(error) => {
+            Err(failure) => {
                 tracing::warn!(
                     source = %src.slug,
-                    category = %error.category().as_str(),
-                    error = %error,
+                    http_status = ?failure.http_status,
+                    error = %failure.message,
                     "crawl_cycle: fetch error"
                 );
                 errors += 1;
+                sources_failed += 1;
                 failed_sources.insert(src.slug.clone());
+                persist_source_failure(
+                    store.as_ref(),
+                    &src.slug,
+                    &failure.message,
+                    failure.http_status,
+                    min_interval,
+                    Utc::now(),
+                )
+                .await;
             }
         }
     }
 
     let attempted_sources = fetch_sources.len().max(1);
-    let success_ratio = ingested as f64 / attempted_sources as f64;
+    let success_ratio = sources_succeeded as f64 / attempted_sources as f64;
     let min_success_ratio = std::env::var("CRAWL_MIN_SUCCESS_RATIO")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
@@ -555,11 +748,38 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         v
     };
 
-    if ingested == 0 || success_ratio < min_success_ratio {
+    let coverage_debt_remaining_count = match store.load_source_runtime_states().await {
+        Ok(states) => remaining_due_sources(&sources, &states, Utc::now()),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "crawl_cycle: failed to reload source runtime state for coverage debt"
+            );
+            selection_debt_remaining
+        }
+    };
+
+    tracing::info!(
+        sources_due,
+        sources_attempted,
+        sources_succeeded,
+        sources_failed,
+        coverage_debt_remaining = coverage_debt_remaining_count,
+        ingested,
+        errors,
+        "crawl_cycle: scheduler metrics"
+    );
+
+    if sources_succeeded == 0 || success_ratio < min_success_ratio {
         let failure_summary = format!(
-            "crawl_cycle degraded: ingested={} attempted_sources={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={}",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={}",
+            sources_due,
+            sources_attempted,
+            sources_succeeded,
+            sources_failed,
             ingested,
-            fetch_sources.len(),
+            errors,
+            coverage_debt_remaining_count,
             success_ratio,
             min_success_ratio,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
@@ -581,11 +801,14 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
             .await;
 
         run.fail(&format!(
-            "crawl_cycle: {}/{} sources attempted; {} observations ingested, {} errors; failed_sources=[{}]",
-            fetch_sources.len(),
-            sources.iter().filter(|s| s.enabled).count(),
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} failed_sources=[{}]",
+            sources_due,
+            sources_attempted,
+            sources_succeeded,
+            sources_failed,
             ingested,
             errors,
+            coverage_debt_remaining_count,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
         ));
         return run;
@@ -627,14 +850,17 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: {}/{} sources attempted; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; success_ratio={:.2}",
-            fetch_sources.len(),
-            sources.iter().filter(|s| s.enabled).count(),
+            "crawl_cycle: due={} attempted={} succeeded={} failed={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; coverage_debt_remaining={}; success_ratio={:.2}",
+            sources_due,
+            sources_attempted,
+            sources_succeeded,
+            sources_failed,
             ingested,
             entity_linked,
             dynamically_discovered_companies,
             errors,
             poi_links_created,
+            coverage_debt_remaining_count,
             success_ratio,
         ),
     );

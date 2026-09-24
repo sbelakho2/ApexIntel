@@ -44,6 +44,7 @@ doc_overindented_list_items = "allow"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "socks", "cookies", "rustls-tls"] }

@@ -53,6 +53,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }

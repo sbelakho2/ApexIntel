@@ -17,4 +17,9 @@ pub mod technical;
 pub use crate::sources_registry::{Category, Region, Source};
 
 // Re-export helper functions used by worker
-pub use crate::sources_registry::{all_sources, filter_by_tier, select_sources_for_crawl};
+pub use crate::sources_registry::{
+    all_sources, coverage_debt_remaining, effective_capability, filter_by_tier, is_source_due,
+    select_due_sources, source_coverage_summary, ApiAdapter, FetchStrategy, SourceCapability,
+    SourceCoverageSummary, SourceRuntimeStateProvider, SourceScheduleCandidate, SourceSelection,
+    FORCED_SOURCE_SLUGS,
+};
