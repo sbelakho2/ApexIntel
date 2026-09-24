@@ -23,8 +23,8 @@
   {# ── KPI stat cards ── #}
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
     {% for card in stat_cards %}
-    <div class="apex-metric-card">
-      <div class="apex-metric-rail {{ card.accent_class }}"></div>
+    <div class="apex-stat">
+      <div class="apex-stat-rail {{ card.accent_class }}"></div>
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2 pt-1">
         <div class="rounded-sm border border-rams-line bg-rams-panel p-1.5 text-rams-muted">
           {% call m::icon(card.icon, "h-3.5 w-3.5") %}
@@ -35,7 +35,7 @@
         </span>
         {% endif %}
       </div>
-      <p class="apex-metric-label">{{ card.label }}</p>
+      <p class="apex-stat-label">{{ card.label }}</p>
       <p class="mt-1.5 apex-metric-number text-2xl">{{ card.value }}</p>
     </div>
     {% endfor %}

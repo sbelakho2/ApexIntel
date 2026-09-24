@@ -11,7 +11,7 @@
   <div class="trends-filter-bar">
     <div class="trends-filter-group">
       <label for="metric">Metric</label>
-      <select name="metric" id="metric" onchange="this.form.submit()">
+      <select class="apex-select" name="metric" id="metric" onchange="this.form.submit()">
         {% for m in available_metrics %}
         <option value="{{ m.value }}" {% if m.selected %}selected{% endif %}>{{ m.label }}</option>
         {% endfor %}
@@ -20,7 +20,7 @@
 
     <div class="trends-filter-group">
       <label for="bucket">Bucket</label>
-      <select name="bucket" id="bucket" onchange="this.form.submit()">
+      <select class="apex-select" name="bucket" id="bucket" onchange="this.form.submit()">
         <option value="daily" {% if selected_bucket == "daily" %}selected{% endif %}>Daily</option>
         <option value="weekly" {% if selected_bucket == "weekly" %}selected{% endif %}>Weekly</option>
         <option value="monthly" {% if selected_bucket == "monthly" %}selected{% endif %}>Monthly</option>
@@ -31,7 +31,7 @@
 
     <div class="trends-filter-group">
       <label for="range">Date Range</label>
-      <select name="range" id="range" onchange="this.form.submit()">
+      <select class="apex-select" name="range" id="range" onchange="this.form.submit()">
         <option value="30d" {% if selected_range == "30d" %}selected{% endif %}>Last 30 Days</option>
         <option value="90d" {% if selected_range == "90d" %}selected{% endif %}>Last 90 Days</option>
         <option value="1y" {% if selected_range == "1y" %}selected{% endif %}>Last 1 Year</option>
@@ -43,46 +43,46 @@
     {% if selected_range == "custom" %}
     <div class="trends-filter-group">
       <label for="from">From</label>
-      <input type="date" name="from" id="from" value="{{ from_date }}" onchange="this.form.submit()">
+      <input class="apex-input" type="date" name="from" id="from" value="{{ from_date }}" onchange="this.form.submit()">
     </div>
     <div class="trends-filter-group">
       <label for="to">To</label>
-      <input type="date" name="to" id="to" value="{{ to_date }}" onchange="this.form.submit()">
+      <input class="apex-input" type="date" name="to" id="to" value="{{ to_date }}" onchange="this.form.submit()">
     </div>
     {% endif %}
 
     <div class="trends-filter-group">
       <label>&nbsp;</label>
-      <button type="submit" class="apex-filter-chip apex-filter-chip-active text-[11px]">Apply</button>
+      <button type="submit" class="apex-chip apex-chip-active text-[11px]">Apply</button>
     </div>
   </div>
 </form>
 
 <!-- ── Summary Stat Cards ──────────────────────────────────────────────── -->
 <div class="trends-summary-grid mb-6">
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-steel"></div>
-    <p class="apex-metric-label">Total</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-steel"></div>
+    <p class="apex-stat-label">Total</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.total }}</p>
   </div>
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-green"></div>
-    <p class="apex-metric-label">Average</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-green"></div>
+    <p class="apex-stat-label">Average</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ "{:.1}"|format(summary.average) }}</p>
   </div>
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-amber"></div>
-    <p class="apex-metric-label">Min</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-amber"></div>
+    <p class="apex-stat-label">Min</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.min }}</p>
   </div>
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-violet"></div>
-    <p class="apex-metric-label">Max</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-violet"></div>
+    <p class="apex-stat-label">Max</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.max }}</p>
   </div>
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-slate"></div>
-    <p class="apex-metric-label">Data Points</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-slate"></div>
+    <p class="apex-stat-label">Data Points</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{{ summary.data_points }}</p>
   </div>
 </div>
@@ -129,7 +129,7 @@
 <!-- ── Comparison Cards ────────────────────────────────────────────────── -->
 <div class="trends-comparison-grid mb-6">
   {% if let Some(mom) = mom_comparison %}
-  <div class="trends-comparison-card">
+  <div class="apex-card">
     <h3>{{ mom.label }}</h3>
     <div class="flex items-center justify-between mt-2">
       <div>
@@ -164,7 +164,7 @@
   {% endif %}
 
   {% if let Some(yoy) = yoy_comparison %}
-  <div class="trends-comparison-card">
+  <div class="apex-card">
     <h3>{{ yoy.label }}</h3>
     <div class="flex items-center justify-between mt-2">
       <div>
@@ -206,7 +206,7 @@
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">Top Entities by {{ selected_metric }}</h2>
   </div>
   <div class="apex-card-body p-0">
-    <table class="trends-entity-table">
+    <table class="apex-table">
       <thead>
         <tr>
           <th>Entity Type</th>

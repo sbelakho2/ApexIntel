@@ -76,7 +76,7 @@ const pages = [
       // Wait for data to fully render — longer timeout for charts/tables on mobile
       await page.waitForTimeout(5000);
       // Wait for actual content elements (cards, tables, data containers) to appear
-      await page.waitForSelector('.apex-card, table, .data-table, main > *, .graph-kpi-grid', { timeout: 5000 }).catch(() => {});
+      await page.waitForSelector('.apex-card, table, .apex-table, main > *, .graph-kpi-grid', { timeout: 5000 }).catch(() => {});
       // Also wait for main element to exist
       try {
         await page.waitForSelector('main', { timeout: 3000 });

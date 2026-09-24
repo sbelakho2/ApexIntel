@@ -4,14 +4,14 @@
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Competitors", total.to_string(), "metric-rail-steel") %}
   {% call m::metric_card("High Threat (≥70)", high_threat_count.to_string(), "metric-rail-red") %}
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-orange"></div>
-    <p class="apex-metric-label">Avg Threat</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-orange"></div>
+    <p class="apex-stat-label">Avg Threat</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{% if avg_threat > 0 %}{{ avg_threat }}{% else %}—{% endif %}</p>
   </div>
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-green"></div>
-    <p class="apex-metric-label">Avg Overlap %</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-green"></div>
+    <p class="apex-stat-label">Avg Overlap %</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{% if avg_overlap_pct > 0 %}{{ avg_overlap_pct }}{% else %}—{% endif %}</p>
   </div>
 </div>
@@ -35,12 +35,12 @@
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Threat:</span>
     {% for chip in threat_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
     <span class="mx-2 h-4 w-px bg-rams-line"></span>
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Overlap:</span>
     {% for chip in overlap_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
     <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {{ active_filters }}</span>
     <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>

@@ -33,16 +33,16 @@
 <nav class="mt-4 flex items-center justify-between" aria-label="Search results pages">
   {% if page > 1 %}
   <a href="/search?q={{ query|urlencode }}&entity_type={{ active_type }}&page={{ page - 1 }}&per_page={{ per_page }}"
-     class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em]">← Prev</a>
+     class="apex-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em]">← Prev</a>
   {% else %}
-  <span class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] opacity-40">← Prev</span>
+  <span class="apex-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] opacity-40">← Prev</span>
   {% endif %}
   <span class="text-[10px] text-rams-muted uppercase tracking-[0.1em] font-bold">Page {{ page }} / {{ total_pages }}</span>
   {% if page < total_pages %}
   <a href="/search?q={{ query|urlencode }}&entity_type={{ active_type }}&page={{ page + 1 }}&per_page={{ per_page }}"
-     class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em]">Next →</a>
+     class="apex-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em]">Next →</a>
   {% else %}
-  <span class="apex-filter-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] opacity-40">Next →</span>
+  <span class="apex-chip px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] opacity-40">Next →</span>
   {% endif %}
 </nav>
 {% endif %}

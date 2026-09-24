@@ -6,8 +6,8 @@ use axum::extract::Query;
 
 use crate::*;
 use apex_api::routes::graph::{
-    parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode, NeighborhoodQuery,
-    NeighborhoodResponse, PathQuery, PathResponse, PathStep,
+    edge_source_name, parse_edge_types, GraphEdge as RouteGraphEdge, GraphNode as RouteGraphNode,
+    NeighborhoodQuery, NeighborhoodResponse, PathQuery, PathResponse, PathStep,
 };
 
 #[derive(sqlx::FromRow)]
@@ -389,12 +389,23 @@ fn edge_matches_filters(
 }
 
 fn edge_row_to_route_edge(edge: EdgeRow) -> RouteGraphEdge {
+    let weight = edge.weight.unwrap_or(1.0);
     RouteGraphEdge {
         source: edge.source_id.to_string(),
         target: edge.target_id.to_string(),
         edge_type: edge.edge_type,
-        weight: edge.weight.unwrap_or(1.0),
+        weight,
         label: None,
+        confidence: Some(edge.confidence.unwrap_or(weight).clamp(0.0, 1.0)),
+        first_seen: edge.first_seen.map(|ts| ts.to_rfc3339()),
+        last_confirmed: edge.last_seen.map(|ts| ts.to_rfc3339()),
+        evidence_count: Some(
+            edge.evidence_ids
+                .as_ref()
+                .map(|ids| ids.len() as i64)
+                .unwrap_or(0),
+        ),
+        source_name: edge_source_name(edge.metadata.as_ref()),
     }
 }
 

@@ -19,9 +19,9 @@
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Companies Tracked", total.to_string(), "metric-rail-steel") %}
   {% call m::metric_card("High Risk (≥70)", high_risk_count.to_string(), "metric-rail-red") %}
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-green"></div>
-    <p class="apex-metric-label">Avg Risk Score</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-green"></div>
+    <p class="apex-stat-label">Avg Risk Score</p>
     <p class="mt-1.5 apex-metric-number text-2xl">{% if avg_risk > 0 %}{{ avg_risk }}{% else %}—{% endif %}</p>
   </div>
   {% call m::metric_card("Regions", regions_count.to_string(), "metric-rail-orange") %}
@@ -69,12 +69,12 @@
   <div class="flex flex-wrap items-center gap-2">
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Region:</span>
     {% for chip in region_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-active{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
     <span class="mx-2 h-4 w-px bg-rams-line"></span>
     <span class="text-[10px] font-bold uppercase text-rams-muted mr-1">Tier:</span>
     {% for chip in tier_filters %}
-    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-filter-chip {% if chip.active %}apex-filter-chip-active{% else %}apex-filter-chip-idle{% endif %}">{{ chip.label }}</a>
+    <a href="{{ chip.href }}" hx-get="{{ chip.href }}" hx-target="#main-results" hx-push-url="true" class="apex-chip {% if chip.active %}apex-chip-active{% else %}apex-chip-idle{% endif %}">{{ chip.label }}</a>
     {% endfor %}
     <span class="mx-2 text-[10px] font-bold uppercase text-rams-muted">Active: {{ active_filters }}</span>
     <a href="{{ reset_href }}" hx-get="{{ reset_href }}" hx-target="#main-results" hx-push-url="true" class="apex-action-link">Reset Filters</a>

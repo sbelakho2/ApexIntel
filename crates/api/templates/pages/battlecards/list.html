@@ -18,19 +18,19 @@
 
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   {% call m::metric_card("Total", total.to_string(), "metric-rail-steel") %}
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-steel"></div>
-    <p class="apex-metric-label">Active</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-steel"></div>
+    <p class="apex-stat-label">Active</p>
     <p class="mt-1.5 apex-metric-number text-2xl">—</p>
   </div>
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-green"></div>
-    <p class="apex-metric-label">Draft</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-green"></div>
+    <p class="apex-stat-label">Draft</p>
     <p class="mt-1.5 apex-metric-number text-2xl">—</p>
   </div>
-  <div class="apex-metric-card">
-    <div class="apex-metric-rail metric-rail-steel"></div>
-    <p class="apex-metric-label">Archived</p>
+  <div class="apex-stat">
+    <div class="apex-stat-rail metric-rail-steel"></div>
+    <p class="apex-stat-label">Archived</p>
     <p class="mt-1.5 apex-metric-number text-2xl">—</p>
   </div>
 </div>
@@ -42,22 +42,22 @@
        hx-get="/battlecards"
        hx-target="#main-results"
        hx-push-url="true"
-       class="apex-filter-chip {% if active_status == "" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">All</a>
+       class="apex-chip {% if active_status == "" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">All</a>
     <a href="/battlecards?status=active"
        hx-get="/battlecards?status=active"
        hx-target="#main-results"
        hx-push-url="true"
-       class="apex-filter-chip {% if active_status == "active" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Active</a>
+       class="apex-chip {% if active_status == "active" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Active</a>
     <a href="/battlecards?status=draft"
        hx-get="/battlecards?status=draft"
        hx-target="#main-results"
        hx-push-url="true"
-       class="apex-filter-chip {% if active_status == "draft" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Draft</a>
+       class="apex-chip {% if active_status == "draft" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Draft</a>
     <a href="/battlecards?status=archived"
        hx-get="/battlecards?status=archived"
        hx-target="#main-results"
        hx-push-url="true"
-       class="apex-filter-chip {% if active_status == "archived" %}apex-filter-chip-accent{% else %}apex-filter-chip-idle{% endif %}">Archived</a>
+       class="apex-chip {% if active_status == "archived" %}apex-chip-accent{% else %}apex-chip-idle{% endif %}">Archived</a>
   </div>
 </div>
 

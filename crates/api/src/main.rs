@@ -1656,12 +1656,23 @@ fn classify_buying_center_role(title: &str, role_family: &str) -> &'static str {
 }
 
 fn edge_row_to_graph_edge(row: &EdgeRow) -> GraphEdge {
+    let weight = row.weight.unwrap_or(1.0);
     GraphEdge {
         source: row.source_id.to_string(),
         target: row.target_id.to_string(),
         edge_type: row.edge_type.clone(),
-        weight: row.weight.unwrap_or(0.0),
+        weight,
         label: Some(format!("{} → {}", row.source_type, row.target_type)),
+        confidence: Some(row.confidence.unwrap_or(weight).clamp(0.0, 1.0)),
+        first_seen: row.first_seen.map(|ts| ts.to_rfc3339()),
+        last_confirmed: row.last_seen.map(|ts| ts.to_rfc3339()),
+        evidence_count: Some(
+            row.evidence_ids
+                .as_ref()
+                .map(|ids| ids.len() as i64)
+                .unwrap_or(0),
+        ),
+        source_name: apex_api::routes::graph::edge_source_name(row.metadata.as_ref()),
     }
 }
 

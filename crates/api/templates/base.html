@@ -97,10 +97,11 @@
   </script>
 
   <!-- CSS (compiled via Tailwind standalone CLI from globals.css) -->
-  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260923-mobile-fix4">
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260924-p0-component-purge-1">
   <script src="/static/js/htmx.min.js?v=20260312-runtime-sweep-2" defer></script>
   <script src="/static/js/app.js?v=20260827-b2" defer></script>
   <script src="/static/js/sse-client.js?v=20260827-b2" defer></script>
+  <script src="/static/js/command-palette.js?v=20260924-command-palette-1" defer></script>
   <style>
     /* ── Mobile Navigation Drawer — slide transition, structural shadow only ── */
     #mobile-nav {
@@ -456,17 +457,15 @@
       <main id="main-content" class="flex-1 min-w-0 pb-24 md:pb-10 lg:pb-8" tabindex="-1">
         <header class="sticky top-0 z-20 bg-rams-chassis border-b border-rams-line">
           <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <!-- Mobile header: permanent search command bar + menu trigger -->
-            <div class="flex min-h-12 items-center gap-2 border-b border-rams-line py-2 lg:hidden">
-              <form action="/search" method="get" role="search" class="apex-command-search">
-                <label for="command-search-mobile" class="sr-only">Search</label>
-                <input id="command-search-mobile" type="search" name="q" placeholder="Search intelligence…" autocomplete="off" />
-                <button type="submit" aria-label="Search">Search</button>
-              </form>
-              <button type="button" id="mobile-nav-toggle" class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel text-rams-foreground" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open navigation menu">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-                <span class="sr-only">Open navigation menu</span>
-              </button>
+            <!-- Mobile header: hamburger only -->
+            <div class="flex min-h-12 items-center justify-end gap-2 border-b border-rams-line py-2 lg:hidden">
+              {% call command_palette_trigger("icon") %}
+              <div class="flex shrink-0 items-center gap-2">
+                <button type="button" id="mobile-nav-toggle" class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel text-rams-foreground" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open navigation menu">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                  <span class="sr-only">Open navigation menu</span>
+                </button>
+              </div>
             </div>
             <!-- Desktop header: slim structural strip with the command bar -->
             <div class="hidden min-h-14 items-center justify-between gap-4 border-b border-rams-line py-2.5 lg:flex">
@@ -482,6 +481,8 @@
                 <button type="submit" aria-label="Search">Search</button>
               </form>
               <div class="flex shrink-0 items-center gap-2">
+                <span class="hidden text-[10px] font-bold uppercase tracking-[0.12em] text-rams-muted xl:inline">{{ username }}</span>
+                {% call command_palette_trigger("full") %}
                 <!-- Notification bell -->
                 <a href="/notifications"
                    class="relative inline-flex min-h-11 items-center justify-center rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1.5 text-rams-foreground hover:border-rams-line-strong"
@@ -830,6 +831,7 @@
       });
     })();
   </script>
+  {% include "partials/command_palette.html" %}
   {% include "partials/notification_toast.html" %}
   {% block body_end %}{% endblock %}
 
@@ -1017,4 +1019,19 @@
     {{ warning_count }}
   </span>
 </a>
+{% endmacro %}
+
+{# ── Command palette trigger (rendered in both mobile + desktop headers) ── #}
+{% macro command_palette_trigger(variant) %}
+<button type="button"
+        class="command-palette-trigger inline-flex min-h-11 items-center justify-center gap-2 rounded-rams-sm border border-rams-line bg-rams-panel px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted hover:border-rams-line-strong hover:text-rams-foreground"
+        data-command-palette-trigger
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        aria-controls="command-palette"
+        aria-keyshortcuts="Meta+K Control+K"
+        aria-label="Open command palette (Command or Control + K)">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/></svg>
+  {% if variant == "full" %}<span class="hidden xl:inline">Command</span><kbd class="hidden rounded-rams-sm border border-rams-line bg-rams-module px-1.5 py-0.5 font-mono text-[9px] xl:inline">⌘K</kbd>{% endif %}
+</button>
 {% endmacro %}

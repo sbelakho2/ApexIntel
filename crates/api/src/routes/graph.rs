@@ -97,6 +97,39 @@ pub struct GraphEdge {
     pub edge_type: String,
     pub weight: f64,
     pub label: Option<String>,
+    /// Relationship confidence (0.0–1.0) when the producer supplies it.
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub first_seen: Option<String>,
+    #[serde(default)]
+    pub last_confirmed: Option<String>,
+    #[serde(default)]
+    pub evidence_count: Option<i64>,
+    #[serde(default)]
+    pub source_name: Option<String>,
+}
+
+/// Best-effort provenance label for a stored edge. `graph_edges.metadata` is
+/// JSONB, so different producers store different keys. Shared by the /graph
+/// page, /api/graph and the neighborhood endpoint so the same edge always
+/// reports the same source.
+pub fn edge_source_name(metadata: Option<&serde_json::Value>) -> Option<String> {
+    let metadata = metadata?;
+    for key in [
+        "source_name",
+        "source",
+        "source_url",
+        "provenance",
+        "origin",
+    ] {
+        if let Some(text) = metadata.get(key).and_then(|value| value.as_str()) {
+            if !text.trim().is_empty() {
+                return Some(text.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Shortest path response.
@@ -232,6 +265,11 @@ mod tests {
             edge_type: edge_type.to_string(),
             weight,
             label: None,
+            confidence: None,
+            first_seen: None,
+            last_confirmed: None,
+            evidence_count: None,
+            source_name: None,
         }
     }
 
