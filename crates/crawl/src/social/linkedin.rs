@@ -18,10 +18,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
 
-use crate::browser::BoundedBrowserRunner;
+use crate::browser::{shared_from_env, supports_url, BrowserFetcher, BrowserRequest};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Output types
@@ -94,17 +95,17 @@ pub struct LinkedInPersonProfile {
 pub struct LinkedInScraper {
     client: Client,
     proxy_url: Option<String>,
-    browser_runner: Option<BoundedBrowserRunner>,
+    browser_runner: Option<Arc<dyn BrowserFetcher>>,
 }
 
 impl LinkedInScraper {
     pub fn new(proxy_url: Option<&str>) -> Result<Self> {
-        Self::with_browser_runner(proxy_url, BoundedBrowserRunner::from_env()?)
+        Self::with_browser_runner(proxy_url, shared_from_env()?)
     }
 
     pub fn with_browser_runner(
         proxy_url: Option<&str>,
-        browser_runner: Option<BoundedBrowserRunner>,
+        browser_runner: Option<Arc<dyn BrowserFetcher>>,
     ) -> Result<Self> {
         let client = Self::build_client(proxy_url)?;
         Ok(Self {
@@ -175,9 +176,9 @@ impl LinkedInScraper {
             }
         }
         if let Some(browser_runner) = &self.browser_runner {
-            if BoundedBrowserRunner::supports_url(url) {
-                debug!(url = %url, "LinkedIn HTTP retries exhausted; trying bounded browser fallback");
-                return Ok(browser_runner.fetch(url).await?.html);
+            if supports_url(url) {
+                debug!(url = %url, "LinkedIn HTTP retries exhausted; trying browser fallback");
+                return Ok(browser_runner.fetch(BrowserRequest::new(url)).await?.html);
             }
         }
 
@@ -590,8 +591,6 @@ fn decode_html_entities(s: &str) -> String {
 mod tests {
     use super::*;
 
-    use std::collections::HashMap;
-
     #[test]
     fn scraper_builds() {
         let s = LinkedInScraper::new(None);
@@ -620,8 +619,10 @@ mod tests {
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     #[tokio::test]
     async fn recorded_browser_fixture_parses_dynamic_company_page() {
+        use crate::browser::fixture::RecordedPagesBrowser;
+
         let url = "https://www.linkedin.com/company/apexintel/";
-        let runner = BoundedBrowserRunner::from_recorded_pages(HashMap::from([(
+        let runner: Arc<dyn BrowserFetcher> = Arc::new(RecordedPagesBrowser::new([(
             url.to_string(),
             include_str!("fixtures/linkedin_company_dynamic.html").to_string(),
         )]));
@@ -629,7 +630,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("linkedin scraper should build: {error}"));
 
         let page = runner
-            .fetch(url)
+            .fetch(BrowserRequest::new(url))
             .await
             .unwrap_or_else(|error| panic!("recorded fixture should fetch: {error}"));
         assert_eq!(page.url, url);

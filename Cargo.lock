@@ -160,7 +160,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "apex-core",
+ "async-trait",
  "chrono",
+ "futures-util",
  "governor",
  "hex",
  "lazy_static",
@@ -178,6 +180,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
+ "tokio-tungstenite",
  "tracing",
  "url",
  "urlencoding",

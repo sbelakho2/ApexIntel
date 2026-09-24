@@ -331,7 +331,21 @@ WEEKLY_DAY=0
 DEFAULT_RPS=0.2
 PROXY_POOL_SIZE=50
 ENABLE_PROXY_ROTATION=false
+
+# Headless browser rendering (single persistent Chromium/CDP renderer).
+# Chromium MUST run as the dedicated non-root "apexintel" service account:
+# the renderer deliberately does NOT pass --no-sandbox, so the sandbox needs a
+# non-privileged user (the shipped Dockerfile.api/Dockerfile.worker images
+# already create and switch to "apexintel"). Never run this as root and never
+# reintroduce --no-sandbox.
 ENABLE_HEADLESS_BROWSER=false
+# HEADLESS_BROWSER_BIN=/usr/bin/google-chrome   # or "chromium"/"chrome-headless-shell"
+# HEADLESS_BROWSER_MAX_CONCURRENCY=2            # global browser ceiling (max 2)
+# HEADLESS_BROWSER_TIMEOUT_SECS=30              # hard total render-time cap
+# HEADLESS_BROWSER_QUIET_WINDOW_MS=1000         # network-idle window, clamped 750-1500
+# HEADLESS_BROWSER_SCROLL_STEPS=3               # bounded progressive scroll for lazy content
+# HTTP crawling runs 8-16 requests in parallel (default 12) with per-domain
+# rate limiting; the browser fleet is limited to 1 process / 2 contexts.
 
 # ─── Optional integrations ───────────────────────────────────────────────────
 # GOOGLE_API_KEY=

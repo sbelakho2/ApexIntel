@@ -4,11 +4,12 @@ use std::time::Duration;
 use apex_core::text::truncate_utf8;
 use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER, USER_AGENT};
 use reqwest::Client;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::concurrency::{clamp_http_concurrency, DEFAULT_HTTP_CONCURRENCY};
 use crate::errors::{CrawlError, CrawlFailureCategory};
 use crate::metrics::SharedDomainByteMetrics;
 use crate::proxy::ProxyRotator;
@@ -23,6 +24,9 @@ pub struct CrawlClientConfig {
     pub timeout: Duration,
     pub user_agent: String,
     pub max_retries: usize,
+    /// Fleet-wide ceiling for concurrent ordinary HTTP fetches, clamped to
+    /// the supported 8–16 window ([`crate::concurrency`]).
+    pub max_concurrency: usize,
     pub enforce_robots_txt: bool,
     pub proxy_rotator: Option<Arc<Mutex<ProxyRotator>>>,
     pub rate_limits: Arc<Mutex<RateLimitManager>>,
@@ -36,6 +40,7 @@ impl Default for CrawlClientConfig {
             timeout: Duration::from_secs(20),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             max_retries: 2,
+            max_concurrency: DEFAULT_HTTP_CONCURRENCY,
             enforce_robots_txt: true,
             proxy_rotator: None,
             rate_limits: Arc::new(Mutex::new(RateLimitManager::new())),
@@ -48,6 +53,11 @@ impl Default for CrawlClientConfig {
 pub struct CrawlClient {
     client: Client,
     config: CrawlClientConfig,
+    /// Global concurrency gate for ordinary HTTP fetches. Per-domain
+    /// politeness still comes from `rate_limits`/robots; this only bounds the
+    /// fleet-wide parallelism.
+    http_gate: Arc<Semaphore>,
+    http_concurrency: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -112,17 +122,42 @@ impl CrawlClient {
                 message: error.to_string(),
                 category: CrawlFailureCategory::Network,
             })?;
-        Ok(Self { client, config })
+        let http_concurrency = clamp_http_concurrency(config.max_concurrency);
+        Ok(Self {
+            client,
+            config,
+            http_gate: Arc::new(Semaphore::new(http_concurrency)),
+            http_concurrency,
+        })
     }
 
     pub fn metrics(&self) -> SharedDomainByteMetrics {
         self.config.metrics.clone()
     }
 
+    /// Effective ordinary HTTP concurrency (clamped into 8–16).
+    pub fn http_concurrency(&self) -> usize {
+        self.http_concurrency
+    }
+
     pub async fn fetch_text(
         &self,
         request: &CrawlRequest<'_>,
     ) -> Result<FetchResponse, CrawlError> {
+        // Bound ordinary HTTP parallelism globally (8–16); each logical fetch
+        // counts as one slot across its retries. Per-domain pacing is applied
+        // separately by `rate_limits` and robots handling below.
+        let _permit = self
+            .http_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| CrawlError::Transport {
+                url: request.url.to_string(),
+                message: format!("HTTP concurrency gate closed: {error}"),
+                category: CrawlFailureCategory::Unknown,
+            })?;
+
         let parsed = Url::parse(request.url).map_err(|error| CrawlError::InvalidUrl {
             url: request.url.to_string(),
             message: error.to_string(),
@@ -530,6 +565,68 @@ mod tests {
         assert_eq!(
             parse_cache_control_max_age("public, max-age=120"),
             Some(Duration::from_secs(120))
+        );
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[test]
+    fn http_concurrency_defaults_inside_the_supported_window() {
+        let client = CrawlClient::new(CrawlClientConfig::default())
+            .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
+        assert_eq!(client.http_concurrency(), DEFAULT_HTTP_CONCURRENCY);
+        assert_eq!(
+            client.http_gate.available_permits(),
+            DEFAULT_HTTP_CONCURRENCY,
+            "semaphore capacity must equal the configured concurrency"
+        );
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[test]
+    fn http_concurrency_is_clamped_to_the_supported_window() {
+        let low = CrawlClient::new(CrawlClientConfig {
+            max_concurrency: 1,
+            ..CrawlClientConfig::default()
+        })
+        .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
+        assert_eq!(
+            low.http_concurrency(),
+            crate::concurrency::MIN_HTTP_CONCURRENCY
+        );
+
+        let high = CrawlClient::new(CrawlClientConfig {
+            max_concurrency: 1024,
+            ..CrawlClientConfig::default()
+        })
+        .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
+        assert_eq!(
+            high.http_concurrency(),
+            crate::concurrency::MAX_HTTP_CONCURRENCY
+        );
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[test]
+    fn http_gate_admits_only_the_configured_number_of_fetches() {
+        let client = CrawlClient::new(CrawlClientConfig {
+            max_concurrency: 8,
+            ..CrawlClientConfig::default()
+        })
+        .unwrap_or_else(|error| panic!("test: build crawl client: {error}"));
+
+        let permits: Vec<_> = (0..8)
+            .map(|_| {
+                client
+                    .http_gate
+                    .clone()
+                    .try_acquire_owned()
+                    .unwrap_or_else(|error| panic!("test: acquire permit: {error}"))
+            })
+            .collect();
+        assert_eq!(permits.len(), 8);
+        assert!(
+            client.http_gate.clone().try_acquire_owned().is_err(),
+            "a ninth concurrent fetch must wait"
         );
     }
 }
