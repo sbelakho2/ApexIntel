@@ -54,6 +54,7 @@ pub struct HealthCheckInfo {
 #[template(path = "pages/settings.html")]
 pub struct SettingsPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -242,6 +243,7 @@ fn render_settings_page(
 ) -> SettingsPage {
     SettingsPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

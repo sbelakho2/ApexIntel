@@ -57,6 +57,7 @@ pub struct SearchFacet {
 #[template(path = "pages/search.html")]
 pub struct SearchPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -231,6 +232,7 @@ pub async fn search_page(
     } else {
         let tpl = SearchPage {
             current_path: ctx.current_path,
+            can_admin: ctx.can_admin,
             username: ctx.username,
             warning_count: ctx.warning_count,
             theme: ctx.theme,

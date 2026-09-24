@@ -278,6 +278,7 @@ fn trend_bucket(kind: &str) -> &'static str {
 #[template(path = "pages/insights.html")]
 pub struct InsightsListPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -338,6 +339,7 @@ pub struct InsightsListPartial {
 #[template(path = "pages/insight_detail.html")]
 pub struct InsightDetailPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -841,6 +843,7 @@ pub async fn list_insights(
 
     let tpl = InsightsListPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -970,6 +973,7 @@ pub async fn get_insight(
 
     let tpl = InsightDetailPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

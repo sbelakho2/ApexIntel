@@ -38,6 +38,7 @@ tower-http = { workspace = true, features = ["cors", "trace", "compression-gzip"
 tracing-subscriber = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+argon2 = { workspace = true }
 regex = { workspace = true }
 subtle = "2"
 dotenvy = { workspace = true }

@@ -152,6 +152,7 @@ pub struct CompanyFilterChip {
 #[template(path = "pages/companies.html")]
 pub struct CompaniesListPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -266,6 +267,7 @@ pub struct CompanyDossierTabPartial {
 #[template(path = "pages/company_detail.html")]
 pub struct CompanyDetailPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -564,6 +566,7 @@ pub async fn list_companies(
 
     let tpl = CompaniesListPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -854,6 +857,7 @@ pub async fn get_company(
 
     let tpl = CompanyDetailPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

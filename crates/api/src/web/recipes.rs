@@ -65,6 +65,7 @@ pub struct RecipeField {
 #[template(path = "pages/recipes.html")]
 pub struct RecipesListPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -121,6 +122,7 @@ pub struct RecipesListPartial {
 #[template(path = "pages/recipe_new.html")]
 pub struct RecipeNewPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -276,6 +278,7 @@ pub async fn list_recipes(
 
     let tpl = RecipesListPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -347,6 +350,7 @@ pub async fn new_recipe(
 
     let tpl = RecipeNewPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,

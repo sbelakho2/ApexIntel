@@ -83,6 +83,10 @@ pub struct PageContext {
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
+    /// Principal role (e.g. `admin`, `analyst`).
+    pub role: String,
+    /// True when the principal's role passes `ApiRole::can_admin()`.
+    pub can_admin: bool,
 }
 
 impl PageContext {
@@ -92,6 +96,8 @@ impl PageContext {
             username: session.username.clone(),
             warning_count,
             theme: String::new(), // client-side via JS
+            role: session.role.as_str().to_string(),
+            can_admin: session.role.can_admin(),
         }
     }
 }

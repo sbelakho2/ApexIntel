@@ -307,10 +307,16 @@ SEARCH_INDEX_PATH=/opt/apexintel/data/search
 # The API binary serves the login page and handles session cookies directly.
 # Username: choose an admin username
 APEX_ADMIN_USERNAME=<YOUR_ADMIN_USERNAME>
-# Password hash: echo -n 'yourpassword' | sha256sum | cut -d' ' -f1
-APEX_ADMIN_PASSWORD_HASH=<SHA256_OF_YOUR_PASSWORD>
+# Password hash: Argon2id PHC string (preferred), single-quoted for dotenvy.
+# Generate in-repo: cargo run -p apex-api --example hash_password -- 'yourpassword'
+# Or with the argon2 CLI: echo -n 'yourpassword' | argon2 "$(openssl rand -hex 16)" -id -e
+# Legacy SHA-256 (deprecated, still accepted): echo -n 'yourpassword' | sha256sum | cut -d' ' -f1
+APEX_ADMIN_PASSWORD_HASH='$argon2id$v=19$m=19456,t=2,p=1$<SALT>$<HASH>'
 # Session secret: openssl rand -hex 32
 SESSION_SECRET=<GENERATE_64_CHAR_HEX_SECRET>
+# Optional multi-user login (takes precedence over APEX_ADMIN_*):
+# JSON array of {id, username, password_hash, role}; role: admin|analyst|viewer|service
+# WEB_USERS_JSON='[{"id":"usr-admin","username":"admin","password_hash":"$argon2id$...","role":"admin"}]'
 
 # ─── API Key Authentication (for external API consumers) ─────────────────────
 # Generate: openssl rand -hex 32 | sed 's/^/sk-apex-/'
@@ -353,8 +359,10 @@ chown apexintel:apexintel /opt/apexintel/config/.env
 | `HOST` / `PORT` | ✅ | Bind address (127.0.0.1:8080) |
 | `CORS_ORIGIN` | ✅ | Allowed CORS origin (`https://starzerp.fi`) |
 | `APEX_ADMIN_USERNAME` | ✅ | Web login username |
-| `APEX_ADMIN_PASSWORD_HASH` | ✅ | SHA-256 hash of web login password |
+| `APEX_ADMIN_PASSWORD_HASH` | ✅ | Argon2id PHC hash of the web login password (legacy SHA-256 hex still accepted, deprecated) |
+| `WEB_USERS_JSON` | ➖ | Optional multi-user login: JSON array of `{id, username, password_hash, role}`; overrides `APEX_ADMIN_*` |
 | `SESSION_SECRET` | ✅ | 64-char hex for HMAC cookie signing |
+| `COOKIE_SECURE` | ➖ | Set `1` behind HTTPS: session cookie becomes `__Host-apex_session` with `Secure` |
 | `API_KEY_1` | ✅ | API key for external consumers |
 | `LLM_BASE_URL` | ✅ | Local LLM inference endpoint |
 | `SEARCH_INDEX_PATH` | ✅ | Tantivy index directory |

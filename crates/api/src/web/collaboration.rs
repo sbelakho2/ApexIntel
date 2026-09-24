@@ -252,6 +252,7 @@ pub struct ShareItem {
 #[template(path = "pages/collaboration/workspaces.html")]
 pub(crate) struct WorkspacesPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -265,6 +266,7 @@ pub(crate) struct WorkspacesPage {
 #[template(path = "pages/collaboration/workspace_detail.html")]
 pub(crate) struct WorkspaceDetailPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -280,6 +282,7 @@ pub(crate) struct WorkspaceDetailPage {
 #[template(path = "pages/collaboration/queue.html")]
 pub(crate) struct QueuePage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -293,6 +296,7 @@ pub(crate) struct QueuePage {
 #[template(path = "pages/collaboration/activity.html")]
 pub(crate) struct ActivityPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -303,6 +307,7 @@ pub(crate) struct ActivityPage {
 #[template(path = "pages/collaboration/supplier_risk.html")]
 pub(crate) struct SupplierRiskPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -315,6 +320,7 @@ pub(crate) struct SupplierRiskPage {
 #[template(path = "pages/collaboration/pipeline.html")]
 pub(crate) struct PipelinePage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -326,6 +332,7 @@ pub(crate) struct PipelinePage {
 #[template(path = "pages/collaboration/evidence.html")]
 pub(crate) struct EvidencePage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -337,6 +344,7 @@ pub(crate) struct EvidencePage {
 #[template(path = "pages/collaboration/team_assignments.html")]
 pub(crate) struct TeamAssignmentsPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -430,6 +438,7 @@ pub async fn list_workspaces(
 
     let page = WorkspacesPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -450,6 +459,7 @@ pub async fn list_workspaces(
 #[template(path = "pages/collaboration/workspace_new.html")]
 pub struct WorkspaceNewPage {
     pub current_path: String,
+    pub can_admin: bool,
     pub username: String,
     pub warning_count: i64,
     pub theme: String,
@@ -470,6 +480,7 @@ pub async fn new_workspace_page(
 
     let page = WorkspaceNewPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -603,6 +614,7 @@ pub async fn get_workspace(
 
     let page = WorkspaceDetailPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -732,6 +744,7 @@ pub async fn list_queue(
 
     let page = QueuePage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -819,6 +832,7 @@ pub async fn list_activity(
 
     let page = ActivityPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -872,6 +886,7 @@ pub async fn list_supplier_risks(
 
     let page = SupplierRiskPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -952,6 +967,7 @@ pub async fn list_pipeline(
 
     let page = PipelinePage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -1043,6 +1059,7 @@ pub async fn list_evidence(
 
     let page = EvidencePage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
@@ -1118,6 +1135,7 @@ pub async fn list_team_assignments(
 
     let page = TeamAssignmentsPage {
         current_path: ctx.current_path,
+        can_admin: ctx.can_admin,
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
