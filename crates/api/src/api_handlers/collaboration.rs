@@ -18,7 +18,7 @@ use apex_store::postgres::{
     ActivityFeedRecord, CriticalThreatRecord, InvestigationShareRecord,
     InvestigationWorkspaceRecord, PipelineOpportunityRecord, PriorityQueueItemRecord,
     SourceEvidenceRecord, StrategicOpportunityRecord, SupplierRiskEntryRecord,
-    TeamAssignmentRecord, WorkspaceAssignmentRecord,
+    TeamAssignmentRecord, WatchlistRecord, WorkspaceAssignmentRecord,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -1496,6 +1496,109 @@ pub async fn add_evidence(
         .map_err(store_err)?;
 
     Ok(Json(success(evidence_from_record(record))))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Watchlists (user-private, RLS-scoped)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct WatchlistRequest {
+    pub id: Option<String>,
+    pub name: String,
+    pub entities: Option<Value>,
+    pub notes: Option<String>,
+}
+
+async fn save_watchlist(
+    state: &crate::AppState,
+    auth: &ApiAuthContext,
+    id: Option<Uuid>,
+    req: &WatchlistRequest,
+) -> Result<WatchlistRecord, ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::validation("name", "cannot be empty"));
+    }
+    let entities = req
+        .entities
+        .clone()
+        .filter(Value::is_array)
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+
+    state
+        .store
+        .upsert_watchlist_scoped(
+            &auth.user_id,
+            auth.role.as_str(),
+            id,
+            name,
+            &entities,
+            req.notes.as_deref(),
+        )
+        .await
+        .map_err(store_err)
+}
+
+/// GET /api/watchlists
+/// List the caller's watchlists.
+pub async fn list_watchlists(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+) -> Result<Json<ApiResponse<Vec<WatchlistRecord>>>, ApiError> {
+    let records = state
+        .store
+        .list_watchlists_scoped(&auth.user_id, auth.role.as_str())
+        .await
+        .map_err(store_err)?;
+
+    Ok(Json(success(records)))
+}
+
+/// POST /api/watchlists
+/// Create a watchlist owned by the caller.
+pub async fn create_watchlist(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+    Json(req): Json<WatchlistRequest>,
+) -> Result<Json<ApiResponse<WatchlistRecord>>, ApiError> {
+    let id = parse_optional_uuid(&req.id, "id")?;
+    let record = save_watchlist(&state, &auth, id, &req).await?;
+    Ok(Json(success(record)))
+}
+
+/// PUT /api/watchlists/:id
+/// Update one of the caller's watchlists.
+pub async fn update_watchlist(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+    Json(req): Json<WatchlistRequest>,
+) -> Result<Json<ApiResponse<WatchlistRecord>>, ApiError> {
+    let uuid = parse_uuid(&id, "id")?;
+    let record = save_watchlist(&state, &auth, Some(uuid), &req).await?;
+    Ok(Json(success(record)))
+}
+
+/// DELETE /api/watchlists/:id
+/// Delete one of the caller's watchlists.
+pub async fn delete_watchlist(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, ApiError> {
+    let uuid = parse_uuid(&id, "id")?;
+    let deleted = state
+        .store
+        .delete_watchlist_scoped(&auth.user_id, auth.role.as_str(), uuid)
+        .await
+        .map_err(store_err)?;
+
+    if !deleted {
+        return Err(ApiError::not_found("watchlist", &id));
+    }
+
+    Ok(Json(success(serde_json::json!({"deleted": true}))))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

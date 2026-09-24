@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 use sqlx::postgres::{PgPool, PgPoolOptions};
-use sqlx::{Postgres, QueryBuilder, Row};
+use sqlx::{Postgres, QueryBuilder, Row, Transaction};
 use uuid::Uuid;
 
 use apex_core::entities::*;
@@ -648,6 +648,30 @@ impl PgStore {
 
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Begin a transaction scoped to an application identity.
+    ///
+    /// Sets `app.current_user_id` and `app.current_user_role` with
+    /// `set_config(..., true)`, so the settings are transaction-local: they are
+    /// rolled back with the transaction and can never leak into a pooled
+    /// session. The RLS helper functions from migration 020
+    /// (`current_user_id()` / `current_user_role()`) read these settings.
+    pub async fn begin_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+    ) -> Result<Transaction<'_, Postgres>> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "SELECT set_config('app.current_user_id', $1, true), \
+                    set_config('app.current_user_role', $2, true)",
+        )
+        .bind(user_id)
+        .bind(role)
+        .execute(&mut *tx)
+        .await?;
+        Ok(tx)
     }
 
     // --- Schema Migration ---

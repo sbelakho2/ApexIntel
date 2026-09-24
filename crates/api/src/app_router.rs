@@ -434,6 +434,17 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(activity_handlers::get_activity_feed)
                 .post(activity_handlers::create_activity_event),
         )
+        // ─── Personal Collaboration: Watchlists ───────────────────────────
+        .route(
+            "/api/watchlists",
+            get(collaboration_handlers::list_watchlists)
+                .post(collaboration_handlers::create_watchlist),
+        )
+        .route(
+            "/api/watchlists/:id",
+            put(collaboration_handlers::update_watchlist)
+                .delete(collaboration_handlers::delete_watchlist),
+        )
         // ─── Supply Chain Risk API ────────────────────────────────────────
         .route(
             "/api/supply-risk",

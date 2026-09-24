@@ -16,6 +16,59 @@ fn normalize_tag_labels(tags: &[String]) -> Vec<String> {
     normalized
 }
 
+async fn upsert_watchlist_on(
+    conn: &mut sqlx::PgConnection,
+    id: Option<Uuid>,
+    user_id: &str,
+    name: &str,
+    entities: &Value,
+    notes: Option<&str>,
+) -> Result<WatchlistRecord> {
+    let id = id.unwrap_or_else(Uuid::new_v4);
+    Ok(sqlx::query_as::<_, WatchlistRecord>(
+        r#"INSERT INTO watchlists (id, user_id, name, entities, notes)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (id) DO UPDATE SET
+             name = EXCLUDED.name,
+             entities = EXCLUDED.entities,
+             notes = EXCLUDED.notes,
+             updated_at = NOW()
+           RETURNING id, user_id, name, entities, notes, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(name)
+    .bind(entities)
+    .bind(notes)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+async fn list_watchlists_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+) -> Result<Vec<WatchlistRecord>> {
+    Ok(sqlx::query_as::<_, WatchlistRecord>(
+        "SELECT id, user_id, name, entities, notes, created_at, updated_at FROM watchlists WHERE user_id = $1 ORDER BY updated_at DESC, id ASC",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+async fn delete_watchlist_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    id: Uuid,
+) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM watchlists WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 impl PgStore {
     pub async fn record_audit_event(
         &self,
@@ -285,42 +338,56 @@ impl PgStore {
         entities: &Value,
         notes: Option<&str>,
     ) -> Result<WatchlistRecord> {
-        let id = id.unwrap_or_else(Uuid::new_v4);
-        Ok(sqlx::query_as::<_, WatchlistRecord>(
-            r#"INSERT INTO watchlists (id, user_id, name, entities, notes)
-               VALUES ($1, $2, $3, $4, $5)
-               ON CONFLICT (id) DO UPDATE SET
-                 name = EXCLUDED.name,
-                 entities = EXCLUDED.entities,
-                 notes = EXCLUDED.notes,
-                 updated_at = NOW()
-               RETURNING id, user_id, name, entities, notes, created_at, updated_at"#,
-        )
-        .bind(id)
-        .bind(user_id)
-        .bind(name)
-        .bind(entities)
-        .bind(notes)
-        .fetch_one(&self.pool)
-        .await?)
+        let mut conn = self.pool.acquire().await?;
+        upsert_watchlist_on(&mut conn, id, user_id, name, entities, notes).await
+    }
+
+    pub async fn upsert_watchlist_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Option<Uuid>,
+        name: &str,
+        entities: &Value,
+        notes: Option<&str>,
+    ) -> Result<WatchlistRecord> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record = upsert_watchlist_on(&mut tx, id, user_id, name, entities, notes).await?;
+        tx.commit().await?;
+        Ok(record)
     }
 
     pub async fn list_watchlists(&self, user_id: &str) -> Result<Vec<WatchlistRecord>> {
-        Ok(sqlx::query_as::<_, WatchlistRecord>(
-            "SELECT id, user_id, name, entities, notes, created_at, updated_at FROM watchlists WHERE user_id = $1 ORDER BY updated_at DESC, id ASC",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?)
+        let mut conn = self.pool.acquire().await?;
+        list_watchlists_on(&mut conn, user_id).await
+    }
+
+    pub async fn list_watchlists_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+    ) -> Result<Vec<WatchlistRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let records = list_watchlists_on(&mut tx, user_id).await?;
+        tx.commit().await?;
+        Ok(records)
     }
 
     pub async fn delete_watchlist(&self, user_id: &str, id: Uuid) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM watchlists WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
+        let mut conn = self.pool.acquire().await?;
+        delete_watchlist_on(&mut conn, user_id, id).await
+    }
+
+    pub async fn delete_watchlist_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Uuid,
+    ) -> Result<bool> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let deleted = delete_watchlist_on(&mut tx, user_id, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     pub async fn upsert_annotation(

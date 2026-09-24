@@ -57,8 +57,13 @@ pub(crate) async fn get_preferences(
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
     let user_id = auth_ctx.user_id;
+    let role = auth_ctx.role.as_str();
 
-    let record = match state.store.get_user_preferences_record(&user_id).await {
+    let record = match state
+        .store
+        .get_user_preferences_record_scoped(&user_id, role)
+        .await
+    {
         Ok(v) => v,
         Err(err) => {
             tracing::error!(request_id = %request_id, "get preferences failed: {err:#}");
@@ -90,8 +95,13 @@ pub(crate) async fn update_preferences(
     let start = Instant::now();
     let request_id = Uuid::new_v4().to_string();
     let user_id = auth_ctx.user_id;
+    let role = auth_ctx.role.as_str();
 
-    let existing = match state.store.get_user_preferences_record(&user_id).await {
+    let existing = match state
+        .store
+        .get_user_preferences_record_scoped(&user_id, role)
+        .await
+    {
         Ok(v) => v,
         Err(err) => {
             tracing::error!(request_id = %request_id, "fetch existing preferences failed: {err:#}");
@@ -135,7 +145,13 @@ pub(crate) async fn update_preferences(
 
     if let Err(err) = state
         .store
-        .upsert_user_preferences_record(&user_id, &preferences.theme, &preferences.locale, &raw)
+        .upsert_user_preferences_record_scoped(
+            &user_id,
+            role,
+            &preferences.theme,
+            &preferences.locale,
+            &raw,
+        )
         .await
     {
         tracing::error!(request_id = %request_id, "upsert preferences failed: {err:#}");

@@ -415,7 +415,7 @@ pub async fn settings_page(
     let ctx = PageContext::from_session(&session, "/settings", unack);
 
     let prefs = store
-        .get_user_settings_prefs(&session.username)
+        .get_user_settings_prefs_scoped(&session.username, session.role.as_str())
         .await
         .ok()
         .flatten()
@@ -503,12 +503,15 @@ pub async fn save_settings(
         }
     }
 
-    if let Ok(Some(existing)) = store.get_user_settings_prefs(&session.username).await {
+    if let Ok(Some(existing)) = store
+        .get_user_settings_prefs_scoped(&session.username, session.role.as_str())
+        .await
+    {
         prefs.email_digest_last_sent_at = existing.email_digest_last_sent_at;
     }
 
     if let Err(e) = store
-        .upsert_user_settings_prefs(&session.username, &prefs)
+        .upsert_user_settings_prefs_scoped(&session.username, session.role.as_str(), &prefs)
         .await
     {
         tracing::error!(

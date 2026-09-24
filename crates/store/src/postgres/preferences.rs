@@ -13,58 +13,168 @@ fn merge_settings_page_preferences(
     Ok(preferences)
 }
 
+async fn fetch_user_settings_prefs(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+) -> Result<Option<UserSettingsPrefs>> {
+    let row = sqlx::query("SELECT preferences FROM user_preferences WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let preferences: Option<Value> = row.try_get("preferences")?;
+    let Some(preferences) = preferences else {
+        return Ok(None);
+    };
+
+    let Some(settings_value) = preferences.get("settings_page") else {
+        return Ok(None);
+    };
+
+    Ok(serde_json::from_value::<UserSettingsPrefs>(settings_value.clone()).ok())
+}
+
+async fn fetch_user_preferences_record(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+) -> Result<Option<UserPreferencesRecord>> {
+    let row = sqlx::query(
+        "SELECT theme, locale, preferences, updated_at FROM user_preferences WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let theme: Option<String> = row.try_get("theme")?;
+    let locale: Option<String> = row.try_get("locale")?;
+    let preferences: Option<Value> = row.try_get("preferences")?;
+    let updated_at: Option<DateTime<Utc>> = row.try_get("updated_at")?;
+
+    Ok(Some(UserPreferencesRecord {
+        theme: theme.unwrap_or_else(|| "system".to_string()),
+        locale: locale.unwrap_or_else(|| "en".to_string()),
+        preferences: preferences.unwrap_or_else(|| serde_json::json!({})),
+        updated_at: updated_at.unwrap_or_else(Utc::now),
+    }))
+}
+
+async fn upsert_user_preferences_record_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    theme: &str,
+    locale: &str,
+    preferences: &Value,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO user_preferences (user_id, theme, locale, preferences, updated_at)
+           VALUES ($1, $2, $3, $4, NOW())
+           ON CONFLICT (user_id) DO UPDATE SET
+             theme = EXCLUDED.theme,
+             locale = EXCLUDED.locale,
+             preferences = EXCLUDED.preferences,
+             updated_at = NOW()"#,
+    )
+    .bind(user_id)
+    .bind(theme)
+    .bind(locale)
+    .bind(preferences)
+    .execute(&mut *conn)
+    .await?;
+
+    Ok(())
+}
+
+async fn upsert_user_settings_prefs_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    prefs: &UserSettingsPrefs,
+) -> Result<()> {
+    let row =
+        sqlx::query("SELECT preferences, theme, locale FROM user_preferences WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+
+    let (theme, locale, existing_preferences): (String, String, Option<Value>) =
+        if let Some(row) = row {
+            let theme: Option<String> = row.try_get("theme")?;
+            let locale: Option<String> = row.try_get("locale")?;
+            let preferences: Option<Value> = row.try_get("preferences")?;
+            (
+                theme.unwrap_or_else(|| "system".to_string()),
+                locale.unwrap_or_else(|| "en".to_string()),
+                preferences,
+            )
+        } else {
+            ("system".to_string(), "en".to_string(), None)
+        };
+
+    let preferences = merge_settings_page_preferences(existing_preferences, prefs)?;
+
+    sqlx::query(
+        r#"INSERT INTO user_preferences (user_id, theme, locale, preferences, updated_at)
+           VALUES ($1, $2, $3, $4, NOW())
+           ON CONFLICT (user_id) DO UPDATE SET
+             theme = EXCLUDED.theme,
+             locale = EXCLUDED.locale,
+             preferences = EXCLUDED.preferences,
+             updated_at = NOW()"#,
+    )
+    .bind(user_id)
+    .bind(theme)
+    .bind(locale)
+    .bind(preferences)
+    .execute(&mut *conn)
+    .await?;
+
+    Ok(())
+}
+
 impl PgStore {
     pub async fn get_user_settings_prefs(
         &self,
         user_id: &str,
     ) -> Result<Option<UserSettingsPrefs>> {
-        let row = sqlx::query("SELECT preferences FROM user_preferences WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let mut conn = self.pool.acquire().await?;
+        fetch_user_settings_prefs(&mut conn, user_id).await
+    }
 
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let preferences: Option<Value> = row.try_get("preferences")?;
-        let Some(preferences) = preferences else {
-            return Ok(None);
-        };
-
-        let Some(settings_value) = preferences.get("settings_page") else {
-            return Ok(None);
-        };
-
-        Ok(serde_json::from_value::<UserSettingsPrefs>(settings_value.clone()).ok())
+    pub async fn get_user_settings_prefs_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+    ) -> Result<Option<UserSettingsPrefs>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let prefs = fetch_user_settings_prefs(&mut tx, user_id).await?;
+        tx.commit().await?;
+        Ok(prefs)
     }
 
     pub async fn get_user_preferences_record(
         &self,
         user_id: &str,
     ) -> Result<Option<UserPreferencesRecord>> {
-        let row = sqlx::query(
-            "SELECT theme, locale, preferences, updated_at FROM user_preferences WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let mut conn = self.pool.acquire().await?;
+        fetch_user_preferences_record(&mut conn, user_id).await
+    }
 
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let theme: Option<String> = row.try_get("theme")?;
-        let locale: Option<String> = row.try_get("locale")?;
-        let preferences: Option<Value> = row.try_get("preferences")?;
-        let updated_at: Option<DateTime<Utc>> = row.try_get("updated_at")?;
-
-        Ok(Some(UserPreferencesRecord {
-            theme: theme.unwrap_or_else(|| "system".to_string()),
-            locale: locale.unwrap_or_else(|| "en".to_string()),
-            preferences: preferences.unwrap_or_else(|| serde_json::json!({})),
-            updated_at: updated_at.unwrap_or_else(Utc::now),
-        }))
+    pub async fn get_user_preferences_record_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+    ) -> Result<Option<UserPreferencesRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record = fetch_user_preferences_record(&mut tx, user_id).await?;
+        tx.commit().await?;
+        Ok(record)
     }
 
     pub async fn upsert_user_preferences_record(
@@ -74,22 +184,21 @@ impl PgStore {
         locale: &str,
         preferences: &Value,
     ) -> Result<()> {
-        sqlx::query(
-            r#"INSERT INTO user_preferences (user_id, theme, locale, preferences, updated_at)
-               VALUES ($1, $2, $3, $4, NOW())
-               ON CONFLICT (user_id) DO UPDATE SET
-                 theme = EXCLUDED.theme,
-                 locale = EXCLUDED.locale,
-                 preferences = EXCLUDED.preferences,
-                 updated_at = NOW()"#,
-        )
-        .bind(user_id)
-        .bind(theme)
-        .bind(locale)
-        .bind(preferences)
-        .execute(&self.pool)
-        .await?;
+        let mut conn = self.pool.acquire().await?;
+        upsert_user_preferences_record_on(&mut conn, user_id, theme, locale, preferences).await
+    }
 
+    pub async fn upsert_user_preferences_record_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        theme: &str,
+        locale: &str,
+        preferences: &Value,
+    ) -> Result<()> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        upsert_user_preferences_record_on(&mut tx, user_id, theme, locale, preferences).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -98,45 +207,19 @@ impl PgStore {
         user_id: &str,
         prefs: &UserSettingsPrefs,
     ) -> Result<()> {
-        let row = sqlx::query(
-            "SELECT preferences, theme, locale FROM user_preferences WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let mut conn = self.pool.acquire().await?;
+        upsert_user_settings_prefs_on(&mut conn, user_id, prefs).await
+    }
 
-        let (theme, locale, existing_preferences): (String, String, Option<Value>) =
-            if let Some(row) = row {
-                let theme: Option<String> = row.try_get("theme")?;
-                let locale: Option<String> = row.try_get("locale")?;
-                let preferences: Option<Value> = row.try_get("preferences")?;
-                (
-                    theme.unwrap_or_else(|| "system".to_string()),
-                    locale.unwrap_or_else(|| "en".to_string()),
-                    preferences,
-                )
-            } else {
-                ("system".to_string(), "en".to_string(), None)
-            };
-
-        let preferences = merge_settings_page_preferences(existing_preferences, prefs)?;
-
-        sqlx::query(
-            r#"INSERT INTO user_preferences (user_id, theme, locale, preferences, updated_at)
-               VALUES ($1, $2, $3, $4, NOW())
-               ON CONFLICT (user_id) DO UPDATE SET
-                 theme = EXCLUDED.theme,
-                 locale = EXCLUDED.locale,
-                 preferences = EXCLUDED.preferences,
-                 updated_at = NOW()"#,
-        )
-        .bind(user_id)
-        .bind(theme)
-        .bind(locale)
-        .bind(preferences)
-        .execute(&self.pool)
-        .await?;
-
+    pub async fn upsert_user_settings_prefs_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        prefs: &UserSettingsPrefs,
+    ) -> Result<()> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        upsert_user_settings_prefs_on(&mut tx, user_id, prefs).await?;
+        tx.commit().await?;
         Ok(())
     }
 
