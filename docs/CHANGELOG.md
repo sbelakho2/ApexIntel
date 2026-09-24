@@ -7,6 +7,46 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — Mobile UI overhaul + comprehensive UI CI (B397–B401)
+
+### UI (mobile "vertical text" and overflow)
+- **B399** `page_header` now emits the `page-header` class and omits an empty
+  actions block. A phantom 122px actions container squeezed the H1 to ~140px,
+  wrapping "WARNING" mid-word into vertical text on every page.
+- **B400** Mobile layout hardening: data-table cells stay on one line and
+  scroll horizontally (no one-word-per-line titles); long unbroken entity
+  names/URLs wrap inside cards and module footers; flex/grid children can
+  shrink (`min-width: 0`); SVGs/`img`/`canvas` are bounded; graph detail
+  panels clamp; a page-level `overflow-x: clip` guard stops any stray
+  absolutely-positioned node from creating horizontal scroll. CSS cache-bust
+  version bumped so clients reload the rebuilt stylesheet.
+
+### Backend
+- **B397** Entity-activity chart returned 500: `unnest(entity_ids)` sat in the
+  select list with `GROUP BY`. Rewritten over a subquery; insight counts load.
+- **B398** `strategic_opportunities`, `critical_threats`, `supplier_risk`,
+  `pipeline_opportunities` and `source_evidence` score columns are `NUMERIC`
+  while the structs decode `f64`, so `/executive` silently logged decode
+  errors and rendered empty sections. The query column lists now cast to
+  `double precision`.
+- **B401** `RateLimiter` honours `RATE_LIMIT_DISABLED` (dev/test only) so the
+  UI e2e can sweep every route without tripping the limiter.
+
+### CI / tests
+- Added `scripts/ci/e2e_server_ui.mjs`: logs into the real Axum app and sweeps
+  every navigation route at mobile (390×844) and desktop (1280×900), asserting
+  HTTP 2xx, no console/page errors, no horizontal overflow, one-line mobile
+  table cells, styled 404, unauthenticated redirect, and rendered-link
+  integrity. Wired into Woodpecker as the `e2e-server-ui` step (rust image +
+  Node + Chromium, against the Postgres service).
+- `npm run test:server-ui` added.
+
+### Deployed
+- aarch64 binaries + static assets redeployed to `starzerp.fi`; row counts
+  identical pre/post (zero data loss), migrations max=45, health 200.
+
+---
+
 ## [Unreleased] — Deep audit, pass 3 (B389–B396)
 
 Driven by five parallel read-only audits (core, persistence, worker, API/UI,
