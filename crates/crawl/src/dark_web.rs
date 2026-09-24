@@ -291,6 +291,17 @@ lazy_static! {
 // DarkWebMonitor
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Aggregate outcome of one full scan pass across all active forums.
+#[derive(Debug, Clone, Default)]
+pub struct ScanReport {
+    /// Matching posts, sorted by relevance (descending) then recency.
+    pub posts: Vec<DarkWebPost>,
+    /// Active forums scanned without error.
+    pub forums_scanned: u64,
+    /// Active forums whose scan returned an error.
+    pub forums_failed: u64,
+}
+
 /// Dark web forum and paste-site monitor.
 ///
 /// Orchestrates periodic scanning of configured forums, matches content against
@@ -369,7 +380,17 @@ impl DarkWebMonitor {
     /// Errors from individual forums are logged and suppressed so that a
     /// temporary outage on one forum does not prevent scanning the others.
     pub async fn scan_all(&self) -> Vec<DarkWebPost> {
-        let mut all_posts = Vec::new();
+        self.scan_all_detailed().await.posts
+    }
+
+    /// Scan all active forums, returning posts plus per-forum outcome counts.
+    ///
+    /// Like [`scan_all`](Self::scan_all), errors from individual forums are
+    /// logged and suppressed, but callers that need to report scan quality
+    /// (e.g. the worker's `dark_web_scan` job) can inspect
+    /// [`ScanReport::forums_failed`].
+    pub async fn scan_all_detailed(&self) -> ScanReport {
+        let mut report = ScanReport::default();
 
         for forum in &self.forums {
             if !forum.is_active {
@@ -384,9 +405,11 @@ impl DarkWebMonitor {
                         count = posts.len(),
                         "dark_web: forum scan complete"
                     );
-                    all_posts.append(&mut posts);
+                    report.forums_scanned += 1;
+                    report.posts.append(&mut posts);
                 }
                 Err(e) => {
+                    report.forums_failed += 1;
                     warn!(
                         forum = %forum.name,
                         error = %e,
@@ -397,14 +420,14 @@ impl DarkWebMonitor {
         }
 
         // Sort by relevance descending, then by posted_at descending
-        all_posts.sort_unstable_by(|a, b| {
+        report.posts.sort_unstable_by(|a, b| {
             b.relevance_score
                 .partial_cmp(&a.relevance_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(b.posted_at.cmp(&a.posted_at))
         });
 
-        all_posts
+        report
     }
 
     /// Scan a single forum for matching posts.
@@ -1518,6 +1541,39 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let posts = rt.block_on(monitor.scan_all());
         assert!(posts.is_empty());
+    }
+
+    #[test]
+    fn scan_all_detailed_counts_failed_forum() {
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        monitor.set_forums(vec![DarkWebForum {
+            name: "Unreachable Forum".into(),
+            // Port 1 is never bound; the connection is refused immediately.
+            base_url: "http://127.0.0.1:1".into(),
+            forum_type: ForumType::General,
+            access_method: AccessMethod::Clearnet,
+            is_active: true,
+            last_checked: None,
+            topics_of_interest: vec![],
+        }]);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let report = rt.block_on(monitor.scan_all_detailed());
+        assert!(report.posts.is_empty());
+        assert_eq!(report.forums_scanned, 0);
+        assert_eq!(report.forums_failed, 1);
+    }
+
+    #[test]
+    fn scan_all_detailed_with_no_active_forums_reports_zero() {
+        let mut monitor = DarkWebMonitor::new(None).unwrap();
+        for forum in &mut monitor.forums {
+            forum.is_active = false;
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let report = rt.block_on(monitor.scan_all_detailed());
+        assert!(report.posts.is_empty());
+        assert_eq!(report.forums_scanned, 0);
+        assert_eq!(report.forums_failed, 0);
     }
 
     #[test]
