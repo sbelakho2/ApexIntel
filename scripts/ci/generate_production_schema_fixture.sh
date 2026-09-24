@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Regenerates crates/store/tests/fixtures/production_schema_045.sql — the
+# sanitised production-schema snapshot used by the upgrade-migration test.
+#
+# The snapshot is a schema-only dump of the repository migration lineage at
+# revision 045 (the revision the production database is on) plus the
+# `_sqlx_migrations` bookkeeping rows for versions 000..045 with their real
+# sqlx checksums. No business rows, credentials, or comments are included, so
+# the file is safe to commit.
+#
+# The test restores this fixture into a scratch database and runs
+# `sqlx migrate`, which must apply only the still-pending migrations and leave
+# the schema at head. Regenerate whenever an already-applied migration is
+# (validly) re-checksummed.
+#
+# Requirements: docker with the pgvector/pgvector:pg16 image, python3.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MIGRATIONS_DIR="${ROOT}/migrations"
+OUT="${ROOT}/crates/store/tests/fixtures/production_schema_045.sql"
+LAST_VERSION="${LAST_VERSION:-45}"
+CONTAINER="${CONTAINER:-apex-fixture-pg}"
+DB_NAME="apex_fixture"
+DB_USER="apex"
+DB_PASSWORD="apex"
+HOST_PORT="${HOST_PORT:-55432}"
+IMAGE="${IMAGE:-pgvector/pgvector:pg16}"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker is required to regenerate the production schema snapshot" >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required to compute sqlx migration checksums" >&2
+  exit 1
+fi
+
+cleanup() {
+  docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+cleanup
+docker run -d --name "${CONTAINER}" \
+  -e "POSTGRES_USER=${DB_USER}" \
+  -e "POSTGRES_PASSWORD=${DB_PASSWORD}" \
+  -e "POSTGRES_DB=${DB_NAME}" \
+  -p "${HOST_PORT}:5432" \
+  "${IMAGE}" >/dev/null
+
+echo "waiting for ${CONTAINER} to accept connections..."
+until docker exec "${CONTAINER}" pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null 2>&1; do
+  sleep 1
+done
+
+# sqlx creates its bookkeeping table before applying any migration; migration
+# 037 also has a defensive `CREATE TABLE IF NOT EXISTS` with a different shape,
+# so pre-create the real table exactly as sqlx does. Without this the fixture
+# would capture migration 037's fallback shape instead of production's.
+docker exec -i "${CONTAINER}" \
+  psql -v ON_ERROR_STOP=1 -1 -q -U "${DB_USER}" -d "${DB_NAME}" >/dev/null <<'SQL'
+CREATE TABLE IF NOT EXISTS _sqlx_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
+    success BOOLEAN NOT NULL,
+    checksum BYTEA NOT NULL,
+    execution_time BIGINT NOT NULL
+);
+SQL
+
+applied=0
+while IFS= read -r migration; do
+  base="$(basename "${migration}")"
+  version="${base%%_*}"
+  if [ "$((10#${version}))" -gt "${LAST_VERSION}" ]; then
+    continue
+  fi
+  echo "applying ${base}"
+  docker exec -i "${CONTAINER}" \
+    psql -v ON_ERROR_STOP=1 -1 -q -U "${DB_USER}" -d "${DB_NAME}" < "${migration}" >/dev/null
+  applied=$((applied + 1))
+done < <(find "${MIGRATIONS_DIR}" -maxdepth 1 -name '*.sql' | sort)
+
+echo "applied ${applied} migrations (revision <= ${LAST_VERSION})"
+
+# `_sqlx_migrations` is what tells the migrator these revisions already ran.
+# Checksums are sha384 of the raw migration file bytes, matching
+# sqlx-core's `Migration::new`.
+python3 - "${MIGRATIONS_DIR}" "${LAST_VERSION}" > /tmp/apex_sqlx_migrations_rows.sql <<'PY'
+import hashlib
+import os
+import sys
+
+migrations_dir, last_version = sys.argv[1], int(sys.argv[2])
+
+rows = []
+for name in sorted(os.listdir(migrations_dir)):
+    if not name.endswith(".sql"):
+        continue
+    version_text, _, remainder = name.partition("_")
+    version = int(version_text)
+    if version > last_version:
+        continue
+    description = remainder[: -len(".sql")].replace("_", " ")
+    with open(os.path.join(migrations_dir, name), "rb") as handle:
+        checksum = hashlib.sha384(handle.read()).hexdigest()
+    rows.append((version, description, checksum))
+
+print("-- sqlx bookkeeping rows for revisions 0..%d (real checksums)." % last_version)
+print("INSERT INTO _sqlx_migrations (version, description, installed_on, success, checksum, execution_time) VALUES")
+values = []
+for version, description, checksum in rows:
+    escaped = description.replace("'", "''")
+    values.append(
+        "(%d, '%s', TIMESTAMPTZ '2026-01-01 00:00:00+00', TRUE, decode('%s', 'hex'), 0)"
+        % (version, escaped, checksum)
+    )
+print(",\n".join(values) + ";")
+PY
+
+# The `_sqlx_migrations` table itself is created by the DDL below; insert the
+# bookkeeping rows only after it exists.
+docker exec -i "${CONTAINER}" \
+  psql -v ON_ERROR_STOP=1 -1 -q -U "${DB_USER}" -d "${DB_NAME}" \
+  < /tmp/apex_sqlx_migrations_rows.sql >/dev/null
+
+mkdir -p "$(dirname "${OUT}")"
+{
+  cat <<'HEADER'
+-- ─────────────────────────────────────────────────────────────────────────────
+-- production_schema_045.sql — sanitised production-schema snapshot (revision 045)
+--
+-- Generated by scripts/ci/generate_production_schema_fixture.sh. Contents:
+--   * schema-only DDL for every object created by migrations 000..045
+--     (no business rows, roles, owners, privileges, or comments);
+--   * `_sqlx_migrations` bookkeeping rows for 000..045 with their real sqlx
+--     checksums, so `sqlx migrate` validates the applied revisions and applies
+--     only the still-pending migrations.
+--
+-- The upgrade-migration test restores this fixture into a scratch database and
+-- runs the migrator against it, proving a deployed revision-045 database
+-- upgrades cleanly to head without losing the schema contract.
+--
+-- DO NOT EDIT BY HAND. Regenerate with:
+--   scripts/ci/generate_production_schema_fixture.sh
+-- ─────────────────────────────────────────────────────────────────────────────
+
+HEADER
+
+  docker exec "${CONTAINER}" \
+    pg_dump -U "${DB_USER}" -d "${DB_NAME}" \
+    --schema-only --no-owner --no-privileges --no-comments
+
+  echo
+  echo "-- ─── _sqlx_migrations bookkeeping (data) ────────────────────────────────"
+  docker exec "${CONTAINER}" \
+    pg_dump -U "${DB_USER}" -d "${DB_NAME}" \
+    --data-only --table=_sqlx_migrations --column-inserts --no-owner --no-privileges
+} | sed -E '/^\\(un)?restrict /d' > "${OUT}"
+
+echo "wrote ${OUT} ($(wc -l < "${OUT}") lines)"

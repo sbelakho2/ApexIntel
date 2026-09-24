@@ -32,6 +32,13 @@ services:
       POSTGRES_PASSWORD: apex
 
 steps:
+  # Fails if unrelated-project artifacts or generated output are tracked.
+  - name: repo-contamination
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache git bash
+      - bash scripts/ci/check_repo_contamination.sh
+
   - name: rust
     image: rust:bookworm
     environment:
