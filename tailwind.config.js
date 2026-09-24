@@ -3,7 +3,6 @@ module.exports = {
   content: [
     "./crates/api/templates/**/*.html",
     "./crates/api/static/js/**/*.js",
-    "./crates/frontend/src/**/*.rs",
   ],
   darkMode: "class",
   theme: {
