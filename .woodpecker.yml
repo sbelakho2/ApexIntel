@@ -79,6 +79,9 @@ steps:
 
   - name: wasm-shared
     image: rust:bookworm
+    # Compile-heavy steps run sequentially: concurrent cargo builds on a small
+    # runner caused intermittent failures in the api test suite.
+    depends_on: [rust]
     commands:
       - rustup target add wasm32-unknown-unknown
       - cargo check -p apex-shared --target wasm32-unknown-unknown --locked
