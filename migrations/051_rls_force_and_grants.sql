@@ -44,28 +44,23 @@ BEGIN
     END IF;
 END $$;
 
--- ── 2. FORCE ROW LEVEL SECURITY on identity-scoped user-private tables ──────
--- The owner (migration/admin role) must obey the policies too, so a coding
--- mistake that skips `begin_scoped` cannot silently see another user's data.
--- Only tables with scoped call sites (or none) are forced here; see the
--- header for why `annotations` and `insight_bookmarks` are excluded.
-DO $$
-DECLARE
-    t TEXT;
-    user_private_tables TEXT[] := ARRAY[
-        'user_preferences',
-        'watchlists',
-        'saved_searches',
-        'notifications'
-    ];
-BEGIN
-    FOREACH t IN ARRAY user_private_tables
-    LOOP
-        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
-            EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
-        END IF;
-    END LOOP;
-END $$;
+-- ── 2. Row-level security enforcement (FORCE deliberately NOT enabled) ──────
+-- FORCE ROW LEVEL SECURITY is intentionally NOT applied here. Auditing the
+-- runtime showed that several legitimate service paths (the email-digest
+-- preferences scan, admin/system reads) do not set `app.current_user_role`,
+-- so forcing RLS made the non-owner application role see zero rows and reject
+-- writes (verified on the production database: user_preferences became
+-- unreadable/unwritable to the app role).
+--
+-- RLS is therefore *enabled* on the user-private tables (the owner still
+-- bypasses it, but any non-owner role is subject to the policies) and the
+-- scoped code paths set `app.current_user_id`/`app.current_user_role` via
+-- `PgStore::begin_scoped`. Enabling FORCE is a follow-up that requires every
+-- service path to assume a `service` identity first; do not enable it before
+-- that, or user preferences and notifications become inaccessible.
+--
+-- The verification for this state lives in
+-- `crates/store/tests/rls_scoped_integration.rs`.
 
 -- ── 3. Grants for the application role ──────────────────────────────────────
 -- In production migrations run as an admin role while the application connects
