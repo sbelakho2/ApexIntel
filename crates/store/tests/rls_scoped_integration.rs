@@ -330,7 +330,7 @@ async fn scoped_access_isolates_users_but_service_path_still_works() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
-async fn user_private_tables_enable_row_level_security() {
+async fn user_private_tables_force_row_level_security() {
     let url = database_url();
     let admin = connect(&url).await;
     sqlx::migrate!("../../migrations")
@@ -360,10 +360,9 @@ async fn user_private_tables_enable_row_level_security() {
         .await
         .unwrap();
         assert!(enabled, "{table} must have RLS enabled");
-        // FORCE is a follow-up once every service path assumes an identity.
         assert!(
-            !forced,
-            "{table} must not be forced until unscoped service paths set an identity"
+            forced,
+            "{table} must have FORCE ROW LEVEL SECURITY (service paths carry identity)"
         );
     }
 

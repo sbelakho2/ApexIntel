@@ -613,6 +613,14 @@ impl PgStore {
                     sqlx::query("SET statement_timeout = '30s'")
                         .execute(&mut *conn)
                         .await?;
+                    // Default session identity for service (unscoped) work.
+                    // Scoped transactions override this locally with the
+                    // authenticated user via `begin_scoped`, so RLS policies
+                    // can be FORCEd without locking the application role out
+                    // of legitimate service paths (digest scan, admin reads).
+                    sqlx::query("SELECT set_config('app.current_user_role', 'service', false)")
+                        .execute(&mut *conn)
+                        .await?;
                     Ok(())
                 })
             })
