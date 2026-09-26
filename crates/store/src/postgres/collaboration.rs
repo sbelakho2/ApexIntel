@@ -16,6 +16,188 @@ fn normalize_tag_labels(tags: &[String]) -> Vec<String> {
     normalized
 }
 
+async fn replace_tag_assignments_on(
+    conn: &mut sqlx::PgConnection,
+    subject_type: &str,
+    subject_id: &str,
+    source: &str,
+    created_by: Option<&str>,
+    tags: &[String],
+) -> Result<()> {
+    let tags = normalize_tag_labels(tags);
+
+    sqlx::query(
+        "DELETE FROM tag_assignments WHERE subject_type = $1 AND subject_id = $2 AND source = $3",
+    )
+    .bind(subject_type)
+    .bind(subject_id)
+    .bind(source)
+    .execute(&mut *conn)
+    .await?;
+
+    for tag in tags {
+        let normalized = tag.to_ascii_lowercase();
+        let (tag_id,): (Uuid,) = sqlx::query_as(
+            r#"INSERT INTO tags (label, normalized_label)
+               VALUES ($1, $2)
+               ON CONFLICT (normalized_label) DO UPDATE SET label = EXCLUDED.label
+               RETURNING id"#,
+        )
+        .bind(&tag)
+        .bind(&normalized)
+        .fetch_one(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            r#"INSERT INTO tag_assignments (tag_id, subject_type, subject_id, source, created_by)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (tag_id, subject_type, subject_id, source) DO NOTHING"#,
+        )
+        .bind(tag_id)
+        .bind(subject_type)
+        .bind(subject_id)
+        .bind(source)
+        .bind(created_by)
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn upsert_annotation_on(
+    conn: &mut sqlx::PgConnection,
+    id: Option<Uuid>,
+    user_id: &str,
+    entity_type: &str,
+    entity_id: &str,
+    body: &str,
+    tags: &[String],
+    visibility: &str,
+) -> Result<AnnotationRecord> {
+    let id = id.unwrap_or_else(Uuid::new_v4);
+    let record = sqlx::query_as::<_, AnnotationRecord>(
+        r#"INSERT INTO annotations (id, user_id, entity_type, entity_id, body, tags, visibility)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (id) DO UPDATE SET
+             entity_type = EXCLUDED.entity_type,
+             entity_id = EXCLUDED.entity_id,
+             body = EXCLUDED.body,
+             tags = EXCLUDED.tags,
+             visibility = EXCLUDED.visibility,
+             updated_at = NOW()
+           WHERE annotations.user_id = EXCLUDED.user_id
+           RETURNING id, user_id, entity_type, entity_id, body, tags, visibility, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(body)
+    .bind(tags)
+    .bind(visibility)
+    .fetch_one(&mut *conn)
+    .await?;
+
+    replace_tag_assignments_on(
+        &mut *conn,
+        "annotation",
+        &record.id.to_string(),
+        "annotation",
+        Some(user_id),
+        &record.tags,
+    )
+    .await?;
+
+    Ok(record)
+}
+
+async fn list_annotations_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    entity_type: Option<&str>,
+    entity_id: Option<&str>,
+) -> Result<Vec<AnnotationRecord>> {
+    let mut qb = QueryBuilder::<Postgres>::new(
+        "SELECT id, user_id, entity_type, entity_id, body, tags, visibility, created_at, updated_at FROM annotations WHERE (visibility = 'team' OR user_id = ",
+    );
+    qb.push_bind(user_id).push(")");
+    if let Some(entity_type) = entity_type {
+        qb.push(" AND entity_type = ").push_bind(entity_type);
+    }
+    if let Some(entity_id) = entity_id {
+        qb.push(" AND entity_id = ").push_bind(entity_id);
+    }
+    qb.push(" ORDER BY updated_at DESC, id ASC");
+
+    Ok(qb
+        .build_query_as::<AnnotationRecord>()
+        .fetch_all(&mut *conn)
+        .await?)
+}
+
+async fn delete_annotation_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    id: Uuid,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM annotations WHERE id = $1 AND (user_id = $2 OR visibility = 'team')",
+    )
+    .bind(id)
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+async fn update_priority_queue_item_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    id: Uuid,
+    priority: Option<i32>,
+    status: Option<&str>,
+    notes: Option<Option<&str>>,
+) -> Result<Option<PriorityQueueItemRecord>> {
+    let current = match sqlx::query_as::<_, PriorityQueueItemRecord>(
+        "SELECT id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at FROM priority_queue WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+
+    let new_status = status.unwrap_or(&current.status).to_string();
+    let completed_at: Option<DateTime<Utc>> = if new_status == "completed" {
+        Some(Utc::now())
+    } else {
+        None
+    };
+
+    Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
+        r#"UPDATE priority_queue SET
+             priority = $3,
+             status = $4,
+             notes = $5,
+             completed_at = $6,
+             updated_at = NOW()
+           WHERE id = $1 AND user_id = $2
+           RETURNING id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(priority.unwrap_or(current.priority))
+    .bind(&new_status)
+    .bind(notes.unwrap_or(current.notes.as_deref()))
+    .bind(completed_at)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
 async fn upsert_watchlist_on(
     conn: &mut sqlx::PgConnection,
     id: Option<Uuid>,
@@ -257,57 +439,6 @@ impl PgStore {
         Ok(())
     }
 
-    async fn replace_tag_assignments(
-        &self,
-        subject_type: &str,
-        subject_id: &str,
-        source: &str,
-        created_by: Option<&str>,
-        tags: &[String],
-    ) -> Result<()> {
-        let tags = normalize_tag_labels(tags);
-        let mut tx = self.pool.begin().await?;
-
-        sqlx::query(
-            "DELETE FROM tag_assignments WHERE subject_type = $1 AND subject_id = $2 AND source = $3",
-        )
-        .bind(subject_type)
-        .bind(subject_id)
-        .bind(source)
-        .execute(&mut *tx)
-        .await?;
-
-        for tag in tags {
-            let normalized = tag.to_ascii_lowercase();
-            let (tag_id,): (Uuid,) = sqlx::query_as(
-                r#"INSERT INTO tags (label, normalized_label)
-                   VALUES ($1, $2)
-                   ON CONFLICT (normalized_label) DO UPDATE SET label = EXCLUDED.label
-                   RETURNING id"#,
-            )
-            .bind(&tag)
-            .bind(&normalized)
-            .fetch_one(&mut *tx)
-            .await?;
-
-            sqlx::query(
-                r#"INSERT INTO tag_assignments (tag_id, subject_type, subject_id, source, created_by)
-                   VALUES ($1, $2, $3, $4, $5)
-                   ON CONFLICT (tag_id, subject_type, subject_id, source) DO NOTHING"#,
-            )
-            .bind(tag_id)
-            .bind(subject_type)
-            .bind(subject_id)
-            .bind(source)
-            .bind(created_by)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        tx.commit().await?;
-        Ok(())
-    }
-
     pub async fn upsert_saved_search(
         &self,
         id: Option<Uuid>,
@@ -442,38 +573,45 @@ impl PgStore {
         tags: &[String],
         visibility: &str,
     ) -> Result<AnnotationRecord> {
-        let id = id.unwrap_or_else(Uuid::new_v4);
-        let record = sqlx::query_as::<_, AnnotationRecord>(
-            r#"INSERT INTO annotations (id, user_id, entity_type, entity_id, body, tags, visibility)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               ON CONFLICT (id) DO UPDATE SET
-                 entity_type = EXCLUDED.entity_type,
-                 entity_id = EXCLUDED.entity_id,
-                 body = EXCLUDED.body,
-                 tags = EXCLUDED.tags,
-                 visibility = EXCLUDED.visibility,
-                 updated_at = NOW()
-               RETURNING id, user_id, entity_type, entity_id, body, tags, visibility, created_at, updated_at"#,
+        let mut conn = self.pool.acquire().await?;
+        upsert_annotation_on(
+            &mut conn,
+            id,
+            user_id,
+            entity_type,
+            entity_id,
+            body,
+            tags,
+            visibility,
         )
-        .bind(id)
-        .bind(user_id)
-        .bind(entity_type)
-        .bind(entity_id)
-        .bind(body)
-        .bind(tags)
-        .bind(visibility)
-        .fetch_one(&self.pool)
-        .await?;
+        .await
+    }
 
-        self.replace_tag_assignments(
-            "annotation",
-            &record.id.to_string(),
-            "annotation",
-            Some(user_id),
-            &record.tags,
+    /// Identity-scoped annotation write for RLS-forced `annotations`.
+    pub async fn upsert_annotation_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Option<Uuid>,
+        entity_type: &str,
+        entity_id: &str,
+        body: &str,
+        tags: &[String],
+        visibility: &str,
+    ) -> Result<AnnotationRecord> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record = upsert_annotation_on(
+            &mut tx,
+            id,
+            user_id,
+            entity_type,
+            entity_id,
+            body,
+            tags,
+            visibility,
         )
         .await?;
-
+        tx.commit().await?;
         Ok(record)
     }
 
@@ -483,33 +621,40 @@ impl PgStore {
         entity_type: Option<&str>,
         entity_id: Option<&str>,
     ) -> Result<Vec<AnnotationRecord>> {
-        let mut qb = QueryBuilder::<Postgres>::new(
-            "SELECT id, user_id, entity_type, entity_id, body, tags, visibility, created_at, updated_at FROM annotations WHERE (visibility = 'team' OR user_id = ",
-        );
-        qb.push_bind(user_id).push(")");
-        if let Some(entity_type) = entity_type {
-            qb.push(" AND entity_type = ").push_bind(entity_type);
-        }
-        if let Some(entity_id) = entity_id {
-            qb.push(" AND entity_id = ").push_bind(entity_id);
-        }
-        qb.push(" ORDER BY updated_at DESC, id ASC");
+        let mut conn = self.pool.acquire().await?;
+        list_annotations_on(&mut conn, user_id, entity_type, entity_id).await
+    }
 
-        Ok(qb
-            .build_query_as::<AnnotationRecord>()
-            .fetch_all(&self.pool)
-            .await?)
+    /// Identity-scoped annotation read for RLS-forced `annotations`.
+    pub async fn list_annotations_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        entity_type: Option<&str>,
+        entity_id: Option<&str>,
+    ) -> Result<Vec<AnnotationRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let records = list_annotations_on(&mut tx, user_id, entity_type, entity_id).await?;
+        tx.commit().await?;
+        Ok(records)
     }
 
     pub async fn delete_annotation(&self, user_id: &str, id: Uuid) -> Result<bool> {
-        let result = sqlx::query(
-            "DELETE FROM annotations WHERE id = $1 AND (user_id = $2 OR visibility = 'team')",
-        )
-        .bind(id)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
+        let mut conn = self.pool.acquire().await?;
+        delete_annotation_on(&mut conn, user_id, id).await
+    }
+
+    /// Identity-scoped annotation delete for RLS-forced `annotations`.
+    pub async fn delete_annotation_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Uuid,
+    ) -> Result<bool> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let deleted = delete_annotation_on(&mut tx, user_id, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     pub async fn create_notification(
@@ -1257,47 +1402,36 @@ impl PgStore {
         .await?)
     }
 
+    /// Service-path queue update. The `user_id` predicate is mandatory: the
+    /// default `service` identity bypasses per-user RLS, so without it any
+    /// caller could modify another user's queue item.
     pub async fn update_priority_queue_item(
         &self,
+        user_id: &str,
         id: Uuid,
         priority: Option<i32>,
         status: Option<&str>,
         notes: Option<Option<&str>>,
     ) -> Result<Option<PriorityQueueItemRecord>> {
-        let current = match sqlx::query_as::<_, PriorityQueueItemRecord>(
-            "SELECT id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at FROM priority_queue WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await? {
-            Some(c) => c,
-            None => return Ok(None),
-        };
+        let mut conn = self.pool.acquire().await?;
+        update_priority_queue_item_on(&mut conn, user_id, id, priority, status, notes).await
+    }
 
-        let new_status = status.unwrap_or(&current.status).to_string();
-        let completed_at: Option<DateTime<Utc>> = if new_status == "completed" {
-            Some(Utc::now())
-        } else {
-            None
-        };
-
-        Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
-            r#"UPDATE priority_queue SET
-                 priority = $2,
-                 status = $3,
-                 notes = $4,
-                 completed_at = $5,
-                 updated_at = NOW()
-               WHERE id = $1
-               RETURNING id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at"#,
-        )
-        .bind(id)
-        .bind(priority.unwrap_or(current.priority))
-        .bind(&new_status)
-        .bind(notes.unwrap_or(current.notes.as_deref()))
-        .bind(completed_at)
-        .fetch_optional(&self.pool)
-        .await?)
+    /// Identity-scoped queue update for the RLS-forced `priority_queue` table.
+    pub async fn update_priority_queue_item_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Uuid,
+        priority: Option<i32>,
+        status: Option<&str>,
+        notes: Option<Option<&str>>,
+    ) -> Result<Option<PriorityQueueItemRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record =
+            update_priority_queue_item_on(&mut tx, user_id, id, priority, status, notes).await?;
+        tx.commit().await?;
+        Ok(record)
     }
 
     // ─── Supplier Risk Entries ────────────────────────────────────────────────

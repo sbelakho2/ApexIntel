@@ -620,9 +620,7 @@ impl PgStore {
                     // authenticated user via `begin_scoped`, so RLS policies
                     // can be FORCEd without locking the application role out
                     // of legitimate service paths (digest scan, admin reads).
-                    sqlx::query("SELECT set_config('app.current_user_role', 'service', false)")
-                        .execute(&mut *conn)
-                        .await?;
+                    Self::assume_service_identity(&mut *conn).await?;
                     Ok(())
                 })
             })
@@ -633,6 +631,22 @@ impl PgStore {
 
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Mark a connection with the default unscoped `service` identity.
+    ///
+    /// RLS is FORCEd on the user-private tables, and a connection with no
+    /// identity matches neither the owner policy (`user_id =
+    /// current_user_id()` is NULL) nor the `service` policy. Every pool that
+    /// runs unscoped service paths — the API pool and the worker pool — must
+    /// apply this in its `after_connect` hook.
+    pub async fn assume_service_identity(
+        conn: &mut sqlx::PgConnection,
+    ) -> std::result::Result<(), sqlx::Error> {
+        sqlx::query("SELECT set_config('app.current_user_role', 'service', false)")
+            .execute(conn)
+            .await?;
+        Ok(())
     }
 
     /// Begin a transaction scoped to an application identity.

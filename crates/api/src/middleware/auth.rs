@@ -14,19 +14,6 @@ pub struct AuthenticatedRequest {
     pub rate_limit_per_min: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WebSocketAuthOptions {
-    pub allow_subprotocol_fallback: bool,
-}
-
-impl Default for WebSocketAuthOptions {
-    fn default() -> Self {
-        Self {
-            allow_subprotocol_fallback: websocket_subprotocol_compat_enabled(),
-        }
-    }
-}
-
 pub fn authenticate_api_request(
     headers: &HeaderMap,
     method: &Method,
@@ -90,71 +77,6 @@ pub fn authenticate_api_request(
         },
         rate_limit_per_min,
     })
-}
-
-pub fn extract_websocket_token(
-    headers: &HeaderMap,
-    query_token: Option<&str>,
-    options: WebSocketAuthOptions,
-) -> Result<String, ApiError> {
-    if let Some(token) = query_token.map(str::trim).filter(|value| !value.is_empty()) {
-        return Ok(token.to_string());
-    }
-
-    if let Some(token) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(auth::extract_bearer_token)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(token.to_string());
-    }
-
-    if options.allow_subprotocol_fallback {
-        if let Some(token) = headers
-            .get("sec-websocket-protocol")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(',').next())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return Ok(token.to_string());
-        }
-    }
-
-    Err(ApiError::unauthorized())
-}
-
-pub fn validate_websocket_token(
-    token: &str,
-    api_keys: &HashMap<String, ApiKey>,
-    now: DateTime<Utc>,
-) -> Result<ApiAuthContext, ApiError> {
-    match auth::validate_token(token, api_keys, now) {
-        AuthResult::Valid {
-            key_id,
-            owner_user_id,
-            role,
-        } => Ok(ApiAuthContext {
-            key_id,
-            user_id: owner_user_id,
-            role,
-        }),
-        _ => Err(ApiError::unauthorized()),
-    }
-}
-
-pub fn websocket_subprotocol_compat_enabled() -> bool {
-    std::env::var("APEX_WS_SUBPROTOCOL_AUTH_COMPAT")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
 }
 
 pub fn auth_error_response(err: ApiError) -> Response {
@@ -239,66 +161,5 @@ mod tests {
         assert_eq!(authenticated.auth_context.key_id, "admin-key");
         assert_eq!(authenticated.auth_context.user_id, "user-admin");
         assert_eq!(authenticated.rate_limit_per_min, 120);
-    }
-
-    #[test]
-    fn warnings_ws_rejects_missing_auth_token() {
-        let err = extract_websocket_token(
-            &HeaderMap::new(),
-            None,
-            WebSocketAuthOptions {
-                allow_subprotocol_fallback: false,
-            },
-        )
-        .expect_err("missing websocket auth should fail");
-        assert_eq!(err.http_status(), 401);
-    }
-
-    #[test]
-    fn warnings_ws_accepts_supported_auth_transport() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer admin-secret"),
-        );
-        let token = extract_websocket_token(&headers, None, WebSocketAuthOptions::default())
-            .expect("authorization header should succeed");
-        assert_eq!(token, "admin-secret");
-
-        let query_token = extract_websocket_token(
-            &HeaderMap::new(),
-            Some("query-token"),
-            WebSocketAuthOptions {
-                allow_subprotocol_fallback: false,
-            },
-        )
-        .expect("query token should succeed");
-        assert_eq!(query_token, "query-token");
-    }
-
-    #[test]
-    fn warnings_ws_rejects_invalid_subprotocol_token_when_compat_disabled() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "sec-websocket-protocol",
-            HeaderValue::from_static("legacy-token"),
-        );
-        let err = extract_websocket_token(
-            &headers,
-            None,
-            WebSocketAuthOptions {
-                allow_subprotocol_fallback: false,
-            },
-        )
-        .expect_err("subprotocol fallback should be disabled");
-        assert_eq!(err.http_status(), 401);
-    }
-
-    #[test]
-    fn warnings_ws_validates_supported_auth_transport() {
-        let keys = api_keys();
-        let auth_context = validate_websocket_token("admin-secret", &keys, Utc::now())
-            .expect("known token should validate");
-        assert_eq!(auth_context.key_id, "admin-key");
     }
 }

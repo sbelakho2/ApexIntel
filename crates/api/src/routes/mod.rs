@@ -27,7 +27,6 @@ pub mod security;
 pub mod semantic_search;
 pub mod vector_search;
 pub mod warnings;
-pub mod ws;
 
 pub const API_VERSION: &str = "v1";
 
@@ -836,13 +835,6 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
         // WebSocket
         EndpointDef {
             method: HttpMethod::Get,
-            path: "/ws/warnings",
-            description: "Real-time warning stream via WebSocket",
-            auth_required: true,
-            min_role: "viewer",
-        },
-        EndpointDef {
-            method: HttpMethod::Get,
             path: "/ws/calibration",
             description: "Live calibration curve stream via WebSocket",
             auth_required: false,
@@ -1022,7 +1014,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 100);
+        assert_eq!(eps.len(), 99);
     }
 
     #[test]

@@ -17,6 +17,9 @@
 
 {% block content %}
 <div class="space-y-6">
+  {% if let Some(notice) = degraded_notice %}
+  <div class="apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+  {% endif %}
   <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between lg:gap-4">
     <div class="min-w-0">
       <h1 class="break-words">{{ title }}</h1>

@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{InsightListFilters, PgStore, WarningListFilters};
 
 // ─── Query params ───────────────────────────────────────────────────────────
@@ -333,6 +334,9 @@ pub struct InsightsListPage {
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
+    /// Set when any backing query failed, so the page never renders a DB
+    /// failure as "no insights".
+    pub degraded_notice: Option<String>,
 }
 
 /// HTMX partial — just the results fragment (no base layout).
@@ -361,6 +365,7 @@ pub struct InsightsListPartial {
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Template)]
@@ -402,6 +407,9 @@ pub struct InsightDetailPage {
     pub information_gain_bits: Option<String>,
     pub quality_score_pct: Option<i64>,
     pub dissenting_opinions: Vec<DissentingView>,
+    /// Set when any backing query failed, so a storage error never renders as
+    /// "no notes" / "not bookmarked".
+    pub degraded_notice: Option<String>,
 }
 
 pub struct DissentingView {
@@ -616,13 +624,15 @@ pub async fn list_insights(
         ..Default::default()
     };
 
-    let all_insight_rows = store
-        .list_insights(&filters, 1500, 0)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to list insights: {e}");
-            vec![]
-        });
+    let mut degraded_notice: Option<String> = None;
+
+    let all_insight_rows_state = DataState::from_result(
+        store.list_insights(&filters, 1500, 0).await,
+        "list_insights failed (web insights list)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&all_insight_rows_state, &mut degraded_notice);
+    let all_insight_rows = all_insight_rows_state.into_items();
 
     // Hide internal quality-loop telemetry from user-facing Insights UI.
     let visible_insight_rows: Vec<_> = all_insight_rows
@@ -875,13 +885,18 @@ pub async fn list_insights(
             .collect()
     };
 
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web insights list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let unack = unack_state.into_loaded_or(0);
     let ctx = PageContext::from_session(&session, "/insights", unack);
 
     let tpl = InsightsListPage {
@@ -913,6 +928,7 @@ pub async fn list_insights(
         active_filters,
         reset_href,
         page_base_href,
+        degraded_notice: degraded_notice.clone(),
     };
 
     if is_htmx_request(&headers) {
@@ -939,6 +955,7 @@ pub async fn list_insights(
             active_filters: tpl.active_filters,
             reset_href: tpl.reset_href.clone(),
             page_base_href: tpl.page_base_href.clone(),
+            degraded_notice,
         };
         super::render_template(&partial)
     } else {
@@ -953,13 +970,19 @@ pub async fn get_insight(
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web insight detail)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let unack = unack_state.into_loaded_or(0);
     let ctx = PageContext::from_session(&session, "/insights", unack);
 
     let uuid = match Uuid::parse_str(&id) {
@@ -1079,6 +1102,55 @@ pub async fn get_insight(
     let ev_urls = insight.evidence_urls.clone().unwrap_or_default();
     let diversity = source_diversity_label(&ev_urls);
 
+    let bookmarked_state = DataState::from_result(
+        store
+            .get_bookmarked_insight_ids_scoped(
+                &session.username,
+                session.role.as_str(),
+                &[insight.id],
+            )
+            .await,
+        "get_bookmarked_insight_ids failed (web insight detail)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&bookmarked_state, &mut degraded_notice);
+    let bookmarked = bookmarked_state
+        .map(|ids| ids.contains(&insight.id))
+        .into_loaded_or(false);
+
+    let annotations_state = DataState::from_result(
+        store
+            .list_annotations_scoped(
+                &session.username,
+                session.role.as_str(),
+                Some("insight"),
+                Some(&id),
+            )
+            .await,
+        "list_annotations failed (web insight detail)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&annotations_state, &mut degraded_notice);
+    let annotations: Vec<InsightNoteItem> = annotations_state
+        .into_items()
+        .into_iter()
+        .map(|annotation| InsightNoteItem {
+            author: annotation.user_id,
+            body: annotation.body,
+            created_at: annotation.updated_at.format("%Y-%m-%d %H:%M").to_string(),
+            visibility: annotation.visibility,
+            tags: annotation.tags,
+        })
+        .collect();
+
+    let quality_scores_state = DataState::from_result(
+        store.get_insight_feedback_scores(&[insight.id]).await,
+        "get_insight_feedback_scores failed (web insight detail)",
+        std::collections::HashMap::is_empty,
+    );
+    DegradedNotice::capture(&quality_scores_state, &mut degraded_notice);
+    let quality_scores = quality_scores_state.into_loaded_or_default();
+
     let tpl = InsightDetailPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
@@ -1108,11 +1180,7 @@ pub async fn get_insight(
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default(),
         age_label: relative_age(insight.created_at),
-        bookmarked: store
-            .get_bookmarked_insight_ids(&session.username, &[insight.id])
-            .await
-            .map(|ids| ids.contains(&insight.id))
-            .unwrap_or(false),
+        bookmarked,
         tags: insight.tags.clone().unwrap_or_default(),
         evidence_count: evidence.len(),
         source_diversity: diversity.to_string(),
@@ -1120,31 +1188,15 @@ pub async fn get_insight(
         claims,
         claims_degraded,
         entities: vec![],
-        annotations: store
-            .list_annotations(&session.username, Some("insight"), Some(&id))
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|annotation| InsightNoteItem {
-                author: annotation.user_id,
-                body: annotation.body,
-                created_at: annotation.updated_at.format("%Y-%m-%d %H:%M").to_string(),
-                visibility: annotation.visibility,
-                tags: annotation.tags,
-            })
-            .collect(),
+        annotations,
         ai_analysis: None,
         information_gain_bits: Some(format!(
             "{:.2}",
             detail_information_gain_bits(conf, &assessment_severity)
         )),
-        quality_score_pct: {
-            let scores = store
-                .get_insight_feedback_scores(&[insight.id])
-                .await
-                .unwrap_or_default();
-            scores.get(&insight.id).map(|s| (s * 100.0).round() as i64)
-        },
+        quality_score_pct: quality_scores
+            .get(&insight.id)
+            .map(|s| (s * 100.0).round() as i64),
         dissenting_opinions: insight
             .metadata
             .as_ref()
@@ -1167,6 +1219,7 @@ pub async fn get_insight(
                     .collect()
             })
             .unwrap_or_default(),
+        degraded_notice,
     };
 
     super::render_template(&tpl)
@@ -1249,11 +1302,16 @@ pub async fn bookmark_insight_html(
     };
 
     // Try to bookmark; if already bookmarked, unbookmark instead (toggle)
-    let bookmarked = match store.bookmark_insight(uuid, &session.username, None).await {
+    let bookmarked = match store
+        .bookmark_insight_scoped(uuid, &session.username, session.role.as_str(), None)
+        .await
+    {
         Ok(true) => true, // newly bookmarked
         Ok(false) => {
             // Already bookmarked — remove it
-            let _ = store.unbookmark_insight(uuid, &session.username).await;
+            let _ = store
+                .unbookmark_insight_scoped(uuid, &session.username, session.role.as_str())
+                .await;
             false
         }
         Err(e) => {
@@ -1370,9 +1428,10 @@ pub async fn create_insight_note(
     let visibility = form.visibility.as_deref().unwrap_or("team");
 
     match store
-        .upsert_annotation(
-            None,
+        .upsert_annotation_scoped(
             &session.username,
+            session.role.as_str(),
+            None,
             "insight",
             &id,
             body,
@@ -1530,6 +1589,7 @@ mod tests {
             information_gain_bits: None,
             quality_score_pct: None,
             dissenting_opinions: vec![],
+            degraded_notice: None,
         }
     }
 

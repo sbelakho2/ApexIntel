@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters, WarningOrderBy};
 
 // ─── Query params ───────────────────────────────────────────────────────────
@@ -205,6 +206,9 @@ pub struct WarningsListPage {
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
+    /// Set when any backing query failed, so a storage error never renders as
+    /// "no warnings".
+    pub degraded_notice: Option<String>,
 }
 
 /// HTMX partial — just the results fragment (no base layout).
@@ -237,6 +241,7 @@ pub struct WarningsListPartial {
     pub active_filters: i64,
     pub reset_href: String,
     pub page_base_href: String,
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Template)]
@@ -271,6 +276,9 @@ pub struct WarningDetailPage {
     pub related_entities: Vec<RelatedEntity>,
     pub annotations: Vec<AnalystNoteItem>,
     pub ai_analysis: Option<String>,
+    /// Set when any backing query failed, so a storage error never renders as
+    /// "no evidence" / "no notes".
+    pub degraded_notice: Option<String>,
 }
 
 fn parse_tags(raw: Option<&str>) -> Vec<String> {
@@ -511,31 +519,38 @@ pub async fn list_warnings(
     };
     let desc = sort_dir_str != "asc";
 
-    let total = store.count_warnings(&filters).await.unwrap_or_else(|e| {
-        tracing::error!("Failed to count warnings: {e}");
-        0
-    });
+    let mut degraded_notice: Option<String> = None;
+
+    let total_state = DataState::from_result(
+        store.count_warnings(&filters).await,
+        "count_warnings failed (web warnings list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&total_state, &mut degraded_notice);
+    let total = total_state.into_loaded_or(0);
     let total_pages = if total == 0 {
         0
     } else {
         (total + per_page - 1) / per_page
     };
 
-    let warning_rows = store
-        .list_warnings(&filters, order_by, desc, per_page, offset)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to list warnings: {e}");
-            vec![]
-        });
+    let warning_rows_state = DataState::from_result(
+        store
+            .list_warnings(&filters, order_by, desc, per_page, offset)
+            .await,
+        "list_warnings failed (web warnings list)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&warning_rows_state, &mut degraded_notice);
+    let warning_rows = warning_rows_state.into_items();
 
-    let all_warning_rows = store
-        .list_warnings(&filters, order_by, desc, 1500, 0)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to list warning aggregates: {e}");
-            vec![]
-        });
+    let all_warning_rows_state = DataState::from_result(
+        store.list_warnings(&filters, order_by, desc, 1500, 0).await,
+        "list_warnings (aggregates) failed (web warnings list)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&all_warning_rows_state, &mut degraded_notice);
+    let all_warning_rows = all_warning_rows_state.into_items();
 
     // Resolve entity_ids → company names in one batch query
     let all_entity_ids: Vec<Uuid> = warning_rows
@@ -547,10 +562,14 @@ pub async fn list_warnings(
     let company_name_map: HashMap<Uuid, String> = if all_entity_ids.is_empty() {
         HashMap::new()
     } else {
-        store
-            .get_company_names_by_ids(&all_entity_ids)
-            .await
-            .unwrap_or_default()
+        let company_names_state = DataState::from_result(
+            store.get_company_names_by_ids(&all_entity_ids).await,
+            "get_company_names_by_ids failed (web warnings list)",
+            Vec::is_empty,
+        );
+        DegradedNotice::capture(&company_names_state, &mut degraded_notice);
+        company_names_state
+            .into_items()
             .into_iter()
             .map(|(id, name, _, _)| (id, name))
             .collect()
@@ -759,13 +778,18 @@ pub async fn list_warnings(
         trend
     };
 
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings (unacked) failed (web warnings list)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let unack = unack_state.into_loaded_or(0);
     let ctx = PageContext::from_session(&session, "/warnings", unack);
 
     let tpl = WarningsListPage {
@@ -801,6 +825,7 @@ pub async fn list_warnings(
         active_filters,
         reset_href,
         page_base_href,
+        degraded_notice: degraded_notice.clone(),
     };
 
     if is_htmx_request(&headers) {
@@ -831,6 +856,7 @@ pub async fn list_warnings(
             active_filters: tpl.active_filters,
             reset_href: tpl.reset_href.clone(),
             page_base_href: tpl.page_base_href.clone(),
+            degraded_notice,
         };
         super::render_template(&partial)
     } else {
@@ -854,13 +880,19 @@ pub async fn get_warning(
     Path(id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<WarningDetailQuery>,
 ) -> impl IntoResponse {
-    let unack = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
+    let mut degraded_notice: Option<String> = None;
+    let unack_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings (unacked) failed (web warning detail)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unack_state, &mut degraded_notice);
+    let unack = unack_state.into_loaded_or(0);
     let ctx = PageContext::from_session(&session, "/warnings", unack);
 
     let uuid = match Uuid::parse_str(&id) {
@@ -909,10 +941,21 @@ pub async fn get_warning(
         })
         .collect();
 
-    let annotations = store
-        .list_annotations(&session.username, Some("warning"), Some(&id))
-        .await
-        .unwrap_or_default()
+    let annotations_state = DataState::from_result(
+        store
+            .list_annotations_scoped(
+                &session.username,
+                session.role.as_str(),
+                Some("warning"),
+                Some(&id),
+            )
+            .await,
+        "list_annotations failed (web warning detail)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&annotations_state, &mut degraded_notice);
+    let annotations = annotations_state
+        .into_items()
         .into_iter()
         .map(|annotation| AnalystNoteItem {
             author: annotation.user_id,
@@ -928,10 +971,13 @@ pub async fn get_warning(
     let company_rows = if entity_ids_slice.is_empty() {
         vec![]
     } else {
-        store
-            .get_company_names_by_ids(entity_ids_slice)
-            .await
-            .unwrap_or_default()
+        let company_rows_state = DataState::from_result(
+            store.get_company_names_by_ids(entity_ids_slice).await,
+            "get_company_names_by_ids failed (web warning detail)",
+            Vec::is_empty,
+        );
+        DegradedNotice::capture(&company_rows_state, &mut degraded_notice);
+        company_rows_state.into_items()
     };
     let primary_company_name = company_rows
         .first()
@@ -986,6 +1032,7 @@ pub async fn get_warning(
         related_entities,
         annotations,
         ai_analysis: None,
+        degraded_notice,
     };
 
     // For HTMX detail requests, still render the full template since it
@@ -1202,9 +1249,10 @@ pub async fn create_warning_note(
     let visibility = form.visibility.as_deref().unwrap_or("team");
 
     match store
-        .upsert_annotation(
-            None,
+        .upsert_annotation_scoped(
             &session.username,
+            session.role.as_str(),
+            None,
             "warning",
             &id,
             body,

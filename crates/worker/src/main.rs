@@ -350,12 +350,23 @@ async fn main() -> Result<()> {
     }
     tracing::info!("config validated successfully");
 
-    // Create database pool for recipe insertion
+    // Create database pool for recipe insertion. Every worker connection must
+    // carry the same default `service` identity as the API pool: migrations
+    // 057/058 FORCE RLS on user-private tables, and an unset
+    // `app.current_user_role` matches neither the owner nor the service
+    // policy, so worker reads would silently return zero rows and writes would
+    // be rejected.
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(std::time::Duration::from_secs(5))
         .idle_timeout(std::time::Duration::from_secs(600))
         .max_lifetime(std::time::Duration::from_secs(1800))
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                PgStore::assume_service_identity(&mut *conn).await?;
+                Ok(())
+            })
+        })
         .connect(config.database_url_value())
         .await?;
     tracing::info!("connected to database");

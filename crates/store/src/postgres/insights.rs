@@ -112,6 +112,25 @@ impl PgStore {
         Ok(row.0)
     }
 
+    /// Identity-scoped bookmark lookup for RLS-forced `insight_bookmarks`.
+    pub async fn is_insight_bookmarked_scoped(
+        &self,
+        insight_id: Uuid,
+        user_id: &str,
+        role: &str,
+    ) -> Result<bool> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let row: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM insight_bookmarks WHERE insight_id = $1 AND user_id = $2)",
+        )
+        .bind(insight_id)
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.0)
+    }
+
     pub async fn list_insights(
         &self,
         filters: &InsightListFilters,
@@ -336,6 +355,29 @@ impl PgStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Identity-scoped bookmark write for RLS-forced `insight_bookmarks`.
+    pub async fn bookmark_insight_scoped(
+        &self,
+        insight_id: Uuid,
+        user_id: &str,
+        role: &str,
+        note: Option<&str>,
+    ) -> Result<bool> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let result = sqlx::query(
+            r#"INSERT INTO insight_bookmarks (insight_id, user_id, note)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (insight_id, user_id) DO NOTHING"#,
+        )
+        .bind(insight_id)
+        .bind(user_id)
+        .bind(note)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn record_insight_feedback(
         &self,
         insight_id: Uuid,
@@ -547,6 +589,24 @@ impl PgStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Identity-scoped bookmark delete for RLS-forced `insight_bookmarks`.
+    pub async fn unbookmark_insight_scoped(
+        &self,
+        insight_id: Uuid,
+        user_id: &str,
+        role: &str,
+    ) -> Result<bool> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let result =
+            sqlx::query("DELETE FROM insight_bookmarks WHERE insight_id = $1 AND user_id = $2")
+                .bind(insight_id)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Return all bookmarked insight IDs for a user.
     pub async fn get_bookmarked_insight_ids(
         &self,
@@ -561,6 +621,26 @@ impl PgStore {
         .bind(insight_ids)
         .fetch_all(&self.pool)
         .await?;
+        Ok(rows.into_iter().map(|row| row.0).collect())
+    }
+
+    /// Identity-scoped bookmarked-id lookup for RLS-forced `insight_bookmarks`.
+    pub async fn get_bookmarked_insight_ids_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        insight_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT insight_id FROM insight_bookmarks
+             WHERE user_id = $1 AND insight_id = ANY($2)",
+        )
+        .bind(user_id)
+        .bind(insight_ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(rows.into_iter().map(|row| row.0).collect())
     }
 

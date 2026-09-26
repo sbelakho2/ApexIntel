@@ -75,34 +75,69 @@ pub(crate) async fn get_insight_detail(
     };
 
     let entity_ids: Vec<Uuid> = insight.entity_ids.clone().unwrap_or_default();
-    let company_names = state
-        .store
-        .get_company_names_by_ids(&entity_ids)
-        .await
-        .unwrap_or_default();
+    let company_names = match state.store.get_company_names_by_ids(&entity_ids).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get_company_names_by_ids failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load insight entities",
+                ))),
+            );
+        }
+    };
 
     let mut all_observations = Vec::new();
     for entity_id in &entity_ids {
-        let observations = state
-            .store
-            .get_observations_by_entity(*entity_id, 20)
-            .await
-            .unwrap_or_default();
-        all_observations.extend(observations);
+        match state.store.get_observations_by_entity(*entity_id, 20).await {
+            Ok(observations) => all_observations.extend(observations),
+            Err(err) => {
+                tracing::error!(request_id = %request_id, "get_observations_by_entity failed: {err:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response(ApiError::internal(
+                        "Failed to load insight observations",
+                    ))),
+                );
+            }
+        }
     }
     all_observations.sort_by_key(|o| std::cmp::Reverse(o.ts_utc));
     all_observations.truncate(50);
 
-    let related_warnings = state
+    let related_warnings = match state
         .store
         .get_warnings_by_entity_ids(&entity_ids, 10)
         .await
-        .unwrap_or_default();
-    let related_insights = state
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get_warnings_by_entity_ids failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load related warnings",
+                ))),
+            );
+        }
+    };
+    let related_insights = match state
         .store
         .get_related_insights(&entity_ids, insight_id, 10)
         .await
-        .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get_related_insights failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load related insights",
+                ))),
+            );
+        }
+    };
 
     let observations_json: Vec<serde_json::Value> = all_observations
         .iter()
@@ -159,13 +194,36 @@ pub(crate) async fn get_insight_detail(
         })
         .collect();
 
-    let quality_score = state
+    let quality_scores = match state.store.get_insight_feedback_scores(&[insight_id]).await {
+        Ok(scores) => scores,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "get_insight_feedback_scores failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load insight quality score",
+                ))),
+            );
+        }
+    };
+    let quality_score = quality_scores.get(&insight_id).copied().unwrap_or(0.5);
+
+    let bookmarked = match state
         .store
-        .get_insight_feedback_scores(&[insight_id])
+        .is_insight_bookmarked_scoped(insight_id, &auth_ctx.user_id, auth_ctx.role.as_str())
         .await
-        .ok()
-        .and_then(|scores| scores.get(&insight_id).copied())
-        .unwrap_or(0.5);
+    {
+        Ok(bookmarked) => bookmarked,
+        Err(err) => {
+            tracing::error!(request_id = %request_id, "is_insight_bookmarked failed: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response(ApiError::internal(
+                    "Failed to load bookmark state",
+                ))),
+            );
+        }
+    };
 
     let detail = serde_json::json!({
         "id": insight.id,
@@ -185,7 +243,7 @@ pub(crate) async fn get_insight_detail(
         "related_insights": related_json,
         "source_count": insight.evidence_urls.as_ref().map(|urls| urls.len()).unwrap_or(0),
         "observation_count": all_observations.len(),
-        "bookmarked": state.store.is_insight_bookmarked(insight_id, &auth_ctx.user_id).await.unwrap_or(false),
+        "bookmarked": bookmarked,
         "quality_score": quality_score,
     });
 

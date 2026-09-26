@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::PageContext;
 use crate::middleware::session::WebSession;
+use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{PgStore, WarningListFilters};
 
 #[derive(Clone, Debug)]
@@ -36,29 +37,46 @@ pub struct NotificationsPage {
     pub unread_count: i64,
     pub total: i64,
     pub notifications: Vec<NotificationItem>,
+    /// Set when any backing query failed, so a storage error never renders as
+    /// an empty inbox.
+    pub degraded_notice: Option<String>,
 }
 
 pub async fn list_notifications_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
 ) -> impl IntoResponse {
-    let warning_count = store
-        .count_warnings(&WarningListFilters {
-            acknowledged: Some(false),
-            ..Default::default()
-        })
-        .await
-        .unwrap_or(0);
+    let mut degraded_notice: Option<String> = None;
+
+    let warning_count_state = DataState::from_result(
+        store
+            .count_warnings(&WarningListFilters {
+                acknowledged: Some(false),
+                ..Default::default()
+            })
+            .await,
+        "count_warnings failed (web notifications page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&warning_count_state, &mut degraded_notice);
+    let warning_count = warning_count_state.into_loaded_or(0);
     let ctx = PageContext::from_session(&session, "/notifications", warning_count);
 
-    let notifications = store
-        .list_notifications(&session.username, true, 100)
-        .await
-        .unwrap_or_default();
-    let unread_count = store
-        .unread_notification_count(&session.username)
-        .await
-        .unwrap_or(0);
+    let notifications_state = DataState::from_result(
+        store.list_notifications(&session.username, true, 100).await,
+        "list_notifications failed (web notifications page)",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&notifications_state, &mut degraded_notice);
+    let notifications = notifications_state.into_items();
+
+    let unread_count_state = DataState::from_result(
+        store.unread_notification_count(&session.username).await,
+        "unread_notification_count failed (web notifications page)",
+        |_| false,
+    );
+    DegradedNotice::capture(&unread_count_state, &mut degraded_notice);
+    let unread_count = unread_count_state.into_loaded_or(0);
 
     let page = NotificationsPage {
         current_path: ctx.current_path,
@@ -68,6 +86,7 @@ pub async fn list_notifications_page(
         warning_count: ctx.warning_count,
         theme: ctx.theme,
         unread_count,
+        degraded_notice,
         total: notifications.len() as i64,
         notifications: notifications
             .into_iter()
