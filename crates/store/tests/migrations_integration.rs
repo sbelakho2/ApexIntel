@@ -100,6 +100,8 @@ async fn core_and_feature_tables_exist() {
         "trend_rollups",
         "user_alert_subscriptions",
         "source_runtime_state",
+        "entity_verification_evidence",
+        "entity_review_queue",
     ] {
         assert!(table_exists(&pool, table).await, "missing table {table}");
     }
@@ -119,6 +121,58 @@ async fn core_and_feature_tables_exist() {
             "missing column {table}.{column}"
         );
     }
+
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn entity_review_queue_enqueue_is_idempotent_per_pending_candidate() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = apex_store::postgres::PgStore { pool: pool.clone() };
+
+    let candidate_id = uuid::Uuid::new_v4();
+    let row = apex_store::postgres::EntityReviewRow {
+        candidate_id,
+        candidate_name: "Acme Corp".to_string(),
+        normalized_name: "acme".to_string(),
+        confidence: 0.42,
+        outcome: "analyst_review".to_string(),
+        review_reasons: vec!["missing registry-class identity anchor".to_string()],
+        evidence: serde_json::json!([
+            {"verification_type": "official_registry", "matched_value": "Acme Corp"}
+        ]),
+        metadata: serde_json::json!({"discovered_via": "migration_test"}),
+        source: "migration_test".to_string(),
+    };
+
+    let first = store.enqueue_entity_review(&row).await.unwrap();
+    let second = store.enqueue_entity_review(&row).await.unwrap();
+    assert_eq!(
+        first, second,
+        "repeated nightly passes must reuse the pending review row"
+    );
+
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM entity_review_queue WHERE candidate_id = $1 AND status = 'pending'",
+    )
+    .bind(candidate_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(pending, 1);
+
+    // Once resolved, a later pass may reopen a pending review.
+    sqlx::query(
+        "UPDATE entity_review_queue SET status = 'resolved', resolved_at = NOW() WHERE id = $1",
+    )
+    .bind(first)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let third = store.enqueue_entity_review(&row).await.unwrap();
+    assert_ne!(third, first, "resolved reviews do not block new ones");
 
     pool.close().await;
 }

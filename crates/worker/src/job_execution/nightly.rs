@@ -1,9 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use aho_corasick::AhoCorasick;
 #[cfg(feature = "llm")]
+use crate::entity_admission::EntityAdmissionResult;
+use aho_corasick::AhoCorasick;
 use apex_core::entities::{Company, CompanyType};
 use apex_crawl::browser::{BrowserFetcher, BrowserRequest};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
@@ -13,6 +14,8 @@ use apex_crawl::sources::{
     coverage_debt_remaining as remaining_due_sources, dispatch_source_fetch, select_due_sources,
     FetchDispatch, Source, FORCED_SOURCE_SLUGS,
 };
+#[cfg(feature = "llm")]
+use apex_insights::company_discovery::{normalize_company_name, CompanyCandidate, DiscoverySource};
 #[cfg(feature = "llm")]
 use apex_insights::dynamic_poi_discovery::{
     DiscoveredEntity, DynamicPoiDiscovery, EntityType, PoiCandidate, Recommendation,
@@ -346,30 +349,32 @@ fn recommendation_label(recommendation: &Recommendation) -> &'static str {
     }
 }
 
+/// A dynamically discovered candidate staged until the whole crawl cycle has
+/// been processed, so [`IndependentSourceDomainsProvider`] can see every
+/// source domain that mentioned it.
 #[cfg(feature = "llm")]
-async fn persist_dynamic_discovery_candidates(
-    store: &Arc<PgStore>,
+#[derive(Debug, Clone)]
+struct StagedDynamicCandidate {
+    candidate: PoiCandidate,
+    discovered: DiscoveredEntity,
+    source_domains: BTreeSet<String>,
+}
+
+/// Stage (deduplicate + merge) dynamic discoveries from one source. Nothing
+/// is persisted here; candidates are only admitted after the cycle completes.
+#[cfg(feature = "llm")]
+fn stage_dynamic_discovery_candidates(
+    staged: &mut HashMap<String, StagedDynamicCandidate>,
     candidates: &[PoiCandidate],
     discovered: &[DiscoveredEntity],
-    inserted_names: &mut HashSet<String>,
-    now: chrono::DateTime<Utc>,
-) -> Result<u64> {
-    let insert_limit = std::env::var("CRAWL_DYNAMIC_DISCOVERY_INSERT_LIMIT")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(100)
-        .clamp(1, 1000);
-
+    source_domain: Option<&str>,
+) {
     let discovered_by_name: HashMap<String, &DiscoveredEntity> = discovered
         .iter()
         .map(|entity| (entity.normalized_name.to_ascii_lowercase(), entity))
         .collect();
 
-    let mut inserted = 0_u64;
     for candidate in candidates {
-        if inserted as usize >= insert_limit {
-            break;
-        }
         if !matches!(
             candidate.entity_type,
             EntityType::Company | EntityType::Organization
@@ -382,16 +387,14 @@ async fn persist_dynamic_discovery_candidates(
         ) {
             continue;
         }
-        // Confidence threshold lowered from 0.72 → 0.45 to escape the
-        // bootstrapping trap where new companies only score high confidence if
-        // they already resemble the seed set. At 0.45, genuinely new companies
-        // that appear in crawl content with reasonable signal get admitted, then
-        // get enriched/scored by downstream jobs (ICP, OSINT enrichment).
+        // 0.45 is only the "worth verifying" pre-filter. Admission itself
+        // decides via evidence; this threshold can never admit a company.
         if candidate.confidence < 0.45 {
             continue;
         }
-        // Relax the co-occurrence gate: allow single-source discoveries if they
-        // have meaningful confidence (was: require co_occurrence>0 OR source_diversity>=2).
+        // Relax the co-occurrence gate: allow single-source discoveries if
+        // they have meaningful confidence (was: require co_occurrence>0 OR
+        // source_diversity>=2).
         if candidate.co_occurrence_count == 0
             && candidate.source_diversity < 1
             && candidate.confidence < 0.6
@@ -407,72 +410,190 @@ async fn persist_dynamic_discovery_candidates(
         }
 
         let dedup_key = name.to_ascii_lowercase();
-        if !inserted_names.insert(dedup_key.clone()) {
-            continue;
-        }
-        if store.get_company_by_name_ci(&name).await?.is_some() {
-            continue;
-        }
-
         let discovered_entity = discovered_by_name.get(&dedup_key).copied();
-        let mut company = Company::new(
-            name.clone(),
-            CompanyType::Other("crawl_discovered".to_string()),
-        );
-        company.metadata = serde_json::json!({
-            "discovered_via": "crawl_dynamic_discovery",
-            "recommended_action": recommendation_label(&candidate.recommended_action),
-            "confidence": candidate.confidence,
-            "emergence_score": candidate.emergence_score,
-            "co_occurrence_count": candidate.co_occurrence_count,
-            "source_diversity": candidate.source_diversity,
-            "context": discovered_entity
-                .map(|entity| crate::truncate_text(&entity.context, 220))
-                .unwrap_or_default(),
-            "source_url": discovered_entity
-                .map(|entity| entity.source_url.clone())
-                .unwrap_or_default(),
-            "topics": discovered_entity
-                .map(|entity| entity.topics.clone())
-                .unwrap_or_default(),
-            "geography": discovered_entity
-                .map(|entity| entity.geography.clone())
-                .unwrap_or_default(),
-            "associated_entities": discovered_entity
-                .map(|entity| entity.associated_entities.clone())
-                .unwrap_or_default(),
-            "is_competitor": false,
-            "discovery_track": "crawl_dynamic",
-        });
-        company.created_at = now;
-        company.updated_at = now;
+        let staged_candidate = staged
+            .entry(dedup_key)
+            .or_insert_with(|| StagedDynamicCandidate {
+                candidate: PoiCandidate {
+                    name: name.clone(),
+                    ..candidate.clone()
+                },
+                discovered: discovered_entity
+                    .cloned()
+                    .unwrap_or_else(|| DiscoveredEntity {
+                        raw_name: name.clone(),
+                        normalized_name: normalize_company_name(&name),
+                        source_url: String::new(),
+                        context: String::new(),
+                        confidence: candidate.confidence,
+                        entity_type: EntityType::Company,
+                        associated_entities: Vec::new(),
+                        topics: Vec::new(),
+                        geography: Vec::new(),
+                    }),
+                source_domains: BTreeSet::new(),
+            });
 
-        store.insert_company(&company).await?;
-        inserted += 1;
-        // Surface the first detection of a new company in the activity feed.
-        // This branch only runs for genuinely new companies (existing names
-        // `continue` at the get_company_by_name_ci check above).
-        let region = discovered_entity
-            .and_then(|entity| entity.geography.first())
-            .map(String::as_str);
-        let company_id = company.id.to_string();
-        let activity_logger = apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
-        activity_logger
-            .log_company_detected(
-                &company.name,
-                region,
-                "crawl_dynamic_discovery",
-                Some(&company_id),
-            )
-            .await;
-        tracing::info!(
-            company = %company.name,
-            confidence = candidate.confidence,
-            recommendation = %recommendation_label(&candidate.recommended_action),
-            "crawl_cycle: inserted dynamically discovered company"
+        staged_candidate.candidate.confidence = staged_candidate
+            .candidate
+            .confidence
+            .max(candidate.confidence);
+        staged_candidate.candidate.emergence_score = staged_candidate
+            .candidate
+            .emergence_score
+            .max(candidate.emergence_score);
+        staged_candidate.candidate.co_occurrence_count = staged_candidate
+            .candidate
+            .co_occurrence_count
+            .max(candidate.co_occurrence_count);
+        staged_candidate.candidate.source_diversity = staged_candidate
+            .candidate
+            .source_diversity
+            .max(candidate.source_diversity);
+        if let Some(entity) = discovered_entity {
+            if entity.confidence > staged_candidate.discovered.confidence {
+                staged_candidate.discovered = entity.clone();
+            }
+        }
+        if let Some(domain) = source_domain {
+            let domain = domain.trim().to_ascii_lowercase();
+            if !domain.is_empty() {
+                staged_candidate.source_domains.insert(domain);
+            }
+        }
+    }
+}
+
+/// Admit staged dynamic discoveries through the canonical
+/// `EntityAdmissionService`: evidence-backed verification or analyst review,
+/// never a direct company insert.
+#[cfg(feature = "llm")]
+async fn admit_dynamic_discovery_candidates(
+    store: &Arc<PgStore>,
+    staged: &HashMap<String, StagedDynamicCandidate>,
+    limit: usize,
+) -> Result<u64> {
+    let mut admission = crate::entity_admission::build_entity_admission_service(
+        store.as_ref(),
+        "crawl_dynamic_discovery",
+        "crawl_discovered",
+    );
+    let mut ordered: Vec<&StagedDynamicCandidate> = staged.values().collect();
+    ordered.sort_by(|a, b| {
+        b.candidate
+            .confidence
+            .partial_cmp(&a.candidate.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut inserted = 0_u64;
+    let mut review_required = 0_u64;
+    for staged_candidate in ordered {
+        if inserted as usize >= limit {
+            break;
+        }
+
+        let mut metadata: HashMap<String, String> = HashMap::new();
+        let discovered = &staged_candidate.discovered;
+        metadata.insert("source_url".to_string(), discovered.source_url.clone());
+        metadata.insert(
+            "context".to_string(),
+            crate::truncate_text(&discovered.context, 220).to_string(),
         );
+        metadata.insert("topics".to_string(), discovered.topics.join(", "));
+        metadata.insert("geography".to_string(), discovered.geography.join(", "));
+        metadata.insert(
+            "associated_entities".to_string(),
+            discovered.associated_entities.join(", "),
+        );
+        metadata.insert(
+            "recommended_action".to_string(),
+            recommendation_label(&staged_candidate.candidate.recommended_action).to_string(),
+        );
+        metadata.insert(
+            "emergence_score".to_string(),
+            staged_candidate.candidate.emergence_score.to_string(),
+        );
+        metadata.insert(
+            "co_occurrence_count".to_string(),
+            staged_candidate.candidate.co_occurrence_count.to_string(),
+        );
+        metadata.insert(
+            "source_diversity".to_string(),
+            staged_candidate.candidate.source_diversity.to_string(),
+        );
+        metadata.insert("is_competitor".to_string(), "false".to_string());
+        metadata.insert("discovery_track".to_string(), "crawl_dynamic".to_string());
+        if !staged_candidate.source_domains.is_empty() {
+            metadata.insert(
+                "source_domains".to_string(),
+                staged_candidate
+                    .source_domains
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+
+        let company_candidate = CompanyCandidate {
+            raw_name: staged_candidate.candidate.name.clone(),
+            normalized_name: normalize_company_name(&staged_candidate.candidate.name),
+            source: DiscoverySource::WebCrawl,
+            extraction_confidence: staged_candidate.candidate.confidence,
+            context_snippet: crate::truncate_text(&discovered.context, 220).to_string(),
+            metadata,
+        };
+
+        match admission
+            .evaluate_company_candidate(&company_candidate)
+            .await
+        {
+            Ok(EntityAdmissionResult::Created(company_id)) => {
+                inserted += 1;
+                let region = discovered.geography.first().map(String::as_str);
+                let activity_logger =
+                    apex_worker::activity_logger::ActivityLogger::new(store.pool.clone());
+                activity_logger
+                    .log_company_detected(
+                        &company_candidate.raw_name,
+                        region,
+                        "crawl_dynamic_discovery",
+                        Some(&company_id.to_string()),
+                    )
+                    .await;
+                tracing::info!(
+                    company = %company_candidate.raw_name,
+                    confidence = company_candidate.extraction_confidence,
+                    "crawl_cycle: admitted verified dynamically discovered company"
+                );
+            }
+            Ok(EntityAdmissionResult::Existing(_)) => {}
+            Ok(EntityAdmissionResult::ReviewRequired(review_id)) => {
+                review_required += 1;
+                tracing::debug!(
+                    company = %company_candidate.raw_name,
+                    review_id = %review_id,
+                    "crawl_cycle: dynamic discovery candidate queued for analyst review"
+                );
+            }
+            Ok(EntityAdmissionResult::Rejected) => {}
+            Err(error) => {
+                tracing::warn!(
+                    company = %company_candidate.raw_name,
+                    error = %error,
+                    "crawl_cycle: entity admission failed"
+                );
+            }
+        }
     }
 
+    tracing::info!(
+        inserted,
+        review_required,
+        staged = staged.len(),
+        "crawl_cycle: dynamic discovery admission complete"
+    );
     Ok(inserted)
 }
 
@@ -550,7 +671,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     let mut dynamic_discovery =
         DynamicPoiDiscovery::new(entity_lookup.keys().cloned().collect::<Vec<_>>());
     #[cfg(feature = "llm")]
-    let mut discovered_company_names: HashSet<String> = HashSet::new();
+    let mut staged_dynamic_candidates: HashMap<String, StagedDynamicCandidate> = HashMap::new();
 
     let mut ingested: u64 = 0;
     let mut entity_linked: u64 = 0;
@@ -710,26 +831,16 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                             );
                             if !discovered.is_empty() {
                                 let candidates = dynamic_discovery.generate_candidates(&discovered);
-                                match persist_dynamic_discovery_candidates(
-                                    store,
+                                // Stage only; admission (evidence-backed
+                                // verification or analyst review) runs once
+                                // the whole cycle has collected every source
+                                // domain that mentioned each candidate.
+                                stage_dynamic_discovery_candidates(
+                                    &mut staged_dynamic_candidates,
                                     &candidates,
                                     &discovered,
-                                    &mut discovered_company_names,
-                                    Utc::now(),
-                                )
-                                .await
-                                {
-                                    Ok(inserted) => {
-                                        dynamically_discovered_companies += inserted;
-                                    }
-                                    Err(error) => {
-                                        tracing::warn!(
-                                            source = %src.slug,
-                                            error = %error,
-                                            "crawl_cycle: dynamic discovery persistence failed"
-                                        );
-                                    }
-                                }
+                                    src.domain().as_deref(),
+                                );
                             }
                         }
                         match store
@@ -826,6 +937,24 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                 )
                 .await;
             }
+        }
+    }
+
+    #[cfg(feature = "llm")]
+    if !staged_dynamic_candidates.is_empty() {
+        let admission_limit = std::env::var("CRAWL_DYNAMIC_DISCOVERY_INSERT_LIMIT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(100)
+            .clamp(1, 1000);
+        match admit_dynamic_discovery_candidates(store, &staged_dynamic_candidates, admission_limit)
+            .await
+        {
+            Ok(inserted) => dynamically_discovered_companies = inserted,
+            Err(error) => tracing::warn!(
+                error = %error,
+                "crawl_cycle: dynamic discovery admission failed"
+            ),
         }
     }
 

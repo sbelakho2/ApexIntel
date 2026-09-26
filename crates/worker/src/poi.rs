@@ -179,41 +179,93 @@ pub(crate) async fn resolve_discovered_company_id(
     }
 
     if let Some(org_name) = inferred_org {
-        if let Some(existing) = store.get_company_by_name_ci(org_name).await? {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("source_url".to_string(), disc.source_url.clone());
+        metadata.insert(
+            "discovery_method".to_string(),
+            disc.discovery_method.clone(),
+        );
+        metadata.insert("seed_person_id".to_string(), disc.seed_person_id.clone());
+        metadata.insert("confidence".to_string(), disc.confidence.to_string());
+        metadata.insert(
+            "seed_is_competitor".to_string(),
+            seed_is_competitor.to_string(),
+        );
+        metadata.insert("is_competitor".to_string(), seed_is_competitor.to_string());
+        metadata.insert(
+            "discovery_track".to_string(),
             if seed_is_competitor {
-                persist_discovered_company_context(store, &existing, disc, parent_seed, now)
-                    .await?;
+                "competitor".to_string()
+            } else {
+                "partner_or_prospect".to_string()
+            },
+        );
+        if let Some(seed) = parent_seed {
+            metadata.insert("seed_org_name".to_string(), seed.org_name.clone());
+            if let Some(seed_org_id) = seed.primary_org_id {
+                metadata.insert("seed_org_id".to_string(), seed_org_id.to_string());
             }
-            return Ok(Some(existing.id));
+        }
+        if let Some(domain) = inferred_domain.clone() {
+            metadata.insert("website".to_string(), domain);
         }
 
-        let mut company = Company::new(
-            org_name.to_string(),
-            CompanyType::Other("poi_discovered".to_string()),
+        let company_candidate = apex_insights::company_discovery::CompanyCandidate {
+            raw_name: org_name.to_string(),
+            normalized_name: normalize_company_name(org_name),
+            source: apex_insights::company_discovery::DiscoverySource::Other(
+                "poi_discovery".to_string(),
+            ),
+            extraction_confidence: disc.confidence as f64,
+            context_snippet: disc.source_url.clone(),
+            metadata,
+        };
+
+        // No direct insert: admission verifies (domain/RDAP/corporate-site/
+        // registry evidence) before creating a canonical company; unknown
+        // candidates are queued for analyst review instead.
+        let mut admission = crate::entity_admission::build_entity_admission_service(
+            store,
+            "poi_discovery",
+            "poi_discovered",
         );
-        company.domain = inferred_domain;
-        company.metadata = serde_json::json!({
-            "discovered_via": "poi_discovery",
-            "discovery_method": disc.discovery_method,
-            "source_url": disc.source_url,
-            "seed_person_id": disc.seed_person_id,
-            "confidence": disc.confidence,
-            "seed_org_name": parent_seed.map(|seed| seed.org_name.as_str()),
-            "seed_org_id": parent_seed.and_then(|seed| seed.primary_org_id).map(|id| id.to_string()),
-            "seed_is_competitor": seed_is_competitor,
-            "is_competitor": seed_is_competitor,
-            "discovery_track": if seed_is_competitor { "competitor" } else { "partner_or_prospect" },
-        });
-        company.created_at = now;
-        company.updated_at = now;
-        store.insert_company(&company).await?;
-        tracing::info!(
-            company = %company.name,
-            domain = ?company.domain,
-            method = %disc.discovery_method,
-            "poi_discovery: inserted new company"
-        );
-        return Ok(Some(company.id));
+        match admission
+            .evaluate_company_candidate(&company_candidate)
+            .await?
+        {
+            crate::entity_admission::EntityAdmissionResult::Created(company_id) => {
+                tracing::info!(
+                    company = %org_name,
+                    domain = ?inferred_domain,
+                    method = %disc.discovery_method,
+                    "poi_discovery: admitted verified company"
+                );
+                return Ok(Some(company_id));
+            }
+            crate::entity_admission::EntityAdmissionResult::Existing(company_id) => {
+                if seed_is_competitor {
+                    if let Some(existing) = store.get_company(company_id).await? {
+                        persist_discovered_company_context(
+                            store,
+                            &existing,
+                            disc,
+                            parent_seed,
+                            now,
+                        )
+                        .await?;
+                    }
+                }
+                return Ok(Some(company_id));
+            }
+            crate::entity_admission::EntityAdmissionResult::ReviewRequired(_) => {
+                tracing::info!(
+                    company = %org_name,
+                    method = %disc.discovery_method,
+                    "poi_discovery: candidate queued for analyst review"
+                );
+            }
+            crate::entity_admission::EntityAdmissionResult::Rejected => {}
+        }
     }
 
     Ok(parent_seed.and_then(|seed| seed.primary_org_id))
