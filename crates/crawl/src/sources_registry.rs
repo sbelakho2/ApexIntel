@@ -224,11 +224,6 @@ impl SourceCapability {
         }
     }
 
-    /// Only validated sources count toward the operational source metric.
-    pub fn is_operational(self) -> bool {
-        matches!(self, Self::Operational)
-    }
-
     /// States the scheduler may attempt. `Unvalidated` sources are attempted so
     /// a successful fetch/parser contract check can promote them to
     /// `Operational`; every other state is excluded from scheduling.
@@ -238,9 +233,9 @@ impl SourceCapability {
 }
 
 /// True when runtime state proves at least one successful fetch/parser
-/// contract check: `PgStore::record_source_success` is only called after the
-/// fetched body was parsed and its observation stored, so `last_success_at`
-/// set means both the fetch and the parser contract held.
+/// contract check: the crawl cycle records `last_success_at` only after the
+/// fetched body was parsed and produced non-empty content, so the timestamp
+/// means both the fetch and the parser contract held.
 pub fn source_is_validated(runtime: Option<&SourceRuntimeStateRow>) -> bool {
     runtime.and_then(|row| row.last_success_at).is_some()
 }
@@ -3484,16 +3479,14 @@ pub struct SourceCoverageSummary {
     /// Enabled sources in the registry ("Registered").
     pub registered: usize,
     /// Validated sources with a closed circuit and no consecutive failures.
+    /// The only sources counted in the operational source metric.
     pub operational: usize,
     /// Sources with at least one successful fetch/parser contract check and a
     /// deployment-supported strategy.
     pub validated: usize,
     pub due: usize,
-    /// Alias of `operational`, kept for existing consumers.
-    pub healthy: usize,
-    /// Validated sources currently backing off after failures.
-    pub degraded: usize,
-    /// Every source currently backing off after failures (validated or not).
+    /// Every source currently backing off after failures or with an open
+    /// circuit (validated or not).
     pub temporarily_degraded: usize,
     /// Registered, deployment-supported sources without a successful
     /// fetch/parser contract check yet.
@@ -3567,19 +3560,23 @@ pub fn source_coverage_summary(
         if validated {
             summary.validated += 1;
             if degraded || effective == SourceCapability::TemporarilyFailed {
-                summary.degraded += 1;
                 summary.temporarily_degraded += 1;
             } else {
                 summary.operational += 1;
-                summary.healthy += 1;
             }
             continue;
         }
 
         match effective {
-            // `Operational` is unreachable here: it is only returned with
-            // recorded validation evidence, which the branch above handles.
-            SourceCapability::Operational | SourceCapability::Unvalidated => {
+            // `Operational` is unreachable here: `effective_capability` only
+            // returns it with recorded validation evidence, which the branch
+            // above handles. Handle it as validated anyway so a future change
+            // to that invariant cannot miscount the source.
+            SourceCapability::Operational => {
+                summary.validated += 1;
+                summary.operational += 1;
+            }
+            SourceCapability::Unvalidated => {
                 summary.never_crawled += 1;
             }
             SourceCapability::TemporarilyFailed => {
@@ -3968,8 +3965,6 @@ mod scheduler_tests {
         // Only `healthy` is both validated and not degraded.
         assert_eq!(summary.operational, 1);
         assert_eq!(summary.validated, 2);
-        assert_eq!(summary.healthy, 1);
-        assert_eq!(summary.degraded, 1);
         assert_eq!(summary.temporarily_degraded, 1);
         assert_eq!(summary.never_crawled, 1);
         assert_eq!(summary.credential_blocked, 1);

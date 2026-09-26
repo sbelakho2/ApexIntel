@@ -7,10 +7,13 @@
 # Fails when the rendered DOM is missing either marker or the readiness
 # contract was not honoured.
 #
-# Requirements: a working docker daemon. Chromium keeps its sandbox (the image
-# never passes --no-sandbox), so the sandbox needs the namespace privileges a
-# container does not get by default: the run below grants SYS_ADMIN and lifts
-# seccomp. That only applies to this throwaway test container.
+# Requirements: a working docker daemon. This executes repository code against
+# that daemon, so CI restricts the step to trusted events (see the
+# `browser-container` step in .woodpecker.yml) and never runs it on pull
+# requests. Chromium keeps its sandbox (the image never passes --no-sandbox),
+# so the sandbox needs the namespace privileges a container does not get by
+# default: the run below grants SYS_ADMIN and lifts seccomp. That only applies
+# to this throwaway test container.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

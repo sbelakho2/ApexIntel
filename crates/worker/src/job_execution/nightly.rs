@@ -68,6 +68,15 @@ struct FailedSource {
     kind: SourceFailureKind,
 }
 
+/// The parser contract a source must satisfy before it can be promoted to
+/// validated/operational: the fetched body must produce non-empty content.
+/// `extracted_text` is `Some` when content extraction ran; `None` falls back to
+/// the raw body (deployments without the parse feature). Empty or unparsable
+/// bodies never satisfy the contract.
+fn parser_contract_satisfied(body: &str, extracted_text: Option<&str>) -> bool {
+    !extracted_text.unwrap_or(body).trim().is_empty()
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn fetch_source(
     crawl_client: &CrawlClient,
@@ -788,8 +797,14 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             Ok(fetched) => {
                 sources_attempted += 1;
                 let body = fetched.body;
+                // The parser contract the source metric depends on: a fetch
+                // only validates a source when extraction produced real
+                // content. Empty/unparsable bodies (thin 200s, script-only
+                // pages, extraction failure) leave `parser_contract_ok`
+                // false, so the attempt is recorded as a failure and the
+                // source stays unvalidated instead of being promoted.
                 #[cfg(any(feature = "parse", feature = "llm"))]
-                let obs_value = match extract_page(&body) {
+                let (obs_value, parser_contract_ok) = match extract_page(&body) {
                     Ok(page) => {
                         // Store the extracted text under BOTH `content` (the
                         // canonical key all consumers read) and `body_excerpt`
@@ -798,28 +813,38 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                         // its analysis — 1000 chars was too short for meaningful
                         // intelligence extraction.
                         let text: String = page.body_text.chars().take(4000).collect();
+                        let ok = parser_contract_satisfied(&body, Some(&text));
+                        (
+                            serde_json::json!({
+                                "source_id": src.slug,
+                                "url": url,
+                                "title": page.title,
+                                "description": page.description,
+                                "content": &text,
+                                "body_excerpt": &text,
+                                "text_content": &text,
+                                "language": page.language,
+                            }),
+                            ok,
+                        )
+                    }
+                    Err(_) => (
                         serde_json::json!({
                             "source_id": src.slug,
                             "url": url,
-                            "title": page.title,
-                            "description": page.description,
-                            "content": &text,
-                            "body_excerpt": &text,
-                            "text_content": &text,
-                            "language": page.language,
-                        })
-                    }
-                    Err(_) => serde_json::json!({
-                        "source_id": src.slug,
-                        "url": url,
-                    }),
+                        }),
+                        false,
+                    ),
                 };
                 #[cfg(not(any(feature = "parse", feature = "llm")))]
-                let obs_value = serde_json::json!({
-                    "source_id": src.slug,
-                    "url": url,
-                    "body_len": body.len(),
-                });
+                let (obs_value, parser_contract_ok) = (
+                    serde_json::json!({
+                        "source_id": src.slug,
+                        "url": url,
+                        "body_len": body.len(),
+                    }),
+                    parser_contract_satisfied(&body, None),
+                );
 
                 let obs = {
                     let mut o = Observation::new(
@@ -904,28 +929,57 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                                 );
                             }
                         }
-                        match store
-                            .record_source_success(
+                        if parser_contract_ok {
+                            match store
+                                .record_source_success(
+                                    &src.slug,
+                                    min_interval,
+                                    Some(fetched.latency_ms),
+                                    Some(fetched.http_status),
+                                    Utc::now(),
+                                )
+                                .await
+                            {
+                                Ok(_) => {
+                                    sources_succeeded += 1;
+                                    successful_sources.insert(src.slug.clone());
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        source = %src.slug,
+                                        error = %error,
+                                        "crawl_cycle: failed to persist source success state"
+                                    );
+                                    sources_failed += 1;
+                                    failed_sources.insert(src.slug.clone());
+                                }
+                            }
+                        } else {
+                            // The fetch succeeded but the parser contract did
+                            // not: never promote the source. Record a normal
+                            // failure so the scheduler backs off and the
+                            // source stays unvalidated until it produces real
+                            // content.
+                            tracing::warn!(
+                                source = %src.slug,
+                                http_status = fetched.http_status,
+                                "crawl_cycle: parser contract check failed (empty or unparsable content)"
+                            );
+                            errors += 1;
+                            sources_failed += 1;
+                            failed_sources.insert(src.slug.clone());
+                            if persist_source_failure(
+                                store.as_ref(),
                                 &src.slug,
-                                min_interval,
-                                Some(fetched.latency_ms),
+                                "parser contract check failed: empty or unparsable content",
                                 Some(fetched.http_status),
+                                min_interval,
                                 Utc::now(),
                             )
                             .await
-                        {
-                            Ok(_) => {
-                                sources_succeeded += 1;
-                                successful_sources.insert(src.slug.clone());
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    source = %src.slug,
-                                    error = %error,
-                                    "crawl_cycle: failed to persist source success state"
-                                );
-                                sources_failed += 1;
-                                failed_sources.insert(src.slug.clone());
+                            .is_err()
+                            {
+                                scheduler_state_write_failures += 1;
                             }
                         }
                     }
@@ -2196,5 +2250,29 @@ mod browser_dispatch_tests {
             accepted.is_err(),
             "Browser-strategy source silently fell back to plain HTTP"
         );
+    }
+}
+
+#[cfg(test)]
+mod parser_contract_tests {
+    use super::parser_contract_satisfied;
+
+    #[test]
+    fn parser_contract_requires_non_empty_content() {
+        // Empty or whitespace-only extracted text never validates a source,
+        // even when the HTTP fetch itself returned 200.
+        assert!(!parser_contract_satisfied("", Some("")));
+        assert!(!parser_contract_satisfied("<html></html>", Some("   \n")));
+        assert!(parser_contract_satisfied(
+            "<html><body>real content</body></html>",
+            Some("real content")
+        ));
+
+        // Without the parse feature the raw body is the contract input.
+        assert!(!parser_contract_satisfied("  ", None));
+        assert!(parser_contract_satisfied(
+            "<rss><channel><title>feed</title></channel></rss>",
+            None
+        ));
     }
 }

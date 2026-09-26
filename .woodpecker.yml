@@ -135,9 +135,13 @@ steps:
   # fixture (late network + lazy-loaded DOM) through the shipped worker image,
   # proving Browser-strategy sources are renderable in the container.
   # Requires a Docker daemon on the runner: the host socket is mounted below.
+  # The step executes repository code with that socket plus SYS_ADMIN, so it
+  # is restricted to trusted events and never runs on pull requests.
   - name: browser-container
     image: docker:27-cli
     depends_on: [rust]
+    when:
+      - event: [push, tag, manual]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     commands:

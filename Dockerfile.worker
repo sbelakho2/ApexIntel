@@ -19,13 +19,16 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-# `apex-insights` embeds config/augmentation_entities.yaml via include_str!, so
-# the file must exist at compile time, not only in the runtime image.
-COPY config/ config/
+# `apex-insights` embeds exactly this file via include_str! at compile time.
+# Copying only that file keeps unrelated config edits from invalidating the
+# cargo build cache.
+COPY config/augmentation_entities.yaml config/
 RUN cargo build --release --bin apex-worker --features llm --locked 2>&1
-# Test harness for the container-level browser integration check. Built in the
-# builder stage so the runtime image can run it without a Rust toolchain; only
-# the `browser-check` stage copies it into the shipped image layers.
+
+# Test harness for the container-level browser integration check. This stage is
+# only built for the `browser-check` target, so production builds (default or
+# `--target runtime`) never compile the probe or apex-crawl's dev-dependencies.
+FROM builder AS browser-probe
 RUN cargo build --release --example browser_container_check -p apex-crawl --locked 2>&1
 
 FROM debian:bookworm-slim AS runtime
@@ -61,6 +64,11 @@ CMD ["apex-worker"]
 # (late network + lazy-loaded DOM) through the real persistent Chromium
 # renderer shipped in this image.
 FROM runtime AS browser-check
-COPY --from=builder /build/target/release/examples/browser_container_check /usr/local/bin/browser-container-check
+COPY --from=browser-probe /build/target/release/examples/browser_container_check /usr/local/bin/browser-container-check
 ENTRYPOINT ["/usr/local/bin/browser-container-check"]
 CMD []
+
+# Production worker, kept as the last (default) stage so a plain
+# `docker build -f Dockerfile.worker` builds the worker image, not the probe.
+# `--target runtime` produces the same filesystem for callers that pin it.
+FROM runtime AS worker
