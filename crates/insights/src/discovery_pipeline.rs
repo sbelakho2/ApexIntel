@@ -127,7 +127,7 @@ impl DiscoveryPipeline {
             registry,
             config,
             candidates: Vec::new(),
-            verifier: EntityVerifier::new(),
+            verifier: EntityVerifier::seed_only(),
         }
     }
 
@@ -137,7 +137,7 @@ impl DiscoveryPipeline {
             registry,
             config,
             candidates: Vec::new(),
-            verifier: EntityVerifier::new(),
+            verifier: EntityVerifier::seed_only(),
         }
     }
 

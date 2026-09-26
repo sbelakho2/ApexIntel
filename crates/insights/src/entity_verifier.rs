@@ -37,7 +37,8 @@ use uuid::Uuid;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The kind of evidence a signal represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VerificationType {
     /// Official corporate registry record (e.g. OpenCorporates, Companies House).
     OfficialRegistry,
@@ -120,7 +121,7 @@ impl VerificationType {
 }
 
 /// A single piece of verification evidence, persisted row-for-row.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EvidenceSignal {
     /// Deterministic id of the candidate this signal belongs to.
     pub candidate_id: Uuid,
@@ -571,7 +572,12 @@ pub struct EntityVerifier {
 
 impl EntityVerifier {
     /// Create a verifier with the local, network-free seed directory provider.
-    pub fn new() -> Self {
+    ///
+    /// This constructor is **seed-only**: it can never perform a real
+    /// registry/GLEIF/EDGAR/RDAP lookup. Production code must use
+    /// [`crate::entity_providers::build_production_entity_verifier`]; the
+    /// explicit name keeps the seed directory from being wired by accident.
+    pub fn seed_only() -> Self {
         Self {
             providers: vec![Box::new(SeedDirectoryProvider::new())],
             store: None,
@@ -617,6 +623,17 @@ impl EntityVerifier {
     /// The active policy.
     pub fn policy(&self) -> &VerificationPolicy {
         &self.policy
+    }
+
+    /// Names of the configured evidence providers, in evaluation order.
+    ///
+    /// Used by tests and startup logging to prove the production verifier is
+    /// not backed by the seed directory alone.
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.providers
+            .iter()
+            .map(|provider| provider.name())
+            .collect()
     }
 
     /// Verify a company candidate using all available evidence providers.
@@ -860,12 +877,6 @@ impl EntityVerifier {
     }
 }
 
-impl Default for EntityVerifier {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Local, network-free provider over the curated ticker/domain seed data.
 ///
 /// Emits `OfficialRegistry` evidence for a known listing and
@@ -1021,7 +1032,7 @@ impl EvidenceProvider for SeedDirectoryProvider {
 
 /// Extract the host portion of a URL or bare domain, lowercased and without
 /// a leading `www.`.
-fn domain_of(url: &str) -> Option<String> {
+pub(crate) fn domain_of(url: &str) -> Option<String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return None;
@@ -1117,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_heuristic_check_passes_good_name() {
-        let verifier = EntityVerifier::new();
+        let verifier = EntityVerifier::seed_only();
         let score = verifier.heuristic_check("NVIDIA Corporation");
         assert!(
             score > 0.5,
@@ -1128,19 +1139,19 @@ mod tests {
 
     #[test]
     fn test_heuristic_check_rejects_short_name() {
-        let verifier = EntityVerifier::new();
+        let verifier = EntityVerifier::seed_only();
         assert_eq!(verifier.heuristic_check("AB"), 0.0);
     }
 
     #[test]
     fn test_heuristic_check_rejects_stopwords() {
-        let verifier = EntityVerifier::new();
+        let verifier = EntityVerifier::seed_only();
         assert_eq!(verifier.heuristic_check("the this that"), 0.0);
     }
 
     #[test]
     fn test_heuristic_check_rejects_location() {
-        let verifier = EntityVerifier::new();
+        let verifier = EntityVerifier::seed_only();
         assert_eq!(verifier.heuristic_check("New York"), 0.0);
     }
 
@@ -1158,7 +1169,7 @@ mod tests {
 
     #[test]
     fn test_check_website_valid() {
-        let verifier = EntityVerifier::new();
+        let verifier = EntityVerifier::seed_only();
         assert!(verifier.check_website("https://www.apple.com"));
         assert!(verifier.check_website("https://nvidia.com"));
         assert!(verifier.check_website("http://example.org"));
@@ -1454,7 +1465,7 @@ mod tests {
 
     #[tokio::test]
     async fn seed_provider_emits_known_domain_evidence_but_not_auto_verify() {
-        let mut verifier = EntityVerifier::new();
+        let mut verifier = EntityVerifier::seed_only();
         let candidate = candidate_with_metadata(
             "NVIDIA Corporation",
             &[

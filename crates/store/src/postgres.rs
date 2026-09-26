@@ -232,6 +232,8 @@ mod alert_configs;
 mod alert_subscriptions;
 mod collaboration;
 mod companies;
+mod entity_review;
+pub use entity_review::EntityReviewRow;
 mod company_assets;
 mod competitors;
 pub mod embeddings;

@@ -4,11 +4,13 @@ use std::sync::Arc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[cfg(feature = "llm")]
-use apex_core::entities::{Company, CompanyType};
+use crate::entity_admission::EntityAdmissionResult;
 #[cfg(feature = "llm")]
 use apex_core::env::parse_truthy_flag;
 #[cfg(feature = "llm")]
 use apex_core::person_names::is_place_name;
+#[cfg(feature = "llm")]
+use apex_insights::company_discovery::{normalize_company_name, CompanyCandidate, DiscoverySource};
 #[cfg(feature = "llm")]
 use apex_parse::{
     award::{classify_award_relevance, extract_award, is_award_content},
@@ -30,6 +32,7 @@ struct OrgDiscoveryStats {
     candidate_names: u64,
     inserted: u64,
     existing_matches: u64,
+    review_required: u64,
     skipped_generic: u64,
     skipped_duplicate: u64,
 }
@@ -559,6 +562,11 @@ async fn run_org_first_company_discovery(
         ..OrgDiscoveryStats::default()
     };
     let mut seen_names: HashSet<String> = HashSet::new();
+    let mut admission = crate::entity_admission::build_entity_admission_service(
+        store.as_ref(),
+        "org_first_observation",
+        "org_discovered",
+    );
 
     for observation in observations {
         let candidates = org_discovery_candidates_from_observation(&observation);
@@ -583,37 +591,56 @@ async fn run_org_first_company_discovery(
                 continue;
             }
 
-            if store.get_company_by_name_ci(&name).await?.is_some() {
-                stats.existing_matches += 1;
-                continue;
+            let mut metadata = HashMap::new();
+            metadata.insert("source_url".to_string(), candidate.source_url.clone());
+            metadata.insert("source_kind".to_string(), candidate.source_kind.to_string());
+            metadata.insert("event_name".to_string(), candidate.event_name.clone());
+            metadata.insert(
+                "description".to_string(),
+                crate::truncate_text(&candidate.description, 200).to_string(),
+            );
+            if let Some(country) = candidate.country.clone() {
+                metadata.insert("region".to_string(), country);
             }
-
-            let mut company = Company::new(
-                name.clone(),
-                CompanyType::Other("org_discovered".to_string()),
+            metadata.insert("is_competitor".to_string(), "false".to_string());
+            metadata.insert(
+                "discovery_track".to_string(),
+                "organization_first".to_string(),
             );
-            company.region = candidate.country.clone();
-            company.metadata = serde_json::json!({
-                "discovered_via": "org_first_observation",
-                "source_kind": candidate.source_kind,
-                "source_url": candidate.source_url,
-                "event_name": candidate.event_name,
-                "description": crate::truncate_text(&candidate.description, 200),
-                "is_competitor": false,
-                "discovery_track": "organization_first",
-                "confidence": observation.confidence.unwrap_or(0.55),
-            });
-            company.created_at = now;
-            company.updated_at = now;
 
-            store.insert_company(&company).await?;
-            stats.inserted += 1;
-            tracing::info!(
-                company = %company.name,
-                source_kind = candidate.source_kind,
-                event = %candidate.event_name,
-                "poi_discovery: inserted organization-first company candidate"
-            );
+            let company_candidate = CompanyCandidate {
+                raw_name: name.clone(),
+                normalized_name: normalize_company_name(&name),
+                source: DiscoverySource::WebCrawl,
+                extraction_confidence: observation.confidence.unwrap_or(0.55),
+                context_snippet: crate::truncate_text(&candidate.description, 200).to_string(),
+                metadata,
+            };
+
+            // No direct insert: admission persists evidence and only creates
+            // the company on a verified outcome; everything else is queued for
+            // analyst review.
+            match admission
+                .evaluate_company_candidate(&company_candidate)
+                .await?
+            {
+                EntityAdmissionResult::Created(_) => {
+                    stats.inserted += 1;
+                    tracing::info!(
+                        company = %name,
+                        source_kind = candidate.source_kind,
+                        event = %candidate.event_name,
+                        "poi_discovery: admitted verified organization-first company"
+                    );
+                }
+                EntityAdmissionResult::Existing(_) => {
+                    stats.existing_matches += 1;
+                }
+                EntityAdmissionResult::ReviewRequired(_) => {
+                    stats.review_required += 1;
+                }
+                EntityAdmissionResult::Rejected => {}
+            }
 
             if stats.inserted as usize >= insert_limit {
                 return Ok(stats);
@@ -1892,6 +1919,7 @@ pub(super) async fn run_poi_discovery(store: &Arc<PgStore>) -> JobRun {
             candidate_names = org_discovery.candidate_names,
             inserted = org_discovery.inserted,
             existing_matches = org_discovery.existing_matches,
+            review_required = org_discovery.review_required,
             "poi_discovery: organization-first discovery pass completed"
         );
 

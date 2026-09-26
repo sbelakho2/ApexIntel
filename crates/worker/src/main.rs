@@ -4,6 +4,8 @@
 
 mod config;
 mod digest_filtering;
+#[cfg(feature = "llm")]
+mod entity_admission;
 #[allow(dead_code)]
 mod evidence_scoring;
 #[allow(dead_code)]

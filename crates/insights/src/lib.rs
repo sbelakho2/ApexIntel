@@ -25,6 +25,8 @@ pub mod quality_assurance;
 
 // Discovery & Entity modules
 pub mod company_discovery;
+pub mod entity_admission;
+pub mod entity_providers;
 pub mod entity_relevance;
 pub mod entity_verifier;
 pub mod poi_targeting;
@@ -69,6 +71,16 @@ pub mod outcome_tracker;
 pub mod shortage_correlation;
 
 pub mod pdf_report;
+
+// ─── Entity verification re-exports ─────────────────────────────────────────
+// Canonical admission path for discovered company candidates: verifier +
+// store, evidence persisted, review queue for everything not verified.
+pub use entity_admission::{
+    AdmissionStore, EntityAdmissionResult, EntityAdmissionService, EntityReviewEntry,
+    InMemoryAdmissionStore,
+};
+pub use entity_providers::{build_production_entity_verifier, EntityVerifierCaps};
+pub use entity_verifier::{EntityVerifier, EvidenceProvider, EvidenceSignal, VerificationOutcome};
 
 // ─── Psychological profiling re-exports ─────────────────────────────────────
 // Convenience re-exports so downstream crates (worker, api) can depend on the
