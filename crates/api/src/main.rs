@@ -82,6 +82,8 @@ mod runtime_metrics;
 mod activity_handlers;
 #[path = "api_handlers/alert_settings.rs"]
 mod alert_settings_handlers;
+#[path = "api_handlers/alert_subscriptions.rs"]
+mod alert_subscription_handlers;
 #[path = "api_handlers/battlecards.rs"]
 mod battlecards_handlers;
 #[path = "api_handlers/catalog.rs"]
@@ -285,6 +287,45 @@ async fn build_state() -> Result<AppState> {
 
     let api_keys = load_api_keys();
     tracing::info!(count = %api_keys.len(), "API keys loaded");
+
+    // Provision every API-key owner in the canonical `app_users` identity
+    // table (migration 059). API-key principals never log in, but the
+    // user-owned tables now carry an `app_users(id)` foreign key, so without
+    // this first write (watchlist, preferences, annotation, subscription)
+    // would fail. Insert-only: an existing verified identity is never
+    // overwritten with the key's configured role.
+    for key in api_keys.values() {
+        if let Err(err) = store
+            .ensure_app_user_exists(&key.owner_user_id, &key.owner_user_id, key.role.as_str())
+            .await
+        {
+            tracing::warn!(
+                key_id = %key.key_id,
+                owner_user_id = %key.owner_user_id,
+                "failed to provision app_users identity for API-key owner: {err:#}"
+            );
+        }
+    }
+
+    // Provision every configured web principal (and its username alias) in
+    // `app_users` before serving requests. Some web handlers persist
+    // user-owned rows under `session.username` while others use the signed
+    // `user_id`, and sessions issued before migration 059 may still be valid,
+    // so both identities must exist for the new foreign keys regardless of
+    // whether the user logs in again.
+    for user in apex_api::web::auth::load_web_users() {
+        for identity in [user.user_id(), user.username.as_str()] {
+            if let Err(err) = store
+                .ensure_app_user_exists(identity, &user.username, user.api_role().as_str())
+                .await
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    "failed to provision app_users identity for web principal: {err:#}"
+                );
+            }
+        }
+    }
 
     let redis = {
         let redis_url = config.app.redis_url.expose_secret();
@@ -799,6 +840,9 @@ async fn endpoints() -> Json<Vec<serde_json::Value>> {
         serde_json::json!({ "method": "GET", "path": "/api/supplier-risk", "desc": "Supplier risk list" }),
         serde_json::json!({ "method": "GET", "path": "/api/pipeline", "desc": "Pipeline opportunities" }),
         serde_json::json!({ "method": "GET", "path": "/api/triage", "desc": "AI triage items" }),
+        serde_json::json!({ "method": "GET", "path": "/api/entities/:id/alert-subscription", "desc": "Get the caller's entity alert subscriptions" }),
+        serde_json::json!({ "method": "PUT", "path": "/api/entities/:id/alert-subscription", "desc": "Watch entity alerts" }),
+        serde_json::json!({ "method": "DELETE", "path": "/api/entities/:id/alert-subscription", "desc": "Unwatch entity alerts" }),
         serde_json::json!({ "method": "GET", "path": "/api/trends", "desc": "Historical trends" }),
         serde_json::json!({ "method": "GET", "path": "/api/search/vector", "desc": "Vector similarity search" }),
         serde_json::json!({ "method": "GET", "path": "/api/features", "desc": "API feature flags" }),
@@ -845,6 +889,11 @@ async fn openapi_json() -> Json<serde_json::Value> {
             "/competitors": { "get": { "summary": "List competitors", "tags": ["Competitors"] } },
             "/battlecards": { "get": { "summary": "List battlecards", "tags": ["Battlecards"] } },
             "/triage": { "get": { "summary": "List AI triage items", "tags": ["Triage"] } },
+            "/entities/{id}/alert-subscription": {
+                "get": { "summary": "List the caller's alert subscriptions for an entity", "tags": ["Alerts"] },
+                "put": { "summary": "Opt the caller into alerts for an entity", "tags": ["Alerts"] },
+                "delete": { "summary": "Remove the caller's alert subscription for an entity", "tags": ["Alerts"] }
+            },
             "/trends": { "get": { "summary": "Query historical trends", "tags": ["Trends"] } },
             "/features": { "get": { "summary": "API feature flags", "tags": ["System"] } },
             "/llm/extract-entities": { "post": { "summary": "LLM entity extraction", "tags": ["LLM"] } },

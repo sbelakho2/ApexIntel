@@ -199,10 +199,41 @@ pub async fn login_submit(
         .into_response();
     }
 
-    let session_ttl_ms = match parts
+    let store = parts
         .extensions
         .get::<std::sync::Arc<apex_store::postgres::PgStore>>()
-    {
+        .cloned();
+
+    // Register the principal in the canonical `app_users` identity table
+    // (migration 059) so user-owned writes (alert subscriptions, watchlists,
+    // preferences) satisfy their foreign keys. Web handlers are not yet
+    // consistent about the identity they persist — some use the signed
+    // `user_id`, others `session.username` — so ensure both exist when they
+    // differ. A registration failure must not block a valid login.
+    if let Some(store) = &store {
+        if let Err(err) = store
+            .ensure_app_user(user.user_id(), &user.username, user.api_role().as_str())
+            .await
+        {
+            tracing::warn!(
+                user_id = %user.user_id(),
+                "failed to register app_users principal on login: {err:#}"
+            );
+        }
+        if user.user_id() != user.username {
+            if let Err(err) = store
+                .ensure_app_user_exists(&user.username, &user.username, user.api_role().as_str())
+                .await
+            {
+                tracing::warn!(
+                    username = %user.username,
+                    "failed to register app_users username identity on login: {err:#}"
+                );
+            }
+        }
+    }
+
+    let session_ttl_ms = match &store {
         Some(store) => store
             .get_user_settings_prefs(&user.username)
             .await

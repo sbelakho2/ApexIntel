@@ -50,6 +50,7 @@ async fn scoped_store(admin: &PgPool, url: &str) -> PgStore {
         "watchlists",
         "annotations",
         "insight_bookmarks",
+        "app_users",
         // Annotation writes replace their tag assignments in the same
         // transaction, so the scoped role needs these tag tables too.
         "tags",
@@ -101,6 +102,27 @@ async fn cleanup(admin: &PgPool, users: &[&str]) {
             .execute(admin)
             .await
             .unwrap();
+        sqlx::query("DELETE FROM app_users WHERE id = $1")
+            .bind(user)
+            .execute(admin)
+            .await
+            .unwrap();
+    }
+}
+
+/// Migration 059 gives `user_preferences`/`watchlists` an
+/// `app_users(id) ON DELETE CASCADE` foreign key, so direct inserts in this
+/// test must have a canonical identity row first.
+async fn seed_app_users(admin: &PgPool, users: &[&str]) {
+    for user in users {
+        sqlx::query(
+            "INSERT INTO app_users (id, username, display_name, role) \
+             VALUES ($1, $1, $1, 'analyst') ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user)
+        .execute(admin)
+        .await
+        .unwrap();
     }
 }
 
@@ -118,6 +140,7 @@ async fn scoped_access_isolates_users_but_service_path_still_works() {
     let user_b = "rls-scoped-user-b";
     let user_c = "rls-scoped-user-c";
     cleanup(&admin, &[user_a, user_b, user_c]).await;
+    seed_app_users(&admin, &[user_a, user_b, user_c]).await;
 
     for user in [user_a, user_b, user_c] {
         sqlx::query(

@@ -77,6 +77,47 @@
 </span>
 {% endmacro %}
 
+{# ── Entity alert subscription ("Watch alerts") ──────────────────────────────
+   Interactive control wired by /static/js/alert-subscription.js. The copy
+   deliberately distinguishes the four entity actions so "Watch alerts" is not
+   confused with the work queue, an investigation, or the sales pipeline. #}
+{% macro watch_alerts_control(entity_id, entity_label) %}
+<section class="apex-card no-print p-4" data-alert-subscription data-entity-id="{{ entity_id }}" data-entity-label="{{ entity_label }}">
+  <div class="flex items-start justify-between gap-3">
+    <div>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Watch alerts</h2>
+      <p class="mt-1 text-[11px] leading-relaxed text-rams-muted">
+        Receive in-app alerts whenever this entity crosses your severity floor.
+        <span class="font-bold">Watch alerts</span> is separate from
+        <span class="font-bold">Add to work queue</span> (a personal task),
+        <span class="font-bold">Investigate</span> (opens a workspace), and
+        <span class="font-bold">Add to pipeline</span> (tracks an opportunity).
+      </p>
+    </div>
+    <span data-alert-subscription-state class="shrink-0 rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Not watching</span>
+  </div>
+  <div class="mt-3 flex flex-wrap items-end gap-3">
+    <label class="flex flex-col gap-1 text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+      Minimum severity
+      <select data-alert-subscription-severity class="apex-input text-xs">
+        <option value="info">Info</option>
+        <option value="low">Low</option>
+        <option value="medium" selected>Medium</option>
+        <option value="high">High</option>
+        <option value="critical">Critical</option>
+      </select>
+    </label>
+    <label class="flex flex-col gap-1 text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">
+      Category (optional)
+      <input data-alert-subscription-category type="text" maxlength="64" placeholder="e.g. warning" class="apex-input text-xs">
+    </label>
+    <button type="button" data-alert-subscription-save class="apex-btn apex-btn-primary text-xs">Watch alerts</button>
+    <button type="button" data-alert-subscription-stop class="apex-btn text-xs">Stop watching</button>
+  </div>
+  <p data-alert-subscription-feedback class="mt-2 text-[11px] text-rams-muted" role="status" aria-live="polite"></p>
+</section>
+{% endmacro %}
+
 {% macro score_ring(score, size) %}
 <div class="apex-score-ring {% if score >= 85 %}apex-score-ring-critical{% else if score >= 65 %}apex-score-ring-warning{% else %}apex-score-ring-info{% endif %}" style="--apex-ring-size: {{ size }}px;">
   <span class="text-[10px] font-black">{{ score }}</span>

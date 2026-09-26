@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 pub mod admin;
+pub mod alert_subscriptions;
 pub mod battlecards;
 pub mod capabilities;
 pub mod collaboration;
@@ -106,6 +107,7 @@ pub mod paths {
     pub const SETTINGS_ALERTS: &str = "/api/settings/alerts";
     pub const SETTINGS_ALERTS_ENTITY: &str = "/api/settings/alerts/entity/:entity_id";
     pub const SETTINGS_ALERTS_GLOBAL: &str = "/api/settings/alerts/global";
+    pub const ENTITY_ALERT_SUBSCRIPTION: &str = "/api/entities/:id/alert-subscription";
 
     // ─── Adversarial ──────────────────────────────────────────────────────
     pub const ADVERSARIAL_PLACEMENTS: &str = "/api/adversarial/placements";
@@ -832,6 +834,28 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             auth_required: true,
             min_role: "admin",
         },
+        // ─── Per-user entity alert subscriptions ───────────────────────────
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::ENTITY_ALERT_SUBSCRIPTION,
+            description: "List the caller's alert subscriptions for an entity",
+            auth_required: true,
+            min_role: "viewer",
+        },
+        EndpointDef {
+            method: HttpMethod::Put,
+            path: paths::ENTITY_ALERT_SUBSCRIPTION,
+            description: "Opt the caller into alerts for an entity",
+            auth_required: true,
+            min_role: "analyst",
+        },
+        EndpointDef {
+            method: HttpMethod::Delete,
+            path: paths::ENTITY_ALERT_SUBSCRIPTION,
+            description: "Remove the caller's alert subscription for an entity",
+            auth_required: true,
+            min_role: "analyst",
+        },
         // WebSocket
         EndpointDef {
             method: HttpMethod::Get,
@@ -1014,7 +1038,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 99);
+        assert_eq!(eps.len(), 103);
     }
 
     #[test]

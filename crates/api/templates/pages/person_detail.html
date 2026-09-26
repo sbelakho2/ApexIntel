@@ -50,6 +50,11 @@
   <a href="#poi-profile" class="rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-1 hover:text-rams-foreground">POI Profile</a>
 </nav>
 
+{# ── Entity alert subscription (Watch alerts) ── #}
+<div class="mb-4">
+  {% call m::watch_alerts_control(id, name) %}
+</div>
+
 <div class="briefing-page space-y-6" id="poi-profile">
   <div>
     <h1>{{ name }}</h1>
@@ -201,4 +206,5 @@
   </div>
   {% endif %}
 </div>
+<script src="/static/js/alert-subscription.js?v=20260926-watch-alerts-1" defer></script>
 {% endblock %}

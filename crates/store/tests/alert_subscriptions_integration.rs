@@ -47,6 +47,17 @@ async fn insert_subscription(
     .expect("insert subscription");
 }
 
+async fn insert_app_user(pool: &sqlx::PgPool, user_id: &str) {
+    sqlx::query(
+        "INSERT INTO app_users (id, username, display_name, role) \
+         VALUES ($1, $1, $1, 'analyst') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .expect("insert app_users identity");
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
 async fn find_subscribed_users_returns_matching_subscribers_only() {
@@ -64,6 +75,18 @@ async fn find_subscribed_users_returns_matching_subscribers_only() {
     let user_wrong_category = format!("{marker}-wrong-category");
     let user_disabled = format!("{marker}-disabled");
     let user_other_entity = format!("{marker}-other-entity");
+
+    // Migration 059 requires every subscription user to exist in `app_users`.
+    for user_id in [
+        &user_low,
+        &user_high,
+        &user_critical,
+        &user_wrong_category,
+        &user_disabled,
+        &user_other_entity,
+    ] {
+        insert_app_user(&pool, user_id).await;
+    }
 
     // Matching: 'warning' subscription at low severity.
     insert_subscription(&pool, &user_low, entity_id, Some("warning"), "low", true).await;
@@ -144,6 +167,11 @@ async fn find_subscribed_users_returns_matching_subscribers_only() {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query("DELETE FROM app_users WHERE id LIKE $1")
+        .bind(format!("{marker}%"))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     pool.close().await;
 }
