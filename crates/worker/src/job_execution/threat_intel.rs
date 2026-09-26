@@ -216,7 +216,9 @@ async fn assess_supply_chain_heuristic(
             };
             let mut warning = NewWarning::new("supply_chain", &title, severity)
                 .description(&description)
-                .confidence(0.65);
+                .confidence(0.65)
+                // Entity-scoped: resolve the affected company's subscribers.
+                .entity_ids(vec![company.id]);
             if let Some(region) = company.region.as_deref() {
                 warning = warning.region(region);
             }
@@ -496,7 +498,9 @@ async fn assess_threat_actor_matches(
             );
             let mut warning = NewWarning::new("threat_actor", &title, "high")
                 .description(&description)
-                .confidence(0.6);
+                .confidence(0.6)
+                // Entity-scoped: resolve the affected company's subscribers.
+                .entity_ids(vec![company.id]);
             if let Some(region) = company.region.as_deref() {
                 warning = warning.region(region);
             }

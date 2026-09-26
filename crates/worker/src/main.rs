@@ -184,6 +184,8 @@ struct WeeklyInputs {
     deprecation_policy: Option<DeprecationPolicy>,
 }
 
+mod alert_evaluator;
+mod alert_pipeline;
 mod artifacts;
 mod bootstrap;
 mod continuous_improvement;
@@ -503,8 +505,37 @@ async fn main() -> Result<()> {
     // deterministic warning dedup, semantic triage dedup, alert publication
     // and activity logging happen on every producer path. The triage ingestor
     // is constructed here, never per job.
-    let ingress = Arc::new(intelligence_ingress::build(Arc::clone(&store)).await);
+    //
+    // Warning persistence now requires `event_outbox` (migration 061): the
+    // warning row and its alert event commit in ONE transaction, so a worker
+    // that starts against a database without the table would fail every
+    // warning insert. Fail fast instead of silently losing ingestion.
+    match store.event_outbox_present().await {
+        Ok(true) => {}
+        Ok(false) => anyhow::bail!(
+            "worker startup: event_outbox is missing; apply migration 061_event_outbox.sql \
+             before starting this worker"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "worker startup: could not verify event_outbox presence; continuing"
+        ),
+    }
+
+    // One shared rules evaluator for both the fast path and the drain, so rule
+    // cooldowns are consistent across the two publication triggers.
+    let rules_evaluator = alert_pipeline::load_rules_evaluator();
+    let ingress =
+        Arc::new(intelligence_ingress::build(Arc::clone(&store), rules_evaluator.clone()).await);
     tracing::info!("intelligence ingress initialized");
+
+    // ─── Canonical alert outbox publisher ─────────────────────────────────
+    // ONE publication path: warnings commit their alert event to
+    // `event_outbox` in the same transaction as the warning row, and this
+    // drain task redelivers anything the ingress fast path left unpublished
+    // (crash, ACK failure, optional NATS outage), waiting for the real
+    // publish ACK before stamping `published_at`.
+    alert_pipeline::spawn(Arc::clone(&store), rules_evaluator);
 
     // Create the shared ActivityLogger for recording system events
     // to the activity_feed table across all pipeline stages.
@@ -754,6 +785,7 @@ async fn load_weekly_inputs() -> Result<WeeklyInputs> {
 fn format_status(run: &JobRun) -> &'static str {
     match run.status {
         JobStatus::Succeeded { .. } => "succeeded",
+        JobStatus::Degraded { .. } => "degraded",
         JobStatus::Failed { .. } => "failed",
         JobStatus::Skipped { .. } => "skipped",
         JobStatus::Running => "running",

@@ -13,9 +13,10 @@
 //!
 //! # Integration
 //!
-//! Call [`AlertEvaluator::spawn_background_task`] to run the evaluator as a
-//! background `tokio` task that subscribes to NATS JetStream subjects (e.g.
-//! `insights.new`, `warnings.new`) and automatically evaluates + publishes.
+//! The transactional outbox publisher (`crate::alert_pipeline`) calls
+//! [`AlertEvaluator::evaluate`] for each committed warning event and awaits the
+//! JetStream ACK for every rule-derived alert before stamping the outbox row
+//! published.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,14 +24,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use futures_util::StreamExt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::info;
 use uuid::Uuid;
 
-use crate::nats_stream::{AlertEvent, AlertEventType, NatsPublisher};
+use apex_worker::nats_stream::{AlertEvent, AlertEventType};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rule types — mirrors `config/runtime/alert-rules.yaml`
@@ -187,8 +187,8 @@ pub struct AlertEvaluator {
 impl AlertEvaluator {
     /// Load alert rules from a YAML file.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let content = std::fs::read_to_string(path.as_ref())
-            .context("failed to read alert-rules.yaml")?;
+        let content =
+            std::fs::read_to_string(path.as_ref()).context("failed to read alert-rules.yaml")?;
         Self::load_from_yaml(&content)
     }
 
@@ -237,9 +237,7 @@ impl AlertEvaluator {
             // Dedup check
             let dedup_key = DedupKey {
                 rule_name: rule.name.clone(),
-                entity_id: event
-                    .entity_id
-                    .map(|id| id.to_string()),
+                entity_id: event.entity_id.map(|id| id.to_string()),
             };
 
             let mut dedup = self.dedup.write().await;
@@ -302,112 +300,33 @@ impl AlertEvaluator {
         fired
     }
 
-    /// Evaluate a domain event and immediately publish any fired alerts via NATS.
-    pub async fn evaluate_and_publish(
-        &self,
-        nats: &NatsPublisher,
-        event: &DomainEvent,
-    ) {
-        let alerts = self.evaluate(event).await;
-        for alert in alerts {
-            if let Err(e) = nats.publish_alert(&alert).await {
-                error!(
-                    alert_id = %alert.id,
-                    rule = %alert.title,
-                    error = %e,
-                    "Failed to publish alert via NATS"
-                );
-            } else {
-                info!(
-                    alert_id = %alert.id,
-                    event_type = %alert.event_type,
-                    "Alert fired and published"
-                );
-            }
-        }
-    }
-
-    /// Spawn a background task that subscribes to NATS subjects and evaluates
-    /// incoming domain events automatically.
+    /// Release the dedup/cooldown entries a previous [`Self::evaluate`] recorded
+    /// for this event.
     ///
-    /// Each subject gets a dedicated tokio task that polls the NATS subscriber
-    /// with a 5-second timeout (avoids tight loops and allows graceful shutdown).
-    pub fn spawn_background_task(
-        self,
-        nats: NatsPublisher,
-        subjects: Vec<String>,
-    ) -> tokio::task::JoinHandle<()> {
-        let evaluator = Arc::new(self);
-        let nats = Arc::new(nats);
-
-        tokio::spawn(async move {
-            let Some(client) = nats.client() else {
-                warn!("NATS client not available — background alert evaluator cannot subscribe");
-                return;
-            };
-
-            let mut handles = Vec::new();
-            for subject in subjects {
-                let mut sub = match client.subscribe(subject.clone()).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to subscribe to {subject}: {e}");
-                        continue;
-                    }
-                };
-
-                let eval = Arc::clone(&evaluator);
-                let nats = Arc::clone(&nats);
-
-                let handle = tokio::spawn(async move {
-                    // Poll subscriber with timeout to avoid requiring StreamExt
-                    loop {
-                        let msg = tokio::time::timeout(
-                            Duration::from_secs(5),
-                            sub.next(),
-                        )
-                        .await;
-
-                        let payload = match msg {
-                            Ok(Some(m)) => m.payload.to_vec(),
-                            Ok(None) => {
-                                // Subscription closed
-                                break;
-                            }
-                            Err(_timeout) => {
-                                // Timeout — loop back
-                                continue;
-                            }
-                        };
-
-                        match serde_json::from_slice::<DomainEvent>(&payload) {
-                            Ok(event) => {
-                                eval.evaluate_and_publish(&nats, &event).await;
-                            }
-                            Err(e) => {
-                                warn!("Failed to deserialize domain event: {e}");
-                            }
-                        }
-                    }
-                });
-                handles.push(handle);
+    /// The outbox publisher calls this when a rule-derived alert failed to
+    /// publish: the cooldown was already recorded before the publish, and
+    /// without releasing it the retry would silently suppress the rule alert.
+    /// Releasing may re-deliver rule alerts that were published before the
+    /// failure in the same batch; at-least-once beats silent loss.
+    pub async fn forget_firings(&self, event: &DomainEvent) {
+        let entity_id = event.entity_id.map(|id| id.to_string());
+        let mut dedup = self.dedup.write().await;
+        for rule in &self.rules {
+            if !self.source_matches(&rule.source, &event.source) {
+                continue;
             }
-
-            for handle in handles {
-                if let Err(e) = handle.await {
-                    error!("Alert evaluator subscription handler failed: {e}");
-                }
-            }
-        })
+            dedup.remove(&DedupKey {
+                rule_name: rule.name.clone(),
+                entity_id: entity_id.clone(),
+            });
+        }
     }
 
     // ─── Internal helpers ─────────────────────────────────────────────────
 
     /// Check if a rule source matches an event source.
     fn source_matches(&self, rule_source: &str, event_source: &str) -> bool {
-        rule_source == event_source
-            || event_source.starts_with(rule_source)
-            || rule_source == "*"
+        rule_source == event_source || event_source.starts_with(rule_source) || rule_source == "*"
     }
 
     /// Check whether a rule's condition is satisfied for the given event.
@@ -494,6 +413,15 @@ impl AlertEvaluator {
                         _ => true,
                     },
                     _ => {
+                        // Boolean comparison (`circuit_open == true`).
+                        if let Some(field_bool) = field_value.as_bool() {
+                            let expected = value.eq_ignore_ascii_case("true");
+                            return match op {
+                                "==" => field_bool == expected,
+                                "!=" => field_bool != expected,
+                                _ => true,
+                            };
+                        }
                         // String comparison for non-numeric
                         let field_str = field_value.as_str().unwrap_or("");
                         match op {
@@ -654,10 +582,12 @@ rules:
     async fn test_different_entities_not_deduped() {
         let evaluator = AlertEvaluator::load_from_yaml(sample_rules_yaml()).unwrap();
 
+        // Distinct entity ids: the dedup key is (rule, entity), so reusing
+        // `Uuid::nil()` for both events would (correctly) suppress the second.
         let event1 = DomainEvent::new("test_event", "info", "Event 1", "")
-            .with_entity(Uuid::nil(), "entity-a");
+            .with_entity(Uuid::new_v4(), "entity-a");
         let event2 = DomainEvent::new("test_event", "info", "Event 2", "")
-            .with_entity(Uuid::nil(), "entity-b");
+            .with_entity(Uuid::new_v4(), "entity-b");
 
         let alerts = evaluator.evaluate(&event1).await;
         assert_eq!(alerts.len(), 1);

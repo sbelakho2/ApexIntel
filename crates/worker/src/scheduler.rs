@@ -325,16 +325,35 @@ impl JobKind {
 pub enum JobStatus {
     Pending,
     Running,
-    Succeeded { duration_ms: u64 },
-    Failed { error: String, duration_ms: u64 },
-    Skipped { reason: String },
+    Succeeded {
+        duration_ms: u64,
+    },
+    /// Completed, but a critical downstream stage degraded (for example
+    /// warnings persisted with zero completed triage submissions). This is
+    /// deliberately neither a success nor a failure: operators must not see a
+    /// green run that silently generated no alerts, and a degraded run must not
+    /// trip the circuit breaker the way a hard failure does.
+    Degraded {
+        reason: String,
+        duration_ms: u64,
+    },
+    Failed {
+        error: String,
+        duration_ms: u64,
+    },
+    Skipped {
+        reason: String,
+    },
 }
 
 impl JobStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Succeeded { .. } | Self::Failed { .. } | Self::Skipped { .. }
+            Self::Succeeded { .. }
+                | Self::Degraded { .. }
+                | Self::Failed { .. }
+                | Self::Skipped { .. }
         )
     }
 }
@@ -395,6 +414,30 @@ impl JobRun {
         self.notes = error.to_string();
     }
 
+    /// Complete the run as degraded: the job ran to the end, but a critical
+    /// stage failed (e.g. warnings persisted without completed triage).
+    /// Callers must not report this as success.
+    pub fn degrade(&mut self, items: u64, reason: &str) {
+        let elapsed = Utc::now()
+            .signed_duration_since(self.started_at)
+            .num_milliseconds()
+            .max(0) as u64;
+        tracing::warn!(
+            run_id = %self.run_id,
+            job = self.kind.as_str(),
+            items,
+            reason = %reason,
+            "job_degraded"
+        );
+        self.status = JobStatus::Degraded {
+            reason: reason.to_string(),
+            duration_ms: elapsed,
+        };
+        self.finished_at = Some(Utc::now());
+        self.items_processed = items;
+        self.notes = reason.to_string();
+    }
+
     pub fn skip(&mut self, reason: &str) {
         let reason_code = skip_reason_code(reason);
         tracing::warn!(
@@ -422,6 +465,7 @@ impl JobRun {
     pub fn duration_ms(&self) -> u64 {
         match &self.status {
             JobStatus::Succeeded { duration_ms } => *duration_ms,
+            JobStatus::Degraded { duration_ms, .. } => *duration_ms,
             JobStatus::Failed { duration_ms, .. } => *duration_ms,
             _ => Utc::now()
                 .signed_duration_since(self.started_at)
@@ -1717,6 +1761,11 @@ mod tests {
         assert!(!JobStatus::Pending.is_terminal());
         assert!(!JobStatus::Running.is_terminal());
         assert!(JobStatus::Succeeded { duration_ms: 100 }.is_terminal());
+        assert!(JobStatus::Degraded {
+            reason: "r".to_string(),
+            duration_ms: 10
+        }
+        .is_terminal());
         assert!(JobStatus::Failed {
             error: "e".to_string(),
             duration_ms: 50
@@ -1726,6 +1775,51 @@ mod tests {
             reason: "r".to_string()
         }
         .is_terminal());
+    }
+
+    #[test]
+    fn degraded_run_is_not_a_success_and_does_not_trip_the_breaker() {
+        let mut def = JobDef::new(JobKind::AnomalyScan, Schedule::IntervalSecs(60));
+        def.max_consecutive_failures = 2;
+
+        let mut run = JobRun::new(JobKind::AnomalyScan);
+        run.start();
+        run.degrade(
+            5,
+            "5 warning(s) persisted but 0 triage completions — alerts were never generated",
+        );
+
+        match &run.status {
+            JobStatus::Degraded { reason, .. } => {
+                assert!(reason.contains("triage completions"), "{reason}");
+            }
+            other => panic!("expected Degraded, got {other:?}"),
+        }
+        assert_eq!(run.items_processed, 5);
+        assert!(run.finished_at.is_some());
+        assert!(run.notes.contains("triage completions"));
+
+        // Degraded is not success: the success-rate metric must not count it.
+        def.record_run(&run);
+        assert_eq!(
+            def.consecutive_failures, 0,
+            "a degraded run must not increment consecutive failures"
+        );
+        assert!(def
+            .last_status
+            .as_ref()
+            .is_some_and(|status| { !matches!(status, JobStatus::Succeeded { .. }) }));
+    }
+
+    #[test]
+    fn degraded_status_roundtrips_through_serialization() {
+        let status = JobStatus::Degraded {
+            reason: "0 triage completions".to_string(),
+            duration_ms: 42,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let back: JobStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, status);
     }
 
     // ── JobDef circuit breaker ──

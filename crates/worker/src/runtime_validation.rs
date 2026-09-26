@@ -174,7 +174,9 @@ pub(crate) async fn run_quality_gate_golden_set_regression(
                 )
                 .description(&desc)
                 .region("global")
-                .confidence((1.0 - regression.agreement).clamp(0.0, 1.0)),
+                .confidence((1.0 - regression.agreement).clamp(0.0, 1.0))
+                // Global quality-gate dataset: no entity owns it.
+                .system_broadcast(),
             )
             .await
         {

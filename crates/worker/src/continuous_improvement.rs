@@ -162,7 +162,9 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 )
                 .description(&desc)
                 .region("global")
-                .confidence((1.0 - eval_pass_rate).clamp(0.0, 1.0)),
+                .confidence((1.0 - eval_pass_rate).clamp(0.0, 1.0))
+                // Global LLM quality gate: no entity owns it.
+                .system_broadcast(),
             )
             .await
         {
@@ -391,7 +393,9 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
                 )
                 .description(&desc)
                 .region("global")
-                .confidence((1.0 - cycle_report.avg_critique_score).clamp(0.0, 1.0)),
+                .confidence((1.0 - cycle_report.avg_critique_score).clamp(0.0, 1.0))
+                // Global self-improvement gate: no entity owns it.
+                .system_broadcast(),
             )
             .await
         {

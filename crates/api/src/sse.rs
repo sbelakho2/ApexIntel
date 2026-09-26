@@ -617,11 +617,19 @@ impl DeadLetterSink for NatsDeadLetter {
     async fn dead_letter(&self, payload: &[u8], reason: &str) -> std::result::Result<(), String> {
         let mut headers = async_nats::HeaderMap::new();
         headers.insert("X-Apex-Dead-Letter-Reason", reason.to_string());
-        self.jetstream
+        // `JetStream::publish_with_headers` returns a future that must itself be
+        // awaited: only its completion is the broker ACK. Without the second
+        // await the dead-letter copy would be reported as written even when the
+        // stream rejected it, and the caller would ack a message it never
+        // preserved.
+        let ack = self
+            .jetstream
             .publish_with_headers("dead_letter.alerts", headers, payload.to_vec().into())
             .await
+            .map_err(|e| e.to_string())?;
+        ack.await
             .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("JetStream ACK failed for dead-letter copy: {e}"))
     }
 }
 

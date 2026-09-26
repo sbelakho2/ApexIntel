@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
+use crate::intelligence_ingress::{IngressCounters, IntelligenceIngress, NewWarning};
 use crate::*;
 
 pub(super) async fn run_breach_scan(
@@ -18,12 +18,15 @@ pub(super) async fn run_breach_scan(
     let intelx_key = std::env::var("INTELX_API_KEY").ok();
     let pastebin_key = std::env::var("PASTEBIN_API_DEV_KEY").ok();
 
-    // Load domains from env var first, fall back to DB companies
+    // Load domains from env var first, fall back to DB companies. Each domain
+    // carries its owning company id when known so the breach alert is resolved
+    // against that company's subscribers instead of broadcasting to everyone.
     let domains_raw = std::env::var("MONITORED_DOMAINS").unwrap_or_default();
-    let mut domains: Vec<String> = domains_raw
+    let mut domains: Vec<(String, Option<Uuid>)> = domains_raw
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .map(|domain| (domain, None))
         .collect();
 
     if domains.is_empty() {
@@ -43,8 +46,12 @@ pub(super) async fn run_breach_scan(
             .unwrap_or_default();
         domains = companies
             .iter()
-            .filter_map(|c| c.domain.clone())
-            .filter(|d| !d.is_empty())
+            .filter_map(|c| {
+                c.domain
+                    .clone()
+                    .filter(|d| !d.is_empty())
+                    .map(|domain| (domain, Some(c.id)))
+            })
             .collect();
     }
 
@@ -63,8 +70,9 @@ pub(super) async fn run_breach_scan(
         }
     };
     let mut total_hits: u64 = 0;
+    let mut counters = IngressCounters::default();
 
-    for domain in &domains {
+    for (domain, company_id) in &domains {
         let events = monitor.full_domain_exposure_check(domain).await;
         let count = events.len() as u64;
         if count > 0 {
@@ -81,30 +89,39 @@ pub(super) async fn run_breach_scan(
                 "{count} breach event(s) detected for domain '{domain}'. Immediate review recommended."
             );
             let severity = if count > 5 { "critical" } else { "high" };
-            if let Err(error) = ingress
-                .submit_warning(
-                    NewWarning::new("breach", &title, severity)
-                        .description(&description)
-                        .source_urls(breach_urls)
-                        .confidence(0.9),
-                )
-                .await
-            {
-                tracing::warn!(%error, domain = %domain, "breach_scan: failed to ingest warning");
+            let mut warning = NewWarning::new("breach", &title, severity)
+                .description(&description)
+                .source_urls(breach_urls)
+                .confidence(0.9);
+            match company_id {
+                // Entity-scoped breach: notify the company's subscribers.
+                Some(company_id) => warning = warning.entity_ids(vec![*company_id]),
+                // Domain came from MONITORED_DOMAINS with no owning company:
+                // there is no entity to resolve, so this is an explicit
+                // system-wide security alert.
+                None => warning = warning.system_broadcast(),
+            }
+            match ingress.submit_warning(warning).await {
+                Ok(result) => counters.record(&result),
+                Err(error) => {
+                    tracing::warn!(%error, domain = %domain, "breach_scan: failed to ingest warning");
+                }
             }
         } else {
             tracing::info!(domain = %domain, "breach_scan: clean");
         }
     }
 
-    run.succeed(
+    let summary = format!(
+        "scanned {} domain(s): {} breach events found; {}",
+        domains.len(),
         total_hits,
-        &format!(
-            "scanned {} domain(s): {} breach events found",
-            domains.len(),
-            total_hits,
-        ),
+        counters.summary(),
     );
+    match counters.success_blocker() {
+        Some(reason) => run.degrade(counters.warnings_persisted, &format!("{summary}; {reason}")),
+        None => run.succeed(counters.warnings_persisted, &summary),
+    }
     run
 }
 
@@ -117,11 +134,15 @@ pub(super) async fn run_sanctions_screen(
     run.start();
 
     // Load entity names from env var first, fall back to DB companies + persons
+    // Each entity carries its id when known so a sanctions hit resolves the
+    // entity's subscribers; env-configured names have no id and fall back to an
+    // explicit system-wide alert.
     let entities_raw = std::env::var("MONITORED_ENTITIES").unwrap_or_default();
-    let mut entity_names: Vec<String> = entities_raw
+    let mut entity_names: Vec<(String, Option<Uuid>)> = entities_raw
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .map(|name| (name, None))
         .collect();
 
     if entity_names.is_empty() {
@@ -139,7 +160,7 @@ pub(super) async fn run_sanctions_screen(
             )
             .await
             .unwrap_or_default();
-        entity_names.extend(companies.iter().map(|c| c.name.clone()));
+        entity_names.extend(companies.iter().map(|c| (c.name.clone(), Some(c.id))));
 
         let persons = store
             .list_persons(
@@ -157,7 +178,7 @@ pub(super) async fn run_sanctions_screen(
             )
             .await
             .unwrap_or_default();
-        entity_names.extend(persons.iter().map(|p| p.name.clone()));
+        entity_names.extend(persons.iter().map(|p| (p.name.clone(), Some(p.id))));
     }
 
     if entity_names.is_empty() {
@@ -185,8 +206,9 @@ pub(super) async fn run_sanctions_screen(
     );
 
     let mut total_hits: u64 = 0;
+    let mut counters = IngressCounters::default();
 
-    for name in &entity_names {
+    for (name, entity_id) in &entity_names {
         let matches = screener.screen_entity(name, &[]);
         if matches.is_empty() {
             tracing::debug!(entity = %name, "sanctions_screen: no match");
@@ -219,30 +241,37 @@ pub(super) async fn run_sanctions_screen(
                     SanctionsList::BisDeniedPersons =>
                         "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/denied-persons-list",
                 };
-                if let Err(error) = ingress
-                    .submit_warning(
-                        NewWarning::new("sanctions", &title, severity)
-                            .description(&description)
-                            .source_urls(vec![list_url.to_string()])
-                            .confidence(m.similarity),
-                    )
-                    .await
-                {
-                    tracing::warn!(%error, entity = %name, "sanctions_screen: failed to ingest warning");
+                let mut warning = NewWarning::new("sanctions", &title, severity)
+                    .description(&description)
+                    .source_urls(vec![list_url.to_string()])
+                    .confidence(m.similarity);
+                match entity_id {
+                    Some(entity_id) => warning = warning.entity_ids(vec![*entity_id]),
+                    // Env-configured name with no entity row: a compliance
+                    // alert this severe is an explicit system-wide alert.
+                    None => warning = warning.system_broadcast(),
+                }
+                match ingress.submit_warning(warning).await {
+                    Ok(result) => counters.record(&result),
+                    Err(error) => {
+                        tracing::warn!(%error, entity = %name, "sanctions_screen: failed to ingest warning");
+                    }
                 }
             }
         }
     }
 
-    run.succeed(
+    let summary = format!(
+        "screened {} entities against {} sanctions entries: {} matches; {}",
+        entity_names.len(),
+        screener.entry_count(),
         total_hits,
-        &format!(
-            "screened {} entities against {} sanctions entries: {} matches",
-            entity_names.len(),
-            screener.entry_count(),
-            total_hits
-        ),
+        counters.summary(),
     );
+    match counters.success_blocker() {
+        Some(reason) => run.degrade(counters.warnings_persisted, &format!("{summary}; {reason}")),
+        None => run.succeed(counters.warnings_persisted, &summary),
+    }
     run
 }
 
@@ -518,7 +547,7 @@ pub(super) async fn run_dns_posture_scan(
 
     let mut checked = 0u64;
     let mut dns_issues: Vec<DnsIssueResult> = Vec::new();
-    let mut warnings_generated: u64 = 0;
+    let mut counters = IngressCounters::default();
     let mut warning_ingest_failures: u64 = 0;
 
     for company in &companies {
@@ -662,12 +691,15 @@ pub(super) async fn run_dns_posture_scan(
 
         let mut warning = NewWarning::new("security", &title, severity)
             .description(&description)
-            .confidence(0.85);
+            .confidence(0.85)
+            // Entity-scoped warning: address the company's real subscribers
+            // instead of every connected user.
+            .entity_ids(vec![result.company_id]);
         if let Some(region) = result.region.as_deref() {
             warning = warning.region(region);
         }
         match ingress.submit_warning(warning).await {
-            Ok(_) => warnings_generated += 1,
+            Ok(result) => counters.record(&result),
             Err(error) => {
                 warning_ingest_failures += 1;
                 tracing::warn!(
@@ -680,17 +712,19 @@ pub(super) async fn run_dns_posture_scan(
     }
 
     let summary = format!(
-        "dns_posture_scan: checked {} domains ({} with issues, {} warnings generated, {} warning ingest failures)",
+        "dns_posture_scan: checked {} domains ({} with issues, {} warning ingest failures); {}",
         checked,
         dns_issues.len(),
-        warnings_generated,
         warning_ingest_failures,
+        counters.summary(),
     );
     if warning_ingest_failures > 0 {
         run.items_processed = checked;
         run.fail(&format!("{summary} — warning ingestion degraded"));
+    } else if let Some(reason) = counters.success_blocker() {
+        run.degrade(counters.warnings_persisted, &format!("{summary}; {reason}"));
     } else {
-        run.succeed(warnings_generated, &summary);
+        run.succeed(counters.warnings_persisted, &summary);
     }
     run
 }

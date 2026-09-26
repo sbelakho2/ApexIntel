@@ -11,12 +11,53 @@
 //! - Storage: file
 //! - Retention: interest-based (auto-cleanup when consumers acknowledge)
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use apex_core::alert_config::AlertAudience;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
+
+/// Environment variable that makes NATS a required capability
+/// (`REQUIRE_NATS=true`).
+pub const REQUIRE_NATS_ENV: &str = "REQUIRE_NATS";
+
+/// Environment variable naming the deployment environment; `production`
+/// implies NATS is required.
+pub const APEX_ENV_ENV: &str = "APEX_ENV";
+
+/// Whether NATS is a required capability for this process.
+///
+/// Explicit `REQUIRE_NATS` wins; otherwise `APEX_ENV=production` makes NATS
+/// required. In a required deployment an unavailable JetStream is a hard
+/// failure — [`NatsPublisher::publish_alert`] returns `Err` instead of
+/// silently dropping the alert.
+pub fn nats_required_from_env() -> bool {
+    let flag = std::env::var(REQUIRE_NATS_ENV).ok();
+    let apex_env = std::env::var(APEX_ENV_ENV).ok();
+    nats_required(flag.as_deref(), apex_env.as_deref())
+}
+
+/// Pure resolution of the NATS capability requirement (testable without env).
+fn nats_required(flag: Option<&str>, apex_env: Option<&str>) -> bool {
+    if let Some(flag) = flag {
+        if !flag.trim().is_empty() {
+            return apex_core::env::parse_truthy_flag(flag);
+        }
+    }
+    matches!(
+        apex_env
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "production" | "prod"
+    )
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Alert event types
@@ -81,63 +122,156 @@ impl AlertEvent {
 // NATS Publisher
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// A JetStream publish whose broker ACK has **not** been awaited yet.
+///
+/// Reporting success without [`PendingPublishAck::wait_for_ack`] would claim a
+/// delivery that JetStream may never have accepted.
+pub trait PendingPublishAck: Send {
+    fn wait_for_ack(self: Box<Self>) -> BoxFuture<'static, Result<()>>;
+}
+
+/// The publish transport seam, so the ACK-ordering contract is testable
+/// without a live NATS server.
+#[async_trait]
+pub trait JetStreamTransport: Send + Sync {
+    /// Start a publish. The returned ACK handle must be awaited before the
+    /// caller reports success.
+    async fn publish(
+        &self,
+        subject: String,
+        payload: Vec<u8>,
+    ) -> Result<Box<dyn PendingPublishAck>>;
+}
+
+/// Real transport over an `async_nats` JetStream context.
+pub struct NatsJetStreamTransport {
+    jetstream: async_nats::jetstream::Context,
+}
+
+impl NatsJetStreamTransport {
+    pub fn new(jetstream: async_nats::jetstream::Context) -> Self {
+        Self { jetstream }
+    }
+}
+
+struct NatsPendingAck(async_nats::jetstream::context::PublishAckFuture);
+
+impl PendingPublishAck for NatsPendingAck {
+    fn wait_for_ack(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        Box::pin(async move {
+            self.0
+                .await
+                .map(|_ack| ())
+                .map_err(|e| anyhow::anyhow!("NATS JetStream publish ACK failed: {e}"))
+        })
+    }
+}
+
+#[async_trait]
+impl JetStreamTransport for NatsJetStreamTransport {
+    async fn publish(
+        &self,
+        subject: String,
+        payload: Vec<u8>,
+    ) -> Result<Box<dyn PendingPublishAck>> {
+        let ack = self
+            .jetstream
+            .publish(subject, payload.into())
+            .await
+            .context("failed to publish to NATS JetStream")?;
+        Ok(Box::new(NatsPendingAck(ack)))
+    }
+}
+
 /// Publishes alert events to NATS JetStream.
 ///
-/// Gracefully degrades when NATS is unavailable: all `publish_alert` calls
-/// log a warning and return `Ok(())`.
+/// By default an unavailable NATS degrades gracefully: `publish_alert` logs a
+/// warning and returns `Ok(())` without delivering. When NATS is a **required**
+/// capability ([`nats_required_from_env`] — `REQUIRE_NATS=true` or
+/// `APEX_ENV=production`), the same condition returns `Err` so the caller
+/// reports a degraded outcome instead of a false success.
+#[derive(Clone)]
 pub struct NatsPublisher {
-    client: Option<async_nats::Client>,
-    jetstream: Option<async_nats::jetstream::Context>,
+    transport: Option<Arc<dyn JetStreamTransport>>,
     nats_url: String,
+    required: bool,
 }
 
 impl NatsPublisher {
-    /// Create a new disabled publisher (no NATS connection).
+    /// Create a new disabled publisher (no NATS connection, not required).
     pub fn disabled() -> Self {
+        Self::disabled_with_requirement(false)
+    }
+
+    /// A disabled publisher that reports unavailable NATS as an error.
+    pub fn disabled_with_requirement(required: bool) -> Self {
         Self {
-            client: None,
-            jetstream: None,
+            transport: None,
             nats_url: String::new(),
+            required,
         }
     }
 
-    /// Connect to NATS and ensure the JetStream stream exists.
-    ///
-    /// If the connection fails, the publisher will operate in degraded mode
-    /// (all publishes become no-ops with warnings).
+    /// Connect to NATS and ensure the JetStream stream exists, resolving the
+    /// capability requirement from the environment.
     pub async fn connect(nats_url: &str) -> Self {
+        Self::connect_with_requirement(nats_url, nats_required_from_env()).await
+    }
+
+    /// Connect to NATS with an explicit capability requirement.
+    ///
+    /// If the connection fails, the publisher operates in degraded mode: a
+    /// no-op when NATS is optional, or an error on every publish when NATS is
+    /// required.
+    pub async fn connect_with_requirement(nats_url: &str, required: bool) -> Self {
         match Self::try_connect(nats_url).await {
-            Ok((client, jetstream)) => {
+            Ok(jetstream) => {
                 info!(nats_url = %nats_url, "NATS JetStream publisher connected");
                 Self {
-                    client: Some(client),
-                    jetstream: Some(jetstream),
+                    transport: Some(Arc::new(NatsJetStreamTransport::new(jetstream))),
                     nats_url: nats_url.to_string(),
+                    required,
                 }
             }
             Err(e) => {
-                warn!(nats_url = %nats_url, error = %e, "NATS unavailable — alert publishing degraded");
+                warn!(
+                    nats_url = %nats_url,
+                    required,
+                    error = %e,
+                    "NATS unavailable — alert publishing degraded"
+                );
                 Self {
-                    client: None,
-                    jetstream: None,
+                    transport: None,
                     nats_url: nats_url.to_string(),
+                    required,
                 }
             }
         }
     }
 
-    async fn try_connect(
-        nats_url: &str,
-    ) -> Result<(async_nats::Client, async_nats::jetstream::Context)> {
+    /// Build a publisher around an injected transport.
+    ///
+    /// Used by tests (and available to any caller that wants to inject a
+    /// transport) so the ACK-ordering contract can be verified without a live
+    /// NATS server.
+    pub fn with_transport(transport: Arc<dyn JetStreamTransport>, required: bool) -> Self {
+        Self {
+            transport: Some(transport),
+            nats_url: "test://transport".to_string(),
+            required,
+        }
+    }
+
+    async fn try_connect(nats_url: &str) -> Result<async_nats::jetstream::Context> {
         let client = async_nats::connect(nats_url)
             .await
             .context("failed to connect to NATS")?;
-        let jetstream = async_nats::jetstream::new(client.clone());
+        let jetstream = async_nats::jetstream::new(client);
 
         // Ensure the stream exists (idempotent)
         Self::ensure_stream(&jetstream).await?;
 
-        Ok((client, jetstream))
+        Ok(jetstream)
     }
 
     /// Ensure the `alerts` JetStream stream exists, creating it if necessary.
@@ -171,13 +305,28 @@ impl NatsPublisher {
         }
     }
 
-    /// Publish an alert event to NATS JetStream.
+    /// Publish an alert event to NATS JetStream and await the broker ACK.
     ///
-    /// If NATS is unavailable, logs a warning and returns `Ok(())`
-    /// (graceful degradation).
+    /// Success is reported only after `wait_for_ack` resolves: the JetStream
+    /// `publish` call returns a *future* that must itself be awaited, so
+    /// reporting success right after the first `.await` would silently claim a
+    /// delivery the server never accepted.
+    ///
+    /// If NATS is unavailable: an error when NATS is required, otherwise a
+    /// logged warning and `Ok(())` (graceful degradation).
     pub async fn publish_alert(&self, alert: &AlertEvent) -> Result<()> {
-        let Some(ref jetstream) = self.jetstream else {
-            warn!("NATS publisher not connected — skipping alert publish");
+        let Some(ref transport) = self.transport else {
+            if self.required {
+                anyhow::bail!(
+                    "NATS JetStream is required ({REQUIRE_NATS_ENV}/APEX_ENV=production) \
+                     but the publisher is not connected; alert {} not delivered",
+                    alert.id
+                );
+            }
+            warn!(
+                alert_id = %alert.id,
+                "NATS publisher not connected — skipping alert publish"
+            );
             return Ok(());
         };
 
@@ -185,26 +334,34 @@ impl NatsPublisher {
         let payload =
             serde_json::to_vec(alert).context("failed to serialize AlertEvent to JSON")?;
 
-        jetstream
-            .publish(subject.clone(), payload.into())
+        let ack = transport
+            .publish(subject.clone(), payload)
             .await
             .context(format!(
                 "failed to publish alert to NATS subject '{subject}'"
             ))?;
+        ack.wait_for_ack().await.context(format!(
+            "NATS JetStream did not acknowledge alert on subject '{subject}'"
+        ))?;
 
         info!(
             alert_id = %alert.id,
             event_type = %alert.event_type,
             subject = %subject,
-            "Alert event published to NATS JetStream"
+            "Alert event published to NATS JetStream (ACK awaited)"
         );
 
         Ok(())
     }
 
+    /// Whether NATS is a required capability for this process.
+    pub fn required(&self) -> bool {
+        self.required
+    }
+
     /// Returns `true` if NATS is connected and operational.
     pub fn is_connected(&self) -> bool {
-        self.client.is_some()
+        self.transport.is_some()
     }
 
     /// Returns the NATS URL this publisher was configured with.
@@ -220,6 +377,157 @@ impl NatsPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// Records the publish/ACK ordering so a missing `wait_for_ack` await is a
+    /// test failure instead of a silent success.
+    #[derive(Default)]
+    struct AckRecording {
+        calls: AtomicUsize,
+        publishes: AtomicUsize,
+        acks: AtomicUsize,
+        fail_ack: AtomicBool,
+        order: Mutex<Vec<&'static str>>,
+    }
+
+    impl AckRecording {
+        fn push(&self, entry: &'static str) {
+            if let Ok(mut order) = self.order.lock() {
+                order.push(entry);
+            }
+        }
+
+        fn order(&self) -> Vec<&'static str> {
+            self.order.lock().map(|o| o.clone()).unwrap_or_default()
+        }
+    }
+
+    struct MockAck {
+        recording: Arc<AckRecording>,
+    }
+
+    impl PendingPublishAck for MockAck {
+        fn wait_for_ack(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+            Box::pin(async move {
+                self.recording.acks.fetch_add(1, Ordering::SeqCst);
+                self.recording.push("ack");
+                if self.recording.fail_ack.load(Ordering::SeqCst) {
+                    anyhow::bail!("simulated JetStream ACK failure");
+                }
+                Ok(())
+            })
+        }
+    }
+
+    struct MockTransport {
+        recording: Arc<AckRecording>,
+    }
+
+    #[async_trait]
+    impl JetStreamTransport for MockTransport {
+        async fn publish(
+            &self,
+            _subject: String,
+            _payload: Vec<u8>,
+        ) -> Result<Box<dyn PendingPublishAck>> {
+            self.recording.calls.fetch_add(1, Ordering::SeqCst);
+            self.recording.publishes.fetch_add(1, Ordering::SeqCst);
+            self.recording.push("publish");
+            Ok(Box::new(MockAck {
+                recording: self.recording.clone(),
+            }))
+        }
+    }
+
+    fn test_alert() -> AlertEvent {
+        AlertEvent {
+            id: Uuid::new_v4(),
+            event_type: AlertEventType::NewWarning,
+            severity: apex_core::alert_config::AlertSeverity::High,
+            title: "Test warning".to_string(),
+            description: "A test warning event".to_string(),
+            entity_id: None,
+            entity_name: None,
+            audience: AlertAudience::Users(vec![]),
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_alert_awaits_the_jetstream_ack() {
+        // If `publish_alert` stopped at `transport.publish(..).await` and never
+        // awaited the ACK future, `acks` would stay 0 and this test would fail.
+        let recording = Arc::new(AckRecording::default());
+        let publisher = NatsPublisher::with_transport(
+            Arc::new(MockTransport {
+                recording: recording.clone(),
+            }),
+            false,
+        );
+
+        publisher.publish_alert(&test_alert()).await.unwrap();
+
+        assert_eq!(recording.publishes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            recording.acks.load(Ordering::SeqCst),
+            1,
+            "publish_alert must await the JetStream ACK before reporting success"
+        );
+        assert_eq!(recording.order(), vec!["publish", "ack"]);
+    }
+
+    #[tokio::test]
+    async fn publish_alert_fails_when_ack_fails() {
+        let recording = Arc::new(AckRecording::default());
+        recording.fail_ack.store(true, Ordering::SeqCst);
+        let publisher = NatsPublisher::with_transport(
+            Arc::new(MockTransport {
+                recording: recording.clone(),
+            }),
+            false,
+        );
+
+        let result = publisher.publish_alert(&test_alert()).await;
+        assert!(
+            result.is_err(),
+            "an unacknowledged publish is not a success"
+        );
+        assert_eq!(recording.acks.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn required_nats_publisher_errors_when_unavailable() {
+        let publisher = NatsPublisher::disabled_with_requirement(true);
+        assert!(publisher.required());
+        assert!(!publisher.is_connected());
+        let result = publisher.publish_alert(&test_alert()).await;
+        assert!(
+            result.is_err(),
+            "missing NATS must be an error when NATS is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn optional_nats_publisher_degrades_quietly_when_unavailable() {
+        let publisher = NatsPublisher::disabled();
+        assert!(!publisher.required());
+        publisher.publish_alert(&test_alert()).await.unwrap();
+    }
+
+    #[test]
+    fn nats_requirement_resolution_prefers_explicit_flag() {
+        assert!(nats_required(Some("true"), Some("development")));
+        assert!(nats_required(Some("1"), None));
+        assert!(!nats_required(Some("false"), Some("production")));
+        assert!(nats_required(None, Some("production")));
+        assert!(nats_required(None, Some("production ")));
+        assert!(nats_required(None, Some("PROD")));
+        assert!(!nats_required(None, Some("staging")));
+        assert!(!nats_required(None, None));
+        assert!(!nats_required(Some("  "), Some("staging")));
+    }
 
     #[test]
     fn alert_event_subject_format() {

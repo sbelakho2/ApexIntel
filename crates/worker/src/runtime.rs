@@ -24,6 +24,14 @@ fn worker_state_from_job_def(def: &JobDef) -> apex_store::postgres::WorkerJobSta
             None,
             Some(*duration_ms as i64),
         ),
+        Some(JobStatus::Degraded {
+            reason,
+            duration_ms,
+        }) => (
+            Some("degraded".to_string()),
+            Some(reason.clone()),
+            Some(*duration_ms as i64),
+        ),
         Some(JobStatus::Failed { error, duration_ms }) => (
             Some("failed".to_string()),
             Some(error.clone()),
@@ -59,6 +67,7 @@ fn worker_history_from_run(run: &JobRun) -> apex_store::postgres::WorkerJobHisto
         JobStatus::Pending => "pending",
         JobStatus::Running => "running",
         JobStatus::Succeeded { .. } => "succeeded",
+        JobStatus::Degraded { .. } => "degraded",
         JobStatus::Failed { .. } => "failed",
         JobStatus::Skipped { .. } => "skipped",
     }
@@ -109,6 +118,13 @@ pub(crate) fn restore_scheduler_state(
             def.enabled = !state.circuit_open;
             def.last_status = match state.last_status.as_deref() {
                 Some("succeeded") => Some(JobStatus::Succeeded {
+                    duration_ms: state.last_duration_ms.unwrap_or_default().max(0) as u64,
+                }),
+                Some("degraded") => Some(JobStatus::Degraded {
+                    reason: state
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "previous run was degraded".to_string()),
                     duration_ms: state.last_duration_ms.unwrap_or_default().max(0) as u64,
                 }),
                 Some("failed") => Some(JobStatus::Failed {
