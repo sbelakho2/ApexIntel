@@ -81,14 +81,19 @@ fn normalize_ratio(value: f64) -> f64 {
     normalized.clamp(0.0, 1.0)
 }
 
-/// Ordering weight for buying-centre roles (deciders first).
+/// Sort weight for buying-centre roles, mirroring the canonical engagement
+/// priority in `apex_poi::buying_center::BuyingCenterRole::priority()`
+/// (Buyer, Influencer, Initiator, Gatekeeper, Decider, User) so this view
+/// ranks accounts the same way the rest of the product does. Higher sorts
+/// first; unknown labels rank last.
 fn buying_center_role_rank(role: &str) -> i32 {
     match role {
-        "Decider" => 5,
-        "Buyer" => 4,
-        "Gatekeeper" => 3,
-        "Influencer" => 2,
-        "User" => 1,
+        "Buyer" => 100 - 1,
+        "Influencer" => 100 - 2,
+        "Initiator" => 100 - 3,
+        "Gatekeeper" => 100 - 4,
+        "Decider" => 100 - 5,
+        "User" => 100 - 6,
         _ => 0,
     }
 }
@@ -463,7 +468,12 @@ fn url_encode_component(input: &str) -> String {
         .replace('+', "%2B")
 }
 
-fn build_persons_href(region: Option<&str>, priority: Option<&str>, q: Option<&str>) -> String {
+fn build_persons_href(
+    base: &str,
+    region: Option<&str>,
+    priority: Option<&str>,
+    q: Option<&str>,
+) -> String {
     let mut params: Vec<String> = Vec::new();
     if let Some(region) = region {
         let region = region.trim();
@@ -485,9 +495,9 @@ fn build_persons_href(region: Option<&str>, priority: Option<&str>, q: Option<&s
     }
 
     if params.is_empty() {
-        "/persons".to_string()
+        base.to_string()
     } else {
-        format!("/persons?{}", params.join("&"))
+        format!("{base}?{}", params.join("&"))
     }
 }
 
@@ -671,9 +681,14 @@ pub async fn list_persons(
         .map(|region| {
             let active = selected_region.eq_ignore_ascii_case(region);
             let href = if active {
-                build_persons_href(None, Some(&selected_priority), Some(&selected_q))
+                build_persons_href(route, None, Some(&selected_priority), Some(&selected_q))
             } else {
-                build_persons_href(Some(region), Some(&selected_priority), Some(&selected_q))
+                build_persons_href(
+                    route,
+                    Some(region),
+                    Some(&selected_priority),
+                    Some(&selected_q),
+                )
             };
             RegionFilterChip {
                 href,
@@ -688,9 +703,14 @@ pub async fn list_persons(
         .map(|priority| {
             let active = selected_priority == *priority;
             let href = if active {
-                build_persons_href(Some(&selected_region), None, Some(&selected_q))
+                build_persons_href(route, Some(&selected_region), None, Some(&selected_q))
             } else {
-                build_persons_href(Some(&selected_region), Some(priority), Some(&selected_q))
+                build_persons_href(
+                    route,
+                    Some(&selected_region),
+                    Some(priority),
+                    Some(&selected_q),
+                )
             };
             PriorityFilterChip {
                 href,
@@ -774,7 +794,7 @@ pub async fn list_persons(
         region_filters,
         priority_filters,
         active_filters,
-        reset_href: "/persons".into(),
+        reset_href: route.to_string(),
         search_query: selected_q,
         buying_center_mode,
         buying_centers,
@@ -1116,4 +1136,50 @@ pub async fn get_person(
 
     let _ = is_htmx_request(&headers);
     super::render_template(&tpl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_classified_role_has_a_rank_matching_canonical_priority() {
+        // Sample titles that exercise each branch of classify_buying_center_role.
+        let cases = [
+            ("Chief Executive Officer", "Executive", "Decider"),
+            ("VP Procurement", "Procurement", "Buyer"),
+            ("Quality Manager", "Quality", "Gatekeeper"),
+            ("Director of Marketing", "Marketing", "Influencer"),
+            ("Operations Analyst", "Operations", "User"),
+            ("Market Research Lead", "Research", "Initiator"),
+        ];
+        for (title, family, expected) in cases {
+            let role = classify_buying_center_role(title, family);
+            assert_eq!(role, expected, "{title} classified as {role}");
+            assert!(
+                buying_center_role_rank(role) > 0,
+                "role {role} has no sort rank"
+            );
+        }
+        // Canonical engagement order: Buyer > Influencer > Initiator >
+        // Gatekeeper > Decider > User (apex_poi BuyingCenterRole::priority).
+        assert!(buying_center_role_rank("Buyer") > buying_center_role_rank("Influencer"));
+        assert!(buying_center_role_rank("Influencer") > buying_center_role_rank("Initiator"));
+        assert!(buying_center_role_rank("Initiator") > buying_center_role_rank("Gatekeeper"));
+        assert!(buying_center_role_rank("Gatekeeper") > buying_center_role_rank("Decider"));
+        assert!(buying_center_role_rank("Decider") > buying_center_role_rank("User"));
+        assert_eq!(buying_center_role_rank("Unknown"), 0);
+    }
+
+    #[test]
+    fn persons_href_keeps_the_active_view_base() {
+        assert_eq!(
+            build_persons_href("/buying-centers", None, None, None),
+            "/buying-centers"
+        );
+        assert_eq!(
+            build_persons_href("/buying-centers", Some("US"), None, Some("north")),
+            "/buying-centers?region=US&q=north"
+        );
+    }
 }

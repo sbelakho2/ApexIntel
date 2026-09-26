@@ -89,7 +89,6 @@ pub struct EvidenceItem {
 /// which source domains corroborated it, and whether repeats escalated severity.
 #[derive(Clone, Debug)]
 pub struct SignalRecurrence {
-    pub tracked: bool,
     pub occurrence_count: i64,
     pub first_seen: String,
     pub last_seen: String,
@@ -279,7 +278,8 @@ pub struct WarningDetailPage {
     pub company_name: String,
     pub company_id: String,
     pub region: String,
-    pub confidence: f64,
+    /// Confidence as a whole percentage for display (0–100).
+    pub confidence_pct: i64,
     pub created_at: String,
     pub updated_at: String,
     pub acknowledged: bool,
@@ -893,17 +893,6 @@ fn confidence_to_pct(value: f64) -> i64 {
     }
 }
 
-/// Ordered severity rank used to detect semantic-merge escalations.
-fn severity_rank(value: &str) -> i32 {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "critical" => 4,
-        "high" => 3,
-        "medium" => 2,
-        "low" => 1,
-        _ => 0,
-    }
-}
-
 /// GET /warnings/:id — single warning detail page.
 pub async fn get_warning(
     _headers: HeaderMap,
@@ -1005,7 +994,8 @@ pub async fn get_warning(
         .and_then(|merge| merge.static_severity.clone())
         .filter(|severity| !severity.is_empty())
         .unwrap_or_else(|| stored_severity.clone());
-    let severity_escalated = severity_rank(&effective_severity) > severity_rank(&stored_severity);
+    let severity_escalated = apex_triage::semantic_dedup::severity_rank(&effective_severity)
+        > apex_triage::semantic_dedup::severity_rank(&stored_severity);
     let occurrence_count = merge_info
         .as_ref()
         .map(|merge| i64::from(merge.occurrence_count))
@@ -1032,7 +1022,6 @@ pub async fn get_warning(
         .unwrap_or_else(|| warning.ts_utc.format("%Y-%m-%d %H:%M").to_string());
 
     let recurrence = SignalRecurrence {
-        tracked: merge_info.is_some(),
         occurrence_count,
         first_seen,
         last_seen,
@@ -1158,7 +1147,7 @@ pub async fn get_warning(
         company_name: primary_company_name,
         company_id: primary_company_id,
         region: warning.region.clone().unwrap_or_default(),
-        confidence: warning.confidence.unwrap_or(0.0),
+        confidence_pct: confidence_to_pct(warning.confidence.unwrap_or(0.0)),
         created_at: warning
             .created_at
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
@@ -1281,8 +1270,18 @@ pub async fn start_investigation_html(
         }
     };
 
-    let title: String = warning.title.chars().take(90).collect();
-    let name = format!("Investigate: {title}");
+    // Same name/description derivation as the prefilled workspace form, so the
+    // one-click and form entry points produce the same workspace.
+    let entity_name = match warning.entity_ids.as_deref().unwrap_or_default().first() {
+        Some(entity_id) => store
+            .get_company_names_by_ids(&[*entity_id])
+            .await
+            .ok()
+            .and_then(|names| names.into_iter().next().map(|(_, name, _, _)| name)),
+        None => None,
+    };
+    let (name, description) =
+        super::collaboration::signal_investigation_fields(&warning.title, entity_name.as_deref());
     let entity_focus = serde_json::json!(warning
         .entity_ids
         .as_deref()
@@ -1290,10 +1289,6 @@ pub async fn start_investigation_html(
         .iter()
         .map(|entity_id| entity_id.to_string())
         .collect::<Vec<_>>());
-    let description = format!(
-        "Investigation opened from the {} signal \"{}\".",
-        warning.warning_type, warning.title
-    );
 
     match store
         .create_investigation_workspace(
@@ -1506,14 +1501,6 @@ pub async fn create_warning_note(
 mod tests {
     use super::*;
 
-    #[test]
-    fn severity_rank_orders_known_levels() {
-        assert!(severity_rank("critical") > severity_rank("high"));
-        assert!(severity_rank("high") > severity_rank("medium"));
-        assert!(severity_rank("medium") > severity_rank("low"));
-        assert_eq!(severity_rank("unknown"), 0);
-    }
-
     fn detail_page() -> WarningDetailPage {
         WarningDetailPage {
             current_path: "/warnings/w-1".into(),
@@ -1531,7 +1518,7 @@ mod tests {
             company_name: "Northwind Power Systems".into(),
             company_id: "c0ffee00-0000-4000-8000-000000000001".into(),
             region: "US".into(),
-            confidence: 0.83,
+            confidence_pct: 83,
             created_at: "2026-01-15 08:30".into(),
             updated_at: "2026-01-20 11:00".into(),
             acknowledged: false,
@@ -1544,7 +1531,6 @@ mod tests {
             corroboration: "3 independent source domains corroborate this signal".into(),
             next_actions: vec!["Acknowledge and assign an owner".into()],
             recurrence: SignalRecurrence {
-                tracked: true,
                 occurrence_count: 3,
                 first_seen: "2026-01-15 08:30".into(),
                 last_seen: "2026-01-20 11:00".into(),

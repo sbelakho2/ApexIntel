@@ -16,7 +16,7 @@ use serde::Deserialize;
 use url::form_urlencoded::byte_serialize;
 use uuid::Uuid;
 
-use super::{is_htmx_request, PageContext};
+use super::{dashboard, is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
 use apex_core::data_state::{DataState, DegradedNotice};
 use apex_store::postgres::{CompanyListFilters, CompanyOrderBy, PgStore, WarningListFilters};
@@ -135,9 +135,6 @@ pub struct EntityWhyNow {
     pub headline: String,
     pub latest_signal_id: String,
     pub latest_signal_title: String,
-    pub latest_signal_severity: String,
-    pub latest_signal_type: String,
-    pub latest_signal_age: String,
     pub open_signals: i64,
     pub recent_changes: i64,
     pub evidence_count: i64,
@@ -166,7 +163,6 @@ pub struct EntityWorkspaceRef {
 /// Pipeline opportunity attached to this entity (sales intelligence loop).
 #[derive(Clone, Debug)]
 pub struct EntityPipelineItem {
-    pub id: String,
     pub title: String,
     pub stage: String,
     pub probability_pct: i64,
@@ -782,45 +778,11 @@ fn risk_tier(score: i64) -> &'static str {
     }
 }
 
-/// Short human-readable "how long ago" label for signal/change freshness.
-fn humanize_age(ts: chrono::DateTime<chrono::Utc>) -> String {
-    let delta = chrono::Utc::now().signed_duration_since(ts);
-    let minutes = delta.num_minutes();
-    if minutes < 1 {
-        "just now".to_string()
-    } else if minutes < 60 {
-        format!("{minutes}m ago")
-    } else if delta.num_hours() < 24 {
-        format!("{}h ago", delta.num_hours())
-    } else if delta.num_days() < 14 {
-        format!("{}d ago", delta.num_days())
-    } else if delta.num_days() < 60 {
-        format!("{}w ago", delta.num_days() / 7)
-    } else {
-        format!("{}mo ago", delta.num_days() / 30)
-    }
-}
-
 fn capitalize(value: &str) -> String {
     let mut chars = value.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
-    }
-}
-
-/// True when a workspace's `entity_focus` JSON names this entity, accepting
-/// both bare id arrays (`["<uuid>"]`) and object entries (`{"id": "<uuid>"}`).
-fn workspace_focuses_entity(focus: &serde_json::Value, entity_id: &str) -> bool {
-    fn matches(entry: &serde_json::Value, entity_id: &str) -> bool {
-        entry.as_str() == Some(entity_id)
-            || entry.get("id").and_then(|v| v.as_str()) == Some(entity_id)
-            || entry.get("entity_id").and_then(|v| v.as_str()) == Some(entity_id)
-    }
-    match focus {
-        serde_json::Value::Array(items) => items.iter().any(|item| matches(item, entity_id)),
-        serde_json::Value::Object(_) => matches(focus, entity_id),
-        _ => false,
     }
 }
 
@@ -1015,7 +977,7 @@ pub async fn get_company(
             severity: w.severity.clone(),
             confidence_pct: w.confidence.map(|c| (c * 100.0) as i64).unwrap_or(0),
             created_at: w.ts_utc.format("%Y-%m-%d").to_string(),
-            age: humanize_age(w.ts_utc),
+            age: dashboard::age_label(w.ts_utc),
             acknowledged: w.acknowledged,
         })
         .collect();
@@ -1045,28 +1007,15 @@ pub async fn get_company(
         .collect();
 
     // ── Entity workspace: why now ───────────────────────────────────────
+    // "Latest" must use the same timestamp the UI ages: `ts_utc` is bumped by
+    // semantic-merge recurrences (unlike `created_at`), so order by it here
+    // instead of trusting the store's created_at ordering.
     let open_signals = warning_rows.iter().filter(|w| !w.acknowledged).count() as i64;
-    let latest_signal_id = warning_rows
-        .first()
-        .map(|w| w.id.to_string())
-        .unwrap_or_default();
-    let latest_signal_title = warning_rows
-        .first()
-        .map(|w| w.title.clone())
-        .unwrap_or_default();
-    let latest_signal_severity = warning_rows
-        .first()
-        .map(|w| w.severity.clone())
-        .unwrap_or_default();
-    let latest_signal_type = warning_rows
-        .first()
-        .map(|w| w.warning_type.clone())
-        .unwrap_or_default();
-    let latest_signal_age = warning_rows
-        .first()
-        .map(|w| humanize_age(w.ts_utc))
-        .unwrap_or_default();
-    let headline = if let Some(latest) = warning_rows.first() {
+    let latest_signal = warning_rows.iter().max_by_key(|w| w.ts_utc);
+    let latest_signal_id = latest_signal.map(|w| w.id.to_string()).unwrap_or_default();
+    let latest_signal_title = latest_signal.map(|w| w.title.clone()).unwrap_or_default();
+    let headline = if let Some(latest) = latest_signal {
+        let age = dashboard::age_label(latest.ts_utc);
         if latest.acknowledged {
             format!(
                 "Latest {} {} signal is reviewed; {} signal(s) still open.",
@@ -1077,7 +1026,7 @@ pub async fn get_company(
                 "{} {} signal {} — {} signal(s) need review.",
                 capitalize(&latest.severity),
                 latest.warning_type,
-                latest_signal_age,
+                age,
                 open_signals
             )
         }
@@ -1226,7 +1175,9 @@ pub async fn get_company(
 
     // ── Entity workspace: open investigations + pipeline status ─────────
     let workspaces_state = DataState::from_result(
-        store.list_investigation_workspaces(100).await,
+        store
+            .list_investigation_workspaces_for_entity(&id, 25)
+            .await,
         "failed to fetch entity investigations",
         Vec::is_empty,
     );
@@ -1234,11 +1185,6 @@ pub async fn get_company(
     let open_investigations: Vec<EntityWorkspaceRef> = workspaces_state
         .into_items()
         .into_iter()
-        .filter(|w| {
-            w.status != "closed"
-                && w.status != "archived"
-                && workspace_focuses_entity(&w.entity_focus, &id)
-        })
         .map(|w| EntityWorkspaceRef {
             id: w.id.to_string(),
             name: w.name,
@@ -1259,7 +1205,6 @@ pub async fn get_company(
         .into_items()
         .into_iter()
         .map(|p| EntityPipelineItem {
-            id: p.id.to_string(),
             title: p.title,
             stage: p.stage,
             probability_pct: (p.probability * 100.0).round() as i64,
@@ -1272,32 +1217,25 @@ pub async fn get_company(
 
     // ── Entity workspace: buying centres (people + decision roles) ──────
     let centers_state = DataState::from_result(
-        store.list_buying_centers(uuid).await,
+        store.list_buying_centers(uuid, 20).await,
         "failed to fetch entity buying centres",
         Vec::is_empty,
     );
     DegradedNotice::capture(&centers_state, &mut degraded_notice);
     let center_rows = centers_state.into_items();
-    type CenterMemberSeed = (Uuid, String, f64, bool);
-    let mut center_members: Vec<(String, String, Vec<CenterMemberSeed>)> = Vec::new();
-    let mut center_person_ids: Vec<Uuid> = Vec::new();
-    for center in &center_rows {
-        let members_state = DataState::from_result(
-            store.list_buying_center_members(center.id).await,
-            "failed to fetch buying centre members",
-            Vec::is_empty,
-        );
-        DegradedNotice::capture(&members_state, &mut degraded_notice);
-        let members: Vec<CenterMemberSeed> = members_state
-            .into_items()
-            .into_iter()
-            .map(|m| (m.person_id, m.role, m.influence_score, m.budget_authority))
-            .collect();
-        for (person_id, _, _, _) in &members {
-            center_person_ids.push(*person_id);
-        }
-        center_members.push((center.name.clone(), center.status.clone(), members));
-    }
+    let center_ids: Vec<Uuid> = center_rows.iter().map(|center| center.id).collect();
+
+    // One round trip for all members across the entity's centres.
+    let members_state = DataState::from_result(
+        store
+            .list_buying_center_members_for_centers(&center_ids)
+            .await,
+        "failed to fetch buying centre members",
+        Vec::is_empty,
+    );
+    DegradedNotice::capture(&members_state, &mut degraded_notice);
+    let member_rows = members_state.into_items();
+    let mut center_person_ids: Vec<Uuid> = member_rows.iter().map(|m| m.person_id).collect();
     center_person_ids.sort();
     center_person_ids.dedup();
     let center_person_names: std::collections::HashMap<Uuid, String> = {
@@ -1313,26 +1251,25 @@ pub async fn get_company(
             .map(|(person_id, name, _)| (person_id, name))
             .collect()
     };
-    let buying_centers: Vec<EntityBuyingCentre> = center_members
+    let buying_centers: Vec<EntityBuyingCentre> = center_rows
         .into_iter()
-        .map(|(name, status, members)| EntityBuyingCentre {
-            name,
-            status,
-            members: members
-                .into_iter()
-                .map(
-                    |(person_id, role, influence, budget_authority)| EntityBuyingCentreMember {
-                        person_id: person_id.to_string(),
-                        name: center_person_names
-                            .get(&person_id)
-                            .cloned()
-                            .unwrap_or_else(|| person_id.to_string()[..8].to_string()),
-                        role,
-                        influence_pct: (influence * 100.0).round() as i64,
-                        budget_authority,
-                    },
-                )
+        .map(|center| EntityBuyingCentre {
+            members: member_rows
+                .iter()
+                .filter(|member| member.buying_center_id == center.id)
+                .map(|member| EntityBuyingCentreMember {
+                    person_id: member.person_id.to_string(),
+                    name: center_person_names
+                        .get(&member.person_id)
+                        .cloned()
+                        .unwrap_or_else(|| member.person_id.to_string()[..8].to_string()),
+                    role: member.role.clone(),
+                    influence_pct: (member.influence_score * 100.0).round() as i64,
+                    budget_authority: member.budget_authority,
+                })
                 .collect(),
+            name: center.name,
+            status: center.status,
         })
         .collect();
 
@@ -1340,9 +1277,6 @@ pub async fn get_company(
         headline,
         latest_signal_id,
         latest_signal_title,
-        latest_signal_severity,
-        latest_signal_type,
-        latest_signal_age,
         open_signals,
         recent_changes: recent_change_count,
         evidence_count,
@@ -1600,9 +1534,6 @@ mod tests {
                 headline: "High capacity_alert signal 2d ago — 1 signal(s) need review.".into(),
                 latest_signal_id: "0ddba110-0000-4000-8000-000000000001".into(),
                 latest_signal_title: "Northwind Power expands cell manufacturing capacity".into(),
-                latest_signal_severity: "high".into(),
-                latest_signal_type: "capacity_alert".into(),
-                latest_signal_age: "2d ago".into(),
                 open_signals: 1,
                 recent_changes: 1,
                 evidence_count: 1,
@@ -1630,7 +1561,6 @@ mod tests {
                 updated_at: "2026-01-16".into(),
             }],
             pipeline: vec![EntityPipelineItem {
-                id: "9e7e0000-0000-4000-8000-000000000001".into(),
                 title: "Northwind grid storage capacity opportunity".into(),
                 stage: "discovery".into(),
                 probability_pct: 35,
@@ -1676,39 +1606,5 @@ mod tests {
                 || html.contains("data-evidence-source")
                 || html.contains("Evidence timeline")
         );
-    }
-
-    #[test]
-    fn workspace_focus_matches_id_arrays_and_objects() {
-        let company_id = "c0ffee00-0000-4000-8000-000000000001";
-        assert!(workspace_focuses_entity(
-            &serde_json::json!([company_id]),
-            company_id
-        ));
-        assert!(workspace_focuses_entity(
-            &serde_json::json!([{ "id": company_id }]),
-            company_id
-        ));
-        assert!(workspace_focuses_entity(
-            &serde_json::json!({ "entity_id": company_id }),
-            company_id
-        ));
-        assert!(!workspace_focuses_entity(
-            &serde_json::json!([]),
-            company_id
-        ));
-        assert!(!workspace_focuses_entity(
-            &serde_json::json!(["other"]),
-            company_id
-        ));
-    }
-
-    #[test]
-    fn humanize_age_reports_recency_buckets() {
-        let now = chrono::Utc::now();
-        assert_eq!(humanize_age(now), "just now");
-        assert_eq!(humanize_age(now - chrono::Duration::minutes(5)), "5m ago");
-        assert_eq!(humanize_age(now - chrono::Duration::hours(3)), "3h ago");
-        assert_eq!(humanize_age(now - chrono::Duration::days(2)), "2d ago");
     }
 }

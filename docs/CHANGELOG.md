@@ -19,7 +19,9 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
   Buying Centres is a first-class `/buying-centers` view (people grouped by
   account with decision roles) rather than a duplicate Persons peer. Settings
   lives only in the user menu; Sources/Jobs/Admin stay admin-only. The wasm
-  shell mirrors the same groups.
+  shell renders the same workflow groups over the routes it serves (Search in
+  Command Center, a System group for Settings/Admin, and server-only Triage/
+  Queue/Team Assignments routes noted in the shell).
 - **B403** The entity dossier is now the single intelligence workspace:
   overview, why now, recent changes, people & buying centre (mapped buying
   centre members first, then key persons), evidence timeline (collaboration
@@ -46,13 +48,20 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
   also asserts the workflow nav groups and the new `/buying-centers` route.
 
 ### Backend
-- **B406** Fixes surfaced by the workflow tests: dropped the legacy
+- **B406** Fixes surfaced by the workflow tests and review: dropped the legacy
   `insight_bookmarks` FK to `analyst_users` (migration 061) that blocked
   bookmarking for `app_users` principals; rewrote the per-entity warning/
   insight count queries over `CROSS JOIN LATERAL unnest(...)` so `/companies`
-  no longer degrades; the new-workspace form now offers the workspace types
-  the database accepts and surfaces creation failure instead of redirecting
-  as if it succeeded.
+  no longer degrades; the new-workspace form offers the workspace types and
+  visibility values the database accepts, maps the legacy `org` alias, and
+  surfaces creation failure with the entity/signal prefill preserved; the
+  signal brief renders integer confidence; "latest signal" freshness follows
+  `ts_utc` so merged recurrences are not hidden behind newer rows;
+  `/buying-centers` keeps its view across region/priority filters; the entity
+  workspace batches buying-centre member lookup in one query and filters
+  open investigations in SQL instead of scanning the newest 100 workspaces;
+  buying-centre ordering follows the canonical `apex_poi` role priority and
+  the age/severity helpers are shared instead of duplicated.
 
 ---
 

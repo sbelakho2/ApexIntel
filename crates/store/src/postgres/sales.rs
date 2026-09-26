@@ -552,7 +552,12 @@ impl PgStore {
     }
 
     /// The buying center(s) for a company with their members, ordered by influence.
-    pub async fn list_buying_centers(&self, company_id: Uuid) -> Result<Vec<BuyingCenterRow>> {
+    pub async fn list_buying_centers(
+        &self,
+        company_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<BuyingCenterRow>> {
+        let limit = clamp_limit(limit);
         let rows = sqlx::query_as::<_, BuyingCenterRow>(
             r#"
             SELECT id, opportunity_id, company_id, name, deal_value, status,
@@ -560,9 +565,11 @@ impl PgStore {
             FROM buying_centers
             WHERE company_id = $1
             ORDER BY updated_at DESC
+            LIMIT $2
             "#,
         )
         .bind(company_id)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -582,6 +589,31 @@ impl PgStore {
             "#,
         )
         .bind(buying_center_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Members for several buying centres in one round trip, keyed by centre.
+    /// Used by the entity dossier so member lookup does not scale with the
+    /// number of centres (each row carries its `buying_center_id`).
+    pub async fn list_buying_center_members_for_centers(
+        &self,
+        buying_center_ids: &[Uuid],
+    ) -> Result<Vec<BuyingCenterMemberRow>> {
+        if buying_center_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows = sqlx::query_as::<_, BuyingCenterMemberRow>(
+            r#"
+            SELECT id, buying_center_id, person_id, role, influence_score,
+                   budget_authority, need_signal, timeline_horizon, notes, metadata, created_at
+            FROM buying_center_members
+            WHERE buying_center_id = ANY($1)
+            ORDER BY influence_score DESC
+            "#,
+        )
+        .bind(buying_center_ids)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)

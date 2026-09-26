@@ -1119,6 +1119,41 @@ impl PgStore {
         .await?)
     }
 
+    /// Open investigation workspaces focused on one entity. Filters in SQL
+    /// (status + `entity_focus` containment) so the entity dossier does not
+    /// fetch the whole workspace table, and matching rows beyond a recent
+    /// window are not silently dropped. Accepts both bare id arrays
+    /// (`["<uuid>"]`) and object entries (`{"id"|"entity_id": "<uuid>"}`).
+    pub async fn list_investigation_workspaces_for_entity(
+        &self,
+        entity_id: &str,
+        limit: i64,
+    ) -> Result<Vec<InvestigationWorkspaceRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, InvestigationWorkspaceRecord>(
+            r#"
+            SELECT id, name, description, workspace_type, owner_id, team_id, status,
+                   visibility, tags, entity_focus, findings, conclusions, metadata,
+                   created_at, updated_at, closed_at
+            FROM investigation_workspaces
+            WHERE status NOT IN ('closed', 'archived')
+              AND (
+                    entity_focus @> jsonb_build_array($1::text)
+                 OR entity_focus @> jsonb_build_array(jsonb_build_object('id', $1::text))
+                 OR entity_focus @> jsonb_build_array(jsonb_build_object('entity_id', $1::text))
+                 OR entity_focus->>'id' = $1
+                 OR entity_focus->>'entity_id' = $1
+              )
+            ORDER BY updated_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(entity_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn create_investigation_workspace(
         &self,
         name: &str,

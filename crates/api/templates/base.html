@@ -1005,10 +1005,8 @@
 {% endmacro %}
 
 {% macro nav_item(href, label) %}
-{# Query-bearing items (e.g. /persons?view=buying-centers) are views over a
-   route, so they match exactly instead of prefix-matching the base path. #}
 <a href="{{ href }}"
-   class="sidebar-item {% if current_path == href || (href != "/" && !href.contains("?") && current_path.starts_with(href)) %}active{% endif %}"
+   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
   {{ label }}
 </a>
@@ -1016,7 +1014,7 @@
 
 {% macro nav_item_badge(href, label) %}
 <a href="{{ href }}"
-   class="sidebar-item {% if current_path == href || (href != "/" && !href.contains("?") && current_path.starts_with(href)) %}active{% endif %}"
+   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
   {{ label }}
   {# B310: class, not id — the badge is rendered twice (mobile + desktop

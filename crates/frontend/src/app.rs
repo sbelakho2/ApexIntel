@@ -16,8 +16,11 @@ use crate::routes::{
     warnings::WarningsPage,
 };
 
-/// Organized navigation groups matching the server-rendered workflow IA
-/// (audit #15): workflows first, database tables never peers.
+/// Workflow groups mirroring the server-rendered IA (audit #15). The wasm
+/// shell only holds routes it actually serves, so a few items differ from the
+/// server nav by design: Search stays in Command Center (no permanent command
+/// bar here), Triage/Queue and Team Assignments are server-only routes, and
+/// Settings/Admin live in a System group because this shell has no user menu.
 const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Command Center",
@@ -32,6 +35,7 @@ const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
         "Entities",
         &[
             ("Companies", "/wasm/companies"),
+            ("Competitors", "/wasm/competitors"),
             ("Persons", "/wasm/persons"),
             ("Psych Profiles", "/wasm/psych-profiles"),
         ],
@@ -62,7 +66,6 @@ const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Sales Intelligence",
         &[
-            ("Competitors", "/wasm/competitors"),
             ("Landscape", "/wasm/competitive-landscape"),
             ("Strategic Radar", "/wasm/strategic-radar"),
             ("Battlecards", "/wasm/battlecards"),

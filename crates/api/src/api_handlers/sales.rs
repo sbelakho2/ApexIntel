@@ -298,7 +298,7 @@ pub(crate) async fn list_company_buying_center(
         }
     };
 
-    let centers = match state.store.list_buying_centers(company_id).await {
+    let centers = match state.store.list_buying_centers(company_id, 20).await {
         Ok(c) => c,
         Err(err) => {
             tracing::error!(request_id = %request_id, "list_company_buying_center failed: {err:#}");

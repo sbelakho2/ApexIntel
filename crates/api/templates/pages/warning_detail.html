@@ -77,7 +77,7 @@
         </div>
         <div data-brief-reliability>
           <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Reliability</p>
-          <p class="mt-1 text-sm font-bold text-rams-foreground tabular-nums">{{ confidence }}% · {{ reliability_label }}</p>
+          <p class="mt-1 text-sm font-bold text-rams-foreground tabular-nums">{{ confidence_pct }}% · {{ reliability_label }}</p>
           <p class="mt-1 text-[11px] text-rams-muted">{{ corroboration }}</p>
         </div>
         <div data-brief-entity>
@@ -126,7 +126,7 @@
       <div class="mt-4 grid grid-cols-2 gap-4 text-[11px]">
         <div><span class="font-black uppercase text-rams-muted">Company</span><br>{% if !company_id.is_empty() %}<a href="/companies/{{ company_id }}" class="hover:underline text-rams-foreground">{{ company_name }}</a>{% else %}<span class="text-rams-muted">Unlinked</span>{% endif %}</div>
         <div><span class="font-black uppercase text-rams-muted">Type</span><br><span class="text-rams-foreground">{{ warning_type }}</span></div>
-        <div><span class="font-black uppercase text-rams-muted">Confidence</span><br><span class="text-rams-foreground font-bold tabular-nums">{{ confidence }}%</span></div>
+        <div><span class="font-black uppercase text-rams-muted">Confidence</span><br><span class="text-rams-foreground font-bold tabular-nums">{{ confidence_pct }}%</span></div>
         <div><span class="font-black uppercase text-rams-muted">Created</span><br><span class="text-rams-foreground tabular-nums">{{ created_at }}</span></div>
       </div>
       {% if let Some(outcome) = review_outcome %}
