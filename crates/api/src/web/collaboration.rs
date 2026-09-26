@@ -792,13 +792,20 @@ pub async fn add_to_queue(
 
 /// POST /queue/:id/complete — mark queue item as completed.
 pub async fn complete_queue_item(
-    _session: Extension<WebSession>,
+    session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     if let Ok(uuid) = Uuid::parse_str(&id) {
         let _ = store
-            .update_priority_queue_item(uuid, None, Some("completed"), None)
+            .update_priority_queue_item_scoped(
+                &session.username,
+                session.role.as_str(),
+                uuid,
+                None,
+                Some("completed"),
+                None,
+            )
             .await;
     }
     Redirect::to("/queue")

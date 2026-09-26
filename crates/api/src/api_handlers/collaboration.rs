@@ -1012,6 +1012,7 @@ pub async fn add_to_queue(
 /// Update queue item status
 pub async fn update_queue_item(
     State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
     Path(id): Path<String>,
     Json(req): Json<UpdateQueueItemRequest>,
 ) -> Result<Json<ApiResponse<PriorityQueueItem>>, ApiError> {
@@ -1031,7 +1032,9 @@ pub async fn update_queue_item(
 
     let record = state
         .store
-        .update_priority_queue_item(
+        .update_priority_queue_item_scoped(
+            &auth.user_id,
+            auth.role.as_str(),
             uuid,
             req.priority,
             req.status.as_deref(),

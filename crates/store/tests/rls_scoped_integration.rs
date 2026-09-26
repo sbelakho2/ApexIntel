@@ -544,3 +544,115 @@ async fn user_private_tables_force_row_level_security() {
 
     admin.close().await;
 }
+
+/// The worker builds its own pool and runs unscoped service paths. After
+/// migrations 057/058 FORCE RLS, such a pool must assume the `service`
+/// identity via `PgStore::assume_service_identity`, or every newly forced
+/// table silently returns zero rows / rejects writes.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn forced_worker_tables_require_a_service_identity() {
+    let url = database_url();
+    let admin = connect(&url).await;
+    sqlx::migrate!("../../migrations")
+        .run(&admin)
+        .await
+        .unwrap();
+
+    let role_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
+            .bind(RLS_ROLE)
+            .fetch_one(&admin)
+            .await
+            .unwrap();
+    if !role_exists {
+        sqlx::query(&format!("CREATE ROLE {RLS_ROLE}"))
+            .execute(&admin)
+            .await
+            .expect("create scoped test role (needs CREATEROLE)");
+    }
+    for table in ["analyst_notifications", "insight_feedback_events"] {
+        sqlx::query(&format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} TO {RLS_ROLE}"
+        ))
+        .execute(&admin)
+        .await
+        .expect("grant DML on forced table");
+    }
+
+    let worker_user = "rls-worker-service-user";
+
+    // A non-owner role with no identity is denied by the FORCEd RLS.
+    let no_identity = PgStore::from_pool(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET ROLE apexintel_rls_test")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        no_identity
+            .create_notification(
+                worker_user,
+                "rls_test",
+                "no identity",
+                "must be rejected",
+                None,
+                None,
+                None,
+            )
+            .await
+            .is_err(),
+        "a connection with no identity must not write a forced table"
+    );
+
+    // The same role with the worker's service identity can write and scan.
+    let service = PgStore::from_pool(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET ROLE apexintel_rls_test")
+                        .execute(&mut *conn)
+                        .await?;
+                    PgStore::assume_service_identity(&mut *conn).await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap(),
+    );
+    service
+        .create_notification(
+            worker_user,
+            "rls_test",
+            "service identity",
+            "must be accepted",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("service identity must satisfy the forced service policy");
+    service
+        .list_recent_insight_feedback_events(chrono::Utc::now() - chrono::Duration::days(90))
+        .await
+        .expect("service identity must be able to scan forced feedback events");
+
+    sqlx::query("DELETE FROM analyst_notifications WHERE user_id = $1")
+        .bind(worker_user)
+        .execute(&admin)
+        .await
+        .unwrap();
+
+    admin.close().await;
+}

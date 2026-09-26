@@ -151,6 +151,53 @@ async fn delete_annotation_on(
     Ok(result.rows_affected() > 0)
 }
 
+async fn update_priority_queue_item_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    id: Uuid,
+    priority: Option<i32>,
+    status: Option<&str>,
+    notes: Option<Option<&str>>,
+) -> Result<Option<PriorityQueueItemRecord>> {
+    let current = match sqlx::query_as::<_, PriorityQueueItemRecord>(
+        "SELECT id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at FROM priority_queue WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+
+    let new_status = status.unwrap_or(&current.status).to_string();
+    let completed_at: Option<DateTime<Utc>> = if new_status == "completed" {
+        Some(Utc::now())
+    } else {
+        None
+    };
+
+    Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
+        r#"UPDATE priority_queue SET
+             priority = $3,
+             status = $4,
+             notes = $5,
+             completed_at = $6,
+             updated_at = NOW()
+           WHERE id = $1 AND user_id = $2
+           RETURNING id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(priority.unwrap_or(current.priority))
+    .bind(&new_status)
+    .bind(notes.unwrap_or(current.notes.as_deref()))
+    .bind(completed_at)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
 async fn upsert_watchlist_on(
     conn: &mut sqlx::PgConnection,
     id: Option<Uuid>,
@@ -1355,47 +1402,36 @@ impl PgStore {
         .await?)
     }
 
+    /// Service-path queue update. The `user_id` predicate is mandatory: the
+    /// default `service` identity bypasses per-user RLS, so without it any
+    /// caller could modify another user's queue item.
     pub async fn update_priority_queue_item(
         &self,
+        user_id: &str,
         id: Uuid,
         priority: Option<i32>,
         status: Option<&str>,
         notes: Option<Option<&str>>,
     ) -> Result<Option<PriorityQueueItemRecord>> {
-        let current = match sqlx::query_as::<_, PriorityQueueItemRecord>(
-            "SELECT id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at FROM priority_queue WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await? {
-            Some(c) => c,
-            None => return Ok(None),
-        };
+        let mut conn = self.pool.acquire().await?;
+        update_priority_queue_item_on(&mut conn, user_id, id, priority, status, notes).await
+    }
 
-        let new_status = status.unwrap_or(&current.status).to_string();
-        let completed_at: Option<DateTime<Utc>> = if new_status == "completed" {
-            Some(Utc::now())
-        } else {
-            None
-        };
-
-        Ok(sqlx::query_as::<_, PriorityQueueItemRecord>(
-            r#"UPDATE priority_queue SET
-                 priority = $2,
-                 status = $3,
-                 notes = $4,
-                 completed_at = $5,
-                 updated_at = NOW()
-               WHERE id = $1
-               RETURNING id, user_id, queue_date, item_type, item_id, item_title, priority, status, notes, completed_at, created_at, updated_at"#,
-        )
-        .bind(id)
-        .bind(priority.unwrap_or(current.priority))
-        .bind(&new_status)
-        .bind(notes.unwrap_or(current.notes.as_deref()))
-        .bind(completed_at)
-        .fetch_optional(&self.pool)
-        .await?)
+    /// Identity-scoped queue update for the RLS-forced `priority_queue` table.
+    pub async fn update_priority_queue_item_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Uuid,
+        priority: Option<i32>,
+        status: Option<&str>,
+        notes: Option<Option<&str>>,
+    ) -> Result<Option<PriorityQueueItemRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record =
+            update_priority_queue_item_on(&mut tx, user_id, id, priority, status, notes).await?;
+        tx.commit().await?;
+        Ok(record)
     }
 
     // ─── Supplier Risk Entries ────────────────────────────────────────────────
