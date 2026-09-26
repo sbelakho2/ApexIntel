@@ -1,0 +1,13 @@
+# Docker build context exclusions. `crates/`, `Cargo.toml`, `Cargo.lock` and
+# `config/` are the only paths the Dockerfiles copy.
+.git
+target
+node_modules
+scratch
+screenshots
+training
+training_data
+e2e
+playwright-report
+test-results
+*.png

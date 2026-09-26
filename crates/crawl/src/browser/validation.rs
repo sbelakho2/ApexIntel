@@ -8,7 +8,9 @@
 //! - the host must not be loopback, private, link-local, CGNAT, unique-local,
 //!   unspecified, broadcast or `localhost`,
 //! - the host is re-resolved immediately before navigation and rejected if it
-//!   now points at a private address (DNS-rebinding mitigation),
+//!   now points at a private address (DNS-rebinding mitigation); if the public
+//!   resolution cannot be verified the URL is rejected (fail closed) and the
+//!   crawl attempt is retried later,
 //! - URLs are canonicalised through [`url::Url`] so the browser receives a
 //!   normalised string rather than raw attacker input.
 //!
@@ -139,8 +141,9 @@ pub fn is_private_host(host: &str) -> bool {
 }
 
 /// Re-resolve the host immediately before navigating and reject any private
-/// address. Resolution failures are left to the browser (the page simply
-/// fails to load).
+/// address. Resolution failures fail closed: an attacker-influenced URL whose
+/// public resolution cannot be verified is rejected as a network failure (the
+/// crawl attempt is retried later) instead of bypassing the SSRF guarantee.
 pub async fn assert_public_resolution(url: &Url) -> Result<()> {
     assert_public_resolution_with(url, |host, port| async move {
         tokio::net::lookup_host((host.as_str(), port))
@@ -181,8 +184,12 @@ where
             }
             Ok(())
         }
-        // Resolution failure is handled by the browser itself.
-        Err(_) => Ok(()),
+        // Fail closed: if public resolution cannot be verified the URL must
+        // not reach Chromium. The caller records this as a fetch/network
+        // failure so the attempt is retried later under the same guarantee.
+        Err(error) => Err(anyhow!(
+            "unable to verify public resolution for {host}: {error}"
+        )),
     }
 }
 
@@ -378,11 +385,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolution_failures_defer_to_the_browser() {
+    async fn resolution_failures_fail_closed() {
         let url = Url::parse("https://does-not-resolve.example/").expect("url");
-        assert_public_resolution_with(&url, |_host, _port| async { Err("nxdomain".into()) })
-            .await
-            .expect("resolution failure should not block navigation");
+        let error =
+            assert_public_resolution_with(&url, |_host, _port| async { Err("nxdomain".into()) })
+                .await
+                .expect_err("resolution failure must fail closed, not bypass the SSRF guarantee");
+        assert!(
+            error
+                .to_string()
+                .contains("unable to verify public resolution for does-not-resolve.example"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

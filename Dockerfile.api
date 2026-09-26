@@ -10,6 +10,9 @@ WORKDIR /build
 # Cache dependency compilation
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+# `apex-insights` embeds config/augmentation_entities.yaml via include_str!, so
+# the file must exist at compile time, not only in the runtime image.
+COPY config/ config/
 RUN cargo build --release --bin apex-api --features llm --locked
 
 FROM debian:bookworm-slim AS runtime

@@ -2,6 +2,16 @@
 # Dockerfile.worker — ApexIntel Worker (crawler, miner, scheduler)
 # Build:  docker build -f Dockerfile.worker -t apexintel-worker .
 # Run:    docker run --env-file .env apexintel-worker
+#
+# The runtime image ships Chromium + runtime libraries so Browser-strategy
+# sources are actually renderable in the container: ENABLE_HEADLESS_BROWSER
+# and HEADLESS_BROWSER_BIN are set below. Chromium runs sandboxed under the
+# non-root `apexintel` account (never pass --no-sandbox).
+#
+# Container-level browser integration check (JS-only fixture: late network +
+# lazy-loaded DOM), run via scripts/ci/browser_container_check.sh:
+#   docker build --target browser-check -f Dockerfile.worker -t apexintel-worker-browser-check .
+#   docker run --rm --cap-add=SYS_ADMIN apexintel-worker-browser-check
 # ────────────────────────────────────────────────────────────────────────────
 
 FROM rust:bookworm AS builder
@@ -9,11 +19,21 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+# `apex-insights` embeds config/augmentation_entities.yaml via include_str!, so
+# the file must exist at compile time, not only in the runtime image.
+COPY config/ config/
 RUN cargo build --release --bin apex-worker --features llm --locked 2>&1
+# Test harness for the container-level browser integration check. Built in the
+# builder stage so the runtime image can run it without a Rust toolchain; only
+# the `browser-check` stage copies it into the shipped image layers.
+RUN cargo build --release --example browser_container_check -p apex-crawl --locked 2>&1
 
 FROM debian:bookworm-slim AS runtime
+# Chromium + its runtime libraries: required by the persistent CDP renderer.
+# fonts-liberation keeps text rendering deterministic on slim images.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates libssl3 curl && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates libssl3 curl chromium fonts-liberation && \
     rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r apexintel && useradd -r -g apexintel -d /opt/apexintel apexintel
@@ -31,6 +51,16 @@ HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=30s \
     CMD kill -0 1 || exit 1
 
 USER apexintel
-ENV RUST_LOG=info
+ENV RUST_LOG=info \
+    ENABLE_HEADLESS_BROWSER=true \
+    HEADLESS_BROWSER_BIN=/usr/bin/chromium
 
 CMD ["apex-worker"]
+
+# Container-level browser integration check target. Renders a JS-only fixture
+# (late network + lazy-loaded DOM) through the real persistent Chromium
+# renderer shipped in this image.
+FROM runtime AS browser-check
+COPY --from=builder /build/target/release/examples/browser_container_check /usr/local/bin/browser-container-check
+ENTRYPOINT ["/usr/local/bin/browser-container-check"]
+CMD []

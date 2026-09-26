@@ -66,7 +66,7 @@
   <div class="border-b border-rams-line px-4 py-3">
     <h2 class="text-xs font-black uppercase tracking-[0.12em]">Source Coverage</h2>
     <p class="text-[11px] text-rams-muted mt-1">
-      Only operational, validated sources count toward the product source metric
+      Operational counts only sources validated by a successful fetch and parser contract check
     </p>
   </div>
   <div class="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 xl:grid-cols-6">
@@ -75,16 +75,28 @@
       <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.operational }}</p>
     </div>
     <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Validated</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.validated }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Registered</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.registered }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Credential-blocked</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.credential_blocked }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Unsupported</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.unsupported }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Temporarily degraded</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.temporarily_degraded }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
       <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Due</p>
       <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.due }}</p>
-    </div>
-    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
-      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Healthy</p>
-      <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.healthy }}</p>
-    </div>
-    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
-      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Degraded</p>
-      <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.degraded }}</p>
     </div>
     <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
       <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Never crawled</p>

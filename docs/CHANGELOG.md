@@ -7,6 +7,43 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — Source-capability truth + browser hardening (B402–B405)
+
+Audit items 10, 11, 18, 34 (source/crawl capability truth + browser hardening).
+
+### Backend
+- **B402** `SourceCapability` now defaults to `Unvalidated` instead of
+  `Operational`. A source is only reported `Operational` after its strategy is
+  validated for the deployment AND its runtime state records at least one
+  successful fetch/parser contract check (`record_source_success` is only
+  called after the parsed observation was stored). Unvalidated sources stay
+  schedulable so they can earn validation; only validated sources count toward
+  the operational metric. The admin coverage card now reports Registered /
+  Operational / Validated / Credential-blocked / Unsupported / Temporarily
+  degraded (plus due/backlog detail).
+- **B403** Browser DNS validation fails closed: a URL whose public resolution
+  cannot be verified is rejected with `unable to verify public resolution for
+  {host}` instead of being handed to Chromium. The crawl attempt is recorded
+  as a normal fetch failure and retried under the failure backoff, preserving
+  the SSRF guarantee.
+
+### Container / CI
+- **B404** `Dockerfile.worker` installs Chromium + runtime fonts and sets
+  `ENABLE_HEADLESS_BROWSER=true` / `HEADLESS_BROWSER_BIN=/usr/bin/chromium`, so
+  Browser-strategy sources are renderable in the worker container. A
+  `browser-check` stage plus `scripts/ci/browser_container_check.sh` renders a
+  JS-only fixture (late network + lazy-loaded DOM) through the real image; the
+  Woodpecker `browser-container` step runs it (requires a docker daemon on the
+  runner).
+
+### Docs
+- **B405** README/DEPLOYMENT/.env.example aligned with browser truth: the full
+  profile enables the headless renderer against installed Chromium and states
+  that Browser-strategy sources are unavailable (never HTTP-downgraded) when it
+  is off.
+
+---
+
 ## [Unreleased] — Mobile UI overhaul + comprehensive UI CI (B397–B401)
 
 ### UI (mobile "vertical text" and overflow)

@@ -174,12 +174,24 @@ pub fn dispatch_source_fetch(
     }
 }
 
-/// Operational capability of a source. Only [`SourceCapability::Operational`]
-/// sources are schedulable and counted in the admin source-coverage metric.
+/// Lifecycle capability of a source.
+///
+/// A registered source starts [`SourceCapability::Unvalidated`] and only
+/// becomes [`SourceCapability::Operational`] after its strategy is validated
+/// for this deployment **and** at least one successful fetch/parser contract
+/// check is recorded in its runtime state. Only `Operational` sources count in
+/// the admin source-coverage metric; unvalidated sources stay schedulable so
+/// they can earn that validation with a real fetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceCapability {
+    /// Registered but not yet proven in this deployment: no successful
+    /// fetch/parser contract check has been recorded.
     #[default]
+    Unvalidated,
+    /// Strategy validated for this deployment with at least one successful
+    /// fetch/parser contract check and a closed circuit. The only state counted
+    /// toward the product's operational source metric.
     Operational,
     RequiresCredentials,
     Blocked,
@@ -200,6 +212,7 @@ pub enum SourceCapability {
 impl SourceCapability {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Unvalidated => "unvalidated",
             Self::Operational => "operational",
             Self::RequiresCredentials => "requires_credentials",
             Self::Blocked => "blocked",
@@ -211,9 +224,25 @@ impl SourceCapability {
         }
     }
 
+    /// Only validated sources count toward the operational source metric.
     pub fn is_operational(self) -> bool {
         matches!(self, Self::Operational)
     }
+
+    /// States the scheduler may attempt. `Unvalidated` sources are attempted so
+    /// a successful fetch/parser contract check can promote them to
+    /// `Operational`; every other state is excluded from scheduling.
+    pub fn is_schedulable(self) -> bool {
+        matches!(self, Self::Operational | Self::Unvalidated)
+    }
+}
+
+/// True when runtime state proves at least one successful fetch/parser
+/// contract check: `PgStore::record_source_success` is only called after the
+/// fetched body was parsed and its observation stored, so `last_success_at`
+/// set means both the fetch and the parser contract held.
+pub fn source_is_validated(runtime: Option<&SourceRuntimeStateRow>) -> bool {
+    runtime.and_then(|row| row.last_success_at).is_some()
 }
 
 /// Environment variable listing the comma-separated [`ApiAdapter`] ids whose
@@ -296,21 +325,26 @@ fn env_non_empty(name: &str) -> bool {
 }
 
 /// Resolve the effective capability of a source by combining its declared
-/// capability with the deployment's actual capabilities:
+/// capability with the deployment's actual capabilities and the runtime
+/// evidence recorded for it:
 ///
+/// - declared `Blocked`/`Unsupported`/`RequiresCredentials`/`TemporarilyFailed`
+///   states win over runtime evidence,
 /// - `Browser` strategy + browser disabled → `unavailable_missing_capability`
 /// - `JsonApi` requiring credentials that are not configured →
 ///   `unavailable_missing_credentials`
 /// - `needs_proxy` + no proxy configured → `unavailable_missing_proxy`
-///
-/// A source whose circuit breaker is currently open is `temporarily_failed`
-/// regardless of its declared state (evaluated against the current clock).
+/// - a source whose circuit breaker is currently open is `temporarily_failed`
+///   (evaluated against the current clock),
+/// - otherwise the source is `operational` only when its runtime state records
+///   at least one successful fetch/parser contract check; a registered source
+///   without that evidence is `unvalidated` regardless of its declared state.
 pub fn effective_capability(
     source: &Source,
     runtime: Option<&SourceRuntimeStateRow>,
     deployment_caps: &DeploymentCapabilities,
 ) -> SourceCapability {
-    if !source.capability.is_operational() {
+    if !source.capability.is_schedulable() {
         return source.capability;
     }
     match source.strategy() {
@@ -338,20 +372,25 @@ pub fn effective_capability(
             return SourceCapability::TemporarilyFailed;
         }
     }
-    SourceCapability::Operational
+    if source_is_validated(runtime) {
+        SourceCapability::Operational
+    } else {
+        SourceCapability::Unvalidated
+    }
 }
 
 /// Declared capability plus runtime circuit state, ignoring deployment
-/// capabilities. The scheduler deliberately keeps selecting sources whose
-/// deployment capability is missing: the crawl cycle must see them, persist
-/// an unavailable runtime state, and surface the capability gap in its
-/// counters instead of silently dropping them.
+/// capabilities and validation evidence. The scheduler deliberately keeps
+/// selecting sources whose deployment capability is missing or that are still
+/// unvalidated: the crawl cycle must see them, persist an unavailable runtime
+/// state, and surface the capability gap in its counters instead of silently
+/// dropping them.
 fn runtime_capability(
     source: &Source,
     runtime: Option<&SourceRuntimeStateRow>,
     now: DateTime<Utc>,
 ) -> SourceCapability {
-    if !source.capability.is_operational() {
+    if !source.capability.is_schedulable() {
         return source.capability;
     }
     if let Some(row) = runtime {
@@ -363,7 +402,7 @@ fn runtime_capability(
             return SourceCapability::TemporarilyFailed;
         }
     }
-    SourceCapability::Operational
+    source.capability
 }
 
 /// A single crawlable intelligence source.
@@ -395,8 +434,10 @@ pub struct Source {
     /// Explicit fetch strategy; inferred from URL shape/category when absent.
     #[serde(default)]
     pub fetch_strategy: Option<FetchStrategy>,
-    /// Declared capability of the source. Sources that are not operational
-    /// are excluded from scheduling and from the operational source count.
+    /// Declared capability of the source. Sources start `Unvalidated` and are
+    /// only promoted to `Operational` by runtime evidence (a successful
+    /// fetch/parser contract check); only operational sources count toward the
+    /// product's source metric.
     #[serde(default)]
     pub capability: SourceCapability,
     /// Notes on language, auth requirements, or special handling.
@@ -440,7 +481,7 @@ impl Source {
             enabled: true,
             min_interval_minutes: 60,
             fetch_strategy: None,
-            capability: SourceCapability::Operational,
+            capability: SourceCapability::Unvalidated,
             notes: None,
         }
     }
@@ -3205,7 +3246,7 @@ pub fn is_source_due(
     runtime: Option<&SourceRuntimeStateRow>,
     now: DateTime<Utc>,
 ) -> bool {
-    if !source.enabled || !runtime_capability(source, runtime, now).is_operational() {
+    if !source.enabled || !runtime_capability(source, runtime, now).is_schedulable() {
         return false;
     }
     match runtime {
@@ -3274,7 +3315,7 @@ pub fn rank_due_sources<'a>(
             continue;
         }
         let runtime = states.get(source.slug.as_str()).copied();
-        if !runtime_capability(source, runtime, now).is_operational() {
+        if !runtime_capability(source, runtime, now).is_schedulable() {
             continue;
         }
         let due = is_source_due(source, runtime, now);
@@ -3420,19 +3461,49 @@ pub fn due_sources_remaining(
         .count()
 }
 
-/// Snapshot of the declared vs operational source universe for the admin
-/// source-coverage metric. Only `operational` sources count toward the
-/// product's source count; sources the deployment cannot run are broken out
-/// by the missing capability so the metric stays truthful.
+/// Snapshot of the source universe for the admin source-coverage metric.
+///
+/// The reported lifecycle states are:
+/// - **Registered** (`registered`): enabled sources in the registry,
+/// - **Validated** (`validated`): deployment-supported sources with at least
+///   one successful fetch/parser contract check,
+/// - **Operational** (`operational`): validated sources with a closed circuit
+///   and no consecutive failures — the only sources counted toward the
+///   product's operational source metric,
+/// - **Credential-blocked** (`credential_blocked`): sources requiring
+///   credentials that are not configured,
+/// - **Unsupported** (`unsupported`): sources declared `Blocked`/`Unsupported`,
+/// - **Temporarily degraded** (`temporarily_degraded`): sources backing off
+///   after failures or with an open circuit.
+///
+/// Sources the deployment cannot satisfy at all are broken out by the missing
+/// capability (`unavailable_missing_*`) so the metric stays truthful.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceCoverageSummary {
     pub declared: usize,
+    /// Enabled sources in the registry ("Registered").
+    pub registered: usize,
+    /// Validated sources with a closed circuit and no consecutive failures.
     pub operational: usize,
+    /// Sources with at least one successful fetch/parser contract check and a
+    /// deployment-supported strategy.
+    pub validated: usize,
     pub due: usize,
+    /// Alias of `operational`, kept for existing consumers.
     pub healthy: usize,
+    /// Validated sources currently backing off after failures.
     pub degraded: usize,
-    pub disabled: usize,
+    /// Every source currently backing off after failures (validated or not).
+    pub temporarily_degraded: usize,
+    /// Registered, deployment-supported sources without a successful
+    /// fetch/parser contract check yet.
     pub never_crawled: usize,
+    pub disabled: usize,
+    /// Sources blocked on credentials (`RequiresCredentials` plus
+    /// `UnavailableMissingCredentials`).
+    pub credential_blocked: usize,
+    /// Sources declared `Blocked` or `Unsupported`.
+    pub unsupported: usize,
     /// `Browser`-strategy sources with the headless renderer unavailable.
     pub unavailable_missing_capability: usize,
     /// `JsonApi` sources whose adapter credentials are not configured.
@@ -3446,6 +3517,10 @@ pub struct SourceCoverageSummary {
 /// deployment (see [`DeploymentCapabilities::from_env`]); sources the
 /// deployment cannot satisfy are excluded from `operational` and counted in
 /// the matching `unavailable_missing_*` bucket instead.
+///
+/// A source only counts as `operational` once its runtime state records a
+/// successful fetch/parser contract check: registration alone (or a static
+/// `Operational` declaration) is never enough.
 pub fn source_coverage_summary(
     sources: &[Source],
     states: &[SourceRuntimeStateRow],
@@ -3465,27 +3540,16 @@ pub fn source_coverage_summary(
             summary.disabled += 1;
             continue;
         }
+        summary.registered += 1;
         let runtime = state_by_slug.get(source.slug.as_str()).copied();
-        match effective_capability(source, runtime, deployment_caps) {
-            SourceCapability::Operational => {}
-            SourceCapability::UnavailableMissingCapability => {
-                summary.unavailable_missing_capability += 1;
-                continue;
-            }
-            SourceCapability::UnavailableMissingCredentials => {
-                summary.unavailable_missing_credentials += 1;
-                continue;
-            }
-            SourceCapability::UnavailableMissingProxy => {
-                summary.unavailable_missing_proxy += 1;
-                continue;
-            }
-            _ => continue,
-        }
-        summary.operational += 1;
-        if is_source_due(source, runtime, now) {
-            summary.due += 1;
-        }
+        let effective = effective_capability(source, runtime, deployment_caps);
+        // Validation requires both deployment strategy support (not broken
+        // out below) and recorded runtime success.
+        let validated = source_is_validated(runtime)
+            && matches!(
+                effective,
+                SourceCapability::Operational | SourceCapability::TemporarilyFailed
+            );
         let degraded = runtime
             .map(|row| {
                 row.consecutive_failures > 0
@@ -3495,12 +3559,49 @@ pub fn source_coverage_summary(
                         .unwrap_or(false)
             })
             .unwrap_or(false);
-        if degraded {
-            summary.degraded += 1;
-        } else if runtime.and_then(|row| row.last_success_at).is_some() {
-            summary.healthy += 1;
-        } else {
-            summary.never_crawled += 1;
+
+        if is_source_due(source, runtime, now) {
+            summary.due += 1;
+        }
+
+        if validated {
+            summary.validated += 1;
+            if degraded || effective == SourceCapability::TemporarilyFailed {
+                summary.degraded += 1;
+                summary.temporarily_degraded += 1;
+            } else {
+                summary.operational += 1;
+                summary.healthy += 1;
+            }
+            continue;
+        }
+
+        match effective {
+            // `Operational` is unreachable here: it is only returned with
+            // recorded validation evidence, which the branch above handles.
+            SourceCapability::Operational | SourceCapability::Unvalidated => {
+                summary.never_crawled += 1;
+            }
+            SourceCapability::TemporarilyFailed => {
+                summary.temporarily_degraded += 1;
+                summary.never_crawled += 1;
+            }
+            SourceCapability::RequiresCredentials => {
+                summary.credential_blocked += 1;
+            }
+            SourceCapability::UnavailableMissingCredentials => {
+                summary.credential_blocked += 1;
+                summary.unavailable_missing_credentials += 1;
+            }
+            SourceCapability::Blocked | SourceCapability::Unsupported => {
+                summary.unsupported += 1;
+            }
+            SourceCapability::UnavailableMissingCapability => {
+                summary.unavailable_missing_capability += 1;
+            }
+            SourceCapability::UnavailableMissingProxy => {
+                summary.unavailable_missing_proxy += 1;
+            }
         }
     }
     summary
@@ -3823,7 +3924,7 @@ mod scheduler_tests {
     }
 
     #[test]
-    fn coverage_summary_counts_only_operational_sources() {
+    fn coverage_summary_counts_only_validated_sources() {
         let mut requires_credentials =
             synthetic_source("needs_credentials", Region::Global, Category::News, 2);
         requires_credentials.capability = SourceCapability::RequiresCredentials;
@@ -3863,12 +3964,114 @@ mod scheduler_tests {
             now,
         );
         assert_eq!(summary.declared, 7);
-        assert_eq!(summary.operational, 3);
+        assert_eq!(summary.registered, 6);
+        // Only `healthy` is both validated and not degraded.
+        assert_eq!(summary.operational, 1);
+        assert_eq!(summary.validated, 2);
         assert_eq!(summary.healthy, 1);
         assert_eq!(summary.degraded, 1);
+        assert_eq!(summary.temporarily_degraded, 1);
         assert_eq!(summary.never_crawled, 1);
+        assert_eq!(summary.credential_blocked, 1);
+        assert_eq!(summary.unsupported, 2);
         assert_eq!(summary.disabled, 1);
         assert_eq!(summary.due, 2);
+    }
+
+    #[test]
+    fn source_capability_defaults_to_unvalidated() {
+        assert_eq!(SourceCapability::default(), SourceCapability::Unvalidated);
+        assert_eq!(
+            SourceCapability::default().as_str(),
+            "unvalidated",
+            "the serialized default must be the unvalidated state"
+        );
+
+        let source = synthetic_source("fresh", Region::Global, Category::News, 1);
+        assert_eq!(source.capability, SourceCapability::Unvalidated);
+    }
+
+    #[test]
+    fn registry_yaml_without_capability_is_unvalidated() {
+        let file = tempfile::NamedTempFile::new()
+            .unwrap_or_else(|error| panic!("test: create temp file: {error}"));
+        fs::write(
+            file.path(),
+            "sources:\n  - slug: yaml_feed\n    name: YAML Feed\n    url: https://example.com/feed\n    search_param: null\n    region: Global\n    category: News\n    tier: 1\n    needs_proxy: false\n    rss_url: null\n    enabled: true\n    min_interval_minutes: 15\n    notes: null\n",
+        )
+        .unwrap_or_else(|error| panic!("test: write source yaml: {error}"));
+
+        let sources = load_sources_from_path(file.path())
+            .unwrap_or_else(|error| panic!("test: load sources: {error}"));
+        assert_eq!(sources[0].capability, SourceCapability::Unvalidated);
+    }
+
+    #[test]
+    fn operational_promotion_requires_a_successful_fetch() {
+        let source = synthetic_source("promote_me", Region::Global, Category::News, 1);
+
+        // No runtime evidence: registered, not operational.
+        assert_eq!(
+            effective_capability(&source, None, &DeploymentCapabilities::all_available()),
+            SourceCapability::Unvalidated
+        );
+
+        // Attempts and failures alone never promote a source.
+        let now = Utc::now();
+        let mut failed_row = blank_row("promote_me", now);
+        failed_row.last_attempt_at = Some(now);
+        failed_row.consecutive_failures = 3;
+        failed_row.rolling_success_rate = Some(0.0);
+        assert_eq!(
+            effective_capability(
+                &source,
+                Some(&failed_row),
+                &DeploymentCapabilities::all_available()
+            ),
+            SourceCapability::Unvalidated
+        );
+
+        // One successful fetch/parser contract check promotes to operational.
+        let mut success_row = blank_row("promote_me", now);
+        success_row.last_attempt_at = Some(now);
+        success_row.last_success_at = Some(now);
+        success_row.rolling_success_rate = Some(1.0);
+        assert_eq!(
+            effective_capability(
+                &source,
+                Some(&success_row),
+                &DeploymentCapabilities::all_available()
+            ),
+            SourceCapability::Operational
+        );
+    }
+
+    #[test]
+    fn unvalidated_sources_remain_schedulable() {
+        let source = synthetic_source("fresh", Region::Global, Category::News, 1);
+        let now = Utc::now();
+        assert!(
+            is_source_due(&source, None, now),
+            "an unvalidated source must be schedulable so it can earn validation"
+        );
+        assert!(SourceCapability::Unvalidated.is_schedulable());
+        assert!(SourceCapability::Operational.is_schedulable());
+        assert!(!SourceCapability::Blocked.is_schedulable());
+        assert!(!SourceCapability::RequiresCredentials.is_schedulable());
+        assert!(!SourceCapability::Unsupported.is_schedulable());
+
+        let mut success_row = blank_row("fresh", now);
+        success_row.last_success_at = Some(now);
+        success_row.next_due_at = now + Duration::hours(1);
+        assert!(
+            !is_source_due(&source, Some(&success_row), now),
+            "a validated source keeps its normal interval"
+        );
+        assert!(is_source_due(
+            &source,
+            Some(&success_row),
+            now + Duration::hours(2)
+        ));
     }
 
     #[test]
@@ -3884,12 +4087,26 @@ mod scheduler_tests {
             effective_capability(&browser_source, None, &no_browser),
             SourceCapability::UnavailableMissingCapability
         );
-        assert!(effective_capability(
-            &browser_source,
-            None,
-            &DeploymentCapabilities::all_available()
-        )
-        .is_operational());
+        // Deployment support alone is not validation.
+        assert_eq!(
+            effective_capability(
+                &browser_source,
+                None,
+                &DeploymentCapabilities::all_available()
+            ),
+            SourceCapability::Unvalidated
+        );
+        let now = Utc::now();
+        let mut browser_success = blank_row("social_feed", now);
+        browser_success.last_success_at = Some(now);
+        assert_eq!(
+            effective_capability(
+                &browser_source,
+                Some(&browser_success),
+                &DeploymentCapabilities::all_available()
+            ),
+            SourceCapability::Operational
+        );
 
         let mut api_source = synthetic_source("api_feed", Region::Global, Category::Finance, 2);
         api_source.fetch_strategy = Some(FetchStrategy::JsonApi(ApiAdapter {
@@ -3904,7 +4121,14 @@ mod scheduler_tests {
             credentialed_api_adapters: HashSet::from(["sec_edgar".to_string()]),
             ..DeploymentCapabilities::all_available()
         };
-        assert!(effective_capability(&api_source, None, &with_credentials).is_operational());
+        assert_eq!(
+            effective_capability(&api_source, None, &with_credentials),
+            SourceCapability::Unvalidated
+        );
+        assert_eq!(
+            effective_capability(&api_source, Some(&browser_success), &with_credentials),
+            SourceCapability::Operational
+        );
 
         let mut proxied = synthetic_source("proxied_feed", Region::Global, Category::News, 3);
         proxied.needs_proxy = true;
@@ -3916,9 +4140,13 @@ mod scheduler_tests {
             effective_capability(&proxied, None, &no_proxy),
             SourceCapability::UnavailableMissingProxy
         );
-        assert!(
-            effective_capability(&proxied, None, &DeploymentCapabilities::all_available())
-                .is_operational()
+        assert_eq!(
+            effective_capability(
+                &proxied,
+                Some(&browser_success),
+                &DeploymentCapabilities::all_available()
+            ),
+            SourceCapability::Operational
         );
     }
 
@@ -3965,9 +4193,15 @@ mod scheduler_tests {
             proxy: false,
             credentialed_api_adapters: HashSet::new(),
         };
-        let summary = source_coverage_summary(&sources, &[], &capabilities, now);
+        // `healthy` has runtime success but `healthy` is a plain-HTTP source:
+        // only its successful fetch makes it operational.
+        let mut healthy_row = blank_row("healthy", now);
+        healthy_row.last_success_at = Some(now);
+        healthy_row.next_due_at = now + Duration::hours(1);
+        let summary = source_coverage_summary(&sources, &[healthy_row], &capabilities, now);
         assert_eq!(summary.declared, 3);
         assert_eq!(summary.operational, 1);
+        assert_eq!(summary.validated, 1);
         assert_eq!(summary.unavailable_missing_capability, 1);
         assert_eq!(summary.unavailable_missing_proxy, 1);
     }

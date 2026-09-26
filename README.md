@@ -13,7 +13,7 @@ reserved for threat-intel suites (Recorded Future, OpenCTI):
 
 | Loop stage | ApexIntel implementation |
 |---|---|
-| **Collect** | 680-source registry (news, filings, tenders, CVE/KEV, dark web, social, OpenAlex, RDAP, DNS), scheduled worker with timeouts, concurrency caps, and circuit breakers |
+| **Collect** | 680-source registry (news, filings, tenders, CVE/KEV, dark web, social, OpenAlex, RDAP, DNS), scheduled worker with timeouts, concurrency caps, and circuit breakers. Sources are registered — not operational — until a successful fetch/parser contract check; coverage reports Registered / Validated / Operational / Credential-blocked / Unsupported / Temporarily degraded, and only validated sources count toward the operational metric. Browser-strategy sources render through headless Chromium (installed in `Dockerfile.worker`, enabled with `ENABLE_HEADLESS_BROWSER`); without it they are reported unavailable and never downgraded to plain HTTP |
 | **Normalize & dedup** | Content-derived observation IDs — the same fact fetched twice is stored once; entity linking via name gazettees + LLM extraction |
 | **Analyze** | LLM insight generation grounded in observation text (anti-hallucination word/proper-noun checks), recipe engine with thresholds and cooldowns, predictive pattern priors, anomaly/volume scanners |
 | **Triage** | Scored triage queue with semantic near-duplicate detection, acknowledge/resolve/dismiss workflow, score overrides |
@@ -115,4 +115,8 @@ cargo test --workspace        # ~2,000 unit/integration tests
 cargo clippy --workspace --all-targets
 npx tailwindcss -i crates/api/static/css/globals.css \
   -o crates/api/static/css/tailwind.css --minify   # after CSS edits
+
+# Container-level browser check: builds Dockerfile.worker's browser-check stage
+# and renders a JS-only fixture (late network + lazy-loaded DOM) inside it.
+bash scripts/ci/browser_container_check.sh          # requires docker
 ```

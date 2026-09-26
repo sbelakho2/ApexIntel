@@ -15,6 +15,9 @@
 #      page errors, no horizontal overflow (the "vertical text" class of bug),
 #      data-table cells stay on one line on mobile, the styled 404 works, and
 #      every rendered link resolves.
+#   9. container-level browser integration: builds Dockerfile.worker's
+#      browser-check stage (runtime image + Chromium) and renders a JS-only
+#      fixture (late network + lazy-loaded DOM) through that image.
 #
 # All cargo invocations use `--locked` so a stale Cargo.lock fails the build.
 
@@ -126,3 +129,17 @@ steps:
       # Production artifact must advertise the LLM capability.
       - curl -sf http://127.0.0.1:9095/api/features | grep -q '"llm_enabled":true'
       - BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword node scripts/ci/e2e_server_ui.mjs
+
+  # Container-level browser integration. Builds the worker image's
+  # browser-check stage (real runtime image + Chromium) and renders a JS-only
+  # fixture (late network + lazy-loaded DOM) through the shipped worker image,
+  # proving Browser-strategy sources are renderable in the container.
+  # Requires a Docker daemon on the runner: the host socket is mounted below.
+  - name: browser-container
+    image: docker:27-cli
+    depends_on: [rust]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - apk add --no-cache bash
+      - bash scripts/ci/browser_container_check.sh

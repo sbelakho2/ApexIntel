@@ -108,7 +108,8 @@ sudo apt install -y \
   redis-server \
   nginx certbot python3-certbot-nginx \
   curl wget git unzip htop jq \
-  cmake gcc g++
+  cmake gcc g++ \
+  chromium fonts-liberation
 ```
 
 ### 1.5 Install Rust (only needed if building on server)
@@ -333,13 +334,18 @@ PROXY_POOL_SIZE=50
 ENABLE_PROXY_ROTATION=false
 
 # Headless browser rendering (single persistent Chromium/CDP renderer).
+# The full profile renders Browser-strategy sources, so this is enabled and
+# points at the Chromium installed in section 1.4 (Dockerfile.worker ships
+# Chromium and sets both variables itself). With ENABLE_HEADLESS_BROWSER=false
+# Browser-strategy sources are reported "Unavailable: missing capability" and
+# are never silently downgraded to plain HTTP.
 # Chromium MUST run as the dedicated non-root "apexintel" service account:
 # the renderer deliberately does NOT pass --no-sandbox, so the sandbox needs a
 # non-privileged user (the shipped Dockerfile.api/Dockerfile.worker images
 # already create and switch to "apexintel"). Never run this as root and never
 # reintroduce --no-sandbox.
-ENABLE_HEADLESS_BROWSER=false
-# HEADLESS_BROWSER_BIN=/usr/bin/google-chrome   # or "chromium"/"chrome-headless-shell"
+ENABLE_HEADLESS_BROWSER=true
+HEADLESS_BROWSER_BIN=/usr/bin/chromium
 # HEADLESS_BROWSER_MAX_CONCURRENCY=2            # global browser ceiling (max 2)
 # HEADLESS_BROWSER_TIMEOUT_SECS=30              # hard total render-time cap
 # HEADLESS_BROWSER_QUIET_WINDOW_MS=1000         # network-idle window, clamped 750-1500
