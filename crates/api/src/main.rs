@@ -1,6 +1,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use apex_api::auth::ApiKey;
 use apex_api::config::{ApiRuntimeConfig, PriorityWeights};
 use apex_api::filters::validate_search_text;
@@ -41,6 +41,7 @@ use apex_api::routes::warnings::{
     SortDirection, WarningResponse, WarningSortField,
 };
 use apex_core::alert_config::user_principal_id;
+use apex_core::profile::DeploymentProfile;
 use apex_core::validation::clamp_ratio;
 use apex_store::postgres::{
     AdminCrawlStatus, AdminPoiCoverage, AdminRecipePerformance, ArtifactRow, CapabilityRow,
@@ -157,6 +158,7 @@ struct AppState {
     redis: Option<redis::aio::ConnectionManager>,
     rate_limiter: Arc<RateLimiter>,
     config: Arc<ApiRuntimeConfig>,
+    profile: DeploymentProfile,
     /// SSE manager for real-time alert streaming.
     sse_manager: Option<Arc<apex_api::sse::SseManager>>,
     #[cfg(feature = "llm")]
@@ -254,6 +256,18 @@ async fn build_state() -> Result<AppState> {
             validation_errors.len()
         );
     }
+
+    let profile = DeploymentProfile::from_env().context("invalid APEX_PROFILE")?;
+    if profile.requires_llm_build() && !apex_api::BUILD_LLM_ENABLED {
+        anyhow::bail!(
+            "APEX_PROFILE=full requires the 'llm' feature; rebuild apex-api with --features llm"
+        );
+    }
+    tracing::info!(
+        profile = %profile,
+        llm_build = apex_api::BUILD_LLM_ENABLED,
+        "deployment profile resolved"
+    );
 
     let store = Arc::new(PgStore::connect(config.app.database_url.expose_secret()).await?);
     tracing::info!("database pool initialized");
@@ -391,6 +405,7 @@ async fn build_state() -> Result<AppState> {
         redis,
         rate_limiter,
         config: Arc::new(config),
+        profile,
         sse_manager,
         #[cfg(feature = "llm")]
         llm,
@@ -626,11 +641,17 @@ fn start_status_heartbeat(state: AppState) {
         loop {
             ticker.tick().await;
 
-            let nats_url = nats_url_from_env();
+            // NATS is optional under `core`, so skip the live connect probe there and
+            // only measure it when the profile requires NATS.
+            let nats_url = if state.profile.requires_capability("nats") {
+                Some(nats_url_from_env())
+            } else {
+                None
+            };
             let capabilities = apex_api::routes::capabilities::probe_capabilities(
                 &state.store.pool,
                 &state.search_index,
-                Some(nats_url.as_str()),
+                nats_url.as_deref(),
             )
             .await;
             apex_api::system_status::StatusStrip::publish(capabilities.status_strip());
@@ -693,42 +714,50 @@ async fn health_live() -> StatusCode {
     StatusCode::OK
 }
 
+/// `/api/health/ready` — profile-aware readiness probe. Answers 503 when any
+/// capability the deployment profile requires is missing (full: database,
+/// worker heartbeat, LLM, embeddings, NATS, search index, browser renderer;
+/// core: database, worker heartbeat, embeddings, search index). `/api/health`
+/// remains the detailed matrix.
 async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     let uptime_secs = STARTED_AT
         .get()
         .map(|started| (Utc::now() - started).num_seconds() as u64)
         .unwrap_or(0);
 
-    let store_check = sqlx::query("SELECT 1").execute(&state.store.pool).await;
-    let status = match store_check {
-        Ok(_) => HealthStatus::Healthy,
-        Err(_) => HealthStatus::Unhealthy,
+    // NATS is optional under `core`, so skip the live connect probe there and
+    // only measure it when the profile requires NATS.
+    let nats_url = if state.profile.requires_capability("nats") {
+        Some(nats_url_from_env())
+    } else {
+        None
     };
-
-    // Only mutated when the `llm` feature adds an extra component.
+    let capabilities = apex_api::routes::capabilities::probe_capabilities(
+        &state.store.pool,
+        &state.search_index,
+        nats_url.as_deref(),
+    )
+    .await;
+    // Only mutated when the `llm` feature adds the runtime-config check.
     #[cfg_attr(not(feature = "llm"), allow(unused_mut))]
-    let mut checks = vec![ComponentHealth {
-        name: "database".to_string(),
-        status,
-        message: store_check.err().map(|e| e.to_string()),
-    }];
+    let mut checks = capabilities.readiness_checks(state.profile);
 
+    // A full-profile deployment requires a usable LLM runtime, not just a
+    // binary that was compiled with the feature.
     #[cfg(feature = "llm")]
-    if state.llm.is_none() {
-        checks.push(ComponentHealth {
-            name: "llm".to_string(),
-            status: HealthStatus::Degraded,
-            message: Some("LLM not configured".to_string()),
-        });
+    if state.profile.requires_llm_build() && state.llm.is_none() {
+        if let Some(llm_check) = checks.iter_mut().find(|check| check.name == "llm") {
+            llm_check.status = HealthStatus::Unhealthy;
+            llm_check.message = Some(
+                "llm feature compiled but no LLM model configured (set LLM_MODEL/LLM_BASE_URL)"
+                    .to_string(),
+            );
+        }
     }
 
     let overall = aggregate_health(&checks);
     (
-        match overall {
-            HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
-            HealthStatus::Degraded => StatusCode::OK,
-            HealthStatus::Healthy => StatusCode::OK,
-        },
+        apex_api::routes::capabilities::readiness_http_status(&overall),
         Json(HealthResponse {
             status: overall,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -915,14 +944,9 @@ async fn openapi_json() -> Json<serde_json::Value> {
 #[allow(dead_code)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn api_features() -> Json<serde_json::Value> {
-    #[cfg(feature = "llm")]
-    let llm_enabled = true;
-    #[cfg(not(feature = "llm"))]
-    let llm_enabled = false;
-
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "llm_enabled": llm_enabled,
+        "llm_enabled": apex_api::BUILD_LLM_ENABLED,
         "features": [
             "warnings", "insights", "companies", "persons", "search",
             "graph", "recipes", "security", "admin", "weekly_memo",

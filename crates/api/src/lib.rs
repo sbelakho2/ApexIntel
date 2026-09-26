@@ -24,6 +24,9 @@ pub mod validation;
 pub mod web;
 
 pub const API_LLM_FEATURE_ENABLED: bool = cfg!(feature = "llm");
+/// Build metadata: whether the `llm` feature was compiled into this binary.
+/// `APEX_PROFILE=full` refuses to start when this is `false`.
+pub const BUILD_LLM_ENABLED: bool = cfg!(feature = "llm");
 pub const API_EXPERIMENTAL_LLM_TOOL_CALLING_ENABLED: bool = cfg!(feature = "llm-tool-calling");
 pub const API_VERSIONED_ALIAS_ENABLED: bool = true;
 pub const API_OPENAPI_ENABLED: bool = true;

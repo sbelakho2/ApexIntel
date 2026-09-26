@@ -267,7 +267,7 @@ chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-wo
 
 ### 3.4 Database Migrations
 
-Migrations are embedded in the `apex-store` crate and run automatically when the API starts (`store.run_migrations().await`). No manual migration step needed.
+Migrations are embedded in the `apex-store` crate and run automatically when the API and worker start (`store.run_migrations().await`). No manual migration step is needed, and neither process will start against an unknown schema: migration failure aborts startup. `APEX_SKIP_MIGRATIONS=1` is only honored after verifying that the applied latest migration matches the embedded latest by version and checksum.
 
 ---
 
@@ -772,9 +772,21 @@ systemctl status apexintel-api apexintel-worker apexintel-llm nats minio postgre
 ### 9.2 API Health Check
 
 ```bash
+# Detailed capability matrix
 curl -s https://starzerp.fi/api/health | jq
 # Expected: {"status":"Healthy","version":"0.1.0","checks":[...]}
+
+# Profile-aware readiness probe (503 when a required capability is missing)
+curl -s -o /dev/null -w '%{http_code}\n' https://starzerp.fi/api/health/ready
+# APEX_PROFILE=core (default) requires database, worker heartbeat, embeddings
+# and search index; APEX_PROFILE=full additionally requires LLM, NATS and the
+# browser renderer, and refuses to start without a `--features llm` build.
 ```
+
+Worker containers run `apex-worker healthcheck` as their Docker healthcheck:
+it fails when the database is unreachable, no worker heartbeat exists, or the
+newest `service_heartbeats` row is older than 120s (a stalled scheduler stops
+writing heartbeats).
 
 ### 9.3 Web UI
 

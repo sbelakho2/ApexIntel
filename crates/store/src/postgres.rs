@@ -680,20 +680,81 @@ impl PgStore {
     // --- Schema Migration ---
 
     /// Run the full schema creation. Idempotent via IF NOT EXISTS.
-    /// Set APEX_SKIP_MIGRATIONS=true to skip (useful when the embedded migration
-    /// checksums don't match the database's `_sqlx_migrations` table).
+    ///
+    /// `APEX_SKIP_MIGRATIONS` is an escape hatch for deployments whose schema
+    /// is managed out-of-band; it does **not** mean "assume the schema is
+    /// fine". In skip mode the newest applied migration must match the newest
+    /// embedded migration by version and checksum, so no process ever runs
+    /// against an unknown or stale schema.
     pub async fn run_migrations(&self) -> Result<()> {
-        if std::env::var("APEX_SKIP_MIGRATIONS")
-            .ok()
-            .map(|v| v == "true" || v == "1")
-            .unwrap_or(false)
-        {
-            tracing::warn!("APEX_SKIP_MIGRATIONS is set — skipping database migrations entirely");
-            return Ok(());
+        if skip_migrations_enabled() {
+            tracing::info!(
+                "APEX_SKIP_MIGRATIONS is set — verifying the applied schema instead of migrating"
+            );
+            return self.verify_schema_is_current().await;
         }
         sqlx::migrate!("../../migrations").run(&self.pool).await?;
         Ok(())
     }
+
+    /// Verify that the newest row in `_sqlx_migrations` matches the newest
+    /// embedded migration (version and checksum) and completed successfully.
+    pub async fn verify_schema_is_current(&self) -> Result<()> {
+        let migrator = sqlx::migrate!("../../migrations");
+        let embedded_latest = migrator
+            .iter()
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("no embedded migrations found"))?;
+        let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
+            "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to read _sqlx_migrations: {error}"))?;
+        ensure_latest_migration_matches(
+            applied,
+            embedded_latest.version,
+            embedded_latest.checksum.as_ref(),
+        )
+    }
+}
+
+fn skip_migrations_enabled() -> bool {
+    std::env::var("APEX_SKIP_MIGRATIONS")
+        .ok()
+        .map(|value| apex_core::env::parse_truthy_flag(&value))
+        .unwrap_or(false)
+}
+
+/// Fail unless the newest applied migration row exactly matches the newest
+/// embedded migration: it must exist, have succeeded, and carry the same
+/// version and checksum.
+fn ensure_latest_migration_matches(
+    applied: Option<(i64, Vec<u8>, bool)>,
+    embedded_version: i64,
+    embedded_checksum: &[u8],
+) -> Result<()> {
+    let Some((version, checksum, success)) = applied else {
+        anyhow::bail!(
+            "no migrations have been applied to this database (embedded latest is version {embedded_version})"
+        );
+    };
+    if !success {
+        anyhow::bail!("latest applied migration {version} did not complete successfully");
+    }
+    if version != embedded_version {
+        anyhow::bail!(
+            "database schema is stale: latest applied migration is {version}, embedded latest is {embedded_version}"
+        );
+    }
+    if checksum != embedded_checksum {
+        anyhow::bail!(
+            "database schema checksum mismatch for migration {version}: applied {} vs embedded {}",
+            hex::encode(&checksum),
+            hex::encode(embedded_checksum)
+        );
+    }
+    Ok(())
 }
 
 // ─── Row Types (sqlx::FromRow) ──────────────────────────────────────────────
@@ -2032,5 +2093,47 @@ mod tests {
             qb.sql(),
             "SELECT 1 WHERE (insight_type IS NULL OR (lower(insight_type) NOT LIKE 'llm_%' AND lower(insight_type) <> 'bias_mitigation' AND lower(insight_type) <> 'hypothesis_ach'))"
         );
+    }
+
+    #[test]
+    fn latest_migration_matches_when_version_checksum_and_success_align() {
+        let checksum = vec![1u8, 2, 3, 4];
+        assert!(
+            ensure_latest_migration_matches(Some((53, checksum.clone(), true)), 53, &checksum)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn latest_migration_rejects_missing_history() {
+        let error = ensure_latest_migration_matches(None, 53, &[1, 2, 3]).expect_err("must fail");
+        assert!(error
+            .to_string()
+            .contains("no migrations have been applied"));
+    }
+
+    #[test]
+    fn latest_migration_rejects_failed_latest_row() {
+        let error =
+            ensure_latest_migration_matches(Some((53, vec![1, 2, 3], false)), 53, &[1, 2, 3])
+                .expect_err("must fail");
+        assert!(error.to_string().contains("did not complete successfully"));
+    }
+
+    #[test]
+    fn latest_migration_rejects_stale_version() {
+        let error =
+            ensure_latest_migration_matches(Some((52, vec![1, 2, 3], true)), 53, &[1, 2, 3])
+                .expect_err("must fail");
+        assert!(error.to_string().contains("schema is stale"));
+        assert!(error.to_string().contains("52"));
+    }
+
+    #[test]
+    fn latest_migration_rejects_checksum_mismatch() {
+        let error =
+            ensure_latest_migration_matches(Some((53, vec![9, 9, 9], true)), 53, &[1, 2, 3])
+                .expect_err("must fail");
+        assert!(error.to_string().contains("checksum mismatch"));
     }
 }

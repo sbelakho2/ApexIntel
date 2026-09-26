@@ -7,13 +7,14 @@
 
 use std::time::Duration as StdDuration;
 
+use apex_core::profile::DeploymentProfile;
 use chrono::Utc;
 use serde::Serialize;
 
 use apex_store::postgres::{PgStore, ServiceHeartbeatRow};
 use apex_store::tantivy_index::SearchIndex;
 
-use crate::responses::{ComponentHealth, HealthStatus};
+use crate::responses::{aggregate_health, ComponentHealth, HealthStatus};
 use crate::system_status::{
     format_age, StatusStrip, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS,
 };
@@ -123,6 +124,56 @@ impl Capabilities {
             message: Some(capability.detail.clone()),
         })
         .collect()
+    }
+
+    /// Look up one capability by its stable probe name.
+    pub fn capability(&self, name: &str) -> Option<&CapabilityStatus> {
+        match name {
+            "llm" => Some(&self.llm),
+            "embeddings" => Some(&self.embeddings),
+            "nats" => Some(&self.nats),
+            "browser_renderer" => Some(&self.browser_renderer),
+            "database" => Some(&self.database),
+            "search_index" => Some(&self.search_index),
+            "worker_heartbeat" => Some(&self.worker_heartbeat),
+            "crawl_freshness" => Some(&self.crawl_freshness),
+            _ => None,
+        }
+    }
+
+    /// Readiness report for `profile`: only the capabilities the profile
+    /// requires are included, and any one of them not reporting `ok` is
+    /// `Unhealthy` (never a soft `Degraded`), so callers answer 503.
+    pub fn readiness_checks(&self, profile: DeploymentProfile) -> Vec<ComponentHealth> {
+        profile
+            .required_capabilities()
+            .iter()
+            .filter_map(|name| {
+                self.capability(name).map(|capability| ComponentHealth {
+                    name: (*name).to_string(),
+                    status: if capability.is_ok() {
+                        HealthStatus::Healthy
+                    } else {
+                        HealthStatus::Unhealthy
+                    },
+                    message: Some(capability.detail.clone()),
+                })
+            })
+            .collect()
+    }
+
+    /// Aggregate readiness status for `profile`.
+    pub fn readiness_status(&self, profile: DeploymentProfile) -> HealthStatus {
+        aggregate_health(&self.readiness_checks(profile))
+    }
+}
+
+/// Map a readiness status to the probe's HTTP status: 503 exactly when a
+/// capability the profile requires is missing.
+pub fn readiness_http_status(status: &HealthStatus) -> axum::http::StatusCode {
+    match status {
+        HealthStatus::Healthy | HealthStatus::Degraded => axum::http::StatusCode::OK,
+        HealthStatus::Unhealthy => axum::http::StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -444,5 +495,103 @@ mod tests {
             .find(|check| check.name == "database")
             .expect("database check");
         assert_eq!(database.status, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn core_profile_readiness_permits_disabled_nats_browser_and_llm() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("disabled", "NATS_URL not configured");
+        caps.browser_renderer = CapabilityStatus::new("disabled", "browser disabled");
+        caps.llm = CapabilityStatus::new("disabled", "binary built without the llm feature");
+
+        let status = caps.readiness_status(DeploymentProfile::Core);
+        assert_eq!(status, HealthStatus::Healthy);
+        assert_eq!(readiness_http_status(&status), axum::http::StatusCode::OK);
+    }
+
+    #[test]
+    fn core_profile_readiness_fails_503_when_required_capability_missing() {
+        let mut caps = sample_capabilities();
+        caps.worker_heartbeat =
+            CapabilityStatus::new("unavailable", "no worker heartbeat recorded");
+
+        let status = caps.readiness_status(DeploymentProfile::Core);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn full_profile_readiness_fails_503_when_optional_capability_missing() {
+        let caps = sample_capabilities();
+        assert!(!caps.nats.is_ok() && !caps.browser_renderer.is_ok());
+
+        let status = caps.readiness_status(DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn full_profile_readiness_is_200_when_every_capability_is_ok() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("ok", "connected to nats://127.0.0.1:4222");
+        caps.browser_renderer = CapabilityStatus::new("ok", "headless browser binary found");
+
+        let status = caps.readiness_status(DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Healthy);
+        assert_eq!(readiness_http_status(&status), axum::http::StatusCode::OK);
+    }
+
+    #[test]
+    fn full_profile_readiness_fails_503_without_llm_capability() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("ok", "connected");
+        caps.browser_renderer = CapabilityStatus::new("ok", "chrome found");
+        caps.llm = CapabilityStatus::new("disabled", "binary built without the llm feature");
+
+        let status = caps.readiness_status(DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn readiness_report_lists_exactly_the_required_capabilities() {
+        let caps = sample_capabilities();
+
+        let core_checks = caps.readiness_checks(DeploymentProfile::Core);
+        let core: Vec<&str> = core_checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect();
+        assert_eq!(
+            core,
+            vec!["database", "worker_heartbeat", "embeddings", "search_index"]
+        );
+
+        let full_checks = caps.readiness_checks(DeploymentProfile::Full);
+        let full: Vec<&str> = full_checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect();
+        assert_eq!(
+            full,
+            vec![
+                "database",
+                "worker_heartbeat",
+                "llm",
+                "embeddings",
+                "nats",
+                "search_index",
+                "browser_renderer",
+            ]
+        );
     }
 }

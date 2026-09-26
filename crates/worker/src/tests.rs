@@ -2531,3 +2531,100 @@ fn sanitize_validated_org_rejects_role_text() {
         Some("Acme Electronics")
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Startup schema gate, subcommand parsing, and scheduler liveness (audit P0
+// startup/readiness: no worker may run against an unknown schema, and the
+// container healthcheck must prove the scheduler is making progress).
+// ────────────────────────────────────────────────────────────────────────────
+
+struct PassingMigrationStore;
+
+#[async_trait::async_trait]
+impl SchemaMigrationStore for PassingMigrationStore {
+    async fn run_migrations(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct FailingMigrationStore;
+
+#[async_trait::async_trait]
+impl SchemaMigrationStore for FailingMigrationStore {
+    async fn run_migrations(&self) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "database schema is stale: latest applied migration is 052, embedded latest is 053"
+        ))
+    }
+}
+
+#[tokio::test]
+async fn worker_startup_fails_on_schema_mismatch() {
+    let error = ensure_database_schema(&FailingMigrationStore)
+        .await
+        .expect_err("schema mismatch must abort startup");
+    let report = format!("{error:#}");
+
+    assert!(
+        report.contains("database schema is not current"),
+        "startup error must name the schema gate, got: {report}"
+    );
+    assert!(
+        report.contains("latest applied migration is 052"),
+        "startup error must preserve the store failure detail, got: {report}"
+    );
+}
+
+#[tokio::test]
+async fn worker_startup_succeeds_when_schema_is_current() {
+    ensure_database_schema(&PassingMigrationStore)
+        .await
+        .expect("current schema must start");
+}
+
+#[test]
+fn worker_command_defaults_to_running_the_scheduler() {
+    assert_eq!(
+        parse_worker_command(Vec::<String>::new()).expect("no args"),
+        WorkerCommand::Run
+    );
+}
+
+#[test]
+fn worker_command_parses_healthcheck() {
+    assert_eq!(
+        parse_worker_command(vec!["healthcheck".to_string()]).expect("healthcheck"),
+        WorkerCommand::Healthcheck
+    );
+}
+
+#[test]
+fn worker_command_rejects_unknown_subcommands() {
+    let error = parse_worker_command(vec!["healtcheck".to_string()])
+        .expect_err("typos must not start a second scheduler");
+    assert!(error.to_string().contains("unknown worker subcommand"));
+}
+
+#[test]
+fn scheduler_tick_clock_flags_wedged_tick_only_past_budget() {
+    let clock = SchedulerTickClock::new();
+
+    assert!(!clock.is_wedged(1_000, 900), "idle clock is never wedged");
+
+    let started = Utc::now().timestamp();
+    clock.begin();
+    assert!(
+        !clock.is_wedged(started, 900),
+        "fresh tick is within budget"
+    );
+    assert!(
+        clock.is_wedged(started + 901, 900),
+        "tick past its declared budget is wedged"
+    );
+
+    clock.finish();
+    assert!(
+        !clock.is_wedged(started + 100_000, 900),
+        "completed tick clears the wedge"
+    );
+}
