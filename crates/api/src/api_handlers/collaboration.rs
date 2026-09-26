@@ -17,7 +17,7 @@ use apex_api::routes::collaboration::{
 use apex_store::postgres::{
     ActivityFeedRecord, CriticalThreatRecord, InvestigationShareRecord,
     InvestigationWorkspaceRecord, PipelineOpportunityRecord, PriorityQueueItemRecord,
-    SourceEvidenceRecord, StrategicOpportunityRecord, SupplierRiskEntryRecord,
+    SavedSearchRecord, SourceEvidenceRecord, StrategicOpportunityRecord, SupplierRiskEntryRecord,
     TeamAssignmentRecord, WatchlistRecord, WorkspaceAssignmentRecord,
 };
 use axum::{
@@ -742,7 +742,7 @@ pub async fn list_workspaces(
             {
                 true
             } else {
-                w.owner_id == auth.user_id
+                w.owner_id == auth.user_id.as_str()
             }
         })
         .filter(|w| {
@@ -1317,7 +1317,7 @@ pub async fn record_activity(
     // Resolve the actor's display name from the store
     let actor_name = match state.store.get_analyst_user(&auth.user_id).await {
         Ok(Some(user)) => user.display_name,
-        _ => auth.user_id.clone(),
+        _ => auth.user_id.to_string(),
     };
 
     let visibility = if req.visibility.is_empty() {
@@ -1612,6 +1612,147 @@ pub async fn delete_watchlist(
 
     if !deleted {
         return Err(ApiError::not_found("watchlist", &id));
+    }
+
+    Ok(Json(success(serde_json::json!({"deleted": true}))))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Saved searches (user-private, RLS-scoped)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SavedSearchRequest {
+    pub id: Option<String>,
+    pub name: String,
+    pub query_text: String,
+    #[serde(default)]
+    pub filters: Option<Value>,
+    #[serde(default)]
+    pub default_sort: Option<String>,
+}
+
+fn saved_search_fields(
+    req: &SavedSearchRequest,
+) -> Result<(&str, &str, Value, Option<&str>), ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::validation("name", "cannot be empty"));
+    }
+    if name.chars().count() > 120 {
+        return Err(ApiError::validation(
+            "name",
+            "must be 120 characters or fewer",
+        ));
+    }
+    let query_text = req.query_text.trim();
+    if query_text.chars().count() > 2000 {
+        return Err(ApiError::validation(
+            "query_text",
+            "must be 2000 characters or fewer",
+        ));
+    }
+    let filters = match &req.filters {
+        Some(value) if value.is_object() => value.clone(),
+        Some(Value::Null) | None => Value::Object(serde_json::Map::new()),
+        Some(_) => return Err(ApiError::validation("filters", "must be an object")),
+    };
+    let default_sort = req
+        .default_sort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    Ok((name, query_text, filters, default_sort))
+}
+
+/// GET /api/saved-searches
+/// List the caller's saved searches.
+pub async fn list_saved_searches(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+) -> Result<Json<ApiResponse<Vec<SavedSearchRecord>>>, ApiError> {
+    let records = state
+        .store
+        .list_saved_searches_scoped(&auth.user_id, auth.role.as_str())
+        .await
+        .map_err(store_err)?;
+
+    Ok(Json(success(records)))
+}
+
+/// POST /api/saved-searches
+/// Create a saved search owned by the caller.
+pub async fn create_saved_search(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+    Json(req): Json<SavedSearchRequest>,
+) -> Result<Json<ApiResponse<SavedSearchRecord>>, ApiError> {
+    if req.id.is_some() {
+        return Err(ApiError::validation("id", "is assigned by the server"));
+    }
+    let (name, query_text, filters, default_sort) = saved_search_fields(&req)?;
+    let record = state
+        .store
+        .upsert_saved_search_scoped(
+            &auth.user_id,
+            auth.role.as_str(),
+            None,
+            name,
+            query_text,
+            &filters,
+            default_sort,
+        )
+        .await
+        .map_err(store_err)?;
+    Ok(Json(success(record)))
+}
+
+/// PUT /api/saved-searches/:id
+/// Update one of the caller's saved searches.
+pub async fn update_saved_search(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+    Json(req): Json<SavedSearchRequest>,
+) -> Result<Json<ApiResponse<SavedSearchRecord>>, ApiError> {
+    let uuid = parse_uuid(&id, "id")?;
+    let (name, query_text, filters, default_sort) = saved_search_fields(&req)?;
+    let record = state
+        .store
+        .update_saved_search_scoped(
+            &auth.user_id,
+            auth.role.as_str(),
+            uuid,
+            name,
+            query_text,
+            &filters,
+            default_sort,
+        )
+        .await
+        .map_err(store_err)?;
+
+    match record {
+        Some(record) => Ok(Json(success(record))),
+        None => Err(ApiError::not_found("saved search", &id)),
+    }
+}
+
+/// DELETE /api/saved-searches/:id
+/// Delete one of the caller's saved searches.
+pub async fn delete_saved_search(
+    State(state): State<crate::AppState>,
+    Extension(auth): Extension<ApiAuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, ApiError> {
+    let uuid = parse_uuid(&id, "id")?;
+    let deleted = state
+        .store
+        .delete_saved_search_scoped(&auth.user_id, auth.role.as_str(), uuid)
+        .await
+        .map_err(store_err)?;
+
+    if !deleted {
+        return Err(ApiError::not_found("saved search", &id));
     }
 
     Ok(Json(success(serde_json::json!({"deleted": true}))))

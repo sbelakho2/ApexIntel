@@ -9,7 +9,7 @@
 //! The API server holds a single [`SseManager`] in `AppState`. A background task
 //! consumes alerts from NATS JetStream and dispatches them to connected SSE clients
 //! via fan-out per user. Each authenticated user gets their own event stream,
-//! keyed by the stable principal UUID derived from their user name.
+//! keyed by the stable principal UUID derived from their canonical user id.
 //!
 //! # Delivery guarantees
 //! The consumer never acks a message before it has been processed: the payload
@@ -106,8 +106,8 @@ const ALERT_RETRY_DELAY: Duration = Duration::from_secs(5);
 pub struct SseManager {
     /// Active SSE connections keyed by principal UUID.
     connections: Arc<RwLock<HashMap<Uuid, Vec<mpsc::Sender<SseEvent>>>>>,
-    /// Authenticated principal ID → user name, so the alert router can consult
-    /// `user_preferences` (keyed by user name) for connected users.
+    /// Authenticated principal UUID → canonical user id, so the alert router
+    /// can consult `user_preferences` (keyed by user id) for connected users.
     principals: Arc<PrincipalDirectory>,
 }
 
@@ -127,29 +127,29 @@ impl SseManager {
 
     /// Register a new SSE connection for an authenticated principal.
     ///
-    /// `user_id` must be the stable principal UUID derived from `username`
-    /// (`apex_core::alert_config::user_principal_id`); the user name is
-    /// recorded so per-user preferences can be resolved for this principal.
+    /// `principal_id` is the stable principal UUID derived from `user_id`
+    /// (`apex_core::alert_config::principal_uuid_from_user_id`); the canonical
+    /// user id is recorded so per-user preferences can be resolved.
     ///
     /// Returns a sender and receiver pair. The sender is stored internally for
     /// dispatch and should be passed to [`unregister`](SseManager::unregister)
     /// when the connection closes.
     pub async fn register(
         &self,
-        user_id: Uuid,
-        username: &str,
+        principal_id: Uuid,
+        user_id: &str,
     ) -> (mpsc::Sender<SseEvent>, mpsc::Receiver<SseEvent>) {
         let (tx, rx) = mpsc::channel(SSE_CHANNEL_CAPACITY);
 
-        self.principals.record(user_id, username);
+        self.principals.record(principal_id, user_id);
 
         let mut conns = self.connections.write().await;
-        conns.entry(user_id).or_default().push(tx.clone());
+        conns.entry(principal_id).or_default().push(tx.clone());
 
         info!(
+            principal_id = %principal_id,
             user_id = %user_id,
-            username = %username,
-            total_connections = conns.get(&user_id).map_or(0, Vec::len),
+            total_connections = conns.get(&principal_id).map_or(0, Vec::len),
             "SSE connection registered"
         );
 
@@ -693,7 +693,7 @@ mod tests {
             "connection should be removed after unregister"
         );
         assert!(
-            manager.principals.username_for(user_id).is_none(),
+            manager.principals.user_id_for(user_id).is_none(),
             "principal should be forgotten with the last connection"
         );
 

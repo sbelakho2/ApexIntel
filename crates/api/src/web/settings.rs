@@ -706,12 +706,12 @@ pub async fn settings_page(
     let ctx = PageContext::from_session(&session, "/settings", unack);
 
     let record = store
-        .get_user_preferences_record(&session.username)
+        .get_user_preferences_record(&session.user_id)
         .await
         .ok()
         .flatten();
     let prefs = store
-        .get_user_settings_prefs_scoped(&session.username, session.role.as_str())
+        .get_user_settings_prefs_scoped(&session.user_id, session.role.as_str())
         .await
         .ok()
         .flatten()
@@ -737,12 +737,12 @@ pub async fn save_settings(
     let health = SystemHealthView::probe(&store).await;
 
     let existing_record = store
-        .get_user_preferences_record(&session.username)
+        .get_user_preferences_record(&session.user_id)
         .await
         .ok()
         .flatten();
     let previous = store
-        .get_user_settings_prefs(&session.username)
+        .get_user_settings_prefs(&session.user_id)
         .await
         .ok()
         .flatten()
@@ -821,7 +821,7 @@ pub async fn save_settings(
     }
 
     if let Ok(Some(existing)) = store
-        .get_user_settings_prefs_scoped(&session.username, session.role.as_str())
+        .get_user_settings_prefs_scoped(&session.user_id, session.role.as_str())
         .await
     {
         prefs.email_digest_last_sent_at = existing.email_digest_last_sent_at;
@@ -829,7 +829,7 @@ pub async fn save_settings(
 
     if let Err(e) = store
         .upsert_user_settings_prefs_scoped(
-            &session.username,
+            &session.user_id,
             session.role.as_str(),
             &theme,
             &locale,

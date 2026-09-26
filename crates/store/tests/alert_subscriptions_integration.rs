@@ -7,7 +7,8 @@
 //! `TEST_DATABASE_URL` or `DATABASE_URL`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use apex_core::alert_config::{user_principal_id, AlertSeverity};
+use apex_core::alert_config::{principal_uuid_from_user_id, AlertSeverity};
+use apex_core::identity::UserId;
 use apex_store::postgres::PgStore;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -140,7 +141,10 @@ async fn find_subscribed_users_returns_matching_subscribers_only() {
         .await
         .expect("subscription lookup");
 
-    let mut expected = vec![user_principal_id(&user_low), user_principal_id(&user_high)];
+    let mut expected = vec![
+        principal_uuid_from_user_id(&UserId::from(user_low.as_str())),
+        principal_uuid_from_user_id(&UserId::from(user_high.as_str())),
+    ];
     expected.sort();
     let mut actual = matched.clone();
     actual.sort();

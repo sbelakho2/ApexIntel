@@ -198,6 +198,92 @@ async fn update_priority_queue_item_on(
     .await?)
 }
 
+async fn upsert_saved_search_on(
+    conn: &mut sqlx::PgConnection,
+    id: Option<Uuid>,
+    user_id: &str,
+    name: &str,
+    query_text: &str,
+    filters: &Value,
+    default_sort: Option<&str>,
+) -> Result<SavedSearchRecord> {
+    let id = id.unwrap_or_else(Uuid::new_v4);
+    Ok(sqlx::query_as::<_, SavedSearchRecord>(
+        r#"INSERT INTO saved_searches (id, user_id, name, query_text, filters, default_sort)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (id) DO UPDATE SET
+             name = EXCLUDED.name,
+             query_text = EXCLUDED.query_text,
+             filters = EXCLUDED.filters,
+             default_sort = EXCLUDED.default_sort,
+             updated_at = NOW()
+           WHERE saved_searches.user_id = EXCLUDED.user_id
+           RETURNING id, user_id, name, query_text, filters, default_sort, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(name)
+    .bind(query_text)
+    .bind(filters)
+    .bind(default_sort)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+async fn update_saved_search_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    id: Uuid,
+    name: &str,
+    query_text: &str,
+    filters: &Value,
+    default_sort: Option<&str>,
+) -> Result<Option<SavedSearchRecord>> {
+    Ok(sqlx::query_as::<_, SavedSearchRecord>(
+        r#"UPDATE saved_searches
+           SET name = $3,
+               query_text = $4,
+               filters = $5,
+               default_sort = $6,
+               updated_at = NOW()
+           WHERE id = $1 AND user_id = $2
+           RETURNING id, user_id, name, query_text, filters, default_sort, created_at, updated_at"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(name)
+    .bind(query_text)
+    .bind(filters)
+    .bind(default_sort)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+async fn list_saved_searches_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+) -> Result<Vec<SavedSearchRecord>> {
+    Ok(sqlx::query_as::<_, SavedSearchRecord>(
+        "SELECT id, user_id, name, query_text, filters, default_sort, created_at, updated_at FROM saved_searches WHERE user_id = $1 ORDER BY updated_at DESC, id ASC",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+async fn delete_saved_search_on(
+    conn: &mut sqlx::PgConnection,
+    user_id: &str,
+    id: Uuid,
+) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM saved_searches WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 async fn upsert_watchlist_on(
     conn: &mut sqlx::PgConnection,
     id: Option<Uuid>,
@@ -448,44 +534,105 @@ impl PgStore {
         filters: &Value,
         default_sort: Option<&str>,
     ) -> Result<SavedSearchRecord> {
-        let id = id.unwrap_or_else(Uuid::new_v4);
-        Ok(sqlx::query_as::<_, SavedSearchRecord>(
-            r#"INSERT INTO saved_searches (id, user_id, name, query_text, filters, default_sort)
-               VALUES ($1, $2, $3, $4, $5, $6)
-               ON CONFLICT (id) DO UPDATE SET
-                 name = EXCLUDED.name,
-                 query_text = EXCLUDED.query_text,
-                 filters = EXCLUDED.filters,
-                 default_sort = EXCLUDED.default_sort,
-                 updated_at = NOW()
-               RETURNING id, user_id, name, query_text, filters, default_sort, created_at, updated_at"#,
+        let mut conn = self.pool.acquire().await?;
+        upsert_saved_search_on(
+            &mut conn,
+            id,
+            user_id,
+            name,
+            query_text,
+            filters,
+            default_sort,
         )
-        .bind(id)
-        .bind(user_id)
-        .bind(name)
-        .bind(query_text)
-        .bind(filters)
-        .bind(default_sort)
-        .fetch_one(&self.pool)
-        .await?)
+        .await
+    }
+
+    /// Identity-scoped saved-search write for RLS-forced `saved_searches`.
+    pub async fn upsert_saved_search_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Option<Uuid>,
+        name: &str,
+        query_text: &str,
+        filters: &Value,
+        default_sort: Option<&str>,
+    ) -> Result<SavedSearchRecord> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record = upsert_saved_search_on(
+            &mut tx,
+            id,
+            user_id,
+            name,
+            query_text,
+            filters,
+            default_sort,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    /// Identity-scoped saved-search update; `None` when the id does not belong
+    /// to the caller (never a silent overwrite of another user's row).
+    pub async fn update_saved_search_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Uuid,
+        name: &str,
+        query_text: &str,
+        filters: &Value,
+        default_sort: Option<&str>,
+    ) -> Result<Option<SavedSearchRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let record = update_saved_search_on(
+            &mut tx,
+            user_id,
+            id,
+            name,
+            query_text,
+            filters,
+            default_sort,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(record)
     }
 
     pub async fn list_saved_searches(&self, user_id: &str) -> Result<Vec<SavedSearchRecord>> {
-        Ok(sqlx::query_as::<_, SavedSearchRecord>(
-            "SELECT id, user_id, name, query_text, filters, default_sort, created_at, updated_at FROM saved_searches WHERE user_id = $1 ORDER BY updated_at DESC, id ASC",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?)
+        let mut conn = self.pool.acquire().await?;
+        list_saved_searches_on(&mut conn, user_id).await
+    }
+
+    /// Identity-scoped saved-search read for RLS-forced `saved_searches`.
+    pub async fn list_saved_searches_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+    ) -> Result<Vec<SavedSearchRecord>> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let records = list_saved_searches_on(&mut tx, user_id).await?;
+        tx.commit().await?;
+        Ok(records)
     }
 
     pub async fn delete_saved_search(&self, user_id: &str, id: Uuid) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM saved_searches WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
+        let mut conn = self.pool.acquire().await?;
+        delete_saved_search_on(&mut conn, user_id, id).await
+    }
+
+    /// Identity-scoped saved-search delete for RLS-forced `saved_searches`.
+    pub async fn delete_saved_search_scoped(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: Uuid,
+    ) -> Result<bool> {
+        let mut tx = self.begin_scoped(user_id, role).await?;
+        let deleted = delete_saved_search_on(&mut tx, user_id, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     pub async fn upsert_watchlist(

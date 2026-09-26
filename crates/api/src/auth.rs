@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use apex_core::identity::{UserId, Username};
+
 use parking_lot::Mutex;
 use subtle::ConstantTimeEq;
 
@@ -158,7 +160,8 @@ pub fn client_fingerprint(ip_hint: Option<&str>, user_agent: Option<&str>) -> St
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
     pub key_id: String,
-    pub owner_user_id: String,
+    /// Canonical `app_users.id` this key acts as.
+    pub owner_user_id: UserId,
     pub key_hash: String,
     pub name: String,
     pub role: ApiRole,
@@ -232,16 +235,18 @@ impl FromStr for ApiRole {
 /// be invalidated by bumping the version in the future.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Principal {
-    pub user_id: String,
-    pub username: String,
+    /// Canonical `app_users.id` used for ownership.
+    pub user_id: UserId,
+    /// Login/display name; never an ownership key.
+    pub username: Username,
     pub role: ApiRole,
     pub session_version: u32,
 }
 
 impl Principal {
     pub fn new(
-        user_id: impl Into<String>,
-        username: impl Into<String>,
+        user_id: impl Into<UserId>,
+        username: impl Into<Username>,
         role: ApiRole,
         session_version: u32,
     ) -> Self {
@@ -268,7 +273,7 @@ impl Principal {
 pub enum AuthResult {
     Valid {
         key_id: String,
-        owner_user_id: String,
+        owner_user_id: UserId,
         role: ApiRole,
     },
     Expired {
@@ -408,7 +413,7 @@ mod tests {
 
         let admin_key = ApiKey {
             key_id: "k1".to_string(),
-            owner_user_id: "usr-admin".to_string(),
+            owner_user_id: "usr-admin".into(),
             key_hash: hash_api_key("admin-secret-key"),
             name: "Admin Key".to_string(),
             role: ApiRole::Admin,
@@ -422,7 +427,7 @@ mod tests {
 
         let viewer_key = ApiKey {
             key_id: "k2".to_string(),
-            owner_user_id: "usr-viewer".to_string(),
+            owner_user_id: "usr-viewer".into(),
             key_hash: hash_api_key("viewer-key"),
             name: "Viewer Key".to_string(),
             role: ApiRole::Viewer,
@@ -436,7 +441,7 @@ mod tests {
 
         let disabled_key = ApiKey {
             key_id: "k3".to_string(),
-            owner_user_id: "usr-disabled".to_string(),
+            owner_user_id: "usr-disabled".into(),
             key_hash: hash_api_key("disabled-key"),
             name: "Disabled Key".to_string(),
             role: ApiRole::Analyst,
@@ -450,7 +455,7 @@ mod tests {
 
         let expired_key = ApiKey {
             key_id: "k4".to_string(),
-            owner_user_id: "usr-expired".to_string(),
+            owner_user_id: "usr-expired".into(),
             key_hash: hash_api_key("expired-key"),
             name: "Expired Key".to_string(),
             role: ApiRole::Analyst,
@@ -663,7 +668,7 @@ mod tests {
             result,
             AuthResult::Valid {
                 key_id: "k1".to_string(),
-                owner_user_id: "usr-admin".to_string(),
+                owner_user_id: "usr-admin".into(),
                 role: ApiRole::Admin,
             }
         );
@@ -714,7 +719,7 @@ mod tests {
     fn test_check_origin_no_restriction() {
         let key = ApiKey {
             key_id: "k1".to_string(),
-            owner_user_id: "usr-admin".to_string(),
+            owner_user_id: "usr-admin".into(),
             key_hash: String::new(),
             name: String::new(),
             role: ApiRole::Admin,
@@ -731,7 +736,7 @@ mod tests {
     fn test_check_origin_wildcard() {
         let key = ApiKey {
             key_id: "k1".to_string(),
-            owner_user_id: "usr-admin".to_string(),
+            owner_user_id: "usr-admin".into(),
             key_hash: String::new(),
             name: String::new(),
             role: ApiRole::Admin,
@@ -748,7 +753,7 @@ mod tests {
     fn test_check_origin_matched() {
         let key = ApiKey {
             key_id: "k1".to_string(),
-            owner_user_id: "usr-admin".to_string(),
+            owner_user_id: "usr-admin".into(),
             key_hash: String::new(),
             name: String::new(),
             role: ApiRole::Admin,
@@ -768,7 +773,7 @@ mod tests {
     fn test_check_permission_admin() {
         let auth = AuthResult::Valid {
             key_id: "k1".to_string(),
-            owner_user_id: "usr-admin".to_string(),
+            owner_user_id: "usr-admin".into(),
             role: ApiRole::Admin,
         };
         assert!(check_permission(&auth, PermissionLevel::Admin));
@@ -780,7 +785,7 @@ mod tests {
     fn test_check_permission_analyst() {
         let auth = AuthResult::Valid {
             key_id: "k2".to_string(),
-            owner_user_id: "usr-analyst".to_string(),
+            owner_user_id: "usr-analyst".into(),
             role: ApiRole::Analyst,
         };
         assert!(!check_permission(&auth, PermissionLevel::Admin));
@@ -792,7 +797,7 @@ mod tests {
     fn test_check_permission_viewer() {
         let auth = AuthResult::Valid {
             key_id: "k3".to_string(),
-            owner_user_id: "usr-viewer".to_string(),
+            owner_user_id: "usr-viewer".into(),
             role: ApiRole::Viewer,
         };
         assert!(!check_permission(&auth, PermissionLevel::Admin));
@@ -820,7 +825,7 @@ mod tests {
     fn test_auth_result_is_valid() {
         assert!(AuthResult::Valid {
             key_id: "k".to_string(),
-            owner_user_id: "usr-k".to_string(),
+            owner_user_id: "usr-k".into(),
             role: ApiRole::Admin
         }
         .is_valid());
@@ -834,7 +839,7 @@ mod tests {
     fn test_api_key_serialization() {
         let key = ApiKey {
             key_id: "test".to_string(),
-            owner_user_id: "usr-test".to_string(),
+            owner_user_id: "usr-test".into(),
             key_hash: "abc".to_string(),
             name: "Test Key".to_string(),
             role: ApiRole::Analyst,

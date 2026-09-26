@@ -232,7 +232,7 @@ mod alert_configs;
 mod alert_subscriptions;
 pub use alert_subscriptions::UserAlertSubscriptionRecord;
 mod app_users;
-pub use app_users::AppUserRecord;
+pub use app_users::{AppUserRecord, AppUserSeed};
 mod collaboration;
 mod companies;
 mod entity_review;

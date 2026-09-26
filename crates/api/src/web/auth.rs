@@ -4,9 +4,14 @@
 //! preferred) and the legacy 64-char SHA-256 hex digest (accepted with a
 //! deprecation warning so existing deployments keep working).
 //!
-//! Users come from `WEB_USERS_JSON` (JSON array of
-//! `{id, username, password_hash, role}`) when set, otherwise from the single
-//! legacy `APEX_ADMIN_USERNAME` / `APEX_ADMIN_PASSWORD_HASH` pair (admin role).
+//! `app_users` is canonical: logins resolve against the database record (id,
+//! username, password_hash, role, enabled, session_version). Environment
+//! credentials — `WEB_USERS_JSON` (JSON array of
+//! `{id, username, password_hash, role}`) or the legacy single
+//! `APEX_ADMIN_USERNAME` / `APEX_ADMIN_PASSWORD_HASH` pair (admin role) — are
+//! bootstrap only: they seed rows that do not yet carry a password hash. Once
+//! a row has credentials the environment is ignored. Without a store (unit
+//! tests, no-database deployments) the environment list is used directly.
 
 use askama::Template;
 use axum::{
@@ -17,6 +22,9 @@ use axum::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+
+use apex_core::identity::{UserId, Username};
+use apex_store::postgres::{AppUserSeed, PgStore};
 
 use crate::auth::ApiRole;
 use crate::middleware::session::{
@@ -105,6 +113,116 @@ pub fn load_web_users() -> Vec<WebUser> {
     }]
 }
 
+/// The authenticated principal resolved by a login attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginPrincipal {
+    pub user_id: UserId,
+    pub username: Username,
+    pub role: ApiRole,
+    pub session_version: u32,
+}
+
+fn bootstrap_seeds() -> Vec<AppUserSeed> {
+    load_web_users()
+        .into_iter()
+        .map(|user| {
+            let id = user.user_id().to_string();
+            let role = user.api_role().as_str().to_string();
+            AppUserSeed {
+                id,
+                username: user.username,
+                password_hash: user.password_hash,
+                role,
+            }
+        })
+        .collect()
+}
+
+/// Seed environment-configured credentials into `app_users`.
+///
+/// Returns the number of rows inserted or adopted; rows that already carry a
+/// password hash are left untouched. Failures are logged rather than fatal:
+/// existing database users must stay able to log in even when the bootstrap
+/// configuration is broken.
+pub async fn bootstrap_app_users_from_env(store: &PgStore) -> usize {
+    let seeds = bootstrap_seeds();
+    if seeds.is_empty() {
+        return 0;
+    }
+    match store.bootstrap_app_users(&seeds).await {
+        Ok(applied) => applied,
+        Err(error) => {
+            tracing::warn!(%error, "failed to bootstrap app_users credentials from environment");
+            0
+        }
+    }
+}
+
+/// Authenticate a login against the canonical `app_users` table.
+///
+/// Environment credentials are only ever used to bootstrap rows without a
+/// password hash; once a row has credentials the database is authoritative and
+/// the environment is ignored. When `store` is `None` (unit tests, no-database
+/// deployments) the environment list is the credential source.
+pub async fn resolve_login(
+    store: Option<&PgStore>,
+    username: &str,
+    password: &str,
+) -> Option<LoginPrincipal> {
+    let Some(store) = store else {
+        let user = load_web_users()
+            .into_iter()
+            .find(|user| user.username == username)?;
+        if !verify_password_hash(password, &user.password_hash) {
+            return None;
+        }
+        let user_id = UserId::from(user.user_id());
+        let role = user.api_role();
+        let username = Username::from(user.username);
+        return Some(LoginPrincipal {
+            user_id,
+            username,
+            role,
+            session_version: SESSION_VERSION,
+        });
+    };
+
+    bootstrap_app_users_from_env(store).await;
+
+    let record = store.find_app_user_by_username(username).await.ok()??;
+    if !record.enabled {
+        tracing::warn!(user_id = %record.id, "login rejected: account disabled");
+        return None;
+    }
+    let password_hash = record.password_hash.as_deref()?;
+    if !verify_password_hash(password, password_hash) {
+        return None;
+    }
+
+    // The update re-checks `enabled`, so a row disabled between the lookup and
+    // the credential check still fails closed.
+    let record = store
+        .record_app_user_login(&record.id)
+        .await
+        .ok()
+        .flatten()?;
+    let role = record.role.parse::<ApiRole>().unwrap_or_else(|_| {
+        tracing::warn!(
+            user_id = %record.id,
+            role = %record.role,
+            "unknown role in app_users; defaulting to analyst"
+        );
+        ApiRole::Analyst
+    });
+
+    Some(LoginPrincipal {
+        user_id: UserId::from(record.id),
+        username: Username::from(record.username),
+        role,
+        session_version: record.session_version.max(0) as u32,
+    })
+}
+
 /// Verify a password against a stored hash. Accepts Argon2id PHC strings and
 /// the legacy SHA-256 hex digest (with a deprecation warning).
 pub fn verify_password_hash(password: &str, stored_hash: &str) -> bool {
@@ -171,9 +289,7 @@ pub async fn login_submit(
     Form(form): Form<LoginForm>,
 ) -> Response {
     let session_secret = std::env::var("SESSION_SECRET").unwrap_or_default();
-    let users = load_web_users();
-
-    if users.is_empty() || session_secret.is_empty() {
+    if session_secret.is_empty() {
         tracing::error!("Auth environment variables not configured");
         return LoginPage {
             error: Some("Server misconfiguration — contact administrator".into()),
@@ -181,10 +297,9 @@ pub async fn login_submit(
         .into_response();
     }
 
-    let Some(user) = users
-        .iter()
-        .find(|user| user.username == form.username)
-        .cloned()
+    let store = parts.extensions.get::<std::sync::Arc<PgStore>>().cloned();
+
+    let Some(principal) = resolve_login(store.as_deref(), &form.username, &form.password).await
     else {
         return LoginPage {
             error: Some("Invalid credentials".into()),
@@ -192,50 +307,11 @@ pub async fn login_submit(
         .into_response();
     };
 
-    if !verify_password_hash(&form.password, &user.password_hash) {
-        return LoginPage {
-            error: Some("Invalid credentials".into()),
-        }
-        .into_response();
-    }
-
-    let store = parts
-        .extensions
-        .get::<std::sync::Arc<apex_store::postgres::PgStore>>()
-        .cloned();
-
-    // Register the principal in the canonical `app_users` identity table
-    // (migration 059) so user-owned writes (alert subscriptions, watchlists,
-    // preferences) satisfy their foreign keys. Web handlers are not yet
-    // consistent about the identity they persist — some use the signed
-    // `user_id`, others `session.username` — so ensure both exist when they
-    // differ. A registration failure must not block a valid login.
-    if let Some(store) = &store {
-        if let Err(err) = store
-            .ensure_app_user(user.user_id(), &user.username, user.api_role().as_str())
-            .await
-        {
-            tracing::warn!(
-                user_id = %user.user_id(),
-                "failed to register app_users principal on login: {err:#}"
-            );
-        }
-        if user.user_id() != user.username {
-            if let Err(err) = store
-                .ensure_app_user_exists(&user.username, &user.username, user.api_role().as_str())
-                .await
-            {
-                tracing::warn!(
-                    username = %user.username,
-                    "failed to register app_users username identity on login: {err:#}"
-                );
-            }
-        }
-    }
-
+    // The session length preference is user-private data read under the
+    // canonical user id, not the login name.
     let session_ttl_ms = match &store {
         Some(store) => store
-            .get_user_settings_prefs(&user.username)
+            .get_user_settings_prefs(&principal.user_id)
             .await
             .ok()
             .flatten()
@@ -246,12 +322,12 @@ pub async fn login_submit(
 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let claims = SessionClaims {
-        user_id: user.user_id().to_string(),
-        username: user.username.clone(),
-        role: user.api_role(),
+        user_id: principal.user_id,
+        username: principal.username,
+        role: principal.role,
         issued_at: now_ms,
         expires_at: now_ms + session_ttl_ms,
-        session_version: SESSION_VERSION,
+        session_version: principal.session_version,
     };
 
     let Some(token) = create_session_token(&claims, &session_secret) else {

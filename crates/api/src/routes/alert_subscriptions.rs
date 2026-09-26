@@ -99,12 +99,12 @@ pub fn resolve_subscription_actor(
     requested_user_id: Option<&str>,
 ) -> Result<String, ApiError> {
     let requested = match requested_user_id.map(str::trim).filter(|v| !v.is_empty()) {
-        None => return Ok(auth.user_id.clone()),
+        None => return Ok(auth.user_id.to_string()),
         Some(requested) => requested,
     };
 
-    if requested == auth.user_id {
-        return Ok(auth.user_id.clone());
+    if requested == auth.user_id.as_str() {
+        return Ok(auth.user_id.to_string());
     }
 
     if auth.role.can_admin() {
@@ -127,7 +127,7 @@ mod tests {
     fn auth(user_id: &str, role: ApiRole) -> ApiAuthContext {
         ApiAuthContext {
             key_id: "test".to_string(),
-            user_id: user_id.to_string(),
+            user_id: user_id.into(),
             role,
         }
     }

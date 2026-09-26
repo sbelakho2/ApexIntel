@@ -35,6 +35,31 @@
   </form>
 </div>
 
+<div class="apex-card p-4 mb-4">
+  <h2 class="text-[10px] font-black uppercase tracking-[0.12em] text-rams-muted mb-3">Saved searches</h2>
+  <form action="/search/saved-searches" method="post" class="flex flex-col sm:flex-row gap-2 mb-3">
+    <input type="hidden" name="q" value="{{ query }}">
+    <input type="hidden" name="entity_type" value="{{ active_type }}">
+    <input type="text" name="name" maxlength="120" placeholder="Name this search…" class="apex-input flex-1"
+      {% if query.is_empty() %}disabled{% endif %}>
+    <button type="submit" class="apex-btn apex-btn-primary" {% if query.is_empty() %}disabled{% endif %}>Save current search</button>
+  </form>
+  {% if saved_searches.is_empty() %}
+  <p class="text-xs text-rams-muted">No saved searches yet. Run a search, then name and save it here.</p>
+  {% else %}
+  <ul class="space-y-2">
+    {% for saved in saved_searches %}
+    <li class="flex items-center justify-between gap-2">
+      <a href="{{ saved.load_url() }}" class="text-sm text-rams-foreground hover:underline truncate">{{ saved.name }}</a>
+      <form action="/search/saved-searches/{{ saved.id }}/delete" method="post">
+        <button type="submit" class="text-[10px] uppercase tracking-wider text-rams-muted hover:text-rams-foreground">Delete</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
 <div id="search-results-spinner" class="htmx-indicator mb-4 flex justify-center">
   <svg class="h-5 w-5 animate-spin text-rams-muted" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

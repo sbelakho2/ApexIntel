@@ -649,7 +649,7 @@ pub async fn create_workspace(
             &form.name,
             description.as_deref(),
             normalized_workspace_type(&form.workspace_type, from_signal),
-            &session.username,
+            &session.user_id,
             None, // team_id
             normalized_workspace_visibility(&form.visibility),
             &tags,
@@ -822,7 +822,7 @@ pub async fn assign_user_to_workspace(
 ) -> impl IntoResponse {
     if let Ok(uuid) = Uuid::parse_str(&id) {
         let _ = store
-            .create_workspace_assignment(uuid, &form.user_id, &form.role, &session.username)
+            .create_workspace_assignment(uuid, &form.user_id, &form.role, &session.user_id)
             .await;
     }
     Redirect::to(&format!("/workspaces/{}", id))
@@ -847,7 +847,7 @@ pub async fn share_workspace(
         let _ = store
             .create_investigation_share(
                 uuid,
-                &session.username,
+                &session.user_id,
                 &form.shared_with,
                 &form.share_type,
                 &form.access_level,
@@ -879,7 +879,7 @@ pub async fn list_queue(
 
     let status_filter = params.status.as_deref();
     let items = store
-        .list_priority_queue_items(&session.username, status_filter, 100)
+        .list_priority_queue_items(&session.user_id, status_filter, 100)
         .await
         .unwrap_or_default();
 
@@ -928,7 +928,7 @@ pub async fn add_to_queue(
     let item_id = Uuid::parse_str(&form.item_id).unwrap_or_else(|_| Uuid::new_v4());
     let _ = store
         .create_priority_queue_item(
-            &session.username,
+            &session.user_id,
             &form.item_type,
             item_id,
             &form.item_title,
@@ -948,7 +948,7 @@ pub async fn complete_queue_item(
     if let Ok(uuid) = Uuid::parse_str(&id) {
         let _ = store
             .update_priority_queue_item_scoped(
-                &session.username,
+                &session.user_id,
                 session.role.as_str(),
                 uuid,
                 None,
@@ -1332,7 +1332,7 @@ pub async fn create_team_assignment(
             &form.team_name,
             &form.entity_type,
             &form.entity_id,
-            &session.username,
+            &session.user_id,
             &form.assigned_to,
             &form.role,
             form.notes.as_deref(),

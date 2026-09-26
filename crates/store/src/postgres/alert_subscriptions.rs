@@ -6,7 +6,8 @@
 
 use super::*;
 
-use apex_core::alert_config::{user_principal_id, AlertSeverity};
+use apex_core::alert_config::{principal_uuid_from_user_id, AlertSeverity};
+use apex_core::identity::UserId;
 
 /// One row of `user_alert_subscriptions`.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
@@ -230,7 +231,7 @@ impl PgStore {
 
         Ok(rows
             .into_iter()
-            .map(|(user_id,)| user_principal_id(&user_id))
+            .map(|(user_id,)| principal_uuid_from_user_id(&UserId::from(user_id)))
             .collect())
     }
 }

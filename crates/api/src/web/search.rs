@@ -7,11 +7,13 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
+    extract::{Form, Path},
     http::HeaderMap,
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Redirect},
     Extension,
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use super::{is_htmx_request, PageContext};
 use crate::middleware::session::WebSession;
@@ -51,6 +53,42 @@ pub struct SearchFacet {
     pub active: bool,
 }
 
+// ─── Saved searches (server-rendered personal search section) ──────────────
+
+/// One of the caller's saved searches, rendered on the search page.
+#[derive(Clone, Debug)]
+pub struct SavedSearchItem {
+    pub id: Uuid,
+    pub name: String,
+    pub query: String,
+    pub entity_type: String,
+}
+
+impl SavedSearchItem {
+    /// Rebuild the search URL for "load this saved search" links.
+    pub fn load_url(&self) -> String {
+        let mut url = format!("/search?q={}", urlencode(&self.query));
+        if !self.entity_type.is_empty() && self.entity_type != "all" {
+            url.push_str(&format!("&entity_type={}", urlencode(&self.entity_type)));
+        }
+        url
+    }
+}
+
+fn urlencode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// Body of `POST /search/saved-searches`.
+#[derive(Debug, Deserialize)]
+pub struct SaveSearchForm {
+    pub name: String,
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub entity_type: Option<String>,
+}
+
 // ─── Template ───────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -72,6 +110,7 @@ pub struct SearchPage {
     pub facets: Vec<SearchFacet>,
     pub active_type: String,
     pub took_ms: i64,
+    pub saved_searches: Vec<SavedSearchItem>,
 }
 
 /// HTMX partial for live-search swaps: facets + results + pager (B302).
@@ -231,6 +270,29 @@ pub async fn search_page(
         };
         super::render_template(&partial)
     } else {
+        let saved_searches = store
+            .list_saved_searches_scoped(&session.user_id, session.role.as_str())
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to load saved searches (web search page)");
+                Vec::new()
+            })
+            .into_iter()
+            .map(|record| {
+                let entity_type = record
+                    .filters
+                    .get("entity_type")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("all")
+                    .to_string();
+                SavedSearchItem {
+                    id: record.id,
+                    name: record.name,
+                    query: record.query_text,
+                    entity_type,
+                }
+            })
+            .collect();
         let tpl = SearchPage {
             current_path: ctx.current_path,
             can_admin: ctx.can_admin,
@@ -247,9 +309,63 @@ pub async fn search_page(
             facets,
             active_type,
             took_ms,
+            saved_searches,
         };
         super::render_template(&tpl)
     }
+}
+
+/// POST /search/saved-searches — save the current query for the caller.
+pub async fn save_search(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Form(form): Form<SaveSearchForm>,
+) -> impl IntoResponse {
+    let name = form.name.trim();
+    let query = form.q.trim();
+    if name.is_empty() || query.is_empty() {
+        return Redirect::to(&format!("/search?q={}", urlencode(query)));
+    }
+    let entity_type = normalize_entity_type(form.entity_type.as_deref().unwrap_or("all"));
+    let filters = serde_json::json!({ "entity_type": entity_type });
+    if let Err(error) = store
+        .upsert_saved_search_scoped(
+            &session.user_id,
+            session.role.as_str(),
+            None,
+            name,
+            query,
+            &filters,
+            None,
+        )
+        .await
+    {
+        tracing::warn!(%error, "failed to save search (web search page)");
+    }
+    Redirect::to(&format!(
+        "/search?q={}&entity_type={}",
+        urlencode(query),
+        urlencode(&entity_type)
+    ))
+}
+
+/// POST /search/saved-searches/:id/delete — delete one of the caller's saved
+/// searches. Deleting another user's row is a no-op (ownership is part of the
+/// scoped statement).
+pub async fn delete_saved_search(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Ok(uuid) = Uuid::parse_str(&id) {
+        if let Err(error) = store
+            .delete_saved_search_scoped(&session.user_id, session.role.as_str(), uuid)
+            .await
+        {
+            tracing::warn!(%error, "failed to delete saved search (web search page)");
+        }
+    }
+    Redirect::to("/search")
 }
 
 /// Map plural/singular/unknown facet slugs onto the singular entity types

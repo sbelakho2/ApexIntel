@@ -48,8 +48,10 @@ async fn scoped_store(admin: &PgPool, url: &str) -> PgStore {
     for table in [
         "user_preferences",
         "watchlists",
+        "saved_searches",
         "annotations",
         "insight_bookmarks",
+        "user_alert_subscriptions",
         "app_users",
         // Annotation writes replace their tag assignments in the same
         // transaction, so the scoped role needs these tag tables too.
@@ -88,6 +90,11 @@ async fn cleanup(admin: &PgPool, users: &[&str]) {
             .await
             .unwrap();
         sqlx::query("DELETE FROM watchlists WHERE user_id = $1")
+            .bind(user)
+            .execute(admin)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM saved_searches WHERE user_id = $1")
             .bind(user)
             .execute(admin)
             .await
@@ -334,6 +341,105 @@ async fn scoped_access_isolates_users_but_service_path_still_works() {
     assert_eq!(b_lists.len(), 1);
     assert_eq!(b_lists[0].id, watch_b.id);
 
+    // Saved searches (FORCE RLS, migrations 020/057) round-trip under the
+    // caller's identity and are invisible across users.
+    let saved_a = scoped
+        .upsert_saved_search_scoped(
+            user_a,
+            "analyst",
+            None,
+            "A search",
+            "rams",
+            &json!({"entity_type": "company"}),
+            Some("score"),
+        )
+        .await
+        .unwrap();
+    let saved_b = scoped
+        .upsert_saved_search_scoped(
+            user_b,
+            "analyst",
+            None,
+            "B search",
+            "ravens",
+            &json!({"entity_type": "person"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_ne!(saved_a.id, saved_b.id);
+    assert_eq!(saved_a.user_id, user_a);
+
+    let a_searches = scoped
+        .list_saved_searches_scoped(user_a, "analyst")
+        .await
+        .unwrap();
+    assert_eq!(a_searches.len(), 1);
+    assert_eq!(a_searches[0].id, saved_a.id);
+    assert!(a_searches.iter().all(|search| search.user_id == user_a));
+
+    let mut tx = scoped.begin_scoped(user_a, "analyst").await.unwrap();
+    let visible: Vec<String> = sqlx::query_scalar("SELECT user_id FROM saved_searches")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(visible, vec![user_a.to_string()]);
+    tx.rollback().await.unwrap();
+
+    // Cross-user update/delete never match: ownership is part of the scoped
+    // statement (and RLS denies it a second time).
+    let cross_update = scoped
+        .update_saved_search_scoped(
+            user_a,
+            "analyst",
+            saved_b.id,
+            "hijacked",
+            "ravens",
+            &json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(cross_update.is_none());
+    assert!(!scoped
+        .delete_saved_search_scoped(user_a, "analyst", saved_b.id)
+        .await
+        .unwrap());
+
+    let updated_a = scoped
+        .update_saved_search_scoped(
+            user_a,
+            "analyst",
+            saved_a.id,
+            "A search renamed",
+            "rams",
+            &json!({"entity_type": "company"}),
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("owner update must succeed");
+    assert_eq!(updated_a.name, "A search renamed");
+
+    assert!(scoped
+        .delete_saved_search_scoped(user_a, "analyst", saved_a.id)
+        .await
+        .unwrap());
+    assert!(scoped
+        .list_saved_searches_scoped(user_a, "analyst")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        scoped
+            .list_saved_searches_scoped(user_b, "analyst")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "user B's saved search must be untouched"
+    );
+
     // Annotations are force-scoped by migration 058 (reconciled from the
     // legacy author_id/content shape).
     scoped
@@ -493,6 +599,123 @@ async fn scoped_access_isolates_users_but_service_path_still_works() {
     assert_eq!(b_lists[0].name, "B list");
 
     cleanup(&admin, &[user_a, user_b, user_c]).await;
+    scoped.pool.close().await;
+    admin.close().await;
+}
+
+/// Ownership is keyed by the canonical `app_users.id`, never by the login
+/// name: renaming a user does not orphan any user-owned row, and deleting the
+/// identity cascades.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn ownership_follows_user_id_across_username_change() {
+    let url = database_url();
+    let admin = connect(&url).await;
+    sqlx::migrate!("../../migrations")
+        .run(&admin)
+        .await
+        .unwrap();
+
+    let user_id = format!("identity-it-{}", uuid::Uuid::new_v4());
+    cleanup(&admin, &[&user_id]).await;
+    seed_app_users(&admin, &[&user_id]).await;
+
+    let scoped = scoped_store(&admin, &url).await;
+
+    let watchlist = scoped
+        .upsert_watchlist_scoped(
+            &user_id,
+            "analyst",
+            None,
+            "Owned list",
+            &json!([{"type": "company", "id": "acme"}]),
+            None,
+        )
+        .await
+        .unwrap();
+    let saved = scoped
+        .upsert_saved_search_scoped(
+            &user_id,
+            "analyst",
+            None,
+            "Owned search",
+            "acme",
+            &json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    scoped
+        .upsert_annotation_scoped(
+            &user_id,
+            "analyst",
+            None,
+            "company",
+            "acme",
+            "owned note",
+            &[],
+            "private",
+        )
+        .await
+        .unwrap();
+
+    // The login name changes; every owned row stays attached to the id.
+    let renamed = format!("{user_id}-renamed");
+    sqlx::query("UPDATE app_users SET username = $2 WHERE id = $1")
+        .bind(&user_id)
+        .bind(&renamed)
+        .execute(&admin)
+        .await
+        .expect("rename app_user");
+
+    assert_eq!(
+        scoped
+            .list_watchlists_scoped(&user_id, "analyst")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let searches = scoped
+        .list_saved_searches_scoped(&user_id, "analyst")
+        .await
+        .unwrap();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].id, saved.id);
+    let notes = scoped
+        .list_annotations_scoped(&user_id, "analyst", Some("company"), Some("acme"))
+        .await
+        .unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].body, "owned note");
+
+    // The renamed login name resolves back to the same canonical id.
+    let resolved = scoped
+        .find_app_user_by_username(&renamed)
+        .await
+        .unwrap()
+        .expect("renamed user resolves");
+    assert_eq!(resolved.id, user_id);
+    assert_eq!(watchlist.user_id, user_id);
+
+    // Deleting the canonical identity cascades to its owned rows.
+    sqlx::query("DELETE FROM app_users WHERE id = $1")
+        .bind(&user_id)
+        .execute(&admin)
+        .await
+        .expect("delete canonical identity");
+    assert!(scoped
+        .list_watchlists_scoped(&user_id, "analyst")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(scoped
+        .list_saved_searches_scoped(&user_id, "analyst")
+        .await
+        .unwrap()
+        .is_empty());
+
+    cleanup(&admin, &[&user_id]).await;
     scoped.pool.close().await;
     admin.close().await;
 }

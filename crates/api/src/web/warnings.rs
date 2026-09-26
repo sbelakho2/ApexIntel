@@ -1079,7 +1079,7 @@ pub async fn get_warning(
     let annotations_state = DataState::from_result(
         store
             .list_annotations_scoped(
-                &session.username,
+                &session.user_id,
                 session.role.as_str(),
                 Some("warning"),
                 Some(&id),
@@ -1198,14 +1198,14 @@ pub async fn acknowledge_warning_html(
     };
 
     let result = store
-        .acknowledge_warning(uuid, &session.username, None, None)
+        .acknowledge_warning(uuid, &session.user_id, None, None)
         .await;
     match result {
         Ok(apex_store::postgres::AcknowledgeWarningResult::Acknowledged)
         | Ok(apex_store::postgres::AcknowledgeWarningResult::ReviewedExisting) => {
             let _ = store
                 .create_notification(
-                    &session.username,
+                    &session.user_id,
                     "warning_review",
                     "Warning acknowledged",
                     &format!("Warning {} was acknowledged by {}.", id, session.username),
@@ -1404,7 +1404,7 @@ pub async fn review_warning_html(
         .filter(|value| !value.is_empty());
 
     match store
-        .acknowledge_warning(uuid, &session.username, note, review_outcome)
+        .acknowledge_warning(uuid, &session.user_id, note, review_outcome)
         .await
     {
         Ok(apex_store::postgres::AcknowledgeWarningResult::Acknowledged)
@@ -1417,7 +1417,7 @@ pub async fn review_warning_html(
             };
             let _ = store
                 .create_notification(
-                    &session.username,
+                    &session.user_id,
                     "warning_review",
                     "Warning review recorded",
                     &detail,
@@ -1465,7 +1465,7 @@ pub async fn create_warning_note(
 
     match store
         .upsert_annotation_scoped(
-            &session.username,
+            &session.user_id,
             session.role.as_str(),
             None,
             "warning",
@@ -1479,7 +1479,7 @@ pub async fn create_warning_note(
         Ok(_) => {
             let _ = store
                 .create_notification(
-                    &session.username,
+                    &session.user_id,
                     "annotation",
                     "Warning note added",
                     body,

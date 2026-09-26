@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
+use apex_core::identity::UserId;
 use chrono::Utc;
 use serde::Deserialize;
 
@@ -29,6 +30,10 @@ struct ApiKeyFileRecord {
     raw_key: String,
     name: String,
     role: String,
+    /// Canonical `app_users.id` this key acts as. Defaults to a stable
+    /// per-slot `file-user-N` principal when the file does not carry one.
+    #[serde(default)]
+    user_id: Option<String>,
     #[serde(default)]
     rate_limit_per_min: Option<u32>,
     #[serde(default)]
@@ -142,11 +147,11 @@ pub fn load_api_keys_from_env(slots: usize) -> HashMap<String, ApiKey> {
     for i in 1..=slots {
         let env_key = format!("API_KEY_{}", i);
         if let Ok(val) = std::env::var(&env_key) {
-            let parts: Vec<&str> = val.splitn(3, ',').collect();
+            let parts: Vec<&str> = val.splitn(4, ',').collect();
             if parts.len() < 3 {
                 tracing::warn!(
                     env_key,
-                    "Invalid API key format; expected raw_key,name,role"
+                    "Invalid API key format; expected raw_key,name,role[,user_id]"
                 );
                 continue;
             }
@@ -156,12 +161,18 @@ pub fn load_api_keys_from_env(slots: usize) -> HashMap<String, ApiKey> {
                 .trim()
                 .parse::<ApiRole>()
                 .unwrap_or(ApiRole::Viewer);
+            let owner_user_id = parts
+                .get(3)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(UserId::from)
+                .unwrap_or_else(|| UserId::new(format!("user-{}", i)));
             let key_id = format!("key-{}", i);
             registry.insert(
                 key_id.clone(),
                 ApiKey {
                     key_id,
-                    owner_user_id: format!("user-{}", i),
+                    owner_user_id,
                     key_hash: auth::hash_api_key(raw_key),
                     name: name.to_string(),
                     role,
@@ -184,11 +195,17 @@ pub fn load_api_keys_from_file(path: &Path, slots: usize) -> Result<HashMap<Stri
 
     for (index, record) in records.into_iter().take(slots).enumerate() {
         let key_id = format!("file-key-{}", index + 1);
+        let owner_user_id = record
+            .user_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(UserId::from)
+            .unwrap_or_else(|| UserId::new(format!("file-user-{}", index + 1)));
         registry.insert(
             key_id.clone(),
             ApiKey {
                 key_id,
-                owner_user_id: format!("file-user-{}", index + 1),
+                owner_user_id,
                 key_hash: auth::hash_api_key(record.raw_key.trim()),
                 name: record.name.trim().to_string(),
                 role: record
@@ -217,6 +234,30 @@ mod tests {
             std::env::temp_dir().join(format!("apex-api-{}-{}.json", name, uuid::Uuid::new_v4()));
         fs::write(&path, content).expect("write temp api key file");
         path
+    }
+
+    #[test]
+    fn api_key_file_records_carry_a_canonical_user_id() {
+        let path = temp_file(
+            "api-keys-user-id",
+            r#"[{"raw_key":"alpha","name":"Alpha","role":"analyst","user_id":"usr-42"},
+                {"raw_key":"beta","name":"Beta","role":"viewer"}]"#,
+        );
+        let keys = load_api_keys_from_file(&path, 50).expect("load keys");
+
+        let alpha = keys
+            .values()
+            .find(|key| key.name == "Alpha")
+            .expect("alpha key");
+        assert_eq!(alpha.owner_user_id.as_str(), "usr-42");
+
+        // A record without `user_id` keeps a stable per-slot principal so the
+        // app_users foreign key still has a canonical target.
+        let beta = keys
+            .values()
+            .find(|key| key.name == "Beta")
+            .expect("beta key");
+        assert_eq!(beta.owner_user_id.as_str(), "file-user-2");
     }
 
     #[test]
