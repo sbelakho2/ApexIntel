@@ -5,14 +5,13 @@ use std::time::Duration;
 #[cfg(feature = "llm")]
 use crate::entity_admission::EntityAdmissionResult;
 use aho_corasick::AhoCorasick;
-use apex_core::entities::{Company, CompanyType};
 use apex_crawl::browser::{BrowserFetcher, BrowserRequest};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 use apex_crawl::errors::CrawlError;
 use apex_crawl::governor_limiter::CrawlGovernor;
 use apex_crawl::sources::{
-    crawl_source_budget_from_env, dispatch_source_fetch, due_sources_remaining, scheduler_backlog,
-    select_due_sources, FetchDispatch, FetchStrategy, Source, FORCED_SOURCE_SLUGS,
+    crawl_source_budget_from_env, dispatch_source_fetch, scheduler_backlog, select_due_sources,
+    FetchDispatch, Source, FORCED_SOURCE_SLUGS,
 };
 #[cfg(feature = "llm")]
 use apex_insights::company_discovery::{normalize_company_name, CompanyCandidate, DiscoverySource};
