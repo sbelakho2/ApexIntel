@@ -25,7 +25,9 @@ use std::sync::Arc;
 
 use apex_crawl::dark_web::{DarkWebForum, DarkWebMonitor, DarkWebPost, MonitoringRule, ScanReport};
 
-use crate::intelligence_ingress::{IntelligenceIngress, NewWarning, WarningSubmitter};
+use crate::intelligence_ingress::{
+    IngressCounters, IntelligenceIngress, NewWarning, WarningSubmitter,
+};
 use crate::*;
 
 /// Relevance score at or above which a match generates a security warning.
@@ -97,6 +99,8 @@ struct DarkWebCounters {
     warnings_inserted: u64,
     /// Warning inserts that failed.
     warning_insert_errors: u64,
+    /// Per-stage ingress outcome counters (persisted / triage / alert / activity).
+    ingress_counters: IngressCounters,
 }
 
 impl DarkWebCounters {
@@ -249,7 +253,10 @@ where
         }
 
         match ingress.submit_warning(dark_web_warning(post)).await {
-            Ok(_) => counters.warnings_inserted += 1,
+            Ok(result) => {
+                counters.warnings_inserted += 1;
+                counters.ingress_counters.record(&result);
+            }
             Err(e) => {
                 counters.warning_insert_errors += 1;
                 tracing::warn!(
@@ -269,7 +276,7 @@ where
 fn scan_summary(report: &ScanReport, counters: DarkWebCounters) -> String {
     format!(
         "dark_web_scan: scanned {}/{} active forums ({} failed), {} posts seen, \
-         {} observations inserted ({} errors), {} warnings inserted ({} errors)",
+         {} observations inserted ({} errors), {} warnings inserted ({} errors); {}",
         report.forums_scanned,
         report.forums_scanned + report.forums_failed,
         report.forums_failed,
@@ -278,6 +285,7 @@ fn scan_summary(report: &ScanReport, counters: DarkWebCounters) -> String {
         counters.observation_insert_errors,
         counters.warnings_inserted,
         counters.warning_insert_errors,
+        counters.ingress_counters.summary(),
     )
 }
 
@@ -305,6 +313,11 @@ fn complete_dark_web_scan(run: &mut JobRun, report: &ScanReport, counters: DarkW
              {} warning insert error(s)",
             counters.observation_insert_errors, counters.warning_insert_errors
         ));
+    } else if let Some(reason) = counters.ingress_counters.success_blocker() {
+        run.degrade(
+            counters.observations_inserted,
+            &format!("{summary} — {reason}"),
+        );
     } else {
         run.succeed(counters.observations_inserted, &summary);
     }
@@ -421,6 +434,8 @@ mod tests {
                 source_urls: Vec::new(),
                 confidence: None,
                 occurred_at: chrono::Utc::now(),
+                outbox_id: None,
+                alert: None,
             },
             triage: TriageSubmissionOutcome::Enqueued {
                 item_id: Uuid::new_v4(),
@@ -621,6 +636,39 @@ mod tests {
             other => panic!("persistence errors must fail the job, got {other:?}"),
         }
         assert_eq!(run.items_processed, 1, "stored observations still counted");
+    }
+
+    #[tokio::test]
+    async fn job_is_degraded_when_warnings_persist_without_triage() {
+        let report = test_report(vec![], 1, 0);
+        let counters = DarkWebCounters {
+            posts_seen: 1,
+            observations_inserted: 1,
+            warnings_inserted: 3,
+            ingress_counters: IngressCounters {
+                warnings_persisted: 3,
+                triage_completed: 0,
+                alerts_published: 0,
+                activities_recorded: 3,
+                degraded_warnings: 3,
+            },
+            ..DarkWebCounters::default()
+        };
+
+        let mut run = JobRun::new(JobKind::DarkWebScan);
+        run.start();
+        complete_dark_web_scan(&mut run, &report, counters);
+
+        match &run.status {
+            JobStatus::Degraded { reason, .. } => {
+                assert!(
+                    reason.contains("3 warning(s) persisted but 0 triage completions"),
+                    "degraded reason must name the triage outage: {reason}"
+                );
+            }
+            other => panic!("persisted warnings without triage must degrade, got {other:?}"),
+        }
+        assert_eq!(run.items_processed, 1);
     }
 
     #[tokio::test]

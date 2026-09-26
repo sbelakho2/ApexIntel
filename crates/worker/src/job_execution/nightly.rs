@@ -1225,6 +1225,12 @@ fn finalize_mining_run(run: &mut JobRun, result: &MiningStageResult) {
                 &format!("mining completed: {}", stage.run.notes),
             );
         }
+        apex_worker::scheduler::JobStatus::Degraded { ref reason, .. } => {
+            run.degrade(
+                stage.items,
+                &format!("mining degraded: {reason} ({})", stage.run.notes),
+            );
+        }
         apex_worker::scheduler::JobStatus::Failed { .. } => {
             run.fail(&format!("mining failed: {}", stage.run.notes));
         }
@@ -1449,6 +1455,12 @@ pub(super) async fn run_hypothesis_generation(kind: &JobKind, store: &Arc<PgStor
                     &format!("hypothesis gen completed: {}", stage.run.notes),
                 );
             }
+            apex_worker::scheduler::JobStatus::Degraded { ref reason, .. } => {
+                run.degrade(
+                    stage.items,
+                    &format!("hypothesis gen degraded: {reason} ({})", stage.run.notes),
+                );
+            }
             apex_worker::scheduler::JobStatus::Failed { .. } => {
                 run.fail(&format!("hypothesis gen failed: {}", stage.run.notes));
             }
@@ -1506,6 +1518,12 @@ pub(super) async fn run_feature_drift_check(kind: &JobKind, store: &Arc<PgStore>
             run.succeed(
                 stage.items,
                 &format!("drift check completed: {}", stage.run.notes),
+            );
+        }
+        apex_worker::scheduler::JobStatus::Degraded { ref reason, .. } => {
+            run.degrade(
+                stage.items,
+                &format!("drift check degraded: {reason} ({})", stage.run.notes),
             );
         }
         apex_worker::scheduler::JobStatus::Failed { .. } => {

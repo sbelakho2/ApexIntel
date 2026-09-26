@@ -182,6 +182,8 @@ struct WeeklyInputs {
     deprecation_policy: Option<DeprecationPolicy>,
 }
 
+mod alert_evaluator;
+mod alert_pipeline;
 mod artifacts;
 mod bootstrap;
 mod continuous_improvement;
@@ -403,6 +405,13 @@ async fn main() -> Result<()> {
     let ingress = Arc::new(intelligence_ingress::build(Arc::clone(&store)).await);
     tracing::info!("intelligence ingress initialized");
 
+    // ─── Canonical alert outbox publisher ─────────────────────────────────
+    // ONE publication path: warnings commit their alert event to
+    // `event_outbox` in the same transaction as the warning row, and this
+    // drain task is the only thing that publishes alerts to NATS JetStream
+    // (waiting for the real publish ACK before stamping `published_at`).
+    alert_pipeline::spawn(Arc::clone(&store));
+
     // ─── Liveness heartbeat (migration 049) ───────────────────────────────
     // Health checks read `service_heartbeats.last_seen_at` to distinguish a
     // live worker from one that silently stopped; write every ~30s so
@@ -607,6 +616,7 @@ async fn load_weekly_inputs() -> Result<WeeklyInputs> {
 fn format_status(run: &JobRun) -> &'static str {
     match run.status {
         JobStatus::Succeeded { .. } => "succeeded",
+        JobStatus::Degraded { .. } => "degraded",
         JobStatus::Failed { .. } => "failed",
         JobStatus::Skipped { .. } => "skipped",
         JobStatus::Running => "running",

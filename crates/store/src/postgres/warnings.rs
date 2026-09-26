@@ -411,6 +411,95 @@ impl PgStore {
         source_urls: Option<Vec<String>>,
         confidence: Option<f64>,
     ) -> Result<WarningInsertOutcome> {
+        let mut conn = self.pool.acquire().await?;
+        Self::upsert_warning_on(
+            &mut conn,
+            warning_type,
+            title,
+            description,
+            severity,
+            region,
+            recipe_code,
+            entity_ids,
+            source_urls,
+            confidence,
+        )
+        .await
+    }
+
+    /// Insert (or deterministically merge) a warning and append its alert event
+    /// to `event_outbox` in **one transaction**.
+    ///
+    /// This is the persistence step of the single canonical alert path: because
+    /// the warning row and the outbox event commit together, a crash after the
+    /// commit can never lose the alert (the drain publisher retries unpublished
+    /// rows), and a crash before the commit can never alert on a warning that
+    /// does not exist.
+    ///
+    /// `build_payload` receives the resolved warning outcome (the new id, or the
+    /// deduplicated existing id) so the serialized alert can address the exact
+    /// warning row. Returns the warning outcome and the outbox event id.
+    pub async fn insert_warning_with_outbox<P>(
+        &self,
+        warning_type: &str,
+        title: &str,
+        description: Option<&str>,
+        severity: &str,
+        region: Option<&str>,
+        recipe_code: Option<&str>,
+        entity_ids: Option<Vec<Uuid>>,
+        source_urls: Option<Vec<String>>,
+        confidence: Option<f64>,
+        aggregate_type: &str,
+        event_type: &str,
+        build_payload: P,
+    ) -> Result<(WarningInsertOutcome, Uuid)>
+    where
+        P: FnOnce(WarningInsertOutcome) -> Value,
+    {
+        let mut tx = self.pool.begin().await?;
+        let outcome = Self::upsert_warning_on(
+            &mut tx,
+            warning_type,
+            title,
+            description,
+            severity,
+            region,
+            recipe_code,
+            entity_ids,
+            source_urls,
+            confidence,
+        )
+        .await?;
+        let payload = build_payload(outcome);
+        let (outbox_id,) = sqlx::query_as::<_, (Uuid,)>(
+            "INSERT INTO event_outbox (aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(aggregate_type)
+        .bind(outcome.id)
+        .bind(event_type)
+        .bind(payload)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok((outcome, outbox_id))
+    }
+
+    /// Shared warning-upsert body; runs on any connection so callers can wrap
+    /// it in a transaction (outbox) or run it standalone.
+    async fn upsert_warning_on(
+        conn: &mut sqlx::PgConnection,
+        warning_type: &str,
+        title: &str,
+        description: Option<&str>,
+        severity: &str,
+        region: Option<&str>,
+        recipe_code: Option<&str>,
+        entity_ids: Option<Vec<Uuid>>,
+        source_urls: Option<Vec<String>>,
+        confidence: Option<f64>,
+    ) -> Result<WarningInsertOutcome> {
         let normalized_title = title.trim().to_string();
         let warning_title_dedup = normalize_warning_title_for_dedup(&normalized_title);
         let normalized_description = normalize_optional_text(description);
@@ -464,7 +553,7 @@ impl PgStore {
         .bind(&recent_warning_signature)
         .bind(&normalized_entity_ids)
         .bind(dedup_window)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await?
         {
             sqlx::query(
@@ -494,7 +583,7 @@ impl PgStore {
             .bind(confidence)
             .bind(&normalized_source_urls)
             .bind(&normalized_entity_ids)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
             return Ok(WarningInsertOutcome {
                 id: existing_id,
@@ -521,7 +610,7 @@ impl PgStore {
         .bind(&normalized_entity_ids)
         .bind(&normalized_source_urls)
         .bind(confidence)
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
         Ok(WarningInsertOutcome { id, created: true })
     }

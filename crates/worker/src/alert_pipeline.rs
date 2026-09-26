@@ -1,249 +1,546 @@
-//! Real-time alert pipeline wiring (§5.4).
-//!
-//! Connects the previously-isolated pieces of the streaming alert path into a
-//! single end-to-end flow that runs inside the worker process:
+//! Transactional outbox publisher — the ONE alert publication path.
 //!
 //! ```text
-//! [warnings table] --poll--> DomainEvent --publish--> NATS `events.domain`
-//!     --> AlertEvaluator (subscribed) --> evaluate rules --> NATS `alerts.events.*`
-//!     --> (API SSE consumer) --> browser toast + bell
+//! warning INSERT + outbox event (one transaction)
+//!     -> semantic triage
+//!     -> AlertEvaluator rules (at drain time)
+//!     -> outbox drain: publish -> await JetStream ACK -> published_at
+//!     -> NATS `alerts.events.*`
+//!     -> API SSE consumer -> browser toast + bell
 //! ```
 //!
-//! The evaluator and NATS publisher already existed as library code but were
-//! never spawned; this module is the missing glue. Everything degrades
-//! gracefully when NATS is unavailable (the publisher becomes a no-op and the
-//! producer simply logs).
+//! This module replaced the old warning-table-polling producer (which published
+//! domain events for every new warning row independently of triage and the
+//! AlertEvaluator). Alert events now have exactly one source — the outbox row
+//! committed with its warning — and one publication contract: this drain is the
+//! canonical consumer that redelivers everything the producer's immediate
+//! publish attempt left unpublished (crash, ACK failure, NATS outage). No other
+//! component publishes warning alerts to NATS.
+//!
+//! # Delivery guarantees
+//! - A crash between the warning commit and the publish leaves the outbox row
+//!   unpublished; the next drain retries it (at-least-once, never lost).
+//! - `SELECT ... FOR UPDATE SKIP LOCKED` lets concurrent publishers skip each
+//!   other's rows, and the lock is held for the whole batch: a second publisher
+//!   cannot take a row this drain is publishing.
+//! - `published_at` is stamped only after the JetStream ACK resolves; an ACK
+//!   failure records `attempts`/`last_error` and leaves the row for retry.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use apex_store::postgres::PgStore;
-use chrono::{DateTime, Utc};
+use anyhow::Context;
+use async_trait::async_trait;
 use tracing::{info, warn};
+use uuid::Uuid;
+
+use apex_store::postgres::{EventOutboxRow, OutboxBatch, OutboxDrainOutcome, PgStore};
+use apex_worker::nats_stream::{AlertEvent, NatsPublisher};
 
 use crate::alert_evaluator::{AlertEvaluator, DomainEvent};
-use crate::nats_stream::NatsPublisher;
-
-/// NATS subject the producer publishes domain events to and the evaluator
-/// subscribes to.
-pub const DOMAIN_EVENTS_SUBJECT: &str = "events.domain";
 
 /// Default path to the alert rules file.
 const DEFAULT_ALERT_RULES_PATH: &str = "config/runtime/alert-rules.yaml";
 
-/// How often the producer polls for newly-created warnings.
-const PRODUCER_POLL_INTERVAL_SECS: u64 = 30;
+/// How often the drain task looks for unpublished events.
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Resolve the NATS URL from the environment (`NATS_URL`), defaulting to the
-/// conventional localhost endpoint.
-fn nats_url_from_env() -> String {
-    std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string())
-}
+/// Maximum events locked per drain batch.
+pub const DEFAULT_BATCH_SIZE: i64 = 100;
 
 /// Resolve the alert rules path from the environment (`ALERT_RULES_PATH`).
 fn alert_rules_path_from_env() -> String {
     std::env::var("ALERT_RULES_PATH").unwrap_or_else(|_| DEFAULT_ALERT_RULES_PATH.to_string())
 }
 
-/// Spawn the full real-time alert pipeline.
+/// Load the alert rules, if present. Missing/invalid rules must not stop alert
+/// delivery: the base warning alert still publishes.
+fn load_evaluator() -> Option<Arc<AlertEvaluator>> {
+    let path = alert_rules_path_from_env();
+    match AlertEvaluator::load_from_path(&path) {
+        Ok(evaluator) => {
+            info!(rules_path = %path, "outbox publisher: alert rules loaded");
+            Some(Arc::new(evaluator))
+        }
+        Err(e) => {
+            warn!(
+                rules_path = %path,
+                error = %e,
+                "outbox publisher: alert rules unavailable; publishing base alert events only"
+            );
+            None
+        }
+    }
+}
+
+/// Storage half of the drain: lock a batch, then settle each event.
+#[async_trait]
+pub trait OutboxBatchStore: Send + Sync {
+    /// Lock up to `limit` unpublished events (production:
+    /// `SELECT ... FOR UPDATE SKIP LOCKED`) and return the held batch.
+    async fn lock_batch(&self, limit: i64) -> anyhow::Result<Box<dyn LockedOutboxBatch>>;
+}
+
+/// A locked batch. Marks are applied by [`LockedOutboxBatch::commit`]; dropping
+/// the batch without committing simulates the crash case (nothing marked).
+#[async_trait]
+pub trait LockedOutboxBatch: Send {
+    fn locked_events(&self) -> Vec<EventOutboxRow>;
+    async fn mark_published(&mut self, id: Uuid) -> anyhow::Result<()>;
+    async fn record_failure(&mut self, id: Uuid, error: &str) -> anyhow::Result<()>;
+    async fn commit(self: Box<Self>) -> anyhow::Result<()>;
+}
+
+/// Publication half of the drain. Implementations must await the JetStream ACK
+/// before returning `Ok`.
+#[async_trait]
+pub trait OutboxEventPublisher: Send + Sync {
+    async fn publish_event(&self, event: &AlertEvent) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+impl OutboxBatchStore for PgStore {
+    async fn lock_batch(&self, limit: i64) -> anyhow::Result<Box<dyn LockedOutboxBatch>> {
+        Ok(Box::new(self.lock_unpublished_outbox(limit).await?))
+    }
+}
+
+#[async_trait]
+impl LockedOutboxBatch for OutboxBatch {
+    fn locked_events(&self) -> Vec<EventOutboxRow> {
+        OutboxBatch::events(self).to_vec()
+    }
+
+    async fn mark_published(&mut self, id: Uuid) -> anyhow::Result<()> {
+        OutboxBatch::mark_published(self, id).await
+    }
+
+    async fn record_failure(&mut self, id: Uuid, error: &str) -> anyhow::Result<()> {
+        OutboxBatch::record_failure(self, id, error).await
+    }
+
+    async fn commit(self: Box<Self>) -> anyhow::Result<()> {
+        OutboxBatch::commit(*self).await
+    }
+}
+
+/// Production publisher: evaluates alert rules, then publishes the alert event
+/// and awaits the broker ACK.
+pub struct NatsAlertEventPublisher {
+    publisher: NatsPublisher,
+    evaluator: Option<Arc<AlertEvaluator>>,
+}
+
+impl NatsAlertEventPublisher {
+    pub fn new(publisher: NatsPublisher, evaluator: Option<Arc<AlertEvaluator>>) -> Self {
+        Self {
+            publisher,
+            evaluator,
+        }
+    }
+
+    /// Domain-event view of a stored warning alert, for rule evaluation.
+    fn domain_event_for(event: &AlertEvent) -> DomainEvent {
+        let warning_type = event
+            .metadata
+            .get("warning_type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        DomainEvent {
+            id: event.id,
+            source: format!("warning_{warning_type}"),
+            severity: event.severity.as_str().to_string(),
+            title: event.title.clone(),
+            description: event.description.clone(),
+            entity_id: event.entity_id,
+            entity_name: event.entity_name.clone(),
+            metadata: event.metadata.clone(),
+            created_at: event.created_at,
+        }
+    }
+}
+
+#[async_trait]
+impl OutboxEventPublisher for NatsAlertEventPublisher {
+    async fn publish_event(&self, event: &AlertEvent) -> anyhow::Result<()> {
+        // An unavailable transport must fail the row, never let it be stamped
+        // published: the drain retries it instead of dropping the alert.
+        if !self.publisher.is_connected() {
+            anyhow::bail!(
+                "NATS transport unavailable; leaving outbox event {} unpublished for retry",
+                event.id
+            );
+        }
+
+        if let Some(evaluator) = &self.evaluator {
+            let domain = Self::domain_event_for(event);
+            for rule_alert in evaluator.evaluate(&domain).await {
+                self.publisher
+                    .publish_alert(&rule_alert)
+                    .await
+                    .context("failed to publish rule-derived alert")?;
+            }
+        }
+
+        self.publisher.publish_alert(event).await
+    }
+}
+
+/// Drain one outbox batch: publish each locked event, await the ACK, stamp
+/// `published_at` on success and record the failure otherwise; commit the batch
+/// only after every event settled.
+pub async fn drain_once(
+    store: &dyn OutboxBatchStore,
+    publisher: &dyn OutboxEventPublisher,
+    limit: i64,
+) -> anyhow::Result<OutboxDrainOutcome> {
+    let mut batch = store.lock_batch(limit).await?;
+    let events = batch.locked_events();
+    let mut outcome = OutboxDrainOutcome::default();
+
+    for row in events {
+        let result = match serde_json::from_value::<AlertEvent>(row.payload.clone()) {
+            Ok(event) => publisher.publish_event(&event).await,
+            Err(e) => Err(anyhow::anyhow!(
+                "outbox event {} payload is not a valid AlertEvent: {e}",
+                row.id
+            )),
+        };
+
+        match result {
+            Ok(()) => {
+                batch.mark_published(row.id).await?;
+                outcome.published += 1;
+            }
+            Err(error) => {
+                warn!(
+                    outbox_id = %row.id,
+                    attempts = row.attempts + 1,
+                    error = %error,
+                    "outbox publisher: publish failed; event remains unpublished for retry"
+                );
+                batch.record_failure(row.id, &error.to_string()).await?;
+                outcome.failed += 1;
+            }
+        }
+    }
+
+    batch.commit().await?;
+    Ok(outcome)
+}
+
+/// Spawn the canonical outbox drain task.
 ///
-/// Returns immediately; all work happens on background tokio tasks. When NATS
-/// or the rules file are unavailable the pipeline logs a warning and stays
-/// dormant rather than crashing the worker.
+/// Returns immediately; all work happens on a background tokio task. When NATS
+/// is not configured the task logs and exits (events stay queued for a later
+/// restart with NATS configured); when NATS is temporarily unreachable the task
+/// reconnects on its poll interval.
 pub fn spawn(store: Arc<PgStore>) {
-    // Default to enabled; set REALTIME_ALERTS_ENABLED=false to disable.
     let enabled = std::env::var("REALTIME_ALERTS_ENABLED")
         .ok()
         .map(|v| apex_core::env::parse_truthy_flag(&v))
         .unwrap_or(true);
     if !enabled {
-        info!("real-time alert pipeline disabled (REALTIME_ALERTS_ENABLED=false)");
+        info!("outbox alert publisher disabled (REALTIME_ALERTS_ENABLED=false)");
         return;
     }
 
-
     tokio::spawn(async move {
-        let nats_url = nats_url_from_env();
-
-        // 1. Connect the publisher (used by both the producer and evaluator).
-        let producer_publisher = NatsPublisher::connect(&nats_url).await;
-        if !producer_publisher.is_connected() {
-            warn!(
-                "real-time alert pipeline: NATS unavailable at {nats_url}; \
-                 streaming alerts will not fire until NATS is reachable"
-            );
-            return;
-        }
-
-        // 2. Load rules and spawn the evaluator (subscribes to DOMAIN_EVENTS_SUBJECT).
-        let rules_path = alert_rules_path_from_env();
-        match AlertEvaluator::load_from_path(&rules_path) {
-            Ok(evaluator) => {
-                let evaluator_publisher = NatsPublisher::connect(&nats_url).await;
-                evaluator.spawn_background_task(
-                    evaluator_publisher,
-                    vec![DOMAIN_EVENTS_SUBJECT.to_string()],
-                );
+        let nats_url = match std::env::var("NATS_URL") {
+            Ok(url) if !url.trim().is_empty() => url.trim().to_string(),
+            _ => {
                 info!(
-                    rules_path = %rules_path,
-                    subject = DOMAIN_EVENTS_SUBJECT,
-                    "real-time alert evaluator spawned"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    rules_path = %rules_path,
-                    error = %e,
-                    "failed to load alert rules; evaluator not started"
+                    "outbox alert publisher: NATS_URL unset; alert events stay queued until \
+                     a worker with NATS configured drains them"
                 );
                 return;
             }
-        }
-
-        // 3. Run the warning→DomainEvent producer loop.
-        run_warning_producer(store, producer_publisher).await;
-    });
-}
-
-/// Poll for new warnings and publish them as domain events to NATS.
-async fn run_warning_producer(store: Arc<PgStore>, publisher: NatsPublisher) {
-    let Some(client) = publisher.client().cloned() else {
-        warn!("alert producer: NATS client unavailable; producer exiting");
-        return;
-    };
-
-    // Start from "now" so we don't replay historical warnings on boot.
-    let mut last_seen: DateTime<Utc> = Utc::now();
-    let mut interval = tokio::time::interval(Duration::from_secs(PRODUCER_POLL_INTERVAL_SECS));
-    info!(
-        interval_secs = PRODUCER_POLL_INTERVAL_SECS,
-        "real-time alert producer started"
-    );
-
-    loop {
-        interval.tick().await;
-
-        let warnings = match store.list_recent_warnings_since(last_seen, 200).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                warn!(error = %e, "alert producer: failed to query recent warnings");
-                continue;
-            }
         };
 
-        if warnings.is_empty() {
-            continue;
-        }
+        let evaluator = load_evaluator();
+        let mut publisher = NatsPublisher::connect(&nats_url).await;
+        let mut interval = tokio::time::interval(DEFAULT_POLL_INTERVAL);
 
-        // Advance the cursor to the newest warning we observed.
-        if let Some(newest) = warnings
-            .iter()
-            .filter_map(|w| w.created_at.or(Some(w.ts_utc)))
-            .max()
-        {
-            last_seen = newest;
-        }
+        info!("outbox alert publisher started (single canonical alert path)");
+        loop {
+            interval.tick().await;
 
-        let mut published = 0usize;
-        for w in &warnings {
-            let event = warning_to_domain_event(w);
-            let payload = match serde_json::to_vec(&event) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    warn!(error = %e, "alert producer: failed to serialize domain event");
+            if !publisher.is_connected() {
+                publisher = NatsPublisher::connect(&nats_url).await;
+                if !publisher.is_connected() {
                     continue;
                 }
-            };
-            if let Err(e) = client
-                .publish(DOMAIN_EVENTS_SUBJECT.to_string(), payload.into())
-                .await
-            {
-                warn!(error = %e, "alert producer: failed to publish domain event");
-            } else {
-                published += 1;
+            }
+
+            let drain_publisher =
+                NatsAlertEventPublisher::new(publisher.clone(), evaluator.clone());
+            match drain_once(store.as_ref(), &drain_publisher, DEFAULT_BATCH_SIZE).await {
+                Ok(outcome) if outcome.published > 0 || outcome.failed > 0 => {
+                    info!(
+                        published = outcome.published,
+                        failed = outcome.failed,
+                        "outbox publisher: drained alert events"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(error = %e, "outbox publisher: drain failed");
+                }
             }
         }
-
-        if published > 0 {
-            info!(count = published, "alert producer: published warning domain events");
-        }
-    }
-}
-
-/// Convert a stored warning row into a [`DomainEvent`] for the evaluator.
-fn warning_to_domain_event(w: &apex_store::postgres::WarningRow) -> DomainEvent {
-    let mut event = DomainEvent::new(
-        // Use a `warning`-prefixed source so warning-scoped rules match.
-        format!("warning_{}", w.warning_type),
-        w.severity.clone(),
-        w.title.clone(),
-        w.description.clone().unwrap_or_default(),
-    );
-
-    if let Some(entity_id) = w.entity_ids.as_ref().and_then(|ids| ids.first()).copied() {
-        let name = w.region.clone().unwrap_or_default();
-        event = event.with_entity(entity_id, name);
-    }
-
-    event = event.with_metadata(serde_json::json!({
-        "warning_id": w.id,
-        "warning_type": w.warning_type,
-        "recipe_code": w.recipe_code,
-        "region": w.region,
-        "confidence": w.confidence,
-    }));
-
-    event
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
 
-    fn sample_warning() -> apex_store::postgres::WarningRow {
-        apex_store::postgres::WarningRow {
-            id: uuid::Uuid::new_v4(),
-            recipe_code: Some("C123".to_string()),
-            warning_type: "competitor_change".to_string(),
-            title: "Competitor launched new product".to_string(),
-            description: Some("A competitor announced a new battery line".to_string()),
-            severity: "high".to_string(),
-            region: Some("TN".to_string()),
-            source_urls: None,
-            entity_ids: Some(vec![uuid::Uuid::nil()]),
-            confidence: Some(0.8),
-            ts_utc: Utc::now(),
-            acknowledged: false,
-            acknowledged_by: None,
-            acknowledged_at: None,
-            acknowledged_note: None,
-            review_outcome: None,
-            deleted_at: None,
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
+    fn sample_event(id: Uuid) -> AlertEvent {
+        AlertEvent {
+            id,
+            event_type: apex_worker::nats_stream::AlertEventType::NewWarning,
+            severity: apex_core::alert_config::AlertSeverity::High,
+            title: "Persisted warning".to_string(),
+            description: "Committed before the crash".to_string(),
+            entity_id: Some(Uuid::new_v4()),
+            entity_name: Some("Acme".to_string()),
+            audience: apex_core::alert_config::AlertAudience::Users(vec![]),
+            metadata: serde_json::json!({"warning_type": "volume_anomaly"}),
+            created_at: chrono::Utc::now(),
         }
     }
 
-    #[test]
-    fn warning_maps_to_domain_event() {
-        let w = sample_warning();
-        let event = warning_to_domain_event(&w);
-        assert_eq!(event.source, "warning_competitor_change");
-        assert_eq!(event.severity, "high");
-        assert_eq!(event.title, "Competitor launched new product");
-        assert!(event.entity_id.is_some());
-        assert_eq!(event.metadata["warning_type"], "competitor_change");
+    fn outbox_row(id: Uuid, payload: serde_json::Value) -> EventOutboxRow {
+        EventOutboxRow {
+            id,
+            aggregate_type: "warning".to_string(),
+            aggregate_id: Uuid::new_v4(),
+            event_type: "new_warning".to_string(),
+            payload,
+            created_at: chrono::Utc::now(),
+            published_at: None,
+            attempts: 0,
+            last_error: None,
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryOutbox {
+        events: Arc<Mutex<Vec<EventOutboxRow>>>,
+        published: Arc<Mutex<HashSet<Uuid>>>,
+        failures: Arc<Mutex<Vec<(Uuid, String)>>>,
+    }
+
+    impl MemoryOutbox {
+        fn with_events(events: Vec<EventOutboxRow>) -> Self {
+            Self {
+                events: Arc::new(Mutex::new(events)),
+                published: Arc::new(Mutex::new(HashSet::new())),
+                failures: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn unpublished(&self) -> Vec<Uuid> {
+            let published = self.published.lock().unwrap();
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|row| !published.contains(&row.id))
+                .map(|row| row.id)
+                .collect()
+        }
+
+        fn published_ids(&self) -> HashSet<Uuid> {
+            self.published.lock().unwrap().clone()
+        }
+
+        fn failure_count(&self) -> usize {
+            self.failures.lock().unwrap().len()
+        }
+    }
+
+    struct MemoryBatch {
+        published: Arc<Mutex<HashSet<Uuid>>>,
+        failures: Arc<Mutex<Vec<(Uuid, String)>>>,
+        locked: Vec<EventOutboxRow>,
+        marked: Vec<Uuid>,
+        failed: Vec<(Uuid, String)>,
+    }
+
+    #[async_trait]
+    impl LockedOutboxBatch for MemoryBatch {
+        fn locked_events(&self) -> Vec<EventOutboxRow> {
+            self.locked.clone()
+        }
+
+        async fn mark_published(&mut self, id: Uuid) -> anyhow::Result<()> {
+            self.marked.push(id);
+            Ok(())
+        }
+
+        async fn record_failure(&mut self, id: Uuid, error: &str) -> anyhow::Result<()> {
+            self.failed.push((id, error.to_string()));
+            Ok(())
+        }
+
+        async fn commit(self: Box<Self>) -> anyhow::Result<()> {
+            let mut published = self.published.lock().unwrap();
+            for id in &self.marked {
+                published.insert(*id);
+            }
+            drop(published);
+            let mut failures = self.failures.lock().unwrap();
+            for (id, error) in &self.failed {
+                failures.push((*id, error.clone()));
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl OutboxBatchStore for MemoryOutbox {
+        async fn lock_batch(&self, _limit: i64) -> anyhow::Result<Box<dyn LockedOutboxBatch>> {
+            let locked = self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|row| !self.published.lock().unwrap().contains(&row.id))
+                .cloned()
+                .collect();
+            Ok(Box::new(MemoryBatch {
+                published: Arc::clone(&self.published),
+                failures: Arc::clone(&self.failures),
+                locked,
+                marked: Vec::new(),
+                failed: Vec::new(),
+            }))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingPublisher {
+        delivered: Mutex<Vec<Uuid>>,
+        fail_ids: HashSet<Uuid>,
+    }
+
+    #[async_trait]
+    impl OutboxEventPublisher for RecordingPublisher {
+        async fn publish_event(&self, event: &AlertEvent) -> anyhow::Result<()> {
+            if self.fail_ids.contains(&event.id) {
+                anyhow::bail!("simulated JetStream ACK failure for {}", event.id);
+            }
+            self.delivered.lock().unwrap().push(event.id);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn outbox_drains_after_crash_between_commit_and_publish() {
+        // Simulate the crash: the warning + outbox row committed, then the
+        // process died before publishing anything.
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        assert_eq!(store.unpublished(), vec![event.id]);
+
+        let publisher = RecordingPublisher::default();
+        let outcome = drain_once(&store, &publisher, 10).await.unwrap();
+
+        assert_eq!(outcome.published, 1);
+        assert_eq!(outcome.failed, 0);
+        assert_eq!(
+            publisher.delivered.lock().unwrap().as_slice(),
+            &[event.id],
+            "the committed event must be delivered by the drain"
+        );
+        assert!(
+            store.published_ids().contains(&event.id),
+            "drained event must be stamped published"
+        );
+        assert!(store.unpublished().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_ack_leaves_event_unpublished_for_the_next_drain() {
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        let publisher = RecordingPublisher {
+            fail_ids: HashSet::from([event.id]),
+            ..RecordingPublisher::default()
+        };
+
+        let outcome = drain_once(&store, &publisher, 10).await.unwrap();
+        assert_eq!(outcome.published, 0);
+        assert_eq!(outcome.failed, 1);
+        assert!(
+            store.unpublished().contains(&event.id),
+            "an unacknowledged event must remain unpublished"
+        );
+        assert_eq!(store.failure_count(), 1);
+
+        // The next drain (with a healthy broker) publishes it.
+        let healthy = RecordingPublisher::default();
+        let outcome = drain_once(&store, &healthy, 10).await.unwrap();
+        assert_eq!(outcome.published, 1);
+        assert!(store.published_ids().contains(&event.id));
+    }
+
+    #[tokio::test]
+    async fn invalid_payload_is_recorded_as_failure_not_published() {
+        let id = Uuid::new_v4();
+        let store =
+            MemoryOutbox::with_events(vec![outbox_row(id, serde_json::json!({"nope": true}))]);
+        let publisher = RecordingPublisher::default();
+
+        let outcome = drain_once(&store, &publisher, 10).await.unwrap();
+        assert_eq!(outcome.published, 0);
+        assert_eq!(outcome.failed, 1);
+        assert!(publisher.delivered.lock().unwrap().is_empty());
+        assert!(store.unpublished().contains(&id));
+    }
+
+    #[tokio::test]
+    async fn unavailable_transport_never_marks_events_published() {
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        let publisher = NatsAlertEventPublisher::new(NatsPublisher::disabled(), None);
+
+        let outcome = drain_once(&store, &publisher, 10).await.unwrap();
+        assert_eq!(outcome.published, 0);
+        assert_eq!(outcome.failed, 1);
+        assert!(
+            store.unpublished().contains(&event.id),
+            "a disabled transport must not consume the event"
+        );
     }
 
     #[test]
-    fn nats_url_defaults_to_localhost() {
-        std::env::remove_var("NATS_URL");
-        assert_eq!(nats_url_from_env(), "nats://127.0.0.1:4222");
+    fn domain_event_maps_warning_type_for_rule_sources() {
+        let event = sample_event(Uuid::new_v4());
+        let domain = NatsAlertEventPublisher::domain_event_for(&event);
+        assert_eq!(domain.source, "warning_volume_anomaly");
+        assert_eq!(domain.severity, "high");
+        assert_eq!(domain.id, event.id);
+        assert_eq!(domain.entity_id, event.entity_id);
     }
 
     #[test]
-    fn rules_path_defaults() {
-        std::env::remove_var("ALERT_RULES_PATH");
-        assert_eq!(alert_rules_path_from_env(), DEFAULT_ALERT_RULES_PATH);
+    fn domain_event_tolerates_missing_warning_type() {
+        let mut event = sample_event(Uuid::new_v4());
+        event.metadata = serde_json::json!({});
+        let domain = NatsAlertEventPublisher::domain_event_for(&event);
+        assert_eq!(domain.source, "warning_unknown");
     }
 }

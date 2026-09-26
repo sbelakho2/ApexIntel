@@ -13,17 +13,35 @@
 //! (no per-job `TriageIngestor` construction). `submit_warning`:
 //!
 //! 1. upserts the warning through [`WarningWriter`] (deterministic dedup in
-//!    Postgres returns the existing row id for a repeat),
+//!    Postgres returns the existing row id for a repeat) and commits the
+//!    warning row **and its alert outbox event in one transaction** — there is
+//!    no window where a persisted warning can lose its alert,
 //! 2. submits the stored warning to [`TriageIngestor`] so semantic dedup
 //!    merges repeats (occurrence counts increment instead of duplicate queue
 //!    rows),
-//! 3. publishes the alert/domain event through [`AlertSink`],
+//! 3. attempts delivery of the committed alert event through [`AlertSink`]:
+//!    the JetStream ACK is awaited, then the outbox event is stamped published
+//!    (`crate::alert_pipeline` retries anything left unpublished after a
+//!    crash),
 //! 4. records an activity-feed entry through [`WarningWriter`],
 //! 5. returns a [`WarningSubmissionResult`] with the real per-step outcome.
 //!
 //! A warning insert failure is returned as `Err`; triage/alert/activity
 //! failures are reported in the result as degraded (the warning row is already
 //! persisted, so dropping the outcome would be a silent data loss).
+//!
+//! # Audience policy
+//! Generic entity warnings use [`AlertAudience::Users`] with no explicit ids:
+//! the API alert router resolves the entity's subscribers for the category and
+//! severity. [`AlertAudience::Broadcast`] is reserved for warnings explicitly
+//! marked via [`NewWarning::system_broadcast`] — an unresolved targeted alert
+//! reaches nobody instead of every connected user.
+//!
+//! # Capability requirement
+//! When NATS is required (`REQUIRE_NATS=true` or `APEX_ENV=production`), an
+//! unavailable JetStream makes [`AlertSink::publish_alert`] return `Err` and
+//! the submission is reported degraded; a missing alert backend is never a
+//! silent success.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,12 +59,20 @@ use apex_triage::semantic_dedup::{
 use apex_triage::TriageQueue;
 
 use apex_worker::activity_logger::{ActivityEvent, ActivityLogger};
-use apex_worker::nats_stream::{AlertEvent, AlertEventType, NatsPublisher};
+use apex_worker::nats_stream::{nats_required_from_env, AlertEvent, AlertEventType, NatsPublisher};
 
 /// How long startup waits for NATS before falling back to a disabled publisher.
 const NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A warning as produced by a job, before dedup/insert/triage.
+///
+/// `enabled` controls whether the warning alerts at all (a disabled warning is
+/// persisted and triaged but writes no outbox event), and `is_system_broadcast`
+/// reserves [`AlertAudience::Broadcast`] for genuine system-wide alerts. The
+/// default audience for an entity warning is [`AlertAudience::Users`] with no
+/// explicit ids: the API alert router resolves the entity's real subscribers
+/// for the warning category and severity, and an unresolved alert reaches
+/// nobody instead of every connected user.
 #[derive(Debug, Clone)]
 pub struct NewWarning {
     warning_type: String,
@@ -58,10 +84,13 @@ pub struct NewWarning {
     entity_ids: Vec<Uuid>,
     source_urls: Vec<String>,
     confidence: Option<f64>,
+    enabled: bool,
+    is_system_broadcast: bool,
 }
 
 impl NewWarning {
-    /// Create a warning with the three required fields.
+    /// Create a warning with the three required fields. Alerts are enabled and
+    /// targeted (never an implicit broadcast).
     pub fn new(
         warning_type: impl Into<String>,
         title: impl Into<String>,
@@ -77,6 +106,44 @@ impl NewWarning {
             entity_ids: Vec::new(),
             source_urls: Vec::new(),
             confidence: None,
+            enabled: true,
+            is_system_broadcast: false,
+        }
+    }
+
+    /// Set whether this warning produces an alert event (default `true`).
+    /// Disabled warnings are still persisted, deduplicated and triaged.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Mark this warning as a genuine system-wide alert.
+    ///
+    /// Only operational, non-entity warnings (for example a source outage that
+    /// affects every consumer) should use this; entity warnings must stay
+    /// targeted so they are resolved against `user_alert_subscriptions`.
+    pub fn system_broadcast(mut self) -> Self {
+        self.is_system_broadcast = true;
+        self
+    }
+
+    /// Whether this warning alerts at all.
+    pub fn alerts_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Whether this warning is a deliberate system-wide broadcast.
+    pub fn is_system_broadcast(&self) -> bool {
+        self.is_system_broadcast
+    }
+
+    /// The audience for this warning's alert event.
+    pub fn audience(&self) -> AlertAudience {
+        if self.is_system_broadcast {
+            AlertAudience::Broadcast
+        } else {
+            AlertAudience::Users(Vec::new())
         }
     }
 
@@ -128,6 +195,42 @@ pub struct StoredWarning {
     pub source_urls: Vec<String>,
     pub confidence: Option<f64>,
     pub occurred_at: DateTime<Utc>,
+    /// The outbox event committed in the same transaction as this warning; the
+    /// publisher marks it published only after the JetStream ACK.
+    pub outbox_id: Option<Uuid>,
+    /// The alert event serialized into the outbox row (audience already
+    /// resolved to `Users([])` or `Broadcast`).
+    pub alert: Option<AlertEvent>,
+}
+
+/// Build the alert event for a persisted warning.
+///
+/// Used both for the outbox payload (committed with the warning) and for the
+/// immediate publish attempt, so the fast path and crash recovery publish the
+/// exact same event.
+fn build_alert_event(
+    outcome_id: Uuid,
+    warning: &NewWarning,
+    occurred_at: DateTime<Utc>,
+) -> AlertEvent {
+    AlertEvent {
+        id: outcome_id,
+        event_type: AlertEventType::NewWarning,
+        severity: AlertSeverity::from_str(&warning.severity),
+        title: warning.title.clone(),
+        description: warning.description.clone().unwrap_or_default(),
+        entity_id: warning.entity_ids.first().copied(),
+        entity_name: None,
+        audience: warning.audience(),
+        metadata: serde_json::json!({
+            "warning_id": outcome_id,
+            "warning_type": warning.warning_type,
+            "recipe_code": warning.recipe_code,
+            "region": warning.region,
+            "confidence": warning.confidence,
+        }),
+        created_at: occurred_at,
+    }
 }
 
 /// Outcome of submitting a warning to the semantic triage ingress.
@@ -238,6 +341,74 @@ impl WarningSubmissionResult {
     }
 }
 
+/// Per-job aggregation of warning-submission outcomes.
+///
+/// Distinguishes the stages the audit requires: persisted warnings, completed
+/// triage submissions, ACKed alert publications, activity records, and degraded
+/// submissions. [`IngressCounters::success_blocker`] encodes the hard rule that
+/// a job which persisted warnings but never completed triage must not report
+/// success.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IngressCounters {
+    /// Warnings whose row committed (created or deduplicated).
+    pub warnings_persisted: u64,
+    /// Submissions whose semantic triage step succeeded.
+    pub triage_completed: u64,
+    /// Alerts published and acknowledged by the broker.
+    pub alerts_published: u64,
+    /// Activity-feed entries recorded.
+    pub activities_recorded: u64,
+    /// Submissions with at least one degraded (triage/alert/activity) step.
+    pub degraded_warnings: u64,
+}
+
+impl IngressCounters {
+    /// Record one successful `submit_warning` outcome.
+    pub fn record(&mut self, result: &WarningSubmissionResult) {
+        self.warnings_persisted += 1;
+        if !matches!(result.triage, TriageSubmissionOutcome::Failed { .. }) {
+            self.triage_completed += 1;
+        }
+        if result.alert_published {
+            self.alerts_published += 1;
+        }
+        if result.activity_recorded {
+            self.activities_recorded += 1;
+        }
+        if result.degraded() {
+            self.degraded_warnings += 1;
+        }
+    }
+
+    /// The reason this job must not report success, if any.
+    ///
+    /// Persisted warnings with zero completed triage submissions mean the
+    /// alert-generation pipeline never ran: counting that as success hides a
+    /// total alerting outage.
+    pub fn success_blocker(&self) -> Option<String> {
+        if self.warnings_persisted > 0 && self.triage_completed == 0 {
+            return Some(format!(
+                "{} warning(s) persisted but 0 triage completions — alerts were never generated",
+                self.warnings_persisted
+            ));
+        }
+        None
+    }
+
+    /// One-line counter summary for job notes.
+    pub fn summary(&self) -> String {
+        format!(
+            "warnings_persisted={} triage_completed={} alerts_published={} \
+             activities_recorded={} degraded_warnings={}",
+            self.warnings_persisted,
+            self.triage_completed,
+            self.alerts_published,
+            self.activities_recorded,
+            self.degraded_warnings
+        )
+    }
+}
+
 /// Persistence half of the ingress.
 #[async_trait]
 pub trait WarningWriter: Send + Sync {
@@ -254,6 +425,12 @@ pub trait WarningWriter: Send + Sync {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// Stamp the warning's outbox event published after the broker ACK.
+    /// Implementations with no outbox may keep the default no-op.
+    async fn mark_alert_published(&self, _outbox_id: Uuid) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Alert/domain-event publication half of the ingress.
@@ -264,11 +441,15 @@ pub trait AlertSink: Send + Sync {
         true
     }
 
-    async fn publish_alert(
-        &self,
-        warning: &StoredWarning,
-        triage: &TriageSubmissionOutcome,
-    ) -> anyhow::Result<()>;
+    /// Whether an unavailable alert backend is a hard failure for this
+    /// deployment (production / `REQUIRE_NATS`).
+    fn required(&self) -> bool {
+        false
+    }
+
+    /// Publish an alert event, awaiting the broker ACK before reporting
+    /// success.
+    async fn publish_alert(&self, event: &AlertEvent) -> anyhow::Result<()>;
 }
 
 /// Object-safe view of the ingress used where a concrete generic type is
@@ -294,20 +475,52 @@ impl WarningService {
 #[async_trait]
 impl WarningWriter for WarningService {
     async fn upsert_warning(&self, warning: &NewWarning) -> anyhow::Result<StoredWarning> {
-        let outcome = self
-            .store
-            .insert_warning_with_outcome(
-                &warning.warning_type,
-                &warning.title,
-                warning.description.as_deref(),
-                &warning.severity,
-                warning.region.as_deref(),
-                warning.recipe_code.as_deref(),
-                non_empty(warning.entity_ids.clone()),
-                non_empty(warning.source_urls.clone()),
-                warning.confidence,
+        let occurred_at = Utc::now();
+        let (outcome, outbox_id, alert) = if warning.enabled {
+            // One transaction: the warning row and its alert outbox event
+            // commit together, so no crash window can lose the alert.
+            let (outcome, outbox_id) = self
+                .store
+                .insert_warning_with_outbox(
+                    &warning.warning_type,
+                    &warning.title,
+                    warning.description.as_deref(),
+                    &warning.severity,
+                    warning.region.as_deref(),
+                    warning.recipe_code.as_deref(),
+                    non_empty(warning.entity_ids.clone()),
+                    non_empty(warning.source_urls.clone()),
+                    warning.confidence,
+                    "warning",
+                    "new_warning",
+                    |outcome| {
+                        serde_json::to_value(build_alert_event(outcome.id, warning, occurred_at))
+                            .expect("AlertEvent is always serializable")
+                    },
+                )
+                .await?;
+            (
+                outcome,
+                Some(outbox_id),
+                Some(build_alert_event(outcome.id, warning, occurred_at)),
             )
-            .await?;
+        } else {
+            let outcome = self
+                .store
+                .insert_warning_with_outcome(
+                    &warning.warning_type,
+                    &warning.title,
+                    warning.description.as_deref(),
+                    &warning.severity,
+                    warning.region.as_deref(),
+                    warning.recipe_code.as_deref(),
+                    non_empty(warning.entity_ids.clone()),
+                    non_empty(warning.source_urls.clone()),
+                    warning.confidence,
+                )
+                .await?;
+            (outcome, None, None)
+        };
         Ok(StoredWarning {
             id: outcome.id,
             created: outcome.created,
@@ -320,8 +533,18 @@ impl WarningWriter for WarningService {
             entity_ids: warning.entity_ids.clone(),
             source_urls: warning.source_urls.clone(),
             confidence: warning.confidence,
-            occurred_at: Utc::now(),
+            occurred_at,
+            outbox_id,
+            alert,
         })
+    }
+
+    async fn mark_alert_published(&self, outbox_id: Uuid) -> anyhow::Result<()> {
+        // `false` means the drain publisher already stamped the event (it
+        // published the same outbox row concurrently) or the row is gone; both
+        // are duplicate-delivery, not loss, so they are not errors.
+        self.store.mark_outbox_published(outbox_id).await?;
+        Ok(())
     }
 
     async fn record_warning_activity(
@@ -387,17 +610,25 @@ impl AlertPublisher {
         Self::new(NatsPublisher::disabled())
     }
 
+    /// A disabled publisher for deployments where NATS is required: every
+    /// publish reports an error instead of silently succeeding.
+    pub fn disabled_with_requirement(required: bool) -> Self {
+        Self::new(NatsPublisher::disabled_with_requirement(required))
+    }
+
     /// Connect to NATS with a bounded timeout.
     pub async fn connect(nats_url: &str) -> Self {
         match tokio::time::timeout(NATS_CONNECT_TIMEOUT, NatsPublisher::connect(nats_url)).await {
             Ok(publisher) => Self::new(publisher),
             Err(_) => {
+                let required = nats_required_from_env();
                 tracing::warn!(
                     nats_url,
                     timeout_secs = NATS_CONNECT_TIMEOUT.as_secs(),
-                    "intelligence_ingress: NATS connect timed out; alert publishing disabled"
+                    required,
+                    "intelligence_ingress: NATS connect timed out; alert publishing degraded"
                 );
-                Self::disabled()
+                Self::disabled_with_requirement(required)
             }
         }
     }
@@ -409,36 +640,15 @@ impl AlertSink for AlertPublisher {
         self.enabled
     }
 
-    async fn publish_alert(
-        &self,
-        warning: &StoredWarning,
-        triage: &TriageSubmissionOutcome,
-    ) -> anyhow::Result<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-        let event = AlertEvent {
-            id: warning.id,
-            event_type: AlertEventType::NewWarning,
-            severity: AlertSeverity::from_str(&warning.severity),
-            title: warning.title.clone(),
-            description: warning.description.clone().unwrap_or_default(),
-            entity_id: warning.entity_ids.first().copied(),
-            entity_name: None,
-            audience: AlertAudience::Broadcast,
-            metadata: serde_json::json!({
-                "warning_id": warning.id,
-                "warning_type": warning.warning_type,
-                "recipe_code": warning.recipe_code,
-                "region": warning.region,
-                "confidence": warning.confidence,
-                "created": warning.created,
-                "occurrence_count": triage.occurrence_count(),
-                "triage": triage.as_str(),
-            }),
-            created_at: warning.occurred_at,
-        };
-        self.publisher.publish_alert(&event).await
+    fn required(&self) -> bool {
+        self.publisher.required()
+    }
+
+    async fn publish_alert(&self, event: &AlertEvent) -> anyhow::Result<()> {
+        // `NatsPublisher::publish_alert` awaits the JetStream ACK, returns Err
+        // when NATS is required but unavailable, and degrades to a no-op
+        // otherwise.
+        self.publisher.publish_alert(event).await
     }
 }
 
@@ -515,17 +725,44 @@ where
             }
         };
 
-        let (alert_published, alert_error) = match self.alerts.publish_alert(&stored, &triage).await
-        {
-            Ok(()) => (self.alerts.enabled(), None),
-            Err(error) => {
-                tracing::warn!(
-                    warning_id = %stored.id,
-                    error = %error,
-                    "intelligence_ingress: alert publication failed"
-                );
-                (false, Some(error.to_string()))
-            }
+        let (alert_published, alert_error) = match stored.alert.as_ref() {
+            Some(event) => match self.alerts.publish_alert(event).await {
+                Ok(()) if !self.alerts.enabled() => {
+                    // NATS is optional and unavailable: the outbox event stays
+                    // unpublished for the drain publisher to retry. Not a
+                    // failure in a non-required deployment.
+                    (false, None)
+                }
+                Ok(()) => {
+                    let marked = match stored.outbox_id {
+                        Some(outbox_id) => self.warnings.mark_alert_published(outbox_id).await,
+                        None => Ok(()),
+                    };
+                    match marked {
+                        Ok(()) => (true, None),
+                        Err(error) => {
+                            // The alert reached NATS, but the outbox marker did
+                            // not land: the drain may re-publish it (duplicate),
+                            // so the submission is reported as degraded.
+                            tracing::warn!(
+                                warning_id = %stored.id,
+                                error = %error,
+                                "intelligence_ingress: alert published but outbox marking failed"
+                            );
+                            (true, Some(format!("alert outbox marking failed: {error}")))
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        warning_id = %stored.id,
+                        error = %error,
+                        "intelligence_ingress: alert publication failed"
+                    );
+                    (false, Some(error.to_string()))
+                }
+            },
+            None => (false, None),
         };
 
         let (activity_recorded, activity_error) = match self
@@ -593,8 +830,16 @@ pub async fn build(store: Arc<PgStore>) -> IntelligenceIngress {
             publisher
         }
         _ => {
-            tracing::info!("intelligence_ingress: NATS_URL unset; alert publishing disabled");
-            AlertPublisher::disabled()
+            let required = nats_required_from_env();
+            if required {
+                tracing::error!(
+                    "intelligence_ingress: NATS_URL unset but NATS is required \
+                     (REQUIRE_NATS/APEX_ENV=production); warnings will be reported degraded"
+                );
+            } else {
+                tracing::info!("intelligence_ingress: NATS_URL unset; alert publishing disabled");
+            }
+            AlertPublisher::disabled_with_requirement(required)
         }
     };
 
@@ -724,12 +969,16 @@ mod tests {
 
     /// Deterministic warning store fake: same `(type,title,severity)` returns
     /// the same id with `created = false` on repeat, like the SQL dedup path.
+    /// It also emulates the transactional outbox: an enabled warning gets an
+    /// outbox id and its alert event, which `mark_alert_published` can stamp.
     #[derive(Default)]
     struct FakeWarningWriter {
         rows: Mutex<HashMap<String, Uuid>>,
         upsert_attempts: AtomicUsize,
         activity_writes: AtomicUsize,
+        published_marks: AtomicUsize,
         fail: AtomicBool,
+        fail_mark: AtomicBool,
     }
 
     #[async_trait]
@@ -752,6 +1001,15 @@ mod tests {
                     (id, true)
                 }
             };
+            let occurred_at = Utc::now();
+            let (outbox_id, alert) = if warning.alerts_enabled() {
+                (
+                    Some(Uuid::new_v4()),
+                    Some(build_alert_event(id, warning, occurred_at)),
+                )
+            } else {
+                (None, None)
+            };
             Ok(StoredWarning {
                 id,
                 created,
@@ -764,7 +1022,9 @@ mod tests {
                 entity_ids: warning.entity_ids.clone(),
                 source_urls: warning.source_urls.clone(),
                 confidence: warning.confidence,
-                occurred_at: Utc::now(),
+                occurred_at,
+                outbox_id,
+                alert,
             })
         }
 
@@ -776,12 +1036,21 @@ mod tests {
             self.activity_writes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        async fn mark_alert_published(&self, _outbox_id: Uuid) -> anyhow::Result<()> {
+            if self.fail_mark.load(Ordering::SeqCst) {
+                anyhow::bail!("simulated outbox marking failure");
+            }
+            self.published_marks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     #[derive(Default)]
     struct CountingAlertSink {
         published: AtomicUsize,
         enabled: bool,
+        required: bool,
     }
 
     #[async_trait]
@@ -790,11 +1059,17 @@ mod tests {
             self.enabled
         }
 
-        async fn publish_alert(
-            &self,
-            _warning: &StoredWarning,
-            _triage: &TriageSubmissionOutcome,
-        ) -> anyhow::Result<()> {
+        fn required(&self) -> bool {
+            self.required
+        }
+
+        async fn publish_alert(&self, event: &AlertEvent) -> anyhow::Result<()> {
+            if self.required && !self.enabled {
+                anyhow::bail!("simulated required NATS outage for alert {}", event.id);
+            }
+            if !self.enabled {
+                return Ok(());
+            }
             self.published.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -961,6 +1236,172 @@ mod tests {
 
         let result = ingress.submit_warning(sample_warning()).await.unwrap();
         assert!(!result.alert_published);
-        assert!(!result.degraded(), "a disabled sink is not a failure");
+        assert!(
+            !result.degraded(),
+            "an optional disabled sink is queued, not a failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn required_alert_sink_reports_degraded_when_unavailable() {
+        let ingress = test_ingress(
+            FakeWarningWriter::default(),
+            CountingAlertSink {
+                enabled: false,
+                required: true,
+                ..CountingAlertSink::default()
+            },
+        );
+
+        let result = ingress.submit_warning(sample_warning()).await.unwrap();
+        assert!(!result.alert_published);
+        assert!(
+            result.degraded(),
+            "a required but unavailable alert sink must degrade the submission"
+        );
+        assert!(result.alert_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn alert_outbox_is_marked_published_only_after_delivery() {
+        let ingress = test_ingress(
+            FakeWarningWriter::default(),
+            CountingAlertSink {
+                enabled: true,
+                ..CountingAlertSink::default()
+            },
+        );
+
+        let result = ingress.submit_warning(sample_warning()).await.unwrap();
+        assert!(result.alert_published);
+        assert_eq!(
+            ingress.warnings.published_marks.load(Ordering::SeqCst),
+            1,
+            "the outbox event must be stamped after the publish"
+        );
+    }
+
+    #[tokio::test]
+    async fn outbox_marking_failure_degrades_but_does_not_lose_the_warning() {
+        let writer = FakeWarningWriter::default();
+        writer.fail_mark.store(true, Ordering::SeqCst);
+        let ingress = test_ingress(
+            writer,
+            CountingAlertSink {
+                enabled: true,
+                ..CountingAlertSink::default()
+            },
+        );
+
+        let result = ingress.submit_warning(sample_warning()).await.unwrap();
+        assert!(
+            result.alert_published,
+            "the alert reached the broker even though the marker failed"
+        );
+        assert!(
+            result.degraded(),
+            "an unstamped outbox event risks a duplicate publish and is degraded"
+        );
+    }
+
+    #[test]
+    fn generic_entity_warning_is_targeted_never_broadcast() {
+        let warning =
+            NewWarning::new("volume_anomaly", "Spike", "medium").entity_ids(vec![Uuid::new_v4()]);
+        assert!(warning.alerts_enabled());
+        assert!(!warning.is_system_broadcast());
+        assert_eq!(warning.audience(), AlertAudience::Users(Vec::new()));
+
+        let event = build_alert_event(Uuid::new_v4(), &warning, Utc::now());
+        assert_eq!(
+            event.audience,
+            AlertAudience::Users(Vec::new()),
+            "entity warnings must resolve real subscribers, never broadcast"
+        );
+    }
+
+    #[test]
+    fn system_broadcast_warning_is_the_only_broadcast_source() {
+        let warning =
+            NewWarning::new("source_outage", "All sources down", "critical").system_broadcast();
+        assert!(warning.is_system_broadcast());
+        assert_eq!(warning.audience(), AlertAudience::Broadcast);
+
+        let event = build_alert_event(Uuid::new_v4(), &warning, Utc::now());
+        assert_eq!(event.audience, AlertAudience::Broadcast);
+    }
+
+    #[test]
+    fn alerts_can_be_disabled_without_disabling_persistence() {
+        let warning = NewWarning::new("hygiene", "Noise", "low").enabled(false);
+        assert!(!warning.alerts_enabled());
+        assert_eq!(warning.audience(), AlertAudience::Users(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn alerts_disabled_warning_writes_no_outbox_event() {
+        let ingress = test_ingress(
+            FakeWarningWriter::default(),
+            CountingAlertSink {
+                enabled: true,
+                ..CountingAlertSink::default()
+            },
+        );
+
+        let result = ingress
+            .submit_warning(sample_warning().enabled(false))
+            .await
+            .unwrap();
+        assert!(result.warning.outbox_id.is_none());
+        assert!(result.warning.alert.is_none());
+        assert!(!result.alert_published);
+        assert!(!result.degraded());
+        assert_eq!(ingress.alerts.published.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn counters_distinguish_all_stages() {
+        let ingress = test_ingress(
+            FakeWarningWriter::default(),
+            CountingAlertSink {
+                enabled: true,
+                ..CountingAlertSink::default()
+            },
+        );
+        let mut counters = IngressCounters::default();
+
+        counters.record(&ingress.submit_warning(sample_warning()).await.unwrap());
+        assert_eq!(counters.warnings_persisted, 1);
+        assert_eq!(counters.triage_completed, 1);
+        assert_eq!(counters.alerts_published, 1);
+        assert_eq!(counters.activities_recorded, 1);
+        assert_eq!(counters.degraded_warnings, 0);
+        assert!(counters.success_blocker().is_none());
+        assert!(counters.summary().contains("triage_completed=1"));
+    }
+
+    #[test]
+    fn counters_block_success_when_persisted_without_triage() {
+        let counters = IngressCounters {
+            warnings_persisted: 7,
+            triage_completed: 0,
+            alerts_published: 7,
+            activities_recorded: 7,
+            degraded_warnings: 7,
+        };
+        let blocker = counters
+            .success_blocker()
+            .expect("persisted warnings with zero triage must block success");
+        assert!(blocker.contains("7 warning(s) persisted"));
+
+        let healthy = IngressCounters {
+            warnings_persisted: 7,
+            triage_completed: 7,
+            ..IngressCounters::default()
+        };
+        assert!(healthy.success_blocker().is_none());
+
+        let empty = IngressCounters::default();
+        assert!(empty.success_blocker().is_none());
     }
 }

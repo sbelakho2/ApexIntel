@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use chrono::{Duration, Utc};
 
-use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
+use crate::intelligence_ingress::{IngressCounters, IntelligenceIngress, NewWarning};
 use crate::{JobKind, JobRun, PgStore};
 
 /// How far back to analyze observation trends.
@@ -103,7 +103,7 @@ pub(super) async fn run_anomaly_scan(
     }
 
     let mut anomalies_detected: u64 = 0;
-    let mut warnings_generated: u64 = 0;
+    let mut counters = IngressCounters::default();
 
     for (entity_id, (entity_name, series)) in &by_entity {
         if series.len() < 3 {
@@ -151,7 +151,7 @@ pub(super) async fn run_anomaly_scan(
                     .await
                 {
                     Ok(result) => {
-                        warnings_generated += 1;
+                        counters.record(&result);
                         anomalies_detected += 1;
                         tracing::info!(
                             entity = %entity_name,
@@ -229,7 +229,7 @@ pub(super) async fn run_anomaly_scan(
                 .await
             {
                 Ok(result) => {
-                    warnings_generated += 1;
+                    counters.record(&result);
                     anomalies_detected += 1;
                     tracing::info!(
                         entity = %entity_name,
@@ -302,14 +302,18 @@ pub(super) async fn run_anomaly_scan(
 
             match ingress
                 .submit_warning(
+                    // A silent source is an operational, system-wide problem (no
+                    // single entity owns it), so this is the explicit case where
+                    // Broadcast is correct instead of entity-subscriber resolution.
                     NewWarning::new("source_outage", &title, "high")
                         .description(&description)
-                        .confidence(0.80),
+                        .confidence(0.80)
+                        .system_broadcast(),
                 )
                 .await
             {
                 Ok(result) => {
-                    warnings_generated += 1;
+                    counters.record(&result);
                     tracing::info!(
                         source = %sc.source_id,
                         days_silent,
@@ -326,15 +330,17 @@ pub(super) async fn run_anomaly_scan(
     }
 
     let elapsed = start.elapsed();
-    run.succeed(
-        warnings_generated,
-        &format!(
-            "anomaly_scan: {} entities analyzed, {} anomalies detected, {} warnings generated in {:.1}s",
-            by_entity.len(),
-            anomalies_detected,
-            warnings_generated,
-            elapsed.as_secs_f64(),
-        ),
+    let summary = format!(
+        "anomaly_scan: {} entities analyzed, {} anomalies detected, {} in {:.1}s; {}",
+        by_entity.len(),
+        anomalies_detected,
+        counters.warnings_persisted,
+        elapsed.as_secs_f64(),
+        counters.summary(),
     );
+    match counters.success_blocker() {
+        Some(reason) => run.degrade(counters.warnings_persisted, &format!("{summary}; {reason}")),
+        None => run.succeed(counters.warnings_persisted, &summary),
+    }
     run
 }

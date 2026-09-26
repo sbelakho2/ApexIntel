@@ -23,14 +23,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use futures_util::StreamExt;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::nats_stream::{AlertEvent, AlertEventType, NatsPublisher};
+use apex_worker::nats_stream::{AlertEvent, AlertEventType, NatsPublisher};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rule types — mirrors `config/runtime/alert-rules.yaml`
@@ -187,8 +187,8 @@ pub struct AlertEvaluator {
 impl AlertEvaluator {
     /// Load alert rules from a YAML file.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let content = std::fs::read_to_string(path.as_ref())
-            .context("failed to read alert-rules.yaml")?;
+        let content =
+            std::fs::read_to_string(path.as_ref()).context("failed to read alert-rules.yaml")?;
         Self::load_from_yaml(&content)
     }
 
@@ -237,9 +237,7 @@ impl AlertEvaluator {
             // Dedup check
             let dedup_key = DedupKey {
                 rule_name: rule.name.clone(),
-                entity_id: event
-                    .entity_id
-                    .map(|id| id.to_string()),
+                entity_id: event.entity_id.map(|id| id.to_string()),
             };
 
             let mut dedup = self.dedup.write().await;
@@ -303,11 +301,7 @@ impl AlertEvaluator {
     }
 
     /// Evaluate a domain event and immediately publish any fired alerts via NATS.
-    pub async fn evaluate_and_publish(
-        &self,
-        nats: &NatsPublisher,
-        event: &DomainEvent,
-    ) {
+    pub async fn evaluate_and_publish(&self, nats: &NatsPublisher, event: &DomainEvent) {
         let alerts = self.evaluate(event).await;
         for alert in alerts {
             if let Err(e) = nats.publish_alert(&alert).await {
@@ -362,11 +356,7 @@ impl AlertEvaluator {
                 let handle = tokio::spawn(async move {
                     // Poll subscriber with timeout to avoid requiring StreamExt
                     loop {
-                        let msg = tokio::time::timeout(
-                            Duration::from_secs(5),
-                            sub.next(),
-                        )
-                        .await;
+                        let msg = tokio::time::timeout(Duration::from_secs(5), sub.next()).await;
 
                         let payload = match msg {
                             Ok(Some(m)) => m.payload.to_vec(),
@@ -405,9 +395,7 @@ impl AlertEvaluator {
 
     /// Check if a rule source matches an event source.
     fn source_matches(&self, rule_source: &str, event_source: &str) -> bool {
-        rule_source == event_source
-            || event_source.starts_with(rule_source)
-            || rule_source == "*"
+        rule_source == event_source || event_source.starts_with(rule_source) || rule_source == "*"
     }
 
     /// Check whether a rule's condition is satisfied for the given event.
@@ -494,6 +482,15 @@ impl AlertEvaluator {
                         _ => true,
                     },
                     _ => {
+                        // Boolean comparison (`circuit_open == true`).
+                        if let Some(field_bool) = field_value.as_bool() {
+                            let expected = value.eq_ignore_ascii_case("true");
+                            return match op {
+                                "==" => field_bool == expected,
+                                "!=" => field_bool != expected,
+                                _ => true,
+                            };
+                        }
                         // String comparison for non-numeric
                         let field_str = field_value.as_str().unwrap_or("");
                         match op {
@@ -654,10 +651,12 @@ rules:
     async fn test_different_entities_not_deduped() {
         let evaluator = AlertEvaluator::load_from_yaml(sample_rules_yaml()).unwrap();
 
+        // Distinct entity ids: the dedup key is (rule, entity), so reusing
+        // `Uuid::nil()` for both events would (correctly) suppress the second.
         let event1 = DomainEvent::new("test_event", "info", "Event 1", "")
-            .with_entity(Uuid::nil(), "entity-a");
+            .with_entity(Uuid::new_v4(), "entity-a");
         let event2 = DomainEvent::new("test_event", "info", "Event 2", "")
-            .with_entity(Uuid::nil(), "entity-b");
+            .with_entity(Uuid::new_v4(), "entity-b");
 
         let alerts = evaluator.evaluate(&event1).await;
         assert_eq!(alerts.len(), 1);

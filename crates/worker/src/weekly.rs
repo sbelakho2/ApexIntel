@@ -676,6 +676,12 @@ impl WeeklyReport {
                 JobStatus::Succeeded { duration_ms } => {
                     format!("succeeded duration_ms={}", duration_ms)
                 }
+                JobStatus::Degraded {
+                    reason,
+                    duration_ms,
+                } => {
+                    format!("degraded reason={:?} duration_ms={}", reason, duration_ms)
+                }
                 JobStatus::Failed { error, duration_ms } => {
                     format!("failed error={:?} duration_ms={}", error, duration_ms)
                 }

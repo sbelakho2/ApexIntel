@@ -77,6 +77,7 @@ impl JobExecutionContext {
 async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogger) {
     let status_str = match &run.status {
         JobStatus::Succeeded { .. } => "succeeded",
+        JobStatus::Degraded { .. } => "degraded",
         JobStatus::Failed { .. } => "failed",
         JobStatus::Skipped { .. } => "skipped",
         JobStatus::Running => "running",
@@ -85,6 +86,7 @@ async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogge
 
     let action = match status_str {
         "succeeded" => "job_completed",
+        "degraded" => "job_degraded",
         "failed" => "job_failed",
         "skipped" => "job_skipped",
         _ => "job_unknown",
