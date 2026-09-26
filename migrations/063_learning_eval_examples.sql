@@ -1,5 +1,5 @@
 -- ──────────────────────────────────────────────────────────────────────────────
--- Migration 061: frozen evaluation examples (P0 audit #6A)
+-- Migration 063: frozen evaluation examples (P0 audit #6A)
 --
 -- `learning_eval_sets` (054) only declared `example_count`: the "frozen" set had
 -- no actual, immutable examples behind it, so a run could be evaluated against

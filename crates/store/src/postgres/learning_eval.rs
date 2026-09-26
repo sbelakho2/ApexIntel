@@ -1,17 +1,26 @@
 //! Persistence for the measurable-learning promotion gate (P0 #38, audit #6).
 //!
-//! Backs the tables created by `migrations/054_learning_eval_metrics.sql` and
-//! `migrations/063_learning_eval_examples.sql`: frozen evaluation sets with
+//! Backs the tables created by `migrations/054_learning_eval_metrics.sql`,
+//! `migrations/063_learning_eval_examples.sql` and
+//! `migrations/069_learning_eval_freeze_state.sql`: evaluation sets with
 //! immutable examples, candidate evaluation runs, and their versioned metrics.
 //! The statistical gate itself lives in `apex_learning::evaluation`; this
 //! module only stores, verifies and retrieves.
 //!
-//! Two invariants are enforced here in addition to the database triggers:
+//! A set moves through `building -> frozen` and only a `frozen` set (verified
+//! count + digest, `finalized_at` set) may be evaluated. The invariants are
+//! enforced by database triggers and mirrored here:
 //!
-//! 1. A run may only be persisted when the frozen set actually stores
+//! 1. Examples may only be appended while the set is `building`; the database
+//!    INSERT trigger rejects a frozen/superseded set.
+//! 2. [`PgStore::create_frozen_learning_eval_set`] creates the set, inserts
+//!    the examples, verifies the stored count, computes the digest and freezes
+//!    the set in one transaction.
+//! 3. A run may only be persisted when the frozen set actually stores
 //!    `example_count` examples whose recomputed digest equals
-//!    `examples_digest`; the run records that digest.
-//! 2. `is_training_truth` is explicit. A positive confirmation is never
+//!    `examples_digest`; the run records that digest and a non-empty candidate
+//!    artifact hash, and its baseline provenance is all-or-nothing.
+//! 4. `is_training_truth` is explicit. A positive confirmation is never
 //!    automatically truth, and no dismissal/noise or workflow-convenience
 //!    metric may claim it.
 
@@ -134,7 +143,7 @@ pub struct LearningEvalRunRow {
     pub candidate_kind: String,
     pub candidate_ref: String,
     pub candidate_version: Option<String>,
-    pub candidate_artifact_hash: Option<String>,
+    pub candidate_artifact_hash: String,
     pub baseline_run_id: Option<Uuid>,
     pub baseline_artifact_hash: Option<String>,
     pub baseline_artifact_version: Option<String>,
@@ -167,16 +176,19 @@ pub struct LearningEvalRunInput<'a> {
 }
 
 impl PgStore {
-    /// Create (or fetch) a frozen evaluation set version *without* examples.
+    /// Create (or fetch) a `building` evaluation set version *without*
+    /// examples.
     ///
-    /// `learning_eval_sets` rows are immutable in the database: callers must
-    /// create a new version instead of mutating an existing one. A repeat call
-    /// for an existing `(name, version)` therefore returns the existing id
-    /// rather than updating the row (which the freeze trigger would reject).
+    /// `learning_eval_sets` rows are immutable in the database once frozen:
+    /// callers must create a new version instead of mutating an existing one.
+    /// A repeat call for an existing `(name, version)` therefore returns the
+    /// existing id rather than updating the row (which the freeze trigger
+    /// would reject).
     ///
     /// Prefer [`PgStore::create_frozen_learning_eval_set`] for new sets: a
-    /// set created here has no examples, so evaluation runs against it are
-    /// refused until examples are inserted and finalized.
+    /// set created here has no examples and is not frozen, so evaluation runs
+    /// against it are refused until examples are inserted and
+    /// [`PgStore::finalize_learning_eval_set`] verifies and freezes it.
     pub async fn upsert_learning_eval_set(
         &self,
         name: &str,
@@ -209,10 +221,13 @@ impl PgStore {
 
     /// Create a frozen evaluation set together with its immutable examples.
     ///
-    /// The set declares `examples.len()` and is finalized in the same
-    /// transaction: `examples_digest` is the sha256 over the sorted content
-    /// hashes of the stored examples. `(name, version)` collisions are an
-    /// error: changing a set's examples requires a new version.
+    /// One transaction: the set is inserted `building`, its examples are
+    /// inserted (the database rejects examples on any other state), the stored
+    /// count is verified against `example_count`, `examples_digest` is
+    /// recomputed over the sorted content hashes and the set is stamped
+    /// `state = 'frozen'` with `finalized_at = now()`. `(name, version)`
+    /// collisions are an error: changing a set's examples requires a new
+    /// version.
     pub async fn create_frozen_learning_eval_set(
         &self,
         name: &str,
@@ -229,8 +244,8 @@ impl PgStore {
         let mut tx = self.pool.begin().await?;
         let set_id: Uuid = sqlx::query_scalar(
             r#"INSERT INTO learning_eval_sets
-                 (name, version, description, example_count, metadata)
-               VALUES ($1, $2, $3, $4, $5)
+                 (name, version, description, example_count, metadata, state)
+               VALUES ($1, $2, $3, $4, $5, 'building')
                RETURNING id"#,
         )
         .bind(name.trim())
@@ -254,9 +269,10 @@ impl PgStore {
 
     /// Append the immutable examples of a set, computing their content hashes.
     ///
-    /// Insertion is the only mutation the freeze guard permits; call
+    /// The database only accepts examples while the set is `building`; a
+    /// frozen or superseded set rejects the insert. Call
     /// [`PgStore::finalize_learning_eval_set`] afterwards so the set digest
-    /// covers them, otherwise evaluation runs are refused.
+    /// covers them and the set freezes, otherwise evaluation runs are refused.
     pub async fn insert_learning_eval_examples(
         &self,
         eval_set_id: Uuid,
@@ -293,8 +309,12 @@ impl PgStore {
         Ok(inserted)
     }
 
-    /// Finalize (or refresh) the digest of a frozen set over its stored
-    /// examples. Fails when the stored count does not match `example_count`.
+    /// Verify the stored count, recompute the digest over the stored examples
+    /// and freeze the set (`state = 'frozen'`, `finalized_at` stamped).
+    ///
+    /// Fails when the stored count does not match `example_count`; a
+    /// superseded set cannot be finalized. Re-finalizing an unchanged frozen
+    /// set is a no-op.
     pub async fn finalize_learning_eval_set(&self, eval_set_id: Uuid) -> Result<String> {
         Ok(
             sqlx::query_scalar::<_, String>("SELECT learning_eval_set_finalize_examples($1)")
@@ -306,15 +326,31 @@ impl PgStore {
 
     /// Persist an evaluation run together with its metrics, atomically.
     ///
-    /// Refuses execution unless the frozen set is complete and consistent:
-    /// the stored example count must equal `example_count`, the digest
-    /// recomputed from the stored content hashes must equal `examples_digest`,
-    /// and the run records that same digest plus the candidate/baseline
-    /// artifact hashes. Every metric must pass
+    /// Refuses execution unless the set is structurally frozen and complete:
+    /// `state = 'frozen'`, `finalized_at` set, the stored example count equals
+    /// `example_count`, and the digest recomputed from the stored content
+    /// hashes equals `examples_digest`. The run records that digest, a
+    /// non-empty candidate artifact hash, and baseline provenance that is
+    /// either entirely absent or carries both a baseline run and a baseline
+    /// artifact hash. Every metric must pass
     /// [`LearningEvalMetricInput::validate`] (explicit truth only).
     pub async fn insert_learning_eval_run(&self, run: LearningEvalRunInput<'_>) -> Result<Uuid> {
         if run.candidate_artifact_hash.trim().is_empty() {
             anyhow::bail!("candidate artifact hash is required for an evaluation run");
+        }
+        match (
+            run.baseline_run_id,
+            run.baseline_artifact_hash,
+            run.baseline_artifact_version,
+        ) {
+            (None, None, None) => {}
+            (Some(_), Some(hash), _) if !hash.trim().is_empty() => {}
+            (None, Some(_), _) | (None, None, Some(_)) => {
+                anyhow::bail!("baseline artifact provenance requires a baseline_run_id")
+            }
+            (Some(_), None, _) | (Some(_), Some(_), _) => anyhow::bail!(
+                "baseline artifact provenance requires a non-empty baseline_artifact_hash"
+            ),
         }
         for metric in run.metrics {
             metric.validate()?;

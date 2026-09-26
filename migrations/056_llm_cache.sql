@@ -1,4 +1,4 @@
--- 052_llm_cache.sql
+-- 056_llm_cache.sql
 --
 -- LLM work cache (audit P0 #24).
 --

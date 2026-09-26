@@ -121,6 +121,8 @@ async fn core_and_feature_tables_exist() {
         ("app_users", "session_version"), // 061
         ("app_users", "enabled"),         // 061 (renamed from is_active)
         ("user_alert_subscriptions", "enabled"),
+        ("learning_eval_sets", "state"),        // 069
+        ("learning_eval_sets", "finalized_at"), // 069
     ] {
         assert!(
             column_exists(&pool, table, column).await,
@@ -495,12 +497,62 @@ async fn learning_eval_metrics_schema_round_trips() {
             .unwrap();
     assert_eq!(stored_count, 2);
 
+    // create_frozen_learning_eval_set must leave a structurally frozen set:
+    // state=frozen, finalized_at stamped, and the digest is exactly the
+    // recomputation over the stored examples.
+    let state: String = sqlx::query_scalar("SELECT state FROM learning_eval_sets WHERE id = $1")
+        .bind(set_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "frozen", "create_frozen must freeze the set");
+    let finalized: bool =
+        sqlx::query_scalar("SELECT finalized_at IS NOT NULL FROM learning_eval_sets WHERE id = $1")
+            .bind(set_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(finalized, "frozen sets must record finalized_at");
+    let recomputed_digest: String = sqlx::query_scalar("SELECT learning_eval_examples_digest($1)")
+        .bind(set_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        digest, recomputed_digest,
+        "the recorded digest must cover the stored examples"
+    );
+
     // Finalizing again is idempotent.
     let refinalized = store
         .finalize_learning_eval_set(set_id)
         .await
         .expect("second finalize is idempotent");
     assert_eq!(refinalized, digest);
+
+    // A frozen set rejects further examples: both through the store API and
+    // through raw SQL (the database trigger is the backstop).
+    let late_example = apex_store::postgres::LearningEvalExampleInput::new(
+        "example-late",
+        serde_json::json!({"question": "late"}),
+        serde_json::json!({"label": "positive"}),
+    );
+    let late = store
+        .insert_learning_eval_examples(set_id, &[late_example])
+        .await;
+    assert!(late.is_err(), "frozen sets must reject new examples");
+    let raw_late = sqlx::query(
+        "INSERT INTO learning_eval_examples \
+         (eval_set_id, example_key, input_payload, expected_payload) \
+         VALUES ($1, 'raw-late', '{}'::jsonb, '{}'::jsonb)",
+    )
+    .bind(set_id)
+    .execute(&pool)
+    .await;
+    assert!(
+        raw_late.is_err(),
+        "raw inserts into a frozen set must be rejected"
+    );
 
     // UPDATE and DELETE on frozen examples are rejected by the trigger.
     let update = sqlx::query(
@@ -526,6 +578,26 @@ async fn learning_eval_metrics_schema_round_trips() {
         apex_store::postgres::LearningEvalMetricInput::new("precision", 0.72, 200)
             .with_training_truth(true),
     ];
+
+    // Baseline provenance is all-or-nothing: the baseline run is recorded
+    // first so the candidate can reference it together with its hash/version.
+    let baseline_run_id = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: set_id,
+            candidate_kind: "prompt",
+            candidate_ref: "insight_prompt",
+            candidate_version: Some("v1"),
+            candidate_artifact_hash: "sha256:candidate-v1",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({"candidate": "v1"}),
+            metrics: &metrics,
+        })
+        .await
+        .expect("baseline run must be recorded");
+
     let run_id = store
         .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
             eval_set_id: set_id,
@@ -533,7 +605,7 @@ async fn learning_eval_metrics_schema_round_trips() {
             candidate_ref: "insight_prompt",
             candidate_version: Some("v2"),
             candidate_artifact_hash: "sha256:candidate-v2",
-            baseline_run_id: None,
+            baseline_run_id: Some(baseline_run_id),
             baseline_artifact_hash: Some("sha256:baseline-v1"),
             baseline_artifact_version: Some("v1"),
             metrics_version: 1,
@@ -550,15 +622,79 @@ async fn learning_eval_metrics_schema_round_trips() {
         .expect("recorded run must be readable");
     assert_eq!(recorded.id, run_id);
     assert_eq!(recorded.eval_set_digest, digest);
-    assert_eq!(
-        recorded.candidate_artifact_hash.as_deref(),
-        Some("sha256:candidate-v2")
-    );
+    assert_eq!(recorded.candidate_artifact_hash, "sha256:candidate-v2");
+    assert_eq!(recorded.baseline_run_id, Some(baseline_run_id));
     assert_eq!(
         recorded.baseline_artifact_hash.as_deref(),
         Some("sha256:baseline-v1")
     );
     assert_eq!(recorded.baseline_artifact_version.as_deref(), Some("v1"));
+
+    // A baseline hash (or version) without a baseline run is refused by the
+    // store before the write...
+    let baseline_without_run = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: set_id,
+            candidate_kind: "prompt",
+            candidate_ref: "baseline_without_run",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:x",
+            baseline_run_id: None,
+            baseline_artifact_hash: Some("sha256:orphan-baseline"),
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &metrics,
+        })
+        .await;
+    assert!(
+        baseline_without_run.is_err(),
+        "a baseline hash without a baseline run must be refused"
+    );
+
+    // ...and the database CHECK is the backstop for direct SQL.
+    let hash_without_run = sqlx::query(
+        "INSERT INTO learning_eval_runs (eval_set_id, candidate_kind, candidate_ref, \
+         candidate_artifact_hash, baseline_artifact_hash, eval_set_digest) \
+         VALUES ($1, 'prompt', 'hash_without_run', 'sha256:x', 'sha256:baseline', $2)",
+    )
+    .bind(set_id)
+    .bind(&digest)
+    .execute(&pool)
+    .await;
+    assert!(
+        hash_without_run.is_err(),
+        "raw baseline hash without a baseline run must violate the CHECK"
+    );
+    let run_without_hash = sqlx::query(
+        "INSERT INTO learning_eval_runs (eval_set_id, candidate_kind, candidate_ref, \
+         candidate_artifact_hash, baseline_run_id, eval_set_digest) \
+         VALUES ($1, 'prompt', 'run_without_hash', 'sha256:x', $2, $3)",
+    )
+    .bind(set_id)
+    .bind(baseline_run_id)
+    .bind(&digest)
+    .execute(&pool)
+    .await;
+    assert!(
+        run_without_hash.is_err(),
+        "a baseline run without its artifact hash must violate the CHECK"
+    );
+
+    // A NULL candidate artifact hash is rejected at the database level.
+    let null_candidate = sqlx::query(
+        "INSERT INTO learning_eval_runs (eval_set_id, candidate_kind, candidate_ref, \
+         candidate_artifact_hash, eval_set_digest) \
+         VALUES ($1, 'prompt', 'null_hash', NULL, $2)",
+    )
+    .bind(set_id)
+    .bind(&digest)
+    .execute(&pool)
+    .await;
+    assert!(
+        null_candidate.is_err(),
+        "a NULL candidate artifact hash must be rejected"
+    );
 
     // A raw insert with a wrong digest is refused by the database trigger.
     let forged = sqlx::query(
@@ -575,8 +711,8 @@ async fn learning_eval_metrics_schema_round_trips() {
 
     // Cleanup: runs cascade to metrics. Frozen set rows are intentionally
     // immutable and are left behind (the CI database is ephemeral).
-    sqlx::query("DELETE FROM learning_eval_runs WHERE id = $1")
-        .bind(run_id)
+    sqlx::query("DELETE FROM learning_eval_runs WHERE eval_set_id = $1")
+        .bind(set_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -879,7 +1015,7 @@ async fn learning_eval_training_truth_is_an_explicit_opt_in() {
     .await;
     assert!(duplicate.is_err(), "duplicate metric rows must be rejected");
 
-    // The store fetches an existing frozen version on a repeat call instead of
+    // The store fetches an existing version on a repeat call instead of
     // tripping the freeze trigger with an UPDATE arm.
     let store_set_id = store
         .upsert_learning_eval_set(
@@ -890,7 +1026,7 @@ async fn learning_eval_training_truth_is_an_explicit_opt_in() {
             &serde_json::json!({"source": "integration_test"}),
         )
         .await
-        .expect("first upsert creates the frozen set");
+        .expect("first upsert creates the set");
     let repeat_id = store
         .upsert_learning_eval_set(
             "store_round_trip_set",
@@ -900,13 +1036,367 @@ async fn learning_eval_training_truth_is_an_explicit_opt_in() {
             &serde_json::json!({"source": "integration_test"}),
         )
         .await
-        .expect("repeat upsert fetches the existing frozen set");
+        .expect("repeat upsert fetches the existing set");
     assert_eq!(store_set_id, repeat_id);
 
     // Cleanup: runs cascade to metrics. Frozen set rows are intentionally
     // immutable and are left behind (the CI database is ephemeral).
     sqlx::query("DELETE FROM learning_eval_runs WHERE eval_set_id = $1")
         .bind(set_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    pool.close().await;
+}
+
+fn example(example_key: &str) -> apex_store::postgres::LearningEvalExampleInput {
+    apex_store::postgres::LearningEvalExampleInput::new(
+        example_key,
+        serde_json::json!({"question": example_key}),
+        serde_json::json!({"label": "positive"}),
+    )
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn learning_eval_sets_freeze_structurally_and_gate_runs_on_the_state() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+
+    // A set created through the incremental API starts building and accepts
+    // examples.
+    let name = format!("building_set_{}", uuid::Uuid::new_v4());
+    let set_id = store
+        .upsert_learning_eval_set(&name, 1, None, 1, &serde_json::json!({}))
+        .await
+        .unwrap();
+    store
+        .insert_learning_eval_examples(set_id, &[example("a")])
+        .await
+        .expect("examples may be inserted while the set is building");
+
+    // Align the digest with the stored examples without freezing: the freeze
+    // guard admits a digest refresh on a building set, but the set is still
+    // not frozen, so a run must be refused even though count and digest agree.
+    sqlx::query(
+        "UPDATE learning_eval_sets SET examples_digest = learning_eval_examples_digest(id) \
+         WHERE id = $1",
+    )
+    .bind(set_id)
+    .execute(&pool)
+    .await
+    .expect("building sets may refresh their digest to the recomputation");
+    let state: String = sqlx::query_scalar("SELECT state FROM learning_eval_sets WHERE id = $1")
+        .bind(set_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "building");
+
+    let metrics = vec![apex_store::postgres::LearningEvalMetricInput::new(
+        "precision",
+        0.72,
+        200,
+    )];
+    let unfrozen_run = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: set_id,
+            candidate_kind: "prompt",
+            candidate_ref: "unfrozen",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:unfrozen",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &metrics,
+        })
+        .await
+        .expect_err("a building set must refuse evaluation runs");
+    assert!(
+        unfrozen_run.to_string().contains("not frozen"),
+        "unexpected refusal: {unfrozen_run}"
+    );
+
+    // Finalizing verifies the count, freezes the set and stamps finalized_at.
+    let digest = store
+        .finalize_learning_eval_set(set_id)
+        .await
+        .expect("finalize freezes the building set");
+    let (state, finalized): (String, bool) = {
+        let row = sqlx::query(
+            "SELECT state, finalized_at IS NOT NULL AS finalized \
+             FROM learning_eval_sets WHERE id = $1",
+        )
+        .bind(set_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        (row.get("state"), row.get("finalized"))
+    };
+    assert_eq!(state, "frozen");
+    assert!(finalized, "freezing must stamp finalized_at");
+    let recomputed: String = sqlx::query_scalar("SELECT learning_eval_examples_digest($1)")
+        .bind(set_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        digest, recomputed,
+        "the frozen digest must match the examples"
+    );
+
+    // Once frozen, evaluation runs are accepted.
+    store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: set_id,
+            candidate_kind: "prompt",
+            candidate_ref: "frozen",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:frozen",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &metrics,
+        })
+        .await
+        .expect("a structurally frozen set may be evaluated");
+
+    // A superseded set is terminal: no examples, no finalize, no state revert.
+    let superseded_name = format!("superseded_set_{}", uuid::Uuid::new_v4());
+    let superseded = store
+        .upsert_learning_eval_set(&superseded_name, 1, None, 1, &serde_json::json!({}))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE learning_eval_sets SET state = 'superseded' WHERE id = $1")
+        .bind(superseded)
+        .execute(&pool)
+        .await
+        .expect("a building set may be superseded");
+    let late_insert = store
+        .insert_learning_eval_examples(superseded, &[example("late")])
+        .await;
+    assert!(
+        late_insert.is_err(),
+        "a superseded set must reject new examples"
+    );
+    let late_finalize = store.finalize_learning_eval_set(superseded).await;
+    assert!(
+        late_finalize.is_err(),
+        "a superseded set must not be finalized"
+    );
+    let revert = sqlx::query("UPDATE learning_eval_sets SET state = 'building' WHERE id = $1")
+        .bind(superseded)
+        .execute(&pool)
+        .await;
+    assert!(revert.is_err(), "terminal states are immutable");
+
+    // Cleanup: runs cascade to metrics; frozen sets stay (ephemeral CI DB).
+    sqlx::query("DELETE FROM learning_eval_runs WHERE eval_set_id = $1")
+        .bind(set_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    pool.close().await;
+}
+
+fn migrations_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
+}
+
+fn migration_sql(file: &str) -> String {
+    let path = migrations_dir().join(file);
+    std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn identity_fks_are_validated_and_orphans_are_reconciled() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+
+    // Every identity FK must be fully validated, and the six expected
+    // constraints must exist after 070.
+    let fks = sqlx::query(
+        "SELECT c.conname, c.convalidated \
+         FROM pg_constraint c \
+         JOIN pg_attribute a \
+           ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] \
+          AND a.attname = 'user_id' \
+         WHERE c.contype = 'f' \
+           AND c.confrelid = to_regclass('public.app_users') \
+           AND array_length(c.conkey, 1) = 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut names: Vec<String> = fks.iter().map(|row| row.get("conname")).collect();
+    names.sort();
+    for expected in [
+        "annotations_user_id_fkey",
+        "insight_bookmarks_user_id_fkey",
+        "saved_searches_user_id_fkey",
+        "user_alert_subscriptions_user_id_fkey",
+        "user_preferences_user_id_fkey",
+        "watchlists_user_id_fkey",
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}"
+        );
+    }
+    for row in &fks {
+        let name: String = row.get("conname");
+        let validated: bool = row.get("convalidated");
+        assert!(validated, "identity FK {name} is not convalidated");
+    }
+
+    // Seed a canonical user and two orphan owners in a known identity table:
+    // one recoverable (case/whitespace variant of the canonical id) and one
+    // impossible (no identity anywhere).
+    let canonical = format!("recovery-{}", uuid::Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO app_users (id, username, display_name) VALUES ($1, $1, $1) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(&canonical)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The constraint is validated, so it is dropped to seed the orphans the
+    // way the pre-070 production database could carry them.
+    sqlx::query("ALTER TABLE saved_searches DROP CONSTRAINT IF EXISTS saved_searches_user_id_fkey")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mapped_row = uuid::Uuid::new_v4();
+    let quarantined_row = uuid::Uuid::new_v4();
+    let ghost_owner = format!("ghost-{}", uuid::Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO saved_searches (id, user_id, name, query_text) \
+         VALUES ($1, $2, 'mapped', 'q')",
+    )
+    .bind(mapped_row)
+    .bind(format!("  {}  ", canonical.to_uppercase()))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO saved_searches (id, user_id, name, query_text) \
+         VALUES ($1, $2, 'orphan', 'q')",
+    )
+    .bind(quarantined_row)
+    .bind(&ghost_owner)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Re-running the migration returns the schema to a validated state: the
+    // recoverable owner is mapped, the impossible one is quarantined.
+    sqlx::raw_sql(&migration_sql("070_validate_identity_fks.sql"))
+        .execute(&pool)
+        .await
+        .expect("migration 070 reconciles recoverable and impossible orphans");
+
+    let mapped_owner: String =
+        sqlx::query_scalar("SELECT user_id FROM saved_searches WHERE id = $1")
+            .bind(mapped_row)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        mapped_owner, canonical,
+        "a case/whitespace variant of a canonical id must be mapped onto it"
+    );
+
+    let removed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM saved_searches WHERE id = $1")
+        .bind(quarantined_row)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(removed, 0, "impossible owners are moved out of the table");
+    let archived: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM identity_orphan_quarantine \
+         WHERE source_table = 'saved_searches' AND owner_id = $1",
+    )
+    .bind(&ghost_owner)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(archived, 1, "the impossible owner row must be archived");
+
+    let validated: bool = sqlx::query_scalar(
+        "SELECT convalidated FROM pg_constraint \
+         WHERE conname = 'saved_searches_user_id_fkey' \
+           AND conrelid = to_regclass('public.saved_searches')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(validated, "the identity FK must be validated again");
+
+    // The final assertion fails loudly when an orphan cannot be remediated:
+    // a probe table outside the migration's remediation list keeps one alive.
+    sqlx::query("DROP TABLE IF EXISTS identity_orphan_probe")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE identity_orphan_probe (user_id TEXT)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO identity_orphan_probe (user_id) VALUES ('probe-ghost')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // NOT VALID skips the pre-existing orphan but enforces new writes, which
+    // is exactly the state 059/065 left production in.
+    sqlx::query(
+        "ALTER TABLE identity_orphan_probe \
+         ADD CONSTRAINT identity_orphan_probe_user_id_fkey \
+             FOREIGN KEY (user_id) REFERENCES app_users(id) NOT VALID",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let failure = sqlx::raw_sql(&migration_sql("070_validate_identity_fks.sql"))
+        .execute(&mut *conn)
+        .await
+        .expect_err("unremediated orphan owners must abort the migration loudly");
+    assert!(
+        failure
+            .to_string()
+            .contains("identity orphan owners remain"),
+        "unexpected failure: {failure}"
+    );
+    // The failed migration left its transaction aborted; clear it before the
+    // connection returns to the pool.
+    let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+    drop(conn);
+
+    // The assertion helper refuses the same state directly.
+    let assertion = sqlx::query("SELECT assert_no_identity_orphans()")
+        .execute(&pool)
+        .await
+        .expect_err("assert_no_identity_orphans must raise while an orphan exists");
+    assert!(
+        assertion
+            .to_string()
+            .contains("identity orphan owners remain"),
+        "unexpected assertion error: {assertion}"
+    );
+
+    sqlx::query("DROP TABLE IF EXISTS identity_orphan_probe")
         .execute(&pool)
         .await
         .unwrap();

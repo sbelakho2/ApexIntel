@@ -1,5 +1,5 @@
 -- ════════════════════════════════════════════════════════════════════════════
--- Migration 061: credentials and session state on the canonical identity
+-- Migration 065: credentials and session state on the canonical identity
 --
 -- Audit P0: environment credentials (`APEX_ADMIN_*`, `WEB_USERS_JSON`) were the
 -- only login database, so the `app_users` rows introduced by 059 could not

@@ -1,4 +1,4 @@
--- 061_drop_legacy_bookmark_fk.sql
+-- 068_drop_legacy_bookmark_fk.sql
 --
 -- `insight_bookmarks` carried a legacy foreign key to `analyst_users(id)`
 -- from before `app_users` became the canonical identity (migration 059).
