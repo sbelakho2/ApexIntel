@@ -91,6 +91,14 @@
       <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.never_crawled }}</p>
     </div>
     <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Due after budget</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ source_backlog.due_sources_remaining }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Weighted debt</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ "{:.2}"|format(source_backlog.total_coverage_debt) }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
       <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Declared / Disabled</p>
       <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.declared }} / {{ source_coverage.disabled }}</p>
     </div>

@@ -2962,7 +2962,64 @@ pub struct SourceSelection {
     /// circuit) — the full backlog for this pass.
     pub due: usize,
     /// Eligible sources left unscheduled after applying the budget.
-    pub coverage_debt_remaining: usize,
+    pub due_sources_remaining: usize,
+    /// Weighted coverage debt of the eligible sources the budget could not
+    /// serve: the sum of their normalized [`SourceScheduleCandidate::coverage_debt`].
+    /// Zero when the budget covered every due source. Unlike a raw count this
+    /// tracks *how far behind* the unscheduled backlog is.
+    pub total_coverage_debt: f64,
+}
+
+/// Backlog snapshot for one scheduler pass with a given budget.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SchedulerBacklog {
+    /// Sources eligible at selection time (`next_due_at <= now` with a closed
+    /// circuit) — the full backlog for this pass.
+    pub due: usize,
+    /// Eligible sources left unscheduled after applying the budget.
+    pub due_sources_remaining: usize,
+    /// Sum of `coverage_debt` across the eligible sources the budget left
+    /// unscheduled; `0.0` when the budget covered every due source.
+    pub total_coverage_debt: f64,
+}
+
+impl SchedulerBacklog {
+    /// Derive the backlog from ranked candidates and the pass budget. The
+    /// candidates must be ordered as [`rank_due_sources`] returns them (best
+    /// first), because the first `budget` entries are the ones served.
+    pub fn from_ranked(candidates: &[SourceScheduleCandidate<'_>], budget: usize) -> Self {
+        let due = candidates.len();
+        let total_coverage_debt = candidates
+            .get(budget.min(due)..)
+            .map(|skipped| {
+                skipped
+                    .iter()
+                    .map(|candidate| candidate.coverage_debt)
+                    .sum::<f64>()
+            })
+            .unwrap_or(0.0);
+        Self {
+            due,
+            due_sources_remaining: due.saturating_sub(budget),
+            total_coverage_debt,
+        }
+    }
+}
+
+/// Compute the scheduler backlog for a pass with `budget` slots from persisted
+/// runtime state. Mirrors the source ordering used by [`select_due_sources`].
+pub fn scheduler_backlog(
+    sources: &[Source],
+    states: &[SourceRuntimeStateRow],
+    budget: usize,
+    now: DateTime<Utc>,
+) -> SchedulerBacklog {
+    let state_by_slug: HashMap<&str, &SourceRuntimeStateRow> = states
+        .iter()
+        .map(|row| (row.source_slug.as_str(), row))
+        .collect();
+    let ranked = rank_due_sources(sources, &state_by_slug, now, &FORCED_SOURCE_SLUGS);
+    SchedulerBacklog::from_ranked(&ranked, budget)
 }
 
 /// True when a source may be attempted at `now`.
@@ -3119,6 +3176,19 @@ pub fn rank_due_sources<'a>(
     candidates
 }
 
+/// Default per-pass source budget when `CRAWL_MAX_SOURCES` is unset. Shared by
+/// the crawl cycle and the admin dashboard so they report the same backlog.
+pub const DEFAULT_CRAWL_SOURCE_BUDGET: usize = 20;
+
+/// Per-pass source budget from `CRAWL_MAX_SOURCES`, falling back to
+/// [`DEFAULT_CRAWL_SOURCE_BUDGET`].
+pub fn crawl_source_budget_from_env() -> usize {
+    std::env::var("CRAWL_MAX_SOURCES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_CRAWL_SOURCE_BUDGET)
+}
+
 /// Select up to `budget` due sources using persisted runtime state.
 ///
 /// Only sources with `next_due_at <= now` and a closed circuit
@@ -3137,7 +3207,7 @@ pub async fn select_due_sources<S: SourceRuntimeStateProvider + ?Sized>(
         .map(|row| (row.source_slug.as_str(), row))
         .collect();
     let ranked = rank_due_sources(sources, &state_by_slug, now, &FORCED_SOURCE_SLUGS);
-    let due = ranked.len();
+    let backlog = SchedulerBacklog::from_ranked(&ranked, budget);
     let selected = ranked
         .iter()
         .take(budget)
@@ -3145,13 +3215,14 @@ pub async fn select_due_sources<S: SourceRuntimeStateProvider + ?Sized>(
         .collect();
     Ok(SourceSelection {
         selected,
-        due,
-        coverage_debt_remaining: due.saturating_sub(budget),
+        due: backlog.due,
+        due_sources_remaining: backlog.due_sources_remaining,
+        total_coverage_debt: backlog.total_coverage_debt,
     })
 }
 
 /// Count operational sources that are still due after a crawl pass.
-pub fn coverage_debt_remaining(
+pub fn due_sources_remaining(
     sources: &[Source],
     states: &[SourceRuntimeStateRow],
     now: DateTime<Utc>,
@@ -3457,7 +3528,7 @@ mod scheduler_tests {
             let selection = select_due_sources(&store, &sources, 10, now).await.unwrap();
             assert_eq!(selection.selected.len(), 10, "cycle {cycle}");
             assert_eq!(selection.due, 100 - cycle * 10, "cycle {cycle}");
-            assert_eq!(selection.coverage_debt_remaining, 100 - (cycle + 1) * 10);
+            assert_eq!(selection.due_sources_remaining, 100 - (cycle + 1) * 10);
             for source in selection.selected {
                 let slug = source.slug.clone();
                 assert!(
@@ -3603,8 +3674,730 @@ mod scheduler_tests {
         row.next_due_at = now + Duration::minutes(30);
         let states = vec![row];
 
-        assert_eq!(coverage_debt_remaining(&sources, &states, now), 0);
+        assert_eq!(due_sources_remaining(&sources, &states, now), 0);
         let later = now + Duration::minutes(31);
-        assert_eq!(coverage_debt_remaining(&sources, &states, later), 1);
+        assert_eq!(due_sources_remaining(&sources, &states, later), 1);
+    }
+
+    #[tokio::test]
+    async fn selection_reports_weighted_coverage_debt_for_unscheduled_sources() {
+        let sources: Vec<Source> = (0..10)
+            .map(|index| {
+                synthetic_source(
+                    &format!("debt_{index:02}"),
+                    Region::Global,
+                    Category::News,
+                    1,
+                )
+            })
+            .collect();
+        let store = FakeRuntimeStore::default();
+        let now = Utc::now();
+
+        let selection = select_due_sources(&store, &sources, 4, now).await.unwrap();
+        assert_eq!(selection.due, 10);
+        assert_eq!(selection.due_sources_remaining, 6);
+        assert!(
+            (selection.total_coverage_debt - 6.0).abs() < 1e-9,
+            "six never-succeeded sources each carry debt 1.0, got {}",
+            selection.total_coverage_debt
+        );
+
+        let backlog = scheduler_backlog(&sources, &[], 4, now);
+        assert_eq!(backlog.due, selection.due);
+        assert_eq!(
+            backlog.due_sources_remaining,
+            selection.due_sources_remaining
+        );
+        assert!(
+            (backlog.total_coverage_debt - selection.total_coverage_debt).abs() < 1e-9,
+            "admin and worker backlog views must agree"
+        );
+
+        let covered = select_due_sources(&store, &sources, 50, now).await.unwrap();
+        assert_eq!(covered.due_sources_remaining, 0);
+        assert_eq!(covered.total_coverage_debt, 0.0);
+    }
+}
+
+/// Adversarial scheduler simulation over a virtual week. No sleeps: time is a
+/// mutable `DateTime<Utc>` advanced by [`STEP_MINUTES`] per scheduler pass, and
+/// attempt outcomes are applied with the same EWMA and failure-backoff helpers
+/// the production store uses (`apex_store::postgres`).
+#[cfg(test)]
+mod scheduler_simulation_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use apex_store::postgres::{ewma_latency_ms, ewma_success_rate, failure_backoff};
+    use chrono::Duration;
+
+    /// Virtual-time step between scheduler passes.
+    const STEP_MINUTES: i64 = 15;
+    /// Per-pass source budget under test (the CRAWL_MAX_SOURCES default).
+    const BUDGET: usize = 20;
+    /// Size of the adversarial registry.
+    const SOURCE_COUNT: usize = 680;
+    /// One virtual week at STEP_MINUTES per pass.
+    const WEEK_STEPS: usize = 7 * 24 * 60 / STEP_MINUTES as usize;
+    const WEEK_HOURS: f64 = 7.0 * 24.0;
+    /// A new source appears at the end of virtual day 2.
+    const NEW_SOURCE_STEP: usize = 2 * 24 * 60 / STEP_MINUTES as usize;
+    /// Circuits start open and close after three virtual hours.
+    const CIRCUIT_CLOSE_STEP: usize = 3 * 60 / STEP_MINUTES as usize;
+    /// Trailing window (the final virtual day) used to average due fractions.
+    const DUE_WINDOW_STEPS: usize = 24 * 60 / STEP_MINUTES as usize;
+
+    /// Mixed crawl intervals: 4 h, 8 h, 24 h, 48 h, 72 h, 5 days.
+    const INTERVAL_CHOICES: [u32; 6] = [240, 480, 1440, 2880, 4320, 7200];
+
+    const REGION_CHOICES: [Region; 12] = [
+        Region::Global,
+        Region::NorthAmerica,
+        Region::Europe,
+        Region::MiddleEast,
+        Region::Israel,
+        Region::China,
+        Region::AsiaPacific,
+        Region::LatinAmerica,
+        Region::Africa,
+        Region::EasternEurope,
+        Region::Russia,
+        Region::India,
+    ];
+
+    const CATEGORY_CHOICES: [Category; 18] = [
+        Category::News,
+        Category::Defence,
+        Category::Finance,
+        Category::Trade,
+        Category::Technology,
+        Category::Patents,
+        Category::Sanctions,
+        Category::GovernmentRegistry,
+        Category::Procurement,
+        Category::AcademicResearch,
+        Category::SocialMedia,
+        Category::Forum,
+        Category::GeopoliticsThinkTank,
+        Category::SupplyChain,
+        Category::Cybersecurity,
+        Category::EnergyResources,
+        Category::HealthcareLife,
+        Category::LegalRegulatory,
+    ];
+
+    /// Sources that always fail; `sim_never_succeeds` has never had a success.
+    const FAILING_SLUGS: [&str; 4] = [
+        "sim_fail_fast",
+        "sim_fail_hourly",
+        "sim_fail_daily",
+        "sim_never_succeeds",
+    ];
+    const CIRCUIT_SLUGS: [&str; 3] = [
+        "sim_circuit_short",
+        "sim_circuit_medium",
+        "sim_circuit_long",
+    ];
+    const NEW_SOURCE_SLUG: &str = "sim_new_source";
+    const DISABLED_SLUG: &str = "sim_disabled";
+
+    /// Slugs injected over the generated registry so the adversarial cases are
+    /// present without changing the source count.
+    const SPECIALS: [(&str, u32, u8); 11] = [
+        ("sim_fail_fast", 30, 1),
+        ("sim_fail_hourly", 60, 2),
+        ("sim_fail_daily", 1440, 1),
+        ("sim_never_succeeds", 60, 1),
+        ("sim_circuit_short", 60, 3),
+        ("sim_circuit_medium", 120, 3),
+        ("sim_circuit_long", 240, 3),
+        (FORCED_SOURCE_SLUGS[0], 60, 5),
+        (FORCED_SOURCE_SLUGS[1], 60, 5),
+        (FORCED_SOURCE_SLUGS[2], 60, 5),
+        (FORCED_SOURCE_SLUGS[3], 60, 5),
+    ];
+
+    fn synthetic_source(slug: &str, region: Region, category: Category, tier: u8) -> Source {
+        Source::new(
+            slug,
+            slug,
+            "https://example.com/feed",
+            region,
+            category,
+            tier,
+        )
+    }
+
+    fn blank_row(slug: &str, now: DateTime<Utc>) -> SourceRuntimeStateRow {
+        SourceRuntimeStateRow {
+            source_slug: slug.to_string(),
+            last_attempt_at: None,
+            last_success_at: None,
+            next_due_at: now,
+            consecutive_failures: 0,
+            rolling_success_rate: None,
+            rolling_latency_ms: None,
+            last_http_status: None,
+            circuit_open_until: None,
+            etag: None,
+            last_modified: None,
+            last_error: None,
+            updated_at: now,
+        }
+    }
+
+    fn build_registry() -> Vec<Source> {
+        let mut sources: Vec<Source> = (0..SOURCE_COUNT)
+            .map(|index| {
+                let region_index = index % REGION_CHOICES.len();
+                let category_index = (index / REGION_CHOICES.len()) % CATEGORY_CHOICES.len();
+                // Interval and tier derive from the region+category sum, which
+                // is a Latin-square balance: every region sees a uniform
+                // interval/tier mix across its categories and vice versa, so no
+                // bucket is handed a systematically slower or lower-priority
+                // source mix.
+                let mix = region_index + category_index;
+                let mut source = synthetic_source(
+                    &format!("sim_{index:04}"),
+                    REGION_CHOICES[region_index].clone(),
+                    CATEGORY_CHOICES[category_index].clone(),
+                    (mix % 5) as u8 + 1,
+                );
+                source.min_interval_minutes = INTERVAL_CHOICES[mix % INTERVAL_CHOICES.len()];
+                source
+            })
+            .collect();
+
+        for (special_index, (slug, interval, tier)) in SPECIALS.iter().enumerate() {
+            // Spread the adversarial sources across categories and regions so
+            // their extreme behaviour cannot pile onto a single bucket.
+            let index = 12 * special_index + (special_index * 5) % 12;
+            let source = &mut sources[index];
+            source.slug = (*slug).to_string();
+            source.name = (*slug).to_string();
+            source.min_interval_minutes = *interval;
+            source.tier = *tier;
+        }
+
+        let disabled = sources
+            .last_mut()
+            .unwrap_or_else(|| panic!("registry is non-empty"));
+        disabled.slug = DISABLED_SLUG.to_string();
+        disabled.name = DISABLED_SLUG.to_string();
+        disabled.enabled = false;
+        sources
+    }
+
+    struct SchedulerSim {
+        rows: HashMap<String, SourceRuntimeStateRow>,
+        now: DateTime<Utc>,
+        selection_steps: HashMap<String, Vec<usize>>,
+        total_selected: usize,
+        forced_selected: usize,
+        max_forced_in_pass: usize,
+    }
+
+    impl SchedulerSim {
+        fn new(start: DateTime<Utc>) -> Self {
+            Self {
+                rows: HashMap::new(),
+                now: start,
+                selection_steps: HashMap::new(),
+                total_selected: 0,
+                forced_selected: 0,
+                max_forced_in_pass: 0,
+            }
+        }
+
+        fn record_selection(&mut self, slug: &str, step: usize) {
+            self.selection_steps
+                .entry(slug.to_string())
+                .or_default()
+                .push(step);
+        }
+
+        fn attempt_success(&mut self, slug: &str, source: &Source, latency_ms: f64) {
+            let now = self.now;
+            let interval = Duration::minutes(i64::from(source.min_interval_minutes.max(1)));
+            let row = self
+                .rows
+                .entry(slug.to_string())
+                .or_insert_with(|| blank_row(slug, now));
+            row.last_attempt_at = Some(now);
+            row.last_success_at = Some(now);
+            row.next_due_at = now + interval;
+            row.consecutive_failures = 0;
+            row.circuit_open_until = None;
+            row.rolling_success_rate = Some(ewma_success_rate(row.rolling_success_rate, true));
+            row.rolling_latency_ms = ewma_latency_ms(row.rolling_latency_ms, Some(latency_ms));
+            row.last_http_status = Some(200);
+            row.last_error = None;
+            row.updated_at = now;
+        }
+
+        fn attempt_failure(&mut self, slug: &str, source: &Source) {
+            let now = self.now;
+            let interval = Duration::minutes(i64::from(source.min_interval_minutes.max(1)));
+            let row = self
+                .rows
+                .entry(slug.to_string())
+                .or_insert_with(|| blank_row(slug, now));
+            row.consecutive_failures = row.consecutive_failures.saturating_add(1);
+            row.next_due_at = now + failure_backoff(row.consecutive_failures, interval);
+            row.circuit_open_until = Some(row.next_due_at);
+            row.last_attempt_at = Some(now);
+            row.rolling_success_rate = Some(ewma_success_rate(row.rolling_success_rate, false));
+            row.last_http_status = Some(503);
+            row.last_error = Some("simulated failure".to_string());
+            row.updated_at = now;
+        }
+
+        async fn run_pass(&mut self, sources: &[Source], step: usize) -> SourceSelection {
+            let selection = {
+                let provider: &SchedulerSim = self;
+                select_due_sources(provider, sources, BUDGET, self.now)
+                    .await
+                    .unwrap_or_else(|error| panic!("simulated scheduler pass failed: {error}"))
+            };
+
+            let mut forced_in_pass = 0;
+            for source in &selection.selected {
+                self.record_selection(&source.slug, step);
+                self.total_selected += 1;
+                if FORCED_SOURCE_SLUGS.contains(&source.slug.as_str()) {
+                    forced_in_pass += 1;
+                }
+                if FAILING_SLUGS.contains(&source.slug.as_str()) {
+                    self.attempt_failure(&source.slug, source);
+                } else {
+                    self.attempt_success(&source.slug, source, 80.0 + (step % 40) as f64);
+                }
+            }
+            self.forced_selected += forced_in_pass;
+            self.max_forced_in_pass = self.max_forced_in_pass.max(forced_in_pass);
+            selection
+        }
+    }
+
+    #[async_trait]
+    impl SourceRuntimeStateProvider for SchedulerSim {
+        async fn load_runtime_states(&self) -> anyhow::Result<Vec<SourceRuntimeStateRow>> {
+            let mut states: Vec<SourceRuntimeStateRow> = self.rows.values().cloned().collect();
+            states.sort_by(|a, b| a.source_slug.cmp(&b.source_slug));
+            Ok(states)
+        }
+    }
+
+    fn gaps_minutes(steps: &[usize]) -> Vec<i64> {
+        steps
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]) as i64 * STEP_MINUTES)
+            .collect()
+    }
+
+    fn bucket_rates(
+        sources: &[Source],
+        selection_steps: &HashMap<String, Vec<usize>>,
+        key: impl Fn(&Source) -> String,
+    ) -> Vec<(String, f64)> {
+        let mut selections: HashMap<String, usize> = HashMap::new();
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for source in sources.iter().filter(|source| source.enabled) {
+            let bucket = key(source);
+            *counts.entry(bucket.clone()).or_insert(0) += 1;
+            *selections.entry(bucket).or_insert(0) +=
+                selection_steps.get(&source.slug).map(Vec::len).unwrap_or(0);
+        }
+        let mut rates: Vec<(String, f64)> = counts
+            .into_iter()
+            .map(|(bucket, count)| {
+                let selected = selections.get(&bucket).copied().unwrap_or(0);
+                (bucket, selected as f64 / count as f64)
+            })
+            .collect();
+        rates.sort_by(|a, b| a.0.cmp(&b.0));
+        rates
+    }
+
+    fn assert_rates_normalised(label: &str, rates: &[(String, f64)]) {
+        let min = rates
+            .iter()
+            .map(|(_, rate)| *rate)
+            .fold(f64::INFINITY, f64::min);
+        let max = rates.iter().map(|(_, rate)| *rate).fold(0.0_f64, f64::max);
+        assert!(min > 0.0, "{label} service starved a bucket: {rates:?}");
+        assert!(
+            max <= min * 1.35,
+            "{label} service is uneven (min {min:.1}/source, max {max:.1}/source): {rates:?}"
+        );
+    }
+
+    /// Mean interval demand (attempts per hour) for each bucket. Guards the
+    /// simulation's own source mix: fairness assertions are only meaningful
+    /// when every region/category asks for roughly the same service rate.
+    fn bucket_demand_rates(
+        sources: &[Source],
+        key: impl Fn(&Source) -> String,
+    ) -> Vec<(String, f64)> {
+        let mut totals: HashMap<String, (f64, usize)> = HashMap::new();
+        for source in sources.iter().filter(|source| source.enabled) {
+            let bucket = key(source);
+            let entry = totals.entry(bucket).or_insert((0.0, 0));
+            entry.0 += 60.0 / f64::from(source.min_interval_minutes.max(1));
+            entry.1 += 1;
+        }
+        let mut rates: Vec<(String, f64)> = totals
+            .into_iter()
+            .map(|(bucket, (demand, count))| (bucket, demand / count as f64))
+            .collect();
+        rates.sort_by(|a, b| a.0.cmp(&b.0));
+        rates
+    }
+
+    fn assert_mix_balanced(label: &str, rates: &[(String, f64)]) {
+        let min = rates
+            .iter()
+            .map(|(_, rate)| *rate)
+            .fold(f64::INFINITY, f64::min);
+        let max = rates.iter().map(|(_, rate)| *rate).fold(0.0_f64, f64::max);
+        assert!(
+            max <= min * 1.15,
+            "{label} interval mix is not balanced, fairness assertions would be confounded: {rates:?}"
+        );
+    }
+
+    fn due_fractions(
+        sources: &[Source],
+        rows: &HashMap<String, SourceRuntimeStateRow>,
+        now: DateTime<Utc>,
+        key: impl Fn(&Source) -> String,
+    ) -> Vec<(String, f64)> {
+        let mut due: HashMap<String, usize> = HashMap::new();
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for source in sources.iter().filter(|source| source.enabled) {
+            let bucket = key(source);
+            *counts.entry(bucket.clone()).or_insert(0) += 1;
+            if is_source_due(source, rows.get(&source.slug), now) {
+                *due.entry(bucket).or_insert(0) += 1;
+            }
+        }
+        let mut fractions: Vec<(String, f64)> = counts
+            .into_iter()
+            .map(|(bucket, count)| {
+                let due = due.get(&bucket).copied().unwrap_or(0);
+                (bucket, due as f64 / count as f64)
+            })
+            .collect();
+        fractions.sort_by(|a, b| a.0.cmp(&b.0));
+        fractions
+    }
+
+    fn averaged_fractions(sums: &HashMap<String, f64>, passes: usize) -> Vec<(String, f64)> {
+        assert!(
+            passes > 0,
+            "due-fraction window must contain at least one pass"
+        );
+        let mut fractions: Vec<(String, f64)> = sums
+            .iter()
+            .map(|(bucket, sum)| (bucket.clone(), sum / passes as f64))
+            .collect();
+        fractions.sort_by(|a, b| a.0.cmp(&b.0));
+        fractions
+    }
+
+    fn is_adversarial_slug(slug: &str) -> bool {
+        FAILING_SLUGS.contains(&slug)
+            || CIRCUIT_SLUGS.contains(&slug)
+            || FORCED_SOURCE_SLUGS.contains(&slug)
+            || slug == DISABLED_SLUG
+    }
+
+    /// Ordinary sources used to measure region/category fairness. The
+    /// deliberately extreme adversarial sources (and the mid-week newcomer)
+    /// have their own assertions and would otherwise skew bucket rates.
+    fn is_measured(source: &Source) -> bool {
+        !is_adversarial_slug(&source.slug) && source.slug != NEW_SOURCE_SLUG
+    }
+
+    #[tokio::test]
+    async fn adversarial_week_is_fair_without_starvation() {
+        let mut sources = build_registry();
+        // Precondition: the non-adversarial fleet must not hand one bucket a
+        // slower mix than another, or service-rate fairness would be measuring
+        // the fixture rather than the scheduler. The deliberately extreme
+        // sources (forced, failing, circuit, disabled) are excluded here.
+        let balanced: Vec<Source> = sources
+            .iter()
+            .filter(|source| is_measured(source))
+            .cloned()
+            .collect();
+        assert_mix_balanced(
+            "region",
+            &bucket_demand_rates(&balanced, |source| source.region.as_str().to_string()),
+        );
+        assert_mix_balanced(
+            "category",
+            &bucket_demand_rates(&balanced, |source| source.category.as_str().to_string()),
+        );
+
+        let start = Utc::now();
+        let mut sim = SchedulerSim::new(start);
+
+        for slug in CIRCUIT_SLUGS {
+            let mut row = blank_row(slug, start);
+            row.last_attempt_at = Some(start - Duration::hours(6));
+            row.last_success_at = Some(start - Duration::hours(12));
+            row.next_due_at = start - Duration::minutes(1);
+            row.consecutive_failures = 3;
+            row.rolling_success_rate = Some(0.2);
+            row.circuit_open_until =
+                Some(start + Duration::minutes(STEP_MINUTES * CIRCUIT_CLOSE_STEP as i64));
+            sim.rows.insert(slug.to_string(), row);
+        }
+
+        let mut new_source_step: Option<usize> = None;
+        let region_key = |source: &Source| source.region.as_str().to_string();
+        let category_key = |source: &Source| source.category.as_str().to_string();
+        let mut region_due_sums: HashMap<String, f64> = HashMap::new();
+        let mut category_due_sums: HashMap<String, f64> = HashMap::new();
+        let mut due_window_passes = 0usize;
+        for step in 0..WEEK_STEPS {
+            sim.now = start + Duration::minutes(step as i64 * STEP_MINUTES);
+            if step == NEW_SOURCE_STEP {
+                let mut source =
+                    synthetic_source(NEW_SOURCE_SLUG, Region::Global, Category::News, 1);
+                source.min_interval_minutes = 60;
+                sources.push(source);
+                new_source_step = Some(step);
+            }
+            sim.run_pass(&sources, step).await;
+            if step + DUE_WINDOW_STEPS > WEEK_STEPS {
+                for (bucket, fraction) in due_fractions(&balanced, &sim.rows, sim.now, region_key) {
+                    *region_due_sums.entry(bucket).or_insert(0.0) += fraction;
+                }
+                for (bucket, fraction) in due_fractions(&balanced, &sim.rows, sim.now, category_key)
+                {
+                    *category_due_sums.entry(bucket).or_insert(0.0) += fraction;
+                }
+                due_window_passes += 1;
+            }
+        }
+        let new_source_step =
+            new_source_step.unwrap_or_else(|| panic!("new source must be introduced mid-week"));
+
+        let steps_for = |slug: &str| -> Vec<usize> {
+            sim.selection_steps.get(slug).cloned().unwrap_or_default()
+        };
+
+        // ── No eligible source starves ───────────────────────────────────
+        for source in &sources {
+            let selected = sim
+                .selection_steps
+                .get(&source.slug)
+                .map(Vec::len)
+                .unwrap_or(0);
+            if !source.enabled {
+                assert_eq!(
+                    selected, 0,
+                    "disabled source {} must never be scheduled",
+                    source.slug
+                );
+                continue;
+            }
+            if FAILING_SLUGS.contains(&source.slug.as_str())
+                || CIRCUIT_SLUGS.contains(&source.slug.as_str())
+            {
+                continue;
+            }
+            let available_hours = if source.slug == NEW_SOURCE_SLUG {
+                WEEK_HOURS - NEW_SOURCE_STEP as f64 * STEP_MINUTES as f64 / 60.0
+            } else {
+                WEEK_HOURS
+            };
+            let due_slots =
+                (available_hours / (f64::from(source.min_interval_minutes) / 60.0)).floor();
+            let minimum = ((due_slots * 3.0 / 4.0) as usize).max(1);
+            assert!(
+                selected >= minimum,
+                "source {} starved: selected {selected} times, expected at least {minimum}",
+                source.slug
+            );
+        }
+
+        // ── Circuits block attempts only while open ──────────────────────
+        for slug in CIRCUIT_SLUGS {
+            let steps = steps_for(slug);
+            assert!(!steps.is_empty(), "{slug} starved after its circuit closed");
+            assert!(
+                steps.iter().all(|step| *step >= CIRCUIT_CLOSE_STEP),
+                "{slug} was attempted while its circuit was open: {steps:?}"
+            );
+            assert!(
+                steps[0] <= CIRCUIT_CLOSE_STEP + 24,
+                "{slug} was not sampled promptly after reopening (first step {})",
+                steps[0]
+            );
+            assert!(
+                steps.len() >= 20,
+                "{slug} was barely serviced after reopening: {} selections",
+                steps.len()
+            );
+        }
+
+        // ── A newly introduced source gets early sampling ────────────────
+        let new_steps = steps_for(NEW_SOURCE_SLUG);
+        assert!(!new_steps.is_empty(), "new source was never sampled");
+        assert!(
+            new_steps[0] <= new_source_step + 8,
+            "new source first sampled at step {} (introduced at {new_source_step})",
+            new_steps[0]
+        );
+        assert!(
+            new_steps.len() >= 4,
+            "new source only sampled {} times in the remaining 5 days",
+            new_steps.len()
+        );
+
+        // ── Forced sources are boosted but do not monopolize slots ───────
+        let mut forced_total = 0;
+        for slug in FORCED_SOURCE_SLUGS {
+            let selected = steps_for(slug).len();
+            assert!(
+                selected >= 10,
+                "forced source {slug} starved: {selected} selections"
+            );
+            forced_total += selected;
+        }
+        assert!(
+            sim.max_forced_in_pass <= FORCED_SOURCE_SLUGS.len(),
+            "forced sources exceeded one slot each in a pass"
+        );
+        assert!(sim.total_selected > 0, "simulation made no selections");
+        let forced_share = forced_total as f64 / sim.total_selected as f64;
+        assert!(
+            forced_share < 0.25,
+            "forced sources monopolized {:.1}% of slots",
+            forced_share * 100.0
+        );
+
+        // ── Failed sources back off ──────────────────────────────────────
+        let fast = steps_for("sim_fail_fast");
+        assert!(fast.len() >= 6, "fail-fast source was abandoned");
+        assert!(
+            fast.len() <= 40,
+            "fail-fast source retried {} times in a week; backoff is not limiting",
+            fast.len()
+        );
+        let fast_gaps = gaps_minutes(&fast);
+        assert!(
+            fast_gaps.iter().all(|gap| *gap >= 30),
+            "a failing 30m source must never retry faster than its floor: {fast_gaps:?}"
+        );
+        // The first retry gap is inflated while the initial backlog of
+        // never-attempted sources drains; from the second retry on, the gap
+        // must follow the ladder without shrinking.
+        let ladder_gaps: Vec<i64> = fast_gaps.iter().skip(1).take(4).copied().collect();
+        for pair in ladder_gaps.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "the failure ladder must not shrink: {ladder_gaps:?}"
+            );
+        }
+        assert!(
+            fast_gaps.iter().any(|gap| *gap >= 470),
+            "a repeatedly failing source must reach the 8h cap: {fast_gaps:?}"
+        );
+        let fast_mean = fast_gaps.iter().sum::<i64>() as f64 / fast_gaps.len() as f64;
+        assert!(
+            fast_mean >= 120.0,
+            "mean retry gap {fast_mean:.0} minutes is still too aggressive"
+        );
+
+        for slug in ["sim_fail_hourly", "sim_never_succeeds"] {
+            let gaps = gaps_minutes(&steps_for(slug));
+            assert!(
+                gaps.iter().all(|gap| *gap >= 60),
+                "{slug} retried faster than its hourly interval: {gaps:?}"
+            );
+            assert!(
+                gaps.iter().any(|gap| *gap >= 470),
+                "{slug} never reached the 8h cap: {gaps:?}"
+            );
+        }
+
+        let daily = steps_for("sim_fail_daily");
+        assert!(daily.len() >= 4, "daily failing source was abandoned");
+        assert!(
+            daily.len() <= 9,
+            "a failing 24h-interval source must keep 24h, got {} attempts",
+            daily.len()
+        );
+        let daily_gaps = gaps_minutes(&daily);
+        assert!(
+            daily_gaps.iter().all(|gap| *gap >= 1440),
+            "a 24h-interval source retried faster than 24h while failing: {daily_gaps:?}"
+        );
+
+        // ── Region and category debt normalises ──────────────────────────
+        let region_rates = bucket_rates(&balanced, &sim.selection_steps, region_key);
+        let category_rates = bucket_rates(&balanced, &sim.selection_steps, category_key);
+        assert_rates_normalised("region", &region_rates);
+        assert_rates_normalised("category", &category_rates);
+
+        // Averaged over the final day, no region/category may sit on a
+        // standing backlog, and the buckets must be within a tight band of
+        // each other (debt normalisation, not just "someone got served").
+        let region_due_mean = averaged_fractions(&region_due_sums, due_window_passes);
+        let category_due_mean = averaged_fractions(&category_due_sums, due_window_passes);
+        for (label, fractions) in [
+            ("region", &region_due_mean),
+            ("category", &category_due_mean),
+        ] {
+            let max_due = fractions
+                .iter()
+                .map(|(_, fraction)| *fraction)
+                .fold(0.0_f64, f64::max);
+            let min_due = fractions
+                .iter()
+                .map(|(_, fraction)| *fraction)
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                max_due <= 0.10,
+                "{label} carried a standing backlog over the final day: {fractions:?}"
+            );
+            assert!(
+                max_due - min_due <= 0.05,
+                "{label} final-day due fractions are uneven ({min_due:.3}..{max_due:.3}): {fractions:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn high_quality_sources_win_contested_slots() {
+        let mut sources = vec![
+            synthetic_source("low_quality", Region::Global, Category::News, 2),
+            synthetic_source("high_quality", Region::Global, Category::News, 2),
+        ];
+        for source in &mut sources {
+            source.min_interval_minutes = 60;
+        }
+        let now = Utc::now();
+        let mut sim = SchedulerSim::new(now);
+        for (slug, rate) in [("low_quality", 0.05), ("high_quality", 0.95)] {
+            let mut row = blank_row(slug, now);
+            row.last_success_at = Some(now - Duration::hours(2));
+            row.last_attempt_at = Some(now - Duration::hours(2));
+            row.next_due_at = now - Duration::minutes(1);
+            row.rolling_success_rate = Some(rate);
+            sim.rows.insert(slug.to_string(), row);
+        }
+
+        let selection = select_due_sources(&sim, &sources, 1, now).await.unwrap();
+        assert_eq!(selection.selected.len(), 1);
+        assert_eq!(
+            selection.selected[0].slug, "high_quality",
+            "the persisted rolling success rate must drive priority"
+        );
     }
 }

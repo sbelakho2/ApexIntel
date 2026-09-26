@@ -16,7 +16,10 @@ use super::PageContext;
 use crate::middleware::session::WebSession;
 use crate::system_status::{format_age, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS};
 use apex_core::data_state::DataState;
-use apex_crawl::sources::{all_sources, source_coverage_summary, SourceCoverageSummary};
+use apex_crawl::sources::{
+    all_sources, crawl_source_budget_from_env, scheduler_backlog, source_coverage_summary,
+    SchedulerBacklog, SourceCoverageSummary,
+};
 use apex_store::postgres::{PgStore, WarningListFilters};
 use apex_store::tantivy_index::SearchIndex;
 
@@ -147,6 +150,9 @@ pub struct AdminPage {
     /// Declared vs operational crawl-source coverage (P0 #25). Only
     /// operational sources count toward the product's source count.
     pub source_coverage: SourceCoverageSummary,
+    /// Weighted-fair scheduler backlog for one pass at the configured
+    /// `CRAWL_MAX_SOURCES` budget (P0 scheduler quality).
+    pub source_backlog: SchedulerBacklog,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
@@ -463,7 +469,7 @@ pub async fn admin_page(
         })
         .unwrap_or_default();
 
-    let source_coverage = {
+    let (source_coverage, source_backlog) = {
         let registry = all_sources();
         let runtime_states = store
             .load_source_runtime_states()
@@ -472,7 +478,16 @@ pub async fn admin_page(
                 tracing::error!("Failed to fetch source runtime state: {error}");
                 vec![]
             });
-        source_coverage_summary(&registry, &runtime_states, chrono::Utc::now())
+        let now = chrono::Utc::now();
+        (
+            source_coverage_summary(&registry, &runtime_states, now),
+            scheduler_backlog(
+                &registry,
+                &runtime_states,
+                crawl_source_budget_from_env(),
+                now,
+            ),
+        )
     };
 
     let tpl = AdminPage {
@@ -505,6 +520,7 @@ pub async fn admin_page(
         },
         observation_sources,
         source_coverage,
+        source_backlog,
     };
 
     super::render_template(&tpl)
