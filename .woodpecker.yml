@@ -75,7 +75,7 @@ steps:
       TEST_DATABASE_URL: postgres://apex:apex@database:5432/apex_ci
     commands:
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
-      - cargo test -p apex-store --test migrations_integration --test alert_subscriptions_integration --test rls_scoped_integration --locked -- --ignored --test-threads=1
+      - cargo test -p apex-store --test migrations_integration --test alert_subscriptions_integration --test alert_subscription_crud_integration --test rls_scoped_integration --locked -- --ignored --test-threads=1
 
   - name: wasm-shared
     image: rust:bookworm

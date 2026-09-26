@@ -8,6 +8,20 @@ use super::*;
 
 use apex_core::alert_config::{user_principal_id, AlertSeverity};
 
+/// One row of `user_alert_subscriptions`.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct UserAlertSubscriptionRecord {
+    pub id: Uuid,
+    pub user_id: String,
+    pub entity_id: Uuid,
+    /// `None` means the subscription covers every alert category.
+    pub category: Option<String>,
+    pub min_severity: String,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Ordinal rank used to compare a subscription's `min_severity` with the
 /// severity of an incoming alert. Must match the `CASE` in the query.
 fn severity_rank(severity: AlertSeverity) -> i16 {
@@ -20,7 +34,132 @@ fn severity_rank(severity: AlertSeverity) -> i16 {
     }
 }
 
+/// Normalise an alert category to the form stored in the table: trimmed and
+/// lowercased. The empty string is treated as "every category" (`None`).
+pub(crate) fn normalize_alert_category(category: Option<&str>) -> Option<String> {
+    category
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+}
+
 impl PgStore {
+    /// Insert or update the subscription for one `(user, entity, category)`
+    /// triple. `category = None` covers every category.
+    ///
+    /// The `min_severity` input is lowercased before storage so the unique
+    /// expression index (`lower(category)` / `COALESCE(category, '*')`) and the
+    /// `CHECK` constraint stay consistent with the values the alert router
+    /// compares against.
+    pub async fn upsert_user_alert_subscription(
+        &self,
+        user_id: &str,
+        entity_id: Uuid,
+        category: Option<&str>,
+        min_severity: &str,
+        enabled: bool,
+    ) -> Result<UserAlertSubscriptionRecord> {
+        let category = normalize_alert_category(category);
+        let record: UserAlertSubscriptionRecord = sqlx::query_as(
+            r#"
+            INSERT INTO user_alert_subscriptions
+                (user_id, entity_id, category, min_severity, enabled, updated_at)
+            VALUES ($1, $2, $3, lower($4), $5, now())
+            ON CONFLICT (user_id, entity_id, (COALESCE(lower(category), '*')))
+            DO UPDATE SET
+                category = EXCLUDED.category,
+                min_severity = EXCLUDED.min_severity,
+                enabled = EXCLUDED.enabled,
+                updated_at = now()
+            RETURNING id, user_id, entity_id, category, min_severity, enabled,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(entity_id)
+        .bind(category.as_deref())
+        .bind(min_severity)
+        .bind(enabled)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(record)
+    }
+
+    /// Fetch one subscription for a `(user, entity, category)` triple.
+    /// `category = None` looks up the "every category" row.
+    pub async fn get_user_alert_subscription(
+        &self,
+        user_id: &str,
+        entity_id: Uuid,
+        category: Option<&str>,
+    ) -> Result<Option<UserAlertSubscriptionRecord>> {
+        let category = normalize_alert_category(category);
+        let record: Option<UserAlertSubscriptionRecord> = sqlx::query_as(
+            r#"
+            SELECT id, user_id, entity_id, category, min_severity, enabled,
+                   created_at, updated_at
+            FROM user_alert_subscriptions
+            WHERE user_id = $1
+              AND entity_id = $2
+              AND COALESCE(lower(category), '*') = COALESCE($3, '*')
+            "#,
+        )
+        .bind(user_id)
+        .bind(entity_id)
+        .bind(category.as_deref())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(record)
+    }
+
+    /// Delete one subscription for a `(user, entity, category)` triple.
+    /// Returns `true` when a row was removed.
+    pub async fn delete_user_alert_subscription(
+        &self,
+        user_id: &str,
+        entity_id: Uuid,
+        category: Option<&str>,
+    ) -> Result<bool> {
+        let category = normalize_alert_category(category);
+        let result = sqlx::query(
+            r#"
+            DELETE FROM user_alert_subscriptions
+            WHERE user_id = $1
+              AND entity_id = $2
+              AND COALESCE(lower(category), '*') = COALESCE($3, '*')
+            "#,
+        )
+        .bind(user_id)
+        .bind(entity_id)
+        .bind(category.as_deref())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// List every alert subscription owned by one user, newest first.
+    pub async fn list_user_alert_subscriptions(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<UserAlertSubscriptionRecord>> {
+        let records: Vec<UserAlertSubscriptionRecord> = sqlx::query_as(
+            r#"
+            SELECT id, user_id, entity_id, category, min_severity, enabled,
+                   created_at, updated_at
+            FROM user_alert_subscriptions
+            WHERE user_id = $1
+            ORDER BY updated_at DESC, entity_id
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(records)
+    }
+
     /// Find the users subscribed to a given entity's alerts.
     ///
     /// A subscription matches when it is enabled, its `category` is either

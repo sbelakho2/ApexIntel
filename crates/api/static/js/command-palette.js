@@ -150,8 +150,16 @@
   }
 
   function postJson(url, body) {
+    return sendJson("POST", url, body);
+  }
+
+  function putJson(url, body) {
+    return sendJson("PUT", url, body);
+  }
+
+  function sendJson(method, url, body) {
     return fetch(url, {
-      method: "POST",
+      method: method,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
@@ -394,7 +402,7 @@
     if (!item || item.type === "command") return [];
     var actions = [{ key: "open", label: "Open" }];
     if (["company", "person", "warning", "insight"].includes(item.type)) {
-      actions.push({ key: "watch", label: "Watch" });
+      actions.push({ key: "watch", label: "Watch alerts" });
       actions.push({ key: "investigate", label: "Investigate" });
       actions.push({ key: "pipeline", label: "Add to pipeline" });
     }
@@ -415,14 +423,15 @@
 
   function actionRequest(action, item) {
     if (action === "watch") {
-      return postJson("/api/queue", {
-        item_type: item.type,
-        item_id: item.id,
-        item_title: item.label,
-        priority: 5,
-        notes: "Added from command palette",
+      // Watch alerts == opt into entity alert subscriptions (migration 048).
+      // This is NOT the work queue: POST /api/queue stays behind "Add to
+      // work queue" and is never used by the palette's watch action.
+      return putJson("/api/entities/" + encodeURIComponent(item.id) + "/alert-subscription", {
+        enabled: true,
+        category: null,
+        min_severity: "medium",
       }).then(function () {
-        return "Added " + item.label + " to the priority queue.";
+        return "Watching alerts for " + item.label + " (not added to the work queue, an investigation, or the pipeline).";
       });
     }
     if (action === "investigate") {

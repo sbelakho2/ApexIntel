@@ -86,6 +86,8 @@ mod runtime_metrics;
 mod activity_handlers;
 #[path = "api_handlers/alert_settings.rs"]
 mod alert_settings_handlers;
+#[path = "api_handlers/alert_subscriptions.rs"]
+mod alert_subscription_handlers;
 #[path = "api_handlers/battlecards.rs"]
 mod battlecards_handlers;
 #[path = "api_handlers/catalog.rs"]
@@ -803,6 +805,9 @@ async fn endpoints() -> Json<Vec<serde_json::Value>> {
         serde_json::json!({ "method": "GET", "path": "/api/supplier-risk", "desc": "Supplier risk list" }),
         serde_json::json!({ "method": "GET", "path": "/api/pipeline", "desc": "Pipeline opportunities" }),
         serde_json::json!({ "method": "GET", "path": "/api/triage", "desc": "AI triage items" }),
+        serde_json::json!({ "method": "GET", "path": "/api/entities/:id/alert-subscription", "desc": "Get the caller's entity alert subscriptions" }),
+        serde_json::json!({ "method": "PUT", "path": "/api/entities/:id/alert-subscription", "desc": "Watch entity alerts" }),
+        serde_json::json!({ "method": "DELETE", "path": "/api/entities/:id/alert-subscription", "desc": "Unwatch entity alerts" }),
         serde_json::json!({ "method": "GET", "path": "/api/trends", "desc": "Historical trends" }),
         serde_json::json!({ "method": "GET", "path": "/api/search/vector", "desc": "Vector similarity search" }),
         serde_json::json!({ "method": "GET", "path": "/api/features", "desc": "API feature flags" }),
@@ -850,6 +855,11 @@ async fn openapi_json() -> Json<serde_json::Value> {
             "/competitors": { "get": { "summary": "List competitors", "tags": ["Competitors"] } },
             "/battlecards": { "get": { "summary": "List battlecards", "tags": ["Battlecards"] } },
             "/triage": { "get": { "summary": "List AI triage items", "tags": ["Triage"] } },
+            "/entities/{id}/alert-subscription": {
+                "get": { "summary": "List the caller's alert subscriptions for an entity", "tags": ["Alerts"] },
+                "put": { "summary": "Opt the caller into alerts for an entity", "tags": ["Alerts"] },
+                "delete": { "summary": "Remove the caller's alert subscription for an entity", "tags": ["Alerts"] }
+            },
             "/trends": { "get": { "summary": "Query historical trends", "tags": ["Trends"] } },
             "/features": { "get": { "summary": "API feature flags", "tags": ["System"] } },
             "/llm/extract-entities": { "post": { "summary": "LLM entity extraction", "tags": ["LLM"] } },

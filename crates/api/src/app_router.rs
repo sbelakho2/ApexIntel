@@ -325,6 +325,15 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             "/api/settings/alerts/global",
             put(alert_settings_handlers::upsert_global_alert_defaults),
         )
+        // ─── Per-user entity alert subscriptions (migration 048) ──────────
+        // The alert router resolves addressee-less alerts against these rows;
+        // before this route existed the table had no management path.
+        .route(
+            "/api/entities/:id/alert-subscription",
+            get(alert_subscription_handlers::get_entity_alert_subscription)
+                .put(alert_subscription_handlers::upsert_entity_alert_subscription)
+                .delete(alert_subscription_handlers::delete_entity_alert_subscription),
+        )
         // B292: admin-only surface. Registered as a separate router so the
         // `require_admin` layer scopes to exactly these routes — a layer in
         // the main chain would also gate every route registered above it.

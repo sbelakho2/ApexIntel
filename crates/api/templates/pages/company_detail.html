@@ -53,6 +53,9 @@
     </div>
   </div>
 
+  {# ── Entity alert subscription (Watch alerts) ── #}
+  {% call m::watch_alerts_control(id, name) %}
+
   {# ── Entity activity chart (lazy-loaded via HTMX) ── #}
   {% call m::entity_activity_chart(id, 30) %}
 
@@ -245,4 +248,5 @@
   </div>
   {% endif %}
 </div>
+<script src="/static/js/alert-subscription.js?v=20260926-watch-alerts-1" defer></script>
 {% endblock %}

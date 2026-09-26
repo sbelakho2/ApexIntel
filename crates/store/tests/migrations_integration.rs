@@ -100,6 +100,7 @@ async fn core_and_feature_tables_exist() {
         "trend_rollups",
         "user_alert_subscriptions",
         "source_runtime_state",
+        "app_users",
     ] {
         assert!(table_exists(&pool, table).await, "missing table {table}");
     }
@@ -113,6 +114,8 @@ async fn core_and_feature_tables_exist() {
         ("companies", "headcount_growth_pct"),
         ("closed_deals", "won"),
         ("buying_center_members", "influence_score"),
+        ("app_users", "last_login_at"), // 059
+        ("user_alert_subscriptions", "enabled"),
     ] {
         assert!(
             column_exists(&pool, table, column).await,
