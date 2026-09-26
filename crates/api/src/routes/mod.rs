@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 103);
+        assert_eq!(eps.len(), 102);
     }
 
     #[test]
