@@ -73,4 +73,37 @@ impl PgStore {
 
         Ok(record)
     }
+
+    /// Ensure an identity row exists **without modifying an existing one**,
+    /// returning the stored row.
+    ///
+    /// This is the provisioning backstop for principals that do not go through
+    /// login (API-key owners at startup, the alert-subscription PUT), where
+    /// only existence is required for the migration-059 foreign keys. Unlike
+    /// [`Self::ensure_app_user`] it never overwrites `username`, `role` or
+    /// `last_login_at`, so it cannot clobber a verified principal's identity or
+    /// write the caller's role onto an override target.
+    pub async fn ensure_app_user_exists(
+        &self,
+        user_id: &str,
+        username: &str,
+        role: &str,
+    ) -> Result<AppUserRecord> {
+        sqlx::query(
+            r#"
+            INSERT INTO app_users (id, username, display_name, role)
+            VALUES ($1, $2, $2, $3)
+            ON CONFLICT (id) DO NOTHING
+            "#,
+        )
+        .bind(user_id)
+        .bind(username)
+        .bind(role)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_app_user(user_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("app_users row for '{user_id}' missing after insert"))
+    }
 }

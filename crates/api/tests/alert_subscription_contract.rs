@@ -93,19 +93,18 @@ fn subscription_identity_is_the_authenticated_principal() {
         "alice"
     );
 
-    // Impersonation is rejected for non-privileged roles ...
-    for role in [ApiRole::Analyst, ApiRole::Viewer] {
+    // Impersonation is rejected for every non-admin role, including service
+    // (whose writes the auth middleware rejects anyway) ...
+    for role in [ApiRole::Analyst, ApiRole::Viewer, ApiRole::Service] {
         let error = resolve_subscription_actor(&auth("alice", role), Some("bob")).unwrap_err();
         assert_eq!(error.code, ErrorCode::Forbidden);
     }
 
-    // ... and allowed for admin/service principals only.
-    for role in [ApiRole::Admin, ApiRole::Service] {
-        assert_eq!(
-            resolve_subscription_actor(&auth("ops", role), Some("bob")).unwrap(),
-            "bob"
-        );
-    }
+    // ... and allowed for admin principals only.
+    assert_eq!(
+        resolve_subscription_actor(&auth("ops", ApiRole::Admin), Some("bob")).unwrap(),
+        "bob"
+    );
 }
 
 #[test]
@@ -118,6 +117,8 @@ fn subscription_input_validation_rejects_bad_severity_and_category() {
     );
     assert_eq!(validate_category(Some("")).unwrap(), None);
     assert!(validate_category(Some(&"c".repeat(65))).is_err());
+    // `*` is the COALESCE sentinel for the NULL-category row.
+    assert!(validate_category(Some("*")).is_err());
 }
 
 #[test]
@@ -146,8 +147,31 @@ fn palette_watch_action_targets_the_subscription_endpoint() {
 
     // The palette still exposes a distinct label and distinguishes the actions.
     assert!(PALETTE_JS.contains("label: \"Watch alerts\""));
-    assert!(PALETTE_HTML.contains("Watch alerts only opts into notifications"));
-    assert!(PALETTE_HTML.contains("Add to work queue"));
+    assert!(PALETTE_HTML.contains("Watch alerts (companies and persons only)"));
+    assert!(PALETTE_HTML.contains("never adds a work-queue task"));
+
+    // Watch is offered only where a subscription can ever match: company and
+    // person results. Warning/insight ids are not AlertEvent.entity_id values.
+    let actions_fn = PALETTE_JS
+        .split("function actionsFor(item)")
+        .nth(1)
+        .expect("palette defines actionsFor");
+    let actions_fn = actions_fn
+        .split("function recordAndOpen")
+        .next()
+        .expect("actionsFor terminator");
+    assert!(
+        actions_fn.contains("if (item.type === \"company\" || item.type === \"person\")"),
+        "Watch alerts must be gated to company/person results"
+    );
+    let watch_push = actions_fn
+        .split("label: \"Watch alerts\"")
+        .next()
+        .expect("watch push");
+    assert!(
+        watch_push.contains("if (item.type === \"company\" || item.type === \"person\")"),
+        "the watch action must sit inside the company/person gate"
+    );
 }
 
 #[test]
@@ -170,6 +194,24 @@ fn all_three_verbs_resolve_the_authenticated_principal() {
     assert!(
         SUBSCRIPTION_HANDLERS_RS.contains("body.user_id.as_deref()"),
         "PUT must support the admin/service user_id override"
+    );
+}
+
+#[test]
+fn entity_get_uses_entity_scoped_store_lookups() {
+    // The per-entity GET must not read the caller's whole subscription set and
+    // filter in Rust; category-scoped reads use the natural-key getter.
+    assert!(
+        SUBSCRIPTION_HANDLERS_RS.contains("list_user_alert_subscriptions_for_entity"),
+        "GET must use the entity-scoped store query"
+    );
+    assert!(
+        SUBSCRIPTION_HANDLERS_RS.contains("get_user_alert_subscription"),
+        "category-scoped GET must use the natural-key getter"
+    );
+    assert!(
+        !SUBSCRIPTION_HANDLERS_RS.contains("filter(|record| record.entity_id"),
+        "GET must not filter the full subscription set in Rust"
     );
 }
 

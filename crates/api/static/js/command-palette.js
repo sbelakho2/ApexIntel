@@ -402,7 +402,13 @@
     if (!item || item.type === "command") return [];
     var actions = [{ key: "open", label: "Open" }];
     if (["company", "person", "warning", "insight"].includes(item.type)) {
-      actions.push({ key: "watch", label: "Watch alerts" });
+      // Subscriptions are keyed by the entity an alert is *about*
+      // (AlertEvent.entity_id = company/person). A warning/insight row's own
+      // UUID would create a subscription that can never match, so Watch alerts
+      // is only offered on entity results.
+      if (item.type === "company" || item.type === "person") {
+        actions.push({ key: "watch", label: "Watch alerts" });
+      }
       actions.push({ key: "investigate", label: "Investigate" });
       actions.push({ key: "pipeline", label: "Add to pipeline" });
     }

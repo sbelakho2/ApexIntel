@@ -6,11 +6,12 @@
 //! - `PUT    /api/entities/:id/alert-subscription`
 //! - `DELETE /api/entities/:id/alert-subscription`
 //!
-//! The subscription identity is always the authenticated principal. Admin and
-//! service principals may additionally target another user with `?user_id=`;
-//! every other role is pinned to its own identity.
+//! The subscription identity is always the authenticated principal. Admin
+//! principals may additionally target another user with `?user_id=`; every
+//! other role, including `Service`, is pinned to its own identity. (The auth
+//! middleware additionally rejects all service writes with 403, so a service
+//! key can only read its own subscription.)
 
-use crate::auth::ApiRole;
 use crate::responses::ApiError;
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +70,10 @@ pub fn validate_min_severity(value: &str) -> Result<String, ApiError> {
 
 /// Normalise and validate an optional alert category. `None` and the empty
 /// string both mean "every category".
+///
+/// `'*'` is rejected: migration 048 uses `COALESCE(lower(category), '*')` as
+/// its uniqueness sentinel for the "every category" row, so a literal `'*'`
+/// would collide with (and silently rewrite or delete) that wildcard row.
 pub fn validate_category(category: Option<&str>) -> Result<Option<String>, ApiError> {
     match category.map(str::trim).filter(|value| !value.is_empty()) {
         None => Ok(None),
@@ -76,14 +81,18 @@ pub fn validate_category(category: Option<&str>) -> Result<Option<String>, ApiEr
             "category",
             "must be 64 characters or fewer",
         )),
+        Some("*") => Err(ApiError::validation(
+            "category",
+            "'*' is reserved for the all-categories subscription",
+        )),
         Some(value) => Ok(Some(value.to_ascii_lowercase())),
     }
 }
 
 /// Resolve which user a subscription request acts for.
 ///
-/// Without an override this is always the authenticated principal. Admin and
-/// service principals may target another user; analyst/viewer principals
+/// Without an override this is always the authenticated principal. Only admin
+/// principals may target another user; analyst/viewer/service principals
 /// attempting to act for someone else get 403 (never a silent rewrite).
 pub fn resolve_subscription_actor(
     auth: &crate::destructive_actions::ApiAuthContext,
@@ -98,11 +107,11 @@ pub fn resolve_subscription_actor(
         return Ok(auth.user_id.clone());
     }
 
-    if auth.role.can_admin() || matches!(auth.role, ApiRole::Service) {
+    if auth.role.can_admin() {
         Ok(requested.to_string())
     } else {
         Err(ApiError::forbidden(
-            "Only admin or service principals may manage another user's alert subscription",
+            "Only admin principals may manage another user's alert subscription",
         ))
     }
 }
@@ -112,6 +121,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use crate::auth::ApiRole;
     use crate::destructive_actions::ApiAuthContext;
 
     fn auth(user_id: &str, role: ApiRole) -> ApiAuthContext {
@@ -136,8 +146,8 @@ mod tests {
     }
 
     #[test]
-    fn actor_override_is_rejected_for_analyst_and_viewer() {
-        for role in [ApiRole::Analyst, ApiRole::Viewer] {
+    fn actor_override_is_rejected_for_every_non_admin_role() {
+        for role in [ApiRole::Analyst, ApiRole::Viewer, ApiRole::Service] {
             let ctx = auth("alice", role);
             let err = resolve_subscription_actor(&ctx, Some("bob")).unwrap_err();
             assert_eq!(err.code, crate::responses::ErrorCode::Forbidden);
@@ -145,14 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn actor_override_is_allowed_for_admin_and_service() {
-        for role in [ApiRole::Admin, ApiRole::Service] {
-            let ctx = auth("ops", role);
-            assert_eq!(
-                resolve_subscription_actor(&ctx, Some("bob")).unwrap(),
-                "bob".to_string()
-            );
-        }
+    fn actor_override_is_allowed_for_admin() {
+        let ctx = auth("ops", ApiRole::Admin);
+        assert_eq!(
+            resolve_subscription_actor(&ctx, Some("bob")).unwrap(),
+            "bob".to_string()
+        );
     }
 
     #[test]
@@ -171,5 +179,13 @@ mod tests {
             Some("warning".to_string())
         );
         assert!(validate_category(Some(&"x".repeat(65))).is_err());
+    }
+
+    #[test]
+    fn reserved_all_categories_sentinel_is_rejected() {
+        // `*` is the COALESCE sentinel for the NULL-category row; allowing it
+        // would let a client rewrite or delete the wildcard subscription.
+        assert!(validate_category(Some("*")).is_err());
+        assert!(validate_category(Some(" * ")).is_err());
     }
 }

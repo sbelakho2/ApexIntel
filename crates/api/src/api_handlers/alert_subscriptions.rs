@@ -8,8 +8,9 @@
 //! `user_alert_subscriptions` (migration 048) is what the alert router resolves
 //! addressee-less alerts against; without these routes the table had no product
 //! management path. Identity always comes from the authenticated principal
-//! (`ApiAuthContext.user_id`); admin/service principals may target another user
-//! with `?user_id=` or a body `user_id`.
+//! (`ApiAuthContext.user_id`); admin principals may target another user with
+//! `?user_id=` or a body `user_id`. Service keys act as their own owner
+//! identity — the auth middleware rejects every service write with 403.
 
 use crate::*;
 
@@ -40,6 +41,10 @@ fn store_err(err: impl std::fmt::Display) -> ApiError {
 }
 
 /// GET /api/entities/:id/alert-subscription
+///
+/// Without `?category=`, returns every subscription the caller has for the
+/// entity; with it, only that natural-key row (the store lookup uses the
+/// `(user_id, entity_id, category)` prefix instead of scanning the user's set).
 pub(crate) async fn get_entity_alert_subscription(
     State(state): State<AppState>,
     Extension(auth): Extension<ApiAuthContext>,
@@ -49,14 +54,23 @@ pub(crate) async fn get_entity_alert_subscription(
     let entity_id = parse_entity_id(&entity_id)?;
     let actor = resolve_subscription_actor(&auth, query.user_id.as_deref())?;
 
-    let subscriptions: Vec<UserAlertSubscriptionRecord> = state
-        .store
-        .list_user_alert_subscriptions(&actor)
-        .await
-        .map_err(store_err)?
-        .into_iter()
-        .filter(|record| record.entity_id == entity_id)
-        .collect();
+    let subscriptions: Vec<UserAlertSubscriptionRecord> = match query.category.as_deref() {
+        Some(category) => {
+            let category = validate_category(Some(category))?;
+            state
+                .store
+                .get_user_alert_subscription(&actor, entity_id, category.as_deref())
+                .await
+                .map_err(store_err)?
+                .into_iter()
+                .collect()
+        }
+        None => state
+            .store
+            .list_user_alert_subscriptions_for_entity(&actor, entity_id)
+            .await
+            .map_err(store_err)?,
+    };
 
     let watching = subscriptions.iter().any(|record| record.enabled);
     Ok(Json(success(AlertSubscriptionListResponse {
@@ -79,14 +93,29 @@ pub(crate) async fn upsert_entity_alert_subscription(
     let category = validate_category(body.category.as_deref())?;
     let min_severity = validate_min_severity(&body.min_severity)?;
 
-    // The `user_id` foreign key added in migration 059 requires the principal
-    // to exist in `app_users`; login creates it, and this backstop covers API
-    // keys whose owner never signed in through the web form.
-    state
+    // Migration 059's `user_id` foreign key requires the principal to exist in
+    // `app_users`. Login and API-key startup provision their own identities;
+    // this backstop covers a principal with no row yet (first login is enough
+    // everywhere else). For an admin/service override the target's identity
+    // attributes are unknown here, so a missing target is reported instead of
+    // inventing a row with the caller's role.
+    if state
         .store
-        .ensure_app_user(&actor, &actor, auth.role.as_str())
+        .get_app_user(&actor)
         .await
-        .map_err(store_err)?;
+        .map_err(store_err)?
+        .is_none()
+    {
+        if actor == auth.user_id {
+            state
+                .store
+                .ensure_app_user_exists(&actor, &actor, auth.role.as_str())
+                .await
+                .map_err(store_err)?;
+        } else {
+            return Err(ApiError::not_found("app user", &actor));
+        }
+    }
 
     let subscription = state
         .store

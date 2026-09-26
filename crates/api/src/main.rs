@@ -292,6 +292,45 @@ async fn build_state() -> Result<AppState> {
     let api_keys = load_api_keys();
     tracing::info!(count = %api_keys.len(), "API keys loaded");
 
+    // Provision every API-key owner in the canonical `app_users` identity
+    // table (migration 059). API-key principals never log in, but the
+    // user-owned tables now carry an `app_users(id)` foreign key, so without
+    // this first write (watchlist, preferences, annotation, subscription)
+    // would fail. Insert-only: an existing verified identity is never
+    // overwritten with the key's configured role.
+    for key in api_keys.values() {
+        if let Err(err) = store
+            .ensure_app_user_exists(&key.owner_user_id, &key.owner_user_id, key.role.as_str())
+            .await
+        {
+            tracing::warn!(
+                key_id = %key.key_id,
+                owner_user_id = %key.owner_user_id,
+                "failed to provision app_users identity for API-key owner: {err:#}"
+            );
+        }
+    }
+
+    // Provision every configured web principal (and its username alias) in
+    // `app_users` before serving requests. Some web handlers persist
+    // user-owned rows under `session.username` while others use the signed
+    // `user_id`, and sessions issued before migration 059 may still be valid,
+    // so both identities must exist for the new foreign keys regardless of
+    // whether the user logs in again.
+    for user in apex_api::web::auth::load_web_users() {
+        for identity in [user.user_id(), user.username.as_str()] {
+            if let Err(err) = store
+                .ensure_app_user_exists(identity, &user.username, user.api_role().as_str())
+                .await
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    "failed to provision app_users identity for web principal: {err:#}"
+                );
+            }
+        }
+    }
+
     let redis = {
         let redis_url = config.app.redis_url.expose_secret();
         if !redis_url.is_empty() && redis_url != "redis://127.0.0.1:6379" {

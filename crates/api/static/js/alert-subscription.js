@@ -117,7 +117,18 @@
     feedback(root, "Saving…", "info");
     request("PUT", endpoint(entityId), payload).then(function (data) {
       var subscription = data && data.subscription ? data.subscription : null;
-      root.__apexSubscriptions = subscription ? [subscription] : [];
+      if (subscription) {
+        // Merge into the tracked set by natural key instead of replacing it, so
+        // Stop-watching still knows about the user's other category rows.
+        var key = subscription.category ? String(subscription.category).toLowerCase() : "";
+        var others = (Array.isArray(root.__apexSubscriptions) ? root.__apexSubscriptions : [])
+          .filter(function (row) {
+            var rowKey = row && row.category ? String(row.category).toLowerCase() : "";
+            return rowKey !== key;
+          });
+        others.push(subscription);
+        root.__apexSubscriptions = others;
+      }
       setWatching(root, true);
       var message = "Watching " + payload.min_severity + " alerts for " + entityLabel(root)
         + ". This is separate from the work queue, investigations, and the pipeline.";

@@ -139,6 +139,33 @@ impl PgStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// List one user's alert subscriptions for a single entity.
+    ///
+    /// Uses the leading prefix of `uq_user_alert_subscriptions_natural`, so the
+    /// per-entity GET does not read the user's whole subscription set.
+    pub async fn list_user_alert_subscriptions_for_entity(
+        &self,
+        user_id: &str,
+        entity_id: Uuid,
+    ) -> Result<Vec<UserAlertSubscriptionRecord>> {
+        let records: Vec<UserAlertSubscriptionRecord> = sqlx::query_as(
+            r#"
+            SELECT id, user_id, entity_id, category, min_severity, enabled,
+                   created_at, updated_at
+            FROM user_alert_subscriptions
+            WHERE user_id = $1
+              AND entity_id = $2
+            ORDER BY category NULLS FIRST
+            "#,
+        )
+        .bind(user_id)
+        .bind(entity_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(records)
+    }
+
     /// List every alert subscription owned by one user, newest first.
     pub async fn list_user_alert_subscriptions(
         &self,

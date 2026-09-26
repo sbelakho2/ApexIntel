@@ -48,6 +48,35 @@ async fn subscription_crud_round_trip() {
         .await
         .expect("ensure_app_user is idempotent");
 
+    // `ensure_app_user_exists` is insert-only: it must not overwrite an
+    // existing verified identity (the PUT backstop and API-key provisioning
+    // use it instead of the login upsert).
+    store
+        .ensure_app_user_exists(&marker, "spoofed-username", "admin")
+        .await
+        .expect("ensure_app_user_exists on an existing row");
+    let unchanged = store
+        .get_app_user(&marker)
+        .await
+        .expect("get_app_user")
+        .expect("identity exists");
+    assert_eq!(unchanged.username, format!("{marker}-name"));
+    assert_eq!(unchanged.role, "analyst");
+    let provisioned_other = format!("{marker}-provisioned");
+    store
+        .ensure_app_user_exists(&provisioned_other, "Provisioned User", "viewer")
+        .await
+        .expect("ensure_app_user_exists inserts a missing row");
+    assert_eq!(
+        store
+            .get_app_user(&provisioned_other)
+            .await
+            .expect("get_app_user")
+            .expect("identity exists")
+            .role,
+        "viewer"
+    );
+
     // Create.
     let created = store
         .upsert_user_alert_subscription(&marker, entity_id, Some("Warning"), "HIGH", true)
@@ -90,6 +119,20 @@ async fn subscription_crud_round_trip() {
         .await
         .expect("list subscriptions");
     assert_eq!(listed.len(), 2);
+
+    // The entity-scoped listing powers the per-entity GET without reading the
+    // user's whole subscription set.
+    let entity_rows = store
+        .list_user_alert_subscriptions_for_entity(&marker, entity_id)
+        .await
+        .expect("list subscriptions for entity");
+    assert_eq!(entity_rows.len(), 2);
+    assert!(entity_rows.iter().all(|row| row.entity_id == entity_id));
+    assert!(store
+        .list_user_alert_subscriptions_for_entity(&marker, other_entity)
+        .await
+        .expect("list subscriptions for other entity")
+        .is_empty());
 
     // Delete is natural-key scoped.
     assert!(store
@@ -137,6 +180,13 @@ async fn subscription_crud_round_trip() {
             .await
             .unwrap();
     assert_eq!(remaining, 0, "ON DELETE CASCADE must remove subscriptions");
+
+    // Cleanup the provisioned-only identity used by the insert-only check.
+    sqlx::query("DELETE FROM app_users WHERE id = $1")
+        .bind(&provisioned_other)
+        .execute(&pool)
+        .await
+        .expect("delete provisioned identity");
 
     pool.close().await;
 }
