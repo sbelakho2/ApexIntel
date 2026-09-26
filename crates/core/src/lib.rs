@@ -15,6 +15,7 @@ pub mod graph_risk;
 pub mod hs_codes;
 pub mod outcomes;
 pub mod person_names;
+pub mod profile;
 pub mod provenance;
 pub mod quality_score;
 pub mod schemas;

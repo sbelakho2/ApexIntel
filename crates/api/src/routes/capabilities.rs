@@ -7,12 +7,15 @@
 
 use std::time::Duration as StdDuration;
 
+use apex_core::profile::DeploymentProfile;
 use chrono::Utc;
 use serde::Serialize;
 
 use apex_store::postgres::{PgStore, ServiceHeartbeatRow};
 use apex_store::tantivy_index::SearchIndex;
 
+#[cfg(test)]
+use crate::responses::aggregate_health;
 use crate::responses::{ComponentHealth, HealthStatus};
 use crate::system_status::{
     format_age, StatusStrip, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS,
@@ -124,6 +127,62 @@ impl Capabilities {
         })
         .collect()
     }
+
+    /// Look up one capability by its stable probe name.
+    pub fn capability(&self, name: &str) -> Option<&CapabilityStatus> {
+        match name {
+            "llm" => Some(&self.llm),
+            "embeddings" => Some(&self.embeddings),
+            "nats" => Some(&self.nats),
+            "browser_renderer" => Some(&self.browser_renderer),
+            "database" => Some(&self.database),
+            "search_index" => Some(&self.search_index),
+            "worker_heartbeat" => Some(&self.worker_heartbeat),
+            "crawl_freshness" => Some(&self.crawl_freshness),
+            _ => None,
+        }
+    }
+
+    /// Readiness report for `profile`: only the capabilities the profile
+    /// requires are included, and any one of them not reporting `ok` is
+    /// `Unhealthy` (never a soft `Degraded`), so callers answer 503.
+    pub fn readiness_checks(&self, profile: DeploymentProfile) -> Vec<ComponentHealth> {
+        self.readiness_checks_for(profile.required_capabilities())
+    }
+
+    /// Readiness report for an explicit capability-name set. An unknown name
+    /// fails closed as `Unhealthy` rather than being silently dropped, so a
+    /// profile can never claim a requirement that is not actually measured.
+    pub fn readiness_checks_for(&self, names: &[&str]) -> Vec<ComponentHealth> {
+        names
+            .iter()
+            .map(|name| match self.capability(name) {
+                Some(capability) => ComponentHealth {
+                    name: (*name).to_string(),
+                    status: if capability.is_ok() {
+                        HealthStatus::Healthy
+                    } else {
+                        HealthStatus::Unhealthy
+                    },
+                    message: Some(capability.detail.clone()),
+                },
+                None => ComponentHealth {
+                    name: (*name).to_string(),
+                    status: HealthStatus::Unhealthy,
+                    message: Some("capability has no registered probe".to_string()),
+                },
+            })
+            .collect()
+    }
+}
+
+/// Map a readiness status to the probe's HTTP status: 503 exactly when a
+/// capability the profile requires is missing.
+pub fn readiness_http_status(status: &HealthStatus) -> axum::http::StatusCode {
+    match status {
+        HealthStatus::Healthy | HealthStatus::Degraded => axum::http::StatusCode::OK,
+        HealthStatus::Unhealthy => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    }
 }
 
 /// Run every capability probe. Results are measured per call; nothing is
@@ -133,7 +192,32 @@ pub async fn probe_capabilities(
     search_index: &SearchIndex,
     nats_url: Option<&str>,
 ) -> Capabilities {
+    probe_capabilities_plan(pool, search_index, nats_url, None).await
+}
+
+/// Probe only the capabilities `profile` requires. Optional capabilities are
+/// reported `disabled` without touching the network or filesystem, keeping the
+/// frequently polled readiness probe cheap and free of unneeded side effects.
+pub async fn probe_capabilities_for_profile(
+    pool: &sqlx::PgPool,
+    search_index: &SearchIndex,
+    nats_url: Option<&str>,
+    profile: DeploymentProfile,
+) -> Capabilities {
+    probe_capabilities_plan(pool, search_index, nats_url, Some(profile)).await
+}
+
+async fn probe_capabilities_plan(
+    pool: &sqlx::PgPool,
+    search_index: &SearchIndex,
+    nats_url: Option<&str>,
+    profile: Option<DeploymentProfile>,
+) -> Capabilities {
     let store = PgStore::from_pool(pool.clone());
+    let required = |name: &str| match profile {
+        Some(profile) => profile.requires_capability(name),
+        None => true,
+    };
 
     let database = probe_database(pool).await;
     let embeddings = probe_embeddings(pool).await;
@@ -145,10 +229,26 @@ pub async fn probe_capabilities(
     );
 
     let worker_heartbeat = probe_worker_heartbeat(&store).await;
-    let crawl_freshness = probe_crawl_freshness(&store).await;
-    let nats = probe_nats(nats_url).await;
-    let browser_renderer = probe_browser_renderer();
-    let llm = probe_llm();
+    let crawl_freshness = if required("crawl_freshness") {
+        probe_crawl_freshness(&store).await
+    } else {
+        not_required()
+    };
+    let nats = if required("nats") {
+        probe_nats(nats_url).await
+    } else {
+        not_required()
+    };
+    let browser_renderer = if required("browser_renderer") {
+        probe_browser_renderer()
+    } else {
+        not_required()
+    };
+    let llm = if required("llm") {
+        probe_llm()
+    } else {
+        not_required()
+    };
 
     Capabilities {
         llm,
@@ -160,6 +260,10 @@ pub async fn probe_capabilities(
         worker_heartbeat,
         crawl_freshness,
     }
+}
+
+fn not_required() -> CapabilityStatus {
+    CapabilityStatus::new("disabled", "not required by the deployment profile")
 }
 
 fn probe_llm() -> CapabilityStatus {
@@ -444,5 +548,120 @@ mod tests {
             .find(|check| check.name == "database")
             .expect("database check");
         assert_eq!(database.status, HealthStatus::Unhealthy);
+    }
+
+    fn readiness_status(caps: &Capabilities, profile: DeploymentProfile) -> HealthStatus {
+        aggregate_health(&caps.readiness_checks(profile))
+    }
+
+    #[test]
+    fn unknown_required_capability_fails_closed() {
+        let caps = sample_capabilities();
+        let checks = caps.readiness_checks_for(&["database", "not_a_capability"]);
+
+        let unknown = checks
+            .iter()
+            .find(|check| check.name == "not_a_capability")
+            .expect("unknown capability is reported, not dropped");
+        assert_eq!(unknown.status, HealthStatus::Unhealthy);
+        assert_eq!(aggregate_health(&checks), HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn core_profile_readiness_permits_disabled_nats_browser_and_llm() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("disabled", "NATS_URL not configured");
+        caps.browser_renderer = CapabilityStatus::new("disabled", "browser disabled");
+        caps.llm = CapabilityStatus::new("disabled", "binary built without the llm feature");
+
+        let status = readiness_status(&caps, DeploymentProfile::Core);
+        assert_eq!(status, HealthStatus::Healthy);
+        assert_eq!(readiness_http_status(&status), axum::http::StatusCode::OK);
+    }
+
+    #[test]
+    fn core_profile_readiness_fails_503_when_required_capability_missing() {
+        let mut caps = sample_capabilities();
+        caps.worker_heartbeat =
+            CapabilityStatus::new("unavailable", "no worker heartbeat recorded");
+
+        let status = readiness_status(&caps, DeploymentProfile::Core);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn full_profile_readiness_fails_503_when_optional_capability_missing() {
+        let caps = sample_capabilities();
+        assert!(!caps.nats.is_ok() && !caps.browser_renderer.is_ok());
+
+        let status = readiness_status(&caps, DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn full_profile_readiness_is_200_when_every_capability_is_ok() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("ok", "connected to nats://127.0.0.1:4222");
+        caps.browser_renderer = CapabilityStatus::new("ok", "headless browser binary found");
+
+        let status = readiness_status(&caps, DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Healthy);
+        assert_eq!(readiness_http_status(&status), axum::http::StatusCode::OK);
+    }
+
+    #[test]
+    fn full_profile_readiness_fails_503_without_llm_capability() {
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("ok", "connected");
+        caps.browser_renderer = CapabilityStatus::new("ok", "chrome found");
+        caps.llm = CapabilityStatus::new("disabled", "binary built without the llm feature");
+
+        let status = readiness_status(&caps, DeploymentProfile::Full);
+        assert_eq!(status, HealthStatus::Unhealthy);
+        assert_eq!(
+            readiness_http_status(&status),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn readiness_report_lists_exactly_the_required_capabilities() {
+        let caps = sample_capabilities();
+
+        let core_checks = caps.readiness_checks(DeploymentProfile::Core);
+        let core: Vec<&str> = core_checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect();
+        assert_eq!(
+            core,
+            vec!["database", "worker_heartbeat", "embeddings", "search_index"]
+        );
+
+        let full_checks = caps.readiness_checks(DeploymentProfile::Full);
+        let full: Vec<&str> = full_checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect();
+        assert_eq!(
+            full,
+            vec![
+                "database",
+                "worker_heartbeat",
+                "llm",
+                "embeddings",
+                "nats",
+                "search_index",
+                "browser_renderer",
+            ]
+        );
     }
 }

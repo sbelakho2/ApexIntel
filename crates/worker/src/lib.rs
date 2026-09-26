@@ -16,6 +16,7 @@
 
 pub mod activity_logger;
 pub mod embedding_indexer;
+pub mod healthcheck;
 pub mod holiday_calendar;
 pub mod nats_stream;
 pub mod nightly;
@@ -32,6 +33,9 @@ pub mod trend_aggregator;
 pub mod warning_verifier;
 pub mod webhooks;
 pub mod weekly;
+
+/// Build metadata: whether the `llm` feature was compiled into this binary.
+pub const BUILD_LLM_ENABLED: bool = cfg!(feature = "llm");
 
 // Re-export commonly used types for external callers
 pub use recipe_loader::{load_default_seed_recipes, SeedRecipe};

@@ -268,7 +268,7 @@ chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-wo
 
 ### 3.4 Database Migrations
 
-Migrations are embedded in the `apex-store` crate and run automatically when the API starts (`store.run_migrations().await`). No manual migration step needed.
+Migrations are embedded in the `apex-store` crate and run automatically when the API and worker start (`store.run_migrations().await`). No manual migration step is needed, and neither process will start against an unknown schema: migration failure aborts startup. `APEX_SKIP_MIGRATIONS=1` is only honored after verifying that the applied history matches the embedded migrations (latest version and every checksum), so a binary update against a lagging DB must be preceded by the schema preflight in §8 "Routine Update".
 
 ---
 
@@ -745,7 +745,16 @@ scp -i ~/.ssh/hetzner-db-mac \
   target/aarch64-unknown-linux-gnu/release/apex-worker \
   root@77.42.65.89:/tmp/apex-worker-new
 
-# 3. Install & restart
+# 3. Preflight the schema (mandatory for the fail-closed boot)
+#    With APEX_SKIP_MIGRATIONS=true (production) the new binaries refuse to
+#    start unless the applied migration history matches their embedded
+#    migrations (latest version + every checksum). If the DB is behind,
+#    apply the pending migrations (rehearsed on a restored backup) first.
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
+  'psql "$(grep ^DATABASE_URL= /opt/apexintel/config/.env | cut -d= -f2-)" \
+     -Atc "SELECT max(version) FROM _sqlx_migrations WHERE success"'
+
+# 4. Install & restart
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 << 'EOF'
 systemctl stop apexintel-api apexintel-worker
 cp /tmp/apex-api-new /opt/apexintel/bin/apex-api
@@ -778,9 +787,21 @@ systemctl status apexintel-api apexintel-worker apexintel-llm nats minio postgre
 ### 9.2 API Health Check
 
 ```bash
+# Detailed capability matrix
 curl -s https://starzerp.fi/api/health | jq
 # Expected: {"status":"Healthy","version":"0.1.0","checks":[...]}
+
+# Profile-aware readiness probe (503 when a required capability is missing)
+curl -s -o /dev/null -w '%{http_code}\n' https://starzerp.fi/api/health/ready
+# APEX_PROFILE=core (default) requires database, worker heartbeat, embeddings
+# and search index; APEX_PROFILE=full additionally requires LLM, NATS and the
+# browser renderer, and refuses to start without a `--features llm` build.
 ```
+
+Worker containers run `apex-worker healthcheck` as their Docker healthcheck:
+it fails when the database is unreachable, no worker heartbeat exists, or the
+newest `service_heartbeats` row is older than 120s (a stalled scheduler stops
+writing heartbeats).
 
 ### 9.3 Web UI
 

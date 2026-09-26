@@ -48,10 +48,12 @@ COPY config/ /opt/apexintel/config/
 RUN mkdir -p /opt/apexintel/data /opt/apexintel/logs && \
     chown -R apexintel:apexintel /opt/apexintel
 
-# The worker exposes no HTTP endpoint, so liveness is checked by signalling the
-# process (PID 1) instead of probing a port that does not exist.
-HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=30s \
-    CMD kill -0 1 || exit 1
+# The worker exposes no HTTP endpoint. The healthcheck runs `apex-worker
+# healthcheck`, which connects to the database and requires a fresh
+# `service_heartbeats` row: an unreachable database or a stalled scheduler
+# reports the container unhealthy instead of merely proving PID 1 exists.
+HEALTHCHECK --interval=15s --timeout=10s --retries=3 --start-period=60s \
+    CMD ["apex-worker", "healthcheck"]
 
 USER apexintel
 ENV RUST_LOG=info \

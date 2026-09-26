@@ -43,6 +43,33 @@ Audit items 10, 11, 18, 34 (source/crawl capability truth + browser hardening).
   profile enables the headless renderer against installed Chromium and states
   that Browser-strategy sources are unavailable (never HTTP-downgraded) when it
   is off.
+## [Unreleased] — Startup & readiness truth (audit #5, #32, #33, #36)
+
+### Startup / schema
+- Worker startup now fails when `store.run_migrations()` fails instead of
+  warning and continuing. `APEX_SKIP_MIGRATIONS=1` no longer means "assume
+  the schema is current": the applied history (latest version and every
+  checksum) must match the embedded migrations, or startup aborts.
+- `BUILD_LLM_ENABLED` build metadata added to `apex-api`/`apex-worker`;
+  `APEX_PROFILE=full` refuses to start when the `llm` feature was not
+  compiled.
+
+### Readiness
+- `APEX_PROFILE=core|full` (default `core`). `/api/health/ready` is now
+  profile-aware: 503 when any capability the profile requires is missing
+  (full: database, worker heartbeat, LLM, embeddings, NATS, search index,
+  browser renderer; core keeps NATS, browser rendering and the LLM stack
+  optional), and an unknown required capability fails closed. Only required
+  capabilities are probed, so the load-balancer path stays cheap.
+  `/api/health` remains the detailed matrix.
+
+### Worker healthcheck
+- `Dockerfile.worker` no longer probes PID 1 with `kill -0`. The container
+  healthcheck runs `apex-worker healthcheck`, which verifies the freshness of
+  this container's own `service_heartbeats` row (so another replica cannot
+  mask a stalled instance). Heartbeat writes stop when the scheduler records
+  no progress for longer than the longest enforced job timeout; the stale
+  threshold is now shared in `apex-store` instead of duplicated.
 
 ---
 

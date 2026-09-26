@@ -38,12 +38,13 @@ use fallback_generation::{count_concrete_signal_details, is_generic_action_hint}
 #[allow(unused_imports)]
 pub(crate) use title_formatting::build_analytical_title;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use apex_core::config::AppConfig;
 use apex_core::entities::{Observation, ObservationType};
 #[cfg(feature = "llm")]
 use apex_core::entities::{Person, PriorityVector};
 use apex_core::env::parse_truthy_flag;
+use apex_core::profile::DeploymentProfile;
 use apex_core::schemas::Recipe;
 #[cfg(any(feature = "llm", test))]
 pub(crate) use apex_core::text::truncate_utf8 as truncate_text;
@@ -135,6 +136,7 @@ use quality_gates::{
 };
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "llm")]
 use std::sync::Mutex;
@@ -320,10 +322,105 @@ fn build_proxy_rotator_from_env() -> Option<ProxyRotator> {
     Some(rotator)
 }
 
+/// Worker process subcommands. Running the scheduler is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkerCommand {
+    Run,
+    Healthcheck,
+}
+
+/// Parse `apex-worker [healthcheck]`. Unknown arguments are rejected instead
+/// of silently starting a second scheduler.
+pub(crate) fn parse_worker_command(
+    args: impl IntoIterator<Item = String>,
+) -> Result<WorkerCommand> {
+    let mut args = args.into_iter();
+    match args.next() {
+        None => Ok(WorkerCommand::Run),
+        Some(flag) if flag == "healthcheck" => {
+            if args.next().is_some() {
+                anyhow::bail!("'healthcheck' does not take additional arguments");
+            }
+            Ok(WorkerCommand::Healthcheck)
+        }
+        Some(other) => {
+            anyhow::bail!("unknown worker subcommand '{other}' (supported: healthcheck)")
+        }
+    }
+}
+
+/// Minimal store surface needed to guarantee a current schema at startup.
+/// The trait (rather than `PgStore` directly) lets tests drive the startup
+/// gate with a fake store.
+#[async_trait::async_trait]
+pub(crate) trait SchemaMigrationStore {
+    async fn run_migrations(&self) -> Result<()>;
+}
+
+#[async_trait::async_trait]
+impl SchemaMigrationStore for PgStore {
+    async fn run_migrations(&self) -> Result<()> {
+        PgStore::run_migrations(self).await
+    }
+}
+
+/// Fail startup when the database schema is not current.
+pub(crate) async fn ensure_database_schema(store: &impl SchemaMigrationStore) -> Result<()> {
+    store
+        .run_migrations()
+        .await
+        .context("database schema is not current")
+}
+
+/// Tracks the last moment the scheduler made progress (tick start or a job
+/// completion).
+///
+/// The heartbeat task consults this clock: once no progress has been recorded
+/// for longer than the declared work budget, heartbeat writes stop so the
+/// stale `service_heartbeats` row makes `apex-worker healthcheck` fail instead
+/// of reporting a wedged scheduler healthy. Because every in-flight job is
+/// aborted at its own enforced timeout, a healthy tick always records progress
+/// within one job timeout even when several concurrency waves are running.
+#[derive(Debug)]
+pub(crate) struct SchedulerProgressClock {
+    last_progress_epoch_secs: AtomicI64,
+}
+
+impl SchedulerProgressClock {
+    pub(crate) fn new() -> Self {
+        Self::new_at(Utc::now().timestamp())
+    }
+
+    pub(crate) fn new_at(epoch_secs: i64) -> Self {
+        Self {
+            last_progress_epoch_secs: AtomicI64::new(epoch_secs),
+        }
+    }
+
+    pub(crate) fn record_progress(&self) {
+        self.record_progress_at(Utc::now().timestamp());
+    }
+
+    pub(crate) fn record_progress_at(&self, epoch_secs: i64) {
+        self.last_progress_epoch_secs
+            .store(epoch_secs, Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_stalled(&self, now_epoch_secs: i64, budget_secs: i64) -> bool {
+        now_epoch_secs - self.last_progress_epoch_secs.load(Ordering::SeqCst) > budget_secs
+    }
+}
+
 #[tokio::main]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
+
+    match parse_worker_command(std::env::args().skip(1))? {
+        WorkerCommand::Healthcheck => return run_worker_healthcheck().await,
+        WorkerCommand::Run => {}
+    }
+
     let log_level = std::env::var("WORKER_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
     let log_filter = std::env::var("RUST_LOG")
         .unwrap_or_else(|_| format!("{},apex_worker={}", log_level, log_level));
@@ -350,6 +447,18 @@ async fn main() -> Result<()> {
         );
     }
     tracing::info!("config validated successfully");
+
+    let profile = DeploymentProfile::from_env()?;
+    if profile.requires_llm_build() && !apex_worker::BUILD_LLM_ENABLED {
+        anyhow::bail!(
+            "APEX_PROFILE=full requires the 'llm' feature; rebuild apex-worker with --features llm"
+        );
+    }
+    tracing::info!(
+        profile = %profile,
+        llm_build = apex_worker::BUILD_LLM_ENABLED,
+        "deployment profile resolved"
+    );
 
     // Create database pool for recipe insertion. Every worker connection must
     // carry the same default `service` identity as the API pool: migrations
@@ -383,17 +492,11 @@ async fn main() -> Result<()> {
     tracing::info!("store initialized");
 
     // Migrations normally run at API startup, but the worker can start first
-    // (independent systemd units) and job handlers now write to schema added
-    // by late migrations (e.g. triage_queue merge fields, migration 053).
-    // Best-effort: a failure (permissions, checksum mismatch with
-    // APEX_SKIP_MIGRATIONS semantics) must not take the worker down.
-    match store.run_migrations().await {
-        Ok(()) => tracing::info!("worker startup: database migrations applied"),
-        Err(e) => tracing::warn!(
-            error = %e,
-            "worker startup: database migrations failed; continuing (some features may be degraded)"
-        ),
-    }
+    // (independent systemd units). A worker may never run against an unknown
+    // schema: migration failure — or, under APEX_SKIP_MIGRATIONS, a mismatch
+    // between the applied and embedded latest migration — aborts startup.
+    ensure_database_schema(store.as_ref()).await?;
+    tracing::info!("worker startup: database schema is current");
 
     // ─── Shared warning ingress ───────────────────────────────────────────
     // Every warning-producing job submits through this ONE ingress so
@@ -402,36 +505,6 @@ async fn main() -> Result<()> {
     // is constructed here, never per job.
     let ingress = Arc::new(intelligence_ingress::build(Arc::clone(&store)).await);
     tracing::info!("intelligence ingress initialized");
-
-    // ─── Liveness heartbeat (migration 049) ───────────────────────────────
-    // Health checks read `service_heartbeats.last_seen_at` to distinguish a
-    // live worker from one that silently stopped; write every ~30s so
-    // staleness is a measurement, not an assumption. The first tick fires
-    // immediately, recording a heartbeat at startup.
-    {
-        let heartbeat_store = Arc::clone(&store);
-        tokio::spawn(async move {
-            let instance_id = std::env::var("APEX_INSTANCE_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| {
-                    let host =
-                        std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
-                    format!("{host}-{}", std::process::id())
-                });
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
-            loop {
-                ticker.tick().await;
-                if let Err(error) = heartbeat_store
-                    .record_service_heartbeat("worker", &instance_id, env!("CARGO_PKG_VERSION"))
-                    .await
-                {
-                    tracing::warn!(error = %error, "failed to record worker heartbeat");
-                }
-            }
-        });
-        tracing::info!("worker heartbeat task started");
-    }
 
     // Create the shared ActivityLogger for recording system events
     // to the activity_feed table across all pipeline stages.
@@ -447,6 +520,61 @@ async fn main() -> Result<()> {
         Err(error) => {
             tracing::warn!(error = %error, "failed to restore persisted scheduler state");
         }
+    }
+
+    // A tick may legitimately run for several concurrency waves of jobs, but
+    // every in-flight job is aborted at its enforced timeout, so a healthy
+    // scheduler always records progress within one effective job timeout.
+    // Longer than that plus slack means the tick is genuinely wedged.
+    let scheduler_stall_budget_secs = std::env::var("WORKER_SCHEDULER_STALL_BUDGET_SECS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            scheduler_state
+                .jobs
+                .values()
+                .map(runtime::effective_job_timeout_secs)
+                .max()
+                .unwrap_or(7200) as i64
+                + 900
+        });
+    let scheduler_progress = Arc::new(SchedulerProgressClock::new());
+
+    // ─── Liveness heartbeat (migration 049) ───────────────────────────────
+    // Health checks read `service_heartbeats.last_seen_at` to distinguish a
+    // live worker from one that silently stopped; write every ~30s so
+    // staleness is a measurement, not an assumption. The first tick fires
+    // immediately, recording a heartbeat at startup. When a scheduler tick
+    // exceeds its work budget, heartbeat writes stop so `apex-worker
+    // healthcheck` reports the wedged scheduler instead of a healthy process.
+    {
+        let heartbeat_store = Arc::clone(&store);
+        let progress = Arc::clone(&scheduler_progress);
+        tokio::spawn(async move {
+            // Same identity the healthcheck subprocess resolves, so a
+            // container verifies its own heartbeat row rather than whichever
+            // worker replica beat most recently.
+            let instance_id = apex_worker::healthcheck::resolve_instance_id();
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                if progress.is_stalled(Utc::now().timestamp(), scheduler_stall_budget_secs) {
+                    tracing::error!(
+                        scheduler_stall_budget_secs,
+                        "scheduler made no progress within its work budget; skipping heartbeat so health checks fail"
+                    );
+                    continue;
+                }
+                if let Err(error) = heartbeat_store
+                    .record_service_heartbeat("worker", &instance_id, env!("CARGO_PKG_VERSION"))
+                    .await
+                {
+                    tracing::warn!(error = %error, "failed to record worker heartbeat");
+                }
+            }
+        });
+        tracing::info!("worker heartbeat task started");
     }
 
     let scheduler = Arc::new(TokioMutex::new(scheduler_state));
@@ -495,18 +623,21 @@ async fn main() -> Result<()> {
                 let store = Arc::clone(&store);
                 let scheduler = Arc::clone(&scheduler);
                 let tick_guard = Arc::clone(&tick_guard);
+                let progress = Arc::clone(&scheduler_progress);
                 let job_context = job_context.clone();
                 tokio::spawn(async move {
                     let Ok(_guard) = tick_guard.try_lock() else {
                         tracing::warn!("tick_scheduler: previous run still active; skipping tick");
                         return;
                     };
+                    progress.record_progress();
 
                     let mut scheduler = scheduler.lock().await;
                     // Job-level panics are contained inside tick_scheduler
                     // (each job runs in an observed spawn, B325), so the tick
                     // body itself only does bookkeeping.
-                    runtime::tick_scheduler(&mut scheduler, &store, &job_context).await;
+                    runtime::tick_scheduler(&mut scheduler, &store, &job_context, &progress).await;
+                    progress.record_progress();
                 });
             }
             _ = trigger_interval.tick() => {
@@ -542,6 +673,22 @@ async fn main() -> Result<()> {
     }
     pool.close().await;
     tracing::info!("database pool closed");
+    Ok(())
+}
+
+/// `apex-worker healthcheck`: exit non-zero when the database is unreachable,
+/// no worker heartbeat exists, or the newest heartbeat is stale.
+async fn run_worker_healthcheck() -> Result<()> {
+    let config = AppConfig::from_env()?;
+    let health =
+        apex_worker::healthcheck::check_worker_heartbeat(config.database_url_value(), Utc::now())
+            .await
+            .context("worker healthcheck failed")?;
+
+    println!(
+        "healthy: worker heartbeat {}s ago (instance {}, version {})",
+        health.age_seconds, health.instance_id, health.version
+    );
     Ok(())
 }
 
