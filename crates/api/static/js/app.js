@@ -109,10 +109,6 @@
     return firstBadge ? parseInt(firstBadge.textContent || '0', 10) || 0 : 0;
   }
 
-  function incrementWarningBadges() {
-    updateWarningBadges(currentBadgeCount() + 1);
-  }
-
   function decrementWarningBadges() {
     var currentCount = currentBadgeCount();
     if (currentCount > 0) {
@@ -132,41 +128,6 @@
       .catch(function () { /* ignore server errors */ });
   }
 
-  function connectWarningsWs() {
-    if (!document.querySelector('[data-ws-warnings]')) {
-      return;
-    }
-    var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var retryDelay = 1000;
-
-    function openSocket() {
-      var socket = new WebSocket(protocol + '//' + window.location.host + '/ws/warnings');
-      socket.onopen = function () {
-        retryDelay = 1000;
-      };
-      socket.onmessage = function (event) {
-        try {
-          var payload = JSON.parse(event.data);
-          incrementWarningBadges();
-          showToast(payload.title || 'New warning detected', 'warning');
-        } catch (error) {
-          incrementWarningBadges();
-        }
-      };
-      socket.onerror = function () {
-        socket.close();
-      };
-      socket.onclose = function () {
-        window.setTimeout(function () {
-          retryDelay = Math.min(retryDelay * 2, 30000);
-          openSocket();
-        }, retryDelay);
-      };
-    }
-
-    openSocket();
-  }
-
   document.addEventListener('warning-acknowledged', function () {
     decrementWarningBadges();
     refreshWarningBadgeFromServer();
@@ -175,7 +136,6 @@
   document.addEventListener('DOMContentLoaded', function () {
     applyCsrfToForms(document);
     updateOnlineStatus();
-    connectWarningsWs();
     initDenseTableKeyboardNav();
     initDestructiveConfirms();
     window.setInterval(refreshWarningBadgeFromServer, 60000);

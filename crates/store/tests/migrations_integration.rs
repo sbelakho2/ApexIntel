@@ -125,6 +125,99 @@ async fn core_and_feature_tables_exist() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL; run with --ignored"]
+async fn user_id_tables_are_explicitly_rls_classified() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+
+    // Every base table in `public` with a `user_id` column must either be
+    // explicitly classified as shared/system below, or be identity-scoped:
+    // RLS enabled, FORCEd, and carrying a `current_user_id()` owner policy.
+    // This is the migration-time guard against a new user-private table
+    // shipping without RLS coverage.
+    const SHARED_OR_SYSTEM: &[&str] = &[
+        "workspace_assignments",
+        "api_key_owners",
+        "analyst_user_roles",
+        "weekly_memo_recipients",
+    ];
+
+    let rows = sqlx::query(
+        r#"
+        SELECT c.relname AS table_name,
+               c.relrowsecurity AS rls_enabled,
+               c.relforcerowsecurity AS rls_forced,
+               EXISTS (
+                   SELECT 1 FROM pg_policies p
+                   WHERE p.schemaname = 'public'
+                     AND p.tablename = c.relname
+                     AND COALESCE(p.qual, '') || COALESCE(p.with_check, '')
+                         LIKE '%current_user_id%'
+               ) AS has_owner_policy
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN information_schema.columns col
+          ON col.table_schema = 'public'
+         AND col.table_name = c.relname
+         AND col.column_name = 'user_id'
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+        ORDER BY c.relname
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("enumerate user_id tables");
+
+    let mut seen_tables = Vec::new();
+    let mut scoped_tables = Vec::new();
+    for row in &rows {
+        let table: String = row.get("table_name");
+        seen_tables.push(table.clone());
+        if SHARED_OR_SYSTEM.contains(&table.as_str()) {
+            continue;
+        }
+        scoped_tables.push(table.clone());
+        let rls_enabled: bool = row.get("rls_enabled");
+        let rls_forced: bool = row.get("rls_forced");
+        let has_owner_policy: bool = row.get("has_owner_policy");
+        assert!(
+            rls_enabled,
+            "{table} has user_id but RLS is not enabled (migration 058 gap)"
+        );
+        assert!(
+            rls_forced,
+            "{table} has user_id but RLS is not FORCEd (migration 058 gap)"
+        );
+        assert!(
+            has_owner_policy,
+            "{table} has user_id but no current_user_id() owner policy"
+        );
+    }
+
+    // The shared/system classification must not name tables that do not exist,
+    // so an exemption cannot silently rot after a rename.
+    for shared in SHARED_OR_SYSTEM {
+        assert!(
+            seen_tables.iter().any(|table| table == shared),
+            "{shared} is classified shared/system but has no user_id column"
+        );
+    }
+
+    // 058 reconciles the legacy `annotations` shape (author_id/content) with
+    // the identity-scoped shape the store writes, and forces both named
+    // tables.
+    for required in ["annotations", "insight_bookmarks"] {
+        assert!(
+            scoped_tables.iter().any(|table| table == required),
+            "expected {required} to be a user_id table after migration 058"
+        );
+    }
+
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
 async fn freshly_migrated_schema_contains_no_fixture_intelligence() {
     // migration 004 inserted deterministic demo rows into intelligence tables;
     // migration 046 removes them. A fresh migration run must contain none.

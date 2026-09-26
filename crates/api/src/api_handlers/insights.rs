@@ -242,7 +242,7 @@ pub(crate) async fn bookmark_insight(
     }
     match state
         .store
-        .bookmark_insight(uid, &auth_ctx.user_id, None)
+        .bookmark_insight_scoped(uid, &auth_ctx.user_id, auth_ctx.role.as_str(), None)
         .await
     {
         Ok(created) => {
@@ -400,7 +400,11 @@ pub(crate) async fn unbookmark_insight(
             )
         }
     };
-    match state.store.unbookmark_insight(uid, &auth_ctx.user_id).await {
+    match state
+        .store
+        .unbookmark_insight_scoped(uid, &auth_ctx.user_id, auth_ctx.role.as_str())
+        .await
+    {
         Ok(_removed) => {
             let _ = state
                 .store

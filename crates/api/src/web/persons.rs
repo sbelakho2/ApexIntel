@@ -732,18 +732,23 @@ pub async fn get_person(
         }
     };
 
+    let mut degraded_notice: Option<String> = None;
+
     let organization_name = match person.primary_org_id {
-        Some(org_id) => store
-            .get_company(org_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|company| company.name)
-            .unwrap_or_default(),
+        Some(org_id) => {
+            let organization_state = DataState::from_result(
+                store.get_company(org_id).await,
+                "get_company failed (web person detail)",
+                Option::is_none,
+            );
+            DegradedNotice::capture(&organization_state, &mut degraded_notice);
+            organization_state
+                .into_loaded_or_default()
+                .map(|company| company.name)
+                .unwrap_or_default()
+        }
         None => String::new(),
     };
-
-    let mut degraded_notice: Option<String> = None;
 
     // Fetch role history
     let role_history_state = DataState::from_result(

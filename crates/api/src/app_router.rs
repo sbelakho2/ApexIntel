@@ -783,7 +783,6 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .merge(public)
         .merge(protected)
         .merge(web_pages)
-        .route("/ws/warnings", get(warnings_ws))
         // Styled 404 for pages; JSON 404 for unmatched API routes.
         .fallback(fallback_not_found)
         // ─── PWA static files (dev mode; nginx serves in production) ───

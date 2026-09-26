@@ -267,6 +267,9 @@ pub struct CompanyChangesTabPartial {
 #[template(path = "partials/company_dossier_tab.html")]
 pub struct CompanyDossierTabPartial {
     pub dossier_entries: Vec<DossierEntry>,
+    /// Set when the dossier query failed, so a storage error never renders as
+    /// "no dossier entries".
+    pub degraded_notice: Option<String>,
 }
 
 #[derive(Template)]
@@ -1004,10 +1007,14 @@ pub async fn company_dossier_tab(
         }
     };
 
-    let entries_raw = store
-        .get_dossier_entries("company", uuid, None, 100)
-        .await
-        .unwrap_or_default();
+    let entries_state = DataState::from_result(
+        store.get_dossier_entries("company", uuid, None, 100).await,
+        "get_dossier_entries failed (web company dossier tab)",
+        Vec::is_empty,
+    );
+    let mut degraded_notice: Option<String> = None;
+    DegradedNotice::capture(&entries_state, &mut degraded_notice);
+    let entries_raw = entries_state.into_items();
     let dossier_entries: Vec<DossierEntry> = entries_raw
         .iter()
         .map(|e| DossierEntry {
@@ -1023,7 +1030,10 @@ pub async fn company_dossier_tab(
         })
         .collect();
 
-    let partial = CompanyDossierTabPartial { dossier_entries };
+    let partial = CompanyDossierTabPartial {
+        dossier_entries,
+        degraded_notice,
+    };
     super::render_template(&partial)
 }
 

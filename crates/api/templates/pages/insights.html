@@ -16,6 +16,10 @@
 {% block content %}
 {% call m::page_header("Insight Feed", "eye", "Ranked insights with evidence links and context.", "<a href=\"/memos\" class=\"apex-action-link px-3 py-1.5 tracking-[0.12em]\">Use AI</a>") %}
 
+{% if let Some(notice) = degraded_notice %}
+<div class="apex-card mb-6 border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
+{% endif %}
+
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
   <div class="apex-stat">
     <div class="apex-stat-rail metric-rail-orange"></div>
