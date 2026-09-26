@@ -2606,25 +2606,22 @@ fn worker_command_rejects_unknown_subcommands() {
 }
 
 #[test]
-fn scheduler_tick_clock_flags_wedged_tick_only_past_budget() {
-    let clock = SchedulerTickClock::new();
+fn scheduler_progress_clock_flags_stall_only_past_budget() {
+    let clock = SchedulerProgressClock::new_at(1_000);
 
-    assert!(!clock.is_wedged(1_000, 900), "idle clock is never wedged");
-
-    let started = Utc::now().timestamp();
-    clock.begin();
+    assert!(!clock.is_stalled(1_000, 900), "fresh clock is not stalled");
     assert!(
-        !clock.is_wedged(started, 900),
-        "fresh tick is within budget"
+        !clock.is_stalled(1_900, 900),
+        "exactly at the budget is not stalled"
     );
     assert!(
-        clock.is_wedged(started + 901, 900),
-        "tick past its declared budget is wedged"
+        clock.is_stalled(1_901, 900),
+        "no progress past the budget is a stall"
     );
 
-    clock.finish();
+    clock.record_progress_at(2_000);
     assert!(
-        !clock.is_wedged(started + 100_000, 900),
-        "completed tick clears the wedge"
+        !clock.is_stalled(2_500, 900),
+        "each progress record resets the stall window"
     );
 }

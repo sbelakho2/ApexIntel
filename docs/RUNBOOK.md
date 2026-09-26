@@ -53,10 +53,17 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu -p apex-worker
 scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-api  root@77.42.65.89:/tmp/apex-api-new
 scp -i ~/.ssh/hetzner-db-mac target/aarch64-unknown-linux-gnu/release/apex-worker root@77.42.65.89:/tmp/apex-worker-new
 
-# Server: backup DB first, then swap + restart + verify
+# Server: backup DB first, then verify the schema, swap + restart + verify
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 '
 set -e
 sudo -u postgres pg_dump apexintel | gzip > /opt/apexintel/backups/db_$(date +%Y%m%d_%H%M%S).sql.gz
+# Preflight: production sets APEX_SKIP_MIGRATIONS=true, and the new binaries
+# refuse to start unless the applied schema already matches their embedded
+# migrations (version + checksum). If max(version) is below the embedded
+# latest, apply the pending migrations (rehearsed on a restored backup) BEFORE
+# installing the binaries; otherwise API and worker will crash-loop.
+psql "$(grep ^DATABASE_URL= /opt/apexintel/config/.env | cut -d= -f2-)" \
+  -Atc "SELECT max(version) FROM _sqlx_migrations WHERE success"
 systemctl stop apexintel-worker apexintel-api
 cp /opt/apexintel/bin/apex-api  /opt/apexintel/bin/apex-api.prev   # rollback copy
 cp /opt/apexintel/bin/apex-worker /opt/apexintel/bin/apex-worker.prev
@@ -78,9 +85,12 @@ journalctl -u apexintel-worker --since "1 minute ago" --no-pager | grep -E "work
 
 **Static assets** update independently (`scp crates/api/static/* →
 /opt/apexintel/static/`, no restart; nginx serves them). **Migrations** run
-automatically on API boot — the API validates checksums, so never modify an
-applied migration file (see DEPLOYMENT.md Appendix D for the 2026-08-27
-lineage reconciliation and the schema-sync procedure used).
+automatically on API/worker boot — the binaries validate the applied history
+against their embedded migrations, so never modify an applied migration file
+(see DEPLOYMENT.md Appendix D for the 2026-08-27 lineage reconciliation and
+the schema-sync procedure used). Production sets `APEX_SKIP_MIGRATIONS=true`,
+so the preflight check above is mandatory: a schema behind the embedded latest
+blocks startup entirely.
 
 **To force an immediate job run** (rather than waiting for cadence):
 ```sql

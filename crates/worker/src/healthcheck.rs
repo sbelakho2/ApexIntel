@@ -1,26 +1,50 @@
-//! `apex-worker healthcheck` — prove the worker is doing work.
+//! `apex-worker healthcheck` — prove this worker instance is doing work.
 //!
 //! Container liveness must not be a process-existence check. This probe
 //! connects to the database and requires a fresh `service_heartbeats` row for
-//! `service = 'worker'`; an unreachable database, a deadlocked scheduler (the
-//! heartbeat task stops writing when a scheduler tick exceeds its work
-//! budget), or any other stall all surface as an unhealthy container.
+//! this container's own instance identity; an unreachable database, a
+//! deadlocked scheduler (the heartbeat task stops writing when a scheduler
+//! tick exceeds its work budget), or another replica masking a stalled
+//! instance all surface as an unhealthy container.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use sqlx::Connection;
 
-use apex_store::postgres::{PgStore, ServiceHeartbeatRow};
+use apex_store::postgres::{latest_service_instance_heartbeat, PgStore, ServiceHeartbeatRow};
 
-/// Maximum accepted heartbeat age before the container reports unhealthy.
-/// The worker writes a heartbeat every ~30s, so this tolerates three missed
-/// writes. Mirrors the API's `WORKER_HEARTBEAT_STALE_AFTER_SECS`.
-pub const WORKER_HEARTBEAT_STALE_AFTER_SECS: i64 = 120;
+pub use apex_store::postgres::WORKER_HEARTBEAT_STALE_AFTER_SECS;
+
+/// Service name used for worker heartbeat rows.
+pub const WORKER_SERVICE: &str = "worker";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerHeartbeatHealth {
     pub instance_id: String,
     pub version: String,
     pub age_seconds: i64,
+}
+
+/// Instance identity for this worker's heartbeat row.
+///
+/// `APEX_INSTANCE_ID` wins; otherwise the container/host name is used so the
+/// healthcheck subprocess derives the exact same identity as the heartbeat
+/// writer (both share `HOSTNAME`). Deployments running several workers on one
+/// host must set `APEX_INSTANCE_ID` per process.
+pub fn resolve_instance_id() -> String {
+    instance_id_from_env(
+        std::env::var("APEX_INSTANCE_ID").ok().as_deref(),
+        std::env::var("HOSTNAME").ok().as_deref(),
+    )
+}
+
+fn instance_id_from_env(apex_instance_id: Option<&str>, hostname: Option<&str>) -> String {
+    apex_instance_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| hostname.map(str::trim).filter(|value| !value.is_empty()))
+        .unwrap_or("worker")
+        .to_string()
 }
 
 /// Evaluate the newest worker heartbeat against `max_age_secs`.
@@ -34,7 +58,7 @@ pub fn evaluate_heartbeat(
     max_age_secs: i64,
 ) -> Result<WorkerHeartbeatHealth> {
     let Some(row) = row else {
-        bail!("worker heartbeat missing: no service_heartbeats row for service 'worker'");
+        bail!("worker heartbeat missing: no service_heartbeats row for this instance");
     };
 
     let age_seconds = now
@@ -59,14 +83,18 @@ pub fn evaluate_heartbeat(
     })
 }
 
-/// Connect to the database and evaluate the newest worker heartbeat.
+/// Connect to the database with a single short-lived connection and evaluate
+/// this instance's newest worker heartbeat.
 pub async fn check_worker_heartbeat(
     database_url: &str,
     now: DateTime<Utc>,
 ) -> Result<WorkerHeartbeatHealth> {
-    let store = PgStore::connect(database_url).await?;
-    let row = store.latest_service_heartbeat("worker").await?;
+    let instance_id = resolve_instance_id();
+    let mut conn = sqlx::postgres::PgConnection::connect(database_url).await?;
+    PgStore::assume_service_identity(&mut conn).await?;
+    let row = latest_service_instance_heartbeat(&mut conn, WORKER_SERVICE, &instance_id).await?;
     evaluate_heartbeat(row, now, WORKER_HEARTBEAT_STALE_AFTER_SECS)
+        .with_context(|| format!("worker heartbeat check failed for instance '{instance_id}'"))
 }
 
 #[cfg(test)]
@@ -124,5 +152,27 @@ mod tests {
             .expect("exactly at the threshold is still healthy");
 
         assert_eq!(health.age_seconds, WORKER_HEARTBEAT_STALE_AFTER_SECS);
+    }
+
+    #[test]
+    fn instance_id_prefers_apex_override() {
+        assert_eq!(
+            instance_id_from_env(Some("  worker-a "), Some("host-1")),
+            "worker-a"
+        );
+    }
+
+    #[test]
+    fn instance_id_matches_the_heartbeat_writer_without_a_override() {
+        assert_eq!(
+            instance_id_from_env(None, Some("host-1")),
+            instance_id_from_env(Some("   "), Some("host-1")),
+        );
+        assert_eq!(instance_id_from_env(None, Some("host-1")), "host-1");
+    }
+
+    #[test]
+    fn instance_id_defaults_when_nothing_is_set() {
+        assert_eq!(instance_id_from_env(None, None), "worker");
     }
 }

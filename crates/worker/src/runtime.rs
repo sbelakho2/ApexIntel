@@ -4,8 +4,18 @@ use tokio::sync::Semaphore;
 
 use crate::job_execution::execute_job;
 use crate::job_execution::JobExecutionContext;
-use crate::{format_status, JobKind, JobRun, JobStatus, PgStore, Scheduler, Utc};
+use crate::{
+    format_status, JobKind, JobRun, JobStatus, PgStore, Scheduler, SchedulerProgressClock, Utc,
+};
 use apex_worker::scheduler::JobDef;
+
+/// Effective per-job wall-clock timeout enforced by the scheduler: the
+/// declared timeout, otherwise 7200s, clamped to the runtime's 60..=21_600s
+/// hard bounds. Shared with startup so liveness budgets cannot drift from the
+/// timeouts the runtime actually enforces.
+pub(crate) fn effective_job_timeout_secs(def: &JobDef) -> u64 {
+    def.timeout_secs.unwrap_or(7200).clamp(60, 21_600)
+}
 
 fn worker_state_from_job_def(def: &JobDef) -> apex_store::postgres::WorkerJobStateRecord {
     let (last_status, last_error, last_duration_ms) = match def.last_status.as_ref() {
@@ -124,11 +134,12 @@ pub(crate) fn restore_scheduler_state(
     }
 }
 
-#[tracing::instrument(skip(scheduler, store, ctx))]
+#[tracing::instrument(skip(scheduler, store, ctx, progress))]
 pub(crate) async fn tick_scheduler(
     scheduler: &mut Scheduler,
     store: &Arc<PgStore>,
     ctx: &JobExecutionContext,
+    progress: &SchedulerProgressClock,
 ) {
     tracing::trace!("scheduler_tick_start");
     let now = Utc::now();
@@ -191,11 +202,10 @@ pub(crate) async fn tick_scheduler(
             scheduler
                 .jobs
                 .get(kind.as_str())
-                .and_then(|def| def.timeout_secs)
+                .map(effective_job_timeout_secs)
                 // B322: hard ceiling so a job with no declared timeout can
                 // never wedge the scheduler indefinitely.
-                .unwrap_or(7200)
-                .clamp(60, 21_600),
+                .unwrap_or(7200),
         );
         let run_kind = kind.clone();
         let fail_kind = kind.clone();
@@ -245,6 +255,10 @@ pub(crate) async fn tick_scheduler(
                 run
             }
         };
+        // Every completed (or aborted/timed-out) job is scheduler progress:
+        // the heartbeat task uses this clock to distinguish a long but healthy
+        // tick from a wedged one.
+        progress.record_progress();
         tracing::info!(
             job = kind.as_str(),
             status = format_status(&run),

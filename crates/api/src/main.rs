@@ -725,17 +725,14 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
         .map(|started| (Utc::now() - started).num_seconds() as u64)
         .unwrap_or(0);
 
-    // NATS is optional under `core`, so skip the live connect probe there and
-    // only measure it when the profile requires NATS.
-    let nats_url = if state.profile.requires_capability("nats") {
-        Some(nats_url_from_env())
-    } else {
-        None
-    };
-    let capabilities = apex_api::routes::capabilities::probe_capabilities(
+    // Probe only the capabilities this profile requires; optional capabilities
+    // are not measured, keeping the frequently polled probe cheap.
+    let nats_url = nats_url_from_env();
+    let capabilities = apex_api::routes::capabilities::probe_capabilities_for_profile(
         &state.store.pool,
         &state.search_index,
-        nats_url.as_deref(),
+        Some(nats_url.as_str()),
+        state.profile,
     )
     .await;
     // Only mutated when the `llm` feature adds the runtime-config check.

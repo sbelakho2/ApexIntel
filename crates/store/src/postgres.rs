@@ -243,6 +243,7 @@ pub mod embeddings;
 mod graph;
 mod heartbeats;
 pub use heartbeats::ServiceHeartbeatRow;
+pub use heartbeats::{latest_service_instance_heartbeat, WORKER_HEARTBEAT_STALE_AFTER_SECS};
 mod history;
 mod insights;
 pub use insights::InsightClaimRow;
@@ -697,25 +698,23 @@ impl PgStore {
         Ok(())
     }
 
-    /// Verify that the newest row in `_sqlx_migrations` matches the newest
-    /// embedded migration (version and checksum) and completed successfully.
+    /// Verify the applied migration history against the embedded migrations:
+    /// the newest versions must be equal, every embedded migration up to the
+    /// applied latest must be present, successful, and checksum-identical, and
+    /// no applied migration may be unknown to this binary.
     pub async fn verify_schema_is_current(&self) -> Result<()> {
         let migrator = sqlx::migrate!("../../migrations");
-        let embedded_latest = migrator
+        let embedded: Vec<(i64, Vec<u8>)> = migrator
             .iter()
-            .last()
-            .ok_or_else(|| anyhow::anyhow!("no embedded migrations found"))?;
+            .map(|migration| (migration.version, migration.checksum.to_vec()))
+            .collect();
         let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
-            "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version DESC LIMIT 1",
+            "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version ASC",
         )
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(|error| anyhow::anyhow!("failed to read _sqlx_migrations: {error}"))?;
-        ensure_latest_migration_matches(
-            applied,
-            embedded_latest.version,
-            embedded_latest.checksum.as_ref(),
-        )
+        ensure_migrations_match(&applied, &embedded)
     }
 }
 
@@ -726,33 +725,55 @@ fn skip_migrations_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Fail unless the newest applied migration row exactly matches the newest
-/// embedded migration: it must exist, have succeeded, and carry the same
-/// version and checksum.
-fn ensure_latest_migration_matches(
-    applied: Option<(i64, Vec<u8>, bool)>,
-    embedded_version: i64,
-    embedded_checksum: &[u8],
+/// Fail unless the applied migration history exactly matches the embedded
+/// migrations up to the applied latest version.
+fn ensure_migrations_match(
+    applied: &[(i64, Vec<u8>, bool)],
+    embedded: &[(i64, Vec<u8>)],
 ) -> Result<()> {
-    let Some((version, checksum, success)) = applied else {
+    let Some((latest_embedded, _)) = embedded.iter().max_by_key(|(version, _)| *version) else {
+        anyhow::bail!("no embedded migrations found");
+    };
+    let Some((latest_applied, _, _)) = applied.iter().max_by_key(|(version, _, _)| *version) else {
         anyhow::bail!(
-            "no migrations have been applied to this database (embedded latest is version {embedded_version})"
+            "no migrations have been applied to this database (embedded latest is version {latest_embedded})"
         );
     };
-    if !success {
-        anyhow::bail!("latest applied migration {version} did not complete successfully");
-    }
-    if version != embedded_version {
+    if latest_applied != latest_embedded {
         anyhow::bail!(
-            "database schema is stale: latest applied migration is {version}, embedded latest is {embedded_version}"
+            "database schema is stale: latest applied migration is {latest_applied}, embedded latest is {latest_embedded}"
         );
     }
-    if checksum != embedded_checksum {
-        anyhow::bail!(
-            "database schema checksum mismatch for migration {version}: applied {} vs embedded {}",
-            hex::encode(&checksum),
-            hex::encode(embedded_checksum)
-        );
+
+    for (version, embedded_checksum) in embedded
+        .iter()
+        .filter(|(version, _)| version <= latest_applied)
+    {
+        let Some((_, applied_checksum, success)) = applied
+            .iter()
+            .find(|(applied_version, _, _)| applied_version == version)
+        else {
+            anyhow::bail!("database schema is missing embedded migration {version}");
+        };
+        if !success {
+            anyhow::bail!("applied migration {version} did not complete successfully");
+        }
+        if applied_checksum != embedded_checksum {
+            anyhow::bail!(
+                "database schema checksum mismatch for migration {version}: applied {} vs embedded {}",
+                hex::encode(applied_checksum),
+                hex::encode(embedded_checksum)
+            );
+        }
+    }
+
+    for (version, _, _) in applied {
+        if !embedded
+            .iter()
+            .any(|(embedded_version, _)| embedded_version == version)
+        {
+            anyhow::bail!("database schema contains unknown migration {version}");
+        }
     }
     Ok(())
 }
@@ -2096,44 +2117,73 @@ mod tests {
     }
 
     #[test]
-    fn latest_migration_matches_when_version_checksum_and_success_align() {
-        let checksum = vec![1u8, 2, 3, 4];
-        assert!(
-            ensure_latest_migration_matches(Some((53, checksum.clone(), true)), 53, &checksum)
-                .is_ok()
-        );
+    fn migrations_match_when_full_history_aligns() {
+        let embedded = vec![(52, vec![5u8, 2]), (53, vec![1u8, 2, 3, 4])];
+        let applied = vec![(52, vec![5u8, 2], true), (53, vec![1, 2, 3, 4], true)];
+        assert!(ensure_migrations_match(&applied, &embedded).is_ok());
     }
 
     #[test]
-    fn latest_migration_rejects_missing_history() {
-        let error = ensure_latest_migration_matches(None, 53, &[1, 2, 3]).expect_err("must fail");
+    fn migrations_reject_empty_applied_history() {
+        let error = ensure_migrations_match(&[], &[(53, vec![1, 2, 3])]).expect_err("must fail");
         assert!(error
             .to_string()
             .contains("no migrations have been applied"));
     }
 
     #[test]
-    fn latest_migration_rejects_failed_latest_row() {
-        let error =
-            ensure_latest_migration_matches(Some((53, vec![1, 2, 3], false)), 53, &[1, 2, 3])
-                .expect_err("must fail");
+    fn migrations_reject_failed_latest_row() {
+        let error = ensure_migrations_match(&[(53, vec![1, 2, 3], false)], &[(53, vec![1, 2, 3])])
+            .expect_err("must fail");
         assert!(error.to_string().contains("did not complete successfully"));
     }
 
     #[test]
-    fn latest_migration_rejects_stale_version() {
-        let error =
-            ensure_latest_migration_matches(Some((52, vec![1, 2, 3], true)), 53, &[1, 2, 3])
-                .expect_err("must fail");
+    fn migrations_reject_stale_version() {
+        let error = ensure_migrations_match(
+            &[(52, vec![1, 2, 3], true)],
+            &[(52, vec![1, 2, 3]), (53, vec![1, 2, 3])],
+        )
+        .expect_err("must fail");
         assert!(error.to_string().contains("schema is stale"));
         assert!(error.to_string().contains("52"));
     }
 
     #[test]
-    fn latest_migration_rejects_checksum_mismatch() {
-        let error =
-            ensure_latest_migration_matches(Some((53, vec![9, 9, 9], true)), 53, &[1, 2, 3])
-                .expect_err("must fail");
+    fn migrations_reject_checksum_mismatch() {
+        let error = ensure_migrations_match(&[(53, vec![9, 9, 9], true)], &[(53, vec![1, 2, 3])])
+            .expect_err("must fail");
         assert!(error.to_string().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn migrations_reject_missing_earlier_migration() {
+        let error = ensure_migrations_match(
+            &[(53, vec![1, 2, 3], true)],
+            &[(52, vec![5, 2]), (53, vec![1, 2, 3])],
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("missing embedded migration 52"));
+    }
+
+    #[test]
+    fn migrations_reject_failed_earlier_migration() {
+        let error = ensure_migrations_match(
+            &[(52, vec![5, 2], false), (53, vec![1, 2, 3], true)],
+            &[(52, vec![5, 2]), (53, vec![1, 2, 3])],
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("migration 52"));
+        assert!(error.to_string().contains("did not complete successfully"));
+    }
+
+    #[test]
+    fn migrations_reject_unknown_applied_migration() {
+        let error = ensure_migrations_match(
+            &[(51, vec![7, 7], true), (53, vec![1, 2, 3], true)],
+            &[(53, vec![1, 2, 3])],
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("unknown migration 51"));
     }
 }

@@ -12,8 +12,8 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 ### Startup / schema
 - Worker startup now fails when `store.run_migrations()` fails instead of
   warning and continuing. `APEX_SKIP_MIGRATIONS=1` no longer means "assume
-  the schema is current": the applied latest migration must match the
-  embedded latest by version and checksum, or startup aborts.
+  the schema is current": the applied history (latest version and every
+  checksum) must match the embedded migrations, or startup aborts.
 - `BUILD_LLM_ENABLED` build metadata added to `apex-api`/`apex-worker`;
   `APEX_PROFILE=full` refuses to start when the `llm` feature was not
   compiled.
@@ -23,14 +23,17 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
   profile-aware: 503 when any capability the profile requires is missing
   (full: database, worker heartbeat, LLM, embeddings, NATS, search index,
   browser renderer; core keeps NATS, browser rendering and the LLM stack
-  optional). `/api/health` remains the detailed matrix.
+  optional), and an unknown required capability fails closed. Only required
+  capabilities are probed, so the load-balancer path stays cheap.
+  `/api/health` remains the detailed matrix.
 
 ### Worker healthcheck
 - `Dockerfile.worker` no longer probes PID 1 with `kill -0`. The container
-  healthcheck runs `apex-worker healthcheck`, which requires a fresh
-  `service_heartbeats` row; an unreachable database, a stale heartbeat, or a
-  scheduler tick that exceeds its work budget (heartbeat writes stop) reports
-  the container unhealthy.
+  healthcheck runs `apex-worker healthcheck`, which verifies the freshness of
+  this container's own `service_heartbeats` row (so another replica cannot
+  mask a stalled instance). Heartbeat writes stop when the scheduler records
+  no progress for longer than the longest enforced job timeout; the stale
+  threshold is now shared in `apex-store` instead of duplicated.
 
 ---
 

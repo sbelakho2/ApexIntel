@@ -372,36 +372,42 @@ pub(crate) async fn ensure_database_schema(store: &impl SchemaMigrationStore) ->
         .context("database schema is not current")
 }
 
-/// Tracks whether a scheduler tick is running and for how long.
+/// Tracks the last moment the scheduler made progress (tick start or a job
+/// completion).
 ///
-/// The heartbeat task consults this clock: once a tick has held the scheduler
-/// past the declared work budget, heartbeat writes stop so the stale
-/// `service_heartbeats` row makes `apex-worker healthcheck` fail instead of
-/// reporting a wedged scheduler healthy.
-#[derive(Debug, Default)]
-pub(crate) struct SchedulerTickClock {
-    started_at_epoch_secs: AtomicI64,
+/// The heartbeat task consults this clock: once no progress has been recorded
+/// for longer than the declared work budget, heartbeat writes stop so the
+/// stale `service_heartbeats` row makes `apex-worker healthcheck` fail instead
+/// of reporting a wedged scheduler healthy. Because every in-flight job is
+/// aborted at its own enforced timeout, a healthy tick always records progress
+/// within one job timeout even when several concurrency waves are running.
+#[derive(Debug)]
+pub(crate) struct SchedulerProgressClock {
+    last_progress_epoch_secs: AtomicI64,
 }
 
-impl SchedulerTickClock {
+impl SchedulerProgressClock {
     pub(crate) fn new() -> Self {
+        Self::new_at(Utc::now().timestamp())
+    }
+
+    pub(crate) fn new_at(epoch_secs: i64) -> Self {
         Self {
-            started_at_epoch_secs: AtomicI64::new(0),
+            last_progress_epoch_secs: AtomicI64::new(epoch_secs),
         }
     }
 
-    pub(crate) fn begin(&self) {
-        self.started_at_epoch_secs
-            .store(Utc::now().timestamp(), Ordering::SeqCst);
+    pub(crate) fn record_progress(&self) {
+        self.record_progress_at(Utc::now().timestamp());
     }
 
-    pub(crate) fn finish(&self) {
-        self.started_at_epoch_secs.store(0, Ordering::SeqCst);
+    pub(crate) fn record_progress_at(&self, epoch_secs: i64) {
+        self.last_progress_epoch_secs
+            .store(epoch_secs, Ordering::SeqCst);
     }
 
-    pub(crate) fn is_wedged(&self, now_epoch_secs: i64, budget_secs: i64) -> bool {
-        let started = self.started_at_epoch_secs.load(Ordering::SeqCst);
-        started != 0 && now_epoch_secs - started > budget_secs
+    pub(crate) fn is_stalled(&self, now_epoch_secs: i64, budget_secs: i64) -> bool {
+        now_epoch_secs - self.last_progress_epoch_secs.load(Ordering::SeqCst) > budget_secs
     }
 }
 
@@ -516,10 +522,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // A tick may legitimately run for the longest declared job timeout (the
-    // runtime hard ceiling is 21_600s); past that plus slack the tick is
-    // wedged and the worker must stop claiming to be healthy.
-    let scheduler_wedge_budget_secs = std::env::var("WORKER_SCHEDULER_WEDGE_BUDGET_SECS")
+    // A tick may legitimately run for several concurrency waves of jobs, but
+    // every in-flight job is aborted at its enforced timeout, so a healthy
+    // scheduler always records progress within one effective job timeout.
+    // Longer than that plus slack means the tick is genuinely wedged.
+    let scheduler_stall_budget_secs = std::env::var("WORKER_SCHEDULER_STALL_BUDGET_SECS")
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
         .filter(|value| *value > 0)
@@ -527,12 +534,12 @@ async fn main() -> Result<()> {
             scheduler_state
                 .jobs
                 .values()
-                .map(|def| def.timeout_secs.unwrap_or(7200) as i64)
+                .map(runtime::effective_job_timeout_secs)
                 .max()
-                .unwrap_or(7200)
+                .unwrap_or(7200) as i64
                 + 900
         });
-    let scheduler_tick_clock = Arc::new(SchedulerTickClock::new());
+    let scheduler_progress = Arc::new(SchedulerProgressClock::new());
 
     // ─── Liveness heartbeat (migration 049) ───────────────────────────────
     // Health checks read `service_heartbeats.last_seen_at` to distinguish a
@@ -543,23 +550,19 @@ async fn main() -> Result<()> {
     // healthcheck` reports the wedged scheduler instead of a healthy process.
     {
         let heartbeat_store = Arc::clone(&store);
-        let tick_clock = Arc::clone(&scheduler_tick_clock);
+        let progress = Arc::clone(&scheduler_progress);
         tokio::spawn(async move {
-            let instance_id = std::env::var("APEX_INSTANCE_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| {
-                    let host =
-                        std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
-                    format!("{host}-{}", std::process::id())
-                });
+            // Same identity the healthcheck subprocess resolves, so a
+            // container verifies its own heartbeat row rather than whichever
+            // worker replica beat most recently.
+            let instance_id = apex_worker::healthcheck::resolve_instance_id();
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 ticker.tick().await;
-                if tick_clock.is_wedged(Utc::now().timestamp(), scheduler_wedge_budget_secs) {
+                if progress.is_stalled(Utc::now().timestamp(), scheduler_stall_budget_secs) {
                     tracing::error!(
-                        scheduler_wedge_budget_secs,
-                        "scheduler tick exceeded its work budget; skipping heartbeat so health checks fail"
+                        scheduler_stall_budget_secs,
+                        "scheduler made no progress within its work budget; skipping heartbeat so health checks fail"
                     );
                     continue;
                 }
@@ -620,21 +623,21 @@ async fn main() -> Result<()> {
                 let store = Arc::clone(&store);
                 let scheduler = Arc::clone(&scheduler);
                 let tick_guard = Arc::clone(&tick_guard);
-                let tick_clock = Arc::clone(&scheduler_tick_clock);
+                let progress = Arc::clone(&scheduler_progress);
                 let job_context = job_context.clone();
                 tokio::spawn(async move {
                     let Ok(_guard) = tick_guard.try_lock() else {
                         tracing::warn!("tick_scheduler: previous run still active; skipping tick");
                         return;
                     };
-                    tick_clock.begin();
+                    progress.record_progress();
 
                     let mut scheduler = scheduler.lock().await;
                     // Job-level panics are contained inside tick_scheduler
                     // (each job runs in an observed spawn, B325), so the tick
                     // body itself only does bookkeeping.
-                    runtime::tick_scheduler(&mut scheduler, &store, &job_context).await;
-                    tick_clock.finish();
+                    runtime::tick_scheduler(&mut scheduler, &store, &job_context, &progress).await;
+                    progress.record_progress();
                 });
             }
             _ = trigger_interval.tick() => {

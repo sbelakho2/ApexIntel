@@ -267,7 +267,7 @@ chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-wo
 
 ### 3.4 Database Migrations
 
-Migrations are embedded in the `apex-store` crate and run automatically when the API and worker start (`store.run_migrations().await`). No manual migration step is needed, and neither process will start against an unknown schema: migration failure aborts startup. `APEX_SKIP_MIGRATIONS=1` is only honored after verifying that the applied latest migration matches the embedded latest by version and checksum.
+Migrations are embedded in the `apex-store` crate and run automatically when the API and worker start (`store.run_migrations().await`). No manual migration step is needed, and neither process will start against an unknown schema: migration failure aborts startup. `APEX_SKIP_MIGRATIONS=1` is only honored after verifying that the applied history matches the embedded migrations (latest version and every checksum), so a binary update against a lagging DB must be preceded by the schema preflight in §8 "Routine Update".
 
 ---
 
@@ -739,7 +739,16 @@ scp -i ~/.ssh/hetzner-db-mac \
   target/aarch64-unknown-linux-gnu/release/apex-worker \
   root@77.42.65.89:/tmp/apex-worker-new
 
-# 3. Install & restart
+# 3. Preflight the schema (mandatory for the fail-closed boot)
+#    With APEX_SKIP_MIGRATIONS=true (production) the new binaries refuse to
+#    start unless the applied migration history matches their embedded
+#    migrations (latest version + every checksum). If the DB is behind,
+#    apply the pending migrations (rehearsed on a restored backup) first.
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
+  'psql "$(grep ^DATABASE_URL= /opt/apexintel/config/.env | cut -d= -f2-)" \
+     -Atc "SELECT max(version) FROM _sqlx_migrations WHERE success"'
+
+# 4. Install & restart
 ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 << 'EOF'
 systemctl stop apexintel-api apexintel-worker
 cp /tmp/apex-api-new /opt/apexintel/bin/apex-api

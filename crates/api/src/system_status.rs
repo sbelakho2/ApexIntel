@@ -10,9 +10,10 @@ use std::sync::{OnceLock, RwLock};
 
 use chrono::Duration;
 
-/// A worker heartbeat older than this is considered offline (heartbeats are
-/// written every ~30s, so this tolerates two missed beats plus jitter).
-pub const WORKER_HEARTBEAT_STALE_AFTER_SECS: i64 = 120;
+/// A worker heartbeat older than this is considered offline. Defined in
+/// `apex-store` so the API probes, the status strip, and the worker container
+/// healthcheck cannot drift apart.
+pub use apex_store::postgres::WORKER_HEARTBEAT_STALE_AFTER_SECS;
 
 /// Observations older than this are surfaced as stale data.
 pub const DATA_FRESH_WITHIN_SECS: i64 = 6 * 60 * 60;
