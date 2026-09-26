@@ -63,6 +63,7 @@ pub struct Capabilities {
     pub search_index: CapabilityStatus,
     pub worker_heartbeat: CapabilityStatus,
     pub crawl_freshness: CapabilityStatus,
+    pub deployment: CapabilityStatus,
 }
 
 impl Capabilities {
@@ -77,6 +78,7 @@ impl Capabilities {
             &self.search_index,
             &self.worker_heartbeat,
             &self.crawl_freshness,
+            &self.deployment,
         ];
         if all.iter().any(|c| c.status == "unavailable") {
             "unavailable"
@@ -111,6 +113,7 @@ impl Capabilities {
             ("search_index", &self.search_index),
             ("worker_heartbeat", &self.worker_heartbeat),
             ("crawl_freshness", &self.crawl_freshness),
+            ("deployment", &self.deployment),
         ]
         .into_iter()
         .map(|(name, capability)| ComponentHealth {
@@ -139,6 +142,7 @@ impl Capabilities {
             "search_index" => Some(&self.search_index),
             "worker_heartbeat" => Some(&self.worker_heartbeat),
             "crawl_freshness" => Some(&self.crawl_freshness),
+            "deployment" => Some(&self.deployment),
             _ => None,
         }
     }
@@ -259,6 +263,21 @@ async fn probe_capabilities_plan(
         search_index: search_index_status,
         worker_heartbeat,
         crawl_freshness,
+        deployment: probe_deployment(),
+    }
+}
+
+/// Deployment provenance is a capability like any other: an unconfigured
+/// deploy (missing git SHA) is `degraded`, never a silent pass.
+fn probe_deployment() -> CapabilityStatus {
+    let provenance = crate::provenance::DeploymentProvenance::from_env("apex-api");
+    if provenance.configured {
+        CapabilityStatus::new("ok", provenance.summary())
+    } else {
+        CapabilityStatus::new(
+            "degraded",
+            "no deployment provenance recorded (set APEX_GIT_SHA, APEX_CI_PIPELINE_ID, APEX_ARTIFACT_DIGEST, APEX_DEPLOYED_AT)",
+        )
     }
 }
 
@@ -442,6 +461,7 @@ mod tests {
                 status.age_seconds = Some(240);
                 status
             },
+            deployment: CapabilityStatus::new("ok", "git abc123 · pipeline 42"),
         }
     }
 
@@ -459,6 +479,7 @@ mod tests {
             "search_index",
             "worker_heartbeat",
             "crawl_freshness",
+            "deployment",
         ] {
             let entry = object
                 .get(key)
@@ -522,6 +543,7 @@ mod tests {
                 "search_index",
                 "worker_heartbeat",
                 "crawl_freshness",
+                "deployment",
             ]
         );
         assert!(checks

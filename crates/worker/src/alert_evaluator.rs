@@ -276,7 +276,7 @@ impl AlertEvaluator {
                     "Rule: {}\nCondition: {}\nEvent: {}\n{}",
                     rule.name, rule.condition, event.title, event.description
                 ),
-                entity_id: event.entity_id,
+                entity_ids: event.entity_id.into_iter().collect(),
                 entity_name: event.entity_name.clone(),
                 // Rule firings are not system-wide: leave the audience empty so
                 // the API router resolves the entity's real subscribers. An

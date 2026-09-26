@@ -55,6 +55,101 @@ pub enum AlertAudience {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AlertScope
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What an alert is about, and (for explicit addressing) who it is for.
+///
+/// This replaces the legacy `entity_id: String` / `entity_name: String` pair
+/// on outgoing alerts. The old pair forced system alerts to invent a
+/// `"system"` fake entity, and a warning that referenced several entities was
+/// silently collapsed to one. A system-wide alert is now an explicit
+/// [`AlertScope::SystemBroadcast`], and multi-entity alerts carry the full
+/// [`AlertScope::Entities`] set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AlertScope {
+    /// One named entity (`entity_name` may be absent when only the id is known).
+    Entity {
+        entity_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entity_name: Option<String>,
+    },
+    /// Several entities referenced by the same alert/warning; never truncated.
+    Entities { entity_ids: Vec<String> },
+    /// Explicitly addressed user principals.
+    Users { user_ids: Vec<Uuid> },
+    /// Deliberate system-wide alert with no entity relationship.
+    SystemBroadcast,
+}
+
+impl AlertScope {
+    /// Single named entity.
+    pub fn entity(entity_id: impl Into<String>, entity_name: Option<impl Into<String>>) -> Self {
+        Self::Entity {
+            entity_id: entity_id.into(),
+            entity_name: entity_name.map(Into::into),
+        }
+    }
+
+    /// Full entity set for one alert.
+    pub fn entities<I, S>(entity_ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::Entities {
+            entity_ids: entity_ids.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Every entity id the alert references, in order.
+    pub fn entity_ids(&self) -> Vec<&str> {
+        match self {
+            Self::Entity { entity_id, .. } => vec![entity_id.as_str()],
+            Self::Entities { entity_ids } => entity_ids.iter().map(String::as_str).collect(),
+            Self::Users { .. } | Self::SystemBroadcast => Vec::new(),
+        }
+    }
+
+    /// First entity id, used for display and per-entity config lookups.
+    pub fn primary_entity_id(&self) -> Option<&str> {
+        self.entity_ids().into_iter().next()
+    }
+
+    /// Human-readable label used in notification bodies.
+    pub fn display(&self) -> String {
+        match self {
+            Self::Entity {
+                entity_id,
+                entity_name,
+            } => entity_name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| entity_id.clone()),
+            Self::Entities { entity_ids } if entity_ids.is_empty() => "No entity".to_string(),
+            Self::Entities { entity_ids } => entity_ids.join(", "),
+            Self::Users { user_ids } => format!("{} user(s)", user_ids.len()),
+            Self::SystemBroadcast => "System-wide".to_string(),
+        }
+    }
+
+    /// The audience implied by this scope.
+    ///
+    /// Entity scopes resolve real subscribers downstream and therefore use an
+    /// empty [`AlertAudience::Users`] (nobody until subscriptions resolve);
+    /// only [`AlertScope::SystemBroadcast`] maps to
+    /// [`AlertAudience::Broadcast`].
+    pub fn audience(&self) -> AlertAudience {
+        match self {
+            Self::Users { user_ids } => AlertAudience::Users(user_ids.clone()),
+            Self::SystemBroadcast => AlertAudience::Broadcast,
+            Self::Entity { .. } | Self::Entities { .. } => AlertAudience::Users(Vec::new()),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AlertSeverity
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -436,6 +531,61 @@ mod tests {
             let back: AlertAudience = serde_json::from_str(&json).unwrap();
             assert_eq!(back, audience);
         }
+    }
+
+    // ── AlertScope ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn alert_scope_preserves_the_full_entity_set() {
+        let scope = AlertScope::entities(["entity-a", "entity-b", "entity-c"]);
+        assert_eq!(
+            scope.entity_ids(),
+            vec!["entity-a", "entity-b", "entity-c"],
+            "never truncate a multi-entity alert to entity_ids[1]"
+        );
+        assert_eq!(scope.primary_entity_id(), Some("entity-a"));
+    }
+
+    #[test]
+    fn alert_scope_models_system_alerts_explicitly() {
+        let scope = AlertScope::SystemBroadcast;
+        assert!(scope.entity_ids().is_empty());
+        assert_eq!(scope.display(), "System-wide");
+        assert_eq!(scope.audience(), AlertAudience::Broadcast);
+    }
+
+    #[test]
+    fn alert_scope_entity_resolution_is_not_an_implicit_broadcast() {
+        let single = AlertScope::entity("entity-a", Some("Acme Corp"));
+        assert_eq!(single.display(), "Acme Corp");
+        // Entity scopes resolve real subscribers downstream; empty Users means
+        // "nobody until subscriptions resolve", never a broadcast.
+        assert_eq!(single.audience(), AlertAudience::Users(vec![]));
+
+        let unnamed = AlertScope::entity("entity-a", None::<String>);
+        assert_eq!(unnamed.display(), "entity-a");
+    }
+
+    #[test]
+    fn alert_scope_users_map_to_explicit_audience() {
+        let user = Uuid::nil();
+        let scope = AlertScope::Users {
+            user_ids: vec![user],
+        };
+        assert_eq!(scope.audience(), AlertAudience::Users(vec![user]));
+        assert_eq!(scope.display(), "1 user(s)");
+    }
+
+    #[test]
+    fn alert_scope_serde_is_tagged() {
+        let json = serde_json::to_value(AlertScope::SystemBroadcast).unwrap();
+        assert_eq!(json, serde_json::json!({"kind": "system_broadcast"}));
+
+        let entities = serde_json::to_value(AlertScope::entities(["a", "b"])).unwrap();
+        assert_eq!(
+            entities,
+            serde_json::json!({"kind": "entities", "entity_ids": ["a", "b"]})
+        );
     }
 
     // ── principal_uuid_from_user_id ───────────────────────────────────────────

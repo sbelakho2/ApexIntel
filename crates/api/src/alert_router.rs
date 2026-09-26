@@ -67,7 +67,11 @@ pub struct AlertEvent {
     pub severity: apex_core::alert_config::AlertSeverity,
     pub title: String,
     pub description: String,
-    pub entity_id: Option<Uuid>,
+    /// Complete entity set the alert references. Subscriber resolution is the
+    /// union across every entry; a multi-entity warning must not collapse to
+    /// its first entity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<Uuid>,
     pub entity_name: Option<String>,
     /// Who this alert is addressed to. `Users(vec![])` addresses nobody and
     /// only a deliberate `Broadcast` reaches every connected user.
@@ -87,6 +91,11 @@ impl AlertEvent {
             AlertEventType::SupplyChainRisk => "supply_chain_risk",
             AlertEventType::SystemAlert => "system_alert",
         }
+    }
+
+    /// Primary entity for display and per-entity config lookups, if any.
+    pub fn primary_entity_id(&self) -> Option<Uuid> {
+        self.entity_ids.first().copied()
     }
 }
 
@@ -204,17 +213,28 @@ impl AlertRouter {
 
     /// Find the real subscribers for an entity-targeted alert.
     ///
-    /// Returns principal IDs whose `user_alert_subscriptions` row matches the
-    /// alert's entity, category and severity. With no entity, or no matching
-    /// rows, returns an empty list (nobody).
+    /// Returns the union of principal IDs whose `user_alert_subscriptions` row
+    /// matches any of the alert's entities, category and severity. With no
+    /// entities, or no matching rows, returns an empty list (nobody).
     pub async fn find_subscribed_users(&self, alert: &AlertEvent) -> anyhow::Result<Vec<Uuid>> {
-        let Some(entity_id) = alert.entity_id else {
+        if alert.entity_ids.is_empty() {
             return Ok(Vec::new());
-        };
+        }
 
-        self.db
-            .find_subscribed_users(entity_id, alert.alert_category(), alert.severity)
-            .await
+        let mut seen = std::collections::HashSet::new();
+        let mut subscribers = Vec::new();
+        for entity_id in &alert.entity_ids {
+            for user_id in self
+                .db
+                .find_subscribed_users(*entity_id, alert.alert_category(), alert.severity)
+                .await?
+            {
+                if seen.insert(user_id) {
+                    subscribers.push(user_id);
+                }
+            }
+        }
+        Ok(subscribers)
     }
 
     /// Check whether a specific user should receive this alert.
@@ -258,7 +278,7 @@ impl AlertRouter {
     async fn entity_or_global_allows(&self, alert: &AlertEvent) -> bool {
         use apex_core::alert_config::AlertChannel;
 
-        if let Some(entity_id) = alert.entity_id {
+        if let Some(entity_id) = alert.primary_entity_id() {
             let entity_id_str = entity_id.to_string();
             match self.db.get_entity_alert_config(&entity_id_str).await {
                 Ok(Some(cfg)) => {
@@ -370,7 +390,7 @@ mod tests {
             severity,
             title: "Test".to_string(),
             description: "Test".to_string(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             entity_name: None,
             audience: AlertAudience::Users(vec![]),
             metadata: serde_json::json!({}),
@@ -408,7 +428,7 @@ mod tests {
             severity: AlertSeverity::Critical,
             title: "Competitor move".to_string(),
             description: "A competitor changed strategy".to_string(),
-            entity_id: Some(Uuid::new_v4()),
+            entity_ids: vec![Uuid::new_v4(), Uuid::new_v4()],
             entity_name: Some("Rival Corp".to_string()),
             audience: AlertAudience::Users(vec![Uuid::new_v4()]),
             metadata: serde_json::json!({"change_type": "pivot"}),

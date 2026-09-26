@@ -227,7 +227,7 @@ pub(crate) fn build_alert_event(
         severity: AlertSeverity::from_str(&warning.severity),
         title: warning.title.clone(),
         description: warning.description.clone().unwrap_or_default(),
-        entity_id: warning.entity_ids.first().copied(),
+        entity_ids: warning.entity_ids.clone(),
         entity_name: None,
         audience: warning.audience(),
         metadata: serde_json::json!({

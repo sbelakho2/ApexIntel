@@ -656,7 +656,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Test".to_string(),
             description: "Test description".to_string(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             entity_name: None,
             audience,
             metadata: serde_json::json!({}),

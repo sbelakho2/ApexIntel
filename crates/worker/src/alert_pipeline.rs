@@ -178,7 +178,7 @@ impl NatsAlertEventPublisher {
             severity: event.severity.as_str().to_string(),
             title: event.title.clone(),
             description: event.description.clone(),
-            entity_id: event.entity_id,
+            entity_id: event.primary_entity_id(),
             entity_name: event.entity_name.clone(),
             metadata: event.metadata.clone(),
             created_at: event.created_at,
@@ -394,7 +394,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Persisted warning".to_string(),
             description: "Committed before the crash".to_string(),
-            entity_id: Some(Uuid::new_v4()),
+            entity_ids: vec![Uuid::new_v4()],
             entity_name: Some("Acme".to_string()),
             audience: apex_core::alert_config::AlertAudience::Users(vec![]),
             metadata: serde_json::json!({"warning_type": "volume_anomaly"}),
@@ -875,7 +875,7 @@ rules:
         assert_eq!(domain.source, "warning_volume_anomaly");
         assert_eq!(domain.severity, "high");
         assert_eq!(domain.id, event.id);
-        assert_eq!(domain.entity_id, event.entity_id);
+        assert_eq!(domain.entity_id, event.primary_entity_id());
     }
 
     #[test]

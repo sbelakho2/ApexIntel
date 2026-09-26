@@ -35,13 +35,21 @@ use tracing::{debug, error, info};
 /// definition across the entire platform.
 pub use apex_core::alert_config::AlertSeverity;
 
+/// Who/what an outgoing alert is about.
+///
+/// Re-exported from `apex_core::alert_config` so workers, the API and the UI
+/// share the exact `Entity` / `Entities` / `Users` / `SystemBroadcast` model.
+pub use apex_core::alert_config::AlertScope;
+
 /// A pending alert derived from an `InsightCard` or a pipeline event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "PendingAlertWire")]
 pub struct PendingAlert {
     /// Originating insight / event id.
     pub source_id: String,
-    pub entity_id: String,
-    pub entity_name: String,
+    /// Entity set, explicit users, or an explicit system broadcast. Replaces
+    /// the legacy `"system"` fake entity string.
+    pub scope: AlertScope,
     pub title: String,
     pub body: String,
     pub severity: AlertSeverity,
@@ -54,11 +62,62 @@ pub struct PendingAlert {
     pub llm_narrative: Option<String>,
 }
 
+/// Wire form that still accepts the legacy `entity_id` / `entity_name` pair,
+/// so notification dead-letter rows written before the `AlertScope` migration
+/// remain replayable instead of being silently dropped.
+#[derive(Deserialize)]
+struct PendingAlertWire {
+    source_id: String,
+    #[serde(default)]
+    scope: Option<AlertScope>,
+    #[serde(default)]
+    entity_id: Option<String>,
+    #[serde(default)]
+    entity_name: Option<String>,
+    title: String,
+    body: String,
+    severity: AlertSeverity,
+    priority_score: f64,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    region: Option<String>,
+    created_at: DateTime<Utc>,
+    #[serde(default)]
+    llm_narrative: Option<String>,
+}
+
+impl From<PendingAlertWire> for PendingAlert {
+    fn from(wire: PendingAlertWire) -> Self {
+        let scope = wire
+            .scope
+            .unwrap_or_else(|| match wire.entity_id.as_deref() {
+                Some("system") | None | Some("") => AlertScope::SystemBroadcast,
+                Some(entity_id) => AlertScope::Entity {
+                    entity_id: entity_id.to_string(),
+                    entity_name: wire.entity_name.clone(),
+                },
+            });
+
+        Self {
+            source_id: wire.source_id,
+            scope,
+            title: wire.title,
+            body: wire.body,
+            severity: wire.severity,
+            priority_score: wire.priority_score,
+            category: wire.category,
+            region: wire.region,
+            created_at: wire.created_at,
+            llm_narrative: wire.llm_narrative,
+        }
+    }
+}
+
 impl PendingAlert {
     pub fn new(
         source_id: impl Into<String>,
-        entity_id: impl Into<String>,
-        entity_name: impl Into<String>,
+        scope: AlertScope,
         title: impl Into<String>,
         body: impl Into<String>,
         severity: AlertSeverity,
@@ -66,8 +125,7 @@ impl PendingAlert {
     ) -> Self {
         Self {
             source_id: source_id.into(),
-            entity_id: entity_id.into(),
-            entity_name: entity_name.into(),
+            scope,
             title: title.into(),
             body: body.into(),
             severity,
@@ -77,6 +135,11 @@ impl PendingAlert {
             created_at: Utc::now(),
             llm_narrative: None,
         }
+    }
+
+    /// Human-readable label for notification bodies.
+    pub fn display_name(&self) -> String {
+        self.scope.display()
     }
 }
 
@@ -270,7 +333,7 @@ impl NotificationDispatcher {
             // Always log
             if alert.severity >= self.config.log_min_severity {
                 info!(
-                    entity = %alert.entity_name,
+                    entity = %alert.display_name(),
                     title = %alert.title,
                     severity = %alert.severity.as_str(),
                     priority = %alert.priority_score,
@@ -387,15 +450,24 @@ impl NotificationDispatcher {
                 .llm_narrative
                 .clone()
                 .unwrap_or_else(|| alert.body.clone()),
-            // PendingAlert carries the entity as a string; parse the UUID so
-            // the API router can resolve the entity's real subscribers. A
-            // non-UUID entity yields None and the alert reaches nobody rather
-            // than everyone.
-            entity_id: uuid::Uuid::parse_str(&alert.entity_id).ok(),
-            entity_name: Some(alert.entity_name.clone()),
-            // Resolve real subscribers in the API alert router; never
-            // broadcast implicitly.
-            audience: apex_core::alert_config::AlertAudience::Users(vec![]),
+            // Full entity set: every referenced entity is parsed so the API
+            // router can resolve all of their real subscribers. A non-UUID
+            // entity yields None and no subscribers for that id rather than
+            // reaching everyone.
+            entity_ids: alert
+                .scope
+                .entity_ids()
+                .into_iter()
+                .filter_map(|entity_id| uuid::Uuid::parse_str(entity_id).ok())
+                .collect(),
+            entity_name: match &alert.scope {
+                AlertScope::Entity { entity_name, .. } => entity_name.clone(),
+                _ => None,
+            },
+            // Audience is derived from the scope: explicit users stay explicit,
+            // a deliberate system broadcast is the only Broadcast, and entity
+            // scopes resolve real subscribers in the API alert router.
+            audience: alert.scope.audience(),
             metadata: serde_json::json!({
                 "source_id": alert.source_id,
                 "category": alert.category,
@@ -539,6 +611,7 @@ impl NotificationDispatcher {
 
         let body_text = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
         let region = alert.region.as_deref().unwrap_or("Global");
+        let entity = alert.display_name();
 
         serde_json::json!({
             "text": format!("{emoji} *[{}] {}*\n", alert.severity.as_str().to_uppercase(), alert.title),
@@ -553,7 +626,7 @@ impl NotificationDispatcher {
                 {
                     "type": "section",
                     "fields": [
-                        { "type": "mrkdwn", "text": format!("*Entity:*\n{}", alert.entity_name) },
+                        { "type": "mrkdwn", "text": format!("*Entity:*\n{}", entity) },
                         { "type": "mrkdwn", "text": format!("*Region:*\n{}", region) },
                         { "type": "mrkdwn", "text": format!("*Category:*\n{}", alert.category) },
                         { "type": "mrkdwn", "text": format!("*Priority Score:*\n{:.2}", alert.priority_score) },
@@ -591,7 +664,7 @@ impl NotificationDispatcher {
             Source ID: {}\n\
             Generated: {}\n",
             alert.severity.as_str().to_uppercase(),
-            alert.entity_name,
+            alert.display_name(),
             alert.category,
             alert.region.as_deref().unwrap_or("Global"),
             alert.priority_score,
@@ -644,7 +717,7 @@ pub async fn send_slack_alert(alert: &PendingAlert) -> anyhow::Result<()> {
 
     let body = alert.llm_narrative.as_deref().unwrap_or(&alert.body);
     let mut msg = crate::slack::SlackMessage::new(severity, alert_type, &alert.title, body)
-        .with_entity(&alert.entity_name);
+        .with_entity(alert.display_name());
 
     if let Some(ref region) = alert.region {
         msg = msg.with_region(region);
@@ -687,7 +760,10 @@ pub struct SlaWarningRecord {
     pub title: String,
     pub severity: String,
     pub warning_type: String,
-    pub entity_id: Option<String>,
+    /// Full entity set referenced by the warning. The previous `entity_id`
+    /// field took `entity_ids[1]`, silently dropping every other entity.
+    #[serde(default)]
+    pub entity_ids: Vec<String>,
     pub created_at: chrono::DateTime<Utc>,
     pub acknowledged: bool,
 }
@@ -709,6 +785,18 @@ impl SlaWarningRecord {
     /// Seconds remaining until SLA breach (negative if already breached).
     pub fn sla_seconds_remaining(&self, windows: &SeveritySlaConfig) -> i64 {
         windows.deadline_seconds(&self.severity) - self.age_seconds()
+    }
+
+    /// Alert scope for this warning.
+    ///
+    /// A warning with no entities is an explicit system alert (never the
+    /// `"system"` fake entity); a multi-entity warning carries all of them.
+    pub fn scope(&self) -> AlertScope {
+        match self.entity_ids.as_slice() {
+            [] => AlertScope::SystemBroadcast,
+            [entity_id] => AlertScope::entity(entity_id.clone(), None::<String>),
+            entity_ids => AlertScope::entities(entity_ids.iter().cloned()),
+        }
     }
 }
 
@@ -744,6 +832,14 @@ impl SlaEnforcer {
         Self::new(shared_sla_config_from_env())
     }
 
+    /// The resolved SLA windows this enforcer applies.
+    ///
+    /// Callers must use these (not `SeveritySlaConfig::default()`) for any
+    /// companion metadata so enforcement and reporting share one config.
+    pub fn windows(&self) -> &SeveritySlaConfig {
+        &self.windows
+    }
+
     pub fn build_breach_alert(&self, record: &SlaWarningRecord) -> Option<PendingAlert> {
         if !record.is_sla_breached(&self.windows) {
             return None;
@@ -767,8 +863,7 @@ impl SlaEnforcer {
 
         let mut alert = PendingAlert::new(
             format!("sla-breach:{}", record.id),
-            record.entity_id.clone().unwrap_or_else(|| "system".into()),
-            "SLA Enforcement",
+            record.scope(),
             title,
             body,
             escalated_severity,
@@ -807,8 +902,7 @@ impl SlaEnforcer {
 
         let mut alert = PendingAlert::new(
             format!("sla-reminder:{}", record.id),
-            record.entity_id.clone().unwrap_or_else(|| "system".into()),
-            "SLA Enforcement",
+            record.scope(),
             title,
             body,
             AlertSeverity::High,
@@ -875,8 +969,7 @@ mod tests {
     fn make_alert(severity: AlertSeverity, priority: f64) -> PendingAlert {
         PendingAlert::new(
             "src-001",
-            "entity-1",
-            "Test Corp",
+            AlertScope::entity("entity-1", Some("Test Corp")),
             "Test Alert",
             "Body text.",
             severity,
@@ -953,7 +1046,7 @@ mod tests {
             title: "Test Warning".into(),
             severity: severity.to_string(),
             warning_type: "test_type".into(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             created_at: Utc::now() - chrono::Duration::seconds(age_seconds),
             acknowledged,
         }
@@ -1083,5 +1176,99 @@ mod tests {
             not_approaching.is_empty(),
             "Fresh warning should not be flagged"
         );
+    }
+
+    #[test]
+    fn sla_alert_preserves_the_full_entity_set() {
+        let windows = SeveritySlaConfig {
+            critical_seconds: 10,
+            ..Default::default()
+        };
+        let enforcer = SlaEnforcer::new(windows);
+        let mut record = make_warning("critical", 60, false);
+        record.entity_ids = vec![
+            "11111111-1111-4111-8111-111111111111".into(),
+            "22222222-2222-4222-8222-222222222222".into(),
+        ];
+
+        let alert = enforcer.build_breach_alert(&record).expect("breach alert");
+        assert_eq!(
+            alert.scope.entity_ids(),
+            vec![
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222"
+            ],
+            "every entity on the warning must survive into the alert, not just entity_ids[1]"
+        );
+    }
+
+    #[test]
+    fn sla_alert_without_entities_is_an_explicit_system_broadcast() {
+        let windows = SeveritySlaConfig {
+            critical_seconds: 10,
+            ..Default::default()
+        };
+        let enforcer = SlaEnforcer::new(windows);
+        let record = make_warning("critical", 60, false);
+
+        let alert = enforcer.build_breach_alert(&record).expect("breach alert");
+        assert_eq!(alert.scope, AlertScope::SystemBroadcast);
+        assert_eq!(
+            alert.scope.audience(),
+            apex_core::alert_config::AlertAudience::Broadcast
+        );
+        assert!(
+            !serde_json::to_string(&alert)
+                .expect("serialize")
+                .contains("\"system\""),
+            "system alerts must not fabricate a `system` entity id"
+        );
+    }
+
+    #[test]
+    fn legacy_pending_alert_payloads_stay_replayable() {
+        let legacy_system = serde_json::json!({
+            "source_id": "sla-breach:warning-1",
+            "entity_id": "system",
+            "entity_name": "SLA Enforcement",
+            "title": "SLA BREACH",
+            "body": "overdue",
+            "severity": "high",
+            "priority_score": 0.95,
+            "category": "sla_breach",
+            "region": null,
+            "created_at": "2026-01-01T00:00:00Z",
+            "llm_narrative": null
+        });
+        let alert: PendingAlert =
+            serde_json::from_value(legacy_system).expect("legacy system alert deserializes");
+        assert_eq!(alert.scope, AlertScope::SystemBroadcast);
+
+        let legacy_entity = serde_json::json!({
+            "source_id": "warning-2",
+            "entity_id": "entity-9",
+            "entity_name": "Acme Corp",
+            "title": "Warning",
+            "body": "body",
+            "severity": "medium",
+            "priority_score": 0.5,
+            "category": "warning",
+            "region": "EU",
+            "created_at": "2026-01-01T00:00:00Z",
+            "llm_narrative": null
+        });
+        let alert: PendingAlert =
+            serde_json::from_value(legacy_entity).expect("legacy entity alert deserializes");
+        assert_eq!(alert.display_name(), "Acme Corp");
+    }
+
+    #[test]
+    fn sla_enforcer_exposes_the_same_windows_it_enforces() {
+        let windows = SeveritySlaConfig {
+            high_seconds: 123,
+            ..Default::default()
+        };
+        let enforcer = SlaEnforcer::new(windows);
+        assert_eq!(enforcer.windows().deadline_seconds("high"), 123);
     }
 }

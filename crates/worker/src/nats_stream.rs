@@ -102,7 +102,11 @@ pub struct AlertEvent {
     pub severity: apex_core::alert_config::AlertSeverity,
     pub title: String,
     pub description: String,
-    pub entity_id: Option<Uuid>,
+    /// Complete entity set the alert references. The API resolves subscribers
+    /// for every entry (union), so a multi-entity warning never notifies only
+    /// the first entity's subscribers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<Uuid>,
     pub entity_name: Option<String>,
     /// Who this alert is addressed to. `Users(vec![])` addresses nobody and
     /// only a deliberate `Broadcast` reaches every connected user.
@@ -115,6 +119,11 @@ impl AlertEvent {
     /// Build the NATS subject for this event.
     pub fn subject(&self) -> String {
         format!("alerts.events.{}", self.event_type)
+    }
+
+    /// Primary entity for display and per-entity config lookups, if any.
+    pub fn primary_entity_id(&self) -> Option<Uuid> {
+        self.entity_ids.first().copied()
     }
 }
 
@@ -447,7 +456,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Test warning".to_string(),
             description: "A test warning event".to_string(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             entity_name: None,
             audience: AlertAudience::Users(vec![]),
             metadata: serde_json::json!({}),
@@ -537,7 +546,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Test warning".to_string(),
             description: "A test warning event".to_string(),
-            entity_id: Some(Uuid::new_v4()),
+            entity_ids: vec![Uuid::new_v4()],
             entity_name: Some("Test Corp".to_string()),
             audience: AlertAudience::Users(vec![]),
             metadata: serde_json::json!({}),
@@ -576,7 +585,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::Critical,
             title: "Recipe matched".to_string(),
             description: "A new recipe match found".to_string(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             entity_name: None,
             audience: AlertAudience::Users(vec![Uuid::new_v4()]),
             metadata: serde_json::json!({"score": 0.95}),

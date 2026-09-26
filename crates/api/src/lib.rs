@@ -15,6 +15,7 @@ pub mod middleware;
 pub mod pagination;
 pub mod pdf_writer;
 pub mod phase01;
+pub mod provenance;
 pub mod rate_limit;
 pub mod responses;
 pub mod routes;
