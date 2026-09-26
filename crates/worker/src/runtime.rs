@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::job_execution::execute_job;
+use crate::job_execution::JobExecutionContext;
 use crate::{format_status, JobKind, JobRun, JobStatus, PgStore, Scheduler, Utc};
 use apex_worker::scheduler::JobDef;
 
@@ -123,8 +124,12 @@ pub(crate) fn restore_scheduler_state(
     }
 }
 
-#[tracing::instrument(skip(scheduler, store))]
-pub(crate) async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStore>) {
+#[tracing::instrument(skip(scheduler, store, ctx))]
+pub(crate) async fn tick_scheduler(
+    scheduler: &mut Scheduler,
+    store: &Arc<PgStore>,
+    ctx: &JobExecutionContext,
+) {
     tracing::trace!("scheduler_tick_start");
     let now = Utc::now();
     let due = scheduler.due_jobs(now);
@@ -181,6 +186,7 @@ pub(crate) async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStor
             Err(_) => continue,
         };
         let store = Arc::clone(store);
+        let job_context = ctx.clone();
         let timeout = std::time::Duration::from_secs(
             scheduler
                 .jobs
@@ -207,7 +213,7 @@ pub(crate) async fn tick_scheduler(scheduler: &mut Scheduler, store: &Arc<PgStor
                 // a Tokio JoinHandle only *detaches* the task, so a timed-out
                 // job previously kept running (and could be started again).
                 let mut job_handle =
-                    tokio::spawn(async move { execute_job(&run_kind, &store).await });
+                    tokio::spawn(async move { execute_job(&run_kind, &store, &job_context).await });
                 match tokio::time::timeout(timeout, &mut job_handle).await {
                     Ok(Ok(run)) => run,
                     Ok(Err(join_error)) => {
@@ -256,6 +262,7 @@ pub(crate) async fn poll_trigger_queue(
     manual_trigger_semaphore: &Arc<Semaphore>,
     max_claims_per_poll: usize,
     manual_trigger_timeout_secs: i64,
+    ctx: &JobExecutionContext,
 ) {
     match store
         .timeout_stale_job_triggers(manual_trigger_timeout_secs)
@@ -291,9 +298,10 @@ pub(crate) async fn poll_trigger_queue(
                 tracing::info!(trigger_id = %trigger_id, job = %job_kind_str, "manual trigger: executing job");
 
                 let store = Arc::clone(store);
+                let job_context = ctx.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let run = execute_job(&kind, &store).await;
+                    let run = execute_job(&kind, &store, &job_context).await;
                     persist_run_history(&store, &run).await;
                     let error = if matches!(run.status, JobStatus::Failed { .. }) {
                         Some(run.notes.as_str())

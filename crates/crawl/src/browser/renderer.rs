@@ -36,7 +36,9 @@ use crate::browser::readiness::{
     DEFAULT_MAX_SCROLL_STEPS, DEFAULT_NETWORK_QUIET_WINDOW, DEFAULT_SAMPLE_INTERVAL,
     MAX_NETWORK_QUIET_WINDOW, MIN_NETWORK_QUIET_WINDOW,
 };
-use crate::browser::validation::{assert_public_resolution, validate_browser_url};
+use crate::browser::validation::{
+    assert_public_resolution, validate_browser_url, validate_browser_url_allow_private,
+};
 use crate::browser::{policy_for, BrowserFetcher, BrowserPage, BrowserRequest};
 use crate::concurrency::{
     BrowserConcurrencyGate, BROWSER_CONTEXTS, BROWSER_PROCESSES, GLOBAL_BROWSER_CONCURRENCY,
@@ -77,6 +79,11 @@ pub struct BrowserConfig {
     pub sample_interval: Duration,
     pub max_scroll_steps: u32,
     pub extra_flags: Vec<String>,
+    /// Test-only escape hatch: permit loopback/private fixture URLs so the
+    /// ignored fixture-render integration tests can render a local server.
+    /// This is never read from the environment; production constructors leave
+    /// it `false` so SSRF hardening stays in force.
+    pub allow_private_hosts: bool,
 }
 
 impl Default for BrowserConfig {
@@ -91,6 +98,7 @@ impl Default for BrowserConfig {
             sample_interval: DEFAULT_SAMPLE_INTERVAL,
             max_scroll_steps: DEFAULT_MAX_SCROLL_STEPS,
             extra_flags: Vec::new(),
+            allow_private_hosts: false,
         }
     }
 }
@@ -489,8 +497,14 @@ impl BrowserFetcher for PersistentChromiumBrowser {
             .await
             .context("acquiring browser concurrency slot")?;
 
-        let parsed = validate_browser_url(&req.url)?;
-        assert_public_resolution(&parsed).await?;
+        let parsed = if self.config.allow_private_hosts {
+            validate_browser_url_allow_private(&req.url)?
+        } else {
+            validate_browser_url(&req.url)?
+        };
+        if !self.config.allow_private_hosts {
+            assert_public_resolution(&parsed).await?;
+        }
         let policy = policy_for(&self.config, &req);
 
         match self.render(&parsed, &policy).await {

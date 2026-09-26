@@ -16,7 +16,7 @@
 //! | 5 | Low-signal bulk sources (blogs, aggregators) |
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -137,6 +137,43 @@ pub enum FetchStrategy {
     Search,
 }
 
+/// Transport the crawl path must use for one source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchDispatch {
+    /// Render the endpoint with the shared headless Chromium renderer.
+    Browser,
+    /// Fetch the endpoint over plain HTTP.
+    Http,
+}
+
+/// The deployment cannot execute a source's declared fetch strategy.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum FetchDispatchError {
+    #[error(
+        "source '{slug}' requires the headless browser renderer, but the browser capability \
+         is unavailable (enable ENABLE_HEADLESS_BROWSER and provide Chromium)"
+    )]
+    BrowserUnavailable { slug: String },
+}
+
+/// Decide how a source must be fetched. A `Browser` source is never silently
+/// downgraded to plain HTTP: when the renderer is unavailable the caller must
+/// fail the fetch (and mark the source unavailable) instead.
+pub fn dispatch_source_fetch(
+    source: &Source,
+    browser_available: bool,
+) -> Result<FetchDispatch, FetchDispatchError> {
+    match source.strategy() {
+        FetchStrategy::Browser if !browser_available => {
+            Err(FetchDispatchError::BrowserUnavailable {
+                slug: source.slug.clone(),
+            })
+        }
+        FetchStrategy::Browser => Ok(FetchDispatch::Browser),
+        _ => Ok(FetchDispatch::Http),
+    }
+}
+
 /// Operational capability of a source. Only [`SourceCapability::Operational`]
 /// sources are schedulable and counted in the admin source-coverage metric.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -148,6 +185,16 @@ pub enum SourceCapability {
     Blocked,
     TemporarilyFailed,
     Unsupported,
+    /// The deployment cannot provide the fetch capability this source
+    /// requires — e.g. a `Browser`-strategy source while the headless
+    /// renderer is disabled. Distinct from `Unsupported` (the source itself
+    /// is not supported) and from transient runtime failures.
+    UnavailableMissingCapability,
+    /// A `JsonApi` source whose adapter credentials are not configured in
+    /// this deployment.
+    UnavailableMissingCredentials,
+    /// A source that declares `needs_proxy` while no proxy is configured.
+    UnavailableMissingProxy,
 }
 
 impl SourceCapability {
@@ -158,6 +205,9 @@ impl SourceCapability {
             Self::Blocked => "blocked",
             Self::TemporarilyFailed => "temporarily_failed",
             Self::Unsupported => "unsupported",
+            Self::UnavailableMissingCapability => "unavailable_missing_capability",
+            Self::UnavailableMissingCredentials => "unavailable_missing_credentials",
+            Self::UnavailableMissingProxy => "unavailable_missing_proxy",
         }
     }
 
@@ -166,10 +216,137 @@ impl SourceCapability {
     }
 }
 
+/// Environment variable listing the comma-separated [`ApiAdapter`] ids whose
+/// credentials are configured in this deployment. An adapter that requires
+/// credentials but is absent from this list resolves to
+/// [`SourceCapability::UnavailableMissingCredentials`].
+pub const CREDENTIALED_API_ADAPTERS_ENV: &str = "CRAWL_CREDENTIALED_API_ADAPTERS";
+
+/// Capabilities the deployment can actually provide to the crawler. Combined
+/// with a source's declared capability to compute its
+/// [`effective_capability`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentCapabilities {
+    /// The headless Chromium renderer is enabled and available.
+    pub browser: bool,
+    /// At least one proxy endpoint is configured for proxied sources.
+    pub proxy: bool,
+    /// API adapter ids whose credentials are present in this deployment.
+    pub credentialed_api_adapters: HashSet<String>,
+}
+
+impl Default for DeploymentCapabilities {
+    /// Assume every deployment capability is available. Callers that want
+    /// deployment truthfulness (admin source coverage) must use
+    /// [`DeploymentCapabilities::from_env`] instead.
+    fn default() -> Self {
+        Self {
+            browser: true,
+            proxy: true,
+            credentialed_api_adapters: HashSet::new(),
+        }
+    }
+}
+
+impl DeploymentCapabilities {
+    /// Capabilities configured in this deployment, read from the same
+    /// environment the crawl workers use (`ENABLE_HEADLESS_BROWSER`,
+    /// `ENABLE_PROXY_ROTATION` plus proxy endpoints, and
+    /// [`CREDENTIALED_API_ADAPTERS_ENV`]).
+    pub fn from_env() -> Self {
+        let browser = env_truthy(apex_core::env::ENABLE_HEADLESS_BROWSER);
+        let proxy = env_truthy(apex_core::env::ENABLE_PROXY_ROTATION)
+            && (env_non_empty("PROXY_LIST")
+                || (env_non_empty("PROXY_HOST") && env_non_empty("PROXY_PORT")));
+        let credentialed_api_adapters = std::env::var(CREDENTIALED_API_ADAPTERS_ENV)
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            browser,
+            proxy,
+            credentialed_api_adapters,
+        }
+    }
+
+    /// Every transport capability available; no adapter credentials listed.
+    pub fn all_available() -> Self {
+        Self::default()
+    }
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| apex_core::env::parse_truthy_flag(&value))
+        .unwrap_or(false)
+}
+
+fn env_non_empty(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
 /// Resolve the effective capability of a source by combining its declared
-/// capability with live runtime state: a source whose circuit breaker is
-/// currently open is `temporarily_failed` regardless of its declared state.
+/// capability with the deployment's actual capabilities:
+///
+/// - `Browser` strategy + browser disabled → `unavailable_missing_capability`
+/// - `JsonApi` requiring credentials that are not configured →
+///   `unavailable_missing_credentials`
+/// - `needs_proxy` + no proxy configured → `unavailable_missing_proxy`
+///
+/// A source whose circuit breaker is currently open is `temporarily_failed`
+/// regardless of its declared state (evaluated against the current clock).
 pub fn effective_capability(
+    source: &Source,
+    runtime: Option<&SourceRuntimeStateRow>,
+    deployment_caps: &DeploymentCapabilities,
+) -> SourceCapability {
+    if !source.capability.is_operational() {
+        return source.capability;
+    }
+    match source.strategy() {
+        FetchStrategy::Browser if !deployment_caps.browser => {
+            return SourceCapability::UnavailableMissingCapability;
+        }
+        FetchStrategy::JsonApi(adapter)
+            if adapter.requires_credentials
+                && !deployment_caps
+                    .credentialed_api_adapters
+                    .contains(&adapter.id) =>
+        {
+            return SourceCapability::UnavailableMissingCredentials;
+        }
+        _ => {}
+    }
+    if source.needs_proxy && !deployment_caps.proxy {
+        return SourceCapability::UnavailableMissingProxy;
+    }
+    if let Some(row) = runtime {
+        if row
+            .circuit_open_until
+            .is_some_and(|until| until > Utc::now())
+        {
+            return SourceCapability::TemporarilyFailed;
+        }
+    }
+    SourceCapability::Operational
+}
+
+/// Declared capability plus runtime circuit state, ignoring deployment
+/// capabilities. The scheduler deliberately keeps selecting sources whose
+/// deployment capability is missing: the crawl cycle must see them, persist
+/// an unavailable runtime state, and surface the capability gap in its
+/// counters instead of silently dropping them.
+fn runtime_capability(
     source: &Source,
     runtime: Option<&SourceRuntimeStateRow>,
     now: DateTime<Utc>,
@@ -2971,7 +3148,7 @@ pub fn is_source_due(
     runtime: Option<&SourceRuntimeStateRow>,
     now: DateTime<Utc>,
 ) -> bool {
-    if !source.enabled || !effective_capability(source, runtime, now).is_operational() {
+    if !source.enabled || !runtime_capability(source, runtime, now).is_operational() {
         return false;
     }
     match runtime {
@@ -3040,7 +3217,7 @@ pub fn rank_due_sources<'a>(
             continue;
         }
         let runtime = states.get(source.slug.as_str()).copied();
-        if !effective_capability(source, runtime, now).is_operational() {
+        if !runtime_capability(source, runtime, now).is_operational() {
             continue;
         }
         let due = is_source_due(source, runtime, now);
@@ -3174,7 +3351,8 @@ pub fn coverage_debt_remaining(
 
 /// Snapshot of the declared vs operational source universe for the admin
 /// source-coverage metric. Only `operational` sources count toward the
-/// product's source count.
+/// product's source count; sources the deployment cannot run are broken out
+/// by the missing capability so the metric stays truthful.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceCoverageSummary {
     pub declared: usize,
@@ -3184,13 +3362,23 @@ pub struct SourceCoverageSummary {
     pub degraded: usize,
     pub disabled: usize,
     pub never_crawled: usize,
+    /// `Browser`-strategy sources with the headless renderer unavailable.
+    pub unavailable_missing_capability: usize,
+    /// `JsonApi` sources whose adapter credentials are not configured.
+    pub unavailable_missing_credentials: usize,
+    /// Sources declaring `needs_proxy` with no proxy configured.
+    pub unavailable_missing_proxy: usize,
 }
 
 /// Aggregate the registry + persisted runtime state into the admin
-/// source-coverage metric.
+/// source-coverage metric. `deployment_caps` must describe the actual
+/// deployment (see [`DeploymentCapabilities::from_env`]); sources the
+/// deployment cannot satisfy are excluded from `operational` and counted in
+/// the matching `unavailable_missing_*` bucket instead.
 pub fn source_coverage_summary(
     sources: &[Source],
     states: &[SourceRuntimeStateRow],
+    deployment_caps: &DeploymentCapabilities,
     now: DateTime<Utc>,
 ) -> SourceCoverageSummary {
     let state_by_slug: HashMap<&str, &SourceRuntimeStateRow> = states
@@ -3207,8 +3395,21 @@ pub fn source_coverage_summary(
             continue;
         }
         let runtime = state_by_slug.get(source.slug.as_str()).copied();
-        if !effective_capability(source, runtime, now).is_operational() {
-            continue;
+        match effective_capability(source, runtime, deployment_caps) {
+            SourceCapability::Operational => {}
+            SourceCapability::UnavailableMissingCapability => {
+                summary.unavailable_missing_capability += 1;
+                continue;
+            }
+            SourceCapability::UnavailableMissingCredentials => {
+                summary.unavailable_missing_credentials += 1;
+                continue;
+            }
+            SourceCapability::UnavailableMissingProxy => {
+                summary.unavailable_missing_proxy += 1;
+                continue;
+            }
+            _ => continue,
         }
         summary.operational += 1;
         if is_source_due(source, runtime, now) {
@@ -3584,7 +3785,12 @@ mod scheduler_tests {
         failing_row.next_due_at = now - Duration::minutes(1);
         let states = vec![healthy_row, failing_row];
 
-        let summary = source_coverage_summary(&sources, &states, now);
+        let summary = source_coverage_summary(
+            &sources,
+            &states,
+            &DeploymentCapabilities::all_available(),
+            now,
+        );
         assert_eq!(summary.declared, 7);
         assert_eq!(summary.operational, 3);
         assert_eq!(summary.healthy, 1);
@@ -3592,6 +3798,107 @@ mod scheduler_tests {
         assert_eq!(summary.never_crawled, 1);
         assert_eq!(summary.disabled, 1);
         assert_eq!(summary.due, 2);
+    }
+
+    #[test]
+    fn effective_capability_separates_missing_deployment_capabilities() {
+        let browser_source =
+            synthetic_source("social_feed", Region::Global, Category::SocialMedia, 3);
+        assert_eq!(browser_source.strategy(), FetchStrategy::Browser);
+        let no_browser = DeploymentCapabilities {
+            browser: false,
+            ..DeploymentCapabilities::all_available()
+        };
+        assert_eq!(
+            effective_capability(&browser_source, None, &no_browser),
+            SourceCapability::UnavailableMissingCapability
+        );
+        assert!(effective_capability(
+            &browser_source,
+            None,
+            &DeploymentCapabilities::all_available()
+        )
+        .is_operational());
+
+        let mut api_source = synthetic_source("api_feed", Region::Global, Category::Finance, 2);
+        api_source.fetch_strategy = Some(FetchStrategy::JsonApi(ApiAdapter {
+            id: "sec_edgar".to_string(),
+            requires_credentials: true,
+        }));
+        assert_eq!(
+            effective_capability(&api_source, None, &DeploymentCapabilities::all_available()),
+            SourceCapability::UnavailableMissingCredentials
+        );
+        let with_credentials = DeploymentCapabilities {
+            credentialed_api_adapters: HashSet::from(["sec_edgar".to_string()]),
+            ..DeploymentCapabilities::all_available()
+        };
+        assert!(effective_capability(&api_source, None, &with_credentials).is_operational());
+
+        let mut proxied = synthetic_source("proxied_feed", Region::Global, Category::News, 3);
+        proxied.needs_proxy = true;
+        let no_proxy = DeploymentCapabilities {
+            proxy: false,
+            ..DeploymentCapabilities::all_available()
+        };
+        assert_eq!(
+            effective_capability(&proxied, None, &no_proxy),
+            SourceCapability::UnavailableMissingProxy
+        );
+        assert!(
+            effective_capability(&proxied, None, &DeploymentCapabilities::all_available())
+                .is_operational()
+        );
+    }
+
+    #[test]
+    fn browser_strategy_dispatch_never_falls_back_to_http() {
+        let browser_source = synthetic_source("forum_feed", Region::Global, Category::Forum, 4);
+        assert_eq!(browser_source.strategy(), FetchStrategy::Browser);
+        assert_eq!(
+            dispatch_source_fetch(&browser_source, false),
+            Err(FetchDispatchError::BrowserUnavailable {
+                slug: "forum_feed".to_string()
+            })
+        );
+        assert_eq!(
+            dispatch_source_fetch(&browser_source, true),
+            Ok(FetchDispatch::Browser)
+        );
+
+        let http_source = synthetic_source("news_feed", Region::Global, Category::News, 1);
+        assert_eq!(
+            dispatch_source_fetch(&http_source, false),
+            Ok(FetchDispatch::Http)
+        );
+        assert_eq!(
+            dispatch_source_fetch(&http_source, true),
+            Ok(FetchDispatch::Http)
+        );
+    }
+
+    #[test]
+    fn coverage_summary_reports_sources_missing_deployment_capabilities() {
+        let browser_source =
+            synthetic_source("browser_feed", Region::Global, Category::SocialMedia, 3);
+        let mut proxied = synthetic_source("proxied_feed", Region::Global, Category::News, 3);
+        proxied.needs_proxy = true;
+        let sources = vec![
+            browser_source,
+            proxied,
+            synthetic_source("healthy", Region::Global, Category::News, 1),
+        ];
+        let now = Utc::now();
+        let capabilities = DeploymentCapabilities {
+            browser: false,
+            proxy: false,
+            credentialed_api_adapters: HashSet::new(),
+        };
+        let summary = source_coverage_summary(&sources, &[], &capabilities, now);
+        assert_eq!(summary.declared, 3);
+        assert_eq!(summary.operational, 1);
+        assert_eq!(summary.unavailable_missing_capability, 1);
+        assert_eq!(summary.unavailable_missing_proxy, 1);
     }
 
     #[test]

@@ -3,8 +3,10 @@
 //! The weighted-fair crawl scheduler in `apex-crawl` reads
 //! [`SourceRuntimeStateRow`]s through the `SourceRuntimeStateProvider` trait;
 //! the nightly crawl cycle writes attempt outcomes back through
-//! [`PgStore::record_source_success`] and
-//! [`PgStore::record_source_attempt_failure`].
+//! [`PgStore::record_source_success`],
+//! [`PgStore::record_source_attempt_failure`] and — for sources the
+//! deployment cannot execute (e.g. a `Browser` source with the headless
+//! renderer disabled) — [`PgStore::mark_source_unavailable`].
 
 use super::*;
 use chrono::Duration;
@@ -161,6 +163,43 @@ impl PgStore {
         .bind(next_due_at)
         .bind(last_http_status)
         .bind(rolling_latency_ms)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Mark a source unavailable because this deployment cannot satisfy its
+    /// required fetch capability (for example a `Browser`-strategy source
+    /// while the headless renderer is disabled).
+    ///
+    /// This is **not** a crawl attempt: `last_attempt_at` and
+    /// `consecutive_failures` are left untouched, but the circuit is opened
+    /// until `now + retry_after` and `last_error` records the capability gap
+    /// so the scheduler backs off and the admin surfaces stay truthful.
+    pub async fn mark_source_unavailable(
+        &self,
+        source_slug: &str,
+        last_error: &str,
+        retry_after: Duration,
+        now: DateTime<Utc>,
+    ) -> Result<SourceRuntimeStateRow> {
+        let next_due_at = now + retry_after;
+        let row = sqlx::query_as::<_, SourceRuntimeStateRow>(&format!(
+            r#"INSERT INTO source_runtime_state (
+                   source_slug, next_due_at, consecutive_failures,
+                   circuit_open_until, last_error, updated_at
+               ) VALUES ($1, $2, 0, $2, $3, $4)
+               ON CONFLICT (source_slug) DO UPDATE SET
+                   next_due_at = EXCLUDED.next_due_at,
+                   circuit_open_until = EXCLUDED.circuit_open_until,
+                   last_error = EXCLUDED.last_error,
+                   updated_at = EXCLUDED.updated_at
+               RETURNING {SOURCE_RUNTIME_COLUMNS}"#
+        ))
+        .bind(source_slug)
+        .bind(next_due_at)
+        .bind(last_error)
+        .bind(now)
         .fetch_one(&self.pool)
         .await?;
         Ok(row)

@@ -35,6 +35,18 @@ const DANGEROUS_CHARS: [char; 12] = [
 /// Returns the parsed, normalised [`Url`] (never the raw input) so callers
 /// navigate to exactly what was validated.
 pub fn validate_browser_url(url: &str) -> Result<Url> {
+    validate_browser_url_inner(url, false)
+}
+
+/// Test-only variant of [`validate_browser_url`] that permits
+/// loopback/private hosts. Only the ignored fixture-render integration tests
+/// use this (through `BrowserConfig::allow_private_hosts`); production code
+/// must keep the private-host rejection.
+pub(crate) fn validate_browser_url_allow_private(url: &str) -> Result<Url> {
+    validate_browser_url_inner(url, true)
+}
+
+fn validate_browser_url_inner(url: &str, allow_private: bool) -> Result<Url> {
     if url.len() > MAX_URL_LENGTH {
         return Err(anyhow!(
             "URL exceeds maximum allowed length ({MAX_URL_LENGTH}): {:.50}",
@@ -63,7 +75,7 @@ pub fn validate_browser_url(url: &str) -> Result<Url> {
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow!("URL has no host: {:.80}", url))?;
-    if is_private_host(host) {
+    if !allow_private && is_private_host(host) {
         return Err(anyhow!(
             "refusing to browse private/loopback/metadata host {host}: {:.50}",
             url
@@ -277,6 +289,17 @@ mod tests {
         );
         assert_eq!(host_from_url("http://[::1]:9000/").as_deref(), Some("::1"));
         assert_eq!(host_from_url("not a url").as_deref(), None);
+    }
+
+    #[test]
+    fn allow_private_variant_permits_loopback_fixtures_only() {
+        assert!(validate_browser_url("http://127.0.0.1:8080/").is_err());
+        let parsed = validate_browser_url_allow_private("http://127.0.0.1:8080/fixture")
+            .expect("loopback fixtures are permitted when explicitly opted in");
+        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+        // Scheme hardening is not bypassed by the test-only opt-in.
+        assert!(validate_browser_url_allow_private("file:///etc/passwd").is_err());
+        assert!(validate_browser_url_allow_private("javascript:alert(1)").is_err());
     }
 
     #[test]

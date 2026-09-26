@@ -115,6 +115,7 @@ use chrono::Utc;
 use evidence_scoring::noisy_or;
 #[cfg(feature = "llm")]
 use evidence_scoring::{calculate_relevance, signal_diversity_multiplier};
+use job_execution::JobExecutionContext;
 #[cfg(feature = "llm")]
 pub(crate) use quality_gates::normalize_gate_text;
 #[cfg(all(feature = "llm", test))]
@@ -445,6 +446,9 @@ async fn main() -> Result<()> {
         .filter(|v| *v > 0)
         .unwrap_or(2 * 60 * 60);
     let manual_trigger_semaphore = Arc::new(Semaphore::new(manual_trigger_concurrency));
+    // P0 browser crawl: one shared headless renderer for the whole worker
+    // lifetime; `Browser`-strategy sources never fall back to plain HTTP.
+    let job_context = JobExecutionContext::from_env();
     let jobs_count = scheduler.lock().await.jobs.len();
     tracing::info!(
         jobs = jobs_count,
@@ -469,6 +473,7 @@ async fn main() -> Result<()> {
                 let store = Arc::clone(&store);
                 let scheduler = Arc::clone(&scheduler);
                 let tick_guard = Arc::clone(&tick_guard);
+                let job_context = job_context.clone();
                 tokio::spawn(async move {
                     let Ok(_guard) = tick_guard.try_lock() else {
                         tracing::warn!("tick_scheduler: previous run still active; skipping tick");
@@ -479,13 +484,14 @@ async fn main() -> Result<()> {
                     // Job-level panics are contained inside tick_scheduler
                     // (each job runs in an observed spawn, B325), so the tick
                     // body itself only does bookkeeping.
-                    runtime::tick_scheduler(&mut scheduler, &store).await;
+                    runtime::tick_scheduler(&mut scheduler, &store, &job_context).await;
                 });
             }
             _ = trigger_interval.tick() => {
                 let store = Arc::clone(&store);
                 let trigger_guard = Arc::clone(&trigger_guard);
                 let manual_trigger_semaphore = Arc::clone(&manual_trigger_semaphore);
+                let job_context = job_context.clone();
                 tokio::spawn(async move {
                     let Ok(_guard) = trigger_guard.try_lock() else {
                         tracing::debug!("poll_trigger_queue: previous poll still active; skipping tick");
@@ -497,6 +503,7 @@ async fn main() -> Result<()> {
                         &manual_trigger_semaphore,
                         manual_max_claims_per_poll,
                         manual_trigger_timeout_secs,
+                        &job_context,
                     )
                     .await;
                 });

@@ -5,12 +5,13 @@ use std::time::Duration;
 use aho_corasick::AhoCorasick;
 #[cfg(feature = "llm")]
 use apex_core::entities::{Company, CompanyType};
+use apex_crawl::browser::{BrowserFetcher, BrowserRequest};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 use apex_crawl::errors::CrawlError;
 use apex_crawl::governor_limiter::CrawlGovernor;
 use apex_crawl::sources::{
-    coverage_debt_remaining as remaining_due_sources, select_due_sources, FetchStrategy, Source,
-    FORCED_SOURCE_SLUGS,
+    coverage_debt_remaining as remaining_due_sources, dispatch_source_fetch, select_due_sources,
+    FetchDispatch, Source, FORCED_SOURCE_SLUGS,
 };
 #[cfg(feature = "llm")]
 use apex_insights::dynamic_poi_discovery::{
@@ -21,6 +22,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::sync::Semaphore;
 
+use super::JobExecutionContext;
 use crate::*;
 
 const NIGHTLY_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -48,14 +50,25 @@ struct FetchedSource {
     latency_ms: f64,
 }
 
+/// How a source fetch failed. `BrowserUnavailable` is a deployment capability
+/// gap, not a crawl attempt: it must mark the source unavailable instead of
+/// counting as a normal failure or falling back to HTTP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceFailureKind {
+    Fetch,
+    BrowserUnavailable,
+}
+
 struct FailedSource {
     message: String,
     http_status: Option<i32>,
+    kind: SourceFailureKind,
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 async fn fetch_source(
     crawl_client: &CrawlClient,
+    browser: Option<&Arc<dyn BrowserFetcher>>,
     governor: &CrawlGovernor,
     browser_permits: &Arc<Semaphore>,
     source: &Source,
@@ -63,9 +76,25 @@ async fn fetch_source(
 ) -> SourceFetchOutcome {
     let endpoint = source.rss_url.as_deref().unwrap_or(source.url.as_str());
     let prefers_browser_ua = source.slug == "globes_il_tech";
-    let browser_strategy =
-        prefers_browser_ua || matches!(source.strategy(), FetchStrategy::Browser);
-    let _browser_permit = if browser_strategy {
+
+    // Single dispatch decision: `Browser` sources either render with the
+    // shared Chromium renderer or fail as a capability gap — never HTTP.
+    let dispatch = match dispatch_source_fetch(source, browser.is_some()) {
+        Ok(dispatch) => dispatch,
+        Err(error) => {
+            return SourceFetchOutcome {
+                source_index,
+                result: Err(FailedSource {
+                    message: error.to_string(),
+                    http_status: None,
+                    kind: SourceFailureKind::BrowserUnavailable,
+                }),
+            };
+        }
+    };
+
+    let needs_browser_slot = dispatch == FetchDispatch::Browser;
+    let _browser_permit = if needs_browser_slot || prefers_browser_ua {
         Some(
             browser_permits
                 .clone()
@@ -79,6 +108,43 @@ async fn fetch_source(
 
     if let Some(domain) = source.domain() {
         governor.wait_for_slot(&domain).await;
+    }
+
+    if dispatch == FetchDispatch::Browser {
+        let Some(browser) = browser else {
+            // `dispatch_source_fetch` guarantees this is unreachable: keep a
+            // defensive capability failure instead of an HTTP downgrade.
+            return SourceFetchOutcome {
+                source_index,
+                result: Err(FailedSource {
+                    message: format!(
+                        "source '{}' requires the headless browser renderer, but no browser is available",
+                        source.slug
+                    ),
+                    http_status: None,
+                    kind: SourceFailureKind::BrowserUnavailable,
+                }),
+            };
+        };
+        let started = std::time::Instant::now();
+        return match browser.fetch(BrowserRequest::new(endpoint)).await {
+            Ok(page) => SourceFetchOutcome {
+                source_index,
+                result: Ok(FetchedSource {
+                    body: page.html,
+                    http_status: 200,
+                    latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+                }),
+            },
+            Err(error) => SourceFetchOutcome {
+                source_index,
+                result: Err(FailedSource {
+                    message: error.to_string(),
+                    http_status: None,
+                    kind: SourceFailureKind::Fetch,
+                }),
+            },
+        };
     }
 
     let request = CrawlRequest::new(endpoint)
@@ -109,6 +175,7 @@ async fn fetch_source(
                     _ => None,
                 },
                 message: error.to_string(),
+                kind: SourceFailureKind::Fetch,
             }),
         },
     }
@@ -410,7 +477,7 @@ async fn persist_dynamic_discovery_candidates(
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionContext) -> JobRun {
     let mut run = JobRun::new(JobKind::CrawlCycle);
     run.start();
     let sources = all_sources();
@@ -493,12 +560,15 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     let mut sources_attempted: u64 = 0;
     let mut sources_succeeded: u64 = 0;
     let mut sources_failed: u64 = 0;
+    let mut sources_browser_unavailable: u64 = 0;
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
+    let mut browser_unavailable_sources: HashSet<String> = HashSet::new();
     let mut companies_with_new_obs: HashSet<Uuid> = HashSet::new();
 
     let governor = CrawlGovernor::with_limits(CRAWL_DOMAIN_RPS, GLOBAL_HTTP_CONCURRENCY as u32);
     let browser_permits = Arc::new(Semaphore::new(BROWSER_CONCURRENCY));
+    let browser = ctx.browser();
     let mut in_flight: FuturesUnordered<BoxFuture<'_, SourceFetchOutcome>> =
         FuturesUnordered::new();
     let mut pending = fetch_sources.iter().enumerate().peekable();
@@ -508,6 +578,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         };
         in_flight.push(Box::pin(fetch_source(
             &crawl_client,
+            browser,
             &governor,
             &browser_permits,
             source,
@@ -519,6 +590,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         if let Some((source_index, source)) = pending.next() {
             in_flight.push(Box::pin(fetch_source(
                 &crawl_client,
+                browser,
                 &governor,
                 &browser_permits,
                 source,
@@ -529,10 +601,10 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         let src = &fetch_sources[outcome.source_index];
         let url = src.rss_url.as_deref().unwrap_or(src.url.as_str());
         let min_interval = chrono::Duration::minutes(i64::from(src.min_interval_minutes));
-        sources_attempted += 1;
 
         match outcome.result {
             Ok(fetched) => {
+                sources_attempted += 1;
                 let body = fetched.body;
                 #[cfg(any(feature = "parse", feature = "llm"))]
                 let obs_value = match extract_page(&body) {
@@ -706,7 +778,35 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                     }
                 }
             }
+            Err(failure) if failure.kind == SourceFailureKind::BrowserUnavailable => {
+                // Deployment capability gap, not a crawl attempt: record the
+                // unavailable runtime state, back the scheduler off, and
+                // surface a dedicated counter. Never retried over HTTP.
+                sources_browser_unavailable += 1;
+                browser_unavailable_sources.insert(src.slug.clone());
+                tracing::warn!(
+                    source = %src.slug,
+                    error = %failure.message,
+                    "crawl_cycle: source requires the browser renderer, which is unavailable; marking source unavailable"
+                );
+                let retry_after = if min_interval > chrono::Duration::zero() {
+                    min_interval
+                } else {
+                    chrono::Duration::minutes(30)
+                };
+                if let Err(error) = store
+                    .mark_source_unavailable(&src.slug, &failure.message, retry_after, Utc::now())
+                    .await
+                {
+                    tracing::warn!(
+                        source = %src.slug,
+                        error = %error,
+                        "crawl_cycle: failed to persist unavailable source state"
+                    );
+                }
+            }
             Err(failure) => {
+                sources_attempted += 1;
                 tracing::warn!(
                     source = %src.slug,
                     http_status = ?failure.http_status,
@@ -729,7 +829,10 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         }
     }
 
-    let attempted_sources = fetch_sources.len().max(1);
+    // Capability-gap sources are excluded from the reliability ratio: they
+    // were never attempted, so counting them as failures would misreport the
+    // crawl path's health.
+    let attempted_sources = sources_attempted.max(1);
     let success_ratio = sources_succeeded as f64 / attempted_sources as f64;
     let min_success_ratio = std::env::var("CRAWL_MIN_SUCCESS_RATIO")
         .ok()
@@ -744,6 +847,11 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     };
     let successful_sources_list = {
         let mut v: Vec<_> = successful_sources.iter().cloned().collect();
+        v.sort();
+        v
+    };
+    let browser_unavailable_sources_list = {
+        let mut v: Vec<_> = browser_unavailable_sources.iter().cloned().collect();
         v.sort();
         v
     };
@@ -764,6 +872,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         sources_attempted,
         sources_succeeded,
         sources_failed,
+        sources_browser_unavailable,
         coverage_debt_remaining = coverage_debt_remaining_count,
         ingested,
         errors,
@@ -772,11 +881,12 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
 
     if sources_succeeded == 0 || success_ratio < min_success_ratio {
         let failure_summary = format!(
-            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={}",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} coverage_debt_remaining={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={} browser_unavailable_sources={}",
             sources_due,
             sources_attempted,
             sources_succeeded,
             sources_failed,
+            sources_browser_unavailable,
             ingested,
             errors,
             coverage_debt_remaining_count,
@@ -784,6 +894,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
             min_success_ratio,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
             if successful_sources_list.is_empty() { "none".to_string() } else { successful_sources_list.join(",") },
+            if browser_unavailable_sources_list.is_empty() { "none".to_string() } else { browser_unavailable_sources_list.join(",") },
         );
 
         let _ = store
@@ -801,15 +912,17 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
             .await;
 
         run.fail(&format!(
-            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} failed_sources=[{}]",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} coverage_debt_remaining={} failed_sources=[{}] browser_unavailable_sources=[{}]",
             sources_due,
             sources_attempted,
             sources_succeeded,
             sources_failed,
+            sources_browser_unavailable,
             ingested,
             errors,
             coverage_debt_remaining_count,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
+            if browser_unavailable_sources_list.is_empty() { "none".to_string() } else { browser_unavailable_sources_list.join(",") },
         ));
         return run;
     }
@@ -850,11 +963,12 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: due={} attempted={} succeeded={} failed={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; coverage_debt_remaining={}; success_ratio={:.2}",
+            "crawl_cycle: due={} attempted={} succeeded={} failed={} browser_unavailable={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; coverage_debt_remaining={}; success_ratio={:.2}",
             sources_due,
             sources_attempted,
             sources_succeeded,
             sources_failed,
+            sources_browser_unavailable,
             ingested,
             entity_linked,
             dynamically_discovered_companies,
@@ -1699,5 +1813,69 @@ mod pattern_mining_tests {
         );
         assert_eq!(seed.signals.len(), 2);
         assert_eq!(seed.transforms.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod browser_dispatch_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use apex_crawl::sources::{Category, Region, SourceCapability};
+
+    fn browser_source(url: &str) -> Source {
+        Source {
+            slug: "js_only_forum".to_string(),
+            name: "JS-only forum".to_string(),
+            url: url.to_string(),
+            search_param: None,
+            region: Region::Global,
+            category: Category::Forum,
+            tier: 4,
+            needs_proxy: false,
+            rss_url: None,
+            enabled: true,
+            min_interval_minutes: 60,
+            fetch_strategy: None,
+            capability: SourceCapability::Operational,
+            notes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_strategy_without_capability_fails_instead_of_http_fallback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind endpoint the HTTP fallback would hit");
+        let addr = listener.local_addr().expect("test server addr");
+        let source = browser_source(&format!("http://{addr}/js-only"));
+
+        let client = CrawlClient::new(CrawlClientConfig::default())
+            .expect("crawl client builds without network access");
+        let governor = CrawlGovernor::with_limits(CRAWL_DOMAIN_RPS, GLOBAL_HTTP_CONCURRENCY as u32);
+        let permits = Arc::new(Semaphore::new(BROWSER_CONCURRENCY));
+
+        let outcome = fetch_source(&client, None, &governor, &permits, &source, 0).await;
+        match outcome.result {
+            Err(failure) => {
+                assert_eq!(failure.kind, SourceFailureKind::BrowserUnavailable);
+                assert!(
+                    failure.message.contains("browser"),
+                    "capability gap must name the missing renderer: {}",
+                    failure.message
+                );
+                assert_eq!(failure.http_status, None);
+            }
+            Ok(_) => panic!("Browser-strategy source must not succeed without a renderer"),
+        }
+
+        // The endpoint must never be contacted: the only permitted outcomes
+        // are a real render or an explicit capability failure.
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept()).await;
+        assert!(
+            accepted.is_err(),
+            "Browser-strategy source silently fell back to plain HTTP"
+        );
     }
 }

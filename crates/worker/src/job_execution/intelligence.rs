@@ -353,13 +353,17 @@ pub(super) async fn run_outcome_tracking(kind: &JobKind, store: &Arc<PgStore>) -
     run
 }
 
-pub(super) async fn run_self_improvement_cycle(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_self_improvement_cycle(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ctx: &super::JobExecutionContext,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     tracing::info!("self_improvement_cycle: starting coordinated improvement loop");
-    let source_run = Box::pin(super::execute_job(&JobKind::SourceScoring, store)).await;
-    let cross_run = Box::pin(super::execute_job(&JobKind::CrossDomainMining, store)).await;
-    let outcome_run = Box::pin(super::execute_job(&JobKind::OutcomeTracking, store)).await;
+    let source_run = Box::pin(super::execute_job(&JobKind::SourceScoring, store, ctx)).await;
+    let cross_run = Box::pin(super::execute_job(&JobKind::CrossDomainMining, store, ctx)).await;
+    let outcome_run = Box::pin(super::execute_job(&JobKind::OutcomeTracking, store, ctx)).await;
     let base_total =
         source_run.items_processed + cross_run.items_processed + outcome_run.items_processed;
     let base_failed = [&source_run, &cross_run, &outcome_run]

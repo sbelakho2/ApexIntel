@@ -40,6 +40,7 @@ tempfile = "3"
 once_cell = "1.19"
 wiremock = "0.6"
 tokio-test = "0.4"
+apex-parse = { path = "../parse" }
 
 [lints]
 workspace = true

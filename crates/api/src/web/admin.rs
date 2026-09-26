@@ -16,7 +16,9 @@ use super::PageContext;
 use crate::middleware::session::WebSession;
 use crate::system_status::{format_age, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS};
 use apex_core::data_state::DataState;
-use apex_crawl::sources::{all_sources, source_coverage_summary, SourceCoverageSummary};
+use apex_crawl::sources::{
+    all_sources, source_coverage_summary, DeploymentCapabilities, SourceCoverageSummary,
+};
 use apex_store::postgres::{PgStore, WarningListFilters};
 use apex_store::tantivy_index::SearchIndex;
 
@@ -472,7 +474,12 @@ pub async fn admin_page(
                 tracing::error!("Failed to fetch source runtime state: {error}");
                 vec![]
             });
-        source_coverage_summary(&registry, &runtime_states, chrono::Utc::now())
+        source_coverage_summary(
+            &registry,
+            &runtime_states,
+            &DeploymentCapabilities::from_env(),
+            chrono::Utc::now(),
+        )
     };
 
     let tpl = AdminPage {

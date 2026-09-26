@@ -22,10 +22,55 @@ mod weekly;
 
 use std::sync::Arc;
 
+use apex_crawl::browser::BrowserFetcher;
 use apex_store::postgres::PgStore;
 use apex_worker::activity_logger::ActivityLogger;
 use apex_worker::scheduler::JobStatus;
 use apex_worker::scheduler::{JobKind, JobRun};
+
+/// Shared crawl execution context constructed once at worker startup.
+///
+/// Holds the process-wide headless browser renderer (one Chromium process for
+/// every `Browser`-strategy source) so the crawl cycle never has to build one
+/// per fetch. When the capability is disabled this is `None`, and the crawl
+/// path fails `Browser` sources explicitly instead of downgrading them to
+/// plain HTTP.
+#[derive(Clone, Default)]
+pub(crate) struct JobExecutionContext {
+    browser: Option<Arc<dyn BrowserFetcher>>,
+}
+
+impl JobExecutionContext {
+    /// Build the context from the worker environment. Absent capability (or
+    /// invalid browser configuration) yields a context without a renderer;
+    /// `Browser` sources then surface as unavailable rather than being
+    /// silently fetched over HTTP.
+    pub(crate) fn from_env() -> Self {
+        let browser = match apex_crawl::browser::shared_from_env() {
+            Ok(browser) => browser,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "headless browser configuration invalid; Browser-strategy sources will be marked unavailable"
+                );
+                None
+            }
+        };
+        match browser.as_ref() {
+            Some(_) => tracing::info!(
+                "headless browser renderer enabled for Browser-strategy sources"
+            ),
+            None => tracing::warn!(
+                "headless browser disabled (ENABLE_HEADLESS_BROWSER); Browser-strategy sources will be marked unavailable and never downgraded to HTTP"
+            ),
+        }
+        Self { browser }
+    }
+
+    pub(crate) fn browser(&self) -> Option<&Arc<dyn BrowserFetcher>> {
+        self.browser.as_ref()
+    }
+}
 
 /// Log a general job-completion event to the activity feed.
 async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogger) {
@@ -68,12 +113,16 @@ async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogge
         .await;
 }
 
-#[tracing::instrument(skip(kind, store), fields(job = %kind.as_str()))]
-pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+#[tracing::instrument(skip(kind, store, ctx), fields(job = %kind.as_str()))]
+pub(crate) async fn execute_job(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ctx: &JobExecutionContext,
+) -> JobRun {
     tracing::debug!(job = %kind.as_str(), "job_start");
     let logger = ActivityLogger::new(store.pool.clone());
     let run = match kind {
-        JobKind::CrawlCycle => nightly::run_crawl_cycle(store).await,
+        JobKind::CrawlCycle => nightly::run_crawl_cycle(store, ctx).await,
         JobKind::PatternMining => nightly::run_pattern_mining(kind, store).await,
         JobKind::HypothesisGeneration => nightly::run_hypothesis_generation(kind, store).await,
         JobKind::PoiRefresh => poi::run_poi_refresh(kind, store).await,
@@ -92,7 +141,7 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
         JobKind::KevCatalogFetch => security::run_kev_catalog_fetch(kind, store).await,
         JobKind::LookalikeDomainScan => security::run_lookalike_domain_scan(kind, store).await,
         JobKind::SelfImprovementCycle => {
-            intelligence::run_self_improvement_cycle(kind, store).await
+            intelligence::run_self_improvement_cycle(kind, store, ctx).await
         }
         JobKind::RecipeFire => recipes::run_recipe_fire(kind, store).await,
         JobKind::PoiDiscovery => poi::run_poi_discovery(store).await,

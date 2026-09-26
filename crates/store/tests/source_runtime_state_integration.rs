@@ -80,6 +80,35 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
     assert_eq!(loaded.consecutive_failures, 0);
     assert_eq!(loaded.next_due_at, now + Duration::minutes(45));
 
+    // A missing deployment capability is not a crawl attempt: the circuit
+    // opens, the reason is recorded, and attempt/failure counters stay put.
+    let unavailable_at = now + Duration::hours(1);
+    let row = store
+        .mark_source_unavailable(
+            slug,
+            "source requires the headless browser renderer (ENABLE_HEADLESS_BROWSER)",
+            Duration::minutes(30),
+            unavailable_at,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.circuit_open_until,
+        Some(unavailable_at + Duration::minutes(30))
+    );
+    assert_eq!(row.next_due_at, unavailable_at + Duration::minutes(30));
+    assert_eq!(row.consecutive_failures, 0);
+    // Not an attempt: the previous success timestamps are preserved untouched.
+    assert_eq!(row.last_attempt_at, Some(now));
+    assert_eq!(row.last_success_at, Some(now));
+    assert!(
+        row.last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("headless browser")),
+        "capability gap must be recorded in last_error: {:?}",
+        row.last_error
+    );
+
     sqlx::query("DELETE FROM source_runtime_state WHERE source_slug = $1")
         .bind(slug)
         .execute(&pool)
