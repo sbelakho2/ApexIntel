@@ -247,6 +247,10 @@ mod history;
 mod insights;
 pub use insights::InsightClaimRow;
 mod learning_eval;
+pub use learning_eval::{
+    LearningEvalExampleInput, LearningEvalMetricInput, LearningEvalMetricRow, LearningEvalRunInput,
+    LearningEvalRunRow,
+};
 mod llm_cache;
 mod llm_governance;
 mod logistics;
