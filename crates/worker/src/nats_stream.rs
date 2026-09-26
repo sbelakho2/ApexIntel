@@ -141,15 +141,6 @@ pub trait JetStreamTransport: Send + Sync {
         subject: String,
         payload: Vec<u8>,
     ) -> Result<Box<dyn PendingPublishAck>>;
-
-    /// Start a publish with headers (used for dead-letter copies). The returned
-    /// ACK handle must be awaited before the caller reports success.
-    async fn publish_with_headers(
-        &self,
-        subject: String,
-        headers: async_nats::HeaderMap,
-        payload: Vec<u8>,
-    ) -> Result<Box<dyn PendingPublishAck>>;
 }
 
 /// Real transport over an `async_nats` JetStream context.
@@ -190,20 +181,6 @@ impl JetStreamTransport for NatsJetStreamTransport {
             .context("failed to publish to NATS JetStream")?;
         Ok(Box::new(NatsPendingAck(ack)))
     }
-
-    async fn publish_with_headers(
-        &self,
-        subject: String,
-        headers: async_nats::HeaderMap,
-        payload: Vec<u8>,
-    ) -> Result<Box<dyn PendingPublishAck>> {
-        let ack = self
-            .jetstream
-            .publish_with_headers(subject, headers, payload.into())
-            .await
-            .context("failed to publish to NATS JetStream")?;
-        Ok(Box::new(NatsPendingAck(ack)))
-    }
 }
 
 /// Publishes alert events to NATS JetStream.
@@ -215,7 +192,6 @@ impl JetStreamTransport for NatsJetStreamTransport {
 /// reports a degraded outcome instead of a false success.
 #[derive(Clone)]
 pub struct NatsPublisher {
-    client: Option<async_nats::Client>,
     transport: Option<Arc<dyn JetStreamTransport>>,
     nats_url: String,
     required: bool,
@@ -230,7 +206,6 @@ impl NatsPublisher {
     /// A disabled publisher that reports unavailable NATS as an error.
     pub fn disabled_with_requirement(required: bool) -> Self {
         Self {
-            client: None,
             transport: None,
             nats_url: String::new(),
             required,
@@ -250,10 +225,9 @@ impl NatsPublisher {
     /// required.
     pub async fn connect_with_requirement(nats_url: &str, required: bool) -> Self {
         match Self::try_connect(nats_url).await {
-            Ok((client, jetstream)) => {
+            Ok(jetstream) => {
                 info!(nats_url = %nats_url, "NATS JetStream publisher connected");
                 Self {
-                    client: Some(client),
                     transport: Some(Arc::new(NatsJetStreamTransport::new(jetstream))),
                     nats_url: nats_url.to_string(),
                     required,
@@ -267,7 +241,6 @@ impl NatsPublisher {
                     "NATS unavailable — alert publishing degraded"
                 );
                 Self {
-                    client: None,
                     transport: None,
                     nats_url: nats_url.to_string(),
                     required,
@@ -276,29 +249,29 @@ impl NatsPublisher {
         }
     }
 
-    /// Build a publisher around an injected transport (tests).
-    #[cfg(test)]
+    /// Build a publisher around an injected transport.
+    ///
+    /// Used by tests (and available to any caller that wants to inject a
+    /// transport) so the ACK-ordering contract can be verified without a live
+    /// NATS server.
     pub fn with_transport(transport: Arc<dyn JetStreamTransport>, required: bool) -> Self {
         Self {
-            client: None,
             transport: Some(transport),
             nats_url: "test://transport".to_string(),
             required,
         }
     }
 
-    async fn try_connect(
-        nats_url: &str,
-    ) -> Result<(async_nats::Client, async_nats::jetstream::Context)> {
+    async fn try_connect(nats_url: &str) -> Result<async_nats::jetstream::Context> {
         let client = async_nats::connect(nats_url)
             .await
             .context("failed to connect to NATS")?;
-        let jetstream = async_nats::jetstream::new(client.clone());
+        let jetstream = async_nats::jetstream::new(client);
 
         // Ensure the stream exists (idempotent)
         Self::ensure_stream(&jetstream).await?;
 
-        Ok((client, jetstream))
+        Ok(jetstream)
     }
 
     /// Ensure the `alerts` JetStream stream exists, creating it if necessary.
@@ -381,35 +354,6 @@ impl NatsPublisher {
         Ok(())
     }
 
-    /// Publish a raw payload with headers and await the broker ACK (dead-letter
-    /// copies). Not awaited ACKs are the same silent-loss bug as alert
-    /// publishes, so the contract is identical.
-    pub async fn publish_with_headers_acked(
-        &self,
-        subject: &str,
-        headers: async_nats::HeaderMap,
-        payload: Vec<u8>,
-    ) -> Result<()> {
-        let Some(ref transport) = self.transport else {
-            if self.required {
-                anyhow::bail!(
-                    "NATS JetStream is required ({REQUIRE_NATS_ENV}/APEX_ENV=production) \
-                     but the publisher is not connected; payload for '{subject}' not delivered"
-                );
-            }
-            warn!(subject, "NATS publisher not connected — skipping publish");
-            return Ok(());
-        };
-        let ack = transport
-            .publish_with_headers(subject.to_string(), headers, payload)
-            .await
-            .context(format!("failed to publish to NATS subject '{subject}'"))?;
-        ack.wait_for_ack().await.context(format!(
-            "NATS JetStream did not acknowledge publish on subject '{subject}'"
-        ))?;
-        Ok(())
-    }
-
     /// Whether NATS is a required capability for this process.
     pub fn required(&self) -> bool {
         self.required
@@ -418,11 +362,6 @@ impl NatsPublisher {
     /// Returns `true` if NATS is connected and operational.
     pub fn is_connected(&self) -> bool {
         self.transport.is_some()
-    }
-
-    /// Borrow the underlying NATS client, when connected.
-    pub fn client(&self) -> Option<&async_nats::Client> {
-        self.client.as_ref()
     }
 
     /// Returns the NATS URL this publisher was configured with.
@@ -499,15 +438,6 @@ mod tests {
                 recording: self.recording.clone(),
             }))
         }
-
-        async fn publish_with_headers(
-            &self,
-            _subject: String,
-            _headers: async_nats::HeaderMap,
-            _payload: Vec<u8>,
-        ) -> Result<Box<dyn PendingPublishAck>> {
-            self.publish(_subject, _payload).await
-        }
     }
 
     fn test_alert() -> AlertEvent {
@@ -577,11 +507,6 @@ mod tests {
             result.is_err(),
             "missing NATS must be an error when NATS is required"
         );
-        // The dead-letter path has the same contract.
-        let dead_letter = publisher
-            .publish_with_headers_acked("dead_letter.alerts", async_nats::HeaderMap::new(), vec![])
-            .await;
-        assert!(dead_letter.is_err());
     }
 
     #[tokio::test]

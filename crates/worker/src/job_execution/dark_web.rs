@@ -206,6 +206,9 @@ fn dark_web_warning(post: &DarkWebPost) -> NewWarning {
         .description(warning_description(post))
         .source_urls(vec![post.url.clone()])
         .confidence(post.relevance_score)
+        // Dark-web posts carry no entity id; this is an operational
+        // security alert, so it is an explicit system-wide broadcast.
+        .system_broadcast()
 }
 
 /// Persist matching posts and tally real outcomes.
@@ -435,7 +438,7 @@ mod tests {
                 confidence: None,
                 occurred_at: chrono::Utc::now(),
                 outbox_id: None,
-                alert: None,
+                audience_resolvable: true,
             },
             triage: TriageSubmissionOutcome::Enqueued {
                 item_id: Uuid::new_v4(),

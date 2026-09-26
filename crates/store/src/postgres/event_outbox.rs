@@ -1,10 +1,19 @@
 use super::*;
 
+/// Maximum publish attempts before an outbox event stops being retried.
+///
+/// Without this cap a permanently unpublishable payload (schema mismatch,
+/// rejected subject, oversize) would stay at the head of the oldest-first
+/// drain forever and starve every newer alert once a full batch accrues.
+/// Exhausted rows remain `published_at IS NULL` (never falsely delivered) and
+/// keep their `last_error` for operator inspection.
+pub const MAX_OUTBOX_ATTEMPTS: i32 = 10;
+
 /// One row of `event_outbox` (migration 061).
 ///
 /// The outbox is written in the same transaction as its source aggregate (for
 /// warnings: [`PgStore::insert_warning_with_outbox`]) and published exactly
-/// once per successful JetStream ACK by the worker's single alert publisher.
+/// once per successful JetStream ACK by the single alert publisher.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EventOutboxRow {
     pub id: Uuid,
@@ -16,31 +25,6 @@ pub struct EventOutboxRow {
     pub published_at: Option<DateTime<Utc>>,
     pub attempts: i32,
     pub last_error: Option<String>,
-}
-
-/// An event to append to the outbox in the same transaction as its aggregate.
-#[derive(Debug, Clone)]
-pub struct NewOutboxEvent {
-    pub aggregate_type: String,
-    pub aggregate_id: Uuid,
-    pub event_type: String,
-    pub payload: Value,
-}
-
-impl NewOutboxEvent {
-    pub fn new(
-        aggregate_type: impl Into<String>,
-        aggregate_id: Uuid,
-        event_type: impl Into<String>,
-        payload: Value,
-    ) -> Self {
-        Self {
-            aggregate_type: aggregate_type.into(),
-            aggregate_id,
-            event_type: event_type.into(),
-            payload,
-        }
-    }
 }
 
 /// Result of draining one outbox batch.
@@ -69,10 +53,6 @@ impl OutboxBatch {
     /// The locked events, oldest first.
     pub fn events(&self) -> &[EventOutboxRow] {
         &self.events
-    }
-
-    pub fn len(&self) -> usize {
-        self.events.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -110,12 +90,6 @@ impl OutboxBatch {
         self.tx.commit().await?;
         Ok(())
     }
-
-    /// Roll the whole batch back (nothing was marked published).
-    pub async fn rollback(self) -> Result<()> {
-        self.tx.rollback().await?;
-        Ok(())
-    }
 }
 
 /// Keep `last_error` bounded so a pathological error cannot bloat the row.
@@ -129,30 +103,14 @@ fn truncate_outbox_error(error: &str) -> String {
 }
 
 impl PgStore {
-    /// Append an event to the outbox. Callers that need atomicity with their
-    /// aggregate must use the transactional variants (e.g.
-    /// [`PgStore::insert_warning_with_outbox`]).
-    pub async fn enqueue_outbox_event(&self, event: &NewOutboxEvent) -> Result<Uuid> {
-        let (id,) = sqlx::query_as::<_, (Uuid,)>(
-            "INSERT INTO event_outbox (aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, $3, $4) RETURNING id",
-        )
-        .bind(&event.aggregate_type)
-        .bind(event.aggregate_id)
-        .bind(&event.event_type)
-        .bind(&event.payload)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(id)
-    }
-
-    /// Lock up to `limit` unpublished outbox events for publishing.
+    /// Lock up to `limit` unpublished, still-retryable outbox events.
     ///
     /// Uses `SELECT ... FOR UPDATE SKIP LOCKED`: rows locked by another
     /// publisher are skipped instead of blocking, and the lock is held until the
-    /// returned [`OutboxBatch`] is committed or rolled back. The caller must
-    /// publish each event, await the broker ACK, call `mark_published`, and only
-    /// then commit.
+    /// returned [`OutboxBatch`] is committed or rolled back. Events that already
+    /// exhausted [`MAX_OUTBOX_ATTEMPTS`] are excluded so poison rows cannot
+    /// starve newer alerts. The caller must publish each event, await the broker
+    /// ACK, call `mark_published`, and only then commit.
     pub async fn lock_unpublished_outbox(&self, limit: i64) -> Result<OutboxBatch> {
         let limit = limit.clamp(1, 500);
         let mut tx = self.pool.begin().await?;
@@ -160,38 +118,49 @@ impl PgStore {
             "SELECT id, aggregate_type, aggregate_id, event_type, payload, created_at, \
                     published_at, attempts, last_error \
                FROM event_outbox \
-              WHERE published_at IS NULL \
+              WHERE published_at IS NULL AND attempts < $2 \
               ORDER BY created_at ASC, id ASC \
               LIMIT $1 \
               FOR UPDATE SKIP LOCKED",
         )
         .bind(limit)
+        .bind(MAX_OUTBOX_ATTEMPTS)
         .fetch_all(&mut *tx)
         .await?;
         Ok(OutboxBatch { tx, events })
     }
 
-    /// Stamp `published_at` on one outbox event after the broker ACK was
-    /// awaited. Returns `true` when this call marked it (a second call is a
-    /// no-op, so duplicate fast-path/drain publishes cannot double-stamp).
-    pub async fn mark_outbox_published(&self, id: Uuid) -> Result<bool> {
-        let result = sqlx::query(
-            "UPDATE event_outbox SET published_at = now(), last_error = NULL \
-             WHERE id = $1 AND published_at IS NULL",
+    /// Lock one specific unpublished, still-retryable outbox event.
+    ///
+    /// Returns an empty batch when another publisher already holds the row
+    /// (`SKIP LOCKED`) or when it is published/exhausted, so the caller can skip
+    /// its immediate delivery attempt and let the drain own the event.
+    pub async fn lock_outbox_event(&self, id: Uuid) -> Result<OutboxBatch> {
+        let mut tx = self.pool.begin().await?;
+        let events = sqlx::query_as::<_, EventOutboxRow>(
+            "SELECT id, aggregate_type, aggregate_id, event_type, payload, created_at, \
+                    published_at, attempts, last_error \
+               FROM event_outbox \
+              WHERE id = $1 AND published_at IS NULL AND attempts < $2 \
+              FOR UPDATE SKIP LOCKED",
         )
         .bind(id)
-        .execute(&self.pool)
+        .bind(MAX_OUTBOX_ATTEMPTS)
+        .fetch_all(&mut *tx)
         .await?;
-        Ok(result.rows_affected() > 0)
+        Ok(OutboxBatch { tx, events })
     }
 
-    /// Count unpublished outbox events (dashboard/health checks).
-    pub async fn count_unpublished_outbox(&self) -> Result<i64> {
-        let (count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*)::bigint FROM event_outbox WHERE published_at IS NULL")
+    /// Whether the `event_outbox` table exists (startup capability check).
+    ///
+    /// Warning persistence depends on it (migration 061); a worker running
+    /// against a database without it would fail every warning insert.
+    pub async fn event_outbox_present(&self) -> Result<bool> {
+        let (present,): (bool,) =
+            sqlx::query_as("SELECT to_regclass('public.event_outbox') IS NOT NULL")
                 .fetch_one(&self.pool)
                 .await?;
-        Ok(count)
+        Ok(present)
     }
 }
 

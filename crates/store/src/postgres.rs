@@ -238,7 +238,7 @@ mod companies;
 mod entity_review;
 mod event_outbox;
 pub use entity_review::EntityReviewRow;
-pub use event_outbox::{EventOutboxRow, NewOutboxEvent, OutboxBatch, OutboxDrainOutcome};
+pub use event_outbox::{EventOutboxRow, OutboxBatch, OutboxDrainOutcome, MAX_OUTBOX_ATTEMPTS};
 mod company_assets;
 mod competitors;
 pub mod embeddings;

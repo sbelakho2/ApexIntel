@@ -13,9 +13,10 @@
 //!
 //! # Integration
 //!
-//! Call [`AlertEvaluator::spawn_background_task`] to run the evaluator as a
-//! background `tokio` task that subscribes to NATS JetStream subjects (e.g.
-//! `insights.new`, `warnings.new`) and automatically evaluates + publishes.
+//! The transactional outbox publisher (`crate::alert_pipeline`) calls
+//! [`AlertEvaluator::evaluate`] for each committed warning event and awaits the
+//! JetStream ACK for every rule-derived alert before stamping the outbox row
+//! published.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,13 +25,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::info;
 use uuid::Uuid;
 
-use apex_worker::nats_stream::{AlertEvent, AlertEventType, NatsPublisher};
+use apex_worker::nats_stream::{AlertEvent, AlertEventType};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rule types — mirrors `config/runtime/alert-rules.yaml`
@@ -300,95 +300,26 @@ impl AlertEvaluator {
         fired
     }
 
-    /// Evaluate a domain event and immediately publish any fired alerts via NATS.
-    pub async fn evaluate_and_publish(&self, nats: &NatsPublisher, event: &DomainEvent) {
-        let alerts = self.evaluate(event).await;
-        for alert in alerts {
-            if let Err(e) = nats.publish_alert(&alert).await {
-                error!(
-                    alert_id = %alert.id,
-                    rule = %alert.title,
-                    error = %e,
-                    "Failed to publish alert via NATS"
-                );
-            } else {
-                info!(
-                    alert_id = %alert.id,
-                    event_type = %alert.event_type,
-                    "Alert fired and published"
-                );
-            }
-        }
-    }
-
-    /// Spawn a background task that subscribes to NATS subjects and evaluates
-    /// incoming domain events automatically.
+    /// Release the dedup/cooldown entries a previous [`Self::evaluate`] recorded
+    /// for this event.
     ///
-    /// Each subject gets a dedicated tokio task that polls the NATS subscriber
-    /// with a 5-second timeout (avoids tight loops and allows graceful shutdown).
-    pub fn spawn_background_task(
-        self,
-        nats: NatsPublisher,
-        subjects: Vec<String>,
-    ) -> tokio::task::JoinHandle<()> {
-        let evaluator = Arc::new(self);
-        let nats = Arc::new(nats);
-
-        tokio::spawn(async move {
-            let Some(client) = nats.client() else {
-                warn!("NATS client not available — background alert evaluator cannot subscribe");
-                return;
-            };
-
-            let mut handles = Vec::new();
-            for subject in subjects {
-                let mut sub = match client.subscribe(subject.clone()).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to subscribe to {subject}: {e}");
-                        continue;
-                    }
-                };
-
-                let eval = Arc::clone(&evaluator);
-                let nats = Arc::clone(&nats);
-
-                let handle = tokio::spawn(async move {
-                    // Poll subscriber with timeout to avoid requiring StreamExt
-                    loop {
-                        let msg = tokio::time::timeout(Duration::from_secs(5), sub.next()).await;
-
-                        let payload = match msg {
-                            Ok(Some(m)) => m.payload.to_vec(),
-                            Ok(None) => {
-                                // Subscription closed
-                                break;
-                            }
-                            Err(_timeout) => {
-                                // Timeout — loop back
-                                continue;
-                            }
-                        };
-
-                        match serde_json::from_slice::<DomainEvent>(&payload) {
-                            Ok(event) => {
-                                eval.evaluate_and_publish(&nats, &event).await;
-                            }
-                            Err(e) => {
-                                warn!("Failed to deserialize domain event: {e}");
-                            }
-                        }
-                    }
-                });
-                handles.push(handle);
+    /// The outbox publisher calls this when a rule-derived alert failed to
+    /// publish: the cooldown was already recorded before the publish, and
+    /// without releasing it the retry would silently suppress the rule alert.
+    /// Releasing may re-deliver rule alerts that were published before the
+    /// failure in the same batch; at-least-once beats silent loss.
+    pub async fn forget_firings(&self, event: &DomainEvent) {
+        let entity_id = event.entity_id.map(|id| id.to_string());
+        let mut dedup = self.dedup.write().await;
+        for rule in &self.rules {
+            if !self.source_matches(&rule.source, &event.source) {
+                continue;
             }
-
-            for handle in handles {
-                if let Err(e) = handle.await {
-                    error!("Alert evaluator subscription handler failed: {e}");
-                }
-            }
-        })
+            dedup.remove(&DedupKey {
+                rule_name: rule.name.clone(),
+                entity_id: entity_id.clone(),
+            });
+        }
     }
 
     // ─── Internal helpers ─────────────────────────────────────────────────

@@ -3,8 +3,9 @@
 //! ```text
 //! warning INSERT + outbox event (one transaction)
 //!     -> semantic triage
-//!     -> AlertEvaluator rules (at drain time)
-//!     -> outbox drain: publish -> await JetStream ACK -> published_at
+//!     -> publisher claims the outbox row (FOR UPDATE SKIP LOCKED)
+//!     -> AlertEvaluator rules
+//!     -> publish -> await JetStream ACK -> published_at -> commit
 //!     -> NATS `alerts.events.*`
 //!     -> API SSE consumer -> browser toast + bell
 //! ```
@@ -12,19 +13,25 @@
 //! This module replaced the old warning-table-polling producer (which published
 //! domain events for every new warning row independently of triage and the
 //! AlertEvaluator). Alert events now have exactly one source — the outbox row
-//! committed with its warning — and one publication contract: this drain is the
-//! canonical consumer that redelivers everything the producer's immediate
-//! publish attempt left unpublished (crash, ACK failure, NATS outage). No other
+//! committed with its warning — and one publication implementation:
+//!
+//! * The ingress calls [`deliver_outbox_event`] right after triage for a
+//!   low-latency delivery attempt.
+//! * The background drain calls [`drain_once`] to redeliver everything left
+//!   unpublished (crash, ACK failure, NATS outage, exhausted fast-path claim).
+//!
+//! Both claim rows with `FOR UPDATE SKIP LOCKED`, so a row is only ever
+//! published by the holder of its lock; the other side skips it. No other
 //! component publishes warning alerts to NATS.
 //!
 //! # Delivery guarantees
 //! - A crash between the warning commit and the publish leaves the outbox row
 //!   unpublished; the next drain retries it (at-least-once, never lost).
-//! - `SELECT ... FOR UPDATE SKIP LOCKED` lets concurrent publishers skip each
-//!   other's rows, and the lock is held for the whole batch: a second publisher
-//!   cannot take a row this drain is publishing.
-//! - `published_at` is stamped only after the JetStream ACK resolves; an ACK
-//!   failure records `attempts`/`last_error` and leaves the row for retry.
+//! - `published_at` is stamped only after the JetStream ACK resolves inside the
+//!   same transaction that holds the row lock; an ACK failure records
+//!   `attempts`/`last_error` and leaves the row for retry.
+//! - Events that exhaust [`MAX_OUTBOX_ATTEMPTS`] stop being selected, so a
+//!   permanently unpublishable payload cannot starve newer alerts.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +41,9 @@ use async_trait::async_trait;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use apex_store::postgres::{EventOutboxRow, OutboxBatch, OutboxDrainOutcome, PgStore};
+use apex_store::postgres::{
+    EventOutboxRow, OutboxBatch, OutboxDrainOutcome, PgStore, MAX_OUTBOX_ATTEMPTS,
+};
 use apex_worker::nats_stream::{AlertEvent, NatsPublisher};
 
 use crate::alert_evaluator::{AlertEvaluator, DomainEvent};
@@ -46,7 +55,11 @@ const DEFAULT_ALERT_RULES_PATH: &str = "config/runtime/alert-rules.yaml";
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Maximum events locked per drain batch.
-pub const DEFAULT_BATCH_SIZE: i64 = 100;
+pub const DEFAULT_BATCH_SIZE: i64 = 25;
+
+/// Upper bound for one publish + ACK round trip. Bounds how long a batch holds
+/// its row locks when the broker accepts messages but never acknowledges them.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Resolve the alert rules path from the environment (`ALERT_RULES_PATH`).
 fn alert_rules_path_from_env() -> String {
@@ -55,7 +68,7 @@ fn alert_rules_path_from_env() -> String {
 
 /// Load the alert rules, if present. Missing/invalid rules must not stop alert
 /// delivery: the base warning alert still publishes.
-fn load_evaluator() -> Option<Arc<AlertEvaluator>> {
+pub fn load_rules_evaluator() -> Option<Arc<AlertEvaluator>> {
     let path = alert_rules_path_from_env();
     match AlertEvaluator::load_from_path(&path) {
         Ok(evaluator) => {
@@ -73,12 +86,16 @@ fn load_evaluator() -> Option<Arc<AlertEvaluator>> {
     }
 }
 
-/// Storage half of the drain: lock a batch, then settle each event.
+/// Storage half of the drain: lock a batch or one specific event, then settle.
 #[async_trait]
 pub trait OutboxBatchStore: Send + Sync {
     /// Lock up to `limit` unpublished events (production:
     /// `SELECT ... FOR UPDATE SKIP LOCKED`) and return the held batch.
     async fn lock_batch(&self, limit: i64) -> anyhow::Result<Box<dyn LockedOutboxBatch>>;
+
+    /// Lock one specific unpublished event; an empty batch means another
+    /// publisher owns it, it is already published, or it is exhausted.
+    async fn lock_event(&self, id: Uuid) -> anyhow::Result<Box<dyn LockedOutboxBatch>>;
 }
 
 /// A locked batch. Marks are applied by [`LockedOutboxBatch::commit`]; dropping
@@ -86,6 +103,7 @@ pub trait OutboxBatchStore: Send + Sync {
 #[async_trait]
 pub trait LockedOutboxBatch: Send {
     fn locked_events(&self) -> Vec<EventOutboxRow>;
+    fn is_empty(&self) -> bool;
     async fn mark_published(&mut self, id: Uuid) -> anyhow::Result<()>;
     async fn record_failure(&mut self, id: Uuid, error: &str) -> anyhow::Result<()>;
     async fn commit(self: Box<Self>) -> anyhow::Result<()>;
@@ -103,12 +121,20 @@ impl OutboxBatchStore for PgStore {
     async fn lock_batch(&self, limit: i64) -> anyhow::Result<Box<dyn LockedOutboxBatch>> {
         Ok(Box::new(self.lock_unpublished_outbox(limit).await?))
     }
+
+    async fn lock_event(&self, id: Uuid) -> anyhow::Result<Box<dyn LockedOutboxBatch>> {
+        Ok(Box::new(self.lock_outbox_event(id).await?))
+    }
 }
 
 #[async_trait]
 impl LockedOutboxBatch for OutboxBatch {
     fn locked_events(&self) -> Vec<EventOutboxRow> {
         OutboxBatch::events(self).to_vec()
+    }
+
+    fn is_empty(&self) -> bool {
+        OutboxBatch::is_empty(self)
     }
 
     async fn mark_published(&mut self, id: Uuid) -> anyhow::Result<()> {
@@ -175,10 +201,13 @@ impl OutboxEventPublisher for NatsAlertEventPublisher {
         if let Some(evaluator) = &self.evaluator {
             let domain = Self::domain_event_for(event);
             for rule_alert in evaluator.evaluate(&domain).await {
-                self.publisher
-                    .publish_alert(&rule_alert)
-                    .await
-                    .context("failed to publish rule-derived alert")?;
+                if let Err(error) = self.publisher.publish_alert(&rule_alert).await {
+                    // The evaluator already recorded the rule's cooldown before
+                    // the publish; release it so the outbox retry redelivers the
+                    // rule alert instead of silently suppressing it.
+                    evaluator.forget_firings(&domain).await;
+                    return Err(error).context("failed to publish rule-derived alert");
+                }
             }
         }
 
@@ -186,21 +215,31 @@ impl OutboxEventPublisher for NatsAlertEventPublisher {
     }
 }
 
-/// Drain one outbox batch: publish each locked event, await the ACK, stamp
-/// `published_at` on success and record the failure otherwise; commit the batch
-/// only after every event settled.
-pub async fn drain_once(
-    store: &dyn OutboxBatchStore,
+/// Publish every event in a locked batch, then commit.
+///
+/// Returns the per-stage outcome plus the last publish error (for caller
+/// reporting). A publish failure records the attempt and leaves the event
+/// unpublished; it never aborts the rest of the batch.
+async fn publish_locked_batch(
+    mut batch: Box<dyn LockedOutboxBatch>,
     publisher: &dyn OutboxEventPublisher,
-    limit: i64,
-) -> anyhow::Result<OutboxDrainOutcome> {
-    let mut batch = store.lock_batch(limit).await?;
+) -> anyhow::Result<(OutboxDrainOutcome, Option<String>)> {
     let events = batch.locked_events();
     let mut outcome = OutboxDrainOutcome::default();
+    let mut last_error: Option<String> = None;
 
     for row in events {
         let result = match serde_json::from_value::<AlertEvent>(row.payload.clone()) {
-            Ok(event) => publisher.publish_event(&event).await,
+            Ok(event) => {
+                let attempted =
+                    tokio::time::timeout(PUBLISH_TIMEOUT, publisher.publish_event(&event)).await;
+                match attempted {
+                    Ok(result) => result,
+                    Err(_) => Err(anyhow::anyhow!(
+                        "publish exceeded {PUBLISH_TIMEOUT:?} and was abandoned"
+                    )),
+                }
+            }
             Err(e) => Err(anyhow::anyhow!(
                 "outbox event {} payload is not a valid AlertEvent: {e}",
                 row.id
@@ -213,20 +252,69 @@ pub async fn drain_once(
                 outcome.published += 1;
             }
             Err(error) => {
-                warn!(
-                    outbox_id = %row.id,
-                    attempts = row.attempts + 1,
-                    error = %error,
-                    "outbox publisher: publish failed; event remains unpublished for retry"
-                );
+                let next_attempt = row.attempts + 1;
+                if next_attempt >= MAX_OUTBOX_ATTEMPTS {
+                    warn!(
+                        outbox_id = %row.id,
+                        attempts = next_attempt,
+                        error = %error,
+                        "outbox publisher: event exhausted its attempts and will not be retried"
+                    );
+                } else {
+                    warn!(
+                        outbox_id = %row.id,
+                        attempts = next_attempt,
+                        error = %error,
+                        "outbox publisher: publish failed; event remains unpublished for retry"
+                    );
+                }
                 batch.record_failure(row.id, &error.to_string()).await?;
                 outcome.failed += 1;
+                last_error = Some(error.to_string());
             }
         }
     }
 
     batch.commit().await?;
+    Ok((outcome, last_error))
+}
+
+/// Drain one outbox batch.
+pub async fn drain_once(
+    store: &dyn OutboxBatchStore,
+    publisher: &dyn OutboxEventPublisher,
+    limit: i64,
+) -> anyhow::Result<OutboxDrainOutcome> {
+    let batch = store.lock_batch(limit).await?;
+    let (outcome, _) = publish_locked_batch(batch, publisher).await?;
     Ok(outcome)
+}
+
+/// Deliver one specific outbox event (the ingress fast path).
+///
+/// * `Ok(true)` — this call held the row lock, published the event and awaited
+///   its ACK, then stamped `published_at`.
+/// * `Ok(false)` — another publisher owns the row, it is already published, or
+///   the row is exhausted; delivery is left to the drain.
+/// * `Err` — this call held the row, the publish failed, and the failure was
+///   recorded for retry.
+pub async fn deliver_outbox_event(
+    store: &dyn OutboxBatchStore,
+    publisher: &dyn OutboxEventPublisher,
+    id: Uuid,
+) -> anyhow::Result<bool> {
+    let batch = store.lock_event(id).await?;
+    if batch.is_empty() {
+        return Ok(false);
+    }
+    let (outcome, last_error) = publish_locked_batch(batch, publisher).await?;
+    if outcome.published > 0 {
+        return Ok(true);
+    }
+    Err(anyhow::anyhow!(
+        "{}",
+        last_error.unwrap_or_else(|| format!("outbox event {id} was not published"))
+    ))
 }
 
 /// Spawn the canonical outbox drain task.
@@ -235,7 +323,7 @@ pub async fn drain_once(
 /// is not configured the task logs and exits (events stay queued for a later
 /// restart with NATS configured); when NATS is temporarily unreachable the task
 /// reconnects on its poll interval.
-pub fn spawn(store: Arc<PgStore>) {
+pub fn spawn(store: Arc<PgStore>, evaluator: Option<Arc<AlertEvaluator>>) {
     let enabled = std::env::var("REALTIME_ALERTS_ENABLED")
         .ok()
         .map(|v| apex_core::env::parse_truthy_flag(&v))
@@ -257,7 +345,6 @@ pub fn spawn(store: Arc<PgStore>) {
             }
         };
 
-        let evaluator = load_evaluator();
         let mut publisher = NatsPublisher::connect(&nats_url).await;
         let mut interval = tokio::time::interval(DEFAULT_POLL_INTERVAL);
 
@@ -295,7 +382,10 @@ pub fn spawn(store: Arc<PgStore>) {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    use apex_worker::nats_stream::{JetStreamTransport, PendingPublishAck};
 
     fn sample_event(id: Uuid) -> AlertEvent {
         AlertEvent {
@@ -330,6 +420,7 @@ mod tests {
     struct MemoryOutbox {
         events: Arc<Mutex<Vec<EventOutboxRow>>>,
         published: Arc<Mutex<HashSet<Uuid>>>,
+        claims: Arc<Mutex<HashSet<Uuid>>>,
         failures: Arc<Mutex<Vec<(Uuid, String)>>>,
     }
 
@@ -338,6 +429,7 @@ mod tests {
             Self {
                 events: Arc::new(Mutex::new(events)),
                 published: Arc::new(Mutex::new(HashSet::new())),
+                claims: Arc::new(Mutex::new(HashSet::new())),
                 failures: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -360,10 +452,41 @@ mod tests {
         fn failure_count(&self) -> usize {
             self.failures.lock().unwrap().len()
         }
+
+        fn lock_rows(&self, limit: Option<usize>, only: Option<Uuid>) -> MemoryBatch {
+            let published = self.published.lock().unwrap().clone();
+            let mut claims = self.claims.lock().unwrap();
+            let mut locked = Vec::new();
+            for row in self.events.lock().unwrap().iter() {
+                if (Some(row.id) == only || only.is_none())
+                    && !published.contains(&row.id)
+                    && row.attempts < MAX_OUTBOX_ATTEMPTS
+                    && !claims.contains(&row.id)
+                {
+                    claims.insert(row.id);
+                    locked.push(row.clone());
+                    if let Some(limit) = limit {
+                        if locked.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+            drop(claims);
+            MemoryBatch {
+                published: Arc::clone(&self.published),
+                claims: Arc::clone(&self.claims),
+                failures: Arc::clone(&self.failures),
+                locked,
+                marked: Vec::new(),
+                failed: Vec::new(),
+            }
+        }
     }
 
     struct MemoryBatch {
         published: Arc<Mutex<HashSet<Uuid>>>,
+        claims: Arc<Mutex<HashSet<Uuid>>>,
         failures: Arc<Mutex<Vec<(Uuid, String)>>>,
         locked: Vec<EventOutboxRow>,
         marked: Vec<Uuid>,
@@ -374,6 +497,10 @@ mod tests {
     impl LockedOutboxBatch for MemoryBatch {
         fn locked_events(&self) -> Vec<EventOutboxRow> {
             self.locked.clone()
+        }
+
+        fn is_empty(&self) -> bool {
+            self.locked.is_empty()
         }
 
         async fn mark_published(&mut self, id: Uuid) -> anyhow::Result<()> {
@@ -387,14 +514,21 @@ mod tests {
         }
 
         async fn commit(self: Box<Self>) -> anyhow::Result<()> {
-            let mut published = self.published.lock().unwrap();
-            for id in &self.marked {
-                published.insert(*id);
+            {
+                let mut published = self.published.lock().unwrap();
+                for id in &self.marked {
+                    published.insert(*id);
+                }
             }
-            drop(published);
-            let mut failures = self.failures.lock().unwrap();
-            for (id, error) in &self.failed {
-                failures.push((*id, error.clone()));
+            {
+                let mut failures = self.failures.lock().unwrap();
+                for (id, error) in &self.failed {
+                    failures.push((*id, error.clone()));
+                }
+            }
+            let mut claims = self.claims.lock().unwrap();
+            for row in &self.locked {
+                claims.remove(&row.id);
             }
             Ok(())
         }
@@ -402,22 +536,12 @@ mod tests {
 
     #[async_trait]
     impl OutboxBatchStore for MemoryOutbox {
-        async fn lock_batch(&self, _limit: i64) -> anyhow::Result<Box<dyn LockedOutboxBatch>> {
-            let locked = self
-                .events
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|row| !self.published.lock().unwrap().contains(&row.id))
-                .cloned()
-                .collect();
-            Ok(Box::new(MemoryBatch {
-                published: Arc::clone(&self.published),
-                failures: Arc::clone(&self.failures),
-                locked,
-                marked: Vec::new(),
-                failed: Vec::new(),
-            }))
+        async fn lock_batch(&self, limit: i64) -> anyhow::Result<Box<dyn LockedOutboxBatch>> {
+            Ok(Box::new(self.lock_rows(Some(limit.max(1) as usize), None)))
+        }
+
+        async fn lock_event(&self, id: Uuid) -> anyhow::Result<Box<dyn LockedOutboxBatch>> {
+            Ok(Box::new(self.lock_rows(None, Some(id))))
         }
     }
 
@@ -524,6 +648,224 @@ mod tests {
             store.unpublished().contains(&event.id),
             "a disabled transport must not consume the event"
         );
+    }
+
+    #[tokio::test]
+    async fn exhausted_event_is_not_reclaimed() {
+        let event = sample_event(Uuid::new_v4());
+        let mut row = outbox_row(event.id, serde_json::to_value(&event).unwrap());
+        row.attempts = MAX_OUTBOX_ATTEMPTS;
+        let store = MemoryOutbox::with_events(vec![row]);
+        let publisher = RecordingPublisher::default();
+
+        let outcome = drain_once(&store, &publisher, 10).await.unwrap();
+        assert_eq!(outcome.published, 0);
+        assert_eq!(outcome.failed, 0);
+        assert!(publisher.delivered.lock().unwrap().is_empty());
+        assert!(store.unpublished().contains(&event.id));
+    }
+
+    #[tokio::test]
+    async fn second_publisher_skips_a_claimed_event() {
+        // Mirrors `FOR UPDATE SKIP LOCKED`: while one publisher holds the row,
+        // the fast path must not publish it again.
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        let drain = store.lock_batch(10).await.unwrap();
+        assert!(!drain.is_empty());
+
+        let publisher = RecordingPublisher::default();
+        let delivered = deliver_outbox_event(&store, &publisher, event.id)
+            .await
+            .unwrap();
+        assert!(
+            !delivered,
+            "a row held by another publisher must be skipped, not published twice"
+        );
+        assert!(publisher.delivered.lock().unwrap().is_empty());
+
+        // Once the drain commits, the event is published by it.
+        let (outcome, _) = publish_locked_batch(drain, &publisher).await.unwrap();
+        assert_eq!(outcome.published, 1);
+    }
+
+    #[tokio::test]
+    async fn fast_path_delivers_an_unclaimed_event_once() {
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        let publisher = RecordingPublisher::default();
+
+        let delivered = deliver_outbox_event(&store, &publisher, event.id)
+            .await
+            .unwrap();
+        assert!(delivered);
+        assert!(store.published_ids().contains(&event.id));
+
+        // A second attempt finds nothing to claim.
+        let delivered = deliver_outbox_event(&store, &publisher, event.id)
+            .await
+            .unwrap();
+        assert!(!delivered);
+        assert_eq!(publisher.delivered.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fast_path_failure_is_recorded_for_retry() {
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        let failing = RecordingPublisher {
+            fail_ids: HashSet::from([event.id]),
+            ..RecordingPublisher::default()
+        };
+
+        let result = deliver_outbox_event(&store, &failing, event.id).await;
+        assert!(result.is_err(), "a failed ACK must surface as an error");
+        assert!(
+            store.unpublished().contains(&event.id),
+            "the event must stay queued after a failed fast-path publish"
+        );
+        assert_eq!(store.failure_count(), 1);
+    }
+
+    /// Transport mock: fails the first publish (the rule alert) and counts the
+    /// successful ones, so the rule-cooldown release is observable.
+    #[derive(Default)]
+    struct FailFirstTransport {
+        calls: Arc<AtomicUsize>,
+        succeeded: Arc<AtomicUsize>,
+    }
+
+    struct RecordingAck {
+        succeeded: Arc<AtomicUsize>,
+        will_fail: bool,
+    }
+
+    impl PendingPublishAck for RecordingAck {
+        fn wait_for_ack(
+            self: Box<Self>,
+        ) -> futures::future::BoxFuture<'static, anyhow::Result<()>> {
+            Box::pin(async move {
+                if self.will_fail {
+                    anyhow::bail!("simulated rule-alert ACK failure");
+                }
+                self.succeeded.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    #[async_trait]
+    impl JetStreamTransport for FailFirstTransport {
+        async fn publish(
+            &self,
+            _subject: String,
+            _payload: Vec<u8>,
+        ) -> anyhow::Result<Box<dyn PendingPublishAck>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(RecordingAck {
+                succeeded: Arc::clone(&self.succeeded),
+                will_fail: call == 0,
+            }))
+        }
+    }
+
+    struct FlakyTransportCounters {
+        calls: Arc<AtomicUsize>,
+        succeeded: Arc<AtomicUsize>,
+    }
+
+    fn flaky_rule_publisher(
+        evaluator: Arc<AlertEvaluator>,
+    ) -> (NatsAlertEventPublisher, FlakyTransportCounters) {
+        let transport = FailFirstTransport::default();
+        let counters = FlakyTransportCounters {
+            calls: Arc::clone(&transport.calls),
+            succeeded: Arc::clone(&transport.succeeded),
+        };
+        let nats = NatsPublisher::with_transport(Arc::new(transport), false);
+        (
+            NatsAlertEventPublisher::new(nats, Some(evaluator)),
+            counters,
+        )
+    }
+
+    #[tokio::test]
+    async fn rule_alert_failure_releases_cooldown_and_redelivers_on_retry() {
+        let evaluator = Arc::new(
+            AlertEvaluator::load_from_yaml(
+                r#"
+version: 1
+rules:
+  - name: any-warning
+    source: warning
+    condition: "true"
+    severity: info
+    for: 1h
+    notify: []
+"#,
+            )
+            .unwrap(),
+        );
+        let event = sample_event(Uuid::new_v4());
+        let store = MemoryOutbox::with_events(vec![outbox_row(
+            event.id,
+            serde_json::to_value(&event).unwrap(),
+        )]);
+        let (publisher, transport) = flaky_rule_publisher(evaluator);
+
+        // First drain: the rule alert fails, the cooldown is released, and the
+        // row stays unpublished (the base alert is never reached).
+        let outcome = drain_once(&store, &publisher, 10).await.unwrap();
+        assert_eq!(outcome.failed, 1);
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+
+        // Retry: the rule alert must be attempted again despite its 1h cooldown.
+        let outcome = drain_once(&store, &publisher, 10).await.unwrap();
+        assert_eq!(
+            outcome.published, 1,
+            "the retry must publish the rule alert and the base alert"
+        );
+        assert_eq!(
+            transport.succeeded.load(Ordering::SeqCst),
+            2,
+            "the retry must ACK the rule alert and the base alert"
+        );
+        assert!(store.published_ids().contains(&event.id));
+    }
+
+    #[tokio::test]
+    async fn rule_evaluation_publishes_rule_alerts_and_the_base_alert() {
+        let evaluator = Arc::new(
+            AlertEvaluator::load_from_yaml(
+                r#"
+version: 1
+rules:
+  - name: any-warning
+    source: warning
+    condition: "true"
+    severity: info
+    for: 0s
+    notify: []
+"#,
+            )
+            .unwrap(),
+        );
+        let event = sample_event(Uuid::new_v4());
+        let (publisher, transport) = flaky_rule_publisher(evaluator);
+        // Make the transport healthy: the first publish must succeed here.
+        transport.calls.store(1, Ordering::SeqCst);
+
+        publisher.publish_event(&event).await.unwrap();
+        assert_eq!(transport.succeeded.load(Ordering::SeqCst), 2);
     }
 
     #[test]

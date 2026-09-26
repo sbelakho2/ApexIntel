@@ -220,7 +220,10 @@ async fn run_placement_clustering(
                     .submit_warning(
                         NewWarning::new("adversarial", &title, severity)
                             .description(&description)
-                            .confidence(0.80),
+                            .confidence(0.80)
+                            // Coordinated placement across sources is an
+                            // operational, system-wide signal.
+                            .system_broadcast(),
                     )
                     .await
                 {
@@ -438,7 +441,9 @@ async fn run_quarantine_management(
             .submit_warning(
                 NewWarning::new("adversarial", &title, "high")
                     .description(&description)
-                    .confidence(0.85),
+                    .confidence(0.85)
+                    // Quarantine is operational and has no entity row.
+                    .system_broadcast(),
             )
             .await
         {

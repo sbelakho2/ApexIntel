@@ -1107,7 +1107,9 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             .submit_warning(
                 NewWarning::new("crawl_health", "Crawl reliability degraded", "high")
                     .description(&failure_summary)
-                    .confidence((1.0 - success_ratio).clamp(0.0, 1.0)),
+                    .confidence((1.0 - success_ratio).clamp(0.0, 1.0))
+                    // Crawl health is operational and system-wide.
+                    .system_broadcast(),
             )
             .await
         {
