@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
+
 /// A FRED series observation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FredObservation {
@@ -120,52 +122,98 @@ impl FredMonitor {
     }
 
     /// Fetch observations for all configured FRED series.
-    pub async fn scan(&self) -> Vec<FredSignal> {
+    ///
+    /// Aggregates per-series outcomes conservatively: a series whose response
+    /// no longer deserializes is reported as a parse failure (marking the
+    /// source degraded) instead of being dropped from an empty-looking scan.
+    pub async fn scan(&self) -> ParseOutcome<FredSignal> {
         let mut all_signals = Vec::new();
+        let mut any_parsed = false;
+        let mut any_empty_parse = false;
+        let mut first_fetch_failure: Option<(String, Option<u16>)> = None;
+        let mut first_parse_failure: Option<(String, String)> = None;
 
         for series_id in &self.config.series_ids {
             match self.fetch_series(series_id).await {
-                Ok(observations) => {
-                    if let Some(signal) = self.build_signal(series_id, &observations) {
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    any_parsed = true;
+                    if items.is_empty() {
+                        any_empty_parse = true;
+                    }
+                    if let Some(signal) = self.build_signal(series_id, &items) {
                         all_signals.push(signal);
                     }
                 }
-                Err(e) => {
-                    warn!(series_id = %series_id, error = %e, "FRED series fetch failed");
+                ParseOutcome::FetchFailed { error, http_status } => {
+                    warn!(series_id = %series_id, error = %error, "FRED series fetch failed");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    warn!(series_id = %series_id, error = %error, "FRED series parser failed");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
                 }
             }
         }
 
         info!(
             total = all_signals.len(),
-            "FRED economic monitoring scan complete"
+            any_empty_parse, "FRED economic monitoring scan complete"
         );
-        all_signals
+
+        if let Some((error, redacted_sample)) = first_parse_failure {
+            return ParseOutcome::ParseFailed {
+                error,
+                redacted_sample,
+            };
+        }
+        if !any_parsed {
+            if let Some((error, http_status)) = first_fetch_failure {
+                return ParseOutcome::FetchFailed { error, http_status };
+            }
+        }
+        ParseOutcome::ParsedSuccessfully { items: all_signals }
     }
 
     /// Fetch recent observations for a FRED series.
-    async fn fetch_series(&self, series_id: &str) -> Result<Vec<FredObservation>> {
-        let api_key = self
-            .config
-            .api_key
-            .as_deref()
-            .context("FRED API key not configured")?;
+    ///
+    /// Fetch failure (network/HTTP/key), parse failure (schema change) and a
+    /// successfully deserialized — possibly empty — observation list are
+    /// distinct outcomes.
+    async fn fetch_series(&self, series_id: &str) -> ParseOutcome<FredObservation> {
+        let Some(api_key) = self.config.api_key.as_deref() else {
+            let outcome =
+                ParseOutcome::fetch_failed("FRED API key not configured".to_string(), None);
+            PARSER_METRICS.record(&outcome);
+            return outcome;
+        };
 
         let url = format!(
             "{}?series_id={}&api_key={}&file_type=json&sort_order=desc&limit=24",
             self.config.base_url, series_id, api_key
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("FRED API request")?;
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome =
+                    ParseOutcome::fetch_failed(format!("FRED API request failed: {error}"), None);
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), series_id = %series_id, "FRED API returned non-success");
-            return Ok(Vec::new());
+            let outcome = ParseOutcome::fetch_failed(
+                format!("FRED API returned HTTP {status}"),
+                Some(status),
+            );
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
         #[derive(Deserialize, Default)]
@@ -178,9 +226,34 @@ impl FredMonitor {
             value: String,
         }
 
-        let fred_resp: FredResponse = resp.json().await.unwrap_or_default();
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read FRED response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        let fred_resp: FredResponse = match serde_json::from_str(&text) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to parse FRED JSON for {series_id}: {error}"),
+                    &text,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
         let raw_obs = fred_resp.observations.unwrap_or_default();
 
+        // A missing/null `observations` array is a valid "no data" response;
+        // individual malformed rows are skipped as best-effort telemetry (the
+        // envelope deserialized successfully, which is the parser contract).
         let observations: Vec<FredObservation> = raw_obs
             .iter()
             .filter_map(|o| {
@@ -198,7 +271,9 @@ impl FredMonitor {
             })
             .collect();
 
-        Ok(observations)
+        let outcome = ParseOutcome::parsed(observations);
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 
     /// Build an intelligence signal from FRED observations.
@@ -347,5 +422,70 @@ mod tests {
         let signal = monitor.build_signal("TEST", &obs).unwrap();
         assert_eq!(signal.latest_value, 110.0);
         assert!((signal.change_pct.unwrap() - 10.0).abs() < 0.01);
+    }
+
+    fn monitor_for(base_url: String) -> FredMonitor {
+        FredMonitor::new(FredConfig {
+            base_url,
+            api_key: Some("test-key".to_string()),
+            series_ids: vec!["INDPRO".to_string()],
+            timeout_secs: 5,
+        })
+        .expect("FRED monitor")
+    }
+
+    #[tokio::test]
+    async fn fred_schema_change_is_parse_failure_not_empty_success() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("{\"observations\": \"not-an-array\"}"),
+            )
+            .mount(&server)
+            .await;
+
+        let outcome = monitor_for(server.uri()).scan().await;
+        assert!(
+            outcome.is_parse_failure(),
+            "expected ParseFailed: {outcome:?}"
+        );
+        assert!(!outcome.is_parsed_success());
+        assert!(outcome.redacted_sample().is_some());
+        assert!(outcome.failure_error().is_some());
+    }
+
+    #[tokio::test]
+    async fn fred_empty_observations_is_parsed_success() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"observations\": []}"))
+            .mount(&server)
+            .await;
+
+        let outcome = monitor_for(server.uri()).scan().await;
+        assert!(outcome.is_parsed_success());
+        assert_eq!(outcome.item_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn fred_http_error_is_fetch_failure() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let outcome = monitor_for(server.uri()).scan().await;
+        assert!(outcome.is_fetch_failure());
+        assert!(!outcome.is_parse_failure());
     }
 }

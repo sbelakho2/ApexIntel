@@ -254,16 +254,27 @@ pub fn process_source_scoring_stage(result: &SourceScoringStageResult) -> Improv
         };
     }
 
-    run.succeed(
+    let summary = format!(
+        "Scored {} sources: {} upgraded, {} downgraded, {} coverage gaps",
         result.sources_scored,
-        &format!(
-            "Scored {} sources: {} upgraded, {} downgraded, {} coverage gaps",
-            result.sources_scored,
-            result.sources_upgraded,
-            result.sources_downgraded,
-            result.coverage_gaps_found
-        ),
+        result.sources_upgraded,
+        result.sources_downgraded,
+        result.coverage_gaps_found
     );
+    if result.errors.is_empty() {
+        run.succeed(result.sources_scored, &summary);
+    } else {
+        // Structured degraded stage: errors must not be folded into a clean
+        // success — the stage ran but some inputs/operations failed.
+        run.degrade(
+            result.sources_scored,
+            &format!(
+                "{summary} — degraded: {} error(s): {}",
+                result.errors.len(),
+                result.errors.join("; ")
+            ),
+        );
+    }
     ImprovementStageOutcome {
         stage: SelfImprovementStage::SourceScoring,
         run,
@@ -317,13 +328,22 @@ pub fn process_cross_domain_stage(result: &CrossDomainStageResult) -> Improvemen
         };
     }
 
-    run.succeed(
-        result.pairs_evaluated,
-        &format!(
-            "Evaluated {} pairs: {} synergies found, {} new candidates",
-            result.pairs_evaluated, result.synergies_found, result.new_candidates_generated
-        ),
+    let summary = format!(
+        "Evaluated {} pairs: {} synergies found, {} new candidates",
+        result.pairs_evaluated, result.synergies_found, result.new_candidates_generated
     );
+    if result.errors.is_empty() {
+        run.succeed(result.pairs_evaluated, &summary);
+    } else {
+        run.degrade(
+            result.pairs_evaluated,
+            &format!(
+                "{summary} — degraded: {} error(s): {}",
+                result.errors.len(),
+                result.errors.join("; ")
+            ),
+        );
+    }
     ImprovementStageOutcome {
         stage: SelfImprovementStage::CrossDomainMining,
         run,
@@ -379,17 +399,26 @@ pub fn process_outcome_tracking_stage(
         };
     }
 
-    run.succeed(
+    let summary = format!(
+        "Checked {} predictions: {} confirmed, {} expired, {} overconfident, {} poor accuracy",
         result.predictions_checked,
-        &format!(
-            "Checked {} predictions: {} confirmed, {} expired, {} overconfident, {} poor accuracy",
-            result.predictions_checked,
-            result.predictions_confirmed,
-            result.predictions_expired,
-            result.overconfident_recipes,
-            result.poor_accuracy_recipes
-        ),
+        result.predictions_confirmed,
+        result.predictions_expired,
+        result.overconfident_recipes,
+        result.poor_accuracy_recipes
     );
+    if result.errors.is_empty() {
+        run.succeed(result.predictions_checked, &summary);
+    } else {
+        run.degrade(
+            result.predictions_checked,
+            &format!(
+                "{summary} — degraded: {} error(s): {}",
+                result.errors.len(),
+                result.errors.join("; ")
+            ),
+        );
+    }
     ImprovementStageOutcome {
         stage: SelfImprovementStage::OutcomeTracking,
         run,
@@ -427,14 +456,25 @@ pub fn process_meta_learning_stage(result: &MetaLearningStageResult) -> Improvem
         };
     }
 
-    run.succeed(
-        result.recipes_analysed,
-        &format!(
+    let summary = format!(
         "Analysed {} recipes: {} threshold adjustments, {} high-value signals, {} recommendations",
-        result.recipes_analysed, result.threshold_adjustments_suggested,
-        result.high_value_signal_types_found, result.collection_recommendations_generated
-    ),
+        result.recipes_analysed,
+        result.threshold_adjustments_suggested,
+        result.high_value_signal_types_found,
+        result.collection_recommendations_generated
     );
+    if result.errors.is_empty() {
+        run.succeed(result.recipes_analysed, &summary);
+    } else {
+        run.degrade(
+            result.recipes_analysed,
+            &format!(
+                "{summary} — degraded: {} error(s): {}",
+                result.errors.len(),
+                result.errors.join("; ")
+            ),
+        );
+    }
     ImprovementStageOutcome {
         stage: SelfImprovementStage::MetaLearning,
         run,
@@ -622,6 +662,31 @@ mod tests {
         let report = run_self_improvement_pipeline(None, None, None, None);
         assert!(report.overall_success);
         assert_eq!(report.stages.len(), 0);
+    }
+
+    #[test]
+    fn test_stage_errors_degrade_instead_of_succeeding() {
+        let with_errors = SourceScoringStageResult {
+            sources_scored: 4,
+            sources_upgraded: 1,
+            sources_downgraded: 1,
+            coverage_gaps_found: 2,
+            errors: vec!["failed to load telemetry: db down".to_string()],
+        };
+        let outcome = process_source_scoring_stage(&with_errors);
+        assert!(
+            matches!(outcome.run.status, JobStatus::Degraded { .. }),
+            "stage errors must produce a structured degraded stage, got {:?}",
+            outcome.run.status
+        );
+        assert_eq!(outcome.error_count, 1);
+
+        let clean = SourceScoringStageResult {
+            errors: vec![],
+            ..with_errors
+        };
+        let outcome = process_source_scoring_stage(&clean);
+        assert!(matches!(outcome.run.status, JobStatus::Succeeded { .. }));
     }
 
     #[test]

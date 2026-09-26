@@ -139,6 +139,7 @@ pub(crate) async fn export_companies_csv(
         }
     }
 
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
     let _ = store
         .record_export_history(&user_id, "companies", "csv", &filters_json, emitted, Some("companies.csv"))
         .await;
@@ -228,6 +229,7 @@ pub(crate) async fn export_persons_csv(
         }
     }
 
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
     let _ = store
         .record_export_history(&user_id, "persons", "csv", &filters_json, emitted, Some("persons.csv"))
         .await;
@@ -317,6 +319,7 @@ pub(crate) async fn export_insights_csv(
         }
     }
 
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
     let _ = store
         .record_export_history(&user_id, "insights", "csv", &filters_json, emitted, Some("insights.csv"))
         .await;

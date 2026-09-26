@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use apex_core::entities::RoleFamily;
 use apex_crawl::contact_enrichment::ContactEnricher;
+use apex_crawl::parse_outcome::ParseOutcome;
 use apex_insights::icp_scorer::{IcpDefinition, IcpInput, IcpScorer};
 use apex_poi::buying_center::{role_to_buying_center, BuyingCenterRole};
 use apex_store::postgres::{NewBuyingMember, NewContactMethod, PgStore};
@@ -62,6 +63,11 @@ pub(super) async fn run_contact_enrichment(kind: &JobKind, store: &Arc<PgStore>)
 
     let enricher = ContactEnricher::from_env();
     let mut enriched = 0u64;
+    // Distinct false-success counters: a provider schema change is a parser
+    // incident, and a failed contact_methods write is not a clean enrichment.
+    let mut provider_fetch_failures = 0u64;
+    let mut provider_parse_failures = 0u64;
+    let mut upsert_failures = 0u64;
 
     for (person_id, name, domain) in &rows {
         let domain = match domain {
@@ -69,8 +75,8 @@ pub(super) async fn run_contact_enrichment(kind: &JobKind, store: &Arc<PgStore>)
             _ => continue,
         };
         match enricher.enrich(name, domain).await {
-            Ok(contacts) if !contacts.is_empty() => {
-                for c in &contacts {
+            ParseOutcome::ParsedSuccessfully { items } => {
+                for c in &items {
                     let new_cm = NewContactMethod {
                         person_id: *person_id,
                         contact_type: c.contact_type.clone(),
@@ -84,26 +90,52 @@ pub(super) async fn run_contact_enrichment(kind: &JobKind, store: &Arc<PgStore>)
                         metadata: serde_json::json!({"name": name}),
                     };
                     if let Err(e) = store.upsert_contact_method(&new_cm).await {
+                        upsert_failures += 1;
                         tracing::warn!(error = %e, "contact_enrichment: upsert failed");
                     }
                 }
-                enriched += 1;
+                if !items.is_empty() {
+                    enriched += 1;
+                }
             }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::debug!(error = %e, name = %name, "contact_enrichment: provider error")
+            ParseOutcome::FetchFailed { error, .. } => {
+                provider_fetch_failures += 1;
+                tracing::debug!(error = %error, name = %name, "contact_enrichment: provider fetch error");
+            }
+            ParseOutcome::ParseFailed {
+                error,
+                redacted_sample,
+            } => {
+                provider_parse_failures += 1;
+                tracing::warn!(
+                    error = %error,
+                    sample = %redacted_sample,
+                    name = %name,
+                    "contact_enrichment: provider parser failure (schema change)"
+                );
             }
         }
     }
 
-    run.succeed(
+    let summary = format!(
+        "contact_enrichment: checked {} persons, enriched {} with contact data \
+         ({} provider fetch failures, {} provider parse failures, {} upsert failures)",
+        rows.len(),
         enriched,
-        &format!(
-            "contact_enrichment: checked {} persons, enriched {} with contact data",
-            rows.len(),
-            enriched
-        ),
+        provider_fetch_failures,
+        provider_parse_failures,
+        upsert_failures,
     );
+    if provider_parse_failures > 0 || upsert_failures > 0 {
+        run.items_processed = enriched;
+        run.fail(&format!(
+            "{summary} — provider parser or persistence failure"
+        ));
+    } else if provider_fetch_failures > 0 {
+        run.degrade(enriched, &format!("{summary} — provider fetch degraded"));
+    } else {
+        run.succeed(enriched, &summary);
+    }
     run
 }
 

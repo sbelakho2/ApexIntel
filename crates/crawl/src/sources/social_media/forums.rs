@@ -1,11 +1,12 @@
 //! Industry Forum Presence Detection Module
 
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{info, warn};
+
+use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
 
 /// A forum/community source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,29 +133,82 @@ impl ForumMonitor {
         ]
     }
 
-    pub async fn scan_forums(&self) -> Vec<ForumMention> {
+    pub async fn scan_forums(&self) -> ParseOutcome<ForumMention> {
         let mut all_mentions = Vec::new();
+        let mut any_parsed = false;
+        let mut first_fetch_failure: Option<(String, Option<u16>)> = None;
+        let mut first_parse_failure: Option<(String, String)> = None;
+
         for source in self.sources.iter().filter(|s| s.enabled) {
             match self.fetch_rss(&source.url).await {
-                Ok(items) => all_mentions.extend(self.items_to_mentions(&items, source)),
-                Err(e) => warn!(source = %source.source_id, error = %e, "Forum feed failed"),
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    any_parsed = true;
+                    all_mentions.extend(self.items_to_mentions(&items, source));
+                }
+                ParseOutcome::FetchFailed { error, http_status } => {
+                    warn!(source = %source.source_id, error = %error, "Forum feed failed");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    warn!(source = %source.source_id, error = %error, "Forum feed parser failed");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
+                }
             }
         }
         all_mentions.sort_by_key(|m| std::cmp::Reverse(m.published_at));
         info!(total = all_mentions.len(), "Forum monitoring complete");
-        all_mentions
-    }
 
-    async fn fetch_rss(&self, url: &str) -> Result<Vec<ForumRssItem>> {
-        let resp = self.client.get(url).send().await?;
-        if !resp.status().is_success() {
-            return Ok(Vec::new());
+        if let Some((error, redacted_sample)) = first_parse_failure {
+            return ParseOutcome::ParseFailed {
+                error,
+                redacted_sample,
+            };
         }
-        let body = resp.text().await?;
-        self.parse_rss(&body)
+        if !any_parsed {
+            if let Some((error, http_status)) = first_fetch_failure {
+                return ParseOutcome::FetchFailed { error, http_status };
+            }
+        }
+        ParseOutcome::ParsedSuccessfully {
+            items: all_mentions,
+        }
     }
 
-    fn parse_rss(&self, xml: &str) -> Result<Vec<ForumRssItem>> {
+    async fn fetch_rss(&self, url: &str) -> ParseOutcome<ForumRssItem> {
+        let resp = match self.client.get(url).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("forum feed request failed: {error}"),
+                    None,
+                )
+            }
+        };
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            return ParseOutcome::fetch_failed(
+                format!("forum feed returned HTTP {status}"),
+                Some(status),
+            );
+        }
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read forum feed: {error}"),
+                    None,
+                )
+            }
+        };
+        let outcome = self.parse_rss(&body);
+        PARSER_METRICS.record(&outcome);
+        outcome
+    }
+
+    fn parse_rss(&self, xml: &str) -> ParseOutcome<ForumRssItem> {
         use quick_xml::events::Event;
         use quick_xml::Reader;
         let mut reader = Reader::from_str(xml);
@@ -214,11 +268,18 @@ impl ForumMonitor {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(_) => break,
+                Err(error) => {
+                    // Truncated/malformed XML is a parser incident, not an
+                    // empty feed: return a parse failure with a redacted sample.
+                    return ParseOutcome::parse_failed(
+                        format!("failed to parse forum RSS XML: {error}"),
+                        xml,
+                    );
+                }
                 _ => {}
             }
         }
-        Ok(items)
+        ParseOutcome::parsed(items)
     }
 
     fn items_to_mentions(&self, items: &[ForumRssItem], source: &ForumSource) -> Vec<ForumMention> {

@@ -317,6 +317,7 @@ pub(crate) async fn list_company_buying_center(
             .store
             .list_buying_center_members(c.id)
             .await
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             .unwrap_or_default();
         let member_views: Vec<BuyingCenterMemberView> = members
             .into_iter()

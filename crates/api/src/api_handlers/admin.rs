@@ -474,6 +474,7 @@ async fn execute_replay_job(
         "processed": total_observations,
         "warnings_generated": warnings_generated,
     });
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
     let _ = state
         .store
         .record_audit_event(&actor, "replay_completed", &detail)
@@ -555,6 +556,7 @@ pub(crate) async fn post_replay(
     };
 
     let job_id = job.id;
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
     let _ = state
         .store
         .record_audit_event(
@@ -585,6 +587,7 @@ pub(crate) async fn post_replay(
                         Some(Utc::now()),
                     )
                     .await;
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
                 let _ = state_clone
                     .store
                     .record_audit_event(

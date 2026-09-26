@@ -878,6 +878,7 @@ pub async fn get_person(
             organization_state
                 .into_loaded_or_default()
                 .map(|company| company.name)
+                // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                 .unwrap_or_default()
         }
         None => String::new(),

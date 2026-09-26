@@ -21,10 +21,11 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
+
+use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
 
 /// A discovered, provenance-tracked contact method.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,36 +77,68 @@ impl ContactEnricher {
     /// Discover contact methods for a person at a company domain.
     ///
     /// Tries each configured provider in waterfall order, then the website
-    /// fallback. Returns the first non-empty set of results (providers may
-    /// return multiple contact methods). Never returns an empty vec from a
-    /// "faked success" — empty means genuinely nothing was found.
+    /// fallback. Returns a [`ParseOutcome`]: a provider schema change is a
+    /// parse failure (never an empty "not found"), and an empty
+    /// `ParsedSuccessfully` means a provider answered cleanly and genuinely
+    /// had no match.
     pub async fn enrich(
         &self,
         full_name: &str,
         company_domain: &str,
-    ) -> Result<Vec<EnrichedContact>> {
+    ) -> ParseOutcome<EnrichedContact> {
         let mut all: Vec<EnrichedContact> = Vec::new();
+        let mut first_fetch_failure: Option<(String, Option<u16>)> = None;
+        let mut first_parse_failure: Option<(String, String)> = None;
+        let mut any_parsed = false;
 
         if let Some(key) = &self.apollo_key {
             match self.apollo_lookup(key, full_name, company_domain).await {
-                Ok(contacts) if !contacts.is_empty() => {
-                    debug!(name = full_name, n = contacts.len(), "contact: apollo hit");
-                    all.extend(contacts);
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    any_parsed = true;
+                    if !items.is_empty() {
+                        debug!(name = full_name, n = items.len(), "contact: apollo hit");
+                        all.extend(items);
+                    } else {
+                        debug!(name = full_name, "contact: apollo miss");
+                    }
                 }
-                Ok(_) => debug!(name = full_name, "contact: apollo miss"),
-                Err(e) => warn!(error = %e, "contact: apollo error"),
+                ParseOutcome::FetchFailed { error, http_status } => {
+                    warn!(error = %error, "contact: apollo error");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    warn!(error = %error, "contact: apollo parser error");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
+                }
             }
         }
 
         if all.is_empty() {
             if let Some(key) = &self.hunter_key {
                 match self.hunter_lookup(key, full_name, company_domain).await {
-                    Ok(contacts) if !contacts.is_empty() => {
-                        debug!(name = full_name, n = contacts.len(), "contact: hunter hit");
-                        all.extend(contacts);
+                    ParseOutcome::ParsedSuccessfully { items } => {
+                        any_parsed = true;
+                        if !items.is_empty() {
+                            debug!(name = full_name, n = items.len(), "contact: hunter hit");
+                            all.extend(items);
+                        } else {
+                            debug!(name = full_name, "contact: hunter miss");
+                        }
                     }
-                    Ok(_) => debug!(name = full_name, "contact: hunter miss"),
-                    Err(e) => warn!(error = %e, "contact: hunter error"),
+                    ParseOutcome::FetchFailed { error, http_status } => {
+                        warn!(error = %error, "contact: hunter error");
+                        first_fetch_failure.get_or_insert((error, http_status));
+                    }
+                    ParseOutcome::ParseFailed {
+                        error,
+                        redacted_sample,
+                    } => {
+                        warn!(error = %error, "contact: hunter parser error");
+                        first_parse_failure.get_or_insert((error, redacted_sample));
+                    }
                 }
             }
         }
@@ -113,16 +146,26 @@ impl ContactEnricher {
         if all.is_empty() {
             if let Some(key) = &self.clearbit_key {
                 match self.clearbit_lookup(key, full_name, company_domain).await {
-                    Ok(contacts) if !contacts.is_empty() => {
-                        debug!(
-                            name = full_name,
-                            n = contacts.len(),
-                            "contact: clearbit hit"
-                        );
-                        all.extend(contacts);
+                    ParseOutcome::ParsedSuccessfully { items } => {
+                        any_parsed = true;
+                        if !items.is_empty() {
+                            debug!(name = full_name, n = items.len(), "contact: clearbit hit");
+                            all.extend(items);
+                        } else {
+                            debug!(name = full_name, "contact: clearbit miss");
+                        }
                     }
-                    Ok(_) => debug!(name = full_name, "contact: clearbit miss"),
-                    Err(e) => warn!(error = %e, "contact: clearbit error"),
+                    ParseOutcome::FetchFailed { error, http_status } => {
+                        warn!(error = %error, "contact: clearbit error");
+                        first_fetch_failure.get_or_insert((error, http_status));
+                    }
+                    ParseOutcome::ParseFailed {
+                        error,
+                        redacted_sample,
+                    } => {
+                        warn!(error = %error, "contact: clearbit parser error");
+                        first_parse_failure.get_or_insert((error, redacted_sample));
+                    }
                 }
             }
         }
@@ -131,16 +174,44 @@ impl ContactEnricher {
         // matching mailto/phone. Low confidence, real provenance.
         if all.is_empty() {
             match self.website_scrape(full_name, company_domain).await {
-                Ok(contacts) if !contacts.is_empty() => {
-                    debug!(name = full_name, n = contacts.len(), "contact: website hit");
-                    all.extend(contacts);
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    any_parsed = true;
+                    if !items.is_empty() {
+                        debug!(name = full_name, n = items.len(), "contact: website hit");
+                        all.extend(items);
+                    } else {
+                        debug!(name = full_name, "contact: website miss");
+                    }
                 }
-                Ok(_) => debug!(name = full_name, "contact: website miss"),
-                Err(e) => warn!(error = %e, "contact: website error"),
+                ParseOutcome::FetchFailed { error, http_status } => {
+                    warn!(error = %error, "contact: website error");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    warn!(error = %error, "contact: website parser error");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
+                }
             }
         }
 
-        Ok(all)
+        let outcome = if let Some((error, redacted_sample)) = first_parse_failure {
+            ParseOutcome::ParseFailed {
+                error,
+                redacted_sample,
+            }
+        } else if !any_parsed && all.is_empty() {
+            match first_fetch_failure {
+                Some((error, http_status)) => ParseOutcome::FetchFailed { error, http_status },
+                None => ParseOutcome::parsed(Vec::new()),
+            }
+        } else {
+            ParseOutcome::parsed(all)
+        };
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 
     // ── Apollo ──────────────────────────────────────────────────────────────
@@ -150,25 +221,52 @@ impl ContactEnricher {
         key: &str,
         full_name: &str,
         domain: &str,
-    ) -> Result<Vec<EnrichedContact>> {
+    ) -> ParseOutcome<EnrichedContact> {
         let (first, last) = split_name(full_name);
         let body = serde_json::json!({
             "first_name": first,
             "last_name": last,
             "organization_domains": [domain],
         });
-        let resp = self
+        let resp = match self
             .client
             .post("https://api.apollo.io/api/v1/people/match")
             .header("X-Api-Key", key)
             .json(&body)
             .send()
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(format!("apollo request failed: {error}"), None)
+            }
+        };
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             tracing::warn!(status = %resp.status(), "apollo_lookup: request failed (check API key/quota)");
-            return Ok(Vec::new());
+            return ParseOutcome::fetch_failed(
+                format!("apollo returned HTTP {status}"),
+                Some(status),
+            );
         }
-        let json: serde_json::Value = resp.json().await.unwrap_or_default();
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read apollo response: {error}"),
+                    None,
+                )
+            }
+        };
+        let json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(json) => json,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse apollo JSON: {error}"),
+                    &text,
+                )
+            }
+        };
         let person = &json["person"];
         let mut out = Vec::new();
         if let Some(email) = person["email"].as_str().filter(|s| !s.is_empty()) {
@@ -207,7 +305,7 @@ impl ContactEnricher {
                 source: "apollo".into(),
             });
         }
-        Ok(out)
+        ParseOutcome::parsed(out)
     }
 
     // ── Hunter ──────────────────────────────────────────────────────────────
@@ -217,7 +315,7 @@ impl ContactEnricher {
         key: &str,
         full_name: &str,
         domain: &str,
-    ) -> Result<Vec<EnrichedContact>> {
+    ) -> ParseOutcome<EnrichedContact> {
         let (first, last) = split_name(full_name);
         // B331: encode name parts (spaces/unicode previously produced an
         // unparseable URL → silent miss) and pass the key via header instead
@@ -228,17 +326,38 @@ impl ContactEnricher {
             urlencoding::encode(&first),
             urlencoding::encode(&last),
         );
-        let resp = self
-            .client
-            .get(&url)
-            .header("X-Api-Key", key)
-            .send()
-            .await?;
+        let resp = match self.client.get(&url).header("X-Api-Key", key).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(format!("hunter request failed: {error}"), None)
+            }
+        };
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             tracing::warn!(status = %resp.status(), "hunter_lookup: request failed (check API key/quota)");
-            return Ok(Vec::new());
+            return ParseOutcome::fetch_failed(
+                format!("hunter returned HTTP {status}"),
+                Some(status),
+            );
         }
-        let json: serde_json::Value = resp.json().await.unwrap_or_default();
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read hunter response: {error}"),
+                    None,
+                )
+            }
+        };
+        let json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(json) => json,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse hunter JSON: {error}"),
+                    &text,
+                )
+            }
+        };
         let data = &json["data"];
         let mut out = Vec::new();
         if let Some(email) = data["email"].as_str().filter(|s| !s.is_empty()) {
@@ -259,7 +378,7 @@ impl ContactEnricher {
                 source: "hunter".into(),
             });
         }
-        Ok(out)
+        ParseOutcome::parsed(out)
     }
 
     // ── Clearbit ────────────────────────────────────────────────────────────
@@ -269,16 +388,45 @@ impl ContactEnricher {
         key: &str,
         full_name: &str,
         domain: &str,
-    ) -> Result<Vec<EnrichedContact>> {
+    ) -> ParseOutcome<EnrichedContact> {
         let (first, last) = split_name(full_name);
         let url = format!(
             "https://person.clearbit.com/v1/people/find?domain={domain}&first_name={first}&last_name={last}"
         );
-        let resp = self.client.get(&url).bearer_auth(key).send().await?;
+        let resp = match self.client.get(&url).bearer_auth(key).send().await {
+            Ok(resp) => resp,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("clearbit request failed: {error}"),
+                    None,
+                )
+            }
+        };
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            let status = resp.status().as_u16();
+            return ParseOutcome::fetch_failed(
+                format!("clearbit returned HTTP {status}"),
+                Some(status),
+            );
         }
-        let json: serde_json::Value = resp.json().await.unwrap_or_default();
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                return ParseOutcome::fetch_failed(
+                    format!("failed to read clearbit response: {error}"),
+                    None,
+                )
+            }
+        };
+        let json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(json) => json,
+            Err(error) => {
+                return ParseOutcome::parse_failed(
+                    format!("failed to parse clearbit JSON: {error}"),
+                    &text,
+                )
+            }
+        };
         let mut out = Vec::new();
         if let Some(email) = json["email"].as_str().filter(|s| !s.is_empty()) {
             out.push(EnrichedContact {
@@ -298,12 +446,12 @@ impl ContactEnricher {
                 source: "clearbit".into(),
             });
         }
-        Ok(out)
+        ParseOutcome::parsed(out)
     }
 
     // ── Website scrape fallback (always available) ──────────────────────────
 
-    async fn website_scrape(&self, full_name: &str, domain: &str) -> Result<Vec<EnrichedContact>> {
+    async fn website_scrape(&self, full_name: &str, domain: &str) -> ParseOutcome<EnrichedContact> {
         let domain = domain.trim().trim_start_matches("www.");
         // Try common contact/about pages.
         let candidates = [
@@ -323,17 +471,30 @@ impl ContactEnricher {
             last_lower
         };
         if anchor.is_empty() {
-            return Ok(Vec::new());
+            return ParseOutcome::parsed(Vec::new());
         }
 
+        let mut last_error: Option<String> = None;
+        let mut fetched_any_page = false;
         for url in &candidates {
             let resp = match self.client.get(url).send().await {
                 Ok(r) if r.status().is_success() => r,
-                _ => continue,
+                Ok(r) => {
+                    last_error = Some(format!("{url} returned HTTP {}", r.status()));
+                    continue;
+                }
+                Err(error) => {
+                    last_error = Some(format!("{url} request failed: {error}"));
+                    continue;
+                }
             };
+            fetched_any_page = true;
             let html = match resp.text().await {
                 Ok(t) => t,
-                Err(_) => continue,
+                Err(error) => {
+                    last_error = Some(format!("failed to read {url}: {error}"));
+                    continue;
+                }
             };
             // Look for a mailto: near the person's last name.
             let mut out = Vec::new();
@@ -362,10 +523,21 @@ impl ContactEnricher {
                 }
             }
             if !out.is_empty() {
-                return Ok(out);
+                return ParseOutcome::parsed(out);
             }
         }
-        Ok(Vec::new())
+
+        if !fetched_any_page {
+            // Every candidate page failed to fetch: this is a fetch failure,
+            // not evidence that the person has no public contact method.
+            return ParseOutcome::fetch_failed(
+                last_error.unwrap_or_else(|| {
+                    "no website contact page could be fetched (all candidates failed)".to_string()
+                }),
+                None,
+            );
+        }
+        ParseOutcome::parsed(Vec::new())
     }
 }
 

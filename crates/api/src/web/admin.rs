@@ -153,6 +153,9 @@ pub struct AdminPage {
     /// Weighted-fair scheduler backlog for one pass at the configured
     /// `CRAWL_MAX_SOURCES` budget (P0 scheduler quality).
     pub source_backlog: SchedulerBacklog,
+    /// Process-wide source-adapter parser health (P0 #26): fetch/parse/success
+    /// counters and the parser success rate shown on the admin dashboard.
+    pub parser_metrics: apex_crawl::parse_outcome::ParserMetricsSnapshot,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
@@ -526,6 +529,7 @@ pub async fn admin_page(
         observation_sources,
         source_coverage,
         source_backlog,
+        parser_metrics: apex_crawl::parse_outcome::PARSER_METRICS.snapshot(),
     };
 
     super::render_template(&tpl)

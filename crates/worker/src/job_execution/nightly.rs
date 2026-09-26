@@ -747,6 +747,9 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     let mut sources_attempted: u64 = 0;
     let mut sources_succeeded: u64 = 0;
     let mut sources_failed: u64 = 0;
+    // Parser-contract failures are a distinct incident class from transport
+    // failures: the fetch worked but extraction/deserialization did not.
+    let mut sources_parse_failed: u64 = 0;
     let mut sources_browser_unavailable: u64 = 0;
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
@@ -804,47 +807,65 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                 // false, so the attempt is recorded as a failure and the
                 // source stays unvalidated instead of being promoted.
                 #[cfg(any(feature = "parse", feature = "llm"))]
-                let (obs_value, parser_contract_ok) = match extract_page(&body) {
-                    Ok(page) => {
-                        // Store the extracted text under BOTH `content` (the
-                        // canonical key all consumers read) and `body_excerpt`
-                        // (legacy compatibility). Increase from 1000 to 4000
-                        // chars so the insight LLM has enough context to ground
-                        // its analysis — 1000 chars was too short for meaningful
-                        // intelligence extraction.
-                        let text: String = page.body_text.chars().take(4000).collect();
-                        let ok = parser_contract_satisfied(&body, Some(&text));
-                        (
+                let (obs_value, parser_contract_ok, parser_failure_sample) =
+                    match extract_page(&body) {
+                        Ok(page) => {
+                            // Store the extracted text under BOTH `content` (the
+                            // canonical key all consumers read) and `body_excerpt`
+                            // (legacy compatibility). Increase from 1000 to 4000
+                            // chars so the insight LLM has enough context to ground
+                            // its analysis — 1000 chars was too short for meaningful
+                            // intelligence extraction.
+                            let text: String = page.body_text.chars().take(4000).collect();
+                            let ok = parser_contract_satisfied(&body, Some(&text));
+                            let sample = if ok {
+                                None
+                            } else {
+                                // Redacted, bounded evidence for the parser incident.
+                                Some(apex_crawl::parse_outcome::redact_sample(&text))
+                            };
+                            (
+                                serde_json::json!({
+                                    "source_id": src.slug,
+                                    "url": url,
+                                    "title": page.title,
+                                    "description": page.description,
+                                    "content": &text,
+                                    "body_excerpt": &text,
+                                    "text_content": &text,
+                                    "language": page.language,
+                                }),
+                                ok,
+                                sample,
+                            )
+                        }
+                        Err(_) => (
                             serde_json::json!({
                                 "source_id": src.slug,
                                 "url": url,
-                                "title": page.title,
-                                "description": page.description,
-                                "content": &text,
-                                "body_excerpt": &text,
-                                "text_content": &text,
-                                "language": page.language,
                             }),
-                            ok,
-                        )
-                    }
-                    Err(_) => (
+                            false,
+                            Some(apex_crawl::parse_outcome::redact_sample(&body)),
+                        ),
+                    };
+                #[cfg(not(any(feature = "parse", feature = "llm")))]
+                let (obs_value, parser_contract_ok, parser_failure_sample) = {
+                    let ok = parser_contract_satisfied(&body, None);
+                    let sample = if ok {
+                        None
+                    } else {
+                        Some(apex_crawl::parse_outcome::redact_sample(&body))
+                    };
+                    (
                         serde_json::json!({
                             "source_id": src.slug,
                             "url": url,
+                            "body_len": body.len(),
                         }),
-                        false,
-                    ),
+                        ok,
+                        sample,
+                    )
                 };
-                #[cfg(not(any(feature = "parse", feature = "llm")))]
-                let (obs_value, parser_contract_ok) = (
-                    serde_json::json!({
-                        "source_id": src.slug,
-                        "url": url,
-                        "body_len": body.len(),
-                    }),
-                    parser_contract_satisfied(&body, None),
-                );
 
                 let obs = {
                     let mut o = Observation::new(
@@ -956,10 +977,10 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                             }
                         } else {
                             // The fetch succeeded but the parser contract did
-                            // not: never promote the source. Record a normal
-                            // failure so the scheduler backs off and the
-                            // source stays unvalidated until it produces real
-                            // content.
+                            // not: never promote the source. Record a parser
+                            // failure so the scheduler backs off, the parser
+                            // metric is separate from transport failures, and
+                            // `last_success_at` is preserved.
                             tracing::warn!(
                                 source = %src.slug,
                                 http_status = fetched.http_status,
@@ -967,17 +988,19 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
                             );
                             errors += 1;
                             sources_failed += 1;
+                            sources_parse_failed += 1;
                             failed_sources.insert(src.slug.clone());
-                            if persist_source_failure(
-                                store.as_ref(),
-                                &src.slug,
-                                "parser contract check failed: empty or unparsable content",
-                                Some(fetched.http_status),
-                                min_interval,
-                                Utc::now(),
-                            )
-                            .await
-                            .is_err()
+                            if store
+                                .record_source_parse_failure(
+                                    &src.slug,
+                                    "parser contract check failed: empty or unparsable content",
+                                    parser_failure_sample.as_deref(),
+                                    Some(fetched.http_status),
+                                    min_interval,
+                                    Utc::now(),
+                                )
+                                .await
+                                .is_err()
                             {
                                 scheduler_state_write_failures += 1;
                             }
@@ -1128,6 +1151,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
         sources_attempted,
         sources_succeeded,
         sources_failed,
+        sources_parse_failed,
         sources_browser_unavailable,
         due_sources_remaining = due_sources_remaining_count,
         total_coverage_debt,
@@ -1139,11 +1163,12 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
 
     if sources_succeeded == 0 || success_ratio < min_success_ratio {
         let failure_summary = format!(
-            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} due_sources_remaining={} total_coverage_debt={:.2} scheduler_state_write_failures={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={} browser_unavailable_sources={}",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} parser_failed={} browser_unavailable={} ingested={} errors={} due_sources_remaining={} total_coverage_debt={:.2} scheduler_state_write_failures={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={} browser_unavailable_sources={}",
             sources_due,
             sources_attempted,
             sources_succeeded,
             sources_failed,
+            sources_parse_failed,
             sources_browser_unavailable,
             ingested,
             errors,
@@ -1706,7 +1731,19 @@ async fn generate_and_stage_hypotheses(
         return outcome;
     }
 
-    let existing_codes = store.list_recipe_codes().await.unwrap_or_default();
+    // Existing recipe codes drive collision-free namespacing; a failed read
+    // must not be treated as "no recipes exist" (that would produce colliding
+    // codes), so the stage records the input failure and stops.
+    let existing_codes = match store.list_recipe_codes().await {
+        Ok(codes) => codes,
+        Err(error) => {
+            outcome.errors.push(format!(
+                "failed to load existing recipe codes (refusing collision-prone generation): {error}"
+            ));
+            outcome.failed += 1;
+            return outcome;
+        }
+    };
     let mut existing_set: HashSet<String> = existing_codes.iter().cloned().collect();
 
     let client = crate::build_quality_llm_client();

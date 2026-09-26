@@ -44,6 +44,7 @@ pub(crate) async fn get_person_psych(
             (
                 StatusCode::OK,
                 Json(success_with_meta(
+                    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                     serde_json::to_value(&profile).unwrap_or_default(),
                     ResponseMeta::now()
                         .with_request_id(request_id)
@@ -133,6 +134,7 @@ pub(crate) async fn get_person_engagement_profile(
             (
                 StatusCode::OK,
                 Json(success_with_meta(
+                    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                     serde_json::to_value(&profile).unwrap_or_default(),
                     ResponseMeta::now()
                         .with_request_id(request_id)

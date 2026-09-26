@@ -18,6 +18,7 @@ rand = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+hickory-resolver = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 regex = { workspace = true }

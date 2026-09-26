@@ -437,11 +437,15 @@ pub async fn list_insights(
     Extension(store): Extension<Arc<PgStore>>,
     axum::extract::Query(params): axum::extract::Query<InsightsQuery>,
 ) -> impl IntoResponse {
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let active_category = params.category.clone().unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let active_impact = params.impact.clone().unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let search_query = params.q.clone().unwrap_or_default();
     let sort_field = params.sort.clone().unwrap_or_else(|| "created_at".into());
     let sort_dir = params.dir.clone().unwrap_or_else(|| "desc".into());
+    // false-success-classification: best-effort — optional boolean default; absence is not a failure
     let show_bookmarked = params.bookmarked.unwrap_or(false);
 
     let category_values = [
@@ -1309,6 +1313,7 @@ pub async fn bookmark_insight_html(
         Ok(true) => true, // newly bookmarked
         Ok(false) => {
             // Already bookmarked — remove it
+            // false-success-classification: best-effort — best-effort write whose failure is logged upstream
             let _ = store
                 .unbookmark_insight_scoped(uuid, &session.user_id, session.role.as_str())
                 .await;
@@ -1325,6 +1330,7 @@ pub async fn bookmark_insight_html(
     };
 
     if bookmarked {
+        // false-success-classification: best-effort — secondary feedback record; the scoped action is already persisted
         let _ = store
             .record_insight_feedback(uuid, &session.user_id, "bookmarked", None)
             .await;

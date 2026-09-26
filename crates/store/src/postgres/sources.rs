@@ -180,6 +180,41 @@ impl PgStore {
         Ok(row)
     }
 
+    /// Record a **parser** failure for a source: the fetch succeeded but the
+    /// body no longer deserializes (schema change), so the source must be
+    /// marked degraded and backed off without ever touching `last_success_at`.
+    ///
+    /// This shares the failure backoff/EWMA path with
+    /// [`Self::record_source_attempt_failure`]; the distinct entry point and
+    /// `parser_failure:` error prefix let operators separate transport
+    /// failures from parser incidents. `last_success_at` is preserved by the
+    /// underlying upsert (it is not part of the conflict update), so a source
+    /// with earlier successful parses keeps its validation timestamp.
+    pub async fn record_source_parse_failure(
+        &self,
+        source_slug: &str,
+        parser_error: &str,
+        redacted_sample: Option<&str>,
+        last_http_status: Option<i32>,
+        min_interval: Duration,
+        now: DateTime<Utc>,
+    ) -> Result<SourceRuntimeStateRow> {
+        let mut message = format!("parser_failure: {parser_error}");
+        if let Some(sample) = redacted_sample {
+            if !sample.is_empty() {
+                message.push_str(&format!(" | sample: {sample}"));
+            }
+        }
+        self.record_source_attempt_failure(
+            source_slug,
+            &message,
+            last_http_status,
+            min_interval,
+            now,
+        )
+        .await
+    }
+
     /// Record a successful attempt: resets the failure counter, clears the
     /// circuit breaker, advances both rolling EWMAs (success rate and latency),
     /// stamps `last_success_at` and schedules the next attempt at

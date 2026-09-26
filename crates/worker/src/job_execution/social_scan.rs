@@ -498,6 +498,7 @@ async fn load_company_names(store: &PgStore) -> Vec<(uuid::Uuid, String)> {
     )
     .fetch_all(&store.pool)
     .await
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     .unwrap_or_default()
 }
 

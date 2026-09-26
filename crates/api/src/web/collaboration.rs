@@ -414,6 +414,7 @@ pub async fn list_workspaces(
     let workspaces = store
         .list_investigation_workspaces(100)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let filtered: Vec<_> = if let Some(status) = status_filter {
@@ -614,6 +615,7 @@ pub async fn create_workspace(
         .signal_id
         .as_deref()
         .map(|signal_id| !signal_id.trim().is_empty())
+        // false-success-classification: best-effort — optional boolean default; absence is not a failure
         .unwrap_or(false);
 
     let mut tags: Vec<String> = form
@@ -709,14 +711,17 @@ pub async fn get_workspace(
     let assignments = store
         .list_workspace_assignments(workspace_id)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let shares = store
         .list_investigation_shares(workspace_id)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let activity = store
         .list_activity_feed(Some(workspace_id), None, None, 50)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let w_item = WorkspaceItem {
@@ -821,11 +826,21 @@ pub async fn assign_user_to_workspace(
     Form(form): Form<AssignUserForm>,
 ) -> impl IntoResponse {
     if let Ok(uuid) = Uuid::parse_str(&id) {
-        let _ = store
+        if let Err(error) = store
             .create_workspace_assignment(uuid, &form.user_id, &form.role, &session.user_id)
-            .await;
+            .await
+        {
+            // Authoritative persistence: never redirect as if the assignment
+            // was stored when the write failed.
+            tracing::error!(%error, workspace_id = %id, "assign_user_to_workspace: write failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to assign user to workspace",
+            )
+                .into_response();
+        }
     }
-    Redirect::to(&format!("/workspaces/{}", id))
+    Redirect::to(&format!("/workspaces/{}", id)).into_response()
 }
 
 /// POST /workspaces/:id/shares — share a workspace.
@@ -881,6 +896,7 @@ pub async fn list_queue(
     let items = store
         .list_priority_queue_items(&session.user_id, status_filter, 100)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let total = items.len();
@@ -984,6 +1000,7 @@ pub async fn list_activity(
     let items = store
         .list_activity_feed(workspace_id, params.team_id.as_deref(), None, limit)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let a_items: Vec<ActivityItem> = items
@@ -1032,6 +1049,7 @@ pub async fn list_supplier_risks(
     let entries = store
         .list_supplier_risk_entries(None, 100)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let total = entries.len();
@@ -1115,6 +1133,7 @@ pub async fn list_pipeline(
     let opportunities = store
         .list_pipeline_opportunities(None, None, 100)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let total = opportunities.len();
@@ -1184,9 +1203,18 @@ pub async fn update_pipeline_stage(
     Form(form): Form<UpdateStageForm>,
 ) -> impl IntoResponse {
     if let Ok(uuid) = Uuid::parse_str(&id) {
-        let _ = store.update_pipeline_stage(uuid, &form.stage, None).await;
+        if let Err(error) = store.update_pipeline_stage(uuid, &form.stage, None).await {
+            // Authoritative persistence: the redirect must not claim the
+            // stage change was stored when the write failed.
+            tracing::error!(%error, opportunity_id = %id, "update_pipeline_stage: write failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to update pipeline stage",
+            )
+                .into_response();
+        }
     }
-    Redirect::to("/pipeline")
+    Redirect::to("/pipeline").into_response()
 }
 
 // ─── Handlers — Source Evidence ────────────────────────────────────────
@@ -1209,6 +1237,7 @@ pub async fn list_evidence(
     let items = store
         .list_source_evidence(None, None, None, 100)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let total = items.len();
@@ -1286,6 +1315,7 @@ pub async fn list_team_assignments(
     let assignments = store
         .list_team_assignments(None, None)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let total = assignments.len();

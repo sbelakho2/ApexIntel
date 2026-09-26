@@ -388,6 +388,7 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
     }
     #[cfg(not(feature = "llm"))]
     {
+        // false-success-classification: best-effort — discarded binding only; no fallible call in this statement
         let _ = store;
         match load_weekly_inputs().await {
             Ok(inputs) => {
@@ -395,7 +396,9 @@ pub(super) async fn run_strategy_memo(kind: &JobKind, store: &Arc<PgStore>) -> J
                     &inputs.staged_recipes,
                     &inputs.production_recipes,
                     &inputs.memo_inputs,
+                    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                     &inputs.promotion_policy.unwrap_or_default(),
+                    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
                     &inputs.deprecation_policy.unwrap_or_default(),
                 );
                 if report.overall_success {

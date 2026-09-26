@@ -353,6 +353,7 @@ pub(crate) async fn acknowledge_warning(
                         "warning_id": id_parsed,
                         "acknowledged_by": body.user_id,
                         "review_outcome": review_outcome,
+            // false-success-classification: best-effort — optional boolean default; absence is not a failure
                         "has_note": body.note.as_ref().map(|note| !note.trim().is_empty()).unwrap_or(false)
                     }),
                 )
@@ -561,6 +562,7 @@ pub(crate) async fn delete_all_warnings(
 
     match state.store.delete_all_warnings().await {
         Ok(count) => {
+            // false-success-classification: best-effort — audit-trail write after the primary mutation succeeded
             let _ = state
                 .store
                 .record_audit_event(

@@ -6,6 +6,11 @@ fn normalize_security_limit(limit: i64) -> i64 {
 
 impl PgStore {
     /// Upsert a DNS posture entry for a domain.
+    ///
+    /// `has_dkim` is only true for a confirmed DKIM key record; the
+    /// authoritative observation is `dkim_status` (tri-state), with
+    /// `dkim_unknown_reason` recorded when DNS resolution was indeterminate.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_dns_posture_entry(
         &self,
         company_id: Option<Uuid>,
@@ -16,11 +21,13 @@ impl PgStore {
         dmarc_policy: Option<&str>,
         spf_record: Option<&str>,
         posture_score: f64,
+        dkim_status: &str,
+        dkim_unknown_reason: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO dns_posture_entries
-               (company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy, spf_record, posture_score, checked_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
+               (company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy, spf_record, posture_score, dkim_status, dkim_unknown_reason, checked_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now())
                ON CONFLICT (domain, checked_at) DO UPDATE SET
                  has_spf = EXCLUDED.has_spf,
                  has_dkim = EXCLUDED.has_dkim,
@@ -28,6 +35,8 @@ impl PgStore {
                  dmarc_policy = EXCLUDED.dmarc_policy,
                  spf_record = EXCLUDED.spf_record,
                  posture_score = EXCLUDED.posture_score,
+                 dkim_status = EXCLUDED.dkim_status,
+                 dkim_unknown_reason = EXCLUDED.dkim_unknown_reason,
                  updated_at = now()"#,
         )
         .bind(company_id)
@@ -38,6 +47,8 @@ impl PgStore {
         .bind(dmarc_policy)
         .bind(spf_record)
         .bind(posture_score)
+        .bind(dkim_status)
+        .bind(dkim_unknown_reason)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -150,10 +161,12 @@ impl PgStore {
             dmarc_policy: Option<String>,
             posture_score: f64,
             checked_at: DateTime<Utc>,
+            dkim_status: String,
+            dkim_unknown_reason: Option<String>,
         }
 
         let rows = sqlx::query_as::<_, DnsPostureTableRow>(
-            "SELECT id, company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy, posture_score, checked_at
+            "SELECT id, company_id, domain, has_spf, has_dkim, has_dmarc, dmarc_policy, posture_score, checked_at, dkim_status, dkim_unknown_reason
              FROM dns_posture_entries
              ORDER BY checked_at DESC
              LIMIT $1",
@@ -170,6 +183,8 @@ impl PgStore {
                     "domain": r.domain,
                     "has_spf": r.has_spf,
                     "has_dkim": r.has_dkim,
+                    "dkim_status": r.dkim_status,
+                    "dkim_unknown_reason": r.dkim_unknown_reason,
                     "has_dmarc": r.has_dmarc,
                     "dmarc_policy": r.dmarc_policy,
                     "posture_score": r.posture_score,

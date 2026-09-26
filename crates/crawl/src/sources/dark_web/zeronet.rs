@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+use crate::parse_outcome::{ParseOutcome, PARSER_METRICS};
+
 /// A ZeroNet zite (distributed site) discovery signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZeroNetSignal {
@@ -92,17 +94,34 @@ impl ZeroNetMonitor {
     }
 
     /// Scan all configured ZeroNet trackers for keyword-matching zites.
-    pub async fn scan(&self) -> Vec<ZeroNetSignal> {
+    ///
+    /// Aggregates per-tracker outcomes conservatively: any parse failure is
+    /// propagated (so a schema change is never reported as an empty scan),
+    /// then all-trackers-failed becomes a fetch failure, and only then is a
+    /// successfully parsed (possibly empty) result returned.
+    pub async fn scan(&self) -> ParseOutcome<ZeroNetSignal> {
         let mut all_signals = Vec::new();
+        let mut any_parsed = false;
+        let mut first_fetch_failure: Option<(String, Option<u16>)> = None;
+        let mut first_parse_failure: Option<(String, String)> = None;
 
         for tracker in &self.config.trackers {
             match self.scan_tracker(tracker).await {
-                Ok(signals) => {
-                    debug!(tracker = %tracker, count = signals.len(), "ZeroNet tracker scan complete");
-                    all_signals.extend(signals);
+                ParseOutcome::ParsedSuccessfully { items } => {
+                    debug!(tracker = %tracker, count = items.len(), "ZeroNet tracker scan complete");
+                    any_parsed = true;
+                    all_signals.extend(items);
                 }
-                Err(e) => {
-                    warn!(tracker = %tracker, error = %e, "ZeroNet tracker scan failed");
+                ParseOutcome::FetchFailed { error, http_status } => {
+                    warn!(tracker = %tracker, error = %error, "ZeroNet tracker scan failed");
+                    first_fetch_failure.get_or_insert((error, http_status));
+                }
+                ParseOutcome::ParseFailed {
+                    error,
+                    redacted_sample,
+                } => {
+                    warn!(tracker = %tracker, error = %error, "ZeroNet tracker parser failed");
+                    first_parse_failure.get_or_insert((error, redacted_sample));
                 }
             }
         }
@@ -112,22 +131,56 @@ impl ZeroNetMonitor {
             total = all_signals.len(),
             "ZeroNet monitoring scan complete"
         );
-        all_signals
+
+        if let Some((error, redacted_sample)) = first_parse_failure {
+            // A tracker whose schema changed marks the source degraded for
+            // this cycle; the parser-failure metric has already been recorded.
+            return ParseOutcome::ParseFailed {
+                error,
+                redacted_sample,
+            };
+        }
+        if !any_parsed {
+            if let Some((error, http_status)) = first_fetch_failure {
+                return ParseOutcome::FetchFailed { error, http_status };
+            }
+        }
+        ParseOutcome::ParsedSuccessfully { items: all_signals }
     }
 
     /// Scan a single ZeroNet tracker's public zite index.
-    async fn scan_tracker(&self, tracker_url: &str) -> Result<Vec<ZeroNetSignal>> {
-        let resp = self
+    ///
+    /// A non-success HTTP status is a fetch failure (previously it was
+    /// silently reported as an empty zite list), and an unparseable body is a
+    /// parser failure with a redacted sample.
+    async fn scan_tracker(&self, tracker_url: &str) -> ParseOutcome<ZeroNetSignal> {
+        let resp = match self
             .client
             .get(tracker_url)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("ZeroNet tracker fetch")?;
+        {
+            Ok(resp) => resp,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("ZeroNet tracker fetch failed: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
         if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             debug!(status = %resp.status(), tracker = %tracker_url, "ZeroNet tracker returned non-success");
-            return Ok(Vec::new());
+            let outcome = ParseOutcome::fetch_failed(
+                format!("ZeroNet tracker returned HTTP {status}"),
+                Some(status),
+            );
+            PARSER_METRICS.record(&outcome);
+            return outcome;
         }
 
         #[derive(Deserialize)]
@@ -141,9 +194,37 @@ impl ZeroNetMonitor {
             date_added: Option<i64>,
         }
 
-        let zites: Vec<ZeroNetZite> = resp.json().await.unwrap_or_default();
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                let outcome = ParseOutcome::fetch_failed(
+                    format!("failed to read ZeroNet tracker response: {error}"),
+                    None,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
 
-        let signals = zites
+        if body.is_empty() || body.trim() == "[]" {
+            let outcome = ParseOutcome::parsed(Vec::new());
+            PARSER_METRICS.record(&outcome);
+            return outcome;
+        }
+
+        let zites: Vec<ZeroNetZite> = match serde_json::from_str(&body) {
+            Ok(zites) => zites,
+            Err(error) => {
+                let outcome = ParseOutcome::parse_failed(
+                    format!("failed to parse ZeroNet tracker JSON: {error}"),
+                    &body,
+                );
+                PARSER_METRICS.record(&outcome);
+                return outcome;
+            }
+        };
+
+        let signals: Vec<ZeroNetSignal> = zites
             .into_iter()
             .filter_map(|z| {
                 let address = z.address?;
@@ -182,7 +263,9 @@ impl ZeroNetMonitor {
             .take(self.config.max_signals as usize)
             .collect();
 
-        Ok(signals)
+        let outcome = ParseOutcome::parsed(signals);
+        PARSER_METRICS.record(&outcome);
+        outcome
     }
 }
 

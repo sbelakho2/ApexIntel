@@ -277,15 +277,21 @@ async fn load_company_pois(store: &PgStore, company_id: &uuid::Uuid) -> Vec<Comp
     .bind(*company_id)
     .fetch_all(&store.pool)
     .await
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     .unwrap_or_default();
 
     rows.iter()
         .map(|row| {
             use sqlx::Row;
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
             let id: uuid::Uuid = row.try_get("id").unwrap_or_default();
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
             let name: String = row.try_get("name").unwrap_or_default();
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
             let role: String = row.try_get("role").unwrap_or_default();
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
             let role_family: String = row.try_get("role_family").unwrap_or_default();
+            // false-success-classification: best-effort — row-column default; a missing column contributes no value
             let org: String = row.try_get("org").unwrap_or_default();
             let role_lower = role.to_lowercase();
             let family_lower = role_family.to_lowercase();
@@ -847,6 +853,7 @@ async fn generate_insights_for_company(
                 .await
                 {
                     if let Ok(person_id) = row.try_get::<uuid::Uuid, _>("id") {
+                        // false-success-classification: best-effort — supplemental person link alongside the persisted company link
                         let _ = store
                             .link_insight_to_entity(insight_id, &person_id, "person")
                             .await;

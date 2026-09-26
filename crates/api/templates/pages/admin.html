@@ -114,6 +114,22 @@
       <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Declared / Disabled</p>
       <p class="mt-1 text-xl font-black tabular-nums">{{ source_coverage.declared }} / {{ source_coverage.disabled }}</p>
     </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Parser success rate</p>
+      <p class="mt-1 text-xl font-black tabular-nums">
+        {% match parser_metrics.parser_success_rate() %}
+        {% when Some with (rate) %}{{ "{:.0}%"|format(rate * 100.0) }}
+        {% when None %}n/a{% endmatch %}
+      </p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Parser failures</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ parser_metrics.parse_failed }}</p>
+    </div>
+    <div class="rounded-rams-sm border border-rams-line/60 px-3 py-2">
+      <p class="text-[10px] font-black uppercase tracking-[0.08em] text-rams-muted">Fetch failures</p>
+      <p class="mt-1 text-xl font-black tabular-nums">{{ parser_metrics.fetch_failed }}</p>
+    </div>
   </div>
 </div>
 

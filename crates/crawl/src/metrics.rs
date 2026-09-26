@@ -107,48 +107,50 @@ impl SharedDomainByteMetrics {
         }
     }
 
+    /// Acquire the inner lock, recovering from a poisoned mutex.
+    ///
+    /// Byte counters are best-effort crawl telemetry, not authoritative state:
+    /// a panic in another thread while it held the lock must not turn every
+    /// later counter read/write into a process panic. A poisoned lock is
+    /// logged and the contained map is used as-is (the only invariant at risk
+    /// is counter accuracy for the panicking task).
+    fn lock_recovering(&self) -> std::sync::MutexGuard<'_, DomainByteMetrics> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!(
+                    "DomainByteMetrics mutex poisoned; recovering counters and continuing"
+                );
+                poisoned.into_inner()
+            }
+        }
+    }
+
     /// Accumulate `bytes` for `domain`.
     ///
-    /// # Panics
-    /// Panics if the internal mutex is poisoned (only possible if another
-    /// thread panicked while holding the lock — i.e., a programmer error).
+    /// Never panics: a poisoned lock is recovered (see [`Self::lock_recovering`]).
     pub fn record_bytes(&self, domain: &str, bytes: u64) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
-            .record_bytes(domain, bytes);
+        self.lock_recovering().record_bytes(domain, bytes);
     }
 
     /// Return the total bytes recorded for `domain` (0 if unseen).
     pub fn get(&self, domain: &str) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
-            .get(domain)
+        self.lock_recovering().get(domain)
     }
 
     /// Return the top `limit` domains by total bytes.
     pub fn top_domains(&self, limit: usize) -> Vec<(String, u64)> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
-            .top_domains(limit)
+        self.lock_recovering().top_domains(limit)
     }
 
     /// Return total bytes across all domains.
     pub fn total_bytes(&self) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
-            .total_bytes()
+        self.lock_recovering().total_bytes()
     }
 
     /// Return the number of distinct domains recorded.
     pub fn domain_count(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
-            .domain_count()
+        self.lock_recovering().domain_count()
     }
 
     /// Take a consistent point-in-time snapshot.
@@ -156,10 +158,7 @@ impl SharedDomainByteMetrics {
     /// Acquires the lock once and returns a cloned copy, allowing the caller
     /// to inspect multiple fields without racing against concurrent writers.
     pub fn snapshot(&self) -> DomainByteMetrics {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| panic!("DomainByteMetrics mutex poisoned: {error}"))
-            .clone()
+        self.lock_recovering().clone()
     }
 }
 
@@ -238,6 +237,32 @@ mod tests {
         shared.record_bytes("a.com", 200);
         shared.record_bytes("b.com", 300);
         assert_eq!(shared.total_bytes(), 500);
+    }
+
+    #[test]
+    fn test_shared_metrics_recovers_from_poisoned_lock() {
+        let shared = SharedDomainByteMetrics::new();
+        shared.record_bytes("keep.com", 7);
+
+        // Poison the mutex the way a panicking reader/writer would.
+        let poisoner = shared.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = poisoner
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            panic!("simulated panic while holding the metrics lock");
+        }));
+        assert!(result.is_err(), "the poisoned task must have panicked");
+
+        // Post-recovery calls must not panic and must keep serving counters.
+        shared.record_bytes("after.com", 3);
+        assert_eq!(shared.get("keep.com"), 7);
+        assert_eq!(shared.get("after.com"), 3);
+        assert_eq!(shared.domain_count(), 2);
+        assert_eq!(shared.snapshot().get("keep.com"), 7);
+        assert_eq!(shared.total_bytes(), 10);
+        assert!(shared.top_domains(5).len() == 2);
     }
 
     // B292: top_domains tie-break ordering

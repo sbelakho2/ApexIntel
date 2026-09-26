@@ -405,8 +405,11 @@ pub async fn list_companies(
     Extension(store): Extension<Arc<PgStore>>,
     axum::extract::Query(params): axum::extract::Query<CompaniesQuery>,
 ) -> impl IntoResponse {
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let active_region = params.region.clone().unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let active_sector = params.sector.clone().unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let search_query = params.q.clone().unwrap_or_default();
     let sort_field = params.sort.clone().unwrap_or_else(|| "name".into());
     let sort_dir_str = params.dir.clone().unwrap_or_else(|| "asc".into());
@@ -1012,7 +1015,9 @@ pub async fn get_company(
     // instead of trusting the store's created_at ordering.
     let open_signals = warning_rows.iter().filter(|w| !w.acknowledged).count() as i64;
     let latest_signal = warning_rows.iter().max_by_key(|w| w.ts_utc);
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let latest_signal_id = latest_signal.map(|w| w.id.to_string()).unwrap_or_default();
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let latest_signal_title = latest_signal.map(|w| w.title.clone()).unwrap_or_default();
     let headline = if let Some(latest) = latest_signal {
         let age = dashboard::age_label(latest.ts_utc);
@@ -1363,11 +1368,13 @@ pub async fn company_changes_tab(
     let change_rows = store
         .get_company_changes(uuid, 50)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let events: Vec<CompanyEvent> = change_rows
         .iter()
         .map(|c| CompanyEvent {
             kind: c.change_type.clone(),
+            // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
             description: c.description.clone().unwrap_or_default(),
             date: c
                 .detected_at

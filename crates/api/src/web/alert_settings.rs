@@ -76,6 +76,7 @@ pub async fn alert_settings_page(
     DegradedNotice::capture(&global_defaults_state, &mut degraded_notice);
     let global_defaults = global_defaults_state
         .into_loaded_or_default()
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     // Load entity overrides

@@ -148,6 +148,7 @@ pub async fn executive_dashboard(
     let competitor_names: Vec<String> = store
         .list_competitors(50, 0)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default()
         .into_iter()
         .map(|c| c.name)

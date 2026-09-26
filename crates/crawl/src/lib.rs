@@ -15,6 +15,7 @@ pub mod governor_limiter;
 pub mod headers;
 pub mod metrics;
 pub mod openalex;
+pub mod parse_outcome;
 pub mod person_scraper;
 pub mod poi_expansion;
 pub mod proxy;

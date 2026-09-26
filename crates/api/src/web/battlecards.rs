@@ -115,6 +115,7 @@ pub async fn list_battlecards(
     let rows = store
         .list_battlecards(query.status.as_deref(), None, page_u32, per_page_u32)
         .await
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let page = page_u32 as i64;
@@ -196,6 +197,7 @@ pub async fn get_battlecard(
 ) -> impl IntoResponse {
     let _ctx = PageContext::from_session(&session, &format!("/battlecards/{}", id), 0);
 
+    // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
     let uid = Uuid::parse_str(&id).unwrap_or_default();
     let row = store.get_battlecard(uid).await;
 

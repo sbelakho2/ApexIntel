@@ -496,8 +496,14 @@ pub fn build_request_body(
     body.insert("model".to_string(), model.into());
     body.insert(
         "messages".to_string(),
-        serde_json::to_value(messages)
-            .unwrap_or_else(|error| panic!("chat messages should serialize: {error}")),
+        serde_json::to_value(messages).unwrap_or_else(|error| {
+            // Serializing a Vec<ChatMessage> of owned strings is a
+            // programmer-constant contract; if it ever breaks, send an empty
+            // message list so the remote API rejects the request explicitly
+            // (an error response) instead of panicking the worker process.
+            tracing::error!(%error, "llm: chat message serialization failed; sending empty message list");
+            serde_json::Value::Array(Vec::new())
+        }),
     );
     body.insert("temperature".to_string(), temperature.into());
     body.insert("max_tokens".to_string(), max_tokens.into());
@@ -641,7 +647,9 @@ pub trait LlmClient: Send + Sync {
 /// OpenAI-compatible client (works with OpenAI, llama.cpp).
 pub struct OpenAiCompatibleClient {
     config: ModelConfig,
-    http: reqwest::Client,
+    /// `None` when HTTP client construction failed: the client is degraded and
+    /// every call returns an explicit error instead of panicking the process.
+    http: Option<reqwest::Client>,
 }
 
 impl OpenAiCompatibleClient {
@@ -652,8 +660,21 @@ impl OpenAiCompatibleClient {
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .build()
-            .unwrap_or_else(|error| panic!("failed to build HTTP client: {error}"));
+            .map_err(|error| {
+                tracing::error!(
+                    %error,
+                    "llm: failed to build HTTP client; client is degraded and will fail calls"
+                );
+                error
+            })
+            .ok();
         Self { config, http }
+    }
+
+    /// True when the underlying HTTP client could not be constructed. Callers
+    /// may surface this so an operator sees the LLM path is degraded.
+    pub fn is_degraded(&self) -> bool {
+        self.http.is_none()
     }
 
     pub fn config(&self) -> &ModelConfig {
@@ -661,6 +682,12 @@ impl OpenAiCompatibleClient {
     }
 
     async fn call(&self, system: &str, user: &str, json_mode: bool) -> Result<String> {
+        let Some(http) = self.http.as_ref() else {
+            anyhow::bail!(
+                "LLM HTTP client is unavailable (construction failed at startup); \
+                 refusing to report a successful call"
+            );
+        };
         // Inject /no_think for Qwen3 to suppress chain-of-thought tokens
         let system_with_nothink = if system.ends_with("/no_think") {
             system.to_string()
@@ -687,7 +714,7 @@ impl OpenAiCompatibleClient {
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
             }
 
-            let mut req = self.http.post(&endpoint).json(&body);
+            let mut req = http.post(&endpoint).json(&body);
             if let Some(ref key) = self.config.api_key {
                 req = req.header("Authorization", format!("Bearer {}", key.expose_secret()));
             }

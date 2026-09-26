@@ -191,6 +191,8 @@ pub struct CircuitBreaker {
     states: Mutex<HashMap<String, DomainState>>,
     failure_threshold: usize,
     cooldown: Duration,
+    /// One-shot latch so the poison warning is emitted once, not per access.
+    poison_warned: std::sync::atomic::AtomicBool,
 }
 
 impl CircuitBreaker {
@@ -199,16 +201,35 @@ impl CircuitBreaker {
             states: Mutex::new(HashMap::new()),
             failure_threshold,
             cooldown: Duration::from_secs(cooldown_secs),
+            poison_warned: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Acquire the circuit-breaker state lock, recovering from a poisoned
+    /// mutex instead of panicking.
+    ///
+    /// The circuit breaker is a best-effort rate limiter, not authoritative
+    /// data: a panic in another thread must not take down request handling.
+    /// The recovered map is used as-is (worst case a failure count is stale),
+    /// and every poisoned acquisition is logged once so the condition stays
+    /// visible.
+    fn states_recovering(&self) -> std::sync::MutexGuard<'_, HashMap<String, DomainState>> {
+        match self.states.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                use std::sync::atomic::Ordering;
+                if !self.poison_warned.swap(true, Ordering::Relaxed) {
+                    warn!("circuit breaker mutex poisoned; recovering state and continuing");
+                }
+                poisoned.into_inner()
+            }
         }
     }
 
     /// Check if requests to a domain are allowed.
     /// Returns true if the circuit is closed (requests allowed).
     pub fn allow_request(&self, domain: &str) -> bool {
-        let states = self.states.lock().unwrap_or_else(|e| {
-            warn!("circuit breaker mutex poisoned: {e}");
-            panic!("circuit breaker mutex poisoned: {e}")
-        });
+        let states = self.states_recovering();
         if let Some(state) = states.get(domain) {
             if let Some(open_since) = state.open_since {
                 if open_since.elapsed() < self.cooldown {
@@ -226,20 +247,14 @@ impl CircuitBreaker {
 
     /// Record a successful request to a domain (resets the failure count).
     pub fn record_success(&self, domain: &str) {
-        let mut states = self.states.lock().unwrap_or_else(|e| {
-            warn!("circuit breaker mutex poisoned: {e}");
-            panic!("circuit breaker mutex poisoned: {e}")
-        });
+        let mut states = self.states_recovering();
         states.remove(domain);
         debug!(domain = %domain, "circuit breaker: success, circuit closed");
     }
 
     /// Record a failed request to a domain.
     pub fn record_failure(&self, domain: &str) {
-        let mut states = self.states.lock().unwrap_or_else(|e| {
-            warn!("circuit breaker mutex poisoned: {e}");
-            panic!("circuit breaker mutex poisoned: {e}")
-        });
+        let mut states = self.states_recovering();
         let entry = states.entry(domain.to_string()).or_insert(DomainState {
             consecutive_failures: 0,
             open_since: None,
@@ -257,10 +272,7 @@ impl CircuitBreaker {
 
     /// Get the current state for all tracked domains.
     pub fn domain_states(&self) -> HashMap<String, (usize, Option<Duration>)> {
-        let states = self.states.lock().unwrap_or_else(|e| {
-            warn!("circuit breaker mutex poisoned: {e}");
-            panic!("circuit breaker mutex poisoned: {e}")
-        });
+        let states = self.states_recovering();
         states
             .iter()
             .map(|(domain, state)| {
@@ -536,5 +548,32 @@ mod tests {
         // Record success should close it
         cb.record_success(domain);
         assert!(cb.allow_request(domain));
+    }
+
+    #[test]
+    fn test_circuit_breaker_recovers_from_poisoned_lock() {
+        let cb = std::sync::Arc::new(CircuitBreaker::new(1, 5));
+        cb.record_failure("poisoned.example.com");
+
+        let poisoner = cb.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = poisoner
+                .states
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            panic!("simulated panic while holding the breaker lock");
+        }));
+        assert!(result.is_err(), "the poisoned task must have panicked");
+
+        // Recovery must preserve usable state (no panic) and keep serving:
+        // the open circuit recorded before the poison is still enforced.
+        assert!(!cb.allow_request("poisoned.example.com"));
+        cb.record_success("poisoned.example.com");
+        assert!(cb.allow_request("poisoned.example.com"));
+        cb.record_failure("other.example.com");
+        assert!(!cb.allow_request("other.example.com"));
+        cb.record_success("other.example.com");
+        assert!(cb.allow_request("other.example.com"));
+        assert!(cb.domain_states().is_empty());
     }
 }

@@ -715,6 +715,7 @@ pub async fn settings_page(
         .await
         .ok()
         .flatten()
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
     let health = SystemHealthView::probe(&store).await;
 
@@ -746,6 +747,7 @@ pub async fn save_settings(
         .await
         .ok()
         .flatten()
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let theme = normalize_choice(

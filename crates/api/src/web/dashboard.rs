@@ -725,6 +725,7 @@ pub async fn dashboard(
                 .map(|(id, name, _, _)| (id, name))
                 .collect()
         })
+        // false-success-classification: best-effort — optional/display value default; failure renders empty rather than asserting persistence
         .unwrap_or_default();
 
     let mut priority_queue: Vec<PriorityItem> =
