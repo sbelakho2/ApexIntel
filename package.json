@@ -15,7 +15,9 @@
     "test:ui-parity:update": "playwright test -c playwright.config.cjs e2e/html-ui.spec.js --update-snapshots",
     "test:e2e": "playwright test -c playwright.config.cjs",
     "test:e2e:ui": "playwright test -c playwright.config.cjs --ui",
-    "test:server-ui": "node scripts/ci/e2e_server_ui.mjs"
+    "test:server-ui": "node scripts/ci/e2e_server_ui.mjs",
+    "test:server-ui:specs": "playwright test -c playwright.server-ui.config.cjs",
+    "test:server-ui:specs:update": "playwright test -c playwright.server-ui.config.cjs --update-snapshots"
   },
   "repository": {
     "type": "git",
@@ -33,9 +35,11 @@
     "tailwindcss": "^3.4.17"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.52.0",
     "@tailwindcss/forms": "^0.5.11",
     "@tailwindcss/typography": "^0.5.20",
+    "pg": "^8.23.0",
     "tailwindcss-animate": "^1.0.7"
   }
 }

@@ -369,6 +369,23 @@ impl PgStore {
         Ok(rows)
     }
 
+    /// Resolve person ids to (id, name, current_role) for relationship/peer
+    /// rendering without an N+1 fetch.
+    pub async fn get_person_names_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, String, Option<String>)>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows: Vec<(Uuid, String, Option<String>)> =
+            sqlx::query_as("SELECT id, name, \"current_role\" FROM persons WHERE id = ANY($1)")
+                .bind(ids)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+
     pub async fn get_person(&self, id: Uuid) -> Result<Option<PersonRow>> {
         let row = sqlx::query_as::<_, PersonRow>(
             "SELECT id, name, name_ar, name_fr, primary_org_id, \"current_role\",

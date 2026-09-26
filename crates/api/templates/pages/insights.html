@@ -173,12 +173,16 @@
               <p class="mt-2 text-xs text-rams-muted leading-relaxed">{{ i.summary_preview }}</p>
               {% endif %}
             </div>
-            <button hx-post="/insights/{{ i.id }}/bookmark" hx-target="#insight-card-{{ i.id }}" hx-swap="outerHTML"
+            {# Bookmark target is a local slot: the endpoint returns the toggled
+               icon, so swapping the whole card (the old target) destroyed it. #}
+            <span id="insight-bookmark-{{ i.id }}" class="shrink-0" data-bookmark-slot>
+            <button hx-post="/insights/{{ i.id }}/bookmark" hx-target="#insight-bookmark-{{ i.id }}" hx-swap="innerHTML"
               class="apex-btn-ghost shrink-0 p-1.5 {% if i.bookmarked %}apex-text-warning{% else %}text-rams-muted{% endif %}"
               title="{% if i.bookmarked %}Remove bookmark{% else %}Bookmark{% endif %}"
               aria-label="{% if i.bookmarked %}Remove bookmark{% else %}Bookmark{% endif %}">
               <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="{% if i.bookmarked %}currentColor{% else %}none{% endif %}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
             </button>
+            </span>
           </div>
           <div class="mt-2 flex items-center justify-between text-[10px] text-rams-muted">
             <div class="flex items-center gap-3">

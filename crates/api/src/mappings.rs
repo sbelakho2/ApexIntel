@@ -141,6 +141,8 @@ mod tests {
             source_urls: Some(vec![]),
             entity_ids: Some(vec![]),
             confidence: None,
+            impact: None,
+            actions: None,
             ts_utc: now,
             acknowledged: false,
             acknowledged_by: None,

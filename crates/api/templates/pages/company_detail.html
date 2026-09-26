@@ -20,6 +20,8 @@
   {% if let Some(notice) = degraded_notice %}
   <div class="apex-card border border-rams-red/40 p-4 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
   {% endif %}
+
+  {# ── Identity header ───────────────────────────────────────────────── #}
   <div class="flex items-start justify-between gap-4">
     <div>
       <h1>{{ name }}</h1>
@@ -41,28 +43,305 @@
     </div>
   </div>
 
-  <div class="apex-card p-4">
-    <p class="text-sm leading-relaxed">{{ description }}</p>
+  {# ── 1. Overview ───────────────────────────────────────────────────── #}
+  <section class="apex-card p-4" data-entity-overview>
+    <div class="flex items-center justify-between border-b border-rams-line pb-2">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Overview</h2>
+      <span class="text-[10px] text-rams-muted tabular-nums">Updated {{ updated_at }}</span>
+    </div>
+    <p class="mt-3 text-sm leading-relaxed">{{ description }}</p>
     {% if !website_url.is_empty() %}
     <p class="mt-2 text-[11px]"><a href="{{ website_url }}" class="apex-link-steel hover:underline" target="_blank" rel="noopener noreferrer">{{ website }}</a></p>
     {% endif %}
-    <div class="mt-4 grid grid-cols-3 gap-4 text-[11px]">
-      <div><span class="font-black uppercase text-rams-muted">Warnings</span><br>{{ total_warnings }}</div>
-      <div><span class="font-black uppercase text-rams-muted">Insights</span><br>{{ total_insights }}</div>
-      <div><span class="font-black uppercase text-rams-muted">Updated</span><br>{{ updated_at }}</div>
+    <div class="mt-4 grid grid-cols-2 gap-4 text-[11px] sm:grid-cols-4">
+      <div><span class="font-black uppercase text-rams-muted">Warnings</span><br><span class="tabular-nums">{{ total_warnings }}</span></div>
+      <div><span class="font-black uppercase text-rams-muted">Insights</span><br><span class="tabular-nums">{{ total_insights }}</span></div>
+      <div><span class="font-black uppercase text-rams-muted">Evidence</span><br><span class="tabular-nums">{{ why_now.evidence_count }}</span></div>
+      <div><span class="font-black uppercase text-rams-muted">Risk score</span><br><span class="tabular-nums">{{ risk_score }}</span></div>
     </div>
-  </div>
+  </section>
 
-  {# ── Entity alert subscription (Watch alerts) ── #}
+  {# ── 2. Why now ────────────────────────────────────────────────────── #}
+  <section class="apex-card p-4" data-entity-why-now>
+    <div class="border-b border-rams-line pb-2">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Why now</h2>
+    </div>
+    <p class="mt-3 text-sm font-semibold" data-why-now-headline>{{ why_now.headline }}</p>
+    <div class="mt-3 grid grid-cols-2 gap-4 text-[11px] sm:grid-cols-4">
+      <div>
+        <span class="font-black uppercase text-rams-muted">Latest signal</span><br>
+        {% if !why_now.latest_signal_id.is_empty() %}
+        <a href="/warnings/{{ why_now.latest_signal_id }}" class="hover:underline text-rams-foreground">{{ why_now.latest_signal_title }}</a>
+        {% else %}
+        <span class="text-rams-muted">None recorded</span>
+        {% endif %}
+      </div>
+      <div><span class="font-black uppercase text-rams-muted">Open signals</span><br><span class="tabular-nums" data-open-signals>{{ why_now.open_signals }}</span></div>
+      <div><span class="font-black uppercase text-rams-muted">Changes · 14d</span><br><span class="tabular-nums">{{ why_now.recent_changes }}</span></div>
+      <div><span class="font-black uppercase text-rams-muted">Evidence items</span><br><span class="tabular-nums">{{ why_now.evidence_count }}</span></div>
+    </div>
+    <div class="mt-4 flex flex-wrap items-center gap-2 no-print">
+      {% if !why_now.latest_signal_id.is_empty() %}
+      <a href="/workspaces/new?entity_id={{ id }}&entity_name={{ name|urlencode }}&signal_id={{ why_now.latest_signal_id }}&signal_title={{ why_now.latest_signal_title|urlencode }}"
+         class="apex-btn apex-btn-primary text-xs" data-action="start-investigation">Start investigation</a>
+      {% else %}
+      <a href="/workspaces/new?entity_id={{ id }}&entity_name={{ name|urlencode }}"
+         class="apex-btn apex-btn-primary text-xs" data-action="start-investigation">Start investigation</a>
+      {% endif %}
+      <form method="post" action="/queue" class="inline-flex">
+        <input type="hidden" name="item_type" value="company">
+        <input type="hidden" name="item_id" value="{{ id }}">
+        <input type="hidden" name="item_title" value="{{ name }}">
+        <input type="hidden" name="priority" value="3">
+        <button type="submit" class="apex-btn apex-btn-secondary text-xs">Add to work queue</button>
+      </form>
+      <a href="/graph?focus={{ id }}" class="apex-btn apex-btn-secondary text-xs">Open graph</a>
+      <a href="/pipeline" class="apex-btn apex-btn-secondary text-xs">Add to pipeline</a>
+    </div>
+  </section>
+
+  {# ── 3. Recent changes ─────────────────────────────────────────────── #}
+  <section class="apex-card" data-entity-changes>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent changes</h2>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ recent_events.len() }}</span>
+    </div>
+    {% if !recent_events.is_empty() %}
+    <div class="divide-y divide-rams-line">
+      {% for ev in recent_events %}
+      <div class="px-4 py-3 hover:bg-rams-panel">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-semibold">{{ ev.kind }}</span>
+          <span class="text-[10px] text-rams-muted tabular-nums">{{ ev.date }}</span>
+        </div>
+        <p class="mt-1 text-[11px] text-rams-muted">{{ ev.description }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── 4. People & buying centre ─────────────────────────────────────── #}
+  <section class="apex-card" data-entity-people>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">People &amp; buying centre</h2>
+      <a href="/buying-centers?q={{ name|urlencode }}" class="text-[10px] font-black uppercase tracking-[0.1em] apex-link-steel hover:underline">Buying centres</a>
+    </div>
+    {% if !buying_centers.is_empty() %}
+    <div class="divide-y divide-rams-line">
+      {% for center in buying_centers %}
+      <div class="px-4 py-3">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-semibold">{{ center.name }}</span>
+          <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ center.status }}</span>
+        </div>
+        <ul class="mt-2 space-y-1.5">
+          {% for member in center.members %}
+          <li class="flex flex-wrap items-center gap-2 text-[11px]">
+            <a href="/persons/{{ member.person_id }}" class="font-semibold text-rams-foreground hover:underline" data-person-link>{{ member.name }}</a>
+            <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ member.role }}</span>
+            {% if member.budget_authority %}<span class="text-[9px] font-bold uppercase text-rams-green">Budget</span>{% endif %}
+            <span class="text-[10px] text-rams-muted tabular-nums">influence {{ member.influence_pct }}%</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if !key_persons.is_empty() %}
+    <div class="divide-y divide-rams-line {% if !buying_centers.is_empty() %}border-t border-rams-line{% endif %}">
+      {% for p in key_persons %}
+      <a href="/persons/{{ p.person_id }}" class="block px-4 py-3 hover:bg-rams-panel" data-person-link>
+        <span class="text-sm font-semibold">{{ p.name }}</span>
+        <span class="ml-2 text-[11px] text-rams-muted">{{ p.role }}{% if !p.since.is_empty() %} since {{ p.since }}{% endif %}</span>
+        {% if !p.background_snippet.is_empty() %}
+        <p class="mt-0.5 text-[10px] text-rams-muted line-clamp-1">{{ p.background_snippet }}</p>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    {% else if buying_centers.is_empty() %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No people mapped to this entity yet</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── 5. Evidence timeline ──────────────────────────────────────────── #}
+  <section class="apex-card" data-entity-evidence>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Evidence timeline</h2>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ why_now.evidence_count }}</span>
+    </div>
+    {% if !evidence_timeline.is_empty() %}
+    <ol class="divide-y divide-rams-line">
+      {% for e in evidence_timeline %}
+      <li class="px-4 py-3">
+        <div class="flex items-center justify-between gap-2">
+          <a href="{{ e.url }}" target="_blank" rel="noopener noreferrer" class="text-sm font-semibold text-rams-foreground hover:underline">{{ e.title }}</a>
+          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ e.at }}</span>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-rams-muted">
+          <span class="rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 font-bold uppercase tracking-[0.08em]">{{ e.kind }}</span>
+          <span data-evidence-source>{{ e.source }}</span>
+        </div>
+        {% if !e.detail.is_empty() %}<p class="mt-1 text-[11px] text-rams-muted">{{ e.detail }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No evidence recorded for this entity</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── 6. Risks ──────────────────────────────────────────────────────── #}
+  <section class="apex-card" data-entity-risks>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Risks</h2>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ risk_count }} high/critical</span>
+    </div>
+    {% if risk_count > 0 %}
+    <div class="divide-y divide-rams-line">
+      {% for w in warnings %}
+      {% if w.severity == "high" || w.severity == "critical" %}
+      <a href="/warnings/{{ w.id }}" class="block px-4 py-3 hover:bg-rams-panel">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-semibold">{{ w.title }}</span>
+          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ w.age }}</span>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          {% call m::severity_badge(w.severity) %}
+          {% if w.acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Reviewed</span>{% endif %}
+          <span class="text-[10px] text-rams-muted">{{ w.warning_type }}</span>
+        </div>
+      </a>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% else %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No high or critical risks open</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── 7. Opportunities ──────────────────────────────────────────────── #}
+  <section class="apex-card" data-entity-opportunities>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Opportunities</h2>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ total_insights }} insights · {{ pipeline.len() }} pipeline</span>
+    </div>
+    {% if !insights.is_empty() %}
+    <div class="divide-y divide-rams-line">
+      {% for i in insights %}
+      <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-rams-panel">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-semibold">{{ i.title }}</span>
+          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ i.created_at }}</span>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center gap-2">
+          {% if !i.insight_type.is_empty() %}<span class="inline-flex items-center rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.insight_type }}</span>{% endif %}
+          <span class="text-[10px] text-rams-muted tabular-nums">{{ i.confidence_pct }}% confidence</span>
+        </div>
+        {% if !i.summary.is_empty() %}<p class="mt-1 text-[11px] text-rams-muted line-clamp-2">{{ i.summary }}</p>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    {% else if pipeline.is_empty() %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No opportunities identified yet</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── 8. Relationships ──────────────────────────────────────────────── #}
+  <section class="apex-card" data-entity-relationships>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Relationships</h2>
+      <a href="/graph?focus={{ id }}" class="text-[10px] font-black uppercase tracking-[0.1em] apex-link-steel hover:underline">Explore graph</a>
+    </div>
+    {% if !relationships.is_empty() %}
+    <div class="divide-y divide-rams-line">
+      {% for rel in relationships %}
+      <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+        <div class="min-w-0">
+          {% if rel.target_kind == "company" %}
+          <a href="/companies/{{ rel.target_id }}" class="text-sm font-semibold text-rams-foreground hover:underline">{{ rel.target_name }}</a>
+          {% else if rel.target_kind == "person" %}
+          <a href="/persons/{{ rel.target_id }}" class="text-sm font-semibold text-rams-foreground hover:underline">{{ rel.target_name }}</a>
+          {% else %}
+          <span class="text-sm font-semibold">{{ rel.target_name }}</span>
+          {% endif %}
+          <span class="ml-2 rounded-rams-sm border border-rams-line bg-rams-panel px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ rel.edge_type }}</span>
+        </div>
+        <div class="flex items-center gap-3 text-[10px] text-rams-muted tabular-nums">
+          <span>{{ rel.target_kind }}</span>
+          {% if rel.confidence_pct > 0 %}<span>confidence {{ rel.confidence_pct }}%</span>{% endif %}
+          {% if !rel.last_seen.is_empty() %}<span>{{ rel.last_seen }}</span>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No graph relationships recorded</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── 9. Watch status ───────────────────────────────────────────────── #}
   {% call m::watch_alerts_control(id, name) %}
 
-  {# ── Entity activity chart (lazy-loaded via HTMX) ── #}
-  {% call m::entity_activity_chart(id, 30) %}
-
-  {% if !warnings.is_empty() %}
-  <div class="apex-card">
+  {# ── 10. Open investigations ───────────────────────────────────────── #}
+  <section class="apex-card" data-entity-investigations>
     <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Warnings</h2>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Open investigations</h2>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ open_investigations.len() }}</span>
+    </div>
+    {% if !open_investigations.is_empty() %}
+    <div class="divide-y divide-rams-line">
+      {% for w in open_investigations %}
+      <a href="/workspaces/{{ w.id }}" class="flex items-center justify-between gap-2 px-4 py-3 hover:bg-rams-panel">
+        <span class="text-sm font-semibold">{{ w.name }}</span>
+        <span class="text-[10px] text-rams-muted uppercase">{{ w.status }} · {{ w.updated_at }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No open investigation for this entity</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── 11. Pipeline status ───────────────────────────────────────────── #}
+  <section class="apex-card" data-entity-pipeline>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Pipeline status</h2>
+      <a href="/pipeline" class="text-[10px] font-black uppercase tracking-[0.1em] apex-link-steel hover:underline">Open pipeline</a>
+    </div>
+    {% if !pipeline.is_empty() %}
+    <div class="divide-y divide-rams-line">
+      {% for p in pipeline %}
+      <div class="px-4 py-3">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-semibold">{{ p.title }}</span>
+          <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-rams-muted">{{ p.stage }}</span>
+        </div>
+        <div class="mt-1 text-[10px] text-rams-muted tabular-nums">
+          {{ p.probability_pct }}% probability{% if !p.value.is_empty() %} · {{ p.value }} value{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No pipeline opportunity linked to this entity</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ── Activity chart (lazy-loaded via HTMX) ─────────────────────────── #}
+  {% if !briefing_mode %}
+  {% call m::entity_activity_chart(id, 30) %}
+  {% endif %}
+
+  {# ── Remaining signals & dossier ───────────────────────────────────── #}
+  {% if !warnings.is_empty() %}
+  <section class="apex-card" data-entity-warnings>
+    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">All warnings</h2>
       <span class="text-[10px] text-rams-muted tabular-nums">{{ total_warnings }}</span>
     </div>
     <div class="divide-y divide-rams-line">
@@ -80,100 +359,17 @@
       </a>
       {% endfor %}
     </div>
-  </div>
+  </section>
   {% endif %}
 
-  {% if !insights.is_empty() %}
-  <div class="apex-card">
-    <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Insights</h2>
-      <span class="text-[10px] text-rams-muted tabular-nums">{{ total_insights }}</span>
-    </div>
-    <div class="divide-y divide-rams-line">
-      {% for i in insights %}
-      <a href="/insights/{{ i.id }}" class="block px-4 py-3 hover:bg-rams-panel">
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-sm font-semibold">{{ i.title }}</span>
-          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ i.created_at }}</span>
-        </div>
-        <div class="mt-1 flex flex-wrap items-center gap-2">
-          {% if !i.insight_type.is_empty() %}<span class="inline-flex items-center rounded-rams-sm border border-rams-line bg-rams-panel px-2 py-0.5 text-[10px] font-bold uppercase">{{ i.insight_type }}</span>{% endif %}
-          <span class="text-[10px] text-rams-muted tabular-nums">{{ i.confidence_pct }}% confidence</span>
-        </div>
-        {% if !i.summary.is_empty() %}
-        <p class="mt-1 text-[11px] text-rams-muted line-clamp-2">{{ i.summary }}</p>
-        {% endif %}
-      </a>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
-  {% if !key_persons.is_empty() %}
-  <div class="apex-card">
-    <div class="border-b border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Key Persons</h2>
-    </div>
-    <div class="divide-y divide-rams-line">
-      {% for p in key_persons %}
-      <a href="/persons/{{ p.person_id }}" class="block px-4 py-3 hover:bg-rams-panel">
-        <span class="text-sm font-semibold">{{ p.name }}</span>
-        <span class="ml-2 text-[11px] text-rams-muted">{{ p.role }} since {{ p.since }}</span>
-        {% if !p.background_snippet.is_empty() %}
-        <p class="mt-0.5 text-[10px] text-rams-muted line-clamp-1">{{ p.background_snippet }}</p>
-        {% endif %}
-      </a>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
-  {% if !sites.is_empty() %}
-  <div class="apex-card">
-    <div class="border-b border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Sites</h2>
-    </div>
-    <div class="divide-y divide-rams-line">
-      {% for s in sites %}
-      <div class="px-4 py-3">
-        <span class="text-sm font-semibold">{{ s.name }}</span>
-        <span class="ml-2 text-[11px] text-rams-muted">{{ s.location }} · {{ s.site_type }}</span>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
-  {% if briefing_mode %}
-  <div class="apex-card page-break-before">
-    <div class="border-b border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Changes</h2>
-    </div>
-    {% if !recent_events.is_empty() %}
-    <div class="divide-y divide-rams-line">
-      {% for ev in recent_events %}
-      <div class="px-4 py-3">
-        <div class="flex items-center justify-between">
-          <span class="text-sm font-semibold">{{ ev.kind }}</span>
-          <span class="text-[10px] text-rams-muted tabular-nums">{{ ev.date }}</span>
-        </div>
-        <p class="mt-1 text-[11px] text-rams-muted">{{ ev.description }}</p>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>{% endif %}
-    {% endif %}
-  </div>
-
-  <div class="apex-card">
+  <section class="apex-card" data-entity-dossier>
     <div class="border-b border-rams-line px-4 py-3">
       <h2 class="text-xs font-black uppercase tracking-[0.12em]">Dossier</h2>
     </div>
     {% if !dossier_entries.is_empty() %}
     <div class="divide-y divide-rams-line">
       {% for entry in dossier_entries %}
-      <div class="px-4 py-3">
+      <div class="px-4 py-3 hover:bg-rams-panel">
         <div class="flex items-center justify-between">
           <span class="text-sm font-semibold">{{ entry.field_name }}</span>
           {% if entry.verified %}
@@ -192,60 +388,22 @@
     {% else %}
     {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>{% endif %}
     {% endif %}
-  </div>
-  {% else %}
-  <div class="apex-card">
+  </section>
+
+  {% if !sites.is_empty() %}
+  <section class="apex-card">
     <div class="border-b border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Recent Changes</h2>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Sites</h2>
     </div>
-
-    <div>
-      {% if !recent_events.is_empty() %}
-      <div class="divide-y divide-rams-line">
-        {% for ev in recent_events %}
-        <div class="px-4 py-3 hover:bg-rams-panel">
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-semibold">{{ ev.kind }}</span>
-            <span class="text-[10px] text-rams-muted tabular-nums">{{ ev.date }}</span>
-          </div>
-          <p class="mt-1 text-[11px] text-rams-muted">{{ ev.description }}</p>
-        </div>
-        {% endfor %}
+    <div class="divide-y divide-rams-line">
+      {% for s in sites %}
+      <div class="px-4 py-3">
+        <span class="text-sm font-semibold">{{ s.name }}</span>
+        <span class="ml-2 text-[11px] text-rams-muted">{{ s.location }} · {{ s.site_type }}</span>
       </div>
-      {% else %}
-      {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No recent changes recorded</p>{% endif %}
-      {% endif %}
+      {% endfor %}
     </div>
-
-    <div class="border-y border-rams-line px-4 py-3">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Dossier</h2>
-    </div>
-
-    <div>
-      {% if !dossier_entries.is_empty() %}
-      <div class="divide-y divide-rams-line">
-        {% for entry in dossier_entries %}
-        <div class="px-4 py-3 hover:bg-rams-panel">
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-semibold">{{ entry.field_name }}</span>
-            {% if entry.verified %}
-            <span class="text-[9px] font-bold uppercase apex-text-positive">Verified</span>
-            {% else %}
-            <span class="text-[9px] font-bold text-rams-muted uppercase">Unverified</span>
-            {% endif %}
-          </div>
-          <p class="mt-1 text-sm">{{ entry.value }}</p>
-          {% if !entry.source.is_empty() %}
-          <p class="mt-0.5 text-[10px] text-rams-muted">Source: {{ entry.source }}</p>
-          {% endif %}
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      {% if degraded_notice.is_none() %}<p class="px-4 py-6 text-center text-sm text-rams-muted">No dossier entries available</p>{% endif %}
-      {% endif %}
-    </div>
-  </div>
+  </section>
   {% endif %}
 </div>
 <script src="/static/js/alert-subscription.js?v=20260926-watch-alerts-1" defer></script>

@@ -7,6 +7,55 @@ Versions correspond to internal fix-batch identifiers (B### = backend fix, U### 
 
 ---
 
+## [Unreleased] — Workflow navigation + entity intelligence workspace (B402–B406)
+
+### UI (information architecture, audit #15 / #27)
+- **B402** Primary navigation is organised by analyst workflow instead of
+  database tables: Command Center (overview, executive, triage, queue,
+  activity), Entities (companies, competitors, people), Signals (warnings,
+  insights, trends, security, supplier risk), Investigations (workspaces,
+  evidence, graph, memos, team assignments), Sales Intelligence (buying
+  centres, pipeline, battlecards), and Automations (recipes, sources, jobs).
+  Buying Centres is a first-class `/buying-centers` view (people grouped by
+  account with decision roles) rather than a duplicate Persons peer. Settings
+  lives only in the user menu; Sources/Jobs/Admin stay admin-only. The wasm
+  shell mirrors the same groups.
+- **B403** The entity dossier is now the single intelligence workspace:
+  overview, why now, recent changes, people & buying centre (mapped buying
+  centre members first, then key persons), evidence timeline (collaboration
+  evidence + signal sources), risks, opportunities, relationships
+  (graph-as-tool one-hop neighbourhood with resolved names), watch status,
+  open investigations (matched on `entity_focus`), and pipeline status
+  (new `list_pipeline_opportunities_for_company`). Every section links back to
+  the signal/investigation/person that produced it.
+- **B404** The warning page answers what/why/reliability/entity/recurrence/
+  next action/evidence per claim in a Signal Brief, and surfaces semantic
+  merge bookkeeping from the triage queue: occurrence count, source domains,
+  first/last seen, and severity escalation. "Start investigation" turns a
+  signal into an incident workspace in one click (entity-linked via
+  `entity_focus`), and "Trace to source" links each claim to its evidence URL.
+
+### Tests / CI
+- **B405** Task-based server-UI flows with explicit action budgets now gate in
+  `scripts/ci/e2e_server_ui.mjs` (and `e2e/server-ui-tasks.spec.js`): open
+  evidence from a warning ≤2 actions, subscribe to entity alerts ≤2, start an
+  investigation from a signal ≤2, find a person from a company dossier ≤2,
+  bookmark an insight, and trace a claim to its source. The deterministic
+  fixture corpus grew people, a buying centre, an insight with claims, a
+  company-linked pipeline opportunity, and triage merge bookkeeping; the gate
+  also asserts the workflow nav groups and the new `/buying-centers` route.
+
+### Backend
+- **B406** Fixes surfaced by the workflow tests: dropped the legacy
+  `insight_bookmarks` FK to `analyst_users` (migration 061) that blocked
+  bookmarking for `app_users` principals; rewrote the per-entity warning/
+  insight count queries over `CROSS JOIN LATERAL unnest(...)` so `/companies`
+  no longer degrades; the new-workspace form now offers the workspace types
+  the database accepts and surfaces creation failure instead of redirecting
+  as if it succeeded.
+
+---
+
 ## [Unreleased] — Mobile UI overhaul + comprehensive UI CI (B397–B401)
 
 ### UI (mobile "vertical text" and overflow)

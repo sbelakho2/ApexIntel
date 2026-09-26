@@ -1530,6 +1530,23 @@ impl PgStore {
         .await?)
     }
 
+    /// Pipeline opportunities attached to one company (migration 043 column),
+    /// used by the entity dossier "pipeline status" section.
+    pub async fn list_pipeline_opportunities_for_company(
+        &self,
+        company_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<PipelineOpportunityRecord>> {
+        let limit = clamp_limit(limit);
+        Ok(sqlx::query_as::<_, PipelineOpportunityRecord>(
+            "SELECT id, opportunity_id, title, stage, value_estimate::double precision, probability::double precision, owner_id, expected_close, actual_close, notes, metadata, created_at, updated_at, closed_at FROM pipeline_opportunities WHERE company_id = $1 ORDER BY created_at DESC LIMIT $2",
+        )
+        .bind(company_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn create_pipeline_opportunity(
         &self,
         opportunity_id: Option<&str>,

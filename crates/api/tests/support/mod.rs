@@ -90,6 +90,8 @@ impl FakeStore {
                 source_urls: Some(vec!["https://example.test/warning".to_string()]),
                 entity_ids: Some(vec![company_id]),
                 confidence: Some(0.81),
+                impact: Some("Capacity tightness".to_string()),
+                actions: Some(vec!["Acknowledge and assign an owner".to_string()]),
                 ts_utc: now,
                 acknowledged: false,
                 acknowledged_by: None,

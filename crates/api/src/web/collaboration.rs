@@ -38,6 +38,11 @@ pub struct CreateWorkspaceForm {
     pub workspace_type: String,
     pub visibility: String,
     pub tags: Option<String>,
+    /// Optional entity/signal the workspace was started from (entity dossier
+    /// or warning "Start investigation" action). Stored as `entity_focus` so
+    /// the entity page can list its open investigations.
+    pub entity_id: Option<String>,
+    pub signal_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -473,11 +478,26 @@ pub struct WorkspaceNewPage {
     pub warning_count: i64,
     pub theme: String,
     pub status_strip: crate::system_status::StatusStrip,
+    pub prefill_name: String,
+    pub prefill_description: String,
+    pub entity_id: String,
+    pub signal_id: String,
+}
+
+/// Query params used by "Start investigation" entry points to prefill the
+/// workspace form from an entity dossier or a signal.
+#[derive(Debug, Default, Deserialize)]
+pub struct WorkspaceNewQuery {
+    pub entity_id: Option<String>,
+    pub entity_name: Option<String>,
+    pub signal_id: Option<String>,
+    pub signal_title: Option<String>,
 }
 
 pub async fn new_workspace_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
+    Query(query): Query<WorkspaceNewQuery>,
 ) -> impl IntoResponse {
     let warning_count = store
         .count_warnings(&apex_store::postgres::WarningListFilters {
@@ -488,6 +508,32 @@ pub async fn new_workspace_page(
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/workspaces/new", warning_count);
 
+    let entity_id = query.entity_id.clone().unwrap_or_default();
+    let signal_id = query.signal_id.clone().unwrap_or_default();
+    let signal_title = query.signal_title.clone().unwrap_or_default();
+    let entity_name = query.entity_name.clone().unwrap_or_default();
+    let prefill_name = if !signal_title.is_empty() {
+        format!("Investigate: {signal_title}")
+    } else if !entity_name.is_empty() {
+        format!("{entity_name} investigation")
+    } else {
+        String::new()
+    };
+    let prefill_description = if !signal_title.is_empty() {
+        format!(
+            "Investigation opened from the signal \"{signal_title}\"{}.",
+            if entity_name.is_empty() {
+                String::new()
+            } else {
+                format!(" on {entity_name}")
+            }
+        )
+    } else if !entity_name.is_empty() {
+        format!("Investigation opened from the {entity_name} entity dossier.")
+    } else {
+        String::new()
+    };
+
     let page = WorkspaceNewPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
@@ -495,6 +541,10 @@ pub async fn new_workspace_page(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        prefill_name,
+        prefill_description,
+        entity_id,
+        signal_id,
     };
 
     render_template(&page)
@@ -512,20 +562,45 @@ pub async fn create_workspace(
         .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
         .unwrap_or_default();
 
-    let _ = store
+    // Entity focus keeps the decision loop closed: investigation started from
+    // a signal or dossier stays linked to that entity (audit #27).
+    let entity_focus = match form.entity_id.as_deref() {
+        Some(entity_id) if !entity_id.trim().is_empty() => {
+            serde_json::json!([entity_id.trim()])
+        }
+        _ => serde_json::json!([]),
+    };
+    let description = form.description.as_deref().filter(|d| !d.trim().is_empty());
+    let description = match (&form.signal_id, description) {
+        (Some(signal_id), Some(description)) if !signal_id.trim().is_empty() => {
+            Some(format!("{description}\n\nOpened from signal {signal_id}."))
+        }
+        (Some(signal_id), None) if !signal_id.trim().is_empty() => {
+            Some(format!("Opened from signal {signal_id}."))
+        }
+        (_, description) => description.map(ToOwned::to_owned),
+    };
+
+    match store
         .create_investigation_workspace(
             &form.name,
-            form.description.as_deref(),
+            description.as_deref(),
             &form.workspace_type,
             &session.username,
             None, // team_id
             &form.visibility,
             &tags,
-            &serde_json::json!({}),
+            &entity_focus,
         )
-        .await;
-
-    Redirect::to("/workspaces")
+        .await
+    {
+        Ok(workspace) => Redirect::to(&format!("/workspaces/{}", workspace.id)),
+        Err(error) => {
+            tracing::warn!(%error, "create_workspace failed");
+            // Surface the failure on the form instead of pretending success.
+            Redirect::to("/workspaces/new?error=create_failed")
+        }
+    }
 }
 
 /// GET /workspaces/:id — workspace detail page.

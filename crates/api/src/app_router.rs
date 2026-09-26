@@ -587,6 +587,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             post(apex_api::web::warnings::acknowledge_warning_html),
         )
         .route(
+            "/warnings/:id/investigate",
+            post(apex_api::web::warnings::start_investigation_html),
+        )
+        .route(
             "/warnings/:id/analyze",
             post(apex_api::web::warnings::analyze_warning_html),
         )
@@ -627,6 +631,10 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             get(apex_api::web::companies::company_dossier_tab),
         )
         .route("/persons", get(apex_api::web::persons::list_persons))
+        .route(
+            "/buying-centers",
+            get(apex_api::web::persons::list_buying_centers),
+        )
         .route("/persons/:id", get(apex_api::web::persons::get_person))
         .route(
             "/competitors",

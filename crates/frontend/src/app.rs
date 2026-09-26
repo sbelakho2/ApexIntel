@@ -16,62 +16,63 @@ use crate::routes::{
     warnings::WarningsPage,
 };
 
-/// Organized navigation groups matching server-rendered rack sidebar.
+/// Organized navigation groups matching the server-rendered workflow IA
+/// (audit #15): workflows first, database tables never peers.
 const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
-        "Core",
+        "Command Center",
         &[
-            ("Dashboard", "/wasm/"),
-            ("Warnings", "/wasm/warnings"),
-            ("Insights", "/wasm/insights"),
-        ],
-    ),
-    (
-        "Intelligence",
-        &[
-            ("Companies", "/wasm/companies"),
-            ("Persons", "/wasm/persons"),
+            ("Overview", "/wasm/"),
             ("Executive", "/wasm/executive"),
-            ("Analyst", "/wasm/analyst"),
+            ("Activity", "/wasm/activity"),
             ("Search", "/wasm/search"),
         ],
     ),
     (
-        "Operations",
+        "Entities",
         &[
-            ("Operations", "/wasm/operational"),
-            ("Activity", "/wasm/activity"),
-            ("Calibration", "/wasm/calibration"),
-            ("Graph", "/wasm/graph"),
+            ("Companies", "/wasm/companies"),
+            ("Persons", "/wasm/persons"),
+            ("Psych Profiles", "/wasm/psych-profiles"),
         ],
     ),
     (
-        "Analysis",
+        "Signals",
         &[
+            ("Warnings", "/wasm/warnings"),
+            ("Insights", "/wasm/insights"),
             ("Trends", "/wasm/trends"),
+            ("Security", "/wasm/security"),
+            ("Threat Intel", "/wasm/threat-intel"),
+            ("Supply Chain", "/wasm/supply-risk"),
             ("Adversarial", "/wasm/adversarial"),
-            ("Causality", "/wasm/causality"),
-            ("Timeline", "/wasm/entities/demo/timeline"),
         ],
     ),
     (
-        "Competitive",
+        "Investigations",
+        &[
+            ("Graph", "/wasm/graph"),
+            ("Timeline", "/wasm/entities/demo/timeline"),
+            ("Operations", "/wasm/operational"),
+            ("Analyst", "/wasm/analyst"),
+            ("Memos", "/wasm/memos"),
+            ("Causality", "/wasm/causality"),
+        ],
+    ),
+    (
+        "Sales Intelligence",
         &[
             ("Competitors", "/wasm/competitors"),
             ("Landscape", "/wasm/competitive-landscape"),
             ("Strategic Radar", "/wasm/strategic-radar"),
             ("Battlecards", "/wasm/battlecards"),
-            ("Supply Chain", "/wasm/supply-risk"),
         ],
     ),
     (
-        "Content",
+        "Automations",
         &[
-            ("Memos", "/wasm/memos"),
             ("Recipes", "/wasm/recipes"),
-            ("Security", "/wasm/security"),
-            ("Threat Intel", "/wasm/threat-intel"),
-            ("Psych Profiles", "/wasm/psych-profiles"),
+            ("Calibration", "/wasm/calibration"),
         ],
     ),
     (
