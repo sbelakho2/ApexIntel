@@ -3,6 +3,7 @@ use std::sync::Arc;
 use apex_crawl::sources::filter_by_tier;
 use apex_store::postgres::{NewCrawlMetric, PgStore, RealSourceTelemetry};
 
+use crate::intelligence_ingress::IntelligenceIngress;
 use crate::*;
 
 pub(super) async fn run_source_scoring(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
@@ -353,13 +354,27 @@ pub(super) async fn run_outcome_tracking(kind: &JobKind, store: &Arc<PgStore>) -
     run
 }
 
-pub(super) async fn run_self_improvement_cycle(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_self_improvement_cycle(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     tracing::info!("self_improvement_cycle: starting coordinated improvement loop");
-    let source_run = Box::pin(super::execute_job(&JobKind::SourceScoring, store)).await;
-    let cross_run = Box::pin(super::execute_job(&JobKind::CrossDomainMining, store)).await;
-    let outcome_run = Box::pin(super::execute_job(&JobKind::OutcomeTracking, store)).await;
+    let source_run = Box::pin(super::execute_job(&JobKind::SourceScoring, store, ingress)).await;
+    let cross_run = Box::pin(super::execute_job(
+        &JobKind::CrossDomainMining,
+        store,
+        ingress,
+    ))
+    .await;
+    let outcome_run = Box::pin(super::execute_job(
+        &JobKind::OutcomeTracking,
+        store,
+        ingress,
+    ))
+    .await;
     let base_total =
         source_run.items_processed + cross_run.items_processed + outcome_run.items_processed;
     let base_failed = [&source_run, &cross_run, &outcome_run]
@@ -372,7 +387,7 @@ pub(super) async fn run_self_improvement_cycle(kind: &JobKind, store: &Arc<PgSto
         let mut total = base_total;
         let mut failed = base_failed;
 
-        match run_llm_continuous_improvement_cycle(store).await {
+        match run_llm_continuous_improvement_cycle(store, ingress).await {
             Ok(stats) => {
                 tracing::info!(
                     eval_pass_rate = stats.eval_pass_rate,

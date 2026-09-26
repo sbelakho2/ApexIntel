@@ -18,6 +18,7 @@ use apex_recipes::stats_enrichment::{
 use apex_store::postgres::InsightRow;
 use uuid::Uuid;
 
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::*;
 
 #[cfg(feature = "llm")]
@@ -835,7 +836,11 @@ async fn notify_slack_high_severity(
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_recipe_fire(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     let now = Utc::now();
@@ -3494,6 +3499,7 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
 
     let mut insights_inserted: u64 = 0;
     let mut warnings_inserted: u64 = 0;
+    let mut warning_ingest_failures: u64 = 0;
     let mut skipped_low_conf: u64 = 0;
     let mut skipped_dedup: u64 = 0;
     let mut skipped_cross_run: u64 = 0;
@@ -4276,31 +4282,38 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 Some(entity_region.as_str())
             };
             let warn_urls = warning_evidence_urls.clone();
-            let _ = store
-                .insert_warning(
-                    &c.category,
-                    &warn_title,
-                    Some(&diversified_action),
-                    warning_severity,
-                    warn_region,
-                    Some(&c.recipe_code),
-                    entity_ids.clone(),
-                    warn_urls,
-                    Some(stored_confidence),
-                )
-                .await;
-            warnings_inserted += 1;
-
-            // Send Slack notification for high/critical severity warnings.
-            notify_slack_high_severity(
-                warning_severity,
-                &warn_title,
-                &diversified_action,
-                Some(&entity_label),
-                &c.category,
-                &c.recipe_code,
-            )
-            .await;
+            let mut warning = NewWarning::new(&c.category, &warn_title, warning_severity)
+                .description(&diversified_action)
+                .recipe_code(&c.recipe_code)
+                .entity_ids(entity_ids.clone().unwrap_or_default())
+                .source_urls(warn_urls.unwrap_or_default())
+                .confidence(stored_confidence);
+            if let Some(region) = warn_region {
+                warning = warning.region(region);
+            }
+            match ingress.submit_warning(warning).await {
+                Ok(_) => {
+                    warnings_inserted += 1;
+                    // Send Slack notification for high/critical severity warnings.
+                    notify_slack_high_severity(
+                        warning_severity,
+                        &warn_title,
+                        &diversified_action,
+                        Some(&entity_label),
+                        &c.category,
+                        &c.recipe_code,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    warning_ingest_failures += 1;
+                    tracing::warn!(
+                        %error,
+                        recipe = %c.recipe_code,
+                        "recipe_fire: failed to ingest warning"
+                    );
+                }
+            }
         }
 
         #[cfg(not(feature = "llm"))]
@@ -4325,31 +4338,38 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
                 Some(entity_region.as_str())
             };
             let warn_urls = warning_evidence_urls.clone();
-            let _ = store
-                .insert_warning(
-                    &c.category,
-                    &warn_title,
-                    Some(&diversified_action),
-                    warning_severity,
-                    warn_region,
-                    Some(&c.recipe_code),
-                    entity_ids.clone(),
-                    warn_urls,
-                    Some(c.confidence),
-                )
-                .await;
-            warnings_inserted += 1;
-
-            // Send Slack notification for high/critical severity warnings.
-            notify_slack_high_severity(
-                warning_severity,
-                &warn_title,
-                &diversified_action,
-                Some(&entity_label),
-                &c.category,
-                &c.recipe_code,
-            )
-            .await;
+            let mut warning = NewWarning::new(&c.category, &warn_title, warning_severity)
+                .description(&diversified_action)
+                .recipe_code(&c.recipe_code)
+                .entity_ids(entity_ids.clone().unwrap_or_default())
+                .source_urls(warn_urls.unwrap_or_default())
+                .confidence(c.confidence);
+            if let Some(region) = warn_region {
+                warning = warning.region(region);
+            }
+            match ingress.submit_warning(warning).await {
+                Ok(_) => {
+                    warnings_inserted += 1;
+                    // Send Slack notification for high/critical severity warnings.
+                    notify_slack_high_severity(
+                        warning_severity,
+                        &warn_title,
+                        &diversified_action,
+                        Some(&entity_label),
+                        &c.category,
+                        &c.recipe_code,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    warning_ingest_failures += 1;
+                    tracing::warn!(
+                        %error,
+                        recipe = %c.recipe_code,
+                        "recipe_fire: failed to ingest warning"
+                    );
+                }
+            }
         }
     }
 
@@ -4675,21 +4695,27 @@ pub(super) async fn run_recipe_fire(kind: &JobKind, store: &Arc<PgStore>) -> Job
         skipped_cross_run = skipped_cross_run,
         inserted = insights_inserted,
         warnings = warnings_inserted,
+        warning_ingest_failures,
         "recipe_fire: run complete"
     );
 
-    run.succeed(
+    let summary = format!(
+        "recipe_fire: {} candidate(s), inserted {} insight(s), {} warning(s), {} warning ingest failure(s) (skipped {} low-conf, {} dedup, {} cross-run)",
+        total_candidates,
         insights_inserted,
-        &format!(
-            "recipe_fire: {} candidate(s), inserted {} insight(s), {} warning(s) (skipped {} low-conf, {} dedup, {} cross-run)",
-            total_candidates,
-            insights_inserted,
-            warnings_inserted,
-            skipped_low_conf,
-            skipped_dedup,
-            skipped_cross_run,
-        ),
+        warnings_inserted,
+        warning_ingest_failures,
+        skipped_low_conf,
+        skipped_dedup,
+        skipped_cross_run,
     );
+    if warning_ingest_failures > 0 {
+        // Persistence failures must never be reported as a clean success.
+        run.items_processed = insights_inserted;
+        run.fail(&format!("{summary} — warning ingestion degraded"));
+    } else {
+        run.succeed(insights_inserted, &summary);
+    }
     run
 }
 

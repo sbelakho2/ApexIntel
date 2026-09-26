@@ -4,6 +4,7 @@
 //! through the current shared quality gate and fails when agreement drops.
 
 use crate::digest_filtering::passes_shared_insight_quality_gate;
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use anyhow::Context;
 use apex_store::postgres::{HistoricalQualityGateLabel, PgStore, QualityGateGoldenSetExample};
 use uuid::Uuid;
@@ -82,6 +83,7 @@ pub(crate) fn evaluate_quality_gate_golden_set(
 #[cfg(feature = "llm")]
 pub(crate) async fn run_quality_gate_golden_set_regression(
     store: &PgStore,
+    ingress: &IntelligenceIngress,
 ) -> anyhow::Result<QualityGateGoldenSetRegressionResult> {
     let accepted_limit = std::env::var("LLM_GOLDEN_SET_ACCEPTED_LIMIT")
         .ok()
@@ -163,22 +165,21 @@ pub(crate) async fn run_quality_gate_golden_set_regression(
             regression.disagreements.len(),
             regression.total_examples,
         );
-        match store
-            .insert_warning(
-                "llm_quality_gate_golden_set_review",
-                "LLM quality-gate golden set review required",
-                Some(&desc),
-                severity,
-                Some("global"),
-                None,
-                None,
-                None,
-                Some((1.0 - regression.agreement).clamp(0.0, 1.0)),
+        match ingress
+            .submit_warning(
+                NewWarning::new(
+                    "llm_quality_gate_golden_set_review",
+                    "LLM quality-gate golden set review required",
+                    severity,
+                )
+                .description(&desc)
+                .region("global")
+                .confidence((1.0 - regression.agreement).clamp(0.0, 1.0)),
             )
             .await
         {
-            Ok(warning_id) => tracing::warn!(
-                warning_id = %warning_id,
+            Ok(result) => tracing::warn!(
+                warning_id = %result.warning_id(),
                 dataset_version = %export.dataset_version,
                 disagreements = regression.disagreements.len(),
                 agreement = regression.agreement,

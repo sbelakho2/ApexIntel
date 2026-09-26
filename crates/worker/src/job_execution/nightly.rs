@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, MatchKind};
 #[cfg(feature = "llm")]
 use apex_core::entities::{Company, CompanyType};
 use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
@@ -21,6 +21,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::sync::Semaphore;
 
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::*;
 
 const NIGHTLY_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -114,6 +115,12 @@ async fn fetch_source(
     }
 }
 
+/// Persist the failure state of one source.
+///
+/// Returns the persistence result instead of swallowing it: a failed write
+/// means the scheduler's source runtime state is now wrong (the source may be
+/// retried immediately or its backoff ladder is never advanced), so callers
+/// must count it and degrade the crawl instead of reporting a clean success.
 async fn persist_source_failure(
     store: &PgStore,
     source_slug: &str,
@@ -121,17 +128,19 @@ async fn persist_source_failure(
     http_status: Option<i32>,
     min_interval: chrono::Duration,
     now: chrono::DateTime<Utc>,
-) {
-    if let Err(error) = store
+) -> anyhow::Result<()> {
+    store
         .record_source_attempt_failure(source_slug, message, http_status, min_interval, now)
         .await
-    {
-        tracing::warn!(
-            source = %source_slug,
-            error = %error,
-            "crawl_cycle: failed to persist source failure state"
-        );
-    }
+        .map(|_state| ())
+        .map_err(|error| {
+            tracing::warn!(
+                source = %source_slug,
+                error = %error,
+                "crawl_cycle: failed to persist source failure state"
+            );
+            error
+        })
 }
 
 /// Precomputed entity matching index combining Aho-Corasick automaton with
@@ -147,15 +156,37 @@ struct EntityMatcher {
     lengths: Vec<usize>,
 }
 
+/// Source of the entity-name index used for crawl observation linking.
+///
+/// Abstracted so the crawl-cycle failure path can be exercised with an
+/// injected failing store without a live database.
+#[async_trait::async_trait]
+trait EntityIndexSource {
+    async fn entity_name_index(&self) -> anyhow::Result<Vec<(Uuid, String)>>;
+}
+
+#[async_trait::async_trait]
+impl EntityIndexSource for PgStore {
+    async fn entity_name_index(&self) -> anyhow::Result<Vec<(Uuid, String)>> {
+        self.list_entity_name_index()
+            .await
+            .map_err(|error| anyhow::anyhow!("entity name index query failed: {error}"))
+    }
+}
+
 /// Build a case-insensitive lookup table mapping known entity name tokens to
 /// their company UUID.  When a crawled page body contains one of these names
 /// the resulting observation is linked to that entity so that downstream jobs
 /// (recipe_fire, pattern_mining, etc.) can attribute the data.
 ///
 /// Also constructs an Aho-Corasick automaton for efficient single-pass
-/// matching.
-async fn build_entity_name_lookup(store: &Arc<PgStore>) -> (HashMap<String, Uuid>, EntityMatcher) {
-    let index = store.list_entity_name_index().await.unwrap_or_default();
+/// matching. Lookup or automaton-construction failure is returned as an error:
+/// pretending the index is empty would silently disable entity linking for the
+/// whole crawl and make every downstream job see zero entity-linked data.
+async fn build_entity_name_lookup<S: EntityIndexSource + ?Sized>(
+    store: &S,
+) -> anyhow::Result<(HashMap<String, Uuid>, EntityMatcher)> {
+    let index = store.entity_name_index().await?;
     let mut lookup: HashMap<String, Uuid> = HashMap::with_capacity(index.len());
     for (id, name) in &index {
         // Skip very short names (≤2 chars) to avoid false-positive matches
@@ -171,15 +202,37 @@ async fn build_entity_name_lookup(store: &Arc<PgStore>) -> (HashMap<String, Uuid
     let lengths: Vec<usize> = patterns.iter().map(|p| p.len()).collect();
     let automaton = AhoCorasick::builder()
         .ascii_case_insensitive(true)
+        // At a given position the longest entity name wins, so "Acme
+        // Batteries" is preferred over a prefix "Acme" (the matcher's
+        // documented longest-match contract).
+        .match_kind(MatchKind::LeftmostLongest)
         .build(&patterns)
-        .unwrap_or_else(|error| panic!("entity name patterns should be valid: {error}"));
+        .map_err(|error| anyhow::anyhow!("failed to build entity name automaton: {error}"))?;
 
     let matcher = EntityMatcher {
         automaton,
         ids,
         lengths,
     };
-    (lookup, matcher)
+    Ok((lookup, matcher))
+}
+
+/// Load the entity index for the crawl cycle, degrading `run` instead of
+/// proceeding with zero entity names when the lookup fails.
+async fn entity_index_or_fail<S: EntityIndexSource + ?Sized>(
+    store: &S,
+    run: &mut JobRun,
+) -> Option<(HashMap<String, Uuid>, EntityMatcher)> {
+    match build_entity_name_lookup(store).await {
+        Ok(index) => Some(index),
+        Err(error) => {
+            run.fail(&format!(
+                "crawl_cycle degraded: failed to load entity name index \
+                 (refusing to crawl without entity linking): {error}"
+            ));
+            None
+        }
+    }
 }
 
 /// Scan a text blob for the best matching entity name.  Uses the precomputed
@@ -410,7 +463,10 @@ async fn persist_dynamic_discovery_candidates(
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_crawl_cycle(
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(JobKind::CrawlCycle);
     run.start();
     let sources = all_sources();
@@ -473,7 +529,13 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     // Pre-load entity name index so we can link observations to known
     // companies/competitors.  Without this mapping recipe_fire sees zero
     // entity-linked observations and skips, producing no warnings or insights.
-    let (entity_lookup, entity_matcher) = build_entity_name_lookup(store).await;
+    // A lookup failure degrades the crawl instead of silently pretending the
+    // index has zero entities.
+    let Some((entity_lookup, entity_matcher)) =
+        entity_index_or_fail(store.as_ref(), &mut run).await
+    else {
+        return run;
+    };
     tracing::info!(
         entity_names = entity_lookup.len(),
         "crawl_cycle: entity name index loaded for observation linking"
@@ -496,6 +558,10 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
     let mut successful_sources: HashSet<String> = HashSet::new();
     let mut failed_sources: HashSet<String> = HashSet::new();
     let mut companies_with_new_obs: HashSet<Uuid> = HashSet::new();
+    // Source runtime state is scheduler state. A failed write leaves the
+    // scheduler's view of the source stale, so a run with any such failure is
+    // degraded, never a clean success.
+    let mut scheduler_state_write_failures: u64 = 0;
 
     let governor = CrawlGovernor::with_limits(CRAWL_DOMAIN_RPS, GLOBAL_HTTP_CONCURRENCY as u32);
     let browser_permits = Arc::new(Semaphore::new(BROWSER_CONCURRENCY));
@@ -694,7 +760,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                         errors += 1;
                         sources_failed += 1;
                         failed_sources.insert(src.slug.clone());
-                        persist_source_failure(
+                        if persist_source_failure(
                             store.as_ref(),
                             &src.slug,
                             &e.to_string(),
@@ -702,7 +768,11 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                             min_interval,
                             Utc::now(),
                         )
-                        .await;
+                        .await
+                        .is_err()
+                        {
+                            scheduler_state_write_failures += 1;
+                        }
                     }
                 }
             }
@@ -716,7 +786,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                 errors += 1;
                 sources_failed += 1;
                 failed_sources.insert(src.slug.clone());
-                persist_source_failure(
+                if persist_source_failure(
                     store.as_ref(),
                     &src.slug,
                     &failure.message,
@@ -724,7 +794,11 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
                     min_interval,
                     Utc::now(),
                 )
-                .await;
+                .await
+                .is_err()
+                {
+                    scheduler_state_write_failures += 1;
+                }
             }
         }
     }
@@ -767,12 +841,13 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         coverage_debt_remaining = coverage_debt_remaining_count,
         ingested,
         errors,
+        scheduler_state_write_failures,
         "crawl_cycle: scheduler metrics"
     );
 
     if sources_succeeded == 0 || success_ratio < min_success_ratio {
         let failure_summary = format!(
-            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={}",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} scheduler_state_write_failures={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={}",
             sources_due,
             sources_attempted,
             sources_succeeded,
@@ -780,28 +855,26 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
             ingested,
             errors,
             coverage_debt_remaining_count,
+            scheduler_state_write_failures,
             success_ratio,
             min_success_ratio,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
             if successful_sources_list.is_empty() { "none".to_string() } else { successful_sources_list.join(",") },
         );
 
-        let _ = store
-            .insert_warning(
-                "crawl_health",
-                "Crawl reliability degraded",
-                Some(&failure_summary),
-                "high",
-                None,
-                None,
-                None,
-                None,
-                Some((1.0 - success_ratio).clamp(0.0, 1.0)),
+        if let Err(error) = ingress
+            .submit_warning(
+                NewWarning::new("crawl_health", "Crawl reliability degraded", "high")
+                    .description(&failure_summary)
+                    .confidence((1.0 - success_ratio).clamp(0.0, 1.0)),
             )
-            .await;
+            .await
+        {
+            tracing::warn!(%error, "crawl_cycle: failed to record crawl health warning");
+        }
 
         run.fail(&format!(
-            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} failed_sources=[{}]",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} ingested={} errors={} coverage_debt_remaining={} scheduler_state_write_failures={} failed_sources=[{}]",
             sources_due,
             sources_attempted,
             sources_succeeded,
@@ -809,6 +882,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
             ingested,
             errors,
             coverage_debt_remaining_count,
+            scheduler_state_write_failures,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
         ));
         return run;
@@ -846,6 +920,22 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>) -> JobRun {
         .await;
 
     // ─────────────────────────────────────────────────────────────────────
+
+    if scheduler_state_write_failures > 0 {
+        // Ingestion succeeded, but the scheduler's source runtime state could
+        // not be fully persisted: report a degraded run, not a clean success.
+        run.fail(&format!(
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={}; {} observations ingested; \
+             scheduler_state_write_failures={} (source failure state not persisted)",
+            sources_due,
+            sources_attempted,
+            sources_succeeded,
+            sources_failed,
+            ingested,
+            scheduler_state_write_failures,
+        ));
+        return run;
+    }
 
     run.succeed(
         ingested,
@@ -1699,5 +1789,102 @@ mod pattern_mining_tests {
         );
         assert_eq!(seed.signals.len(), 2);
         assert_eq!(seed.transforms.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod entity_index_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    /// Injected store whose entity-name index query always fails.
+    struct FailingEntityIndex;
+
+    #[async_trait::async_trait]
+    impl EntityIndexSource for FailingEntityIndex {
+        async fn entity_name_index(&self) -> anyhow::Result<Vec<(Uuid, String)>> {
+            anyhow::bail!("simulated entity index outage")
+        }
+    }
+
+    /// Injected store with a valid, empty entity index.
+    struct EmptyEntityIndex;
+
+    #[async_trait::async_trait]
+    impl EntityIndexSource for EmptyEntityIndex {
+        async fn entity_name_index(&self) -> anyhow::Result<Vec<(Uuid, String)>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn entity_lookup_failure_degrades_crawl_instead_of_using_zero_entities() {
+        let mut run = JobRun::new(JobKind::CrawlCycle);
+        run.start();
+
+        let index = entity_index_or_fail(&FailingEntityIndex, &mut run).await;
+
+        assert!(
+            index.is_none(),
+            "a failed entity lookup must not produce an empty index"
+        );
+        match &run.status {
+            JobStatus::Failed { error, .. } => {
+                assert!(
+                    error.contains("failed to load entity name index"),
+                    "failure note must name the failed stage: {error}"
+                );
+                assert!(
+                    error.contains("simulated entity index outage"),
+                    "failure note must carry the underlying error: {error}"
+                );
+            }
+            other => panic!("expected a failed (degraded) crawl run, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn entity_lookup_empty_index_is_not_a_failure() {
+        let mut run = JobRun::new(JobKind::CrawlCycle);
+        run.start();
+
+        let (lookup, matcher) = entity_index_or_fail(&EmptyEntityIndex, &mut run)
+            .await
+            .expect("an empty (but successful) index is valid");
+
+        assert!(lookup.is_empty());
+        assert!(match_entity_in_text("no known names here", &matcher).is_none());
+        assert!(matches!(run.status, JobStatus::Running));
+    }
+
+    #[tokio::test]
+    async fn entity_lookup_builds_longest_match_matcher() {
+        struct FixedEntityIndex;
+
+        #[async_trait::async_trait]
+        impl EntityIndexSource for FixedEntityIndex {
+            async fn entity_name_index(&self) -> anyhow::Result<Vec<(Uuid, String)>> {
+                Ok(vec![
+                    (Uuid::nil(), "Acme".to_string()),
+                    (Uuid::from_u128(1), "Acme Batteries".to_string()),
+                    (Uuid::from_u128(2), "Sh".to_string()),
+                ])
+            }
+        }
+
+        let mut run = JobRun::new(JobKind::CrawlCycle);
+        run.start();
+        let (lookup, matcher) = entity_index_or_fail(&FixedEntityIndex, &mut run)
+            .await
+            .expect("fixed index loads");
+
+        // Names of length <= 2 are skipped.
+        assert_eq!(lookup.len(), 2);
+        assert_eq!(
+            match_entity_in_text("ACME BATTERIES wins a contract", &matcher),
+            Some(Uuid::from_u128(1)),
+            "longest entity name must win"
+        );
     }
 }

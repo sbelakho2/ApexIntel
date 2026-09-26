@@ -255,6 +255,7 @@ mod security;
 mod sources;
 pub mod trends;
 mod warnings;
+pub use warnings::WarningInsertOutcome;
 
 // Source-runtime scheduling row types and backoff policy (migration 047).
 pub use sources::{

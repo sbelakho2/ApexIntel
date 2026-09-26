@@ -184,6 +184,7 @@ mod bootstrap;
 mod continuous_improvement;
 mod digest;
 mod generation;
+mod intelligence_ingress;
 mod llm_runtime;
 mod poi;
 mod prompts;
@@ -380,6 +381,14 @@ async fn main() -> Result<()> {
         ),
     }
 
+    // ─── Shared warning ingress ───────────────────────────────────────────
+    // Every warning-producing job submits through this ONE ingress so
+    // deterministic warning dedup, semantic triage dedup, alert publication
+    // and activity logging happen on every producer path. The triage ingestor
+    // is constructed here, never per job.
+    let ingress = Arc::new(intelligence_ingress::build(Arc::clone(&store)).await);
+    tracing::info!("intelligence ingress initialized");
+
     // ─── Liveness heartbeat (migration 049) ───────────────────────────────
     // Health checks read `service_heartbeats.last_seen_at` to distinguish a
     // live worker from one that silently stopped; write every ~30s so
@@ -469,6 +478,7 @@ async fn main() -> Result<()> {
                 let store = Arc::clone(&store);
                 let scheduler = Arc::clone(&scheduler);
                 let tick_guard = Arc::clone(&tick_guard);
+                let ingress = Arc::clone(&ingress);
                 tokio::spawn(async move {
                     let Ok(_guard) = tick_guard.try_lock() else {
                         tracing::warn!("tick_scheduler: previous run still active; skipping tick");
@@ -479,11 +489,12 @@ async fn main() -> Result<()> {
                     // Job-level panics are contained inside tick_scheduler
                     // (each job runs in an observed spawn, B325), so the tick
                     // body itself only does bookkeeping.
-                    runtime::tick_scheduler(&mut scheduler, &store).await;
+                    runtime::tick_scheduler(&mut scheduler, &store, &ingress).await;
                 });
             }
             _ = trigger_interval.tick() => {
                 let store = Arc::clone(&store);
+                let ingress = Arc::clone(&ingress);
                 let trigger_guard = Arc::clone(&trigger_guard);
                 let manual_trigger_semaphore = Arc::clone(&manual_trigger_semaphore);
                 tokio::spawn(async move {
@@ -494,6 +505,7 @@ async fn main() -> Result<()> {
 
                     runtime::poll_trigger_queue(
                         &store,
+                        &ingress,
                         &manual_trigger_semaphore,
                         manual_max_claims_per_poll,
                         manual_trigger_timeout_secs,

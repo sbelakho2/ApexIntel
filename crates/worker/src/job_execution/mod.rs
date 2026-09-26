@@ -27,6 +27,8 @@ use apex_worker::activity_logger::ActivityLogger;
 use apex_worker::scheduler::JobStatus;
 use apex_worker::scheduler::{JobKind, JobRun};
 
+use crate::intelligence_ingress::IntelligenceIngress;
+
 /// Log a general job-completion event to the activity feed.
 async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogger) {
     let status_str = match &run.status {
@@ -68,12 +70,16 @@ async fn log_job_completion(kind: &JobKind, run: &JobRun, logger: &ActivityLogge
         .await;
 }
 
-#[tracing::instrument(skip(kind, store), fields(job = %kind.as_str()))]
-pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+#[tracing::instrument(skip(kind, store, ingress), fields(job = %kind.as_str()))]
+pub(crate) async fn execute_job(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     tracing::debug!(job = %kind.as_str(), "job_start");
     let logger = ActivityLogger::new(store.pool.clone());
     let run = match kind {
-        JobKind::CrawlCycle => nightly::run_crawl_cycle(store).await,
+        JobKind::CrawlCycle => nightly::run_crawl_cycle(store, ingress).await,
         JobKind::PatternMining => nightly::run_pattern_mining(kind, store).await,
         JobKind::HypothesisGeneration => nightly::run_hypothesis_generation(kind, store).await,
         JobKind::PoiRefresh => poi::run_poi_refresh(kind, store).await,
@@ -85,34 +91,38 @@ pub(crate) async fn execute_job(kind: &JobKind, store: &Arc<PgStore>) -> JobRun 
         JobKind::SourceScoring => intelligence::run_source_scoring(kind, store).await,
         JobKind::CrossDomainMining => intelligence::run_cross_domain_mining(kind, store).await,
         JobKind::OutcomeTracking => intelligence::run_outcome_tracking(kind, store).await,
-        JobKind::BreachScan => security::run_breach_scan(kind, store).await,
-        JobKind::SanctionsScreen => security::run_sanctions_screen(kind, store).await,
+        JobKind::BreachScan => security::run_breach_scan(kind, store, ingress).await,
+        JobKind::SanctionsScreen => security::run_sanctions_screen(kind, store, ingress).await,
         JobKind::SlaEnforcement => security::run_sla_enforcement(kind, store).await,
-        JobKind::DnsPostureScan => security::run_dns_posture_scan(kind, store).await,
+        JobKind::DnsPostureScan => security::run_dns_posture_scan(kind, store, ingress).await,
         JobKind::KevCatalogFetch => security::run_kev_catalog_fetch(kind, store).await,
         JobKind::LookalikeDomainScan => security::run_lookalike_domain_scan(kind, store).await,
         JobKind::SelfImprovementCycle => {
-            intelligence::run_self_improvement_cycle(kind, store).await
+            intelligence::run_self_improvement_cycle(kind, store, ingress).await
         }
-        JobKind::RecipeFire => recipes::run_recipe_fire(kind, store).await,
+        JobKind::RecipeFire => recipes::run_recipe_fire(kind, store, ingress).await,
         JobKind::PoiDiscovery => poi::run_poi_discovery(store).await,
         JobKind::UpdateEmailDigest => weekly::run_update_email_digest(store).await,
         JobKind::StarzCrmSync => starzcrm::run_starzcrm_sync(store).await,
         JobKind::EmbeddingReindex => {
             apex_worker::embedding_indexer::run_embedding_reindex(kind, store).await
         }
-        JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store).await,
+        JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store, ingress).await,
         JobKind::TriageProcessing => triage::run_triage_processing(kind, store).await,
         JobKind::TrendAggregation => {
             apex_worker::trend_aggregator::run_trend_aggregation(kind, store).await
         }
         JobKind::InsightGeneration => insights::run_insight_generation(kind, store).await,
-        JobKind::ThreatIntelRefresh => threat_intel::run_threat_intel_refresh(kind, store).await,
+        JobKind::ThreatIntelRefresh => {
+            threat_intel::run_threat_intel_refresh(kind, store, ingress).await
+        }
         JobKind::PsychProfileCompute => psych_profile::run_psych_profile_compute(kind, store).await,
         JobKind::PoiRoleReclassify => poi::run_poi_role_reclassify(kind, store).await,
         JobKind::OsintEnrichment => osint_enrichment::run_osint_enrichment(kind, store).await,
-        JobKind::AdversarialAnalysis => adversarial::run_adversarial_analysis(kind, store).await,
-        JobKind::AnomalyScan => anomaly_scan::run_anomaly_scan(kind, store).await,
+        JobKind::AdversarialAnalysis => {
+            adversarial::run_adversarial_analysis(kind, store, ingress).await
+        }
+        JobKind::AnomalyScan => anomaly_scan::run_anomaly_scan(kind, store, ingress).await,
         JobKind::SocialScan => social_scan::run_social_scan(kind, store).await,
         JobKind::TenderScan => tender_scan::run_tender_scan(kind, store).await,
         JobKind::ContactEnrichment => sales::run_contact_enrichment(kind, store).await,

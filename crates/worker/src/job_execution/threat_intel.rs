@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::*;
 
 #[cfg(feature = "llm")]
@@ -14,7 +15,11 @@ use apex_threat_intel::models::{IndustrySector, PaginationParams};
 use apex_threat_intel::threat_actor_database::{ActorStatus, ThreatActor};
 
 /// Execute ThreatIntelRefresh job: refresh threat intel across all tracked entities.
-pub(super) async fn run_threat_intel_refresh(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_threat_intel_refresh(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     let total_start = Instant::now();
@@ -60,7 +65,7 @@ pub(super) async fn run_threat_intel_refresh(kind: &JobKind, store: &Arc<PgStore
 
     for company in &companies {
         // Assess supply chain risk heuristically from observations
-        let heuristic_risk = assess_supply_chain_heuristic(store, company).await;
+        let heuristic_risk = assess_supply_chain_heuristic(store, ingress, company).await;
         if heuristic_risk > 0 {
             supply_chain_risks += heuristic_risk as u64;
             total_scores_updated += 1;
@@ -84,8 +89,8 @@ pub(super) async fn run_threat_intel_refresh(kind: &JobKind, store: &Arc<PgStore
         // threat-actor database (sector + geography overlap).
         #[cfg(feature = "llm")]
         {
-            let matches =
-                assess_threat_actor_matches(store, company, &known_threat_actors).await as u64;
+            let matches = assess_threat_actor_matches(store, ingress, company, &known_threat_actors)
+                .await as u64;
             if matches > 0 {
                 threat_actor_matches += matches;
                 activity_logger
@@ -130,6 +135,7 @@ pub(super) async fn run_threat_intel_refresh(kind: &JobKind, store: &Arc<PgStore
 
 async fn assess_supply_chain_heuristic(
     store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
     company: &apex_store::postgres::CompanyRow,
 ) -> usize {
     let since = chrono::Utc::now() - chrono::Duration::days(30);
@@ -203,23 +209,24 @@ async fn assess_supply_chain_heuristic(
                 "{} shows {} supply chain disruption signals in the last 30 days. Review recommended.",
                 company.name, disruption_count
             );
-            let _ = store
-                .insert_warning(
-                    "supply_chain",
-                    &title,
-                    Some(&description),
-                    if disruption_count >= 5 {
-                        "high"
-                    } else {
-                        "medium"
-                    },
-                    company.region.as_deref(),
-                    None,
-                    None,
-                    None,
-                    Some(0.65),
-                )
-                .await;
+            let severity = if disruption_count >= 5 {
+                "high"
+            } else {
+                "medium"
+            };
+            let mut warning = NewWarning::new("supply_chain", &title, severity)
+                .description(&description)
+                .confidence(0.65);
+            if let Some(region) = company.region.as_deref() {
+                warning = warning.region(region);
+            }
+            if let Err(error) = ingress.submit_warning(warning).await {
+                tracing::warn!(
+                    %error,
+                    company = %company.name,
+                    "threat_intel_refresh: failed to ingest supply chain warning"
+                );
+            }
         }
     }
     disruption_count
@@ -412,6 +419,7 @@ fn actor_match_reasons(
 #[cfg(feature = "llm")]
 async fn assess_threat_actor_matches(
     store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
     company: &apex_store::postgres::CompanyRow,
     known_actors: &[ThreatActor],
 ) -> usize {
@@ -486,19 +494,19 @@ async fn assess_threat_actor_matches(
                 primary_sector,
                 actor.motivation.as_str(),
             );
-            let _ = store
-                .insert_warning(
-                    "threat_actor",
-                    &title,
-                    Some(&description),
-                    "high",
-                    company.region.as_deref(),
-                    None,
-                    None,
-                    None,
-                    Some(0.6),
-                )
-                .await;
+            let mut warning = NewWarning::new("threat_actor", &title, "high")
+                .description(&description)
+                .confidence(0.6);
+            if let Some(region) = company.region.as_deref() {
+                warning = warning.region(region);
+            }
+            if let Err(error) = ingress.submit_warning(warning).await {
+                tracing::warn!(
+                    %error,
+                    company = %company.name,
+                    "threat_intel_refresh: failed to ingest threat actor warning"
+                );
+            }
         }
 
         matches += 1;
