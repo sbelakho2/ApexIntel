@@ -34,7 +34,7 @@ fn ensure_session_secret() {
 fn test_api_key(key_id: &str, user_id: &str, raw_key: &str, role: ApiRole) -> ApiKey {
     ApiKey {
         key_id: key_id.to_string(),
-        owner_user_id: user_id.to_string(),
+        owner_user_id: user_id.into(),
         key_hash: hash_api_key(raw_key),
         name: key_id.to_string(),
         role,
@@ -67,8 +67,8 @@ fn test_api_keys() -> HashMap<String, ApiKey> {
 fn session_cookie(role: ApiRole, user_id: &str, username: &str) -> String {
     let now = Utc::now().timestamp_millis();
     let claims = SessionClaims {
-        user_id: user_id.to_string(),
-        username: username.to_string(),
+        user_id: user_id.into(),
+        username: username.into(),
         role,
         issued_at: now,
         expires_at: now + SESSION_TTL_MS,

@@ -63,7 +63,7 @@ pub async fn list_notifications_page(
     let ctx = PageContext::from_session(&session, "/notifications", warning_count);
 
     let notifications_state = DataState::from_result(
-        store.list_notifications(&session.username, true, 100).await,
+        store.list_notifications(&session.user_id, true, 100).await,
         "list_notifications failed (web notifications page)",
         Vec::is_empty,
     );
@@ -71,7 +71,7 @@ pub async fn list_notifications_page(
     let notifications = notifications_state.into_items();
 
     let unread_count_state = DataState::from_result(
-        store.unread_notification_count(&session.username).await,
+        store.unread_notification_count(&session.user_id).await,
         "unread_notification_count failed (web notifications page)",
         |_| false,
     );
@@ -120,7 +120,7 @@ pub async fn mark_notification_read(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     if let Ok(uuid) = Uuid::parse_str(&id) {
-        let _ = store.mark_notification_read(&session.username, uuid).await;
+        let _ = store.mark_notification_read(&session.user_id, uuid).await;
     }
 
     Redirect::to("/notifications")

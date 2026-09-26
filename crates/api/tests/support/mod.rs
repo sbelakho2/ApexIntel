@@ -26,7 +26,7 @@ use apex_store::postgres::{
 pub fn admin_auth_context() -> ApiAuthContext {
     ApiAuthContext {
         key_id: "admin-key".to_string(),
-        user_id: "user-admin".to_string(),
+        user_id: "user-admin".into(),
         role: ApiRole::Admin,
     }
 }
@@ -34,7 +34,7 @@ pub fn admin_auth_context() -> ApiAuthContext {
 pub fn readonly_auth_context() -> ApiAuthContext {
     ApiAuthContext {
         key_id: "viewer-key".to_string(),
-        user_id: "user-viewer".to_string(),
+        user_id: "user-viewer".into(),
         role: ApiRole::Viewer,
     }
 }
@@ -410,7 +410,7 @@ fn test_api_keys() -> HashMap<String, ApiKey> {
             "admin".to_string(),
             ApiKey {
                 key_id: "admin-key".to_string(),
-                owner_user_id: "user-admin".to_string(),
+                owner_user_id: "user-admin".into(),
                 key_hash: auth::hash_api_key("admin-secret-key"),
                 name: "Admin".to_string(),
                 role: ApiRole::Admin,
@@ -425,7 +425,7 @@ fn test_api_keys() -> HashMap<String, ApiKey> {
             "viewer".to_string(),
             ApiKey {
                 key_id: "viewer-key".to_string(),
-                owner_user_id: "user-viewer".to_string(),
+                owner_user_id: "user-viewer".into(),
                 key_hash: auth::hash_api_key("viewer-secret-key"),
                 name: "Viewer".to_string(),
                 role: ApiRole::Viewer,

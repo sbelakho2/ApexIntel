@@ -84,6 +84,8 @@ steps:
     commands:
       - until bash -c 'echo > /dev/tcp/database/5432' 2>/dev/null; do sleep 1; done
       - cargo test -p apex-store --test migrations_integration --test alert_subscriptions_integration --test alert_subscription_crud_integration --test rls_scoped_integration --locked -- --ignored --test-threads=1
+      # Canonical `app_users` login contract against the same migrated database.
+      - cargo test -p apex-api --test app_users_login_integration --locked -- --ignored --test-threads=1
 
   - name: wasm-shared
     image: rust:bookworm

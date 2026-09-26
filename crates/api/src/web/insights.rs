@@ -616,7 +616,7 @@ pub async fn list_insights(
             Some(search_query.clone())
         },
         bookmarked_by: if show_bookmarked {
-            Some(session.username.clone())
+            Some(session.user_id.to_string())
         } else {
             None
         },
@@ -1105,7 +1105,7 @@ pub async fn get_insight(
     let bookmarked_state = DataState::from_result(
         store
             .get_bookmarked_insight_ids_scoped(
-                &session.username,
+                &session.user_id,
                 session.role.as_str(),
                 &[insight.id],
             )
@@ -1121,7 +1121,7 @@ pub async fn get_insight(
     let annotations_state = DataState::from_result(
         store
             .list_annotations_scoped(
-                &session.username,
+                &session.user_id,
                 session.role.as_str(),
                 Some("insight"),
                 Some(&id),
@@ -1303,14 +1303,14 @@ pub async fn bookmark_insight_html(
 
     // Try to bookmark; if already bookmarked, unbookmark instead (toggle)
     let bookmarked = match store
-        .bookmark_insight_scoped(uuid, &session.username, session.role.as_str(), None)
+        .bookmark_insight_scoped(uuid, &session.user_id, session.role.as_str(), None)
         .await
     {
         Ok(true) => true, // newly bookmarked
         Ok(false) => {
             // Already bookmarked — remove it
             let _ = store
-                .unbookmark_insight_scoped(uuid, &session.username, session.role.as_str())
+                .unbookmark_insight_scoped(uuid, &session.user_id, session.role.as_str())
                 .await;
             false
         }
@@ -1326,13 +1326,13 @@ pub async fn bookmark_insight_html(
 
     if bookmarked {
         let _ = store
-            .record_insight_feedback(uuid, &session.username, "bookmarked", None)
+            .record_insight_feedback(uuid, &session.user_id, "bookmarked", None)
             .await;
     }
 
     let _ = store
         .create_notification(
-            &session.username,
+            &session.user_id,
             "insight_bookmark",
             if bookmarked {
                 "Insight bookmarked"
@@ -1429,7 +1429,7 @@ pub async fn create_insight_note(
 
     match store
         .upsert_annotation_scoped(
-            &session.username,
+            &session.user_id,
             session.role.as_str(),
             None,
             "insight",
@@ -1443,7 +1443,7 @@ pub async fn create_insight_note(
         Ok(_) => {
             let _ = store
                 .create_notification(
-                    &session.username,
+                    &session.user_id,
                     "annotation",
                     "Insight note added",
                     body,

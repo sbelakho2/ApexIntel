@@ -26,7 +26,7 @@ const PERSON_DETAIL_HTML: &str = include_str!("../templates/pages/person_detail.
 fn auth(user_id: &str, role: ApiRole) -> ApiAuthContext {
     ApiAuthContext {
         key_id: "test".to_string(),
-        user_id: user_id.to_string(),
+        user_id: user_id.into(),
         role,
     }
 }

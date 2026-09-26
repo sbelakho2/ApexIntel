@@ -7,26 +7,30 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::identity::UserId;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Principal identity
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Fixed namespace for deriving in-app principal IDs from the authenticated
-/// user name (`user_preferences.user_id` / `analyst_users.id`).
+/// Fixed namespace for deriving in-app principal IDs from the canonical
+/// application user id (`app_users.id`).
 ///
 /// The SSE/WebSocket layers key connections by `Uuid`, while the database
 /// stores user identities as `TEXT`. Deriving the UUID deterministically
-/// (UUIDv5) keeps the mapping stable across API restarts and instances without
-/// adding a users table, so alerts addressed to `Users([id])` resolve to the
-/// same principal that registered its event stream.
+/// (UUIDv5) keeps the mapping stable across API restarts and instances, so
+/// alerts addressed to `Users([id])` resolve to the same principal that
+/// registered its event stream. User-owned tables store the same canonical id,
+/// so the mapping round-trips in both directions.
 const USER_PRINCIPAL_NAMESPACE: Uuid = Uuid::from_u128(0x1b4e28ba_2ee5_5f0e_b2a1_8f3d6c9a7e41);
 
-/// Derive the stable principal UUID for an authenticated user name.
+/// Derive the stable principal UUID for a canonical application user id.
 ///
-/// The same input always produces the same UUID; distinct user names produce
-/// distinct UUIDs (collision probability of UUIDv5/SHA-1).
-pub fn user_principal_id(username: &str) -> Uuid {
-    Uuid::new_v5(&USER_PRINCIPAL_NAMESPACE, username.as_bytes())
+/// The same user id always produces the same UUID; distinct ids produce
+/// distinct UUIDs (collision probability of UUIDv5/SHA-1). The user name is
+/// display/login only and is never an identity input.
+pub fn principal_uuid_from_user_id(user_id: &UserId) -> Uuid {
+    Uuid::new_v5(&USER_PRINCIPAL_NAMESPACE, user_id.as_str().as_bytes())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,12 +438,20 @@ mod tests {
         }
     }
 
-    // ── user_principal_id ─────────────────────────────────────────────────────
+    // ── principal_uuid_from_user_id ───────────────────────────────────────────
 
     #[test]
     fn principal_id_is_deterministic_and_distinct() {
-        let alice = user_principal_id("alice");
-        assert_eq!(alice, user_principal_id("alice"));
-        assert_ne!(alice, user_principal_id("bob"));
+        let alice = principal_uuid_from_user_id(&UserId::from("usr-alice"));
+        assert_eq!(
+            alice,
+            principal_uuid_from_user_id(&UserId::from("usr-alice"))
+        );
+        assert_ne!(alice, principal_uuid_from_user_id(&UserId::from("usr-bob")));
+        assert_ne!(
+            alice,
+            principal_uuid_from_user_id(&UserId::from("alice")),
+            "the user name is not an identity input"
+        );
     }
 }

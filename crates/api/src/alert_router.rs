@@ -95,15 +95,15 @@ impl AlertEvent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// In-process directory of authenticated principals with a live real-time
-/// connection, keyed by the UUID derived from their user name
-/// (`apex_core::alert_config::user_principal_id`).
+/// connection, keyed by the UUID derived from their canonical user id
+/// (`apex_core::alert_config::principal_uuid_from_user_id`).
 ///
-/// `user_preferences` is keyed by user name while alerts address principals by
-/// UUID, and UUIDv5 is one-way. The directory bridges the two for connected
-/// users so [`AlertRouter::should_notify_user`] can consult their preferences.
+/// Alerts address principals by UUID, and UUIDv5 is one-way. The directory
+/// bridges the UUID back to the `app_users.id` behind it for connected users,
+/// so [`AlertRouter::should_notify_user`] can consult their preferences.
 #[derive(Debug, Default)]
 pub struct PrincipalDirectory {
-    usernames: RwLock<HashMap<Uuid, String>>,
+    user_ids: RwLock<HashMap<Uuid, String>>,
 }
 
 impl PrincipalDirectory {
@@ -112,26 +112,26 @@ impl PrincipalDirectory {
         Self::default()
     }
 
-    /// Record (or refresh) the user name behind a principal ID.
-    pub fn record(&self, principal_id: Uuid, username: &str) {
-        if let Ok(mut usernames) = self.usernames.write() {
-            usernames.insert(principal_id, username.to_string());
+    /// Record (or refresh) the canonical user id behind a principal ID.
+    pub fn record(&self, principal_id: Uuid, user_id: &str) {
+        if let Ok(mut user_ids) = self.user_ids.write() {
+            user_ids.insert(principal_id, user_id.to_string());
         }
     }
 
     /// Forget a principal once its last connection has closed.
     pub fn forget(&self, principal_id: Uuid) {
-        if let Ok(mut usernames) = self.usernames.write() {
-            usernames.remove(&principal_id);
+        if let Ok(mut user_ids) = self.user_ids.write() {
+            user_ids.remove(&principal_id);
         }
     }
 
-    /// Resolve the user name for a principal, if it has connected.
-    pub fn username_for(&self, principal_id: Uuid) -> Option<String> {
-        self.usernames
+    /// Resolve the canonical user id for a principal, if it has connected.
+    pub fn user_id_for(&self, principal_id: Uuid) -> Option<String> {
+        self.user_ids
             .read()
             .ok()
-            .and_then(|usernames| usernames.get(&principal_id).cloned())
+            .and_then(|user_ids| user_ids.get(&principal_id).cloned())
     }
 }
 
@@ -224,11 +224,11 @@ impl AlertRouter {
     /// [`EntityAlertConfig`](apex_core::alert_config::EntityAlertConfig), then
     /// the global defaults. Database errors fail open so a transient failure
     /// never silently suppresses an alert.
-    pub async fn should_notify_user(&self, user_id: Uuid, alert: &AlertEvent) -> bool {
-        if let Some(username) = self.principals.username_for(user_id) {
+    pub async fn should_notify_user(&self, principal_id: Uuid, alert: &AlertEvent) -> bool {
+        if let Some(user_id) = self.principals.user_id_for(principal_id) {
             match self
                 .db
-                .get_user_preferences_record_scoped(&username, "viewer")
+                .get_user_preferences_record_scoped(&user_id, "viewer")
                 .await
             {
                 Ok(Some(record)) => {
@@ -242,7 +242,7 @@ impl AlertRouter {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        user = %username,
+                        user_id = %user_id,
                         error = %e,
                         "Failed to fetch user preferences, falling back to alert configs"
                     );
@@ -444,15 +444,17 @@ mod tests {
     }
 
     #[test]
-    fn principal_directory_records_and_forgets_usernames() {
+    fn principal_directory_records_and_forgets_user_ids() {
         let dir = PrincipalDirectory::new();
-        let id = apex_core::alert_config::user_principal_id("alice");
+        let id = apex_core::alert_config::principal_uuid_from_user_id(
+            &apex_core::identity::UserId::from("usr-alice"),
+        );
 
-        assert_eq!(dir.username_for(id), None);
-        dir.record(id, "alice");
-        assert_eq!(dir.username_for(id).as_deref(), Some("alice"));
+        assert_eq!(dir.user_id_for(id), None);
+        dir.record(id, "usr-alice");
+        assert_eq!(dir.user_id_for(id).as_deref(), Some("usr-alice"));
         dir.forget(id);
-        assert_eq!(dir.username_for(id), None);
+        assert_eq!(dir.user_id_for(id), None);
     }
 
     #[test]

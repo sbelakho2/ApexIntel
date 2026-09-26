@@ -6,7 +6,7 @@
 //! pattern as `migrations_integration.rs`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use apex_store::postgres::PgStore;
+use apex_store::postgres::{AppUserSeed, PgStore};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -33,20 +33,54 @@ async fn subscription_crud_round_trip() {
     let other_entity = Uuid::new_v4();
 
     // The canonical identity must exist before a subscription can reference it.
-    let app_user = store
-        .ensure_app_user(&marker, &format!("{marker}-name"), "analyst")
+    // Environment credentials bootstrap the row; the database then wins.
+    let seed = AppUserSeed {
+        id: marker.clone(),
+        username: format!("{marker}-name"),
+        password_hash: "bootstrap-hash".to_string(),
+        role: "analyst".to_string(),
+    };
+    let applied = store
+        .bootstrap_app_users(std::slice::from_ref(&seed))
         .await
-        .expect("ensure_app_user creates the canonical identity");
+        .expect("bootstrap_app_users creates the canonical identity");
+    assert_eq!(applied, 1);
+    let app_user = store
+        .get_app_user(&marker)
+        .await
+        .expect("get_app_user")
+        .expect("identity exists");
     assert_eq!(app_user.id, marker);
-    assert!(app_user.last_login_at.is_some());
+    assert!(app_user.enabled);
+    assert_eq!(app_user.password_hash.as_deref(), Some("bootstrap-hash"));
 
     // Migrations can be re-applied without error and without duplicating the
-    // identity (idempotency of 059).
+    // identity (idempotency of 059/061).
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
-    store
-        .ensure_app_user(&marker, &format!("{marker}-name"), "analyst")
+    let seeded_again = AppUserSeed {
+        password_hash: "changed-env-hash".to_string(),
+        role: "admin".to_string(),
+        ..seed.clone()
+    };
+    let applied = store
+        .bootstrap_app_users(std::slice::from_ref(&seeded_again))
         .await
-        .expect("ensure_app_user is idempotent");
+        .expect("bootstrap_app_users is idempotent");
+    assert_eq!(
+        applied, 0,
+        "a row that already carries credentials must not be re-bootstrapped"
+    );
+
+    // Database-authoritative: a successful login records `last_login_at`
+    // without letting the environment rewrite the stored credentials.
+    let logged_in = store
+        .record_app_user_login(&marker)
+        .await
+        .expect("record_app_user_login")
+        .expect("login row");
+    assert!(logged_in.last_login_at.is_some());
+    assert_eq!(logged_in.password_hash.as_deref(), Some("bootstrap-hash"));
+    assert_eq!(logged_in.role, "analyst");
 
     // `ensure_app_user_exists` is insert-only: it must not overwrite an
     // existing verified identity (the PUT backstop and API-key provisioning

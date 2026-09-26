@@ -169,7 +169,7 @@ pub async fn list_battlecards(
     let template = BattlecardsListPage {
         current_path: "/battlecards".to_string(),
         status_strip: crate::system_status::StatusStrip::current(),
-        username: session.username.clone(),
+        username: session.username.to_string(),
         warning_count,
         theme: String::new(),
         can_admin: ctx.can_admin,
@@ -274,7 +274,7 @@ pub async fn get_battlecard(
             let template = BattlecardDetailPage {
                 current_path: format!("/battlecards/{}", id),
                 status_strip: crate::system_status::StatusStrip::current(),
-                username: session.username.clone(),
+                username: session.username.to_string(),
                 warning_count: 0,
                 theme: String::new(),
                 can_admin: session.can_admin(),
@@ -289,7 +289,7 @@ pub async fn get_battlecard(
             let tpl = super::errors::NotFoundPage {
                 current_path: format!("/battlecards/{}", id),
                 status_strip: crate::system_status::StatusStrip::current(),
-                username: session.username.clone(),
+                username: session.username.to_string(),
                 warning_count: 0,
                 theme: String::new(),
                 can_admin: session.can_admin(),
@@ -302,7 +302,7 @@ pub async fn get_battlecard(
             let tpl = super::errors::InternalErrorPage {
                 current_path: format!("/battlecards/{}", id),
                 status_strip: crate::system_status::StatusStrip::current(),
-                username: session.username.clone(),
+                username: session.username.to_string(),
                 warning_count: 0,
                 theme: String::new(),
                 can_admin: session.can_admin(),

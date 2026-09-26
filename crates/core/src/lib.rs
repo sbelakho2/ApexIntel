@@ -13,6 +13,7 @@ pub mod errors;
 pub mod geospatial;
 pub mod graph_risk;
 pub mod hs_codes;
+pub mod identity;
 pub mod outcomes;
 pub mod person_names;
 pub mod provenance;

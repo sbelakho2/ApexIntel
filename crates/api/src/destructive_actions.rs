@@ -1,5 +1,6 @@
 use crate::auth::ApiRole;
 use crate::responses::ApiError;
+use apex_core::identity::UserId;
 use axum::http::HeaderMap;
 use serde_json::Value;
 
@@ -11,7 +12,8 @@ const DELETE_ALL_WARNINGS_REASON_MAX_LEN: usize = 500;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiAuthContext {
     pub key_id: String,
-    pub user_id: String,
+    /// Canonical `app_users.id` this request acts as.
+    pub user_id: UserId,
     pub role: ApiRole,
 }
 
@@ -90,7 +92,7 @@ pub fn delete_all_warnings_audit_payload(
     Value::Object(serde_json::Map::from_iter([
         (
             "actor_user_id".to_string(),
-            Value::String(auth_ctx.user_id.clone()),
+            Value::String(auth_ctx.user_id.to_string()),
         ),
         (
             "actor_key_id".to_string(),
@@ -124,7 +126,7 @@ mod tests {
     fn admin_auth_context() -> ApiAuthContext {
         ApiAuthContext {
             key_id: "admin-key".to_string(),
-            user_id: "user-admin".to_string(),
+            user_id: "user-admin".into(),
             role: ApiRole::Admin,
         }
     }
@@ -183,7 +185,7 @@ mod tests {
         );
         let viewer = ApiAuthContext {
             key_id: "viewer-key".to_string(),
-            user_id: "viewer-user".to_string(),
+            user_id: "viewer-user".into(),
             role: ApiRole::Viewer,
         };
 

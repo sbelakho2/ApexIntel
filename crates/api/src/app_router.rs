@@ -457,6 +457,17 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
             put(collaboration_handlers::update_watchlist)
                 .delete(collaboration_handlers::delete_watchlist),
         )
+        // ─── Personal Collaboration: Saved Searches (RLS-scoped) ──────────
+        .route(
+            "/api/saved-searches",
+            get(collaboration_handlers::list_saved_searches)
+                .post(collaboration_handlers::create_saved_search),
+        )
+        .route(
+            "/api/saved-searches/:id",
+            put(collaboration_handlers::update_saved_search)
+                .delete(collaboration_handlers::delete_saved_search),
+        )
         // ─── Supply Chain Risk API ────────────────────────────────────────
         .route(
             "/api/supply-risk",
@@ -653,6 +664,14 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route(
             "/search/suggestions",
             get(apex_api::web::search::suggestions_html),
+        )
+        .route(
+            "/search/saved-searches",
+            post(apex_api::web::search::save_search),
+        )
+        .route(
+            "/search/saved-searches/:id/delete",
+            post(apex_api::web::search::delete_saved_search),
         )
         .route("/security", get(apex_api::web::security::security_page))
         .route(

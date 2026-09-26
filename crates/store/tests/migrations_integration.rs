@@ -116,7 +116,10 @@ async fn core_and_feature_tables_exist() {
         ("companies", "headcount_growth_pct"),
         ("closed_deals", "won"),
         ("buying_center_members", "influence_score"),
-        ("app_users", "last_login_at"), // 059
+        ("app_users", "last_login_at"),   // 059
+        ("app_users", "password_hash"),   // 061
+        ("app_users", "session_version"), // 061
+        ("app_users", "enabled"),         // 061 (renamed from is_active)
         ("user_alert_subscriptions", "enabled"),
     ] {
         assert!(

@@ -24,6 +24,8 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+use apex_core::identity::{UserId, Username};
+
 use crate::auth::{ApiKey, ApiRole, Principal};
 use crate::destructive_actions::ApiAuthContext;
 use crate::middleware::auth::{auth_error_response, authenticate_api_request};
@@ -74,8 +76,10 @@ const MAX_CSRF_FORM_BYTES: usize = 64 * 1024;
 /// Session data extracted from the cookie and injected into request extensions.
 #[derive(Clone, Debug)]
 pub struct WebSession {
-    pub user_id: String,
-    pub username: String,
+    /// Canonical `app_users.id`; every ownership write uses this.
+    pub user_id: UserId,
+    /// Login/display name; never an ownership key.
+    pub username: Username,
     pub role: ApiRole,
     pub session_version: u32,
     /// Stable principal UUID used to key real-time connections and to address alerts.
@@ -105,8 +109,8 @@ impl WebSession {
 /// Claims signed into a browser session cookie.
 #[derive(Debug, Clone)]
 pub struct SessionClaims {
-    pub user_id: String,
-    pub username: String,
+    pub user_id: UserId,
+    pub username: Username,
     pub role: ApiRole,
     pub issued_at: i64,
     pub expires_at: i64,
@@ -128,8 +132,8 @@ pub fn create_session_token(claims: &SessionClaims, session_secret: &str) -> Opt
     }
 
     let payload = SessionPayload {
-        uid: &claims.user_id,
-        sub: &claims.username,
+        uid: claims.user_id.as_str(),
+        sub: claims.username.as_str(),
         role: claims.role.as_str(),
         iat: claims.issued_at,
         exp: claims.expires_at,
@@ -213,11 +217,18 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
         }),
     };
 
-    let username = payload.sub;
-    let principal_id = apex_core::alert_config::user_principal_id(&username);
+    let username = Username::from(payload.sub);
+    // Legacy pre-principal cookies carried no `uid`; the login name was the
+    // identity then, so fall back to it. Sessions issued by the current login
+    // always carry the canonical `app_users.id`.
+    let user_id = payload
+        .uid
+        .map(UserId::from)
+        .unwrap_or_else(|| UserId::from(username.as_str()));
+    let principal_id = apex_core::alert_config::principal_uuid_from_user_id(&user_id);
 
     Some(WebSession {
-        user_id: payload.uid.unwrap_or_else(|| username.clone()),
+        user_id,
         username,
         role,
         session_version: payload.sv,
@@ -573,7 +584,7 @@ pub async fn require_session(request: Request, next: Next) -> Response {
             .extensions()
             .get::<Arc<apex_store::postgres::PgStore>>()
         {
-            Some(store) => match store.get_user_preferences_record(&session.username).await {
+            Some(store) => match store.get_user_preferences_record(&session.user_id).await {
                 Ok(Some(record)) => Some((
                     record.theme,
                     table_layout_from_preferences(&record.preferences)
@@ -674,8 +685,8 @@ mod tests {
     ) -> String {
         let now = chrono::Utc::now().timestamp_millis();
         let claims = SessionClaims {
-            user_id: user_id.to_string(),
-            username: username.to_string(),
+            user_id: user_id.into(),
+            username: username.into(),
             role,
             issued_at: now,
             expires_at: now + SESSION_TTL_MS,
@@ -696,7 +707,7 @@ mod tests {
         assert_eq!(session.username, "alice");
         assert_eq!(
             session.principal_id,
-            apex_core::alert_config::user_principal_id("alice"),
+            apex_core::alert_config::principal_uuid_from_user_id(&UserId::from("alice")),
             "session must carry the stable principal ID"
         );
     }
@@ -738,8 +749,8 @@ mod tests {
         let now = chrono::Utc::now().timestamp_millis();
         let token = create_session_token(
             &SessionClaims {
-                user_id: "usr-1".to_string(),
-                username: "alice".to_string(),
+                user_id: "usr-1".into(),
+                username: "alice".into(),
                 role: ApiRole::Admin,
                 issued_at: now - 2 * SESSION_TTL_MS,
                 expires_at: now - SESSION_TTL_MS,

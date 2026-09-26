@@ -40,7 +40,7 @@ use apex_api::routes::warnings::{
     validate_acknowledge, validate_warning_id, AcknowledgeRequest, ListWarningsQuery,
     SortDirection, WarningResponse, WarningSortField,
 };
-use apex_core::alert_config::user_principal_id;
+use apex_core::alert_config::principal_uuid_from_user_id;
 use apex_core::validation::clamp_ratio;
 use apex_store::postgres::{
     AdminCrawlStatus, AdminPoiCoverage, AdminRecipePerformance, ArtifactRow, CapabilityRow,
@@ -296,7 +296,11 @@ async fn build_state() -> Result<AppState> {
     // overwritten with the key's configured role.
     for key in api_keys.values() {
         if let Err(err) = store
-            .ensure_app_user_exists(&key.owner_user_id, &key.owner_user_id, key.role.as_str())
+            .ensure_app_user_exists(
+                key.owner_user_id.as_str(),
+                key.owner_user_id.as_str(),
+                key.role.as_str(),
+            )
             .await
         {
             tracing::warn!(
@@ -307,24 +311,12 @@ async fn build_state() -> Result<AppState> {
         }
     }
 
-    // Provision every configured web principal (and its username alias) in
-    // `app_users` before serving requests. Some web handlers persist
-    // user-owned rows under `session.username` while others use the signed
-    // `user_id`, and sessions issued before migration 059 may still be valid,
-    // so both identities must exist for the new foreign keys regardless of
-    // whether the user logs in again.
-    for user in apex_api::web::auth::load_web_users() {
-        for identity in [user.user_id(), user.username.as_str()] {
-            if let Err(err) = store
-                .ensure_app_user_exists(identity, &user.username, user.api_role().as_str())
-                .await
-            {
-                tracing::warn!(
-                    identity = %identity,
-                    "failed to provision app_users identity for web principal: {err:#}"
-                );
-            }
-        }
+    // Environment credentials are bootstrap-only: they seed `app_users` rows
+    // that do not yet carry a password hash. Once a row has credentials, the
+    // database record is authoritative and the environment is ignored.
+    let bootstrapped = apex_api::web::auth::bootstrap_app_users_from_env(&store).await;
+    if bootstrapped > 0 {
+        tracing::info!(count = %bootstrapped, "bootstrapped app_users identities from environment");
     }
 
     let redis = {
@@ -798,118 +790,14 @@ async fn health_deep(State(mut state): State<AppState>) -> (StatusCode, Json<Hea
     )
 }
 
-async fn endpoints() -> Json<Vec<serde_json::Value>> {
-    Json(vec![
-        serde_json::json!({ "method": "GET", "path": "/api/health", "desc": "Health check" }),
-        serde_json::json!({ "method": "GET", "path": "/api/health/live", "desc": "Liveness probe" }),
-        serde_json::json!({ "method": "GET", "path": "/api/health/ready", "desc": "Readiness probe" }),
-        serde_json::json!({ "method": "GET", "path": "/api/health/deep", "desc": "Deep health check" }),
-        serde_json::json!({ "method": "GET", "path": "/api/health/capabilities", "desc": "Probed capability health" }),
-        serde_json::json!({ "method": "GET", "path": "/api/warnings", "desc": "List warnings" }),
-        serde_json::json!({ "method": "GET", "path": "/api/warnings/:id", "desc": "Get warning detail" }),
-        serde_json::json!({ "method": "POST", "path": "/api/warnings/:id/acknowledge", "desc": "Acknowledge warning" }),
-        serde_json::json!({ "method": "GET", "path": "/api/insights", "desc": "List insights" }),
-        serde_json::json!({ "method": "GET", "path": "/api/insights/:id", "desc": "Get insight detail" }),
-        serde_json::json!({ "method": "GET", "path": "/api/companies", "desc": "List companies" }),
-        serde_json::json!({ "method": "GET", "path": "/api/companies/:id", "desc": "Get company detail" }),
-        serde_json::json!({ "method": "GET", "path": "/api/companies/:id/dossier", "desc": "Get company dossier" }),
-        serde_json::json!({ "method": "GET", "path": "/api/persons", "desc": "List persons" }),
-        serde_json::json!({ "method": "GET", "path": "/api/persons/:id", "desc": "Get person detail" }),
-        serde_json::json!({ "method": "GET", "path": "/api/persons/:id/dossier", "desc": "Get person dossier" }),
-        serde_json::json!({ "method": "GET", "path": "/api/persons/:id/engagement", "desc": "Get person engagement" }),
-        serde_json::json!({ "method": "GET", "path": "/api/search", "desc": "Full-text search" }),
-        serde_json::json!({ "method": "GET", "path": "/api/search/semantic", "desc": "Semantic/vector search" }),
-        serde_json::json!({ "method": "GET", "path": "/api/search/suggest", "desc": "Autocomplete suggestions" }),
-        serde_json::json!({ "method": "GET", "path": "/api/graph", "desc": "List graph edges" }),
-        serde_json::json!({ "method": "GET", "path": "/api/graph/neighborhood/:id", "desc": "Get graph neighborhood" }),
-        serde_json::json!({ "method": "GET", "path": "/api/recipes", "desc": "List recipes" }),
-        serde_json::json!({ "method": "GET", "path": "/api/security", "desc": "Security overview" }),
-        serde_json::json!({ "method": "GET", "path": "/api/security/dns-posture", "desc": "DNS posture check" }),
-        serde_json::json!({ "method": "GET", "path": "/api/competitors", "desc": "List competitors" }),
-        serde_json::json!({ "method": "GET", "path": "/api/battlecards", "desc": "List battle cards" }),
-        serde_json::json!({ "method": "GET", "path": "/api/memos", "desc": "List weekly memos" }),
-        serde_json::json!({ "method": "GET", "path": "/api/insights/weekly-memo", "desc": "Latest weekly memo" }),
-        serde_json::json!({ "method": "GET", "path": "/api/dashboard", "desc": "Dashboard stats" }),
-        serde_json::json!({ "method": "GET", "path": "/api/sites", "desc": "List sites" }),
-        serde_json::json!({ "method": "GET", "path": "/api/capabilities", "desc": "List capabilities" }),
-        serde_json::json!({ "method": "GET", "path": "/api/certifications", "desc": "List certifications" }),
-        serde_json::json!({ "method": "GET", "path": "/api/observations", "desc": "List observations" }),
-        serde_json::json!({ "method": "GET", "path": "/api/executive/summary", "desc": "Executive summary" }),
-        serde_json::json!({ "method": "GET", "path": "/api/workspaces", "desc": "List workspaces" }),
-        serde_json::json!({ "method": "GET", "path": "/api/queue", "desc": "Priority queue" }),
-        serde_json::json!({ "method": "GET", "path": "/api/supplier-risk", "desc": "Supplier risk list" }),
-        serde_json::json!({ "method": "GET", "path": "/api/pipeline", "desc": "Pipeline opportunities" }),
-        serde_json::json!({ "method": "GET", "path": "/api/triage", "desc": "AI triage items" }),
-        serde_json::json!({ "method": "GET", "path": "/api/entities/:id/alert-subscription", "desc": "Get the caller's entity alert subscriptions" }),
-        serde_json::json!({ "method": "PUT", "path": "/api/entities/:id/alert-subscription", "desc": "Watch entity alerts" }),
-        serde_json::json!({ "method": "DELETE", "path": "/api/entities/:id/alert-subscription", "desc": "Unwatch entity alerts" }),
-        serde_json::json!({ "method": "GET", "path": "/api/trends", "desc": "Historical trends" }),
-        serde_json::json!({ "method": "GET", "path": "/api/search/vector", "desc": "Vector similarity search" }),
-        serde_json::json!({ "method": "GET", "path": "/api/features", "desc": "API feature flags" }),
-        serde_json::json!({ "method": "GET", "path": "/api/openapi.json", "desc": "OpenAPI specification" }),
-        serde_json::json!({ "method": "GET", "path": "/api/v1/events/stream", "desc": "SSE real-time events" }),
-    ])
+async fn endpoints() -> Json<Vec<apex_api::routes::EndpointDef>> {
+    Json(apex_api::routes::all_endpoints())
 }
 
-#[allow(dead_code)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+/// Serve the OpenAPI 3.1 document built from the endpoint catalogue, so route
+/// metadata, the catalogue and the served contract can never drift apart.
 async fn openapi_json() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "openapi": "3.0.0",
-        "info": {
-            "title": "ApexIntel Intelligence API",
-            "version": env!("CARGO_PKG_VERSION"),
-            "description": "OSINT intelligence platform for supply chain risk, competitive analysis, and POI profiling in the electronics manufacturing sector."
-        },
-        "servers": [{"url": "/api", "description": "ApexIntel API"}],
-        "paths": {
-            "/health": { "get": { "summary": "Health check", "tags": ["System"] } },
-            "/health/live": { "get": { "summary": "Liveness probe", "tags": ["System"] } },
-            "/health/ready": { "get": { "summary": "Readiness probe", "tags": ["System"] } },
-            "/warnings": { "get": { "summary": "List warnings", "tags": ["Warnings"] } },
-            "/warnings/{id}": {
-                "get": { "summary": "Get warning detail", "tags": ["Warnings"] },
-                "delete": { "summary": "Delete warning", "tags": ["Warnings"] }
-            },
-            "/warnings/{id}/acknowledge": { "post": { "summary": "Acknowledge warning", "tags": ["Warnings"] } },
-            "/insights": { "get": { "summary": "List insights", "tags": ["Insights"] } },
-            "/insights/{id}": { "get": { "summary": "Get insight detail", "tags": ["Insights"] } },
-            "/companies": { "get": { "summary": "List companies", "tags": ["Companies"] } },
-            "/companies/{id}": { "get": { "summary": "Get company detail", "tags": ["Companies"] } },
-            "/companies/{id}/dossier": { "get": { "summary": "Get company dossier", "tags": ["Companies"] } },
-            "/persons": { "get": { "summary": "List persons", "tags": ["Persons"] } },
-            "/persons/{id}": { "get": { "summary": "Get person detail", "tags": ["Persons"] } },
-            "/persons/{id}/engagement": { "get": { "summary": "Get engagement profile", "tags": ["Persons"] } },
-            "/search": { "get": { "summary": "Full-text search", "tags": ["Search"] } },
-            "/search/semantic": { "get": { "summary": "Semantic vector search", "tags": ["Search"] } },
-            "/search/suggest": { "get": { "summary": "Autocomplete suggestions", "tags": ["Search"] } },
-            "/graph": { "get": { "summary": "List graph edges", "tags": ["Graph"] } },
-            "/graph/neighborhood/{id}": { "get": { "summary": "Get neighborhood", "tags": ["Graph"] } },
-            "/recipes": { "get": { "summary": "List recipes", "tags": ["Recipes"] } },
-            "/competitors": { "get": { "summary": "List competitors", "tags": ["Competitors"] } },
-            "/battlecards": { "get": { "summary": "List battlecards", "tags": ["Battlecards"] } },
-            "/triage": { "get": { "summary": "List AI triage items", "tags": ["Triage"] } },
-            "/entities/{id}/alert-subscription": {
-                "get": { "summary": "List the caller's alert subscriptions for an entity", "tags": ["Alerts"] },
-                "put": { "summary": "Opt the caller into alerts for an entity", "tags": ["Alerts"] },
-                "delete": { "summary": "Remove the caller's alert subscription for an entity", "tags": ["Alerts"] }
-            },
-            "/trends": { "get": { "summary": "Query historical trends", "tags": ["Trends"] } },
-            "/features": { "get": { "summary": "API feature flags", "tags": ["System"] } },
-            "/llm/extract-entities": { "post": { "summary": "LLM entity extraction", "tags": ["LLM"] } },
-            "/llm/generate-memo": { "post": { "summary": "LLM memo generation", "tags": ["LLM"] } },
-            "/llm/synthesize-poi": { "post": { "summary": "LLM POI synthesis", "tags": ["LLM"] } }
-        },
-        "components": {
-            "securitySchemes": {
-                "ApiKeyAuth": {
-                    "type": "apiKey",
-                    "in": "header",
-                    "name": "Authorization"
-                }
-            }
-        }
-    }))
+    Json(apex_api::routes::openapi_spec())
 }
 
 #[allow(dead_code)]
@@ -1087,14 +975,14 @@ async fn alert_sse_handler(
     // addressed to real users can actually reach them. The cleanup guard
     // unregisters the sender when the stream is dropped so disconnected
     // clients no longer leak subscriber slots.
-    let username = auth.user_id;
-    let user_id = user_principal_id(&username);
-    let (tx, rx) = sse_manager.register(user_id, &username).await;
+    let user_id = auth.user_id;
+    let principal_id = principal_uuid_from_user_id(&user_id);
+    let (tx, rx) = sse_manager.register(principal_id, user_id.as_str()).await;
 
     let stream = apex_api::sse::SseManager::build_sse_stream_with_cleanup(
         rx,
         sse_manager.clone(),
-        user_id,
+        principal_id,
         tx,
     );
     stream.into_response()

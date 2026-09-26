@@ -97,7 +97,7 @@ mod tests {
                 "admin".to_string(),
                 ApiKey {
                     key_id: "admin-key".to_string(),
-                    owner_user_id: "user-admin".to_string(),
+                    owner_user_id: "user-admin".into(),
                     key_hash: hash_api_key("admin-secret"),
                     name: "Admin".to_string(),
                     role: ApiRole::Admin,
@@ -112,7 +112,7 @@ mod tests {
                 "viewer".to_string(),
                 ApiKey {
                     key_id: "viewer-key".to_string(),
-                    owner_user_id: "user-viewer".to_string(),
+                    owner_user_id: "user-viewer".into(),
                     key_hash: hash_api_key("viewer-secret"),
                     name: "Viewer".to_string(),
                     role: ApiRole::Viewer,

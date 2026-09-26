@@ -106,7 +106,7 @@ pub(crate) async fn upsert_entity_alert_subscription(
         .map_err(store_err)?
         .is_none()
     {
-        if actor == auth.user_id {
+        if actor == auth.user_id.as_str() {
             state
                 .store
                 .ensure_app_user_exists(&actor, &actor, auth.role.as_str())

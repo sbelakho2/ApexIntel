@@ -96,7 +96,7 @@ impl PageContext {
     pub fn from_session(session: &WebSession, path: &str, warning_count: i64) -> Self {
         Self {
             current_path: path.to_string(),
-            username: session.username.clone(),
+            username: session.username.to_string(),
             warning_count,
             theme: String::new(), // client-side via JS
             role: session.role.as_str().to_string(),
