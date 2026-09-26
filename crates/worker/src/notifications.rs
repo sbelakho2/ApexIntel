@@ -78,6 +78,53 @@ impl PendingAlert {
             llm_narrative: None,
         }
     }
+
+    /// Convert into the canonical real-time alert event.
+    ///
+    /// The event id is deterministic (UUIDv5 of the source id) so repeated
+    /// scheduler runs describe the same logical alert. The broker dedupe
+    /// identity is the outbox row id sent as `Nats-Msg-Id`, not this id.
+    pub fn to_alert_event(&self) -> crate::nats_stream::AlertEvent {
+        use crate::nats_stream::{AlertEvent, AlertEventType};
+
+        let event_type = match self.category.as_str() {
+            "insight" | "competitive_intel" | "market_intelligence" => AlertEventType::NewInsight,
+            "warning" | "verification" | "sla_breach" | "sla_reminder" => {
+                AlertEventType::NewWarning
+            }
+            "recipe_match" | "opportunity" | "demand_procurement" => AlertEventType::RecipeMatch,
+            "competitor_change" | "competitor" => AlertEventType::CompetitorChange,
+            "supply_chain" | "supply_chain_risk" => AlertEventType::SupplyChainRisk,
+            _ => AlertEventType::SystemAlert,
+        };
+
+        AlertEvent {
+            id: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, self.source_id.as_bytes()),
+            event_type,
+            severity: self.severity,
+            title: self.title.clone(),
+            description: self
+                .llm_narrative
+                .clone()
+                .unwrap_or_else(|| self.body.clone()),
+            // PendingAlert carries the entity as a string; parse the UUID so
+            // the API router can resolve the entity's real subscribers. A
+            // non-UUID entity yields None and the alert reaches nobody rather
+            // than everyone.
+            entity_id: uuid::Uuid::parse_str(&self.entity_id).ok(),
+            entity_name: Some(self.entity_name.clone()),
+            // Resolve real subscribers in the API alert router; never
+            // broadcast implicitly.
+            audience: apex_core::alert_config::AlertAudience::Users(vec![]),
+            metadata: serde_json::json!({
+                "source_id": self.source_id,
+                "category": self.category,
+                "priority_score": self.priority_score,
+                "region": self.region,
+            }),
+            created_at: self.created_at,
+        }
+    }
 }
 
 /// A fully-formed notification ready to dispatch.
@@ -232,11 +279,16 @@ pub fn should_send_alert(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Dispatches alerts to all configured channels.
+///
+/// This type only performs synchronous fan-out for callers that need an
+/// immediate result (and for backwards compatibility). Durable alert delivery
+/// goes through the outbox pipeline: a domain alert is persisted, queued per
+/// channel in `notification_delivery_state`, and delivered by the retry
+/// processor. This dispatcher deliberately holds **no** NATS branch — real-time
+/// alert publication is exclusively the outbox publisher's job.
 pub struct NotificationDispatcher {
     config: NotificationConfig,
     http: reqwest::Client,
-    /// Optional NATS publisher for real-time streaming.
-    nats: Option<crate::nats_stream::NatsPublisher>,
 }
 
 impl NotificationDispatcher {
@@ -247,18 +299,11 @@ impl NotificationDispatcher {
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_else(|error| panic!("failed to build reqwest client: {error}")),
-            nats: None,
         }
     }
 
     pub fn from_env() -> Self {
         Self::new(NotificationConfig::from_env())
-    }
-
-    /// Attach a NATS publisher for real-time alert streaming.
-    pub fn with_nats(mut self, publisher: crate::nats_stream::NatsPublisher) -> Self {
-        self.nats = Some(publisher);
-        self
     }
 
     /// Dispatch a batch of pending alerts; returns all `Notification` records
@@ -339,79 +384,9 @@ impl NotificationDispatcher {
                     records.push(notif);
                 }
             }
-
-            // Publish to NATS JetStream for real-time delivery
-            self.publish_to_nats(&alert).await;
         }
 
         records
-    }
-
-    /// Publish an alert to NATS JetStream for real-time fan-out to SSE/WebSocket clients.
-    ///
-    /// This is a fire-and-forget operation: failures are logged but never propagated
-    /// (graceful degradation).
-    async fn publish_to_nats(&self, alert: &PendingAlert) {
-        let Some(ref nats) = self.nats else {
-            return;
-        };
-        if !nats.is_connected() {
-            return;
-        }
-
-        let event_type = match alert.category.as_str() {
-            "insight" | "competitive_intel" | "market_intelligence" => {
-                crate::nats_stream::AlertEventType::NewInsight
-            }
-            "warning" | "verification" | "sla_breach" | "sla_reminder" => {
-                crate::nats_stream::AlertEventType::NewWarning
-            }
-            "recipe_match" | "opportunity" | "demand_procurement" => {
-                crate::nats_stream::AlertEventType::RecipeMatch
-            }
-            "competitor_change" | "competitor" => {
-                crate::nats_stream::AlertEventType::CompetitorChange
-            }
-            "supply_chain" | "supply_chain_risk" => {
-                crate::nats_stream::AlertEventType::SupplyChainRisk
-            }
-            _ => crate::nats_stream::AlertEventType::SystemAlert,
-        };
-
-        let event = crate::nats_stream::AlertEvent {
-            id: uuid::Uuid::new_v4(),
-            event_type,
-            severity: alert.severity,
-            title: alert.title.clone(),
-            description: alert
-                .llm_narrative
-                .clone()
-                .unwrap_or_else(|| alert.body.clone()),
-            // PendingAlert carries the entity as a string; parse the UUID so
-            // the API router can resolve the entity's real subscribers. A
-            // non-UUID entity yields None and the alert reaches nobody rather
-            // than everyone.
-            entity_id: uuid::Uuid::parse_str(&alert.entity_id).ok(),
-            entity_name: Some(alert.entity_name.clone()),
-            // Resolve real subscribers in the API alert router; never
-            // broadcast implicitly.
-            audience: apex_core::alert_config::AlertAudience::Users(vec![]),
-            metadata: serde_json::json!({
-                "source_id": alert.source_id,
-                "category": alert.category,
-                "priority_score": alert.priority_score,
-                "region": alert.region,
-            }),
-            created_at: alert.created_at,
-        };
-
-        if let Err(e) = nats.publish_alert(&event).await {
-            tracing::warn!(
-                alert_id = %event.id,
-                error = %e,
-                "Failed to publish alert to NATS"
-            );
-        }
     }
 
     async fn send_webhook(&self, cfg: &WebhookConfig, body: &str) -> Result<()> {

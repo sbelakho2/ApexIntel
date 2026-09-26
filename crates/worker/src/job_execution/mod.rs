@@ -5,6 +5,7 @@ mod dark_web;
 mod insights;
 mod intelligence;
 mod nightly;
+mod notification_delivery;
 mod osint_enrichment;
 mod poi;
 mod psych_profile;
@@ -177,6 +178,9 @@ pub(crate) async fn execute_job(
         JobKind::BuyingCenterDerivation => sales::run_buying_center_derivation(kind, store).await,
         JobKind::PersonMentionMaterialization => {
             sales::run_person_mention_materialization(kind, store).await
+        }
+        JobKind::NotificationDelivery => {
+            notification_delivery::run_notification_delivery(kind, store).await
         }
         JobKind::Custom(name) => custom::run_custom_job(name).await,
     };

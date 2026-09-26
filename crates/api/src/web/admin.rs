@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::{
+    extract::Form,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     Extension,
 };
 
@@ -119,6 +120,41 @@ pub struct SourceItem {
     pub last_ingested: String,
 }
 
+/// One dead-lettered per-channel notification delivery (admin replay).
+#[derive(Clone, Debug)]
+pub struct DeliveryDeadLetterItem {
+    pub delivery_key: String,
+    pub channel: String,
+    pub destination: String,
+    pub attempts: i32,
+    pub error: String,
+    pub dead_lettered_at: String,
+}
+
+/// One dead-lettered outbox alert event (admin replay).
+#[derive(Clone, Debug)]
+pub struct OutboxDeadLetterItem {
+    pub id: String,
+    pub event_type: String,
+    pub attempts: i32,
+    pub error: String,
+    pub dead_lettered_at: String,
+}
+
+/// Form for replaying a dead-lettered channel delivery.
+#[derive(Debug, serde::Deserialize)]
+pub struct DeliveryReplayForm {
+    pub delivery_key: String,
+}
+
+/// Form for replaying a dead-lettered outbox event.
+#[derive(Debug, serde::Deserialize)]
+pub struct OutboxReplayForm {
+    pub outbox_id: String,
+}
+
+const DEAD_LETTER_LIST_LIMIT: i64 = 25;
+
 // ─── Template ───────────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -153,6 +189,10 @@ pub struct AdminPage {
     /// Weighted-fair scheduler backlog for one pass at the configured
     /// `CRAWL_MAX_SOURCES` budget (P0 scheduler quality).
     pub source_backlog: SchedulerBacklog,
+    /// Dead-lettered per-channel notification deliveries awaiting replay.
+    pub delivery_dead_letters: Vec<DeliveryDeadLetterItem>,
+    /// Dead-lettered outbox alert events awaiting replay.
+    pub outbox_dead_letters: Vec<OutboxDeadLetterItem>,
 }
 
 fn fmt_ts(ts: chrono::DateTime<chrono::Utc>) -> String {
@@ -495,6 +535,47 @@ pub async fn admin_page(
         )
     };
 
+    // Durable notification delivery: dead-lettered rows are operator-replayable.
+    let delivery_dead_letters: Vec<DeliveryDeadLetterItem> = store
+        .list_dead_lettered_notifications(DEAD_LETTER_LIST_LIMIT)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::error!("failed to list dead-lettered notification deliveries: {error}");
+            vec![]
+        })
+        .into_iter()
+        .map(|row| DeliveryDeadLetterItem {
+            delivery_key: row.delivery_key,
+            channel: row.channel,
+            destination: row.destination,
+            attempts: row.attempts,
+            error: row.last_error.unwrap_or_default(),
+            dead_lettered_at: row
+                .dead_lettered_at
+                .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "—".to_string()),
+        })
+        .collect();
+    let outbox_dead_letters: Vec<OutboxDeadLetterItem> = store
+        .list_dead_lettered_outbox(DEAD_LETTER_LIST_LIMIT)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::error!("failed to list dead-lettered outbox events: {error}");
+            vec![]
+        })
+        .into_iter()
+        .map(|row| OutboxDeadLetterItem {
+            id: row.id.to_string(),
+            event_type: row.event_type,
+            attempts: row.attempts,
+            error: row.last_error.unwrap_or_default(),
+            dead_lettered_at: row
+                .dead_lettered_at
+                .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "—".to_string()),
+        })
+        .collect();
+
     let tpl = AdminPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
@@ -526,7 +607,74 @@ pub async fn admin_page(
         observation_sources,
         source_coverage,
         source_backlog,
+        delivery_dead_letters,
+        outbox_dead_letters,
     };
 
     super::render_template(&tpl)
+}
+
+/// POST /admin/notifications/delivery/replay — requeue a dead-lettered channel
+/// delivery with a fresh attempt budget.
+pub async fn admin_replay_delivery(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Form(form): Form<DeliveryReplayForm>,
+) -> Response {
+    if !session.can_admin() {
+        return (StatusCode::FORBIDDEN, "Admin role required").into_response();
+    }
+    match store
+        .replay_dead_lettered_notification(&form.delivery_key)
+        .await
+    {
+        Ok(true) => tracing::info!(
+            delivery_key = %form.delivery_key,
+            username = %session.username,
+            "admin replayed a dead-lettered notification delivery"
+        ),
+        Ok(false) => tracing::warn!(
+            delivery_key = %form.delivery_key,
+            "admin replay found no dead-lettered delivery with that key"
+        ),
+        Err(error) => tracing::error!(
+            delivery_key = %form.delivery_key,
+            error = %error,
+            "admin replay of a notification delivery failed"
+        ),
+    }
+    Redirect::to("/admin").into_response()
+}
+
+/// POST /admin/notifications/outbox/replay — requeue a dead-lettered outbox
+/// alert event so the canonical drain retries it.
+pub async fn admin_replay_outbox(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Form(form): Form<OutboxReplayForm>,
+) -> Response {
+    if !session.can_admin() {
+        return (StatusCode::FORBIDDEN, "Admin role required").into_response();
+    }
+    let Ok(outbox_id) = uuid::Uuid::parse_str(form.outbox_id.trim()) else {
+        tracing::warn!(outbox_id = %form.outbox_id, "admin replay received an invalid outbox id");
+        return Redirect::to("/admin").into_response();
+    };
+    match store.replay_dead_lettered_outbox(outbox_id).await {
+        Ok(true) => tracing::info!(
+            %outbox_id,
+            username = %session.username,
+            "admin replayed a dead-lettered outbox event"
+        ),
+        Ok(false) => tracing::warn!(
+            %outbox_id,
+            "admin replay found no dead-lettered outbox event with that id"
+        ),
+        Err(error) => tracing::error!(
+            %outbox_id,
+            error = %error,
+            "admin replay of an outbox event failed"
+        ),
+    }
+    Redirect::to("/admin").into_response()
 }

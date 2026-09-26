@@ -92,20 +92,43 @@ async fn warning_and_outbox_commit_together_and_crash_recovery_drains_later() {
     assert_eq!(payload["warning_id"], serde_json::json!(outcome.id));
     assert_eq!(payload["marker"], serde_json::json!(event_id));
 
-    // Simulate a crash between commit and publish: lock the batch, mark it,
-    // then drop it WITHOUT committing. Nothing may be stamped and the row must
-    // still be claimable by the next drain.
-    {
-        let mut crashed = store.lock_unpublished_outbox(10).await.unwrap();
-        let locked: Vec<Uuid> = crashed.events().iter().map(|row| row.id).collect();
-        assert!(
-            locked.contains(&outbox_id),
-            "the committed event must be claimable by the drain"
-        );
-        crashed.mark_published(outbox_id).await.unwrap();
-        // `crashed` drops here without commit: the simulated process death.
-    }
+    // TX1: claim commits before any publish. The attempt is persisted and no
+    // database lock is held afterwards.
+    let claim = store
+        .claim_unpublished_outbox("drain-1", 120.0, 10)
+        .await
+        .unwrap();
+    let claimed: Vec<Uuid> = claim.rows.iter().map(|row| row.id).collect();
+    assert!(
+        claimed.contains(&outbox_id),
+        "the committed event must be claimable by the drain"
+    );
+    assert_eq!(
+        claim.rows[0].attempts, 1,
+        "the attempt is persisted at claim"
+    );
 
+    // No transaction is held across the publish: a FOR UPDATE NOWAIT probe on
+    // another connection succeeds immediately instead of blocking.
+    sqlx::query("SELECT id FROM event_outbox WHERE id = $1 FOR UPDATE NOWAIT")
+        .bind(outbox_id)
+        .fetch_one(&pool)
+        .await
+        .expect("claiming must not hold a row lock across the publish");
+
+    // A second owner skips the leased row.
+    let second = store
+        .claim_unpublished_outbox("drain-2", 120.0, 10)
+        .await
+        .unwrap();
+    assert!(
+        !second.rows.iter().any(|row| row.id == outbox_id),
+        "a leased event must be skipped by a concurrent publisher"
+    );
+
+    // Simulate a crash after the broker accepted but before TX2 recorded it:
+    // the lease is still held and the row is unpublished, so the drain can
+    // reclaim it once the lease is released (or expires).
     let (published_at, attempts, last_error): (
         Option<chrono::DateTime<chrono::Utc>>,
         i32,
@@ -117,17 +140,29 @@ async fn warning_and_outbox_commit_together_and_crash_recovery_drains_later() {
         .unwrap();
     assert!(
         published_at.is_none(),
-        "a crashed batch must leave the event unpublished for redelivery"
+        "a crash before TX2 must leave the event unpublished for redelivery"
     );
-    assert_eq!(attempts, 0);
+    assert_eq!(attempts, 1);
     assert!(last_error.is_none());
 
-    // The next drain publishes and stamps it.
-    let mut batch = store.lock_unpublished_outbox(10).await.unwrap();
-    let locked: Vec<Uuid> = batch.events().iter().map(|row| row.id).collect();
-    assert!(locked.contains(&outbox_id));
-    batch.mark_published(outbox_id).await.unwrap();
-    batch.commit().await.unwrap();
+    // Release the crashed lease (equivalent to lease expiry) and let the next
+    // drain publish and stamp it.
+    store
+        .release_outbox_claims("drain-1", &[outbox_id])
+        .await
+        .unwrap();
+    let claim = store
+        .claim_outbox_event("drain-3", 120.0, outbox_id)
+        .await
+        .unwrap();
+    assert_eq!(claim.rows.len(), 1);
+    assert!(
+        store
+            .mark_outbox_published(outbox_id, "drain-3")
+            .await
+            .unwrap(),
+        "TX2 stamps published_at for the lease owner"
+    );
 
     let (published_at, marked): (Option<chrono::DateTime<chrono::Utc>>, bool) = sqlx::query_as(
         "SELECT published_at, published_at IS NOT NULL FROM event_outbox WHERE id = $1",
@@ -144,7 +179,11 @@ async fn warning_and_outbox_commit_together_and_crash_recovery_drains_later() {
 
     // An already-published event is no longer claimable (no double-publish).
     assert!(
-        store.lock_outbox_event(outbox_id).await.unwrap().is_empty(),
+        store
+            .claim_outbox_event("drain-4", 120.0, outbox_id)
+            .await
+            .unwrap()
+            .is_empty(),
         "a published event must never be claimable again"
     );
 
@@ -190,35 +229,43 @@ async fn locked_and_exhausted_events_are_not_claimable() {
         .await
         .expect("warning + outbox insert");
 
-    // While one publisher holds the row (`FOR UPDATE`), a second claim with
-    // SKIP LOCKED must come back empty instead of publishing it twice.
-    let held = store.lock_outbox_event(outbox_id).await.unwrap();
-    assert_eq!(held.events().len(), 1);
+    // While one publisher holds the lease, a second claim must come back empty
+    // instead of publishing it twice.
+    let held = store
+        .claim_outbox_event("drain-1", 120.0, outbox_id)
+        .await
+        .unwrap();
+    assert_eq!(held.rows.len(), 1);
     {
-        let second = store.lock_outbox_event(outbox_id).await.unwrap();
+        let second = store
+            .claim_outbox_event("drain-2", 120.0, outbox_id)
+            .await
+            .unwrap();
         assert!(
             second.is_empty(),
-            "a locked event must be skipped by a concurrent publisher"
+            "a leased event must be skipped by a concurrent publisher"
         );
     }
 
-    // Crash the holder without committing: the drop queues a rollback, so poll
-    // briefly until the lock is released and the event is claimable again.
-    drop(held);
-    let mut reclaimed = None;
-    for _ in 0..50 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let batch = store.lock_outbox_event(outbox_id).await.unwrap();
-        if !batch.is_empty() {
-            reclaimed = Some(batch);
-            break;
-        }
-    }
-    assert!(
-        reclaimed.is_some(),
-        "a crashed holder's lock must be released and the event reclaimable"
+    // A crashed holder's lease expires and the event becomes claimable again.
+    sqlx::query("UPDATE event_outbox SET lease_until = now() - interval '1 second' WHERE id = $1")
+        .bind(outbox_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let reclaimed = store
+        .claim_outbox_event("drain-2", 120.0, outbox_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        reclaimed.rows.len(),
+        1,
+        "an expired lease must be reclaimable after a crash"
     );
-    drop(reclaimed);
+    store
+        .release_outbox_claims("drain-2", &[outbox_id])
+        .await
+        .unwrap();
 
     // An event that exhausted its attempts is excluded from both claims.
     sqlx::query("UPDATE event_outbox SET attempts = $2 WHERE id = $1")
@@ -227,16 +274,71 @@ async fn locked_and_exhausted_events_are_not_claimable() {
         .execute(&pool)
         .await
         .unwrap();
-    assert!(store.lock_outbox_event(outbox_id).await.unwrap().is_empty());
+    assert!(store
+        .claim_outbox_event("drain-3", 120.0, outbox_id)
+        .await
+        .unwrap()
+        .is_empty());
     assert!(
         !store
-            .lock_unpublished_outbox(10)
+            .claim_unpublished_outbox("drain-3", 120.0, 10)
             .await
             .unwrap()
-            .events()
+            .rows
             .iter()
             .any(|row| row.id == outbox_id),
         "exhausted events must not occupy the drain"
+    );
+
+    // A failed final attempt moves the row to the explicit dead-letter state;
+    // it stays terminal until an operator replay resets the attempt budget.
+    sqlx::query("UPDATE event_outbox SET attempts = $2 WHERE id = $1")
+        .bind(outbox_id)
+        .bind(apex_store::postgres::MAX_OUTBOX_ATTEMPTS - 1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let final_claim = store
+        .claim_outbox_event("drain-4", 120.0, outbox_id)
+        .await
+        .unwrap();
+    assert_eq!(final_claim.rows.len(), 1);
+    assert!(
+        store
+            .record_outbox_failure(outbox_id, "drain-4", "simulated publish failure")
+            .await
+            .unwrap(),
+        "the final failed attempt must dead-letter the row"
+    );
+    assert!(
+        store
+            .claim_outbox_event("drain-5", 120.0, outbox_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a dead-lettered event must not be claimable"
+    );
+    let dead_letters = store.list_dead_lettered_outbox(10).await.unwrap();
+    assert!(
+        dead_letters.iter().any(|row| row.id == outbox_id),
+        "the dead-lettered row must be visible to the admin replay listing"
+    );
+    assert!(
+        store.replay_dead_lettered_outbox(outbox_id).await.unwrap(),
+        "operator replay must clear the dead-letter state"
+    );
+    let replayed = store
+        .claim_outbox_event("drain-6", 120.0, outbox_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        replayed.rows.len(),
+        1,
+        "a replayed event must be claimable again"
+    );
+    assert_eq!(
+        replayed.rows[0].attempts, 1,
+        "replay resets the attempt budget"
     );
 
     sqlx::query("DELETE FROM event_outbox WHERE id = $1")

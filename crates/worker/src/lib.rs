@@ -20,6 +20,7 @@ pub mod healthcheck;
 pub mod holiday_calendar;
 pub mod nats_stream;
 pub mod nightly;
+pub mod notification_delivery;
 pub mod notifications;
 pub mod pdf_export;
 pub mod recipe_loader;
