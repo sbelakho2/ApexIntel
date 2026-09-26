@@ -59,6 +59,8 @@ dotenvy = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 sqlx = { workspace = true, features = ["mysql"] }
 serde_yaml = "0.9"
+sha2 = { workspace = true }
+hex = { workspace = true }
 redis = { workspace = true }
 regex = "1"
 aho-corasick = "1"

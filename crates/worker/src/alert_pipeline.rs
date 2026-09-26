@@ -42,11 +42,12 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use apex_store::postgres::{
-    EventOutboxRow, OutboxBatch, OutboxDrainOutcome, PgStore, MAX_OUTBOX_ATTEMPTS,
+    AlertEngineStateRecord, EventOutboxRow, OutboxBatch, OutboxDrainOutcome, PgStore,
+    MAX_OUTBOX_ATTEMPTS,
 };
 use apex_worker::nats_stream::{AlertEvent, NatsPublisher};
 
-use crate::alert_evaluator::{AlertEvaluator, DomainEvent};
+use crate::alert_evaluator::{config_hash, AlertEvaluator, AlertRulesConfig, DomainEvent};
 
 /// Default path to the alert rules file.
 const DEFAULT_ALERT_RULES_PATH: &str = "config/runtime/alert-rules.yaml";
@@ -76,6 +77,100 @@ pub fn load_rules_evaluator() -> Option<Arc<AlertEvaluator>> {
             Some(Arc::new(evaluator))
         }
         Err(e) => {
+            warn!(
+                rules_path = %path,
+                error = %e,
+                "outbox publisher: alert rules unavailable; publishing base alert events only"
+            );
+            None
+        }
+    }
+}
+
+/// Persist a failed reload so readiness can see *why* the engine is degraded
+/// (rather than merely that no state row exists).
+async fn record_engine_failure(store: &PgStore, path: &str, error: &str) {
+    let record = AlertEngineStateRecord {
+        rules_path: path.to_string(),
+        rule_count: 0,
+        config_hash: None,
+        last_reload_success: false,
+        last_reload_error: Some(error.to_string()),
+    };
+    if let Err(persist_error) = store.record_alert_engine_state(&record).await {
+        warn!(error = %persist_error, "failed to persist alert-engine failure state");
+    }
+}
+
+/// Re-read and re-hash the rules file, refreshing `alert_engine_state`.
+///
+/// This is the worker's reload check: run on the heartbeat cadence so a stale
+/// state row genuinely means the worker stopped refreshing (not that it simply
+/// has not restarted). Parse failures are recorded and returned as errors.
+pub async fn refresh_alert_engine_state(store: &PgStore) -> anyhow::Result<AlertEngineStateRecord> {
+    let path = alert_rules_path_from_env();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) => {
+            let message = format!("failed to read alert rules: {error}");
+            record_engine_failure(store, &path, &message).await;
+            anyhow::bail!("{message}");
+        }
+    };
+    let config: AlertRulesConfig = match serde_yaml::from_str(&content) {
+        Ok(config) => config,
+        Err(error) => {
+            let message = format!("failed to parse alert rules: {error}");
+            record_engine_failure(store, &path, &message).await;
+            anyhow::bail!("{message}");
+        }
+    };
+    if config.rules.is_empty() {
+        let message = "alert rules file contains no rules".to_string();
+        record_engine_failure(store, &path, &message).await;
+        anyhow::bail!("{message}");
+    }
+
+    let record = AlertEngineStateRecord {
+        rules_path: path.clone(),
+        rule_count: config.rules.len() as i32,
+        config_hash: Some(config_hash(&content)),
+        last_reload_success: true,
+        last_reload_error: None,
+    };
+    store.record_alert_engine_state(&record).await?;
+    Ok(record)
+}
+
+/// Load the rules evaluator and publish its state for readiness probes.
+///
+/// Unlike [`load_rules_evaluator`], this variant records both success and
+/// failure to `alert_engine_state`, so `/api/health/ready` can distinguish a
+/// loaded engine from a missing/unparseable rules file.
+pub async fn load_rules_evaluator_with_state(store: &PgStore) -> Option<Arc<AlertEvaluator>> {
+    let path = alert_rules_path_from_env();
+    match AlertEvaluator::load_from_path(&path) {
+        Ok(evaluator) => {
+            let record = AlertEngineStateRecord {
+                rules_path: path.clone(),
+                rule_count: evaluator.rule_count() as i32,
+                config_hash: Some(evaluator.config_hash().to_string()),
+                last_reload_success: true,
+                last_reload_error: None,
+            };
+            if let Err(error) = store.record_alert_engine_state(&record).await {
+                warn!(error = %error, "failed to persist alert-engine state");
+            }
+            info!(
+                rules_path = %path,
+                rules = evaluator.rule_count(),
+                config_hash = %evaluator.config_hash(),
+                "outbox publisher: alert rules loaded and engine state published"
+            );
+            Some(Arc::new(evaluator))
+        }
+        Err(e) => {
+            record_engine_failure(store, &path, &e.to_string()).await;
             warn!(
                 rules_path = %path,
                 error = %e,

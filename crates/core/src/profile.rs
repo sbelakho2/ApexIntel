@@ -3,8 +3,13 @@
 //!
 //! `core` is the default, so an unlabelled process never silently claims the
 //! full capability set. `full` is the production-intelligence profile: every
-//! measured capability (database, worker heartbeat, LLM build, embeddings,
-//! NATS, search index, browser renderer) is required for readiness.
+//! capability the product depends on — process liveness, data acquisition and
+//! indexing, intelligence generation, and alert delivery — must be *proven*
+//! (not merely configured) before `/api/health/ready` answers 200.
+//!
+//! The `full` required set is also published as policy in the readiness
+//! response (profile + configurable thresholds), so operators can see exactly
+//! which proofs gate a release.
 
 use std::fmt;
 use std::str::FromStr;
@@ -15,11 +20,14 @@ pub const PROFILE_ENV_VAR: &str = "APEX_PROFILE";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeploymentProfile {
     /// Database, worker heartbeat, embeddings and search index are required;
-    /// NATS, browser rendering and the LLM stack stay optional.
+    /// NATS, browser rendering, crawl freshness, source coverage, the alert
+    /// engine, the outbox publisher and scheduled-job freshness stay optional.
     #[default]
     Core,
-    /// Every measured capability is required, including NATS, browser
-    /// rendering and an LLM-enabled build.
+    /// The full product contract: every measured capability is required,
+    /// including crawl freshness, minimum operational source coverage,
+    /// alert-rule engine state, outbox publisher health and critical
+    /// scheduled-job freshness.
     Full,
 }
 
@@ -34,6 +42,11 @@ impl DeploymentProfile {
         "nats",
         "search_index",
         "browser_renderer",
+        "crawl_freshness",
+        "source_coverage",
+        "alert_engine",
+        "outbox",
+        "scheduled_jobs",
     ];
 
     /// Resolve the profile from the environment. Unset or blank means `core`.
@@ -57,7 +70,8 @@ impl DeploymentProfile {
     }
 
     /// Capabilities that must report `ok` for readiness under this profile.
-    /// Optional capabilities (NATS, browser renderer, and the LLM stack under
+    /// Optional capabilities (NATS, browser renderer, crawl freshness, source
+    /// coverage, alert engine, outbox, scheduled jobs, and the LLM stack under
     /// `core`) are excluded.
     pub fn required_capabilities(self) -> &'static [&'static str] {
         match self {
@@ -142,6 +156,11 @@ mod tests {
             "nats",
             "search_index",
             "browser_renderer",
+            "crawl_freshness",
+            "source_coverage",
+            "alert_engine",
+            "outbox",
+            "scheduled_jobs",
         ] {
             assert!(required.contains(&name), "full must require {name}");
         }
@@ -150,7 +169,16 @@ mod tests {
     #[test]
     fn core_permits_nats_browser_and_llm_optional() {
         let core = DeploymentProfile::Core;
-        for name in ["nats", "browser_renderer", "llm"] {
+        for name in [
+            "nats",
+            "browser_renderer",
+            "llm",
+            "crawl_freshness",
+            "source_coverage",
+            "alert_engine",
+            "outbox",
+            "scheduled_jobs",
+        ] {
             assert!(!core.requires_capability(name), "core permits {name}");
         }
         for name in ["database", "worker_heartbeat", "embeddings", "search_index"] {

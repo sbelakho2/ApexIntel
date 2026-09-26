@@ -1,25 +1,28 @@
 //! `/api/health/capabilities` — capability health derived from real probes.
 //!
-//! Every value is measured rather than assumed: the LLM entry reflects the
-//! compiled feature set, NATS/embeddings/database entries are live probes, the
-//! worker heartbeat reads `service_heartbeats.last_seen_at` (migration 049),
-//! and crawl freshness reads the newest `observations.ts_utc`.
+//! Every value is measured rather than assumed: the LLM entry contacts the
+//! configured endpoint, the browser entry runs a real render self-test, the
+//! search-index entry compares database and index high-water marks, the
+//! embeddings entry runs a generation → storage → nearest-neighbour canary,
+//! NATS/database/heartbeat/freshness are live probes, and the alert-engine,
+//! outbox, source-coverage and scheduled-job entries read worker-published
+//! operational state against configurable policy thresholds.
 
 use std::time::Duration as StdDuration;
 
 use apex_core::profile::DeploymentProfile;
+use axum::http::StatusCode;
 use chrono::Utc;
 use serde::Serialize;
 
 use apex_store::postgres::{PgStore, ServiceHeartbeatRow};
 use apex_store::tantivy_index::SearchIndex;
 
+use super::probes::{self, BrowserProbeState, EmbeddingGenerator, LlmProbeTarget, ReadinessPolicy};
 #[cfg(test)]
 use crate::responses::aggregate_health;
 use crate::responses::{ComponentHealth, HealthStatus};
-use crate::system_status::{
-    format_age, StatusStrip, DATA_FRESH_WITHIN_SECS, WORKER_HEARTBEAT_STALE_AFTER_SECS,
-};
+use crate::system_status::{format_age, StatusStrip, WORKER_HEARTBEAT_STALE_AFTER_SECS};
 
 pub const CAPABILITIES_PATH: &str = "/api/health/capabilities";
 
@@ -35,6 +38,9 @@ pub struct CapabilityStatus {
     pub last_seen_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub age_seconds: Option<i64>,
+    /// Search-index lag (database high-water minus indexed high-water).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lag_seconds: Option<i64>,
 }
 
 impl CapabilityStatus {
@@ -44,12 +50,26 @@ impl CapabilityStatus {
             detail: detail.into(),
             last_seen_at: None,
             age_seconds: None,
+            lag_seconds: None,
         }
     }
 
     pub fn is_ok(&self) -> bool {
         self.status == "ok"
     }
+}
+
+/// Inputs the capability plan needs beyond the database search index: the
+/// resolved policy, the configured LLM endpoint, the browser renderer, and the
+/// embedding generator.
+pub struct ProbeContext<'a> {
+    pub pool: &'a sqlx::PgPool,
+    pub search_index: &'a SearchIndex,
+    pub nats_url: Option<&'a str>,
+    pub policy: &'a ReadinessPolicy,
+    pub llm: Option<&'a LlmProbeTarget>,
+    pub browser: &'a BrowserProbeState,
+    pub embedding_generator: Option<&'a dyn EmbeddingGenerator>,
 }
 
 /// Full capability report.
@@ -63,6 +83,114 @@ pub struct Capabilities {
     pub search_index: CapabilityStatus,
     pub worker_heartbeat: CapabilityStatus,
     pub crawl_freshness: CapabilityStatus,
+    /// Minimum operational source coverage (full profile).
+    pub source_coverage: CapabilityStatus,
+    /// Alert-rule engine state published by the worker (full profile).
+    pub alert_engine: CapabilityStatus,
+    /// Outbox publisher backlog (full profile).
+    pub outbox: CapabilityStatus,
+    /// Critical scheduled-job freshness (full profile).
+    pub scheduled_jobs: CapabilityStatus,
+}
+
+/// The product surfaces the five root health endpoints expose, and from which
+/// full product readiness is composed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductSurface {
+    Process,
+    Data,
+    Intelligence,
+    Delivery,
+}
+
+impl ProductSurface {
+    pub const ALL: [Self; 4] = [
+        Self::Process,
+        Self::Data,
+        Self::Intelligence,
+        Self::Delivery,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Data => "data",
+            Self::Intelligence => "intelligence",
+            Self::Delivery => "delivery",
+        }
+    }
+
+    /// Capabilities that make up this surface.
+    pub fn capabilities(self) -> &'static [&'static str] {
+        match self {
+            Self::Process => &["database", "worker_heartbeat", "scheduled_jobs"],
+            Self::Data => &[
+                "crawl_freshness",
+                "source_coverage",
+                "search_index",
+                "browser_renderer",
+            ],
+            Self::Intelligence => &["llm", "embeddings", "alert_engine"],
+            Self::Delivery => &["nats", "outbox"],
+        }
+    }
+}
+
+/// Measured health of one product surface.
+#[derive(Debug, Clone, Serialize)]
+pub struct SurfaceHealth {
+    /// `process` | `data` | `intelligence` | `delivery`.
+    pub surface: String,
+    /// `ok` | `degraded` | `unhealthy`.
+    pub status: String,
+    pub checks: Vec<ComponentHealth>,
+}
+
+impl SurfaceHealth {
+    pub fn from_checks(surface: ProductSurface, checks: Vec<ComponentHealth>) -> Self {
+        let status = if checks
+            .iter()
+            .any(|check| check.status == HealthStatus::Unhealthy)
+        {
+            "unhealthy"
+        } else if checks
+            .iter()
+            .any(|check| check.status == HealthStatus::Degraded)
+        {
+            "degraded"
+        } else {
+            "ok"
+        };
+        Self {
+            surface: surface.as_str().to_string(),
+            status: status.to_string(),
+            checks,
+        }
+    }
+
+    /// Surface endpoints answer 503 whenever any required check is not healthy.
+    pub fn http_status(&self) -> StatusCode {
+        if self.status == "ok" {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    }
+}
+
+/// Profile-aware readiness response: the measured checks, the surfaces they
+/// compose, and the required-capability set + thresholds published as policy.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadinessReport {
+    pub status: HealthStatus,
+    pub version: String,
+    pub uptime_secs: u64,
+    pub profile: String,
+    pub required_capabilities: Vec<String>,
+    pub thresholds: ReadinessPolicy,
+    pub surfaces: Vec<SurfaceHealth>,
+    pub checks: Vec<ComponentHealth>,
 }
 
 impl Capabilities {
@@ -77,6 +205,10 @@ impl Capabilities {
             &self.search_index,
             &self.worker_heartbeat,
             &self.crawl_freshness,
+            &self.source_coverage,
+            &self.alert_engine,
+            &self.outbox,
+            &self.scheduled_jobs,
         ];
         if all.iter().any(|c| c.status == "unavailable") {
             "unavailable"
@@ -111,6 +243,10 @@ impl Capabilities {
             ("search_index", &self.search_index),
             ("worker_heartbeat", &self.worker_heartbeat),
             ("crawl_freshness", &self.crawl_freshness),
+            ("source_coverage", &self.source_coverage),
+            ("alert_engine", &self.alert_engine),
+            ("outbox", &self.outbox),
+            ("scheduled_jobs", &self.scheduled_jobs),
         ]
         .into_iter()
         .map(|(name, capability)| ComponentHealth {
@@ -139,6 +275,10 @@ impl Capabilities {
             "search_index" => Some(&self.search_index),
             "worker_heartbeat" => Some(&self.worker_heartbeat),
             "crawl_freshness" => Some(&self.crawl_freshness),
+            "source_coverage" => Some(&self.source_coverage),
+            "alert_engine" => Some(&self.alert_engine),
+            "outbox" => Some(&self.outbox),
+            "scheduled_jobs" => Some(&self.scheduled_jobs),
             _ => None,
         }
     }
@@ -174,78 +314,120 @@ impl Capabilities {
             })
             .collect()
     }
+
+    /// Checks for one product surface, restricted to the capabilities the
+    /// deployment profile actually requires. A surface with nothing required
+    /// (e.g. delivery under `core`) is trivially healthy.
+    pub fn surface_checks(
+        &self,
+        surface: ProductSurface,
+        profile: DeploymentProfile,
+    ) -> Vec<ComponentHealth> {
+        let names: Vec<&str> = surface
+            .capabilities()
+            .iter()
+            .copied()
+            .filter(|name| profile.requires_capability(name))
+            .collect();
+        self.readiness_checks_for(&names)
+    }
+
+    /// Every surface measured for `profile`, in a stable order.
+    pub fn surface_reports(&self, profile: DeploymentProfile) -> Vec<SurfaceHealth> {
+        ProductSurface::ALL
+            .into_iter()
+            .map(|surface| {
+                SurfaceHealth::from_checks(surface, self.surface_checks(surface, profile))
+            })
+            .collect()
+    }
 }
 
 /// Map a readiness status to the probe's HTTP status: 503 exactly when a
 /// capability the profile requires is missing.
-pub fn readiness_http_status(status: &HealthStatus) -> axum::http::StatusCode {
+pub fn readiness_http_status(status: &HealthStatus) -> StatusCode {
     match status {
-        HealthStatus::Healthy | HealthStatus::Degraded => axum::http::StatusCode::OK,
-        HealthStatus::Unhealthy => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        HealthStatus::Healthy | HealthStatus::Degraded => StatusCode::OK,
+        HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
-/// Run every capability probe. Results are measured per call; nothing is
-/// cached so `/api/health/capabilities` never reports stale health.
-pub async fn probe_capabilities(
-    pool: &sqlx::PgPool,
-    search_index: &SearchIndex,
-    nats_url: Option<&str>,
-) -> Capabilities {
-    probe_capabilities_plan(pool, search_index, nats_url, None).await
+/// Run every capability probe. Probe results are measured per call; the
+/// network/renderer/canary probes cache their own results behind short TTLs so
+/// this stays cheap when polled.
+pub async fn probe_capabilities(ctx: &ProbeContext<'_>) -> Capabilities {
+    probe_capabilities_plan(ctx, None).await
 }
 
 /// Probe only the capabilities `profile` requires. Optional capabilities are
 /// reported `disabled` without touching the network or filesystem, keeping the
 /// frequently polled readiness probe cheap and free of unneeded side effects.
 pub async fn probe_capabilities_for_profile(
-    pool: &sqlx::PgPool,
-    search_index: &SearchIndex,
-    nats_url: Option<&str>,
+    ctx: &ProbeContext<'_>,
     profile: DeploymentProfile,
 ) -> Capabilities {
-    probe_capabilities_plan(pool, search_index, nats_url, Some(profile)).await
+    probe_capabilities_plan(ctx, Some(profile)).await
 }
 
 async fn probe_capabilities_plan(
-    pool: &sqlx::PgPool,
-    search_index: &SearchIndex,
-    nats_url: Option<&str>,
+    ctx: &ProbeContext<'_>,
     profile: Option<DeploymentProfile>,
 ) -> Capabilities {
-    let store = PgStore::from_pool(pool.clone());
+    let store = PgStore::from_pool(ctx.pool.clone());
     let required = |name: &str| match profile {
         Some(profile) => profile.requires_capability(name),
         None => true,
     };
 
-    let database = probe_database(pool).await;
-    let embeddings = probe_embeddings(pool).await;
-
-    let docs = search_index.num_docs();
-    let search_index_status = CapabilityStatus::new(
-        "ok",
-        format!("{docs} documents indexed in the in-process search index"),
-    );
-
+    let database = probe_database(ctx.pool).await;
+    let embeddings = if required("embeddings") {
+        probes::probe_embeddings(ctx.embedding_generator, &store, ctx.policy).await
+    } else {
+        not_required()
+    };
+    let search_index = if required("search_index") {
+        probe_search_index(ctx.search_index, &store, ctx.policy).await
+    } else {
+        not_required()
+    };
     let worker_heartbeat = probe_worker_heartbeat(&store).await;
     let crawl_freshness = if required("crawl_freshness") {
-        probe_crawl_freshness(&store).await
+        probe_crawl_freshness(&store, ctx.policy).await
     } else {
         not_required()
     };
     let nats = if required("nats") {
-        probe_nats(nats_url).await
+        probe_nats(ctx.nats_url).await
     } else {
         not_required()
     };
     let browser_renderer = if required("browser_renderer") {
-        probe_browser_renderer()
+        probes::probe_browser_renderer(ctx.browser, ctx.policy).await
     } else {
         not_required()
     };
     let llm = if required("llm") {
-        probe_llm()
+        probes::probe_llm(ctx.llm, ctx.policy).await
+    } else {
+        not_required()
+    };
+    let source_coverage = if required("source_coverage") {
+        probe_source_coverage(&store, ctx.policy).await
+    } else {
+        not_required()
+    };
+    let alert_engine = if required("alert_engine") {
+        probe_alert_engine(&store, ctx.policy).await
+    } else {
+        not_required()
+    };
+    let outbox = if required("outbox") {
+        probe_outbox(&store, ctx.policy).await
+    } else {
+        not_required()
+    };
+    let scheduled_jobs = if required("scheduled_jobs") {
+        probe_scheduled_jobs(&store, ctx.policy).await
     } else {
         not_required()
     };
@@ -256,22 +438,18 @@ async fn probe_capabilities_plan(
         nats,
         browser_renderer,
         database,
-        search_index: search_index_status,
+        search_index,
         worker_heartbeat,
         crawl_freshness,
+        source_coverage,
+        alert_engine,
+        outbox,
+        scheduled_jobs,
     }
 }
 
 fn not_required() -> CapabilityStatus {
     CapabilityStatus::new("disabled", "not required by the deployment profile")
-}
-
-fn probe_llm() -> CapabilityStatus {
-    if cfg!(feature = "llm") {
-        CapabilityStatus::new("ok", "llm feature compiled in")
-    } else {
-        CapabilityStatus::new("disabled", "binary built without the llm feature")
-    }
 }
 
 async fn probe_database(pool: &sqlx::PgPool) -> CapabilityStatus {
@@ -288,28 +466,31 @@ async fn probe_database(pool: &sqlx::PgPool) -> CapabilityStatus {
     }
 }
 
-async fn probe_embeddings(pool: &sqlx::PgPool) -> CapabilityStatus {
-    let probe = sqlx::query_scalar::<_, bool>(
-        r#"SELECT
-             EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')
-             AND EXISTS (
-                 SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'embeddings' AND column_name = 'embedding'
-             )"#,
-    )
-    .fetch_one(pool)
-    .await;
-
-    match probe {
-        Ok(true) => {
-            CapabilityStatus::new("ok", "pgvector extension and embeddings.embedding present")
+/// Search-index health: empty is never `ok`, and the indexed high-water mark
+/// must keep up with the database's newest observation.
+async fn probe_search_index(
+    index: &SearchIndex,
+    store: &PgStore,
+    policy: &ReadinessPolicy,
+) -> CapabilityStatus {
+    let docs = index.num_docs();
+    let checkpoint = index.checkpoint();
+    let db_high_water = match store.newest_observation_ts().await {
+        Ok(high_water) => high_water,
+        Err(error) => {
+            return CapabilityStatus::new(
+                "unavailable",
+                format!("observation high-water query failed: {error}"),
+            )
         }
-        Ok(false) => CapabilityStatus::new(
-            "degraded",
-            "pgvector extension or embeddings.embedding column missing",
-        ),
-        Err(error) => CapabilityStatus::new("degraded", format!("probe failed: {error}")),
-    }
+    };
+    probes::evaluate_search_index(
+        docs,
+        checkpoint.as_ref(),
+        db_high_water,
+        policy.search_index_max_lag_secs,
+        Utc::now(),
+    )
 }
 
 async fn probe_nats(nats_url: Option<&str>) -> CapabilityStatus {
@@ -322,47 +503,6 @@ async fn probe_nats(nats_url: Option<&str>) -> CapabilityStatus {
         Ok(Err(error)) => CapabilityStatus::new("unavailable", format!("connect failed: {error}")),
         Err(_) => CapabilityStatus::new("unavailable", "connect timed out after 2s"),
     }
-}
-
-fn probe_browser_renderer() -> CapabilityStatus {
-    let enabled = std::env::var("ENABLE_HEADLESS_BROWSER")
-        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
-        .unwrap_or(false);
-    if !enabled {
-        return CapabilityStatus::new(
-            "disabled",
-            "headless browser disabled (ENABLE_HEADLESS_BROWSER is not truthy)",
-        );
-    }
-
-    let binary = std::env::var("HEADLESS_BROWSER_BIN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "google-chrome".to_string());
-
-    if binary_on_path(&binary) {
-        CapabilityStatus::new("ok", format!("headless browser binary found: {binary}"))
-    } else {
-        CapabilityStatus::new(
-            "degraded",
-            format!("ENABLE_HEADLESS_BROWSER is set but binary '{binary}' was not found on PATH"),
-        )
-    }
-}
-
-fn binary_on_path(binary: &str) -> bool {
-    let candidate = std::path::Path::new(binary);
-    if candidate.components().count() > 1 {
-        return candidate.is_file();
-    }
-    std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path).any(|dir| {
-                let full = dir.join(binary);
-                full.is_file()
-            })
-        })
-        .unwrap_or(false)
 }
 
 async fn probe_worker_heartbeat(store: &PgStore) -> CapabilityStatus {
@@ -396,18 +536,22 @@ fn heartbeat_capability(row: ServiceHeartbeatRow) -> CapabilityStatus {
     status
 }
 
-async fn probe_crawl_freshness(store: &PgStore) -> CapabilityStatus {
+async fn probe_crawl_freshness(store: &PgStore, policy: &ReadinessPolicy) -> CapabilityStatus {
     match store.newest_observation_ts().await {
         Ok(Some(newest)) => {
             let age = Utc::now().signed_duration_since(newest);
             let age_seconds = age.num_seconds().max(0);
             let mut status = CapabilityStatus::new(
-                if age_seconds > DATA_FRESH_WITHIN_SECS {
+                if age_seconds > policy.crawl_freshness_max_age_secs {
                     "degraded"
                 } else {
                     "ok"
                 },
-                format!("newest observation {} ago", format_age(age)),
+                format!(
+                    "newest observation {} ago (policy max {}s)",
+                    format_age(age),
+                    policy.crawl_freshness_max_age_secs
+                ),
             );
             status.last_seen_at = Some(newest.to_rfc3339());
             status.age_seconds = Some(age_seconds);
@@ -420,46 +564,116 @@ async fn probe_crawl_freshness(store: &PgStore) -> CapabilityStatus {
     }
 }
 
+async fn probe_source_coverage(store: &PgStore, policy: &ReadinessPolicy) -> CapabilityStatus {
+    let states = match store.load_source_runtime_states().await {
+        Ok(states) => states,
+        Err(error) => {
+            return CapabilityStatus::new(
+                "unavailable",
+                format!("source runtime state query failed: {error}"),
+            )
+        }
+    };
+    let registry = apex_crawl::sources_registry::all_sources();
+    let deployment_caps = apex_crawl::sources_registry::DeploymentCapabilities::from_env();
+    let summary = apex_crawl::sources_registry::source_coverage_summary(
+        &registry,
+        &states,
+        &deployment_caps,
+        Utc::now(),
+    );
+    probes::evaluate_source_coverage(&summary, policy)
+}
+
+async fn probe_alert_engine(store: &PgStore, policy: &ReadinessPolicy) -> CapabilityStatus {
+    match store.alert_engine_state().await {
+        Ok(state) => probes::evaluate_alert_engine(state.as_ref(), policy, Utc::now()),
+        Err(error) => CapabilityStatus::new(
+            "unavailable",
+            format!("alert-engine state query failed: {error}"),
+        ),
+    }
+}
+
+async fn probe_outbox(store: &PgStore, policy: &ReadinessPolicy) -> CapabilityStatus {
+    match store.outbox_backlog().await {
+        Ok(backlog) => probes::evaluate_outbox(Some(&backlog), policy, Utc::now()),
+        Err(error) => CapabilityStatus::new(
+            "unavailable",
+            format!("outbox backlog query failed: {error}"),
+        ),
+    }
+}
+
+async fn probe_scheduled_jobs(store: &PgStore, policy: &ReadinessPolicy) -> CapabilityStatus {
+    match store.list_worker_job_states().await {
+        Ok(states) => probes::evaluate_scheduled_jobs(&states, policy, Utc::now()),
+        Err(error) => CapabilityStatus::new(
+            "unavailable",
+            format!("scheduled job state query failed: {error}"),
+        ),
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
+    fn ok_capability(detail: &str) -> CapabilityStatus {
+        CapabilityStatus::new("ok", detail)
+    }
+
     fn sample_capabilities() -> Capabilities {
         Capabilities {
-            llm: CapabilityStatus::new("ok", "llm feature compiled in"),
-            embeddings: CapabilityStatus::new("ok", "pgvector present"),
-            nats: CapabilityStatus::new("disabled", "NATS_URL not configured"),
-            browser_renderer: CapabilityStatus::new("disabled", "disabled in env"),
-            database: CapabilityStatus::new("ok", "SELECT 1 succeeded in 1ms"),
-            search_index: CapabilityStatus::new("ok", "12 documents indexed"),
+            llm: ok_capability("model probe-model answered"),
+            embeddings: ok_capability("canary round-trip ok"),
+            nats: ok_capability("connected to nats://127.0.0.1:4222"),
+            browser_renderer: ok_capability("rendered data: fixture; JS marker verified"),
+            database: ok_capability("SELECT 1 succeeded in 1ms"),
+            search_index: {
+                let mut status = ok_capability("42 documents indexed; lag 600s");
+                status.lag_seconds = Some(600);
+                status
+            },
             worker_heartbeat: {
-                let mut status = CapabilityStatus::new("ok", "worker heartbeat 5s ago");
+                let mut status = ok_capability("worker heartbeat 5s ago");
                 status.age_seconds = Some(5);
                 status
             },
             crawl_freshness: {
-                let mut status = CapabilityStatus::new("ok", "newest observation 4m ago");
+                let mut status = ok_capability("newest observation 4m ago");
                 status.age_seconds = Some(240);
                 status
             },
+            source_coverage: ok_capability("60 operational sources"),
+            alert_engine: ok_capability("25 rules loaded"),
+            outbox: ok_capability("0 pending"),
+            scheduled_jobs: ok_capability("2 critical jobs fresh"),
         }
     }
+
+    const ALL_CAPABILITY_NAMES: [&str; 12] = [
+        "database",
+        "worker_heartbeat",
+        "llm",
+        "embeddings",
+        "nats",
+        "search_index",
+        "browser_renderer",
+        "crawl_freshness",
+        "source_coverage",
+        "alert_engine",
+        "outbox",
+        "scheduled_jobs",
+    ];
 
     #[test]
     fn capability_payload_has_required_keys_and_types() {
         let json = serde_json::to_value(sample_capabilities()).expect("serializes");
 
         let object = json.as_object().expect("capabilities object");
-        for key in [
-            "llm",
-            "embeddings",
-            "nats",
-            "browser_renderer",
-            "database",
-            "search_index",
-            "worker_heartbeat",
-            "crawl_freshness",
-        ] {
+        for key in ALL_CAPABILITY_NAMES {
             let entry = object
                 .get(key)
                 .unwrap_or_else(|| panic!("missing capability key {key}"));
@@ -475,6 +689,10 @@ mod tests {
                 "{key}.detail must be a string"
             );
         }
+        assert_eq!(
+            json["search_index"]["lag_seconds"], 600,
+            "index lag must be exposed"
+        );
     }
 
     #[test]
@@ -487,6 +705,10 @@ mod tests {
 
         caps.nats = CapabilityStatus::new("unavailable", "connect refused");
         assert_eq!(caps.overall_status(), "unavailable");
+
+        let mut caps = sample_capabilities();
+        caps.alert_engine = CapabilityStatus::new("degraded", "0 rules");
+        assert_eq!(caps.overall_status(), "degraded");
     }
 
     #[test]
@@ -522,6 +744,10 @@ mod tests {
                 "search_index",
                 "worker_heartbeat",
                 "crawl_freshness",
+                "source_coverage",
+                "alert_engine",
+                "outbox",
+                "scheduled_jobs",
             ]
         );
         assert!(checks
@@ -568,15 +794,28 @@ mod tests {
     }
 
     #[test]
-    fn core_profile_readiness_permits_disabled_nats_browser_and_llm() {
+    fn core_profile_readiness_permits_disabled_optional_capabilities() {
         let mut caps = sample_capabilities();
-        caps.nats = CapabilityStatus::new("disabled", "NATS_URL not configured");
-        caps.browser_renderer = CapabilityStatus::new("disabled", "browser disabled");
-        caps.llm = CapabilityStatus::new("disabled", "binary built without the llm feature");
+        for name in [
+            "nats",
+            "browser_renderer",
+            "llm",
+            "crawl_freshness",
+            "source_coverage",
+            "alert_engine",
+            "outbox",
+            "scheduled_jobs",
+        ] {
+            caps = with_capability(
+                caps,
+                name,
+                CapabilityStatus::new("disabled", "not required"),
+            );
+        }
 
         let status = readiness_status(&caps, DeploymentProfile::Core);
         assert_eq!(status, HealthStatus::Healthy);
-        assert_eq!(readiness_http_status(&status), axum::http::StatusCode::OK);
+        assert_eq!(readiness_http_status(&status), StatusCode::OK);
     }
 
     #[test]
@@ -589,46 +828,80 @@ mod tests {
         assert_eq!(status, HealthStatus::Unhealthy);
         assert_eq!(
             readiness_http_status(&status),
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 
     #[test]
     fn full_profile_readiness_fails_503_when_optional_capability_missing() {
-        let caps = sample_capabilities();
-        assert!(!caps.nats.is_ok() && !caps.browser_renderer.is_ok());
+        let mut caps = sample_capabilities();
+        caps.nats = CapabilityStatus::new("disabled", "NATS_URL not configured");
+        caps.browser_renderer = CapabilityStatus::new("disabled", "browser disabled");
 
         let status = readiness_status(&caps, DeploymentProfile::Full);
         assert_eq!(status, HealthStatus::Unhealthy);
         assert_eq!(
             readiness_http_status(&status),
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 
     #[test]
     fn full_profile_readiness_is_200_when_every_capability_is_ok() {
-        let mut caps = sample_capabilities();
-        caps.nats = CapabilityStatus::new("ok", "connected to nats://127.0.0.1:4222");
-        caps.browser_renderer = CapabilityStatus::new("ok", "headless browser binary found");
-
+        let caps = sample_capabilities();
         let status = readiness_status(&caps, DeploymentProfile::Full);
         assert_eq!(status, HealthStatus::Healthy);
-        assert_eq!(readiness_http_status(&status), axum::http::StatusCode::OK);
+        assert_eq!(readiness_http_status(&status), StatusCode::OK);
     }
 
     #[test]
-    fn full_profile_readiness_fails_503_without_llm_capability() {
-        let mut caps = sample_capabilities();
-        caps.nats = CapabilityStatus::new("ok", "connected");
-        caps.browser_renderer = CapabilityStatus::new("ok", "chrome found");
-        caps.llm = CapabilityStatus::new("disabled", "binary built without the llm feature");
+    fn full_readiness_fails_503_for_every_required_capability() {
+        for name in ALL_CAPABILITY_NAMES {
+            let mut caps = sample_capabilities();
+            caps = with_capability(caps, name, CapabilityStatus::new("degraded", "broken"));
+            let status = readiness_status(&caps, DeploymentProfile::Full);
+            assert_eq!(
+                status,
+                HealthStatus::Unhealthy,
+                "{name} must gate full readiness"
+            );
+            assert_eq!(
+                readiness_http_status(&status),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{name} must yield 503"
+            );
+        }
+    }
 
-        let status = readiness_status(&caps, DeploymentProfile::Full);
-        assert_eq!(status, HealthStatus::Unhealthy);
+    #[test]
+    fn full_readiness_includes_crawl_freshness_and_alert_engine_state() {
+        let caps = sample_capabilities();
+        let checks = caps.readiness_checks(DeploymentProfile::Full);
+        let names: Vec<&str> = checks.iter().map(|check| check.name.as_str()).collect();
+        assert!(
+            names.contains(&"crawl_freshness"),
+            "full must require crawl freshness"
+        );
+        assert!(
+            names.contains(&"alert_engine"),
+            "full must require alert-engine state"
+        );
+        assert!(names.contains(&"source_coverage"));
+        assert!(names.contains(&"outbox"));
+        assert!(names.contains(&"scheduled_jobs"));
+
+        let mut caps = sample_capabilities();
+        caps.crawl_freshness = CapabilityStatus::new("degraded", "stale data");
         assert_eq!(
-            readiness_http_status(&status),
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
+            readiness_status(&caps, DeploymentProfile::Full),
+            HealthStatus::Unhealthy
+        );
+
+        let mut caps = sample_capabilities();
+        caps.alert_engine = CapabilityStatus::new("degraded", "reload failed");
+        assert_eq!(
+            readiness_status(&caps, DeploymentProfile::Full),
+            HealthStatus::Unhealthy
         );
     }
 
@@ -661,7 +934,118 @@ mod tests {
                 "nats",
                 "search_index",
                 "browser_renderer",
+                "crawl_freshness",
+                "source_coverage",
+                "alert_engine",
+                "outbox",
+                "scheduled_jobs",
             ]
         );
+    }
+
+    #[test]
+    fn full_surfaces_compose_the_whole_required_capability_set() {
+        let caps = sample_capabilities();
+        let reports = caps.surface_reports(DeploymentProfile::Full);
+        assert_eq!(reports.len(), 4);
+        assert!(reports.iter().all(|report| report.status == "ok"));
+
+        let composed: Vec<String> = reports
+            .iter()
+            .flat_map(|report| report.checks.iter().map(|check| check.name.clone()))
+            .collect();
+        for name in ALL_CAPABILITY_NAMES {
+            assert!(
+                composed.contains(&name.to_string()),
+                "surface composition is missing {name}"
+            );
+        }
+        assert_eq!(composed.len(), ALL_CAPABILITY_NAMES.len());
+    }
+
+    #[test]
+    fn surface_status_is_503_when_a_required_check_is_degraded() {
+        let mut caps = sample_capabilities();
+        caps.outbox = CapabilityStatus::new("degraded", "backlog exceeds policy");
+        let reports = caps.surface_reports(DeploymentProfile::Full);
+
+        let delivery = reports
+            .iter()
+            .find(|report| report.surface == "delivery")
+            .expect("delivery surface");
+        assert_eq!(delivery.status, "unhealthy");
+        assert_eq!(delivery.http_status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let process = reports
+            .iter()
+            .find(|report| report.surface == "process")
+            .expect("process surface");
+        assert_eq!(process.status, "ok");
+        assert_eq!(process.http_status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn core_surfaces_only_include_required_capabilities() {
+        let mut caps = sample_capabilities();
+        for name in [
+            "nats",
+            "browser_renderer",
+            "llm",
+            "crawl_freshness",
+            "source_coverage",
+            "alert_engine",
+            "outbox",
+            "scheduled_jobs",
+        ] {
+            caps = with_capability(
+                caps,
+                name,
+                CapabilityStatus::new("disabled", "not required"),
+            );
+        }
+
+        let reports = caps.surface_reports(DeploymentProfile::Core);
+
+        let process = reports
+            .iter()
+            .find(|report| report.surface == "process")
+            .expect("process surface");
+        assert_eq!(process.http_status(), StatusCode::OK);
+        assert!(process.checks.is_empty() || process.status == "ok");
+
+        let delivery = reports
+            .iter()
+            .find(|report| report.surface == "delivery")
+            .expect("delivery surface");
+        assert!(delivery.checks.is_empty());
+
+        let data = reports
+            .iter()
+            .find(|report| report.surface == "data")
+            .expect("data surface");
+        assert!(data.checks.iter().all(|check| check.name == "search_index"));
+    }
+
+    fn with_capability(
+        mut caps: Capabilities,
+        name: &str,
+        status: CapabilityStatus,
+    ) -> Capabilities {
+        match name {
+            "llm" => caps.llm = status,
+            "embeddings" => caps.embeddings = status,
+            "nats" => caps.nats = status,
+            "browser_renderer" => caps.browser_renderer = status,
+            "database" => caps.database = status,
+            "search_index" => caps.search_index = status,
+            "worker_heartbeat" => caps.worker_heartbeat = status,
+            "crawl_freshness" => caps.crawl_freshness = status,
+            "source_coverage" => caps.source_coverage = status,
+            "alert_engine" => caps.alert_engine = status,
+            "outbox" => caps.outbox = status,
+            "scheduled_jobs" => caps.scheduled_jobs = status,
+            other => panic!("unknown capability {other}"),
+        }
+        caps
     }
 }

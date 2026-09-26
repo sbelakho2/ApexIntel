@@ -10,6 +10,10 @@ use apex_api::responses::{
     aggregate_health, error_response, success, success_with_meta, ApiError, ApiResponse,
     ComponentHealth, ErrorCode, HealthResponse, HealthStatus, PagedResponse, ResponseMeta,
 };
+use apex_api::routes::capabilities::{
+    probe_capabilities, probe_capabilities_for_profile, readiness_http_status, Capabilities,
+    ProbeContext, ProductSurface, ReadinessReport, SurfaceHealth,
+};
 use apex_api::routes::companies::{
     validate_company_id, CompanyDetail, CompanyEvent, CompanyKeyPerson, CompanyListItem,
     CompanySite, CompanySortField, ListCompaniesQuery,
@@ -25,6 +29,9 @@ use apex_api::routes::llm::{ExtractedEntity, LlmTask, MemoSection};
 use apex_api::routes::persons::{
     priority_tier, validate_person_id, ListPersonsQuery, PersonDetail, PersonListItem,
     PersonSortField, PriorityVector,
+};
+use apex_api::routes::probes::{
+    BrowserProbeState, EmbeddingGenerator, LlmProbeTarget, ReadinessPolicy,
 };
 use apex_api::routes::recipes::{
     sort_recipes, ListRecipesQuery, RecipeListItem, RecipeSortField, RecipeStatus,
@@ -159,6 +166,14 @@ struct AppState {
     rate_limiter: Arc<RateLimiter>,
     config: Arc<ApiRuntimeConfig>,
     profile: DeploymentProfile,
+    /// Configurable readiness policy (thresholds + probe budgets).
+    policy: Arc<ReadinessPolicy>,
+    /// Real browser render self-test capability, or why it is unavailable.
+    browser_probe: BrowserProbeState,
+    /// Resolved LLM endpoint/model for the capability probe.
+    llm_probe_target: Option<LlmProbeTarget>,
+    /// Embedding generator for the round-trip canary.
+    embedding_generator: Option<Arc<dyn EmbeddingGenerator>>,
     /// SSE manager for real-time alert streaming.
     sse_manager: Option<Arc<apex_api::sse::SseManager>>,
     #[cfg(feature = "llm")]
@@ -389,6 +404,44 @@ async fn build_state() -> Result<AppState> {
     #[cfg(feature = "llm")]
     let llm = build_llm_runtime(&config)?;
 
+    // ─── Readiness truth wiring ───────────────────────────────────────────
+    // Probes measure real capability: the policy carries configurable
+    // thresholds, the browser state can run a real render self-test, and the
+    // LLM/embedding probes target the configured endpoint/model.
+    let policy = Arc::new(ReadinessPolicy::from_env());
+    tracing::info!(
+        search_index_max_lag_secs = policy.search_index_max_lag_secs,
+        crawl_freshness_max_age_secs = policy.crawl_freshness_max_age_secs,
+        min_operational_sources = policy.min_operational_sources,
+        critical_jobs = ?policy.critical_jobs,
+        "readiness policy resolved"
+    );
+
+    let browser_probe = BrowserProbeState::from_env();
+    if let BrowserProbeState::Unavailable(reason) = &browser_probe {
+        tracing::warn!(reason = %reason, "headless browser enabled but renderer unavailable");
+    }
+
+    #[cfg(feature = "llm")]
+    let llm_probe_target = llm.as_ref().map(|runtime| LlmProbeTarget {
+        base_url: runtime.lightweight.base_url.clone(),
+        chat_endpoint: runtime.lightweight.chat_endpoint(),
+        model: runtime.lightweight.model_name.clone(),
+        timeout_secs: policy.llm_probe_timeout_secs,
+    });
+    #[cfg(not(feature = "llm"))]
+    let llm_probe_target: Option<LlmProbeTarget> = None;
+
+    #[cfg(feature = "llm")]
+    let embedding_generator: Option<Arc<dyn EmbeddingGenerator>> = llm.as_ref().map(|runtime| {
+        Arc::new(apex_llm::embeddings::EmbeddingClient::from_config(
+            &runtime.lightweight,
+        )) as Arc<dyn EmbeddingGenerator>
+    });
+    #[cfg(not(feature = "llm"))]
+    let embedding_generator: Option<Arc<dyn EmbeddingGenerator>> = None;
+    // ──────────────────────────────────────────────────────────────────────
+
     Ok(AppState {
         store,
         search_index,
@@ -398,6 +451,10 @@ async fn build_state() -> Result<AppState> {
         rate_limiter,
         config: Arc::new(config),
         profile,
+        policy,
+        browser_probe,
+        llm_probe_target,
+        embedding_generator,
         sse_manager,
         #[cfg(feature = "llm")]
         llm,
@@ -624,6 +681,21 @@ fn process_instance_id() -> String {
         })
 }
 
+/// Resolve the capability probe context from process state. `nats_url` is
+/// `None` when the profile does not require NATS, so optional probes stay
+/// side-effect free.
+fn probe_context<'a>(state: &'a AppState, nats_url: Option<&'a str>) -> ProbeContext<'a> {
+    ProbeContext {
+        pool: &state.store.pool,
+        search_index: &state.search_index,
+        nats_url,
+        policy: state.policy.as_ref(),
+        llm: state.llm_probe_target.as_ref(),
+        browser: &state.browser_probe,
+        embedding_generator: state.embedding_generator.as_deref(),
+    }
+}
+
 /// Record API heartbeats and refresh the UI status snapshot every ~30s.
 /// The first tick runs immediately, so startup liveness is measured too.
 fn start_status_heartbeat(state: AppState) {
@@ -635,17 +707,13 @@ fn start_status_heartbeat(state: AppState) {
 
             // NATS is optional under `core`, so skip the live connect probe there and
             // only measure it when the profile requires NATS.
-            let nats_url = if state.profile.requires_capability("nats") {
-                Some(nats_url_from_env())
+            let nats_url = nats_url_from_env();
+            let nats_probe = if state.profile.requires_capability("nats") {
+                Some(nats_url.as_str())
             } else {
                 None
             };
-            let capabilities = apex_api::routes::capabilities::probe_capabilities(
-                &state.store.pool,
-                &state.search_index,
-                nats_url.as_deref(),
-            )
-            .await;
+            let capabilities = probe_capabilities(&probe_context(&state, nats_probe)).await;
             apex_api::system_status::StatusStrip::publish(capabilities.status_strip());
 
             if let Err(error) = state
@@ -660,8 +728,9 @@ fn start_status_heartbeat(state: AppState) {
 }
 
 /// `/api/health` — overall health with capability checks derived from real
-/// probes (database, NATS, embeddings, search index, worker heartbeat, data
-/// freshness, browser renderer, LLM feature set).
+/// probes (database, LLM endpoint, embeddings canary, NATS, browser render
+/// self-test, search index lag, worker heartbeat, data freshness, source
+/// coverage, alert-engine state, outbox backlog, scheduled-job freshness).
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let uptime_secs = STARTED_AT
         .get()
@@ -669,12 +738,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         .unwrap_or(0);
 
     let nats_url = nats_url_from_env();
-    let capabilities = apex_api::routes::capabilities::probe_capabilities(
-        &state.store.pool,
-        &state.search_index,
-        Some(nats_url.as_str()),
-    )
-    .await;
+    let capabilities = probe_capabilities(&probe_context(&state, Some(&nats_url))).await;
     let checks = capabilities.health_checks();
     let overall = aggregate_health(&checks);
 
@@ -688,30 +752,22 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 
 /// `/api/health/capabilities` — per-capability probe report for the UI,
 /// dashboards, and operational tooling.
-async fn health_capabilities(
-    State(state): State<AppState>,
-) -> Json<apex_api::routes::capabilities::Capabilities> {
+async fn health_capabilities(State(state): State<AppState>) -> Json<Capabilities> {
     let nats_url = nats_url_from_env();
-    Json(
-        apex_api::routes::capabilities::probe_capabilities(
-            &state.store.pool,
-            &state.search_index,
-            Some(nats_url.as_str()),
-        )
-        .await,
-    )
+    Json(probe_capabilities(&probe_context(&state, Some(&nats_url))).await)
 }
 
 async fn health_live() -> StatusCode {
     StatusCode::OK
 }
 
-/// `/api/health/ready` — profile-aware readiness probe. Answers 503 when any
-/// capability the deployment profile requires is missing (full: database,
-/// worker heartbeat, LLM, embeddings, NATS, search index, browser renderer;
-/// core: database, worker heartbeat, embeddings, search index). `/api/health`
-/// remains the detailed matrix.
-async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+/// `/api/health/ready` — profile-aware readiness probe. Under `full` this is
+/// the composed product readiness: process + data + intelligence + delivery
+/// surfaces, each proving its required capabilities. Answers 503 when any
+/// required capability is not `ok`, and publishes the required set and
+/// configurable thresholds as policy. `/api/health` remains the detailed
+/// matrix.
+async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<ReadinessReport>) {
     let uptime_secs = STARTED_AT
         .get()
         .map(|started| (Utc::now() - started).num_seconds() as u64)
@@ -720,40 +776,82 @@ async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Health
     // Probe only the capabilities this profile requires; optional capabilities
     // are not measured, keeping the frequently polled probe cheap.
     let nats_url = nats_url_from_env();
-    let capabilities = apex_api::routes::capabilities::probe_capabilities_for_profile(
-        &state.store.pool,
-        &state.search_index,
-        Some(nats_url.as_str()),
-        state.profile,
-    )
-    .await;
-    // Only mutated when the `llm` feature adds the runtime-config check.
-    #[cfg_attr(not(feature = "llm"), allow(unused_mut))]
-    let mut checks = capabilities.readiness_checks(state.profile);
-
-    // A full-profile deployment requires a usable LLM runtime, not just a
-    // binary that was compiled with the feature.
-    #[cfg(feature = "llm")]
-    if state.profile.requires_llm_build() && state.llm.is_none() {
-        if let Some(llm_check) = checks.iter_mut().find(|check| check.name == "llm") {
-            llm_check.status = HealthStatus::Unhealthy;
-            llm_check.message = Some(
-                "llm feature compiled but no LLM model configured (set LLM_MODEL/LLM_BASE_URL)"
-                    .to_string(),
-            );
-        }
-    }
-
+    let capabilities =
+        probe_capabilities_for_profile(&probe_context(&state, Some(&nats_url)), state.profile)
+            .await;
+    let checks = capabilities.readiness_checks(state.profile);
+    let surfaces = capabilities.surface_reports(state.profile);
     let overall = aggregate_health(&checks);
+
     (
-        apex_api::routes::capabilities::readiness_http_status(&overall),
-        Json(HealthResponse {
+        readiness_http_status(&overall),
+        Json(ReadinessReport {
             status: overall,
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_secs,
+            profile: state.profile.to_string(),
+            required_capabilities: state
+                .profile
+                .required_capabilities()
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+            thresholds: state.policy.as_ref().clone(),
+            surfaces,
             checks,
         }),
     )
+}
+
+async fn surface_health(
+    state: &AppState,
+    surface: ProductSurface,
+) -> (StatusCode, Json<SurfaceHealth>) {
+    let nats_url = nats_url_from_env();
+    let capabilities =
+        probe_capabilities_for_profile(&probe_context(state, Some(&nats_url)), state.profile).await;
+    let report =
+        SurfaceHealth::from_checks(surface, capabilities.surface_checks(surface, state.profile));
+    (report.http_status(), Json(report))
+}
+
+/// `/process/ready` — process surface: database, worker heartbeat, and
+/// critical scheduled-job freshness for the active profile.
+async fn process_ready(State(state): State<AppState>) -> (StatusCode, Json<SurfaceHealth>) {
+    surface_health(&state, ProductSurface::Process).await
+}
+
+/// `/data/healthy` — data surface: crawl freshness, operational source
+/// coverage, search-index lag, and real browser rendering.
+async fn data_healthy(State(state): State<AppState>) -> (StatusCode, Json<SurfaceHealth>) {
+    surface_health(&state, ProductSurface::Data).await
+}
+
+/// `/intelligence/healthy` — intelligence surface: LLM endpoint, embedding
+/// round trip, and alert-rule engine state.
+async fn intelligence_healthy(State(state): State<AppState>) -> (StatusCode, Json<SurfaceHealth>) {
+    surface_health(&state, ProductSurface::Intelligence).await
+}
+
+/// `/delivery/healthy` — delivery surface: NATS connectivity and outbox
+/// publisher backlog.
+async fn delivery_healthy(State(state): State<AppState>) -> (StatusCode, Json<SurfaceHealth>) {
+    surface_health(&state, ProductSurface::Delivery).await
+}
+
+/// `/process/live` — process liveness; answers 200 whenever the process is
+/// serving requests.
+async fn process_live(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let uptime_secs = STARTED_AT
+        .get()
+        .map(|started| (Utc::now() - started).num_seconds().max(0) as u64)
+        .unwrap_or(0);
+    Json(serde_json::json!({
+        "status": "ok",
+        "profile": state.profile.to_string(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": uptime_secs,
+    }))
 }
 
 async fn health_deep(State(mut state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {

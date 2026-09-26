@@ -21,6 +21,7 @@ pub mod insights;
 pub mod llm;
 pub mod persons;
 pub mod preferences;
+pub mod probes;
 pub mod recipes;
 pub mod replay;
 pub mod search;
@@ -41,6 +42,12 @@ pub mod paths {
     pub const HEALTH_READY: &str = "/api/health/ready";
     pub const HEALTH_DEEP: &str = "/api/health/deep";
     pub const HEALTH_CAPABILITIES: &str = "/api/health/capabilities";
+    // Product surface probes (root-level; composed into full product readiness).
+    pub const PROCESS_LIVE: &str = "/process/live";
+    pub const PROCESS_READY: &str = "/process/ready";
+    pub const DATA_HEALTHY: &str = "/data/healthy";
+    pub const INTELLIGENCE_HEALTHY: &str = "/intelligence/healthy";
+    pub const DELIVERY_HEALTHY: &str = "/delivery/healthy";
     pub const ENDPOINTS: &str = "/api/endpoints";
     pub const OPENAPI_JSON: &str = "/api/openapi.json";
     pub const DOCS: &str = "/api/docs";

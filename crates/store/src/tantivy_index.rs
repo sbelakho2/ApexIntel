@@ -1,10 +1,17 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{BooleanQuery, QueryParser, TermQuery};
 use tantivy::schema::*;
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+
+/// File name (inside the index directory) holding the last successful commit
+/// checkpoint. Readiness compares its high-water mark against the database's
+/// newest observation, so an empty or lagging index cannot report `ok`.
+pub const INDEX_CHECKPOINT_FILE: &str = "apex_index_checkpoint.json";
 
 /// Truncate a string to at most `max_chars` characters (safe for multi-byte UTF-8).
 fn truncate_snippet(text: &str, max_chars: usize) -> String {
@@ -17,12 +24,43 @@ fn truncate_snippet(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Proof that the index was successfully committed, and the source-data
+/// high-water mark that commit covered.
+///
+/// Written by whoever commits documents (`SearchIndex::record_checkpoint`) and
+/// read by readiness probes. A missing checkpoint means the index has never
+/// recorded a successful commit, which is not the same as "healthy".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexCheckpoint {
+    /// When the commit that produced this checkpoint succeeded.
+    pub last_commit_at: DateTime<Utc>,
+    /// Newest source observation timestamp included in that commit (`None`
+    /// when the indexer has never seen source data).
+    pub high_water_ts: Option<DateTime<Utc>>,
+    /// Number of documents committed in that commit.
+    pub indexed_documents: u64,
+}
+
+/// Read a checkpoint file, returning `None` when it is missing or unreadable.
+///
+/// An unreadable checkpoint must never fail index open (the read path stays
+/// available) but also must never be invented: readiness treats `None` as
+/// "never committed".
+fn read_checkpoint_file(path: &Path) -> Option<IndexCheckpoint> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 /// Full-text search index for observations, companies, and documents.
 pub struct SearchIndex {
     index: Index,
     reader: IndexReader,
     #[allow(dead_code)]
     schema: Schema,
+    /// Where the commit checkpoint lives (`None` for in-memory indexes).
+    checkpoint_path: Option<PathBuf>,
+    /// Last checkpoint read from / written to `checkpoint_path`.
+    checkpoint: Mutex<Option<IndexCheckpoint>>,
     // Field handles
     pub id_field: Field,
     pub entity_type_field: Field,
@@ -78,10 +116,15 @@ impl SearchIndex {
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
 
+        let checkpoint_path = Some(index_path.join(INDEX_CHECKPOINT_FILE));
+        let checkpoint = checkpoint_path.as_deref().and_then(read_checkpoint_file);
+
         Ok(Self {
             index,
             reader,
             schema,
+            checkpoint_path,
+            checkpoint: Mutex::new(checkpoint),
             id_field,
             entity_type_field,
             entity_id_field,
@@ -120,6 +163,8 @@ impl SearchIndex {
             index,
             reader,
             schema,
+            checkpoint_path: None,
+            checkpoint: Mutex::new(None),
             id_field,
             entity_type_field,
             entity_id_field,
@@ -130,6 +175,43 @@ impl SearchIndex {
             tags_field,
             timestamp_field,
         })
+    }
+
+    /// Last successful commit checkpoint, if any was recorded.
+    ///
+    /// A `None` result means this index has never recorded a commit — an empty
+    /// or freshly recreated index. Readiness must not treat that as healthy.
+    pub fn checkpoint(&self) -> Option<IndexCheckpoint> {
+        match self.checkpoint.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Persist a commit checkpoint after a successful `IndexWriter::commit`.
+    ///
+    /// The file is written atomically (temp file + rename) so a crashing
+    /// indexer can never leave a half-written checkpoint that a subsequent
+    /// readiness probe would misread as fresh.
+    pub fn record_checkpoint(&self, checkpoint: &IndexCheckpoint) -> Result<()> {
+        let Some(path) = self.checkpoint_path.as_deref() else {
+            // In-memory indexes keep the checkpoint in memory only.
+            match self.checkpoint.lock() {
+                Ok(mut guard) => *guard = Some(checkpoint.clone()),
+                Err(poisoned) => *poisoned.into_inner() = Some(checkpoint.clone()),
+            }
+            return Ok(());
+        };
+
+        let serialized = serde_json::to_vec_pretty(checkpoint)?;
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &serialized)?;
+        std::fs::rename(&tmp_path, path)?;
+        match self.checkpoint.lock() {
+            Ok(mut guard) => *guard = Some(checkpoint.clone()),
+            Err(poisoned) => *poisoned.into_inner() = Some(checkpoint.clone()),
+        }
+        Ok(())
     }
 
     /// Get a writer with specified heap size.
@@ -374,6 +456,44 @@ mod tests {
     fn test_create_in_memory_index() {
         let idx = create_test_index();
         assert_eq!(idx.num_docs(), 0);
+        assert!(idx.checkpoint().is_none(), "fresh index has no checkpoint");
+    }
+
+    #[test]
+    fn checkpoint_round_trips_through_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = SearchIndex::open(dir.path()).unwrap();
+        assert!(idx.checkpoint().is_none());
+
+        let checkpoint = IndexCheckpoint {
+            last_commit_at: Utc::now(),
+            high_water_ts: Some(Utc::now() - chrono::Duration::minutes(5)),
+            indexed_documents: 7,
+        };
+        idx.record_checkpoint(&checkpoint).unwrap();
+        assert_eq!(idx.checkpoint().as_ref(), Some(&checkpoint));
+
+        let reopened = SearchIndex::open(dir.path()).unwrap();
+        assert_eq!(reopened.checkpoint().as_ref(), Some(&checkpoint));
+    }
+
+    #[test]
+    fn corrupt_checkpoint_reads_as_absent_instead_of_failing_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = SearchIndex::open(dir.path()).unwrap();
+        idx.record_checkpoint(&IndexCheckpoint {
+            last_commit_at: Utc::now(),
+            high_water_ts: None,
+            indexed_documents: 1,
+        })
+        .unwrap();
+        std::fs::write(dir.path().join(INDEX_CHECKPOINT_FILE), b"{not json").unwrap();
+
+        let reopened = SearchIndex::open(dir.path()).unwrap();
+        assert!(
+            reopened.checkpoint().is_none(),
+            "a corrupt checkpoint must read as 'never committed', not as stale health"
+        );
     }
 
     #[test]

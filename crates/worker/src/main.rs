@@ -523,8 +523,10 @@ async fn main() -> Result<()> {
     }
 
     // One shared rules evaluator for both the fast path and the drain, so rule
-    // cooldowns are consistent across the two publication triggers.
-    let rules_evaluator = alert_pipeline::load_rules_evaluator();
+    // cooldowns are consistent across the two publication triggers. Loading
+    // also publishes the engine state (rule count, config hash, reload result)
+    // that readiness probes verify.
+    let rules_evaluator = alert_pipeline::load_rules_evaluator_with_state(store.as_ref()).await;
     let ingress =
         Arc::new(intelligence_ingress::build(Arc::clone(&store), rules_evaluator.clone()).await);
     tracing::info!("intelligence ingress initialized");
@@ -596,6 +598,14 @@ async fn main() -> Result<()> {
                         "scheduler made no progress within its work budget; skipping heartbeat so health checks fail"
                     );
                     continue;
+                }
+                // Refresh the alert-engine state on the liveness cadence:
+                // readiness requires a recent, successful rules reload, and a
+                // stale row then means this task stopped refreshing it.
+                if let Err(error) =
+                    alert_pipeline::refresh_alert_engine_state(&heartbeat_store).await
+                {
+                    tracing::warn!(error = %error, "alert-engine state refresh failed");
                 }
                 if let Err(error) = heartbeat_store
                     .record_service_heartbeat("worker", &instance_id, env!("CARGO_PKG_VERSION"))

@@ -37,6 +37,23 @@ pub struct OutboxDrainOutcome {
     pub failed: usize,
 }
 
+/// Measured publisher backlog for readiness probes.
+///
+/// A healthy outbox publisher keeps `pending` small and `oldest_pending_at`
+/// recent; `exhausted` counts poison rows that will never be retried and must
+/// be surfaced instead of silently starving newer alerts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct OutboxBacklog {
+    /// Unpublished events still eligible for retry (`attempts < MAX`).
+    pub pending: i64,
+    /// Unpublished events that exhausted [`MAX_OUTBOX_ATTEMPTS`].
+    pub exhausted: i64,
+    /// Creation time of the oldest unpublished event.
+    pub oldest_pending_at: Option<DateTime<Utc>>,
+    /// Newest successful publish, if anything was ever published.
+    pub last_published_at: Option<DateTime<Utc>>,
+}
+
 /// A batch of unpublished outbox events locked with `FOR UPDATE SKIP LOCKED`.
 ///
 /// The transaction is held open until [`OutboxBatch::commit`] so two concurrent
@@ -161,6 +178,27 @@ impl PgStore {
                 .fetch_one(&self.pool)
                 .await?;
         Ok(present)
+    }
+
+    /// Measure the publisher backlog in one indexed aggregate query.
+    pub async fn outbox_backlog(&self) -> Result<OutboxBacklog> {
+        let row = sqlx::query_as::<_, (i64, i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>(
+            r#"SELECT
+                   COUNT(*) FILTER (WHERE published_at IS NULL AND attempts < $1),
+                   COUNT(*) FILTER (WHERE published_at IS NULL AND attempts >= $1),
+                   MIN(created_at) FILTER (WHERE published_at IS NULL),
+                   MAX(published_at)
+                 FROM event_outbox"#,
+        )
+        .bind(MAX_OUTBOX_ATTEMPTS)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(OutboxBacklog {
+            pending: row.0,
+            exhausted: row.1,
+            oldest_pending_at: row.2,
+            last_published_at: row.3,
+        })
     }
 }
 
