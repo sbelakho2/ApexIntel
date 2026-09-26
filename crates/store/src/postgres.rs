@@ -263,8 +263,8 @@ mod warnings;
 
 // Source-runtime scheduling row types and backoff policy (migration 047).
 pub use sources::{
-    failure_backoff, next_due_after_success, DueSourceRow, SourceRuntimeStateRow,
-    FAILURE_BACKOFF_LADDER,
+    ewma_latency_ms, ewma_success_rate, failure_backoff, next_due_after_success, DueSourceRow,
+    SourceRuntimeStateRow, EWMA_ALPHA, FAILURE_BACKOFF_LADDER, MAX_FAILURE_BACKOFF,
 };
 
 // Sales-activation row types (re-exported for handlers/workers).

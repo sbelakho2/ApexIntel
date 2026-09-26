@@ -11,8 +11,8 @@ use apex_crawl::client::{CrawlClient, CrawlClientConfig, CrawlRequest};
 use apex_crawl::errors::CrawlError;
 use apex_crawl::governor_limiter::CrawlGovernor;
 use apex_crawl::sources::{
-    coverage_debt_remaining as remaining_due_sources, dispatch_source_fetch, select_due_sources,
-    FetchDispatch, Source, FORCED_SOURCE_SLUGS,
+    crawl_source_budget_from_env, dispatch_source_fetch, due_sources_remaining, scheduler_backlog,
+    select_due_sources, FetchDispatch, FetchStrategy, Source, FORCED_SOURCE_SLUGS,
 };
 #[cfg(feature = "llm")]
 use apex_insights::company_discovery::{normalize_company_name, CompanyCandidate, DiscoverySource};
@@ -602,10 +602,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     let mut run = JobRun::new(JobKind::CrawlCycle);
     run.start();
     let sources = all_sources();
-    let crawl_limit: usize = std::env::var("CRAWL_MAX_SOURCES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20);
+    let crawl_limit: usize = crawl_source_budget_from_env();
 
     let selection =
         match select_due_sources(store.as_ref(), &sources, crawl_limit, Utc::now()).await {
@@ -618,7 +615,8 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             }
         };
     let sources_due = selection.due;
-    let selection_debt_remaining = selection.coverage_debt_remaining;
+    let selection_due_remaining = selection.due_sources_remaining;
+    let selection_coverage_debt = selection.total_coverage_debt;
     let fetch_sources = selection.selected;
 
     if fetch_sources.is_empty() {
@@ -985,16 +983,20 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
         v
     };
 
-    let coverage_debt_remaining_count = match store.load_source_runtime_states().await {
-        Ok(states) => remaining_due_sources(&sources, &states, Utc::now()),
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "crawl_cycle: failed to reload source runtime state for coverage debt"
-            );
-            selection_debt_remaining
-        }
-    };
+    let (due_sources_remaining_count, total_coverage_debt) =
+        match store.load_source_runtime_states().await {
+            Ok(states) => {
+                let backlog = scheduler_backlog(&sources, &states, crawl_limit, Utc::now());
+                (backlog.due_sources_remaining, backlog.total_coverage_debt)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "crawl_cycle: failed to reload source runtime state for scheduler backlog"
+                );
+                (selection_due_remaining, selection_coverage_debt)
+            }
+        };
 
     tracing::info!(
         sources_due,
@@ -1002,7 +1004,8 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
         sources_succeeded,
         sources_failed,
         sources_browser_unavailable,
-        coverage_debt_remaining = coverage_debt_remaining_count,
+        due_sources_remaining = due_sources_remaining_count,
+        total_coverage_debt,
         ingested,
         errors,
         "crawl_cycle: scheduler metrics"
@@ -1010,7 +1013,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
 
     if sources_succeeded == 0 || success_ratio < min_success_ratio {
         let failure_summary = format!(
-            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} coverage_debt_remaining={} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={} browser_unavailable_sources={}",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} due_sources_remaining={} total_coverage_debt={:.2} success_ratio={:.2} min_success_ratio={:.2} failed_sources={} successful_sources={} browser_unavailable_sources={}",
             sources_due,
             sources_attempted,
             sources_succeeded,
@@ -1018,7 +1021,8 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             sources_browser_unavailable,
             ingested,
             errors,
-            coverage_debt_remaining_count,
+            due_sources_remaining_count,
+            total_coverage_debt,
             success_ratio,
             min_success_ratio,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
@@ -1041,7 +1045,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             .await;
 
         run.fail(&format!(
-            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} coverage_debt_remaining={} failed_sources=[{}] browser_unavailable_sources=[{}]",
+            "crawl_cycle degraded: due={} attempted={} succeeded={} failed={} browser_unavailable={} ingested={} errors={} due_sources_remaining={} total_coverage_debt={:.2} failed_sources=[{}] browser_unavailable_sources=[{}]",
             sources_due,
             sources_attempted,
             sources_succeeded,
@@ -1049,7 +1053,8 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             sources_browser_unavailable,
             ingested,
             errors,
-            coverage_debt_remaining_count,
+            due_sources_remaining_count,
+            total_coverage_debt,
             if failed_sources_list.is_empty() { "none".to_string() } else { failed_sources_list.join(",") },
             if browser_unavailable_sources_list.is_empty() { "none".to_string() } else { browser_unavailable_sources_list.join(",") },
         ));
@@ -1092,7 +1097,7 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
     run.succeed(
         ingested,
         &format!(
-            "crawl_cycle: due={} attempted={} succeeded={} failed={} browser_unavailable={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; coverage_debt_remaining={}; success_ratio={:.2}",
+            "crawl_cycle: due={} attempted={} succeeded={} failed={} browser_unavailable={}; {} observations ingested ({} entity-linked), {} dynamically discovered companies, {} errors; {} POI links; due_sources_remaining={}; total_coverage_debt={:.2}; success_ratio={:.2}",
             sources_due,
             sources_attempted,
             sources_succeeded,
@@ -1103,7 +1108,8 @@ pub(super) async fn run_crawl_cycle(store: &Arc<PgStore>, ctx: &JobExecutionCont
             dynamically_discovered_companies,
             errors,
             poi_links_created,
-            coverage_debt_remaining_count,
+            due_sources_remaining_count,
+            total_coverage_debt,
             success_ratio,
         ),
     );

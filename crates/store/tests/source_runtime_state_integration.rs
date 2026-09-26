@@ -45,7 +45,10 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
 
     let base = Utc::now();
     let interval = Duration::hours(24);
-    for (attempt, expected_minutes) in [30_i64, 60, 120, 240, 480, 480].into_iter().enumerate() {
+    for (attempt, expected_minutes) in [1440_i64, 1440, 1440, 1440, 1440, 1440]
+        .into_iter()
+        .enumerate()
+    {
         let now = base + Duration::minutes(attempt as i64 * 1000);
         let row = store
             .record_source_attempt_failure(slug, "boom", Some(500), interval, now)
@@ -56,6 +59,7 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
         assert_eq!(row.circuit_open_until, Some(row.next_due_at));
         assert_eq!(row.last_error.as_deref(), Some("boom"));
         assert_eq!(row.last_http_status, Some(500));
+        assert_eq!(row.rolling_success_rate, Some(0.0));
     }
 
     let now = base + Duration::days(30);
@@ -69,6 +73,15 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
     assert!(row.circuit_open_until.is_none());
     assert!(row.last_error.is_none());
     assert_eq!(row.rolling_latency_ms, Some(120.0));
+    assert!((row.rolling_success_rate.unwrap() - 0.15).abs() < 1e-9);
+
+    let later = now + Duration::minutes(45);
+    let row = store
+        .record_source_success(slug, Duration::minutes(45), Some(180.0), Some(200), later)
+        .await
+        .unwrap();
+    assert!((row.rolling_latency_ms.unwrap() - 129.0).abs() < 1e-9);
+    assert!((row.rolling_success_rate.unwrap() - 0.2775).abs() < 1e-9);
 
     let loaded = store
         .load_source_runtime_states()
@@ -78,7 +91,7 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
         .find(|state| state.source_slug == slug)
         .expect("persisted row is loaded back");
     assert_eq!(loaded.consecutive_failures, 0);
-    assert_eq!(loaded.next_due_at, now + Duration::minutes(45));
+    assert_eq!(loaded.next_due_at, later + Duration::minutes(45));
 
     // A missing deployment capability is not a crawl attempt: the circuit
     // opens, the reason is recorded, and attempt/failure counters stay put.
