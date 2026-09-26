@@ -367,6 +367,31 @@ pub async fn admin_page(
         },
     };
 
+    // Audit item 3: an `app_users` row whose role is not one of the four known
+    // roles can never authenticate (the login path fails closed instead of
+    // defaulting to analyst). Surface it here so an administrator notices and
+    // fixes the row instead of debugging a "wrong password" report.
+    let role_metric = match store.count_app_users_with_unknown_roles().await {
+        Ok(0) => SystemMetric {
+            name: "Identity Roles".into(),
+            value: "All roles valid".into(),
+            status: "ok".into(),
+        },
+        Ok(count) => SystemMetric {
+            name: "Identity Roles".into(),
+            value: format!("{count} account(s) with unknown roles — logins rejected"),
+            status: "warning".into(),
+        },
+        Err(error) => {
+            tracing::error!("Failed to count app_users with unknown roles: {error}");
+            SystemMetric {
+                name: "Identity Roles".into(),
+                value: "Unavailable".into(),
+                status: "error".into(),
+            }
+        }
+    };
+
     let uptime = fmt_process_uptime();
 
     // B316: real ingestion panel — observation volume/freshness per source
@@ -510,6 +535,7 @@ pub async fn admin_page(
             search_index_metric,
             worker_metric,
             freshness_metric,
+            role_metric,
         ],
         queues: vec![],
         prompt_versions,

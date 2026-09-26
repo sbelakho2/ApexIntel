@@ -11,6 +11,7 @@ pub mod auth;
 pub mod config;
 pub mod destructive_actions;
 pub mod filters;
+pub mod login_throttle;
 pub mod middleware;
 pub mod pagination;
 pub mod pdf_writer;

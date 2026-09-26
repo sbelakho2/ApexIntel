@@ -10,13 +10,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use apex_core::identity::{UserId, Username};
+use apex_store::login_throttle::{
+    LoginThrottleState, LoginThrottleStatus, LOGIN_TEMP_LOCK_THRESHOLD_10M,
+};
 
 use parking_lot::Mutex;
 use subtle::ConstantTimeEq;
-
-const AUTH_BACKOFF_STEPS_SECS: [i64; 4] = [1, 2, 4, 8];
-const TEMP_LOCK_THRESHOLD_10M: usize = 10;
-const ADMIN_LOCK_THRESHOLD_1H: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthThrottleStatus {
@@ -27,18 +26,39 @@ pub struct AuthThrottleStatus {
     pub admin_unlock_required: bool,
 }
 
-#[derive(Debug, Clone, Default)]
-struct AuthAttemptState {
-    failures_10m: Vec<DateTime<Utc>>,
-    failures_1h: Vec<DateTime<Utc>>,
-    backoff_until: Option<DateTime<Utc>>,
-    temp_lock_until: Option<DateTime<Utc>>,
-    admin_locked: bool,
+impl From<LoginThrottleStatus> for AuthThrottleStatus {
+    fn from(status: LoginThrottleStatus) -> Self {
+        Self {
+            allowed: status.allowed,
+            retry_after_secs: status.retry_after_secs,
+            failure_count_10m: usize::try_from(status.failure_count_10m).unwrap_or(usize::MAX),
+            failure_count_1h: usize::try_from(status.failure_count_1h).unwrap_or(usize::MAX),
+            admin_unlock_required: status.admin_unlock_required,
+        }
+    }
 }
 
+impl AuthThrottleStatus {
+    /// True when the status represents a lockout rather than the transient
+    /// progressive backoff that follows every failure. The login handler uses
+    /// this to answer 429 on the failure that trips a lock (and on the next
+    /// attempts) while still returning the generic "Invalid credentials" page
+    /// during the first attempts.
+    pub fn is_lockout(&self) -> bool {
+        self.admin_unlock_required
+            || self.failure_count_10m >= LOGIN_TEMP_LOCK_THRESHOLD_10M as usize
+    }
+}
+
+/// In-process login-attempt tracker.
+///
+/// This is the fallback backend only: unit tests and no-database deployments.
+/// Production wires the durable PostgreSQL/Redis backends through
+/// [`crate::login_throttle::LoginThrottle`]; the policy itself lives in
+/// [`apex_store::login_throttle::LoginThrottleState`] so all backends agree.
 #[derive(Clone, Default)]
 pub struct AuthAttemptTracker {
-    inner: Arc<Mutex<HashMap<String, AuthAttemptState>>>,
+    inner: Arc<Mutex<HashMap<String, LoginThrottleState>>>,
 }
 
 impl AuthAttemptTracker {
@@ -49,37 +69,14 @@ impl AuthAttemptTracker {
     pub fn evaluate(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
         let mut inner = self.inner.lock();
         let state = inner.entry(attempt_key.to_string()).or_default();
-        prune_attempt_state(state, now);
-        throttle_status_from_state(state, now)
+        state.prune(now);
+        state.status(now).into()
     }
 
     pub fn record_failure(&self, attempt_key: &str, now: DateTime<Utc>) -> AuthThrottleStatus {
         let mut inner = self.inner.lock();
         let state = inner.entry(attempt_key.to_string()).or_default();
-        prune_attempt_state(state, now);
-        state.failures_10m.push(now);
-        state.failures_1h.push(now);
-
-        if state.failures_1h.len() >= ADMIN_LOCK_THRESHOLD_1H {
-            state.admin_locked = true;
-            state.backoff_until = None;
-            state.temp_lock_until = None;
-            return throttle_status_from_state(state, now);
-        }
-
-        if state.failures_10m.len() >= TEMP_LOCK_THRESHOLD_10M {
-            state.temp_lock_until = Some(now + chrono::Duration::minutes(10));
-            state.backoff_until = None;
-            return throttle_status_from_state(state, now);
-        }
-
-        let idx = state.failures_10m.len().saturating_sub(1);
-        let delay_secs = AUTH_BACKOFF_STEPS_SECS
-            .get(idx)
-            .copied()
-            .unwrap_or(*AUTH_BACKOFF_STEPS_SECS.last().unwrap_or(&8));
-        state.backoff_until = Some(now + chrono::Duration::seconds(delay_secs));
-        throttle_status_from_state(state, now)
+        state.record_failure(now).into()
     }
 
     pub fn record_success(&self, attempt_key: &str) {
@@ -89,57 +86,7 @@ impl AuthAttemptTracker {
 
     pub fn clear_lock(&self, attempt_key: &str) -> bool {
         let mut inner = self.inner.lock();
-        if let Some(state) = inner.get_mut(attempt_key) {
-            state.failures_10m.clear();
-            state.failures_1h.clear();
-            state.backoff_until = None;
-            state.temp_lock_until = None;
-            state.admin_locked = false;
-            return true;
-        }
-        false
-    }
-}
-
-fn prune_attempt_state(state: &mut AuthAttemptState, now: DateTime<Utc>) {
-    let cutoff_10m = now - chrono::Duration::minutes(10);
-    let cutoff_1h = now - chrono::Duration::hours(1);
-    state.failures_10m.retain(|ts| *ts >= cutoff_10m);
-    state.failures_1h.retain(|ts| *ts >= cutoff_1h);
-
-    if state.backoff_until.is_some_and(|until| now >= until) {
-        state.backoff_until = None;
-    }
-    if state.temp_lock_until.is_some_and(|until| now >= until) {
-        state.temp_lock_until = None;
-    }
-}
-
-fn throttle_status_from_state(state: &AuthAttemptState, now: DateTime<Utc>) -> AuthThrottleStatus {
-    let retry_after_secs = if state.admin_locked {
-        0
-    } else if let Some(until) = state.temp_lock_until {
-        (until - now).num_seconds().max(0) as u64
-    } else if let Some(until) = state.backoff_until {
-        (until - now).num_seconds().max(0) as u64
-    } else {
-        0
-    };
-
-    AuthThrottleStatus {
-        allowed: !state.admin_locked
-            && state
-                .temp_lock_until
-                .map(|until| now >= until)
-                .unwrap_or(true)
-            && state
-                .backoff_until
-                .map(|until| now >= until)
-                .unwrap_or(true),
-        retry_after_secs,
-        failure_count_10m: state.failures_10m.len(),
-        failure_count_1h: state.failures_1h.len(),
-        admin_unlock_required: state.admin_locked,
+        inner.remove(attempt_key).is_some()
     }
 }
 
@@ -506,6 +453,36 @@ mod tests {
         assert!(!ApiRole::Service.can_admin());
         assert!(!ApiRole::Service.can_write());
         assert!(ApiRole::Service.can_read());
+    }
+
+    #[test]
+    fn auth_throttle_status_distinguishes_backoff_from_lockout() {
+        let backoff = AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 1,
+            failure_count_10m: 1,
+            failure_count_1h: 1,
+            admin_unlock_required: false,
+        };
+        assert!(!backoff.is_lockout());
+
+        let temp_lock = AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 600,
+            failure_count_10m: 10,
+            failure_count_1h: 10,
+            admin_unlock_required: false,
+        };
+        assert!(temp_lock.is_lockout());
+
+        let admin_lock = AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 0,
+            failure_count_10m: 10,
+            failure_count_1h: 20,
+            admin_unlock_required: true,
+        };
+        assert!(admin_lock.is_lockout());
     }
 
     #[test]
