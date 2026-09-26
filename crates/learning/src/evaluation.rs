@@ -4,19 +4,26 @@
 //! *frozen* evaluation set and may only be promoted when the candidate shows a
 //! statistically meaningful improvement and no critical regression.
 //!
-//! Two rules are enforced structurally here:
+//! Three rules are enforced structurally here:
 //!
 //! 1. **Comparisons are same-set and same-version.** A candidate run and its
-//!    baseline must reference the identical frozen evaluation set (id and
-//!    version); otherwise the decision is rejected outright.
-//! 2. **Raw analyst behaviour is not training truth.** Each metric records the
-//!    [`AnalystSignalClass`] it was computed from. Only
-//!    [`AnalystSignalClass::PositiveConfirmation`] rows may back a promotion;
-//!    dismissal/noise and workflow-convenience actions are persisted for
-//!    diagnosis but never count as evidence.
+//!    baseline must reference the identical frozen evaluation set (id, version
+//!    and example digest); otherwise the decision is rejected outright.
+//! 2. **A frozen set must be verifiable.** The set carries its example count and
+//!    the digest of its immutable examples; a run may only execute when the
+//!    digest it recorded matches the frozen set digest, and the database
+//!    refuses runs whose stored examples do not reproduce `example_count` and
+//!    `examples_digest` (migration `063_learning_eval_examples.sql`).
+//! 3. **Raw analyst behaviour is not training truth.** Each metric records the
+//!    [`AnalystSignalClass`] it was computed from *and* an explicit
+//!    [`MetricObservation::is_training_truth`] opt-in. Only
+//!    [`AnalystSignalClass::PositiveConfirmation`] rows may set that flag, and
+//!    a positive confirmation is never automatically truth; dismissal/noise and
+//!    workflow-convenience actions can never back a promotion.
 //!
 //! The persisted schema lives in `migrations/054_learning_eval_metrics.sql`
-//! (`learning_eval_sets`, `learning_eval_runs`, `learning_eval_metrics`).
+//! (`learning_eval_sets`, `learning_eval_runs`, `learning_eval_metrics`) and
+//! `migrations/063_learning_eval_examples.sql` (`learning_eval_examples`).
 
 use serde::{Deserialize, Serialize};
 
@@ -45,8 +52,8 @@ pub enum MetricDirection {
 
 /// How an analyst interaction was produced.
 ///
-/// Only explicit positive confirmation is training truth. Dismissals are real
-/// signal but not ground truth (an analyst may dismiss because of workflow
+/// Only explicit positive confirmation *may* be training truth. Dismissals are
+/// real signal but not ground truth (an analyst may dismiss because of workflow
 /// friction, not because the output was wrong), and workflow-convenience
 /// actions (opening, clicking, bookmarking) carry no judgement at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -58,8 +65,12 @@ pub enum AnalystSignalClass {
 }
 
 impl AnalystSignalClass {
-    /// Only explicit positive confirmation may be treated as training truth.
-    pub const fn is_training_truth(self) -> bool {
+    /// Whether this signal class *may* ever back training truth.
+    ///
+    /// This is an implication, not an equivalence: a positive confirmation is
+    /// not automatically truth. Producers must additionally set
+    /// [`MetricObservation::is_training_truth`].
+    pub const fn may_be_training_truth(self) -> bool {
         matches!(self, Self::PositiveConfirmation)
     }
 
@@ -169,8 +180,23 @@ pub struct MetricObservation {
     pub value: f64,
     pub sample_size: u64,
     pub signal_class: AnalystSignalClass,
+    /// Explicit opt-in that this observation is training truth.
+    ///
+    /// A positive-confirmation signal class alone is not truth: the producer
+    /// must set this flag deliberately. Only confirmation observations may set
+    /// it (`learning_eval_metrics` enforces the implication).
+    #[serde(default)]
+    pub is_training_truth: bool,
     #[serde(default)]
     pub is_critical: bool,
+}
+
+impl MetricObservation {
+    /// True when the observation may back a promotion: the producer opted in
+    /// *and* the signal class permits truth.
+    pub const fn is_truth_evidence(&self) -> bool {
+        self.is_training_truth && self.signal_class.may_be_training_truth()
+    }
 }
 
 /// Reference to the frozen evaluation set a run was measured against.
@@ -180,6 +206,17 @@ pub struct FrozenEvalSetRef {
     pub name: String,
     pub version: u32,
     pub example_count: u64,
+    /// Digest over the immutable examples of the set; empty for unverified or
+    /// legacy references.
+    #[serde(default)]
+    pub examples_digest: String,
+}
+
+impl FrozenEvalSetRef {
+    /// A set can only be evaluated when it carries a digest and examples.
+    pub fn is_verifiable(&self) -> bool {
+        !self.examples_digest.is_empty() && self.example_count > 0
+    }
 }
 
 /// Kind of artefact being evaluated for promotion.
@@ -206,7 +243,20 @@ pub struct CandidateRef {
 pub struct EvaluationRun {
     pub run_id: String,
     pub eval_set: FrozenEvalSetRef,
+    /// Digest recorded on the run when it executed. Must equal
+    /// [`FrozenEvalSetRef::examples_digest`] for the run to count.
+    #[serde(default)]
+    pub eval_set_digest: String,
     pub candidate: CandidateRef,
+    /// Content hash of the exact candidate artefact that was evaluated.
+    #[serde(default)]
+    pub candidate_artifact_hash: String,
+    /// Content hash of the baseline artefact the candidate was compared against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_artifact_hash: Option<String>,
+    /// Version label of the baseline artefact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_artifact_version: Option<String>,
     /// Version of the metric schema/gate used for this run.
     pub metrics_version: u32,
     pub observations: Vec<MetricObservation>,
@@ -278,6 +328,20 @@ pub enum PromotionRejection {
         baseline_set: String,
         candidate_set: String,
     },
+    /// The frozen set does not carry verifiable examples/digest.
+    UnverifiableEvalSet {
+        run_id: String,
+        eval_set_id: String,
+        example_count: u64,
+        digest: String,
+    },
+    /// The digest recorded on a run does not match the frozen set digest, so
+    /// the run cannot be attributed to the frozen examples.
+    FrozenSetDigestMismatch {
+        run_id: String,
+        run_digest: String,
+        frozen_digest: String,
+    },
     MissingMetric {
         metric: LearningMetric,
     },
@@ -287,7 +351,8 @@ pub enum PromotionRejection {
         candidate_samples: u64,
         required: u64,
     },
-    /// The metric row was not backed by the required analyst-signal class.
+    /// The metric row was not backed by an explicit training-truth opt-in on
+    /// the required analyst-signal class.
     NonTruthEvidence {
         metric: LearningMetric,
         signal_class: AnalystSignalClass,
@@ -403,6 +468,24 @@ pub fn evaluate_promotion(
     baseline: &EvaluationRun,
     config: &PromotionGateConfig,
 ) -> PromotionDecision {
+    for run in [candidate, baseline] {
+        if !run.eval_set.is_verifiable() {
+            return PromotionDecision::Reject(PromotionRejection::UnverifiableEvalSet {
+                run_id: run.run_id.clone(),
+                eval_set_id: run.eval_set.id.clone(),
+                example_count: run.eval_set.example_count,
+                digest: run.eval_set.examples_digest.clone(),
+            });
+        }
+        if run.eval_set_digest != run.eval_set.examples_digest {
+            return PromotionDecision::Reject(PromotionRejection::FrozenSetDigestMismatch {
+                run_id: run.run_id.clone(),
+                run_digest: run.eval_set_digest.clone(),
+                frozen_digest: run.eval_set.examples_digest.clone(),
+            });
+        }
+    }
+
     if candidate.eval_set != baseline.eval_set {
         return PromotionDecision::Reject(PromotionRejection::EvaluationSetMismatch {
             baseline_set: format!("{}@v{}", baseline.eval_set.id, baseline.eval_set.version),
@@ -436,8 +519,33 @@ pub fn evaluate_promotion(
             });
         }
 
+        // No observation may claim training truth for a class that can never
+        // back it, even when the metric itself is diagnostic.
+        for observation in [baseline_obs, candidate_obs] {
+            if observation.is_training_truth && !observation.signal_class.may_be_training_truth() {
+                return PromotionDecision::Reject(PromotionRejection::NonTruthEvidence {
+                    metric,
+                    signal_class: observation.signal_class,
+                });
+            }
+        }
+
         if !metric.gates_promotion() {
             continue;
+        }
+
+        // A positive confirmation is not automatically training truth: the
+        // gating metric only counts when the producer explicitly opted in.
+        if !baseline_obs.is_truth_evidence() || !candidate_obs.is_truth_evidence() {
+            let offending = if !candidate_obs.is_truth_evidence() {
+                candidate_obs.signal_class
+            } else {
+                baseline_obs.signal_class
+            };
+            return PromotionDecision::Reject(PromotionRejection::NonTruthEvidence {
+                metric,
+                signal_class: offending,
+            });
         }
 
         if candidate_obs.sample_size < config.min_sample_size
@@ -485,6 +593,8 @@ mod tests {
     use super::*;
 
     const FROZEN_SET_ID: &str = "2f6a0f8e-8f6f-4d4f-9a4f-0f6a8e8f6f4d";
+    const FROZEN_SET_DIGEST: &str =
+        "d3cbc430b00e82d8b9f3db5d82679544f8df3eaed07302a03e0bf0989b9a1a43";
 
     fn frozen_set(version: u32) -> FrozenEvalSetRef {
         FrozenEvalSetRef {
@@ -492,6 +602,23 @@ mod tests {
             name: "insight_quality_golden_set".to_string(),
             version,
             example_count: 500,
+            examples_digest: FROZEN_SET_DIGEST.to_string(),
+        }
+    }
+
+    fn positive(
+        metric: LearningMetric,
+        value: f64,
+        n: u64,
+        is_critical: bool,
+    ) -> MetricObservation {
+        MetricObservation {
+            metric,
+            value,
+            sample_size: n,
+            signal_class: AnalystSignalClass::PositiveConfirmation,
+            is_training_truth: true,
+            is_critical,
         }
     }
 
@@ -502,46 +629,17 @@ mod tests {
         n: u64,
     ) -> Vec<MetricObservation> {
         vec![
-            MetricObservation {
-                metric: LearningMetric::Precision,
-                value: precision,
-                sample_size: n,
-                signal_class: AnalystSignalClass::PositiveConfirmation,
-                is_critical: false,
-            },
-            MetricObservation {
-                metric: LearningMetric::FalsePositiveRate,
-                value: fpr,
-                sample_size: n,
-                signal_class: AnalystSignalClass::PositiveConfirmation,
-                is_critical: true,
-            },
-            MetricObservation {
-                metric: LearningMetric::DuplicateRate,
-                value: 0.08,
-                sample_size: n,
-                signal_class: AnalystSignalClass::PositiveConfirmation,
-                is_critical: false,
-            },
-            MetricObservation {
-                metric: LearningMetric::GroundingFailureRate,
-                value: grounding,
-                sample_size: n,
-                signal_class: AnalystSignalClass::PositiveConfirmation,
-                is_critical: true,
-            },
-            MetricObservation {
-                metric: LearningMetric::AnalystAcceptanceRate,
-                value: 0.55,
-                sample_size: n,
-                signal_class: AnalystSignalClass::PositiveConfirmation,
-                is_critical: false,
-            },
+            positive(LearningMetric::Precision, precision, n, false),
+            positive(LearningMetric::FalsePositiveRate, fpr, n, true),
+            positive(LearningMetric::DuplicateRate, 0.08, n, false),
+            positive(LearningMetric::GroundingFailureRate, grounding, n, true),
+            positive(LearningMetric::AnalystAcceptanceRate, 0.55, n, false),
             MetricObservation {
                 metric: LearningMetric::AnalystDismissalRate,
                 value: 0.30,
                 sample_size: n,
                 signal_class: AnalystSignalClass::DismissalNoise,
+                is_training_truth: false,
                 is_critical: false,
             },
             MetricObservation {
@@ -549,6 +647,7 @@ mod tests {
                 value: 18.0,
                 sample_size: n,
                 signal_class: AnalystSignalClass::WorkflowConvenience,
+                is_training_truth: false,
                 is_critical: false,
             },
             MetricObservation {
@@ -556,15 +655,10 @@ mod tests {
                 value: 0.40,
                 sample_size: n,
                 signal_class: AnalystSignalClass::WorkflowConvenience,
+                is_training_truth: false,
                 is_critical: false,
             },
-            MetricObservation {
-                metric: LearningMetric::EntityLinkingAccuracy,
-                value: 0.80,
-                sample_size: n,
-                signal_class: AnalystSignalClass::PositiveConfirmation,
-                is_critical: false,
-            },
+            positive(LearningMetric::EntityLinkingAccuracy, 0.80, n, false),
         ]
     }
 
@@ -577,11 +671,15 @@ mod tests {
         EvaluationRun {
             run_id: run_id.to_string(),
             eval_set: frozen_set(version),
+            eval_set_digest: FROZEN_SET_DIGEST.to_string(),
             candidate: CandidateRef {
                 kind: CandidateKind::Prompt,
                 reference: candidate_ref.to_string(),
                 version: None,
             },
+            candidate_artifact_hash: format!("sha256:{candidate_ref}"),
+            baseline_artifact_hash: Some("sha256:baseline".to_string()),
+            baseline_artifact_version: Some("v1".to_string()),
             metrics_version: 1,
             observations,
         }
@@ -752,14 +850,132 @@ mod tests {
 
     #[test]
     fn raw_action_classification_never_upgrades_convenience_to_truth() {
-        assert!(AnalystSignalClass::classify_raw_action("confirmed").is_training_truth());
-        assert!(AnalystSignalClass::classify_raw_action("true_positive").is_training_truth());
-        assert!(!AnalystSignalClass::classify_raw_action("dismissed").is_training_truth());
-        assert!(!AnalystSignalClass::classify_raw_action("false_positive").is_training_truth());
-        assert!(!AnalystSignalClass::classify_raw_action("opened").is_training_truth());
-        assert!(!AnalystSignalClass::classify_raw_action("bookmarked").is_training_truth());
+        assert!(AnalystSignalClass::classify_raw_action("confirmed").may_be_training_truth());
+        assert!(AnalystSignalClass::classify_raw_action("true_positive").may_be_training_truth());
+        assert!(!AnalystSignalClass::classify_raw_action("dismissed").may_be_training_truth());
+        assert!(!AnalystSignalClass::classify_raw_action("false_positive").may_be_training_truth());
+        assert!(!AnalystSignalClass::classify_raw_action("opened").may_be_training_truth());
+        assert!(!AnalystSignalClass::classify_raw_action("bookmarked").may_be_training_truth());
         // Unknown tokens are conservatively workflow convenience, never truth.
-        assert!(!AnalystSignalClass::classify_raw_action("??? unexplored").is_training_truth());
+        assert!(!AnalystSignalClass::classify_raw_action("??? unexplored").may_be_training_truth());
+    }
+
+    #[test]
+    fn positive_confirmation_is_not_automatically_training_truth() {
+        // A confirmation whose producer did not opt in is not evidence.
+        let mut observations = base_observations(0.75, 0.08, 0.04, 200);
+        observations[0].is_training_truth = false;
+        let baseline = run(
+            "base-10",
+            "insight_prompt",
+            3,
+            base_observations(0.60, 0.10, 0.05, 200),
+        );
+        let candidate = run("cand-10", "insight_prompt", 3, observations);
+
+        let decision = evaluate_promotion(&candidate, &baseline, &PromotionGateConfig::default());
+
+        match decision {
+            PromotionDecision::Reject(PromotionRejection::NonTruthEvidence {
+                metric,
+                signal_class,
+            }) => {
+                assert_eq!(metric, LearningMetric::Precision);
+                assert_eq!(signal_class, AnalystSignalClass::PositiveConfirmation);
+            }
+            other => panic!("expected non-truth rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn training_truth_cannot_be_set_on_dismissal_or_noise() {
+        // The in-memory gate refuses truth claims on non-confirmation classes.
+        let mut observations = base_observations(0.75, 0.08, 0.04, 200);
+        observations[5].is_training_truth = true;
+        assert!(!observations[5].is_truth_evidence());
+        let baseline = run(
+            "base-11",
+            "insight_prompt",
+            3,
+            base_observations(0.60, 0.10, 0.05, 200),
+        );
+        let candidate = run("cand-11", "insight_prompt", 3, observations);
+
+        let decision = evaluate_promotion(&candidate, &baseline, &PromotionGateConfig::default());
+
+        match decision {
+            PromotionDecision::Reject(PromotionRejection::NonTruthEvidence {
+                metric,
+                signal_class,
+            }) => {
+                assert_eq!(metric, LearningMetric::AnalystDismissalRate);
+                assert_eq!(signal_class, AnalystSignalClass::DismissalNoise);
+            }
+            other => panic!("expected non-truth rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn digest_mismatch_between_run_and_frozen_set_is_refused() {
+        let baseline = run(
+            "base-12",
+            "insight_prompt",
+            3,
+            base_observations(0.60, 0.10, 0.05, 200),
+        );
+        let mut candidate = run(
+            "cand-12",
+            "insight_prompt",
+            3,
+            base_observations(0.75, 0.08, 0.04, 200),
+        );
+        candidate.eval_set_digest = "deadbeef".to_string();
+
+        let decision = evaluate_promotion(&candidate, &baseline, &PromotionGateConfig::default());
+
+        match decision {
+            PromotionDecision::Reject(PromotionRejection::FrozenSetDigestMismatch {
+                run_id,
+                run_digest,
+                frozen_digest,
+            }) => {
+                assert_eq!(run_id, "cand-12");
+                assert_eq!(run_digest, "deadbeef");
+                assert_eq!(frozen_digest, FROZEN_SET_DIGEST);
+            }
+            other => panic!("expected digest-mismatch rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sets_without_examples_or_digest_are_refused() {
+        let baseline = run(
+            "base-13",
+            "insight_prompt",
+            3,
+            base_observations(0.60, 0.10, 0.05, 200),
+        );
+        let mut candidate = run(
+            "cand-13",
+            "insight_prompt",
+            3,
+            base_observations(0.75, 0.08, 0.04, 200),
+        );
+        candidate.eval_set.examples_digest = String::new();
+
+        let decision = evaluate_promotion(&candidate, &baseline, &PromotionGateConfig::default());
+
+        match decision {
+            PromotionDecision::Reject(PromotionRejection::UnverifiableEvalSet {
+                run_id,
+                eval_set_id,
+                ..
+            }) => {
+                assert_eq!(run_id, "cand-13");
+                assert_eq!(eval_set_id, FROZEN_SET_ID);
+            }
+            other => panic!("expected unverifiable-set rejection, got {other:?}"),
+        }
     }
 
     #[test]

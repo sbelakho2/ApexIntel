@@ -407,6 +407,23 @@ async fn learning_eval_metrics_schema_round_trips() {
     assert!(table_exists(&pool, "learning_eval_sets").await);
     assert!(table_exists(&pool, "learning_eval_runs").await);
     assert!(table_exists(&pool, "learning_eval_metrics").await);
+    assert!(table_exists(&pool, "learning_eval_examples").await);
+    assert!(
+        column_exists(&pool, "learning_eval_sets", "examples_digest").await,
+        "frozen sets must carry an examples digest"
+    );
+    assert!(
+        column_exists(&pool, "learning_eval_runs", "eval_set_digest").await,
+        "runs must record the frozen set digest they used"
+    );
+    assert!(
+        column_exists(&pool, "learning_eval_runs", "candidate_artifact_hash").await,
+        "runs must record the candidate artifact hash"
+    );
+    assert!(
+        column_exists(&pool, "learning_eval_runs", "baseline_artifact_hash").await,
+        "runs must record the baseline artifact hash"
+    );
 
     let view_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM information_schema.views \
@@ -417,58 +434,439 @@ async fn learning_eval_metrics_schema_round_trips() {
     .unwrap();
     assert!(view_exists, "training-truth view must exist");
 
-    let set_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO learning_eval_sets (id, name, version, example_count) VALUES ($1, $2, 1, 500)",
+    // ── Frozen examples: immutable, hashed, digested ────────────────────────
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+    let set_name = format!("golden_set_{}", uuid::Uuid::new_v4());
+    let set_id = store
+        .create_frozen_learning_eval_set(
+            &set_name,
+            1,
+            Some("integration test set"),
+            &serde_json::json!({"source": "integration_test"}),
+            &[
+                apex_store::postgres::LearningEvalExampleInput::new(
+                    "example-a",
+                    serde_json::json!({"question": "a"}),
+                    serde_json::json!({"label": "positive"}),
+                )
+                .with_provenance(serde_json::json!({"origin": "test"})),
+                apex_store::postgres::LearningEvalExampleInput::new(
+                    "example-b",
+                    serde_json::json!({"question": "b"}),
+                    serde_json::json!({"label": "negative"}),
+                ),
+            ],
+        )
+        .await
+        .expect("create frozen set with examples");
+
+    let example_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_eval_examples WHERE eval_set_id = $1")
+            .bind(set_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(example_count, 2, "both examples must be stored");
+
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "SELECT content_hash FROM learning_eval_examples WHERE eval_set_id = $1 ORDER BY example_key",
     )
     .bind(set_id)
-    .bind(format!("golden_set_{set_id}"))
-    .execute(&pool)
+    .fetch_all(&pool)
     .await
-    .expect("insert frozen evaluation set");
+    .unwrap();
+    assert!(
+        hashes.iter().all(|hash| hash.len() == 64),
+        "content hashes must be sha256 hex: {hashes:?}"
+    );
 
-    // Frozen sets are append-only: updates must be rejected by the trigger.
-    let update = sqlx::query("UPDATE learning_eval_sets SET example_count = 999 WHERE id = $1")
+    let digest: String =
+        sqlx::query_scalar("SELECT examples_digest FROM learning_eval_sets WHERE id = $1")
+            .bind(set_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!digest.is_empty(), "frozen set digest must be recorded");
+    let stored_count: i32 =
+        sqlx::query_scalar("SELECT example_count FROM learning_eval_sets WHERE id = $1")
+            .bind(set_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_count, 2);
+
+    // Finalizing again is idempotent.
+    let refinalized = store
+        .finalize_learning_eval_set(set_id)
+        .await
+        .expect("second finalize is idempotent");
+    assert_eq!(refinalized, digest);
+
+    // UPDATE and DELETE on frozen examples are rejected by the trigger.
+    let update = sqlx::query(
+        "UPDATE learning_eval_examples SET example_key = 'tampered' WHERE eval_set_id = $1",
+    )
+    .bind(set_id)
+    .execute(&pool)
+    .await;
+    assert!(update.is_err(), "frozen examples must reject updates");
+    let delete = sqlx::query("DELETE FROM learning_eval_examples WHERE eval_set_id = $1")
         .bind(set_id)
         .execute(&pool)
         .await;
-    assert!(
-        update.is_err(),
-        "frozen evaluation sets must reject updates"
-    );
+    assert!(delete.is_err(), "frozen examples must reject deletes");
+    let update_set = sqlx::query("UPDATE learning_eval_sets SET example_count = 999 WHERE id = $1")
+        .bind(set_id)
+        .execute(&pool)
+        .await;
+    assert!(update_set.is_err(), "frozen sets must reject updates");
 
-    let run_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO learning_eval_runs (id, eval_set_id, candidate_kind, candidate_ref, metrics_version) \
-         VALUES ($1, $2, 'prompt', 'insight_prompt', 1)",
+    // ── Runs record digest and artifact hashes, and verify the set ──────────
+    let metrics = vec![
+        apex_store::postgres::LearningEvalMetricInput::new("precision", 0.72, 200)
+            .with_training_truth(true),
+    ];
+    let run_id = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: set_id,
+            candidate_kind: "prompt",
+            candidate_ref: "insight_prompt",
+            candidate_version: Some("v2"),
+            candidate_artifact_hash: "sha256:candidate-v2",
+            baseline_run_id: None,
+            baseline_artifact_hash: Some("sha256:baseline-v1"),
+            baseline_artifact_version: Some("v1"),
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({"candidate": "v2"}),
+            metrics: &metrics,
+        })
+        .await
+        .expect("verified run must be recorded");
+
+    let recorded = store
+        .latest_learning_eval_run(set_id, "prompt", "insight_prompt")
+        .await
+        .unwrap()
+        .expect("recorded run must be readable");
+    assert_eq!(recorded.id, run_id);
+    assert_eq!(recorded.eval_set_digest, digest);
+    assert_eq!(
+        recorded.candidate_artifact_hash.as_deref(),
+        Some("sha256:candidate-v2")
+    );
+    assert_eq!(
+        recorded.baseline_artifact_hash.as_deref(),
+        Some("sha256:baseline-v1")
+    );
+    assert_eq!(recorded.baseline_artifact_version.as_deref(), Some("v1"));
+
+    // A raw insert with a wrong digest is refused by the database trigger.
+    let forged = sqlx::query(
+        "INSERT INTO learning_eval_runs (eval_set_id, candidate_kind, candidate_ref, \
+         candidate_artifact_hash, eval_set_digest) VALUES ($1, 'prompt', 'forged', 'sha256:x', 'deadbeef')",
     )
-    .bind(run_id)
     .bind(set_id)
     .execute(&pool)
-    .await
-    .expect("insert evaluation run");
+    .await;
+    assert!(
+        forged.is_err(),
+        "runs whose digest does not match the frozen set must be refused"
+    );
 
-    // Positive confirmation is training truth.
+    // Cleanup: runs cascade to metrics. Frozen set rows are intentionally
+    // immutable and are left behind (the CI database is ephemeral).
+    sqlx::query("DELETE FROM learning_eval_runs WHERE id = $1")
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn learning_eval_runs_refuse_missing_or_mismatched_examples() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+
+    // ── Missing examples: declared 3, stored 2 ──────────────────────────────
+    let short_name = format!("short_set_{}", uuid::Uuid::new_v4());
+    let short_set = store
+        .upsert_learning_eval_set(&short_name, 1, None, 3, &serde_json::json!({}))
+        .await
+        .unwrap();
+    store
+        .insert_learning_eval_examples(
+            short_set,
+            &[
+                apex_store::postgres::LearningEvalExampleInput::new(
+                    "a",
+                    serde_json::json!({"q": 1}),
+                    serde_json::json!({"l": "x"}),
+                ),
+                apex_store::postgres::LearningEvalExampleInput::new(
+                    "b",
+                    serde_json::json!({"q": 2}),
+                    serde_json::json!({"l": "y"}),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let finalize = store.finalize_learning_eval_set(short_set).await;
+    assert!(
+        finalize.is_err(),
+        "a set that declares more examples than it stores cannot be finalized"
+    );
+
+    let metrics = vec![
+        apex_store::postgres::LearningEvalMetricInput::new("precision", 0.72, 200)
+            .with_training_truth(true),
+    ];
+    let short_run = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: short_set,
+            candidate_kind: "prompt",
+            candidate_ref: "short",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:short",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &metrics,
+        })
+        .await
+        .expect_err("missing examples must refuse the run");
+    let message = short_run.to_string();
+    assert!(
+        message.contains("stores 2 examples but declares 3"),
+        "unexpected refusal: {message}"
+    );
+
+    // ── Digest mismatch: right count, wrong (stale) digest ──────────────────
+    let stale_name = format!("stale_set_{}", uuid::Uuid::new_v4());
+    let stale_set = store
+        .upsert_learning_eval_set(&stale_name, 1, None, 2, &serde_json::json!({}))
+        .await
+        .unwrap();
+    store
+        .insert_learning_eval_examples(
+            stale_set,
+            &[
+                apex_store::postgres::LearningEvalExampleInput::new(
+                    "a",
+                    serde_json::json!({"q": 1}),
+                    serde_json::json!({"l": "x"}),
+                ),
+                apex_store::postgres::LearningEvalExampleInput::new(
+                    "b",
+                    serde_json::json!({"q": 2}),
+                    serde_json::json!({"l": "y"}),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+    let stale_run = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: stale_set,
+            candidate_kind: "prompt",
+            candidate_ref: "stale",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:stale",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &metrics,
+        })
+        .await
+        .expect_err("digest mismatch must refuse the run");
+    assert!(
+        stale_run.to_string().contains("digest mismatch"),
+        "unexpected refusal: {stale_run}"
+    );
+
+    // Tampering with a frozen example after finalization also changes the
+    // recomputed digest, so the same run is refused. The trigger is disabled
+    // to simulate an out-of-band write with restored integrity enforcement.
+    let tampered_name = format!("tampered_set_{}", uuid::Uuid::new_v4());
+    let tampered_set = store
+        .create_frozen_learning_eval_set(
+            &tampered_name,
+            1,
+            None,
+            &serde_json::json!({}),
+            &[apex_store::postgres::LearningEvalExampleInput::new(
+                "a",
+                serde_json::json!({"q": 1}),
+                serde_json::json!({"l": "x"}),
+            )],
+        )
+        .await
+        .unwrap();
     sqlx::query(
-        "INSERT INTO learning_eval_metrics (run_id, metric, value, sample_size, signal_class, is_training_truth) \
-         VALUES ($1, 'precision', 0.72, 200, 'positive_confirmation', TRUE)",
+        "ALTER TABLE learning_eval_examples DISABLE TRIGGER trg_learning_eval_examples_freeze",
     )
-    .bind(run_id)
     .execute(&pool)
     .await
-    .expect("insert confirmed precision metric");
+    .unwrap();
+    sqlx::query(
+        "UPDATE learning_eval_examples SET content_hash = 'tampered' WHERE eval_set_id = $1",
+    )
+    .bind(tampered_set)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "ALTER TABLE learning_eval_examples ENABLE TRIGGER trg_learning_eval_examples_freeze",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let tampered_run = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: tampered_set,
+            candidate_kind: "prompt",
+            candidate_ref: "tampered",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:tampered",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &metrics,
+        })
+        .await
+        .expect_err("recomputed digest mismatch must refuse the run");
+    assert!(
+        tampered_run.to_string().contains("digest mismatch"),
+        "unexpected refusal: {tampered_run}"
+    );
 
-    // Workflow convenience must never be marked as training truth.
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn learning_eval_training_truth_is_an_explicit_opt_in() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+
+    let set_name = format!("truth_set_{}", uuid::Uuid::new_v4());
+    let set_id = store
+        .create_frozen_learning_eval_set(
+            &set_name,
+            1,
+            None,
+            &serde_json::json!({}),
+            &[apex_store::postgres::LearningEvalExampleInput::new(
+                "a",
+                serde_json::json!({"q": 1}),
+                serde_json::json!({"l": "x"}),
+            )],
+        )
+        .await
+        .unwrap();
+
+    // The store rejects explicit truth on a dismissal/noise metric...
+    let invalid = vec![
+        apex_store::postgres::LearningEvalMetricInput::new("precision", 0.7, 200)
+            .with_training_truth(true),
+        apex_store::postgres::LearningEvalMetricInput::new("analyst_dismissal_rate", 0.2, 200)
+            .with_signal_class("dismissal_noise")
+            .with_training_truth(true),
+    ];
+    let refused = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: set_id,
+            candidate_kind: "prompt",
+            candidate_ref: "invalid_truth",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:invalid-truth",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &invalid,
+        })
+        .await
+        .expect_err("truth on dismissal/noise must be rejected");
+    assert!(
+        refused.to_string().contains("cannot be training truth"),
+        "unexpected refusal: {refused}"
+    );
+
+    // ...and the database CHECK is the backstop for direct SQL.
+    let raw_run_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO learning_eval_runs (eval_set_id, candidate_kind, candidate_ref, \
+         candidate_artifact_hash, eval_set_digest) \
+         SELECT id, 'prompt', 'raw_truth', 'sha256:raw', examples_digest \
+         FROM learning_eval_sets WHERE id = $1 RETURNING id",
+    )
+    .bind(set_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let forged_truth = sqlx::query(
         "INSERT INTO learning_eval_metrics (run_id, metric, value, sample_size, signal_class, is_training_truth) \
          VALUES ($1, 'source_yield', 0.40, 200, 'workflow_convenience', TRUE)",
     )
-    .bind(run_id)
+    .bind(raw_run_id)
     .execute(&pool)
     .await;
     assert!(
         forged_truth.is_err(),
         "non-confirmed analyst signals must not be stored as training truth"
+    );
+
+    // A positive confirmation defaults to NOT truth; truth requires the
+    // explicit flag.
+    let default_truth = vec![
+        apex_store::postgres::LearningEvalMetricInput::new("precision", 0.72, 200),
+        apex_store::postgres::LearningEvalMetricInput::new("analyst_dismissal_rate", 0.30, 200)
+            .with_signal_class("dismissal_noise"),
+    ];
+    assert!(
+        !default_truth[0].is_training_truth,
+        "positive confirmation must not be inferred as truth"
+    );
+    let run_id = store
+        .insert_learning_eval_run(apex_store::postgres::LearningEvalRunInput {
+            eval_set_id: set_id,
+            candidate_kind: "prompt",
+            candidate_ref: "explicit_truth",
+            candidate_version: None,
+            candidate_artifact_hash: "sha256:explicit",
+            baseline_run_id: None,
+            baseline_artifact_hash: None,
+            baseline_artifact_version: None,
+            metrics_version: 1,
+            metrics_snapshot: &serde_json::json!({}),
+            metrics: &default_truth,
+        })
+        .await
+        .expect("confirmed metric without the flag is allowed");
+
+    let truth_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_training_truth_metrics WHERE run_id = $1",
+    )
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        truth_rows, 0,
+        "a positive confirmation without the explicit flag is not training truth"
     );
 
     // One metric per (run, metric, signal class).
@@ -481,18 +879,8 @@ async fn learning_eval_metrics_schema_round_trips() {
     .await;
     assert!(duplicate.is_err(), "duplicate metric rows must be rejected");
 
-    let truth_rows: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_training_truth_metrics WHERE run_id = $1",
-    )
-    .bind(run_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(truth_rows, 1);
-
-    // The store helper must fetch an existing frozen version on a repeat call
-    // instead of tripping the freeze trigger with an UPDATE arm.
-    let store = apex_store::postgres::PgStore::from_pool(pool.clone());
+    // The store fetches an existing frozen version on a repeat call instead of
+    // tripping the freeze trigger with an UPDATE arm.
     let store_set_id = store
         .upsert_learning_eval_set(
             "store_round_trip_set",
@@ -517,8 +905,8 @@ async fn learning_eval_metrics_schema_round_trips() {
 
     // Cleanup: runs cascade to metrics. Frozen set rows are intentionally
     // immutable and are left behind (the CI database is ephemeral).
-    sqlx::query("DELETE FROM learning_eval_runs WHERE id = $1")
-        .bind(run_id)
+    sqlx::query("DELETE FROM learning_eval_runs WHERE eval_set_id = $1")
+        .bind(set_id)
         .execute(&pool)
         .await
         .unwrap();
