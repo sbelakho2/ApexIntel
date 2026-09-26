@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
 
-{% block title %}Persons — ApexIntel{% endblock %}
+{% block title %}{% if buying_center_mode %}Buying Centres{% else %}Persons{% endif %} — ApexIntel{% endblock %}
 
 {% block breadcrumbs %}
 <nav class="apex-card px-4 py-2.5 mb-6" aria-label="Breadcrumb">
@@ -14,7 +14,11 @@
 {% endblock %}
 
 {% block content %}
+{% if buying_center_mode %}
+{% call m::page_header("Buying Centres", "users", "Sales intelligence view: the people who decide, buy, and gatekeep at each account.", "") %}
+{% else %}
 {% call m::page_header("POI Browser", "users", "Searchable person-of-interest profiles filtered by region and role.", "") %}
+{% endif %}
 
 {% if let Some(notice) = degraded_notice %}
 <div class="apex-card border border-rams-red/40 p-4 mb-6 text-sm font-semibold text-rams-red" role="alert" data-degraded="true">{{ notice }}</div>
@@ -45,6 +49,7 @@
 
 <div class="mb-4 apex-card p-3">
   <form method="get" action="/persons" class="mb-3 flex flex-wrap items-center gap-2">
+    {% if buying_center_mode %}<input type="hidden" name="view" value="buying-centers">{% endif %}
     <label for="persons-search" class="text-[10px] font-bold uppercase text-rams-muted">Search</label>
     <input id="persons-search" name="q" type="text" value="{{ search_query }}"
            placeholder="Name, role, organization"
@@ -71,6 +76,45 @@
   </div>
 </div>
 
+{% if buying_center_mode %}
+<section class="apex-card mb-4" data-buying-centers>
+  <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
+    <div>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em]">Buying centres by account</h2>
+      <p class="mt-1 text-[11px] text-rams-muted">Deciders, buyers, gatekeepers, and influencers grouped by organisation.</p>
+    </div>
+    <span class="text-[10px] text-rams-muted tabular-nums">{{ buying_centers.len() }} account{% if buying_centers.len() != 1 %}s{% endif %}</span>
+  </div>
+  {% if buying_centers.is_empty() %}
+  {% if degraded_notice.is_none() %}{% call m::empty_state("No buying centres", "No people match the current filters. Broaden the search to map decision makers.") %}{% endif %}
+  {% else %}
+  <div class="divide-y divide-rams-line">
+    {% for center in buying_centers %}
+    <div class="px-4 py-3" data-buying-center="{{ center.organization }}">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span class="text-sm font-semibold">{{ center.organization }}</span>
+        <span class="text-[10px] text-rams-muted tabular-nums">{{ center.region }} · {{ center.deciders }} decider{% if center.deciders != 1 %}s{% endif %}</span>
+      </div>
+      <ul class="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {% for member in center.members %}
+        <li class="rounded-rams-sm border border-rams-line bg-rams-panel px-3 py-2">
+          <a href="/persons/{{ member.id }}" class="text-sm font-semibold text-rams-foreground hover:underline" data-person-link>{{ member.name }}</a>
+          <div class="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-rams-muted">
+            <span class="rounded-rams-sm border border-rams-line bg-rams-chassis px-1.5 py-0.5 font-bold uppercase tracking-[0.1em]">{{ member.buying_center_role }}</span>
+            <span class="truncate">{{ member.role }}</span>
+            <span class="tabular-nums">{{ member.influence_score }}</span>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if !buying_center_mode %}
 <div class="apex-card overflow-hidden mb-4">
   <div class="flex items-center justify-between border-b border-rams-line px-4 py-3">
     <div>
@@ -140,4 +184,5 @@
     {% endfor %}
   {% endif %}
 </div>
+{% endif %}
 {% endblock %}

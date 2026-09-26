@@ -29,12 +29,16 @@
         {% if acknowledged %}<span class="text-[10px] font-bold uppercase apex-text-positive">Acknowledged</span>{% endif %}
       </div>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
       {% if !briefing_mode %}
       <a href="/warnings/{{ id }}?briefing=true" class="apex-btn apex-btn-secondary">Briefing</a>
       {% else %}
       <button type="button" onclick="window.print()" class="no-print apex-btn apex-btn-primary">Print / PDF</button>
       {% endif %}
+      {# Signal → investigation decision loop, one click. #}
+      <form action="/warnings/{{ id }}/investigate" method="post" class="no-print inline-flex">
+        <button type="submit" class="apex-btn apex-btn-primary" data-action="start-investigation">Start investigation</button>
+      </form>
       {% if !acknowledged %}
       <button hx-post="/warnings/{{ id }}/acknowledge"
               hx-target="#ack-status"
@@ -55,14 +59,74 @@
   </div>
   <div id="ack-status"></div>
 
+  {# ── Signal brief: what / why / reliability / entity / recurrence / next action ── #}
+  <section class="apex-module" data-signal-brief>
+    <div class="apex-module-header">
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Signal Brief</h2>
+    </div>
+    <div class="apex-module-body">
+      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div data-brief-what>
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">What</p>
+          <p class="mt-1 text-sm font-semibold text-rams-foreground">{{ title }}</p>
+          <p class="mt-1 text-[11px] text-rams-muted">{{ warning_type }}</p>
+        </div>
+        <div data-brief-why>
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Why it matters</p>
+          <p class="mt-1 text-sm leading-relaxed text-rams-foreground">{% if !impact.is_empty() %}{{ impact }}{% else %}{{ description }}{% endif %}</p>
+        </div>
+        <div data-brief-reliability>
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Reliability</p>
+          <p class="mt-1 text-sm font-bold text-rams-foreground tabular-nums">{{ confidence_pct }}% · {{ reliability_label }}</p>
+          <p class="mt-1 text-[11px] text-rams-muted">{{ corroboration }}</p>
+        </div>
+        <div data-brief-entity>
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Entity</p>
+          {% if !company_id.is_empty() %}
+          <p class="mt-1 text-sm"><a href="/companies/{{ company_id }}" class="hover:underline text-rams-foreground font-semibold" data-entity-link>{{ company_name }}</a></p>
+          {% else %}
+          <p class="mt-1 text-sm text-rams-muted">No entity linked</p>
+          {% endif %}
+          <p class="mt-1 text-[11px] text-rams-muted">Region {{ region }}</p>
+        </div>
+        <div data-brief-recurrence>
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Recurrence</p>
+          <p class="mt-1 text-sm text-rams-foreground" data-occurrence-count>{{ recurrence.occurrence_count }} occurrence{% if recurrence.occurrence_count != 1 %}s{% endif %}</p>
+          <p class="mt-1 text-[11px] text-rams-muted tabular-nums">
+            First seen {{ recurrence.first_seen }}<br>Last seen {{ recurrence.last_seen }}
+          </p>
+          {% if recurrence.severity_escalated %}
+          <p class="mt-1 text-[10px] font-bold uppercase text-rams-red" data-severity-escalation>
+            Severity escalated {{ recurrence.stored_severity }} → {{ recurrence.effective_severity }}
+          </p>
+          {% endif %}
+          {% if !recurrence.source_domains.is_empty() %}
+          <p class="mt-1 text-[10px] text-rams-muted" data-merge-source-domains>
+            Domains: {% for domain in recurrence.source_domains %}{{ domain }}{% if !loop.last %}, {% endif %}{% endfor %}
+          </p>
+          {% endif %}
+        </div>
+        <div data-brief-next>
+          <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Next action</p>
+          <ul class="mt-1 list-disc space-y-0.5 pl-4 text-[11px] text-rams-foreground">
+            {% for action in next_actions %}<li>{{ action }}</li>{% endfor %}
+          </ul>
+          {% if !company_id.is_empty() %}
+          <a href="/companies/{{ company_id }}" class="mt-2 inline-block text-[10px] font-black uppercase tracking-[0.1em] apex-link-steel hover:underline">Open entity dossier</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
   {# ── Description module ── #}
   <div class="apex-module">
     <div class="apex-module-body">
       <p class="text-sm leading-relaxed text-rams-foreground">{{ description }}</p>
       <div class="mt-4 grid grid-cols-2 gap-4 text-[11px]">
-        <div><span class="font-black uppercase text-rams-muted">Company</span><br><a href="/companies/{{ company_id }}" class="hover:underline text-rams-foreground">{{ company_name }}</a></div>
+        <div><span class="font-black uppercase text-rams-muted">Company</span><br>{% if !company_id.is_empty() %}<a href="/companies/{{ company_id }}" class="hover:underline text-rams-foreground">{{ company_name }}</a>{% else %}<span class="text-rams-muted">Unlinked</span>{% endif %}</div>
         <div><span class="font-black uppercase text-rams-muted">Type</span><br><span class="text-rams-foreground">{{ warning_type }}</span></div>
-        <div><span class="font-black uppercase text-rams-muted">Confidence</span><br><span class="text-rams-foreground font-bold tabular-nums">{{ confidence }}%</span></div>
+        <div><span class="font-black uppercase text-rams-muted">Confidence</span><br><span class="text-rams-foreground font-bold tabular-nums">{{ confidence_pct }}%</span></div>
         <div><span class="font-black uppercase text-rams-muted">Created</span><br><span class="text-rams-foreground tabular-nums">{{ created_at }}</span></div>
       </div>
       {% if let Some(outcome) = review_outcome %}
@@ -151,8 +215,6 @@
     </div>
     <div class="apex-module-body">
       <div class="flex flex-wrap gap-2">
-        {# B309: companies/persons paths — the old `{{ kind }}s` pluralization
-           produced `/companys/{id}` (404) for company entities. #}
         {% for entity in related_entities %}
         {% if entity.kind == "company" %}
         <a href="/companies/{{ entity.id }}" class="inline-flex items-center gap-1.5 rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-1.5 text-sm font-medium text-rams-foreground hover:bg-rams-panel">
@@ -171,22 +233,34 @@
   </div>
   {% endif %}
 
-  {# ── Evidence module ── #}
-  {% if !evidence.is_empty() %}
-  <div class="apex-module">
+  {# ── Evidence & claims module: one row per claim source, traceable ── #}
+  <div class="apex-module" data-signal-evidence>
     <div class="apex-module-header">
-      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Evidence</h2>
+      <h2 class="text-xs font-black uppercase tracking-[0.12em] text-rams-foreground">Evidence &amp; Claims</h2>
+      <span class="text-[10px] text-rams-muted tabular-nums">{{ evidence.len() }} source{% if evidence.len() != 1 %}s{% endif %}{% if recurrence.merged_source_count > 0 %} · {{ recurrence.merged_source_count }} merged{% endif %}</span>
     </div>
+    {% if !evidence.is_empty() %}
     <div class="divide-y divide-rams-line">
       {% for e in evidence %}
-      <div class="px-4 py-3">
-        <p class="text-sm text-rams-foreground">{{ e.snippet }}</p>
-        <p class="mt-1 text-[10px] text-rams-muted">{{ e.source }} · {{ e.found_at }}</p>
+      <div class="px-4 py-3" data-claim="{{ loop.index }}">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-[10px] font-black uppercase tracking-[0.1em] text-rams-muted">Claim source {{ loop.index }}</p>
+            <p class="mt-1 text-sm text-rams-foreground">{{ e.source }}</p>
+          </div>
+          <span class="shrink-0 text-[10px] text-rams-muted tabular-nums">{{ e.found_at }}</span>
+        </div>
+        {% if !e.snippet.is_empty() %}<p class="mt-1 text-[11px] text-rams-muted">{{ e.snippet }}</p>{% endif %}
+        <a href="{{ e.url }}" target="_blank" rel="noopener noreferrer"
+           class="mt-1 inline-block text-[10px] font-black uppercase tracking-[0.1em] apex-link-steel hover:underline"
+           data-claim-source="{{ e.url }}">Trace to source</a>
       </div>
       {% endfor %}
     </div>
+    {% else %}
+    <p class="px-4 py-6 text-center text-sm text-rams-muted">No evidence linked to this signal</p>
+    {% endif %}
   </div>
-  {% endif %}
 
   {# ── AI Analysis module ── #}
   {% if let Some(analysis) = ai_analysis %}

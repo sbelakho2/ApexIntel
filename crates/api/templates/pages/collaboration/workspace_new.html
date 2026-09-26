@@ -19,27 +19,36 @@
 <div class="max-w-2xl">
   {% call m::page_header("New Workspace", "folder", "Open an investigation workspace to collaborate with your team.", "") %}
 
+  {% if let Some(notice) = error_notice %}
+  <div class="apex-card border border-rams-red/40 p-4 mb-4 text-sm font-semibold text-rams-red" role="alert" data-workspace-error>
+    {{ notice }}
+  </div>
+  {% endif %}
+
   <form method="post" action="/workspaces" class="space-y-4 pb-8">
+    {% if !entity_id.is_empty() %}<input type="hidden" name="entity_id" value="{{ entity_id }}">{% endif %}
+    {% if !signal_id.is_empty() %}<input type="hidden" name="signal_id" value="{{ signal_id }}">{% endif %}
     <div class="apex-card p-4 space-y-3">
       <label class="flex flex-col gap-1">
         <span class="text-[9px] font-bold uppercase text-rams-muted">Name</span>
-        <input type="text" name="name" required maxlength="120" placeholder="e.g. Q3 competitor pricing investigation"
+        <input type="text" name="name" required maxlength="120" value="{{ prefill_name }}" placeholder="e.g. Q3 competitor pricing investigation"
           class="rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-2 text-sm w-full focus:outline-none focus:ring-1 focus:ring-rams-line">
       </label>
 
       <label class="flex flex-col gap-1">
         <span class="text-[9px] font-bold uppercase text-rams-muted">Description</span>
         <textarea name="description" rows="3" placeholder="What is this workspace investigating?"
-          class="rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-2 text-sm w-full focus:outline-none focus:ring-1 focus:ring-rams-line"></textarea>
+          class="rounded-rams-sm border border-rams-line bg-rams-chassis px-3 py-2 text-sm w-full focus:outline-none focus:ring-1 focus:ring-rams-line">{{ prefill_description }}</textarea>
       </label>
 
       <div class="grid gap-3 sm:grid-cols-2">
         <label class="flex flex-col gap-1">
           <span class="text-[9px] font-bold uppercase text-rams-muted">Type</span>
           <select name="workspace_type" class="apex-select">
-            <option value="investigation">Investigation</option>
-            <option value="monitoring">Monitoring</option>
-            <option value="response">Response</option>
+            <option value="structured" {% if prefill_workspace_type == "structured" %}selected{% endif %}>Structured investigation</option>
+            <option value="incident" {% if prefill_workspace_type == "incident" %}selected{% endif %}>Incident response</option>
+            <option value="ongoing" {% if prefill_workspace_type == "ongoing" %}selected{% endif %}>Ongoing monitoring</option>
+            <option value="ad-hoc" {% if prefill_workspace_type == "ad-hoc" %}selected{% endif %}>Ad-hoc review</option>
           </select>
         </label>
         <label class="flex flex-col gap-1">
@@ -47,7 +56,7 @@
           <select name="visibility" class="apex-select">
             <option value="team">Team</option>
             <option value="private">Private</option>
-            <option value="org">Organization</option>
+            <option value="organization">Organization</option>
           </select>
         </label>
       </div>

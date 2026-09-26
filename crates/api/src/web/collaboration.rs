@@ -38,6 +38,11 @@ pub struct CreateWorkspaceForm {
     pub workspace_type: String,
     pub visibility: String,
     pub tags: Option<String>,
+    /// Optional entity/signal the workspace was started from (entity dossier
+    /// or warning "Start investigation" action). Stored as `entity_focus` so
+    /// the entity page can list its open investigations.
+    pub entity_id: Option<String>,
+    pub signal_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -473,11 +478,75 @@ pub struct WorkspaceNewPage {
     pub warning_count: i64,
     pub theme: String,
     pub status_strip: crate::system_status::StatusStrip,
+    pub prefill_name: String,
+    pub prefill_description: String,
+    pub prefill_workspace_type: String,
+    pub entity_id: String,
+    pub signal_id: String,
+    pub error_notice: Option<String>,
+}
+
+/// Query params used by "Start investigation" entry points to prefill the
+/// workspace form from an entity dossier or a signal. `error` carries a
+/// failure code back from `create_workspace` so the form can say what
+/// happened instead of silently resetting.
+#[derive(Debug, Default, Deserialize)]
+pub struct WorkspaceNewQuery {
+    pub entity_id: Option<String>,
+    pub entity_name: Option<String>,
+    pub signal_id: Option<String>,
+    pub signal_title: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Canonical name/description for an investigation opened from a signal.
+/// Shared by the one-click warning action and the prefilled workspace form so
+/// both entry points produce the same workspace.
+pub(crate) fn signal_investigation_fields(
+    signal_title: &str,
+    entity_name: Option<&str>,
+) -> (String, String) {
+    let title: String = signal_title.chars().take(90).collect();
+    let name = format!("Investigate: {title}");
+    let entity_suffix = match entity_name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(entity_name) => format!(" on {entity_name}"),
+        None => String::new(),
+    };
+    let description =
+        format!("Investigation opened from the signal \"{signal_title}\"{entity_suffix}.");
+    (name, description)
+}
+
+/// Workspace types the database accepts (migration 002 check constraint).
+fn normalized_workspace_type(raw: &str, from_signal: bool) -> &'static str {
+    // Signal-originated investigations are always incidents; otherwise honour
+    // the submitted type and fall back to `structured` for unknown input.
+    if from_signal {
+        return "incident";
+    }
+    match raw.trim() {
+        "ad-hoc" => "ad-hoc",
+        "incident" => "incident",
+        "ongoing" => "ongoing",
+        _ => "structured",
+    }
+}
+
+/// Workspace visibility values the database accepts (migration 002), with a
+/// legacy `org` alias mapped to `organization`.
+fn normalized_workspace_visibility(raw: &str) -> &'static str {
+    match raw.trim() {
+        "private" => "private",
+        "organization" | "org" => "organization",
+        "public" => "public",
+        _ => "team",
+    }
 }
 
 pub async fn new_workspace_page(
     session: Extension<WebSession>,
     Extension(store): Extension<Arc<PgStore>>,
+    Query(query): Query<WorkspaceNewQuery>,
 ) -> impl IntoResponse {
     let warning_count = store
         .count_warnings(&apex_store::postgres::WarningListFilters {
@@ -488,6 +557,35 @@ pub async fn new_workspace_page(
         .unwrap_or(0);
     let ctx = PageContext::from_session(&session, "/workspaces/new", warning_count);
 
+    let entity_id = query.entity_id.clone().unwrap_or_default();
+    let signal_id = query.signal_id.clone().unwrap_or_default();
+    let signal_title = query.signal_title.clone().unwrap_or_default();
+    let entity_name = query.entity_name.clone().unwrap_or_default();
+    let (prefill_name, prefill_description) = if !signal_title.is_empty() {
+        signal_investigation_fields(
+            &signal_title,
+            Some(entity_name.as_str()).filter(|name| !name.is_empty()),
+        )
+    } else if !entity_name.is_empty() {
+        (
+            format!("{entity_name} investigation"),
+            format!("Investigation opened from the {entity_name} entity dossier."),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    let prefill_workspace_type = if !signal_id.is_empty() {
+        "incident".to_string()
+    } else {
+        "structured".to_string()
+    };
+    let error_notice = query.error.as_deref().map(|code| match code {
+        "create_failed" => {
+            "Workspace could not be created. Check the name and type, then try again.".to_string()
+        }
+        other => format!("Workspace could not be created ({other}). Try again."),
+    });
+
     let page = WorkspaceNewPage {
         current_path: ctx.current_path,
         can_admin: ctx.can_admin,
@@ -495,6 +593,12 @@ pub async fn new_workspace_page(
         username: ctx.username,
         warning_count: ctx.warning_count,
         theme: ctx.theme,
+        prefill_name,
+        prefill_description,
+        prefill_workspace_type,
+        entity_id,
+        signal_id,
+        error_notice,
     };
 
     render_template(&page)
@@ -506,26 +610,71 @@ pub async fn create_workspace(
     Extension(store): Extension<Arc<PgStore>>,
     Form(form): Form<CreateWorkspaceForm>,
 ) -> impl IntoResponse {
-    let tags: Vec<String> = form
+    let from_signal = form
+        .signal_id
+        .as_deref()
+        .map(|signal_id| !signal_id.trim().is_empty())
+        .unwrap_or(false);
+
+    let mut tags: Vec<String> = form
         .tags
         .as_deref()
         .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
         .unwrap_or_default();
+    if from_signal && !tags.iter().any(|tag| tag == "signal") {
+        tags.push("signal".to_string());
+    }
 
-    let _ = store
+    // Entity focus keeps the decision loop closed: investigation started from
+    // a signal or dossier stays linked to that entity (audit #27).
+    let entity_focus = match form.entity_id.as_deref() {
+        Some(entity_id) if !entity_id.trim().is_empty() => {
+            serde_json::json!([entity_id.trim()])
+        }
+        _ => serde_json::json!([]),
+    };
+    let description = form.description.as_deref().filter(|d| !d.trim().is_empty());
+    let description = match (&form.signal_id, description) {
+        (Some(signal_id), Some(description)) if !signal_id.trim().is_empty() => {
+            Some(format!("{description}\n\nOpened from signal {signal_id}."))
+        }
+        (Some(signal_id), None) if !signal_id.trim().is_empty() => {
+            Some(format!("Opened from signal {signal_id}."))
+        }
+        (_, description) => description.map(ToOwned::to_owned),
+    };
+
+    match store
         .create_investigation_workspace(
             &form.name,
-            form.description.as_deref(),
-            &form.workspace_type,
+            description.as_deref(),
+            normalized_workspace_type(&form.workspace_type, from_signal),
             &session.username,
             None, // team_id
-            &form.visibility,
+            normalized_workspace_visibility(&form.visibility),
             &tags,
-            &serde_json::json!({}),
+            &entity_focus,
         )
-        .await;
-
-    Redirect::to("/workspaces")
+        .await
+    {
+        Ok(workspace) => Redirect::to(&format!("/workspaces/{}", workspace.id)),
+        Err(error) => {
+            tracing::warn!(%error, "create_workspace failed");
+            // Surface the failure on the form instead of pretending success,
+            // and keep the entity/signal prefill so the retry is one click.
+            let mut params: Vec<(&str, &str)> = vec![("error", "create_failed")];
+            if let Some(entity_id) = form.entity_id.as_deref().filter(|v| !v.trim().is_empty()) {
+                params.push(("entity_id", entity_id));
+            }
+            if let Some(signal_id) = form.signal_id.as_deref().filter(|v| !v.trim().is_empty()) {
+                params.push(("signal_id", signal_id));
+            }
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(params)
+                .finish();
+            Redirect::to(&format!("/workspaces/new?{query}"))
+        }
+    }
 }
 
 /// GET /workspaces/:id — workspace detail page.
@@ -1191,4 +1340,44 @@ pub async fn create_team_assignment(
         .await;
 
     Redirect::to("/team-assignments")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_investigation_fields_are_shared_and_bounded() {
+        let long_title = "x".repeat(200);
+        let (name, description) =
+            signal_investigation_fields(&long_title, Some("Northwind Power Systems"));
+        assert!(name.starts_with("Investigate: "));
+        assert_eq!(name.chars().count(), "Investigate: ".len() + 90);
+        assert!(description.contains("Northwind Power Systems"));
+
+        let (name_without_entity, description_without_entity) =
+            signal_investigation_fields("Capacity alert", None);
+        assert_eq!(name_without_entity, "Investigate: Capacity alert");
+        assert!(!description_without_entity.contains(" on "));
+    }
+
+    #[test]
+    fn workspace_types_and_visibility_are_normalized_to_db_values() {
+        assert_eq!(
+            normalized_workspace_type("investigation", false),
+            "structured"
+        );
+        assert_eq!(normalized_workspace_type("garbage", false), "structured");
+        assert_eq!(normalized_workspace_type("incident", false), "incident");
+        // Signal-originated investigations are always incidents.
+        assert_eq!(normalized_workspace_type("structured", true), "incident");
+
+        assert_eq!(normalized_workspace_visibility("org"), "organization");
+        assert_eq!(
+            normalized_workspace_visibility("organization"),
+            "organization"
+        );
+        assert_eq!(normalized_workspace_visibility("private"), "private");
+        assert_eq!(normalized_workspace_visibility("garbage"), "team");
+    }
 }

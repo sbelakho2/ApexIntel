@@ -16,62 +16,66 @@ use crate::routes::{
     warnings::WarningsPage,
 };
 
-/// Organized navigation groups matching server-rendered rack sidebar.
+/// Workflow groups mirroring the server-rendered IA (audit #15). The wasm
+/// shell only holds routes it actually serves, so a few items differ from the
+/// server nav by design: Search stays in Command Center (no permanent command
+/// bar here), Triage/Queue and Team Assignments are server-only routes, and
+/// Settings/Admin live in a System group because this shell has no user menu.
 const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
-        "Core",
+        "Command Center",
         &[
-            ("Dashboard", "/wasm/"),
-            ("Warnings", "/wasm/warnings"),
-            ("Insights", "/wasm/insights"),
-        ],
-    ),
-    (
-        "Intelligence",
-        &[
-            ("Companies", "/wasm/companies"),
-            ("Persons", "/wasm/persons"),
+            ("Overview", "/wasm/"),
             ("Executive", "/wasm/executive"),
-            ("Analyst", "/wasm/analyst"),
+            ("Activity", "/wasm/activity"),
             ("Search", "/wasm/search"),
         ],
     ),
     (
-        "Operations",
+        "Entities",
         &[
-            ("Operations", "/wasm/operational"),
-            ("Activity", "/wasm/activity"),
-            ("Calibration", "/wasm/calibration"),
-            ("Graph", "/wasm/graph"),
-        ],
-    ),
-    (
-        "Analysis",
-        &[
-            ("Trends", "/wasm/trends"),
-            ("Adversarial", "/wasm/adversarial"),
-            ("Causality", "/wasm/causality"),
-            ("Timeline", "/wasm/entities/demo/timeline"),
-        ],
-    ),
-    (
-        "Competitive",
-        &[
+            ("Companies", "/wasm/companies"),
             ("Competitors", "/wasm/competitors"),
+            ("Persons", "/wasm/persons"),
+            ("Psych Profiles", "/wasm/psych-profiles"),
+        ],
+    ),
+    (
+        "Signals",
+        &[
+            ("Warnings", "/wasm/warnings"),
+            ("Insights", "/wasm/insights"),
+            ("Trends", "/wasm/trends"),
+            ("Security", "/wasm/security"),
+            ("Threat Intel", "/wasm/threat-intel"),
+            ("Supply Chain", "/wasm/supply-risk"),
+            ("Adversarial", "/wasm/adversarial"),
+        ],
+    ),
+    (
+        "Investigations",
+        &[
+            ("Graph", "/wasm/graph"),
+            ("Timeline", "/wasm/entities/demo/timeline"),
+            ("Operations", "/wasm/operational"),
+            ("Analyst", "/wasm/analyst"),
+            ("Memos", "/wasm/memos"),
+            ("Causality", "/wasm/causality"),
+        ],
+    ),
+    (
+        "Sales Intelligence",
+        &[
             ("Landscape", "/wasm/competitive-landscape"),
             ("Strategic Radar", "/wasm/strategic-radar"),
             ("Battlecards", "/wasm/battlecards"),
-            ("Supply Chain", "/wasm/supply-risk"),
         ],
     ),
     (
-        "Content",
+        "Automations",
         &[
-            ("Memos", "/wasm/memos"),
             ("Recipes", "/wasm/recipes"),
-            ("Security", "/wasm/security"),
-            ("Threat Intel", "/wasm/threat-intel"),
-            ("Psych Profiles", "/wasm/psych-profiles"),
+            ("Calibration", "/wasm/calibration"),
         ],
     ),
     (

@@ -221,7 +221,9 @@ pub struct HealthItem {
     pub href: String,
 }
 
-fn age_label(dt: DateTime<Utc>) -> String {
+/// Short "how long ago" label shared by dashboard and entity/signal views so
+/// the same timestamp reads identically across the product.
+pub(crate) fn age_label(dt: DateTime<Utc>) -> String {
     let delta = Utc::now().signed_duration_since(dt);
     let minutes = delta.num_minutes();
     if minutes < 1 {

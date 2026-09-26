@@ -97,29 +97,23 @@ The app shell is defined in [`crates/frontend/src/app.rs`](../crates/frontend/sr
 
 - **Router base**: `/wasm` (all routes are prefixed with `/wasm/`)
 - **Layout**: CSS Grid with 260px sidebar + flexible main area (desktop); single-column with slide-in nav (mobile)
-- **Navigation**: 16 nav items + 1 "Adversarial" link, rendered from a `NAV_ITEMS` constant
+- **Navigation**: workflow groups rendered from the `NAV_GROUPS` constant
 - **Routes**: Defined via `<Routes base="/wasm">` with nested `<Route path="..." view=... />` components
 
 ### Navigation
 
+Primary navigation mirrors the server-rendered workflow IA (audit #15):
+workflows first, database tables never peers.
+
 ```rust
-const NAV_ITEMS: [(&str, &str); 16] = [
-    ("Overview", "/"),
-    ("Warnings", "/warnings"),
-    ("Insights", "/insights"),
-    ("Companies", "/companies"),
-    ("Persons", "/persons"),
-    ("Search", "/search"),
-    ("Memos", "/memos"),
-    ("Calibration", "/calibration"),
-    ("Graph", "/graph"),
-    ("Competitors", "/competitors"),
-    ("Security", "/security"),
-    ("Recipes", "/recipes"),
-    ("Settings", "/settings"),
-    ("Admin", "/admin"),
-    ("Causality", "/causality"),
-    ("Timeline", "/entities/demo/timeline"),
+const NAV_GROUPS: &[(&str, &[(&str, &str)])] = &[
+    ("Command Center", &[("Overview", "/wasm/"), ("Executive", "/wasm/executive"), ("Activity", "/wasm/activity"), ("Search", "/wasm/search")]),
+    ("Entities", &[("Companies", "/wasm/companies"), ("Persons", "/wasm/persons"), ("Psych Profiles", "/wasm/psych-profiles")]),
+    ("Signals", &[("Warnings", "/wasm/warnings"), ("Insights", "/wasm/insights"), ("Trends", "/wasm/trends"), ("Security", "/wasm/security"), ("Threat Intel", "/wasm/threat-intel"), ("Supply Chain", "/wasm/supply-risk"), ("Adversarial", "/wasm/adversarial")]),
+    ("Investigations", &[("Graph", "/wasm/graph"), ("Timeline", "/wasm/entities/demo/timeline"), ("Operations", "/wasm/operational"), ("Analyst", "/wasm/analyst"), ("Memos", "/wasm/memos"), ("Causality", "/wasm/causality")]),
+    ("Sales Intelligence", &[("Competitors", "/wasm/competitors"), ("Landscape", "/wasm/competitive-landscape"), ("Strategic Radar", "/wasm/strategic-radar"), ("Battlecards", "/wasm/battlecards")]),
+    ("Automations", &[("Recipes", "/wasm/recipes"), ("Calibration", "/wasm/calibration")]),
+    ("System", &[("Settings", "/wasm/settings"), ("Admin", "/wasm/admin")]),
 ];
 ```
 

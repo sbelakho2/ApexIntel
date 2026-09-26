@@ -85,6 +85,20 @@ pub struct EvidenceItem {
     pub found_at: String,
 }
 
+/// Semantic-merge recurrence summary for a signal: how many times it repeated,
+/// which source domains corroborated it, and whether repeats escalated severity.
+#[derive(Clone, Debug)]
+pub struct SignalRecurrence {
+    pub occurrence_count: i64,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub source_domains: Vec<String>,
+    pub merged_source_count: i64,
+    pub severity_escalated: bool,
+    pub stored_severity: String,
+    pub effective_severity: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct WarningFilterChip {
     pub label: String,
@@ -264,7 +278,8 @@ pub struct WarningDetailPage {
     pub company_name: String,
     pub company_id: String,
     pub region: String,
-    pub confidence: f64,
+    /// Confidence as a whole percentage for display (0–100).
+    pub confidence_pct: i64,
     pub created_at: String,
     pub updated_at: String,
     pub acknowledged: bool,
@@ -272,6 +287,12 @@ pub struct WarningDetailPage {
     pub acknowledged_at: Option<String>,
     pub acknowledged_note: Option<String>,
     pub review_outcome: Option<String>,
+    /// Signal brief: what / why / reliability / entity / recurrence / next action.
+    pub impact: String,
+    pub reliability_label: String,
+    pub corroboration: String,
+    pub next_actions: Vec<String>,
+    pub recurrence: SignalRecurrence,
     pub evidence: Vec<EvidenceItem>,
     pub related_entities: Vec<RelatedEntity>,
     pub annotations: Vec<AnalystNoteItem>,
@@ -941,6 +962,120 @@ pub async fn get_warning(
         })
         .collect();
 
+    // ── Signal brief: semantic-merge recurrence ─────────────────────────
+    let merge_state = DataState::from_result(
+        store.get_triage_merge_info("warning", uuid).await,
+        "get_triage_merge_info failed (web warning detail)",
+        |_| false,
+    );
+    DegradedNotice::capture(&merge_state, &mut degraded_notice);
+    let merge_info = merge_state.into_loaded_or_default();
+
+    let mut source_domains: Vec<String> = evidence
+        .iter()
+        .map(|e| e.source.clone())
+        .filter(|source| !source.is_empty() && source != "unknown")
+        .collect();
+    if let Some(merge) = &merge_info {
+        for url in &merge.merged_source_urls {
+            if let Some(domain) = url.split('/').nth(2) {
+                if !domain.is_empty() {
+                    source_domains.push(domain.to_string());
+                }
+            }
+        }
+    }
+    source_domains.sort();
+    source_domains.dedup();
+
+    let stored_severity = warning.severity.clone();
+    let effective_severity = merge_info
+        .as_ref()
+        .and_then(|merge| merge.static_severity.clone())
+        .filter(|severity| !severity.is_empty())
+        .unwrap_or_else(|| stored_severity.clone());
+    let severity_escalated = apex_triage::semantic_dedup::severity_rank(&effective_severity)
+        > apex_triage::semantic_dedup::severity_rank(&stored_severity);
+    let occurrence_count = merge_info
+        .as_ref()
+        .map(|merge| i64::from(merge.occurrence_count))
+        .unwrap_or(1)
+        .max(1);
+    let first_seen = merge_info
+        .as_ref()
+        .map(|merge| merge.first_seen_at.format("%Y-%m-%d %H:%M").to_string())
+        .or_else(|| {
+            warning
+                .created_at
+                .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        })
+        .unwrap_or_else(|| warning.ts_utc.format("%Y-%m-%d %H:%M").to_string());
+    let last_seen = merge_info
+        .as_ref()
+        .and_then(|merge| merge.last_seen_at)
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .or_else(|| {
+            warning
+                .updated_at
+                .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        })
+        .unwrap_or_else(|| warning.ts_utc.format("%Y-%m-%d %H:%M").to_string());
+
+    let recurrence = SignalRecurrence {
+        occurrence_count,
+        first_seen,
+        last_seen,
+        source_domains: source_domains.clone(),
+        merged_source_count: merge_info
+            .as_ref()
+            .map(|merge| merge.merged_source_urls.len() as i64)
+            .unwrap_or(0),
+        severity_escalated,
+        stored_severity: stored_severity.clone(),
+        effective_severity: effective_severity.clone(),
+    };
+
+    let confidence_value = warning.confidence.unwrap_or(0.0);
+    let reliability_label = if confidence_value >= 0.8 {
+        "High confidence"
+    } else if confidence_value >= 0.5 {
+        "Moderate confidence"
+    } else {
+        "Low confidence"
+    }
+    .to_string();
+    let corroboration = if source_domains.len() >= 3 {
+        format!(
+            "{} independent source domains corroborate this signal",
+            source_domains.len()
+        )
+    } else if source_domains.len() == 2 {
+        "Two independent source domains".to_string()
+    } else if source_domains.len() == 1 {
+        "Single source domain — corroborate before acting".to_string()
+    } else {
+        "No source domain recorded".to_string()
+    };
+
+    let next_actions = {
+        let mut actions = warning.actions.clone().unwrap_or_default();
+        if actions.is_empty() {
+            actions = match effective_severity.as_str() {
+                "critical" => vec![
+                    "Open an investigation and assign an owner".to_string(),
+                    "Acknowledge and notify the account team".to_string(),
+                ],
+                "high" => vec![
+                    "Acknowledge and assign an owner".to_string(),
+                    "Open an investigation if the entity is material".to_string(),
+                ],
+                "medium" => vec!["Review the evidence and acknowledge".to_string()],
+                _ => vec!["Monitor — acknowledge if the signal recurs".to_string()],
+            };
+        }
+        actions
+    };
+
     let annotations_state = DataState::from_result(
         store
             .list_annotations_scoped(
@@ -1012,7 +1147,7 @@ pub async fn get_warning(
         company_name: primary_company_name,
         company_id: primary_company_id,
         region: warning.region.clone().unwrap_or_default(),
-        confidence: warning.confidence.unwrap_or(0.0),
+        confidence_pct: confidence_to_pct(warning.confidence.unwrap_or(0.0)),
         created_at: warning
             .created_at
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
@@ -1028,6 +1163,11 @@ pub async fn get_warning(
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string()),
         acknowledged_note: warning.acknowledged_note.clone(),
         review_outcome: warning.review_outcome.clone(),
+        impact: warning.impact.clone().unwrap_or_default(),
+        reliability_label,
+        corroboration,
+        next_actions,
+        recurrence,
         evidence,
         related_entities,
         annotations,
@@ -1092,6 +1232,81 @@ pub async fn acknowledge_warning_html(
         Err(e) => {
             tracing::error!("Failed to acknowledge warning {id}: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Html("Failed to acknowledge warning".to_string())).into_response()
+        }
+    }
+}
+
+/// POST /warnings/:id/investigate — start an investigation workspace from a
+/// signal in one action, then land on the workspace (decision loop: signal →
+/// investigation). The workspace keeps the entity link via `entity_focus`.
+pub async fn start_investigation_html(
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("Invalid warning ID".to_string()),
+            )
+                .into_response()
+        }
+    };
+
+    let warning = match store.get_warning(uuid).await {
+        Ok(Some(warning)) => warning,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("Warning not found".to_string())).into_response()
+        }
+        Err(error) => {
+            tracing::error!("Failed to load warning {id} for investigation: {error}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Failed to start investigation".to_string()),
+            )
+                .into_response();
+        }
+    };
+
+    // Same name/description derivation as the prefilled workspace form, so the
+    // one-click and form entry points produce the same workspace.
+    let entity_name = match warning.entity_ids.as_deref().unwrap_or_default().first() {
+        Some(entity_id) => store
+            .get_company_names_by_ids(&[*entity_id])
+            .await
+            .ok()
+            .and_then(|names| names.into_iter().next().map(|(_, name, _, _)| name)),
+        None => None,
+    };
+    let (name, description) =
+        super::collaboration::signal_investigation_fields(&warning.title, entity_name.as_deref());
+    let entity_focus = serde_json::json!(warning
+        .entity_ids
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|entity_id| entity_id.to_string())
+        .collect::<Vec<_>>());
+
+    match store
+        .create_investigation_workspace(
+            &name,
+            Some(&description),
+            "incident",
+            &session.username,
+            None,
+            "team",
+            &["signal".to_string(), warning.warning_type.clone()],
+            &entity_focus,
+        )
+        .await
+    {
+        Ok(workspace) => Redirect::to(&format!("/workspaces/{}", workspace.id)).into_response(),
+        Err(error) => {
+            tracing::error!("Failed to create investigation for warning {id}: {error}");
+            Redirect::to(&format!("/warnings/{id}")).into_response()
         }
     }
 }
@@ -1280,4 +1495,93 @@ pub async fn create_warning_note(
     }
 
     axum::response::Redirect::to(&format!("/warnings/{id}")).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detail_page() -> WarningDetailPage {
+        WarningDetailPage {
+            current_path: "/warnings/w-1".into(),
+            can_admin: true,
+            username: "admin".into(),
+            warning_count: 1,
+            theme: "light".into(),
+            status_strip: crate::system_status::StatusStrip::unknown(),
+            briefing_mode: false,
+            id: "0ddba110-0000-4000-8000-000000000001".into(),
+            title: "Northwind Power expands cell manufacturing capacity".into(),
+            severity: "high".into(),
+            warning_type: "capacity_alert".into(),
+            description: "Permit filings indicate a 4 GWh expansion.".into(),
+            company_name: "Northwind Power Systems".into(),
+            company_id: "c0ffee00-0000-4000-8000-000000000001".into(),
+            region: "US".into(),
+            confidence_pct: 83,
+            created_at: "2026-01-15 08:30".into(),
+            updated_at: "2026-01-20 11:00".into(),
+            acknowledged: false,
+            acknowledged_by: None,
+            acknowledged_at: None,
+            acknowledged_note: None,
+            review_outcome: None,
+            impact: "Grid-scale storage supply shifts within three quarters.".into(),
+            reliability_label: "High confidence".into(),
+            corroboration: "3 independent source domains corroborate this signal".into(),
+            next_actions: vec!["Acknowledge and assign an owner".into()],
+            recurrence: SignalRecurrence {
+                occurrence_count: 3,
+                first_seen: "2026-01-15 08:30".into(),
+                last_seen: "2026-01-20 11:00".into(),
+                source_domains: vec!["example.test".into(), "news.example.test".into()],
+                merged_source_count: 3,
+                severity_escalated: true,
+                stored_severity: "high".into(),
+                effective_severity: "critical".into(),
+            },
+            evidence: vec![EvidenceItem {
+                id: "0".into(),
+                source: "example.test".into(),
+                url: "https://example.test/reports/northwind-capacity-expansion".into(),
+                snippet: String::new(),
+                found_at: "2026-01-15 08:30".into(),
+            }],
+            related_entities: vec![RelatedEntity {
+                kind: "company".into(),
+                id: "c0ffee00-0000-4000-8000-000000000001".into(),
+                name: "Northwind Power Systems".into(),
+            }],
+            annotations: vec![AnalystNoteItem {
+                author: "admin".into(),
+                body: "Watching the Austin permit thread.".into(),
+                created_at: "2026-01-16 09:00".into(),
+                visibility: "team".into(),
+                tags: vec!["escalation".into()],
+            }],
+            ai_analysis: None,
+            degraded_notice: None,
+        }
+    }
+
+    #[test]
+    fn warning_brief_answers_what_why_reliability_entity_recurrence_next_action() {
+        let html = detail_page().render().expect("warning detail renders");
+
+        for needle in [
+            "Signal Brief",
+            "Why it matters",
+            "Reliability",
+            "Entity",
+            "Recurrence",
+            "Next action",
+            "3 occurrences",
+            "Severity escalated high → critical",
+            "news.example.test",
+            "data-claim-source",
+            "data-claim=\"1\"",
+        ] {
+            assert!(html.contains(needle), "signal brief missing {needle}");
+        }
+    }
 }

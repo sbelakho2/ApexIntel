@@ -1070,6 +1070,10 @@ pub struct WarningRow {
     pub source_urls: Option<Vec<String>>,
     pub entity_ids: Option<Vec<Uuid>>,
     pub confidence: Option<f64>,
+    /// Why the signal matters (warnings.impact); drives the warning "Why" brief.
+    pub impact: Option<String>,
+    /// Recommended next actions (warnings.actions); empty means "derive defaults".
+    pub actions: Option<Vec<String>>,
     pub ts_utc: DateTime<Utc>,
     pub acknowledged: bool,
     pub acknowledged_by: Option<String>,
@@ -1079,6 +1083,23 @@ pub struct WarningRow {
     pub deleted_at: Option<DateTime<Utc>>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Semantic-merge bookkeeping accumulated on the triage queue row backing a
+/// warning/insight. Warnings store one row per deduplicated signal; repeats
+/// are counted here (`occurrence_count`) with merged source URLs and the
+/// first/last observation timestamps, so the UI can answer "occurrences /
+/// first seen / last seen / severity escalation" from the merge engine itself.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct TriageMergeInfo {
+    pub id: Uuid,
+    pub item_type: String,
+    pub source_id: String,
+    pub static_severity: Option<String>,
+    pub occurrence_count: i32,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub merged_source_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]

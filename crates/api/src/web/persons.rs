@@ -81,6 +81,23 @@ fn normalize_ratio(value: f64) -> f64 {
     normalized.clamp(0.0, 1.0)
 }
 
+/// Sort weight for buying-centre roles, mirroring the canonical engagement
+/// priority in `apex_poi::buying_center::BuyingCenterRole::priority()`
+/// (Buyer, Influencer, Initiator, Gatekeeper, Decider, User) so this view
+/// ranks accounts the same way the rest of the product does. Higher sorts
+/// first; unknown labels rank last.
+fn buying_center_role_rank(role: &str) -> i32 {
+    match role {
+        "Buyer" => 100 - 1,
+        "Influencer" => 100 - 2,
+        "Initiator" => 100 - 3,
+        "Gatekeeper" => 100 - 4,
+        "Decider" => 100 - 5,
+        "User" => 100 - 6,
+        _ => 0,
+    }
+}
+
 fn priority_metric(vector: &Option<serde_json::Value>, key: &str) -> Option<f64> {
     vector
         .as_ref()
@@ -270,6 +287,9 @@ pub struct PersonListQuery {
     pub region: Option<String>,
     pub priority: Option<String>,
     pub q: Option<String>,
+    /// `buying-centers` renders the Sales Intelligence workspace view over the
+    /// same person data: people grouped by organisation with decision roles.
+    pub view: Option<String>,
 }
 
 const PERSON_REGION_FILTERS: [&str; 6] = ["Tunisia", "Morocco", "Israel", "EU", "China", "Global"];
@@ -329,6 +349,25 @@ pub struct PersonListCard {
     pub priority: String,
     pub influence_score: i64,
     pub tags: Vec<String>,
+}
+
+/// One person inside a buying-centre group on the Sales Intelligence view.
+#[derive(Clone, Debug)]
+pub struct BuyingCenterPerson {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub buying_center_role: String,
+    pub influence_score: i64,
+}
+
+/// People grouped by organisation with their buying-centre role.
+#[derive(Clone, Debug)]
+pub struct BuyingCenterGroup {
+    pub organization: String,
+    pub region: String,
+    pub deciders: i64,
+    pub members: Vec<BuyingCenterPerson>,
 }
 
 #[derive(Clone, Debug)]
@@ -411,6 +450,10 @@ pub struct PersonsPage {
     pub active_filters: i64,
     pub reset_href: String,
     pub search_query: String,
+    /// Sales Intelligence workspace view: buying centres (people grouped by
+    /// organisation with decision roles) instead of a flat POI table.
+    pub buying_center_mode: bool,
+    pub buying_centers: Vec<BuyingCenterGroup>,
     /// Rendered when person queries failed, instead of "no results".
     pub degraded_notice: Option<String>,
 }
@@ -425,7 +468,12 @@ fn url_encode_component(input: &str) -> String {
         .replace('+', "%2B")
 }
 
-fn build_persons_href(region: Option<&str>, priority: Option<&str>, q: Option<&str>) -> String {
+fn build_persons_href(
+    base: &str,
+    region: Option<&str>,
+    priority: Option<&str>,
+    q: Option<&str>,
+) -> String {
     let mut params: Vec<String> = Vec::new();
     if let Some(region) = region {
         let region = region.trim();
@@ -447,9 +495,9 @@ fn build_persons_href(region: Option<&str>, priority: Option<&str>, q: Option<&s
     }
 
     if params.is_empty() {
-        "/persons".to_string()
+        base.to_string()
     } else {
-        format!("/persons?{}", params.join("&"))
+        format!("{base}?{}", params.join("&"))
     }
 }
 
@@ -468,7 +516,13 @@ pub async fn list_persons(
         })
         .await
         .unwrap_or(0);
-    let ctx = PageContext::from_session(&session, "/persons", unack);
+    let buying_center_mode = query.view.as_deref() == Some("buying-centers");
+    let route = if buying_center_mode {
+        "/buying-centers"
+    } else {
+        "/persons"
+    };
+    let ctx = PageContext::from_session(&session, route, unack);
 
     let mut degraded_notice: Option<String> = None;
     let all_rows_state = DataState::from_result(
@@ -627,9 +681,14 @@ pub async fn list_persons(
         .map(|region| {
             let active = selected_region.eq_ignore_ascii_case(region);
             let href = if active {
-                build_persons_href(None, Some(&selected_priority), Some(&selected_q))
+                build_persons_href(route, None, Some(&selected_priority), Some(&selected_q))
             } else {
-                build_persons_href(Some(region), Some(&selected_priority), Some(&selected_q))
+                build_persons_href(
+                    route,
+                    Some(region),
+                    Some(&selected_priority),
+                    Some(&selected_q),
+                )
             };
             RegionFilterChip {
                 href,
@@ -644,9 +703,14 @@ pub async fn list_persons(
         .map(|priority| {
             let active = selected_priority == *priority;
             let href = if active {
-                build_persons_href(Some(&selected_region), None, Some(&selected_q))
+                build_persons_href(route, Some(&selected_region), None, Some(&selected_q))
             } else {
-                build_persons_href(Some(&selected_region), Some(priority), Some(&selected_q))
+                build_persons_href(
+                    route,
+                    Some(&selected_region),
+                    Some(priority),
+                    Some(&selected_q),
+                )
             };
             PriorityFilterChip {
                 href,
@@ -659,6 +723,59 @@ pub async fn list_persons(
     let active_filters = i64::from(!selected_region.is_empty())
         + i64::from(!selected_priority.is_empty())
         + i64::from(!selected_q.is_empty());
+
+    // Sales Intelligence view: group the same filtered people into buying
+    // centres by organisation, ranked by decision role.
+    let buying_centers: Vec<BuyingCenterGroup> = {
+        use std::collections::BTreeMap;
+        let mut grouped: BTreeMap<String, (String, Vec<BuyingCenterPerson>)> = BTreeMap::new();
+        for row in &filtered_rows {
+            let organization = if row.organization.trim().is_empty() {
+                "Unaffiliated".to_string()
+            } else {
+                row.organization.clone()
+            };
+            let role = classify_buying_center_role(&row.role, &row.role_family);
+            let entry = grouped
+                .entry(organization)
+                .or_insert_with(|| (row.region.clone(), Vec::new()));
+            entry.1.push(BuyingCenterPerson {
+                id: row.id.to_string(),
+                name: row.name.clone(),
+                role: row.role.clone(),
+                buying_center_role: role.to_string(),
+                influence_score: (row.priority_score * 100.0).round() as i64,
+            });
+        }
+        let mut groups: Vec<BuyingCenterGroup> = grouped
+            .into_iter()
+            .map(|(organization, (region, mut members))| {
+                members.sort_by(|a, b| {
+                    buying_center_role_rank(&b.buying_center_role)
+                        .cmp(&buying_center_role_rank(&a.buying_center_role))
+                        .then(b.influence_score.cmp(&a.influence_score))
+                });
+                let deciders = members
+                    .iter()
+                    .filter(|member| member.buying_center_role == "Decider")
+                    .count() as i64;
+                BuyingCenterGroup {
+                    organization,
+                    region,
+                    deciders,
+                    members,
+                }
+            })
+            .collect();
+        groups.sort_by(|a, b| {
+            b.deciders.cmp(&a.deciders).then(
+                a.organization
+                    .to_lowercase()
+                    .cmp(&b.organization.to_lowercase()),
+            )
+        });
+        groups
+    };
 
     let tpl = PersonsPage {
         current_path: ctx.current_path,
@@ -677,12 +794,28 @@ pub async fn list_persons(
         region_filters,
         priority_filters,
         active_filters,
-        reset_href: "/persons".into(),
+        reset_href: route.to_string(),
         search_query: selected_q,
+        buying_center_mode,
+        buying_centers,
     };
 
     let _ = is_htmx_request(&headers);
     super::render_template(&tpl)
+}
+
+/// GET /buying-centers — Sales Intelligence workspace view over the same
+/// person data: people grouped by organisation with decision roles. Kept as a
+/// first-class route (not a query on /persons) so navigation active states and
+/// deep links are unambiguous.
+pub async fn list_buying_centers(
+    headers: HeaderMap,
+    session: Extension<WebSession>,
+    Extension(store): Extension<Arc<PgStore>>,
+    Query(mut query): Query<PersonListQuery>,
+) -> impl IntoResponse {
+    query.view = Some("buying-centers".to_string());
+    list_persons(headers, session, Extension(store), Query(query)).await
 }
 
 /// GET /persons/:id — person of interest detail page.
@@ -1003,4 +1136,50 @@ pub async fn get_person(
 
     let _ = is_htmx_request(&headers);
     super::render_template(&tpl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_classified_role_has_a_rank_matching_canonical_priority() {
+        // Sample titles that exercise each branch of classify_buying_center_role.
+        let cases = [
+            ("Chief Executive Officer", "Executive", "Decider"),
+            ("VP Procurement", "Procurement", "Buyer"),
+            ("Quality Manager", "Quality", "Gatekeeper"),
+            ("Director of Marketing", "Marketing", "Influencer"),
+            ("Operations Analyst", "Operations", "User"),
+            ("Market Research Lead", "Research", "Initiator"),
+        ];
+        for (title, family, expected) in cases {
+            let role = classify_buying_center_role(title, family);
+            assert_eq!(role, expected, "{title} classified as {role}");
+            assert!(
+                buying_center_role_rank(role) > 0,
+                "role {role} has no sort rank"
+            );
+        }
+        // Canonical engagement order: Buyer > Influencer > Initiator >
+        // Gatekeeper > Decider > User (apex_poi BuyingCenterRole::priority).
+        assert!(buying_center_role_rank("Buyer") > buying_center_role_rank("Influencer"));
+        assert!(buying_center_role_rank("Influencer") > buying_center_role_rank("Initiator"));
+        assert!(buying_center_role_rank("Initiator") > buying_center_role_rank("Gatekeeper"));
+        assert!(buying_center_role_rank("Gatekeeper") > buying_center_role_rank("Decider"));
+        assert!(buying_center_role_rank("Decider") > buying_center_role_rank("User"));
+        assert_eq!(buying_center_role_rank("Unknown"), 0);
+    }
+
+    #[test]
+    fn persons_href_keeps_the_active_view_base() {
+        assert_eq!(
+            build_persons_href("/buying-centers", None, None, None),
+            "/buying-centers"
+        );
+        assert_eq!(
+            build_persons_href("/buying-centers", Some("US"), None, Some("north")),
+            "/buying-centers?region=US&q=north"
+        );
+    }
 }

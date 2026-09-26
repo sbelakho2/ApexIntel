@@ -9,23 +9,42 @@
 //   * short page titles do not break mid-word into "vertical text"
 //   * long unbroken strings (entity names, URLs) do not widen the layout
 //   * data-table cells stay on one line on small screens
-// It also checks the unauthenticated redirect, the styled 404, and that every
-// link/hx-* target rendered on a page resolves (link integrity).
+// It also checks the unauthenticated redirect, the styled 404, that every
+// link/hx-* target rendered on a page resolves (link integrity), the workflow
+// information architecture, and the task-based flows with explicit action
+// budgets (open evidence <=2, watch alerts <=2, start investigation <=2,
+// find person <=2, bookmark insight, trace claim -> source).
 //
 // Usage: BASE_URL=http://127.0.0.1:9095 ADMIN_USER=admin ADMIN_PASS=adminpassword \
-//        node scripts/ci/e2e_server_ui.mjs
+//        DATABASE_URL=postgres://... node scripts/ci/e2e_server_ui.mjs
 import { chromium } from 'playwright';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { SEED, seedDatabase } = require('../../e2e/helpers/server-ui-fixtures.cjs');
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:9095';
 const USER = process.env.ADMIN_USER || 'admin';
 const PASS = process.env.ADMIN_PASS || 'adminpassword';
 
 const ROUTES = [
-  '/', '/warnings', '/insights', '/companies', '/persons', '/competitors',
+  '/', '/warnings', '/insights', '/companies', '/persons', '/buying-centers',
+  '/competitors',
   '/battlecards', '/search', '/graph', '/triage', '/workspaces', '/queue',
   '/activity', '/supplier-risk', '/pipeline', '/evidence', '/team-assignments',
   '/executive', '/trends', '/security', '/admin', '/memos', '/notifications',
   '/settings', '/settings/alerts',
+];
+
+// Audit #15: primary navigation is organised by analyst workflow, not by
+// database table. Settings lives in the user menu.
+const WORKFLOW_NAV_GROUPS = [
+  'Command Center',
+  'Entities',
+  'Signals',
+  'Investigations',
+  'Sales Intelligence',
+  'Automations',
 ];
 
 const VIEWPORTS = [
@@ -44,6 +63,7 @@ const EXPECTED_MOBILE_ACTIVE = {
   '/trends': 'Signals',
   '/companies': 'Entities',
   '/persons': 'Entities',
+  '/buying-centers': 'Entities',
   '/competitors': 'Entities',
   '/triage': 'Triage',
   '/queue': 'Triage',
@@ -91,6 +111,10 @@ async function collectLinks(page, origin) {
 
 const browser = await chromium.launch();
 try {
+  // ── Deterministic fixtures for the task-based flows ──────────────────
+  // The route sweep does not need data, but the budgeted analyst tasks do.
+  await seedDatabase();
+
   // ── Unauthenticated behaviour ─────────────────────────────────────────
   {
     const ctx = await browser.newContext();
@@ -166,10 +190,25 @@ try {
         userMenuSettings: !!document.querySelector('details.apex-user-menu a[href="/settings"]')
           || !!document.querySelector('a[href="/settings"]'),
         userMenu: !!document.querySelector('details.apex-user-menu'),
+        navGroups: Array.from(document.querySelectorAll('.apex-nav-group-label'))
+          .map((el) => el.textContent.trim()),
+        settingsInPrimaryNav: !!document.querySelector('nav[aria-label="Sections"] a[href="/settings"]'),
       }));
       if (!ia.commandBar) v(`[${vp.name}] ${route} missing permanent command bar search entry`);
       if (vp.name === 'desktop' && !ia.userMenuSettings) {
         v(`[desktop] ${route} settings not reachable from the user menu`);
+      }
+
+      // ── Audit #15: workflow navigation IA ────────────────────────────────
+      if (route === '/') {
+        for (const group of WORKFLOW_NAV_GROUPS) {
+          if (!ia.navGroups.includes(group)) {
+            v(`[${vp.name}] missing workflow nav group "${group}"`);
+          }
+        }
+        if (ia.settingsInPrimaryNav) {
+          v(`[${vp.name}] settings should live in the user menu, not primary navigation`);
+        }
       }
 
       // ── P0 #34: 5-item mobile bottom bar contract ─────────────────────────
@@ -241,6 +280,131 @@ try {
       }
     }
     await page.close();
+  }
+
+  // ── Task-based flows with explicit action budgets ─────────────────────
+  // Each budget counts user actions only (clicks/keys); login/goto are setup.
+  {
+    const flow = async (name, fn, budget) => {
+      const page = await authCtx.newPage();
+      const state = { actions: 0 };
+      const act = async (label, run) => {
+        state.actions += 1;
+        await run();
+        if (state.actions > budget) {
+          v(`task "${name}" exceeded budget ${budget} at action "${label}"`);
+        }
+      };
+      try {
+        await fn(page, act);
+      } catch (error) {
+        v(`task "${name}" failed: ${String(error.message || error).slice(0, 200)}`);
+      } finally {
+        await page.close();
+      }
+    };
+
+    // Open evidence from a warning in <=2 actions.
+    await flow('open evidence from warning', async (page, act) => {
+      const warning = SEED.warnings[0];
+      await page.goto(`${BASE}/warnings`, { waitUntil: 'domcontentloaded' });
+      await act('open warning', () =>
+        page.locator('tr[data-row-link]', { hasText: warning.title }).click());
+      await page.waitForURL(`**/warnings/${warning.id}`);
+      const sourceLink = page.locator('[data-claim-source]').first();
+      if (!(await sourceLink.isVisible().catch(() => false))) {
+        v('task "open evidence from warning": no claim source link rendered');
+        return;
+      }
+      const evidenceHref = await sourceLink.getAttribute('href');
+      if (!evidenceHref || !evidenceHref.includes('example.test')) {
+        v(`task "open evidence from warning": unexpected evidence href ${evidenceHref}`);
+      }
+      await act('open claim source', async () => {
+        const [popup] = await Promise.all([page.waitForEvent('popup'), sourceLink.click()]);
+        if (!popup) {
+          v('task "open evidence from warning": evidence link did not open the source');
+        }
+        await popup.close();
+      });
+    }, 2);
+
+    // Subscribe to entity alerts in <=2 actions.
+    await flow('watch entity alerts', async (page, act) => {
+      const company = SEED.companies[0];
+      await page.goto(`${BASE}/companies`, { waitUntil: 'domcontentloaded' });
+      await act('open company dossier', () =>
+        page.locator('tr[data-row-link]', { hasText: company.name }).click());
+      await page.waitForURL(`**/companies/${company.id}`);
+      await act('watch alerts', () => page.locator('[data-alert-subscription-save]').click());
+      await page.waitForFunction(
+        () => document.querySelector('[data-alert-subscription-state]')?.textContent.trim() === 'Watching',
+        { timeout: 15_000 }
+      );
+    }, 2);
+
+    // Start an investigation from a signal in <=2 actions.
+    await flow('start investigation from signal', async (page, act) => {
+      const warning = SEED.warnings[0];
+      await page.goto(`${BASE}/warnings`, { waitUntil: 'domcontentloaded' });
+      await act('open warning', () =>
+        page.locator('tr[data-row-link]', { hasText: warning.title }).click());
+      await page.waitForURL(`**/warnings/${warning.id}`);
+      await act('start investigation', () =>
+        page.locator('[data-action="start-investigation"]').click());
+      await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 15_000 });
+      const heading = (await page.locator('h1').first().textContent()) || '';
+      if (!heading.includes('Investigate:')) {
+        v(`task "start investigation from signal": workspace heading "${heading.trim()}"`);
+      }
+    }, 2);
+
+    // Find a person from a company dossier in <=2 actions.
+    await flow('find person from dossier', async (page, act) => {
+      const company = SEED.companies[0];
+      const person = SEED.persons[0];
+      await page.goto(`${BASE}/companies`, { waitUntil: 'domcontentloaded' });
+      await act('open company dossier', () =>
+        page.locator('tr[data-row-link]', { hasText: company.name }).click());
+      await page.waitForURL(`**/companies/${company.id}`);
+      await act('open person', () =>
+        page.locator('[data-person-link]', { hasText: person.name }).first().click());
+      await page.waitForURL(`**/persons/${person.id}`);
+      const body = (await page.locator('#main-content').textContent()) || '';
+      if (!body.includes(person.name)) {
+        v(`task "find person from dossier": ${person.name} not rendered on person page`);
+      }
+    }, 2);
+
+    // Bookmark an insight (<=2 actions from the insight list).
+    await flow('bookmark insight', async (page, act) => {
+      const insight = SEED.insight;
+      await page.goto(`${BASE}/insights`, { waitUntil: 'domcontentloaded' });
+      await act('open insight', () =>
+        page.locator(`a[href="/insights/${insight.id}"]`).first().click());
+      await page.waitForURL(`**/insights/${insight.id}`);
+      await act('bookmark', () =>
+        page.getByRole('button', { name: 'Bookmark', exact: true }).click());
+      await page.waitForSelector('#bookmark-status button[title="Remove bookmark"]', {
+        timeout: 15_000,
+      });
+    }, 2);
+
+    // Trace a claim to its source (one citation click).
+    await flow('trace claim to source', async (page, act) => {
+      const insight = SEED.insight;
+      await page.goto(`${BASE}/insights/${insight.id}`, { waitUntil: 'domcontentloaded' });
+      await act('follow citation', () =>
+        page.locator('a[title="Evidence source 1"]').first().click());
+      await page.waitForFunction(() => window.location.hash === '#source-1', { timeout: 10_000 });
+      const href = await page
+        .locator('#source-1 a[href]')
+        .first()
+        .getAttribute('href');
+      if (href !== insight.evidenceUrl) {
+        v(`task "trace claim to source": source href ${href} (expected ${insight.evidenceUrl})`);
+      }
+    }, 2);
   }
 
   // ── Link integrity (rendered links from the main pages) ───────────────

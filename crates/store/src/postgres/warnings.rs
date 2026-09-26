@@ -97,7 +97,7 @@ impl PgStore {
                    WHERE ranked.rn = 1
                )
                SELECT id, recipe_code, warning_type, title, description, severity, region,
-                      source_urls, entity_ids, confidence, ts_utc, acknowledged,
+                      source_urls, entity_ids, confidence, impact, actions, ts_utc, acknowledged,
                       acknowledged_by, acknowledged_at, acknowledged_note,
                       review_outcome, reviewed_by, reviewed_at, deleted_at, created_at, updated_at
                FROM dedup"#,
@@ -354,6 +354,28 @@ impl PgStore {
             "SELECT * FROM warnings WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Semantic-merge bookkeeping for the triage row backing a warning.
+    pub async fn get_triage_merge_info(
+        &self,
+        item_type: &str,
+        source_id: Uuid,
+    ) -> Result<Option<TriageMergeInfo>> {
+        let row = sqlx::query_as::<_, TriageMergeInfo>(
+            r#"
+            SELECT id, item_type, source_id::text, static_severity, occurrence_count,
+                   created_at AS first_seen_at, last_seen_at, merged_source_urls
+            FROM triage_queue
+            WHERE item_type = $1 AND source_id = $2::uuid
+            LIMIT 1
+            "#,
+        )
+        .bind(item_type)
+        .bind(source_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)

@@ -97,7 +97,7 @@
   </script>
 
   <!-- CSS (compiled via Tailwind standalone CLI from globals.css) -->
-  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260924-p0-component-purge-1">
+  <link rel="stylesheet" href="/static/css/tailwind.css?v=20260926-workflow-ia-1">
   <script src="/static/js/htmx.min.js?v=20260312-runtime-sweep-2" defer></script>
   <script src="/static/js/app.js?v=20260827-b2" defer></script>
   <script src="/static/js/sse-client.js?v=20260827-b2" defer></script>
@@ -558,7 +558,7 @@
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
             <span class="apex-mobile-tab-label">Signals</span>
           </a>
-          <a href="/companies" class="apex-mobile-tab" {% if current_path.starts_with("/companies") || current_path.starts_with("/competitors") || current_path.starts_with("/persons") %}aria-current="location"{% endif %}>
+          <a href="/companies" class="apex-mobile-tab" {% if current_path.starts_with("/companies") || current_path.starts_with("/competitors") || current_path.starts_with("/persons") || current_path.starts_with("/buying-centers") %}aria-current="location"{% endif %}>
             <span class="apex-tab-indicator" aria-hidden="true"></span>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="14" x="2" y="7" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
             <span class="apex-mobile-tab-label">Entities</span>
@@ -940,21 +940,31 @@
 <p class="apex-nav-group-label">{{ label }}</p>
 {% endmacro %}
 
-{# Primary information architecture (P0 #21): eight sections, rendered the
-   same in the desktop sidebar and the mobile drawer. Settings lives in the
-   user menu, Search in the permanent top command bar. #}
+{# Primary information architecture (audit #15): navigation is organised by
+   analyst workflow, not by database table. Six workflow groups, rendered the
+   same in the desktop sidebar and the mobile drawer:
+     Command Center  — what needs attention now
+     Entities        — the dossiers behind the signals
+     Signals         — warning/insight/trend/security views over one signal model
+     Investigations  — workspaces, evidence, graph-as-tool
+     Sales Intelligence — buying centres, pipeline, battlecards
+     Automations     — recipes, sources, jobs (admin-only where the source needs it)
+   Settings lives in the user menu, Search in the permanent top command bar.
+   Every route referenced here is registered in `app_router.rs` (no 404s). #}
 {% macro primary_nav() %}
 <div class="apex-nav-group">
   {% call nav_group("Command Center") %}
   {% call nav_item("/", "Overview") %}
   {% call nav_item("/executive", "Executive") %}
+  {% call nav_item_badge("/triage", "Triage") %}
+  {% call nav_item("/queue", "Queue") %}
   {% call nav_item("/activity", "Activity") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Entities") %}
   {% call nav_item("/companies", "Companies") %}
   {% call nav_item("/competitors", "Competitors") %}
-  {% call nav_item("/persons", "Persons") %}
+  {% call nav_item("/persons", "People") %}
 </div>
 <div class="apex-nav-group">
   {% call nav_group("Signals") %}
@@ -965,11 +975,6 @@
   {% call nav_item("/supplier-risk", "Supplier Risk") %}
 </div>
 <div class="apex-nav-group">
-  {% call nav_group("Triage") %}
-  {% call nav_item("/triage", "Triage") %}
-  {% call nav_item("/queue", "Queue") %}
-</div>
-<div class="apex-nav-group">
   {% call nav_group("Investigations") %}
   {% call nav_item("/workspaces", "Workspaces") %}
   {% call nav_item("/evidence", "Evidence") %}
@@ -978,8 +983,8 @@
   {% call nav_item("/team-assignments", "Team Assignments") %}
 </div>
 <div class="apex-nav-group">
-  {% call nav_group("Sales Intel") %}
-  {% call nav_item("/persons", "Buying Centers") %}
+  {% call nav_group("Sales Intelligence") %}
+  {% call nav_item("/buying-centers", "Buying Centres") %}
   {% call nav_item("/pipeline", "Pipeline") %}
   {% call nav_item("/battlecards", "Battlecards") %}
 </div>
@@ -1009,7 +1014,7 @@
 
 {% macro nav_item_badge(href, label) %}
 <a href="{{ href }}"
-   class="sidebar-item {% if current_path == href || current_path.starts_with(href) %}active{% endif %}"
+   class="sidebar-item {% if current_path == href || (href != "/" && current_path.starts_with(href)) %}active{% endif %}"
    {% if current_path == href %}aria-current="page"{% endif %}>
   {{ label }}
   {# B310: class, not id — the badge is rendered twice (mobile + desktop

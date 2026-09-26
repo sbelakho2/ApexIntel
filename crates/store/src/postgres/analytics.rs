@@ -87,12 +87,13 @@ impl PgStore {
     /// pages without per-row count queries.
     pub async fn get_warning_counts_by_entity(&self) -> Result<Vec<(Uuid, i64)>> {
         let rows = sqlx::query(
-            r#"SELECT unnest(entity_ids) AS entity_id, COUNT(*)::BIGINT AS cnt
-               FROM warnings
-               WHERE entity_ids IS NOT NULL
-                                 AND deleted_at IS NULL
-                 AND array_length(entity_ids, 1) > 0
-               GROUP BY entity_id"#,
+            r#"SELECT u.entity_id AS entity_id, COUNT(*)::BIGINT AS cnt
+               FROM warnings w
+               CROSS JOIN LATERAL unnest(w.entity_ids) AS u(entity_id)
+               WHERE w.entity_ids IS NOT NULL
+                 AND w.deleted_at IS NULL
+                 AND array_length(w.entity_ids, 1) > 0
+               GROUP BY u.entity_id"#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -110,11 +111,12 @@ impl PgStore {
     /// Total insight count per entity across all time (B315).
     pub async fn get_insight_counts_by_entity(&self) -> Result<Vec<(Uuid, i64)>> {
         let rows = sqlx::query(
-            r#"SELECT unnest(entity_ids) AS entity_id, COUNT(*)::BIGINT AS cnt
-               FROM insights
-               WHERE entity_ids IS NOT NULL
-                 AND array_length(entity_ids, 1) > 0
-               GROUP BY entity_id"#,
+            r#"SELECT u.entity_id AS entity_id, COUNT(*)::BIGINT AS cnt
+               FROM insights i
+               CROSS JOIN LATERAL unnest(i.entity_ids) AS u(entity_id)
+               WHERE i.entity_ids IS NOT NULL
+                 AND array_length(i.entity_ids, 1) > 0
+               GROUP BY u.entity_id"#,
         )
         .fetch_all(&self.pool)
         .await?;
