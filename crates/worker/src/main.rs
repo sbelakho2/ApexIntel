@@ -187,6 +187,7 @@ mod bootstrap;
 mod continuous_improvement;
 mod digest;
 mod generation;
+mod intelligence_ingress;
 mod llm_runtime;
 mod poi;
 mod prompts;
@@ -394,6 +395,14 @@ async fn main() -> Result<()> {
         ),
     }
 
+    // ─── Shared warning ingress ───────────────────────────────────────────
+    // Every warning-producing job submits through this ONE ingress so
+    // deterministic warning dedup, semantic triage dedup, alert publication
+    // and activity logging happen on every producer path. The triage ingestor
+    // is constructed here, never per job.
+    let ingress = Arc::new(intelligence_ingress::build(Arc::clone(&store)).await);
+    tracing::info!("intelligence ingress initialized");
+
     // ─── Liveness heartbeat (migration 049) ───────────────────────────────
     // Health checks read `service_heartbeats.last_seen_at` to distinguish a
     // live worker from one that silently stopped; write every ~30s so
@@ -461,7 +470,7 @@ async fn main() -> Result<()> {
     let manual_trigger_semaphore = Arc::new(Semaphore::new(manual_trigger_concurrency));
     // P0 browser crawl: one shared headless renderer for the whole worker
     // lifetime; `Browser`-strategy sources never fall back to plain HTTP.
-    let job_context = JobExecutionContext::from_env();
+    let job_context = JobExecutionContext::from_env(Arc::clone(&ingress));
     let jobs_count = scheduler.lock().await.jobs.len();
     tracing::info!(
         jobs = jobs_count,

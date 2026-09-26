@@ -3,9 +3,14 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::*;
 
-pub(super) async fn run_breach_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_breach_scan(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
 
@@ -71,28 +76,22 @@ pub(super) async fn run_breach_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
             total_hits += count;
             let breach_urls: Vec<String> =
                 events.iter().filter_map(|e| e.source_url.clone()).collect();
-            let breach_urls_opt = if breach_urls.is_empty() {
-                None
-            } else {
-                Some(breach_urls)
-            };
             let title = format!("Domain breach exposure: {domain}");
             let description = format!(
                 "{count} breach event(s) detected for domain '{domain}'. Immediate review recommended."
             );
-            let _ = store
-                .insert_warning(
-                    "breach",
-                    &title,
-                    Some(&description),
-                    if count > 5 { "critical" } else { "high" },
-                    None,
-                    None,
-                    None,
-                    breach_urls_opt,
-                    Some(0.9),
+            let severity = if count > 5 { "critical" } else { "high" };
+            if let Err(error) = ingress
+                .submit_warning(
+                    NewWarning::new("breach", &title, severity)
+                        .description(&description)
+                        .source_urls(breach_urls)
+                        .confidence(0.9),
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(%error, domain = %domain, "breach_scan: failed to ingest warning");
+            }
         } else {
             tracing::info!(domain = %domain, "breach_scan: clean");
         }
@@ -109,7 +108,11 @@ pub(super) async fn run_breach_scan(kind: &JobKind, store: &Arc<PgStore>) -> Job
     run
 }
 
-pub(super) async fn run_sanctions_screen(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_sanctions_screen(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
 
@@ -216,19 +219,17 @@ pub(super) async fn run_sanctions_screen(kind: &JobKind, store: &Arc<PgStore>) -
                     SanctionsList::BisDeniedPersons =>
                         "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/denied-persons-list",
                 };
-                let _ = store
-                    .insert_warning(
-                        "sanctions",
-                        &title,
-                        Some(&description),
-                        severity,
-                        None,
-                        None,
-                        None,
-                        Some(vec![list_url.to_string()]),
-                        Some(m.similarity),
+                if let Err(error) = ingress
+                    .submit_warning(
+                        NewWarning::new("sanctions", &title, severity)
+                            .description(&description)
+                            .source_urls(vec![list_url.to_string()])
+                            .confidence(m.similarity),
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!(%error, entity = %name, "sanctions_screen: failed to ingest warning");
+                }
             }
         }
     }
@@ -492,7 +493,11 @@ struct DnsIssueResult {
     score: f64,
 }
 
-pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_dns_posture_scan(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
 
@@ -513,6 +518,8 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
 
     let mut checked = 0u64;
     let mut dns_issues: Vec<DnsIssueResult> = Vec::new();
+    let mut warnings_generated: u64 = 0;
+    let mut warning_ingest_failures: u64 = 0;
 
     for company in &companies {
         let Some(domain) = &company.domain else {
@@ -653,31 +660,38 @@ pub(super) async fn run_dns_posture_scan(kind: &JobKind, store: &Arc<PgStore>) -
         );
         let severity = if result.score < 20.0 { "high" } else { "low" };
 
-        let _ = store
-            .insert_warning(
-                "security",
-                &title,
-                Some(&description),
-                severity,
-                result.region.as_deref(),
-                None,
-                None,
-                None,
-                Some(0.85),
-            )
-            .await;
+        let mut warning = NewWarning::new("security", &title, severity)
+            .description(&description)
+            .confidence(0.85);
+        if let Some(region) = result.region.as_deref() {
+            warning = warning.region(region);
+        }
+        match ingress.submit_warning(warning).await {
+            Ok(_) => warnings_generated += 1,
+            Err(error) => {
+                warning_ingest_failures += 1;
+                tracing::warn!(
+                    %error,
+                    domain = %result.domain,
+                    "dns_posture_scan: failed to ingest warning"
+                );
+            }
+        }
     }
 
-    let warning_count = dns_issues.len().min(10) as u64;
-    run.succeed(
+    let summary = format!(
+        "dns_posture_scan: checked {} domains ({} with issues, {} warnings generated, {} warning ingest failures)",
         checked,
-        &format!(
-            "dns_posture_scan: checked {} domains ({} with issues, {} warnings generated)",
-            checked,
-            dns_issues.len(),
-            warning_count,
-        ),
+        dns_issues.len(),
+        warnings_generated,
+        warning_ingest_failures,
     );
+    if warning_ingest_failures > 0 {
+        run.items_processed = checked;
+        run.fail(&format!("{summary} — warning ingestion degraded"));
+    } else {
+        run.succeed(warnings_generated, &summary);
+    }
     run
 }
 

@@ -39,6 +39,14 @@ steps:
       - apk add --no-cache git bash
       - bash scripts/ci/check_repo_contamination.sh
 
+  # Fails if a worker job bypasses the shared warning ingress and calls
+  # `store.insert_warning(...)` directly (skipping semantic triage dedup).
+  - name: warning-ingress-guard
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache bash grep
+      - bash scripts/ci/check_warning_ingress.sh
+
   - name: rust
     image: rust:bookworm
     environment:

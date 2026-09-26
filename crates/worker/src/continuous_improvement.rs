@@ -13,6 +13,7 @@ use apex_store::postgres::{InsightListFilters, PgStore, WarningListFilters};
 use chrono::Utc;
 
 use crate::digest_filtering::passes_shared_insight_quality_gate;
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::llm_runtime::build_quality_llm_client;
 use crate::runtime_validation::run_quality_gate_golden_set_regression;
 #[cfg(feature = "llm")]
@@ -30,6 +31,7 @@ pub(crate) struct LlmContinuousImprovementStats {
 #[cfg(feature = "llm")]
 pub(crate) async fn run_llm_continuous_improvement_cycle(
     store: &PgStore,
+    ingress: &IntelligenceIngress,
 ) -> anyhow::Result<LlmContinuousImprovementStats> {
     let llm = build_quality_llm_client();
 
@@ -151,22 +153,21 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
             max_hallucination_rate * 100.0,
             eval_report.failed,
         );
-        match store
-            .insert_warning(
-                "llm_quality_regression",
-                "LLM quality regression detected",
-                Some(&desc),
-                severity,
-                Some("global"),
-                None,
-                None,
-                None,
-                Some((1.0 - eval_pass_rate).clamp(0.0, 1.0)),
+        match ingress
+            .submit_warning(
+                NewWarning::new(
+                    "llm_quality_regression",
+                    "LLM quality regression detected",
+                    severity,
+                )
+                .description(&desc)
+                .region("global")
+                .confidence((1.0 - eval_pass_rate).clamp(0.0, 1.0)),
             )
             .await
         {
-            Ok(warning_id) => tracing::warn!(
-                warning_id = %warning_id,
+            Ok(result) => tracing::warn!(
+                warning_id = %result.warning_id(),
                 severity,
                 "self_improvement_cycle: inserted llm quality regression warning"
             ),
@@ -381,22 +382,21 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
             cycle_report.captures_analysed,
             cycle_report.examples_qualifying,
         );
-        match store
-            .insert_warning(
-                "llm_self_improvement_degradation",
-                "LLM self-improvement cycle quality below threshold",
-                Some(&desc),
-                "high",
-                Some("global"),
-                None,
-                None,
-                None,
-                Some((1.0 - cycle_report.avg_critique_score).clamp(0.0, 1.0)),
+        match ingress
+            .submit_warning(
+                NewWarning::new(
+                    "llm_self_improvement_degradation",
+                    "LLM self-improvement cycle quality below threshold",
+                    "high",
+                )
+                .description(&desc)
+                .region("global")
+                .confidence((1.0 - cycle_report.avg_critique_score).clamp(0.0, 1.0)),
             )
             .await
         {
-            Ok(warning_id) => tracing::warn!(
-                warning_id = %warning_id,
+            Ok(result) => tracing::warn!(
+                warning_id = %result.warning_id(),
                 "self_improvement_cycle: inserted llm self-improvement degradation warning"
             ),
             Err(error) => tracing::error!(
@@ -406,7 +406,7 @@ pub(crate) async fn run_llm_continuous_improvement_cycle(
         }
     }
 
-    let golden_set_regression = run_quality_gate_golden_set_regression(store)
+    let golden_set_regression = run_quality_gate_golden_set_regression(store, ingress)
         .await
         .context("llm self-improvement: quality gate golden set regression failed")?;
     tracing::info!(

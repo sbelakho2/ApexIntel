@@ -35,9 +35,10 @@ use apex_worker::scheduler::{JobKind, JobRun};
 /// per fetch. When the capability is disabled this is `None`, and the crawl
 /// path fails `Browser` sources explicitly instead of downgrading them to
 /// plain HTTP.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct JobExecutionContext {
     browser: Option<Arc<dyn BrowserFetcher>>,
+    pub(crate) ingress: Arc<crate::intelligence_ingress::IntelligenceIngress>,
 }
 
 impl JobExecutionContext {
@@ -45,7 +46,7 @@ impl JobExecutionContext {
     /// invalid browser configuration) yields a context without a renderer;
     /// `Browser` sources then surface as unavailable rather than being
     /// silently fetched over HTTP.
-    pub(crate) fn from_env() -> Self {
+    pub(crate) fn from_env(ingress: Arc<crate::intelligence_ingress::IntelligenceIngress>) -> Self {
         let browser = match apex_crawl::browser::shared_from_env() {
             Ok(browser) => browser,
             Err(error) => {
@@ -64,7 +65,7 @@ impl JobExecutionContext {
                 "headless browser disabled (ENABLE_HEADLESS_BROWSER); Browser-strategy sources will be marked unavailable and never downgraded to HTTP"
             ),
         }
-        Self { browser }
+        Self { browser, ingress }
     }
 
     pub(crate) fn browser(&self) -> Option<&Arc<dyn BrowserFetcher>> {
@@ -134,34 +135,38 @@ pub(crate) async fn execute_job(
         JobKind::SourceScoring => intelligence::run_source_scoring(kind, store).await,
         JobKind::CrossDomainMining => intelligence::run_cross_domain_mining(kind, store).await,
         JobKind::OutcomeTracking => intelligence::run_outcome_tracking(kind, store).await,
-        JobKind::BreachScan => security::run_breach_scan(kind, store).await,
-        JobKind::SanctionsScreen => security::run_sanctions_screen(kind, store).await,
+        JobKind::BreachScan => security::run_breach_scan(kind, store, &ctx.ingress).await,
+        JobKind::SanctionsScreen => security::run_sanctions_screen(kind, store, &ctx.ingress).await,
         JobKind::SlaEnforcement => security::run_sla_enforcement(kind, store).await,
-        JobKind::DnsPostureScan => security::run_dns_posture_scan(kind, store).await,
+        JobKind::DnsPostureScan => security::run_dns_posture_scan(kind, store, &ctx.ingress).await,
         JobKind::KevCatalogFetch => security::run_kev_catalog_fetch(kind, store).await,
         JobKind::LookalikeDomainScan => security::run_lookalike_domain_scan(kind, store).await,
         JobKind::SelfImprovementCycle => {
             intelligence::run_self_improvement_cycle(kind, store, ctx).await
         }
-        JobKind::RecipeFire => recipes::run_recipe_fire(kind, store).await,
+        JobKind::RecipeFire => recipes::run_recipe_fire(kind, store, &ctx.ingress).await,
         JobKind::PoiDiscovery => poi::run_poi_discovery(store).await,
         JobKind::UpdateEmailDigest => weekly::run_update_email_digest(store).await,
         JobKind::StarzCrmSync => starzcrm::run_starzcrm_sync(store).await,
         JobKind::EmbeddingReindex => {
             apex_worker::embedding_indexer::run_embedding_reindex(kind, store).await
         }
-        JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store).await,
+        JobKind::DarkWebScan => dark_web::run_dark_web_scan(kind, store, &ctx.ingress).await,
         JobKind::TriageProcessing => triage::run_triage_processing(kind, store).await,
         JobKind::TrendAggregation => {
             apex_worker::trend_aggregator::run_trend_aggregation(kind, store).await
         }
         JobKind::InsightGeneration => insights::run_insight_generation(kind, store).await,
-        JobKind::ThreatIntelRefresh => threat_intel::run_threat_intel_refresh(kind, store).await,
+        JobKind::ThreatIntelRefresh => {
+            threat_intel::run_threat_intel_refresh(kind, store, &ctx.ingress).await
+        }
         JobKind::PsychProfileCompute => psych_profile::run_psych_profile_compute(kind, store).await,
         JobKind::PoiRoleReclassify => poi::run_poi_role_reclassify(kind, store).await,
         JobKind::OsintEnrichment => osint_enrichment::run_osint_enrichment(kind, store).await,
-        JobKind::AdversarialAnalysis => adversarial::run_adversarial_analysis(kind, store).await,
-        JobKind::AnomalyScan => anomaly_scan::run_anomaly_scan(kind, store).await,
+        JobKind::AdversarialAnalysis => {
+            adversarial::run_adversarial_analysis(kind, store, &ctx.ingress).await
+        }
+        JobKind::AnomalyScan => anomaly_scan::run_anomaly_scan(kind, store, &ctx.ingress).await,
         JobKind::SocialScan => social_scan::run_social_scan(kind, store).await,
         JobKind::TenderScan => tender_scan::run_tender_scan(kind, store).await,
         JobKind::ContactEnrichment => sales::run_contact_enrichment(kind, store).await,

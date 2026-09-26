@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use apex_crawl::dark_web::{DarkWebForum, DarkWebMonitor, DarkWebPost, MonitoringRule, ScanReport};
 
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning, WarningSubmitter};
 use crate::*;
 
 /// Relevance score at or above which a match generates a security warning.
@@ -108,14 +109,13 @@ impl DarkWebCounters {
 /// Persistence operations required by the dark web scan.
 ///
 /// Implemented for [`PgStore`] in production; tests inject a failing mock so
-/// persistence-error handling is exercised without a database.
+/// persistence-error handling is exercised without a database. Warnings do not
+/// go through this trait: they are submitted through the shared
+/// [`WarningSubmitter`] ingress so they get semantic triage dedup too.
 trait DarkWebPersistence {
     /// Store one observation. Returns `true` when a new row was created and
     /// `false` when the deterministic id already existed.
     async fn insert_observation(&self, post: &DarkWebPost) -> anyhow::Result<bool>;
-
-    /// Store the warning generated for a high-relevance post.
-    async fn insert_warning(&self, post: &DarkWebPost) -> anyhow::Result<()>;
 }
 
 fn warning_title(post: &DarkWebPost) -> String {
@@ -194,37 +194,30 @@ impl DarkWebPersistence for PgStore {
 
         Ok(result.rows_affected() > 0)
     }
+}
 
-    async fn insert_warning(&self, post: &DarkWebPost) -> anyhow::Result<()> {
-        let title = warning_title(post);
-        let description = warning_description(post);
-        PgStore::insert_warning(
-            self,
-            "dark_web",
-            &title,
-            Some(&description),
-            warning_severity(post),
-            None,
-            None,
-            None,
-            Some(vec![post.url.clone()]),
-            Some(post.relevance_score),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("warning insert failed for post {}: {e}", post.id))?;
-        Ok(())
-    }
+/// Build the warning submitted for a high-relevance dark web post.
+fn dark_web_warning(post: &DarkWebPost) -> NewWarning {
+    NewWarning::new("dark_web", warning_title(post), warning_severity(post))
+        .description(warning_description(post))
+        .source_urls(vec![post.url.clone()])
+        .confidence(post.relevance_score)
 }
 
 /// Persist matching posts and tally real outcomes.
 ///
-/// `warnings_inserted` only advances after a successful insert; failed inserts
-/// are counted in `warning_insert_errors` so callers can report a degraded run
-/// instead of full success.
-async fn persist_dark_web_posts<P: DarkWebPersistence>(
+/// `warnings_inserted` only advances after a successful ingress submission;
+/// failed submissions are counted in `warning_insert_errors` so callers can
+/// report a degraded run instead of full success.
+async fn persist_dark_web_posts<P, I>(
     persistence: &P,
+    ingress: &I,
     posts: &[DarkWebPost],
-) -> DarkWebCounters {
+) -> DarkWebCounters
+where
+    P: DarkWebPersistence + ?Sized,
+    I: WarningSubmitter + ?Sized,
+{
     let mut counters = DarkWebCounters {
         posts_seen: posts.len() as u64,
         ..DarkWebCounters::default()
@@ -255,8 +248,8 @@ async fn persist_dark_web_posts<P: DarkWebPersistence>(
             continue;
         }
 
-        match persistence.insert_warning(post).await {
-            Ok(()) => counters.warnings_inserted += 1,
+        match ingress.submit_warning(dark_web_warning(post)).await {
+            Ok(_) => counters.warnings_inserted += 1,
             Err(e) => {
                 counters.warning_insert_errors += 1;
                 tracing::warn!(
@@ -325,7 +318,11 @@ fn complete_dark_web_scan(run: &mut JobRun, report: &ScanReport, counters: DarkW
 /// 4. Store matching posts as observations.
 /// 5. Generate warnings for high-relevance matches.
 /// 6. Report real counters; fail the run when persistence is incomplete.
-pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_dark_web_scan(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
 
@@ -356,7 +353,7 @@ pub(super) async fn run_dark_web_scan(kind: &JobKind, store: &Arc<PgStore>) -> J
     apply_monitor_config(&mut monitor, forums, rules);
 
     let report = monitor.scan_all_detailed().await;
-    let counters = persist_dark_web_posts(store.as_ref(), &report.posts).await;
+    let counters = persist_dark_web_posts(store.as_ref(), ingress.as_ref(), &report.posts).await;
     complete_dark_web_scan(&mut run, &report, counters);
     run
 }
@@ -391,7 +388,6 @@ mod tests {
     #[derive(Debug, Default)]
     struct MockPersistence {
         fail_observations: bool,
-        fail_warnings: bool,
     }
 
     impl DarkWebPersistence for MockPersistence {
@@ -401,12 +397,52 @@ mod tests {
             }
             Ok(true)
         }
+    }
 
-        async fn insert_warning(&self, _post: &DarkWebPost) -> anyhow::Result<()> {
-            if self.fail_warnings {
+    /// Injected warning ingress: fails or succeeds without a database.
+    #[derive(Debug, Default)]
+    struct MockWarningIngress {
+        fail: bool,
+    }
+
+    fn fake_submission() -> crate::intelligence_ingress::WarningSubmissionResult {
+        use crate::intelligence_ingress::{StoredWarning, TriageSubmissionOutcome};
+        crate::intelligence_ingress::WarningSubmissionResult {
+            warning: StoredWarning {
+                id: Uuid::new_v4(),
+                created: true,
+                warning_type: "dark_web".to_string(),
+                title: "test".to_string(),
+                description: None,
+                severity: "high".to_string(),
+                region: None,
+                recipe_code: None,
+                entity_ids: Vec::new(),
+                source_urls: Vec::new(),
+                confidence: None,
+                occurred_at: chrono::Utc::now(),
+            },
+            triage: TriageSubmissionOutcome::Enqueued {
+                item_id: Uuid::new_v4(),
+                occurrence_count: 1,
+            },
+            alert_published: false,
+            alert_error: None,
+            activity_recorded: true,
+            activity_error: None,
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WarningSubmitter for MockWarningIngress {
+        async fn submit_warning(
+            &self,
+            _warning: NewWarning,
+        ) -> anyhow::Result<crate::intelligence_ingress::WarningSubmissionResult> {
+            if self.fail {
                 anyhow::bail!("simulated warning insert failure");
             }
-            Ok(())
+            Ok(fake_submission())
         }
     }
 
@@ -508,11 +544,13 @@ mod tests {
 
     #[tokio::test]
     async fn warning_insert_failure_counts_error_and_not_success() {
-        let persistence = MockPersistence {
-            fail_observations: false,
-            fail_warnings: true,
-        };
-        let counters = persist_dark_web_posts(&persistence, &[test_post("post-1", 0.95)]).await;
+        let ingress = MockWarningIngress { fail: true };
+        let counters = persist_dark_web_posts(
+            &MockPersistence::default(),
+            &ingress,
+            &[test_post("post-1", 0.95)],
+        )
+        .await;
 
         assert_eq!(counters.posts_seen, 1);
         assert_eq!(counters.observations_inserted, 1);
@@ -528,9 +566,10 @@ mod tests {
     async fn observation_insert_failure_counts_error_and_skips_warning() {
         let persistence = MockPersistence {
             fail_observations: true,
-            fail_warnings: false,
         };
-        let counters = persist_dark_web_posts(&persistence, &[test_post("post-1", 0.95)]).await;
+        let ingress = MockWarningIngress::default();
+        let counters =
+            persist_dark_web_posts(&persistence, &ingress, &[test_post("post-1", 0.95)]).await;
 
         assert_eq!(counters.posts_seen, 1);
         assert_eq!(counters.observations_inserted, 0);
@@ -542,8 +581,9 @@ mod tests {
     #[tokio::test]
     async fn successful_persistence_counts_inserted_rows() {
         let persistence = MockPersistence::default();
+        let ingress = MockWarningIngress::default();
         let posts = vec![test_post("post-1", 0.95), test_post("post-2", 0.5)];
-        let counters = persist_dark_web_posts(&persistence, &posts).await;
+        let counters = persist_dark_web_posts(&persistence, &ingress, &posts).await;
 
         assert_eq!(counters.posts_seen, 2);
         assert_eq!(counters.observations_inserted, 2);
@@ -558,12 +598,10 @@ mod tests {
 
     #[tokio::test]
     async fn job_fails_when_persistence_errors_occur() {
-        let persistence = MockPersistence {
-            fail_observations: false,
-            fail_warnings: true,
-        };
+        let persistence = MockPersistence::default();
+        let ingress = MockWarningIngress { fail: true };
         let report = test_report(vec![test_post("post-1", 0.95)], 1, 0);
-        let counters = persist_dark_web_posts(&persistence, &report.posts).await;
+        let counters = persist_dark_web_posts(&persistence, &ingress, &report.posts).await;
 
         let mut run = JobRun::new(JobKind::DarkWebScan);
         run.start();
@@ -588,12 +626,13 @@ mod tests {
     #[tokio::test]
     async fn job_succeeds_and_reports_real_counters_when_persistence_ok() {
         let persistence = MockPersistence::default();
+        let ingress = MockWarningIngress::default();
         let report = test_report(
             vec![test_post("post-1", 0.95), test_post("post-2", 0.2)],
             2,
             1,
         );
-        let counters = persist_dark_web_posts(&persistence, &report.posts).await;
+        let counters = persist_dark_web_posts(&persistence, &ingress, &report.posts).await;
 
         let mut run = JobRun::new(JobKind::DarkWebScan);
         run.start();
@@ -622,8 +661,9 @@ mod tests {
     #[tokio::test]
     async fn empty_scan_succeeds_with_zero_counters() {
         let persistence = MockPersistence::default();
+        let ingress = MockWarningIngress::default();
         let report = test_report(vec![], 1, 0);
-        let counters = persist_dark_web_posts(&persistence, &report.posts).await;
+        let counters = persist_dark_web_posts(&persistence, &ingress, &report.posts).await;
 
         let mut run = JobRun::new(JobKind::DarkWebScan);
         run.start();

@@ -1,5 +1,14 @@
 use super::*;
 
+/// Outcome of a warning upsert: the row id plus whether this call created a new
+/// row (`created = true`) or merged into an existing deduplicated warning
+/// (`created = false`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WarningInsertOutcome {
+    pub id: Uuid,
+    pub created: bool,
+}
+
 fn normalize_warning_window(limit: i64, offset: i64) -> (i64, i64) {
     (clamp_limit(limit), offset.max(0))
 }
@@ -351,6 +360,10 @@ impl PgStore {
     }
 
     /// Insert a new warning row. Returns the inserted row's id.
+    ///
+    /// Thin wrapper over [`PgStore::insert_warning_with_outcome`] for callers
+    /// that do not need to know whether the row was created or merged into an
+    /// existing deduplicated warning.
     pub async fn insert_warning(
         &self,
         warning_type: &str,
@@ -363,6 +376,41 @@ impl PgStore {
         source_urls: Option<Vec<String>>,
         confidence: Option<f64>,
     ) -> Result<Uuid> {
+        Ok(self
+            .insert_warning_with_outcome(
+                warning_type,
+                title,
+                description,
+                severity,
+                region,
+                recipe_code,
+                entity_ids,
+                source_urls,
+                confidence,
+            )
+            .await?
+            .id)
+    }
+
+    /// Insert a warning row, reporting whether a new row was created or the
+    /// submission was deterministically deduplicated into an existing row.
+    ///
+    /// The dedup/update semantics are identical to [`PgStore::insert_warning`];
+    /// the only difference is the returned outcome, which lets the shared
+    /// intelligence ingress distinguish "new warning" from "recurrence merged
+    /// into an existing warning" instead of discarding that information.
+    pub async fn insert_warning_with_outcome(
+        &self,
+        warning_type: &str,
+        title: &str,
+        description: Option<&str>,
+        severity: &str,
+        region: Option<&str>,
+        recipe_code: Option<&str>,
+        entity_ids: Option<Vec<Uuid>>,
+        source_urls: Option<Vec<String>>,
+        confidence: Option<f64>,
+    ) -> Result<WarningInsertOutcome> {
         let normalized_title = title.trim().to_string();
         let warning_title_dedup = normalize_warning_title_for_dedup(&normalized_title);
         let normalized_description = normalize_optional_text(description);
@@ -448,7 +496,10 @@ impl PgStore {
             .bind(&normalized_entity_ids)
             .execute(&self.pool)
             .await?;
-            return Ok(existing_id);
+            return Ok(WarningInsertOutcome {
+                id: existing_id,
+                created: false,
+            });
         }
 
         let id = Uuid::new_v4();
@@ -472,7 +523,7 @@ impl PgStore {
         .bind(confidence)
         .execute(&self.pool)
         .await?;
-        Ok(id)
+        Ok(WarningInsertOutcome { id, created: true })
     }
 
     /// Delete a single warning by ID. Returns true if a row was deleted.

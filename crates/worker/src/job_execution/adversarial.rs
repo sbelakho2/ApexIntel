@@ -9,10 +9,15 @@ use std::time::Instant;
 
 use uuid::Uuid;
 
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::*;
 
 /// Execute AdversarialAnalysis job: placement clustering, source entropy, quarantine.
-pub(super) async fn run_adversarial_analysis(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_adversarial_analysis(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     let total_start = Instant::now();
@@ -22,7 +27,7 @@ pub(super) async fn run_adversarial_analysis(kind: &JobKind, store: &Arc<PgStore
     let mut entropy_alerts: u64 = 0;
 
     // 1. Run placement clustering: detect coordinated content placement patterns
-    match run_placement_clustering(store).await {
+    match run_placement_clustering(store, ingress).await {
         Ok(count) => placements_detected = count,
         Err(e) => {
             tracing::warn!(error = %e, "adversarial_analysis: placement clustering failed");
@@ -38,7 +43,7 @@ pub(super) async fn run_adversarial_analysis(kind: &JobKind, store: &Arc<PgStore
     }
 
     // 3. Run quarantine management: release expired items, escalate persistent threats
-    match run_quarantine_management(store).await {
+    match run_quarantine_management(store, ingress).await {
         Ok(count) => sources_quarantined = count,
         Err(e) => {
             tracing::warn!(error = %e, "adversarial_analysis: quarantine management failed");
@@ -63,7 +68,10 @@ pub(super) async fn run_adversarial_analysis(kind: &JobKind, store: &Arc<PgStore
 /// Detect coordinated content placement patterns across sources.
 /// Looks for clusters of similar content appearing across multiple sources
 /// within a short time window (potential coordinated disinformation).
-async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
+async fn run_placement_clustering(
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> Result<u64, String> {
     // Load recent observations grouped by time windows
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
     let rows = sqlx::query(
@@ -203,23 +211,21 @@ async fn run_placement_clustering(store: &Arc<PgStore>) -> Result<u64, String> {
                         .join(", "),
                 );
 
-                let _ = store
-                    .insert_warning(
-                        "adversarial",
-                        &title,
-                        Some(&description),
-                        if cluster.len() >= 10 {
-                            "critical"
-                        } else {
-                            "high"
-                        },
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(0.80),
+                let severity = if cluster.len() >= 10 {
+                    "critical"
+                } else {
+                    "high"
+                };
+                if let Err(error) = ingress
+                    .submit_warning(
+                        NewWarning::new("adversarial", &title, severity)
+                            .description(&description)
+                            .confidence(0.80),
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!(%error, "adversarial_analysis: failed to ingest placement warning");
+                }
             }
 
             for item in &cluster {
@@ -356,7 +362,10 @@ async fn run_source_entropy_detection(store: &Arc<PgStore>) -> Result<u64, Strin
 }
 
 /// Manage quarantine queue: release expired items, verify persistent threats.
-async fn run_quarantine_management(store: &Arc<PgStore>) -> Result<u64, String> {
+async fn run_quarantine_management(
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> Result<u64, String> {
     let now = chrono::Utc::now();
     let mut managed: u64 = 0;
 
@@ -425,19 +434,16 @@ async fn run_quarantine_management(store: &Arc<PgStore>) -> Result<u64, String> 
             source_domain, reason
         );
 
-        let _ = store
-            .insert_warning(
-                "adversarial",
-                &title,
-                Some(&description),
-                "high",
-                None,
-                None,
-                None,
-                None,
-                Some(0.85),
+        if let Err(error) = ingress
+            .submit_warning(
+                NewWarning::new("adversarial", &title, "high")
+                    .description(&description)
+                    .confidence(0.85),
             )
-            .await;
+            .await
+        {
+            tracing::warn!(%error, source_domain, "adversarial_analysis: failed to ingest quarantine warning");
+        }
 
         managed += 1;
     }

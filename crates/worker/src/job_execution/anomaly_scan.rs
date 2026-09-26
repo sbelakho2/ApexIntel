@@ -26,64 +26,8 @@ use std::time::Instant;
 
 use chrono::{Duration, Utc};
 
+use crate::intelligence_ingress::{IntelligenceIngress, NewWarning};
 use crate::{JobKind, JobRun, PgStore};
-
-use apex_core::triage::TriageItemType;
-use apex_triage::semantic_dedup::SemanticDedup;
-use apex_triage::{TriageIngestor, TriageQueue, TriageSubmission};
-
-/// Build the triage ingress used by warning producers.
-///
-/// Warning insertion is the production triage ingress: every warning that is
-/// stored is submitted through [`TriageIngestor`] so semantic dedup can merge
-/// repeated signals (incrementing occurrence counts and accumulating evidence)
-/// instead of enqueuing duplicate triage rows.
-fn make_triage_ingestor(store: &Arc<PgStore>) -> TriageIngestor<TriageQueue> {
-    TriageIngestor::new(
-        TriageQueue::new(store.pool.clone()),
-        SemanticDedup::with_in_memory_fallback(),
-    )
-}
-
-/// Submit a freshly inserted warning to the triage ingress.
-///
-/// Ingress is best-effort: a failure to submit must never fail the job that
-/// produced the warning (the warning itself is already persisted).
-async fn submit_warning_to_triage(
-    ingestor: &TriageIngestor<TriageQueue>,
-    warning_id: uuid::Uuid,
-    title: &str,
-    description: &str,
-    severity: &str,
-    entity_id: Option<uuid::Uuid>,
-    entity_name: Option<&str>,
-) {
-    let submission = TriageSubmission {
-        item_type: TriageItemType::Warning,
-        source_id: warning_id.to_string(),
-        title: title.to_string(),
-        description: description.to_string(),
-        entity_id,
-        entity_name: entity_name.map(str::to_string),
-        static_severity: Some(severity.to_string()),
-        dimensions: None,
-        observation_ids: Vec::new(),
-        source_urls: Vec::new(),
-    };
-    match ingestor.submit(submission).await {
-        Ok(outcome) => tracing::debug!(
-            warning_id = %warning_id,
-            merged = outcome.merged(),
-            occurrence_count = outcome.item().occurrence_count,
-            "anomaly_scan: warning submitted to triage"
-        ),
-        Err(e) => tracing::warn!(
-            warning_id = %warning_id,
-            error = %e,
-            "anomaly_scan: failed to submit warning to triage"
-        ),
-    }
-}
 
 /// How far back to analyze observation trends.
 const ANALYSIS_WINDOW_DAYS: i64 = 30;
@@ -95,11 +39,14 @@ const MIN_OBS_FOR_ANALYSIS: i64 = 5;
 const VOLUME_ANOMALY_THRESHOLD: f64 = 0.50;
 
 /// Run the dynamic anomaly scan.
-pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> JobRun {
+pub(super) async fn run_anomaly_scan(
+    kind: &JobKind,
+    store: &Arc<PgStore>,
+    ingress: &Arc<IntelligenceIngress>,
+) -> JobRun {
     let mut run = JobRun::new(kind.clone());
     run.start();
     let start = Instant::now();
-    let triage_ingestor = make_triage_ingestor(store);
 
     use sqlx::Row;
 
@@ -194,38 +141,25 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                      Investigate the underlying cause and assess operational impact."
                 );
 
-                let _warning_id = uuid::Uuid::new_v4();
-                match store
-                    .insert_warning(
-                        "volume_anomaly",
-                        &title,
-                        Some(&description),
-                        "medium",
-                        None,
-                        None,
-                        Some(vec![*entity_id]),
-                        None,
-                        Some(0.75),
+                match ingress
+                    .submit_warning(
+                        NewWarning::new("volume_anomaly", &title, "medium")
+                            .description(&description)
+                            .entity_ids(vec![*entity_id])
+                            .confidence(0.75),
                     )
                     .await
                 {
-                    Ok(warning_id) => {
+                    Ok(result) => {
                         warnings_generated += 1;
                         anomalies_detected += 1;
-                        submit_warning_to_triage(
-                            &triage_ingestor,
-                            warning_id,
-                            &title,
-                            &description,
-                            "medium",
-                            Some(*entity_id),
-                            Some(entity_name),
-                        )
-                        .await;
                         tracing::info!(
                             entity = %entity_name,
                             direction,
                             pct_change,
+                            warning_id = %result.warning_id(),
+                            occurrence_count = result.occurrence_count(),
+                            merged = result.triage_merged(),
                             "anomaly_scan: volume anomaly warning generated"
                         );
                     }
@@ -285,36 +219,23 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                  actionable intelligence."
             );
 
-            match store
-                .insert_warning(
-                    "signal_shift",
-                    &title,
-                    Some(&description),
-                    "medium",
-                    None,
-                    None,
-                    Some(vec![*entity_id]),
-                    None,
-                    Some(0.70),
+            match ingress
+                .submit_warning(
+                    NewWarning::new("signal_shift", &title, "medium")
+                        .description(&description)
+                        .entity_ids(vec![*entity_id])
+                        .confidence(0.70),
                 )
                 .await
             {
-                Ok(warning_id) => {
+                Ok(result) => {
                     warnings_generated += 1;
                     anomalies_detected += 1;
-                    submit_warning_to_triage(
-                        &triage_ingestor,
-                        warning_id,
-                        &title,
-                        &description,
-                        "medium",
-                        Some(*entity_id),
-                        Some(entity_name),
-                    )
-                    .await;
                     tracing::info!(
                         entity = %entity_name,
                         new_types = %types_str,
+                        warning_id = %result.warning_id(),
+                        occurrence_count = result.occurrence_count(),
                         "anomaly_scan: signal shift warning generated"
                     );
                 }
@@ -333,7 +254,7 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
         obs_count_30d: i64,
     }
 
-    let source_counts: Vec<SourceCount> = sqlx::query_as::<_, SourceCount>(
+    let source_counts: Vec<SourceCount> = match sqlx::query_as::<_, SourceCount>(
         r#"SELECT
                COALESCE(provenance->>'source_id', provenance->>'source', 'unknown') as source_id,
                MAX(ts_utc) as last_obs,
@@ -346,7 +267,17 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
     )
     .fetch_all(&store.pool)
     .await
-    .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            // Source-outage detection must not silently degrade into "no
+            // outages": a failed query is a failed job, not a clean scan.
+            run.fail(&format!(
+                "anomaly_scan: failed to load source activity for outage detection: {e}"
+            ));
+            return run;
+        }
+    };
 
     for sc in &source_counts {
         let Some(last_obs) = sc.last_obs else {
@@ -369,35 +300,21 @@ pub(super) async fn run_anomaly_scan(kind: &JobKind, store: &Arc<PgStore>) -> Jo
                 sc.source_id, days_silent, sc.obs_count_30d
             );
 
-            match store
-                .insert_warning(
-                    "source_outage",
-                    &title,
-                    Some(&description),
-                    "high",
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(0.80),
+            match ingress
+                .submit_warning(
+                    NewWarning::new("source_outage", &title, "high")
+                        .description(&description)
+                        .confidence(0.80),
                 )
                 .await
             {
-                Ok(warning_id) => {
+                Ok(result) => {
                     warnings_generated += 1;
-                    submit_warning_to_triage(
-                        &triage_ingestor,
-                        warning_id,
-                        &title,
-                        &description,
-                        "high",
-                        None,
-                        None,
-                    )
-                    .await;
                     tracing::info!(
                         source = %sc.source_id,
                         days_silent,
+                        warning_id = %result.warning_id(),
+                        occurrence_count = result.occurrence_count(),
                         "anomaly_scan: source outage warning generated"
                     );
                 }

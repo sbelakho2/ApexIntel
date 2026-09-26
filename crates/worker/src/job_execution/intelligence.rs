@@ -364,6 +364,7 @@ pub(super) async fn run_self_improvement_cycle(
     let source_run = Box::pin(super::execute_job(&JobKind::SourceScoring, store, ctx)).await;
     let cross_run = Box::pin(super::execute_job(&JobKind::CrossDomainMining, store, ctx)).await;
     let outcome_run = Box::pin(super::execute_job(&JobKind::OutcomeTracking, store, ctx)).await;
+
     let base_total =
         source_run.items_processed + cross_run.items_processed + outcome_run.items_processed;
     let base_failed = [&source_run, &cross_run, &outcome_run]
@@ -376,7 +377,7 @@ pub(super) async fn run_self_improvement_cycle(
         let mut total = base_total;
         let mut failed = base_failed;
 
-        match run_llm_continuous_improvement_cycle(store).await {
+        match run_llm_continuous_improvement_cycle(store, &ctx.ingress).await {
             Ok(stats) => {
                 tracing::info!(
                     eval_pass_rate = stats.eval_pass_rate,
