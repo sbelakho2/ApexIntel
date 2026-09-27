@@ -256,6 +256,8 @@ pub use learning_eval::{
 };
 mod llm_cache;
 mod llm_governance;
+mod login_throttle;
+pub use crate::login_throttle::LoginThrottleStatus;
 mod logistics;
 mod memos;
 mod observations;

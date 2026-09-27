@@ -12,6 +12,16 @@
 //! bootstrap only: they seed rows that do not yet carry a password hash. Once
 //! a row has credentials the environment is ignored. Without a store (unit
 //! tests, no-database deployments) the environment list is used directly.
+//!
+//! Every attempt is throttled through [`LoginThrottle`] under a key built from
+//! the normalised login name plus a trusted client fingerprint: evaluated
+//! before password verification and recorded after it. Login names are
+//! canonical (`lower(username)`, migration 070) and a configured user whose
+//! role is missing or unknown is rejected — never silently downgraded to a
+//! default role.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use askama::Template;
 use axum::{
@@ -19,6 +29,7 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
+use chrono::Utc;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -26,7 +37,8 @@ use subtle::ConstantTimeEq;
 use apex_core::identity::{UserId, Username};
 use apex_store::postgres::{AppUserSeed, PgStore};
 
-use crate::auth::ApiRole;
+use crate::auth::{client_fingerprint, ApiRole, AuthThrottleStatus};
+use crate::login_throttle::LoginThrottle;
 use crate::middleware::session::{
     clear_session_cookie_headers, create_session_token, session_cookie_header,
     session_ttl_ms_for_hours, SessionClaims, SESSION_TTL_MS, SESSION_VERSION,
@@ -66,29 +78,84 @@ impl WebUser {
         }
     }
 
-    pub fn api_role(&self) -> ApiRole {
-        self.role.parse().unwrap_or_default()
+    /// Parsed role. A missing or malformed role is an error — unknown roles
+    /// must never silently fall back to a privilege (not even to the old
+    /// `analyst` default).
+    pub fn api_role(&self) -> anyhow::Result<ApiRole> {
+        let role = self.role.trim();
+        if role.is_empty() {
+            anyhow::bail!("web user '{}' has no role", self.username);
+        }
+        role.parse::<ApiRole>()
+            .map_err(|_| anyhow::anyhow!("web user '{}' has unknown role '{role}'", self.username))
     }
+}
+
+/// Canonical login name: trimmed and case-folded, matching the
+/// `lower(username)` uniqueness enforced by migration 070.
+pub fn normalize_login_name(username: &str) -> String {
+    username.trim().to_lowercase()
+}
+
+/// Validate environment-configured web users before any of them is trusted.
+///
+/// Rejects malformed roles, empty identifiers/hashes, duplicate ids and
+/// duplicate login names (case-insensitive). An ambiguous or malformed
+/// `WEB_USERS_JSON` must not bootstrap credentials or authenticate.
+pub fn validate_web_users(users: &[WebUser]) -> Result<(), String> {
+    let mut ids: HashMap<String, usize> = HashMap::new();
+    let mut names: HashMap<String, usize> = HashMap::new();
+
+    for (index, user) in users.iter().enumerate() {
+        let id = user.user_id().trim().to_string();
+        if id.is_empty() {
+            return Err(format!("entry {index}: id/username must not be empty"));
+        }
+        if user.username.trim().is_empty() {
+            return Err(format!("entry {index}: username must not be empty"));
+        }
+        if user.password_hash.trim().is_empty() {
+            return Err(format!(
+                "entry {index} ('{}'): password_hash must not be empty",
+                user.username
+            ));
+        }
+        user.api_role().map_err(|error| error.to_string())?;
+
+        if let Some(previous) = ids.insert(id.clone(), index) {
+            return Err(format!(
+                "duplicate id '{id}' in WEB_USERS_JSON entries {previous} and {index}"
+            ));
+        }
+        let normalized = normalize_login_name(&user.username);
+        if let Some(previous) = names.insert(normalized.clone(), index) {
+            return Err(format!(
+                "duplicate username '{normalized}' in WEB_USERS_JSON entries {previous} and {index}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Load configured web users: `WEB_USERS_JSON` when set, otherwise the single
 /// `APEX_ADMIN_USERNAME` / `APEX_ADMIN_PASSWORD_HASH` admin pair. Returns an
-/// empty list (with an error log) when configuration is missing or invalid.
+/// empty list (with an error log) when configuration is missing, malformed or
+/// ambiguous.
 pub fn load_web_users() -> Vec<WebUser> {
     if let Ok(raw) = std::env::var("WEB_USERS_JSON") {
         let raw = raw.trim();
         if !raw.is_empty() {
             match serde_json::from_str::<Vec<WebUser>>(raw) {
-                Ok(users) if !users.is_empty() => {
-                    for user in &users {
-                        if user.role.is_empty() {
-                            tracing::warn!(username = %user.username, "WEB_USERS_JSON entry has no role; defaulting to analyst");
-                        } else if user.role.parse::<ApiRole>().is_err() {
-                            tracing::warn!(username = %user.username, role = %user.role, "WEB_USERS_JSON entry has an unknown role; defaulting to analyst");
-                        }
+                Ok(users) if !users.is_empty() => match validate_web_users(&users) {
+                    Ok(()) => return users,
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            "WEB_USERS_JSON rejected; no web users loaded from the environment"
+                        );
+                        return Vec::new();
                     }
-                    return users;
-                }
+                },
                 Ok(_) => {
                     tracing::error!("WEB_USERS_JSON is an empty array; no web users configured")
                 }
@@ -123,19 +190,25 @@ pub struct LoginPrincipal {
 }
 
 fn bootstrap_seeds() -> Vec<AppUserSeed> {
-    load_web_users()
-        .into_iter()
-        .map(|user| {
-            let id = user.user_id().to_string();
-            let role = user.api_role().as_str().to_string();
-            AppUserSeed {
-                id,
-                username: user.username,
-                password_hash: user.password_hash,
-                role,
+    let mut seeds = Vec::new();
+    for user in load_web_users() {
+        let role = match user.api_role() {
+            Ok(role) => role,
+            Err(error) => {
+                tracing::error!(username = %user.username, %error, "skipping web user with unusable role");
+                continue;
             }
-        })
-        .collect()
+        };
+        seeds.push(AppUserSeed {
+            id: user.user_id().to_string(),
+            // Store the canonical (trimmed) name so it always matches the
+            // normalized lookup; a padded configured name cannot authenticate.
+            username: user.username.trim().to_string(),
+            password_hash: user.password_hash,
+            role: role.as_str().to_string(),
+        });
+    }
+    seeds
 }
 
 /// Seed environment-configured credentials into `app_users`.
@@ -169,16 +242,28 @@ pub async fn resolve_login(
     username: &str,
     password: &str,
 ) -> Option<LoginPrincipal> {
+    let normalized = normalize_login_name(username);
+
     let Some(store) = store else {
         let user = load_web_users()
             .into_iter()
-            .find(|user| user.username == username)?;
+            .find(|user| normalize_login_name(&user.username) == normalized)?;
+        let role = match user.api_role() {
+            Ok(role) => role,
+            Err(error) => {
+                tracing::error!(
+                    username = %user.username,
+                    %error,
+                    "login rejected: unknown role in WEB_USERS_JSON"
+                );
+                return None;
+            }
+        };
         if !verify_password_hash(password, &user.password_hash) {
             return None;
         }
         let user_id = UserId::from(user.user_id());
-        let role = user.api_role();
-        let username = Username::from(user.username);
+        let username = Username::from(user.username.trim());
         return Some(LoginPrincipal {
             user_id,
             username,
@@ -194,6 +279,20 @@ pub async fn resolve_login(
         tracing::warn!(user_id = %record.id, "login rejected: account disabled");
         return None;
     }
+    // An unknown role must fail authentication, never fall back to a default
+    // role. The database CHECK (migration 071) is the backstop; this is the
+    // runtime guard for schemas migrated out-of-band.
+    let role = match record.role.trim().parse::<ApiRole>() {
+        Ok(role) => role,
+        Err(_) => {
+            tracing::error!(
+                user_id = %record.id,
+                role = %record.role,
+                "login rejected: unknown role in app_users"
+            );
+            return None;
+        }
+    };
     let password_hash = record.password_hash.as_deref()?;
     if !verify_password_hash(password, password_hash) {
         return None;
@@ -206,14 +305,6 @@ pub async fn resolve_login(
         .await
         .ok()
         .flatten()?;
-    let role = record.role.parse::<ApiRole>().unwrap_or_else(|_| {
-        tracing::warn!(
-            user_id = %record.id,
-            role = %record.role,
-            "unknown role in app_users; defaulting to analyst"
-        );
-        ApiRole::Analyst
-    });
 
     Some(LoginPrincipal {
         user_id: UserId::from(record.id),
@@ -298,14 +389,52 @@ pub async fn login_submit(
     }
 
     let store = parts.extensions.get::<std::sync::Arc<PgStore>>().cloned();
+    // The app router always provides the configured throttle (durable
+    // PostgreSQL/Redis). A bare router — unit tests — gets a per-request
+    // in-memory throttle, which keeps the decision deterministic without
+    // failing open or leaking state between tests.
+    let throttle = parts
+        .extensions
+        .get::<Arc<LoginThrottle>>()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(LoginThrottle::in_memory()));
+
+    // Throttle key: normalised login name + trusted client fingerprint. The
+    // name is normalised so case/whitespace variants cannot dodge a lockout.
+    let attempt_key = login_attempt_key(&form.username, &parts);
+
+    // Evaluate before any password verification: a locked key is rejected
+    // without touching the credential store.
+    let pre_check = throttle.evaluate(&attempt_key, Utc::now()).await;
+    if !pre_check.allowed {
+        tracing::warn!(
+            username = %normalize_login_name(&form.username),
+            retry_after_secs = pre_check.retry_after_secs,
+            admin_unlock_required = pre_check.admin_unlock_required,
+            "login rejected: throttle locked"
+        );
+        return locked_response(&pre_check);
+    }
 
     let Some(principal) = resolve_login(store.as_deref(), &form.username, &form.password).await
     else {
+        let post_failure = throttle.record_failure(&attempt_key, Utc::now()).await;
+        if post_failure.is_lockout() {
+            tracing::warn!(
+                username = %normalize_login_name(&form.username),
+                retry_after_secs = post_failure.retry_after_secs,
+                admin_unlock_required = post_failure.admin_unlock_required,
+                "login locked after failed attempt"
+            );
+            return locked_response(&post_failure);
+        }
         return LoginPage {
             error: Some("Invalid credentials".into()),
         }
         .into_response();
     };
+
+    throttle.record_success(&attempt_key).await;
 
     // The session length preference is user-private data read under the
     // canonical user id, not the login name.
@@ -342,6 +471,70 @@ pub async fn login_submit(
         headers.append(header::SET_COOKIE, cookie);
     }
     (StatusCode::SEE_OTHER, headers).into_response()
+}
+
+/// Build the throttle key for one login attempt.
+///
+/// The key is the normalised login name plus a fingerprint of the trusted
+/// client address only:
+///   * the TCP peer address from `ConnectInfo` is trusted;
+///   * `X-Forwarded-For` is only honored under `API_TRUST_PROXY=1`, where the
+///     deployment's reverse proxy overwrites it (same contract as the API
+///     rate limiter, B298);
+///   * the User-Agent is deliberately excluded: a client controls that header
+///     and could otherwise rotate it to land in a fresh lockout bucket;
+///   * the hash keeps the durable key fixed-size regardless of input size.
+fn login_attempt_key(username: &str, parts: &axum::http::request::Parts) -> String {
+    let peer_ip = parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.ip().to_string());
+    let trusted_ip = if std::env::var("API_TRUST_PROXY")
+        .map(|value| value == "1")
+        .unwrap_or(false)
+    {
+        parts
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or(peer_ip)
+    } else {
+        peer_ip
+    };
+    format!(
+        "{}|{}",
+        normalize_login_name(username),
+        client_fingerprint(trusted_ip.as_deref(), None)
+    )
+}
+
+/// Generic rejection for a throttled login: 429 with `Retry-After`, and a
+/// message that never reveals whether the account exists or whether the
+/// password was checked.
+fn locked_response(status: &AuthThrottleStatus) -> Response {
+    let message = if status.admin_unlock_required {
+        "Too many failed sign-in attempts. This client is locked for security reasons; try again later."
+    } else {
+        "Too many failed sign-in attempts. Try again later."
+    };
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        LoginPage {
+            error: Some(message.into()),
+        },
+    )
+        .into_response();
+    // Admin locks are bounded too, so a known remaining time is advertised.
+    if status.retry_after_secs > 0 {
+        if let Ok(value) = HeaderValue::from_str(&status.retry_after_secs.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+    }
+    response
 }
 
 /// POST /logout — clear cookie(s), redirect to login.
@@ -396,5 +589,188 @@ mod tests {
         ));
         // 64 chars, but not hex.
         assert!(!verify_password_hash("pw", &"z".repeat(64)));
+    }
+
+    fn web_user(username: &str, role: &str) -> WebUser {
+        WebUser {
+            id: String::new(),
+            username: username.to_string(),
+            password_hash: "hash".to_string(),
+            role: role.to_string(),
+        }
+    }
+
+    #[test]
+    fn api_role_rejects_missing_and_unknown_roles() {
+        assert_eq!(
+            web_user("alice", "admin").api_role().unwrap(),
+            ApiRole::Admin
+        );
+        assert!(web_user("alice", "").api_role().is_err());
+        assert!(web_user("alice", "superuser").api_role().is_err());
+        assert!(web_user("alice", "ANALYST").api_role().is_err());
+    }
+
+    #[test]
+    fn validate_web_users_rejects_unknown_roles() {
+        let users = vec![web_user("alice", "admin"), web_user("bob", "superuser")];
+        let error = validate_web_users(&users).expect_err("unknown role must be rejected");
+        assert!(error.contains("superuser"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_web_users_rejects_duplicate_usernames_case_insensitively() {
+        let users = vec![web_user("Alice", "admin"), web_user(" alice ", "viewer")];
+        let error = validate_web_users(&users).expect_err("duplicate login name must be rejected");
+        assert!(
+            error.contains("duplicate username"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_web_users_rejects_duplicate_ids() {
+        let mut first = web_user("alice", "admin");
+        first.id = "usr-1".to_string();
+        let mut second = web_user("bob", "viewer");
+        second.id = "usr-1".to_string();
+        let error =
+            validate_web_users(&[first, second]).expect_err("duplicate id must be rejected");
+        assert!(error.contains("duplicate id"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn load_web_users_rejects_duplicate_and_unknown_role_configuration() {
+        // Startup fail-closed: a malformed or ambiguous environment list is
+        // never trusted, so none of it can bootstrap credentials.
+        let duplicates = serde_json::json!([
+            {"id": "u1", "username": "Alice", "password_hash": "h1", "role": "admin"},
+            {"id": "u2", "username": " alice ", "password_hash": "h2", "role": "viewer"},
+        ]);
+        std::env::set_var("WEB_USERS_JSON", duplicates.to_string());
+        assert!(
+            load_web_users().is_empty(),
+            "duplicate login names must reject the whole configuration"
+        );
+
+        let duplicate_ids = serde_json::json!([
+            {"id": "same", "username": "alice", "password_hash": "h1", "role": "admin"},
+            {"id": "same", "username": "bob", "password_hash": "h2", "role": "viewer"},
+        ]);
+        std::env::set_var("WEB_USERS_JSON", duplicate_ids.to_string());
+        assert!(
+            load_web_users().is_empty(),
+            "duplicate ids must reject the whole configuration"
+        );
+
+        let unknown_role = serde_json::json!([
+            {"id": "u1", "username": "alice", "password_hash": "h1", "role": "superuser"},
+        ]);
+        std::env::set_var("WEB_USERS_JSON", unknown_role.to_string());
+        assert!(
+            load_web_users().is_empty(),
+            "an unknown role must reject the whole configuration"
+        );
+
+        // A padded configured name is accepted but bootstrapped trimmed, so
+        // the stored name always matches the normalized lookup.
+        let padded = serde_json::json!([
+            {"id": "u1", "username": " alice ", "password_hash": "h1", "role": "admin"},
+        ]);
+        std::env::set_var("WEB_USERS_JSON", padded.to_string());
+        let seeds = bootstrap_seeds();
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].username, "alice");
+
+        std::env::remove_var("WEB_USERS_JSON");
+    }
+
+    #[test]
+    fn validate_web_users_accepts_distinct_valid_entries() {
+        let mut admin = web_user("Alice", "admin");
+        admin.id = "usr-1".to_string();
+        let mut viewer = web_user("bob", "viewer");
+        viewer.id = "usr-2".to_string();
+        assert!(validate_web_users(&[admin, viewer]).is_ok());
+    }
+
+    #[test]
+    fn normalize_login_name_trims_and_case_folds() {
+        assert_eq!(normalize_login_name("  Alice  "), "alice");
+        assert_eq!(normalize_login_name("BOB"), "bob");
+    }
+
+    fn request_parts(
+        user_agent: Option<&str>,
+        peer: Option<std::net::SocketAddr>,
+    ) -> axum::http::request::Parts {
+        let mut builder = axum::http::Request::builder().method("POST").uri("/login");
+        if let Some(user_agent) = user_agent {
+            builder = builder.header(header::USER_AGENT, user_agent);
+        }
+        let (mut parts, _) = builder.body(()).expect("request").into_parts();
+        if let Some(peer) = peer {
+            parts.extensions.insert(axum::extract::ConnectInfo(peer));
+        }
+        parts
+    }
+
+    #[test]
+    fn throttle_key_normalizes_username_and_trusts_only_the_client_address() {
+        let parts = request_parts(Some("test-agent"), None);
+        let upper = login_attempt_key(" Alice ", &parts);
+        let lower = login_attempt_key("alice", &parts);
+        assert_eq!(upper, lower, "case/whitespace variants share one bucket");
+
+        // The User-Agent is client-controlled: rotating it must NOT give a new
+        // lockout bucket.
+        let other_agent = request_parts(Some("other-agent"), None);
+        assert_eq!(
+            login_attempt_key("alice", &parts),
+            login_attempt_key("alice", &other_agent),
+            "rotating the User-Agent must not reset the lockout bucket"
+        );
+
+        let peer = std::net::SocketAddr::from(([127, 0, 0, 1], 4040));
+        let with_peer = request_parts(Some("test-agent"), Some(peer));
+        assert_ne!(
+            login_attempt_key("alice", &parts),
+            login_attempt_key("alice", &with_peer),
+            "the trusted peer address is part of the fingerprint"
+        );
+    }
+
+    #[test]
+    fn locked_response_is_generic_429_with_retry_after() {
+        let temporary = locked_response(&AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 5,
+            failure_count_10m: 10,
+            failure_count_1h: 10,
+            admin_unlock_required: false,
+        });
+        assert_eq!(temporary.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(temporary.headers().get(header::RETRY_AFTER).unwrap(), "5");
+
+        // The strongest lock is bounded, so its remaining time is advertised.
+        let admin = locked_response(&AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 86_400,
+            failure_count_10m: 10,
+            failure_count_1h: 20,
+            admin_unlock_required: true,
+        });
+        assert_eq!(admin.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(admin.headers().get(header::RETRY_AFTER).unwrap(), "86400");
+
+        // State without a known deadline stays generic with no header.
+        let undated = locked_response(&AuthThrottleStatus {
+            allowed: false,
+            retry_after_secs: 0,
+            failure_count_10m: 10,
+            failure_count_1h: 20,
+            admin_unlock_required: true,
+        });
+        assert!(undated.headers().get(header::RETRY_AFTER).is_none());
     }
 }

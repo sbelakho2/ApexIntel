@@ -211,10 +211,16 @@ pub fn validate_session(headers: &HeaderMap, session_secret: &str) -> Option<Web
         // Pre-principal cookies carried no role; Analyst was the fallback then
         // and remains the safe default now.
         None => ApiRole::Analyst,
-        Some(raw) => raw.parse::<ApiRole>().unwrap_or_else(|_| {
-            tracing::warn!(role = %raw, "unknown role in session payload; defaulting to analyst");
-            ApiRole::Analyst
-        }),
+        // A signed cookie that explicitly carries a role we do not know is not
+        // a pre-principal cookie: reject the session instead of granting the
+        // analyst fallback (audit item 3 — unknown roles never fail open).
+        Some(raw) => match raw.parse::<ApiRole>() {
+            Ok(role) => role,
+            Err(_) => {
+                tracing::error!(role = %raw, "unknown role in session payload; session rejected");
+                return None;
+            }
+        },
     };
 
     let username = Username::from(payload.sub);
@@ -724,6 +730,29 @@ mod tests {
         assert_eq!(session.user_id, "legacy");
         assert_eq!(session.session_version, 0);
         assert!(!session.can_admin());
+    }
+
+    #[test]
+    fn session_with_unknown_role_is_rejected() {
+        let secret = "test-secret";
+        let now = chrono::Utc::now().timestamp_millis();
+        let payload = serde_json::json!({
+            "sub": "mallory",
+            "role": "superuser",
+            "iat": now,
+            "exp": now + SESSION_TTL_MS,
+        });
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_bytes);
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&payload_bytes);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        let headers = headers_with_cookie(&format!("apex_session={payload_b64}.{sig}"));
+
+        assert!(
+            validate_session(&headers, secret).is_none(),
+            "a signed session with an unknown role must fail closed"
+        );
     }
 
     #[test]

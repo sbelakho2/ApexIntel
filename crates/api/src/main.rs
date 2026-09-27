@@ -157,6 +157,8 @@ struct AppState {
     api_keys: Arc<HashMap<String, ApiKey>>,
     redis: Option<redis::aio::ConnectionManager>,
     rate_limiter: Arc<RateLimiter>,
+    /// Durable login throttle (Redis when configured, otherwise PostgreSQL).
+    login_throttle: Arc<apex_api::login_throttle::LoginThrottle>,
     config: Arc<ApiRuntimeConfig>,
     profile: DeploymentProfile,
     /// SSE manager for real-time alert streaming.
@@ -349,6 +351,18 @@ async fn build_state() -> Result<AppState> {
     let rate_limiter = Arc::new(RateLimiter::new());
     tracing::info!("rate limiter initialized");
 
+    // Durable login throttle: Redis when REDIS_URL is configured, otherwise
+    // the canonical PostgreSQL store, so lockouts survive restarts and are
+    // shared by every replica.
+    let login_throttle = Arc::new(apex_api::login_throttle::LoginThrottle::new(
+        Some(store.clone()),
+        redis.clone(),
+    ));
+    tracing::info!(
+        backend = login_throttle.backend().as_str(),
+        "login throttle initialized"
+    );
+
     // ─── SSE / Real-time alerts ─────────────────────────────────────────
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
@@ -396,6 +410,7 @@ async fn build_state() -> Result<AppState> {
         api_keys: Arc::new(api_keys),
         redis,
         rate_limiter,
+        login_throttle,
         config: Arc::new(config),
         profile,
         sse_manager,
@@ -828,10 +843,14 @@ async fn openapi_json() -> Json<serde_json::Value> {
 
 #[allow(dead_code)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-async fn api_features() -> Json<serde_json::Value> {
+async fn api_features(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "llm_enabled": apex_api::BUILD_LLM_ENABLED,
+        // Backend actually serving the durable login throttle. `memory` means
+        // no durable store was configured (tests/dev only).
+        "login_throttle_backend": state.login_throttle.backend().as_str(),
+        "login_throttle_durable": state.login_throttle.is_durable(),
         "features": [
             "warnings", "insights", "companies", "persons", "search",
             "graph", "recipes", "security", "admin", "weekly_memo",
