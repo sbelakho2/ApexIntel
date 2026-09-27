@@ -112,8 +112,10 @@ async fn source_runtime_state_failure_backoff_success_reset_and_index() {
     assert_eq!(row.next_due_at, unavailable_at + Duration::minutes(30));
     assert_eq!(row.consecutive_failures, 0);
     // Not an attempt: the previous success timestamps are preserved untouched.
-    assert_eq!(row.last_attempt_at, Some(now));
-    assert_eq!(row.last_success_at, Some(now));
+    // The previous success was recorded at `later`, so both timestamps are
+    // `later` — never the earlier `now` success.
+    assert_eq!(row.last_attempt_at, Some(later));
+    assert_eq!(row.last_success_at, Some(later));
     assert!(
         row.last_error
             .as_deref()

@@ -933,6 +933,16 @@ async fn endpoints() -> Json<Vec<apex_api::routes::EndpointDef>> {
     Json(apex_api::routes::all_endpoints())
 }
 
+/// `/api/version` — running deployment provenance: the git SHA, CI pipeline,
+/// artifact digest, and deploy time recorded by `scripts/ops/record_deployment.sh`
+/// at deploy time. Unconfigured values are reported as `"unknown"` rather than
+/// guessed.
+async fn api_version() -> Json<apex_api::provenance::DeploymentProvenance> {
+    Json(apex_api::provenance::DeploymentProvenance::from_env(
+        "apex-api",
+    ))
+}
+
 /// Serve the OpenAPI 3.1 document built from the endpoint catalogue, so route
 /// metadata, the catalogue and the served contract can never drift apart.
 async fn openapi_json() -> Json<serde_json::Value> {

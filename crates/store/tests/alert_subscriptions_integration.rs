@@ -179,3 +179,65 @@ async fn find_subscribed_users_returns_matching_subscribers_only() {
 
     pool.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; run with --ignored"]
+async fn batch_subscriber_lookup_unions_every_entity() {
+    let pool = connect().await;
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let store = PgStore::from_pool(pool.clone());
+
+    let entity_a = Uuid::new_v4();
+    let entity_b = Uuid::new_v4();
+    let entity_c = Uuid::new_v4();
+    let marker = format!("audit-batch-{}", Uuid::new_v4());
+    let user_a = format!("{marker}-a");
+    let user_b = format!("{marker}-b");
+
+    for user_id in [&user_a, &user_b] {
+        insert_app_user(&pool, user_id).await;
+    }
+    insert_subscription(&pool, &user_a, entity_a, Some("warning"), "low", true).await;
+    insert_subscription(&pool, &user_b, entity_b, Some("warning"), "low", true).await;
+    // The same user subscribed to both referenced entities must appear once.
+    insert_subscription(&pool, &user_a, entity_b, Some("warning"), "low", true).await;
+
+    let mut matched = store
+        .find_subscribed_users_for_entities(
+            &[entity_a, entity_b, entity_c],
+            "warning",
+            AlertSeverity::High,
+        )
+        .await
+        .expect("batch lookup");
+    matched.sort();
+    let mut expected = vec![
+        principal_uuid_from_user_id(&UserId::from(user_a.as_str())),
+        principal_uuid_from_user_id(&UserId::from(user_b.as_str())),
+    ];
+    expected.sort();
+    assert_eq!(matched, expected, "union across entities, deduplicated");
+
+    // No entities addressed means nobody, never an implicit broadcast.
+    let none = store
+        .find_subscribed_users_for_entities(&[], "warning", AlertSeverity::Critical)
+        .await
+        .expect("empty batch lookup");
+    assert!(none.is_empty());
+
+    // Cleanup.
+    sqlx::query("DELETE FROM user_alert_subscriptions WHERE entity_id IN ($1, $2, $3)")
+        .bind(entity_a)
+        .bind(entity_b)
+        .bind(entity_c)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM app_users WHERE id LIKE $1")
+        .bind(format!("{marker}%"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    pool.close().await;
+}

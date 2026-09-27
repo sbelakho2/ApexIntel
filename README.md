@@ -80,10 +80,13 @@ cargo run -p apex-api --bin apex-api   # runs sqlx migrations on boot
 
 # 4. Run
 cargo run --release -p apex-worker &   # pipeline
-cargo run --release -p apex-api        # UI on :8080 (see SERVER_PORT)
+cargo run --release -p apex-api        # UI on :8080 (see PORT)
 ```
 
-Log in with `WEB_USERS` credentials; API clients use `Authorization: Bearer
+Log in with the `WEB_USERS_JSON` credentials (JSON array of
+`{id, username, password_hash, role}`); when it is unset the single-admin
+legacy fallback `APEX_ADMIN_USERNAME` / `APEX_ADMIN_PASSWORD_HASH` applies.
+API clients use `Authorization: Bearer
 <API_KEY_N>` keys (roles: admin > analyst > viewer). Browser sessions now
 also authenticate read + CSRF-checked write calls to `/api/*` endpoints
 (exports, charts, graph actions work directly from the UI).

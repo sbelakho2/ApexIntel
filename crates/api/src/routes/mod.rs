@@ -52,6 +52,7 @@ pub mod paths {
     pub const OPENAPI_JSON: &str = "/api/openapi.json";
     pub const DOCS: &str = "/api/docs";
     pub const FEATURES: &str = "/api/features";
+    pub const VERSION: &str = "/api/version";
     pub const WARNINGS: &str = "/api/warnings";
     pub const WARNING_DETAIL: &str = "/api/warnings/:id";
     pub const WARNING_ACKNOWLEDGE: &str = "/api/warnings/:id/acknowledge";
@@ -229,6 +230,14 @@ pub fn all_endpoints() -> Vec<EndpointDef> {
             method: HttpMethod::Get,
             path: paths::FEATURES,
             description: "Public feature flags for client rollout",
+            auth_required: false,
+            min_role: "public",
+        },
+        EndpointDef {
+            method: HttpMethod::Get,
+            path: paths::VERSION,
+            description:
+                "Running deployment provenance (git SHA, CI pipeline, artifact digest, deploy time)",
             auth_required: false,
             min_role: "public",
         },
@@ -1045,7 +1054,7 @@ mod tests {
     #[test]
     fn test_all_endpoints_count() {
         let eps = all_endpoints();
-        assert_eq!(eps.len(), 102);
+        assert_eq!(eps.len(), 103);
     }
 
     #[test]

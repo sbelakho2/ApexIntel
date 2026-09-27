@@ -96,13 +96,18 @@ impl std::fmt::Display for AlertEventType {
 
 /// An alert event to be published through NATS JetStream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "AlertEventWire")]
 pub struct AlertEvent {
     pub id: Uuid,
     pub event_type: AlertEventType,
     pub severity: apex_core::alert_config::AlertSeverity,
     pub title: String,
     pub description: String,
-    pub entity_id: Option<Uuid>,
+    /// Complete entity set the alert references. The API resolves subscribers
+    /// for every entry (union), so a multi-entity warning never notifies only
+    /// the first entity's subscribers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<Uuid>,
     pub entity_name: Option<String>,
     /// Who this alert is addressed to. `Users(vec![])` addresses nobody and
     /// only a deliberate `Broadcast` reaches every connected user.
@@ -111,10 +116,61 @@ pub struct AlertEvent {
     pub created_at: DateTime<Utc>,
 }
 
+/// Wire form that still accepts the pre-`entity_ids` singular field.
+///
+/// `event_outbox` rows written by older binaries carry `entity_id`; without
+/// this the rename would deserialize successfully into `entity_ids = []` and
+/// silently publish those alerts to nobody. The legacy id is merged into the
+/// full set instead.
+#[derive(Deserialize)]
+struct AlertEventWire {
+    id: Uuid,
+    event_type: AlertEventType,
+    severity: apex_core::alert_config::AlertSeverity,
+    title: String,
+    description: String,
+    #[serde(default)]
+    entity_ids: Vec<Uuid>,
+    #[serde(default)]
+    entity_id: Option<Uuid>,
+    entity_name: Option<String>,
+    audience: AlertAudience,
+    metadata: serde_json::Value,
+    created_at: DateTime<Utc>,
+}
+
+impl From<AlertEventWire> for AlertEvent {
+    fn from(wire: AlertEventWire) -> Self {
+        let mut entity_ids = wire.entity_ids;
+        if entity_ids.is_empty() {
+            if let Some(entity_id) = wire.entity_id {
+                entity_ids.push(entity_id);
+            }
+        }
+        Self {
+            id: wire.id,
+            event_type: wire.event_type,
+            severity: wire.severity,
+            title: wire.title,
+            description: wire.description,
+            entity_ids,
+            entity_name: wire.entity_name,
+            audience: wire.audience,
+            metadata: wire.metadata,
+            created_at: wire.created_at,
+        }
+    }
+}
+
 impl AlertEvent {
     /// Build the NATS subject for this event.
     pub fn subject(&self) -> String {
         format!("alerts.events.{}", self.event_type)
+    }
+
+    /// Primary entity for display and per-entity config lookups, if any.
+    pub fn primary_entity_id(&self) -> Option<Uuid> {
+        self.entity_ids.first().copied()
     }
 }
 
@@ -447,7 +503,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Test warning".to_string(),
             description: "A test warning event".to_string(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             entity_name: None,
             audience: AlertAudience::Users(vec![]),
             metadata: serde_json::json!({}),
@@ -537,7 +593,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::High,
             title: "Test warning".to_string(),
             description: "A test warning event".to_string(),
-            entity_id: Some(Uuid::new_v4()),
+            entity_ids: vec![Uuid::new_v4()],
             entity_name: Some("Test Corp".to_string()),
             audience: AlertAudience::Users(vec![]),
             metadata: serde_json::json!({}),
@@ -576,7 +632,7 @@ mod tests {
             severity: apex_core::alert_config::AlertSeverity::Critical,
             title: "Recipe matched".to_string(),
             description: "A new recipe match found".to_string(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             entity_name: None,
             audience: AlertAudience::Users(vec![Uuid::new_v4()]),
             metadata: serde_json::json!({"score": 0.95}),
@@ -587,5 +643,31 @@ mod tests {
         assert_eq!(deserialized.id, event.id);
         assert_eq!(deserialized.event_type, event.event_type);
         assert_eq!(deserialized.audience, event.audience);
+    }
+
+    #[test]
+    fn legacy_singular_entity_id_still_addresses_its_entity() {
+        let entity_id = Uuid::new_v4();
+        // Frozen pre-rename shape: what older binaries wrote to event_outbox.
+        let legacy = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "event_type": "new_warning",
+            "severity": "high",
+            "title": "Legacy",
+            "description": "queued before the entity_ids rename",
+            "entity_id": entity_id,
+            "entity_name": "Acme",
+            "audience": {"kind": "users", "user_ids": []},
+            "metadata": {"warning_id": Uuid::new_v4()},
+            "created_at": "2026-01-01T00:00:00Z"
+        });
+
+        let event: AlertEvent = serde_json::from_value(legacy).expect("legacy payload parses");
+        assert_eq!(
+            event.entity_ids,
+            vec![entity_id],
+            "the legacy id must not be dropped into an empty set"
+        );
+        assert_eq!(event.primary_entity_id(), Some(entity_id));
     }
 }

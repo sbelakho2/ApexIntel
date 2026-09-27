@@ -2,7 +2,7 @@
 
 **Audience**: DevOps, System Administrator  
 **Revision**: March 2026  
-**Status**: 🚀 Deployed (single-binary architecture)  
+**Status**: 🚀 Deployed (multi-service: `apexintel-api`, `apexintel-worker`, `apexintel-llm`)  
 **Domain**: https://starzerp.fi
 
 ---
@@ -34,13 +34,18 @@ ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89
 
 ### 0.2 Application Architecture
 
-ApexIntel runs as a **single Rust binary** (`apex-api`) that serves:
-- **HTML pages** via Askama templates + HTMX (no JavaScript framework)
-- **REST API** (`/api/*`) with JSON responses
-- **WebSocket** (`/ws/*`) for live updates
-- **Static assets** (CSS, JS, fonts, icons) – served by nginx directly
+ApexIntel runs as **separate Rust services**, not a single binary:
+- **`apexintel-api`** (`apex-api`) serves:
+  - **HTML pages** via Askama templates + HTMX (no JavaScript framework)
+  - **REST API** (`/api/*`) with JSON responses
+  - **WebSocket** (`/ws/*`) for live updates
+  - **API-served assets** (CSS, JS, fonts, icons also mirrored for nginx)
+- **`apexintel-worker`** (`apex-worker`) runs the background crawl/insight/SLA pipeline.
+- **`apexintel-llm`** (llama-server) serves the local model on port 8081.
 
-There is **no Node.js frontend**. The entire web UI is compiled into the binary.
+There is **no Node.js frontend**. The web UI templates are compiled into the
+`apex-api` binary, but the API and the worker are deployed, restarted, and
+versioned independently.
 
 ### 0.3 Application Stack
 
@@ -191,8 +196,8 @@ redis-cli ping  # → PONG
 ```
 /opt/apexintel/                          ← Application root (owner: apexintel)
 ├── bin/
-│   ├── apex-api                         ← Rust API + web UI binary (single binary)
-│   └── apex-worker                      ← Rust background worker binary
+│   ├── apex-api                         ← Rust API + web UI binary (service: apexintel-api)
+│   └── apex-worker                      ← Rust background worker binary (service: apexintel-worker)
 ├── config/
 │   └── .env                             ← Production environment (secrets + auth)
 ├── data/
@@ -386,6 +391,21 @@ chown apexintel:apexintel /opt/apexintel/config/.env
 | `API_KEY_1` | ✅ | API key for external consumers |
 | `LLM_BASE_URL` | ✅ | Local LLM inference endpoint |
 | `SEARCH_INDEX_PATH` | ✅ | Tantivy index directory |
+| `LLM_TIMEOUT_SECS` | ➖ | Per-call LLM timeout; code default 180, production sets `600` for 30B CPU inference |
+| `APEX_GIT_SHA` | ✅ (prod) | Commit the running binaries were built from; surfaced by `/api/version` |
+| `APEX_CI_PIPELINE_ID` | ✅ (prod) | Woodpecker pipeline that produced the artifact; surfaced by `/api/version` |
+| `APEX_ARTIFACT_DIGEST` | ✅ (prod) | `sha256:<hex>` digest of the deployed artifact; surfaced by `/api/version` |
+| `APEX_DEPLOYED_AT` | ✅ (prod) | RFC 3339 deploy timestamp; surfaced by `/api/version` |
+
+> Provenance is not optional in production: `scripts/ops/record_deployment.sh`
+> writes the per-deployment audit record and prints the four `APEX_*` exports
+> for the service `.env`. Without `APEX_GIT_SHA`, the `deployment` capability in
+> `/api/health/capabilities` reports `degraded`.
+>
+> `/api/version` is **public by design** (like `/api/health`) so load balancers
+> and operators can verify the running build without credentials. If your
+> threat model treats exact build identity as sensitive, allowlist the route at
+> nginx or require a session in front of it.
 
 ---
 
@@ -764,6 +784,38 @@ chown apexintel:apexintel /opt/apexintel/bin/apex-api /opt/apexintel/bin/apex-wo
 systemctl start apexintel-api apexintel-worker
 curl -sf http://127.0.0.1:8080/api/health | jq
 EOF
+
+# 5. Record deployment provenance (git SHA + CI pipeline + test results +
+#    migration test result + artifact digest + deploy time) against the exact
+#    artifact uploaded in step 2. The digest is computed locally from the same
+#    bytes that were copied to the server.
+APEX_GIT_SHA="$(git rev-parse HEAD)"
+APEX_CI_PIPELINE_ID="${CI_PIPELINE_NUMBER:-local}"
+APEX_ARTIFACT_DIGEST="sha256:$(shasum -a 256 target/aarch64-unknown-linux-gnu/release/apex-api | awk '{print $1}')"
+APEX_DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+scripts/ops/record_deployment.sh \
+  --git-sha "${APEX_GIT_SHA}" \
+  --pipeline-id "${APEX_CI_PIPELINE_ID}" \
+  --tests passed \
+  --migrations passed \
+  --artifact-digest "${APEX_ARTIFACT_DIGEST}" \
+  --deployed-at "${APEX_DEPLOYED_AT}" \
+  --ledger deployments.jsonl
+
+# 6. Give the running API that identity, then verify it. systemd reads
+#    EnvironmentFile at process start, so the restart is required; appending
+#    is safe because the later value wins.
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 "cat >> /opt/apexintel/config/.env <<EOF
+APEX_GIT_SHA=${APEX_GIT_SHA}
+APEX_CI_PIPELINE_ID=${APEX_CI_PIPELINE_ID}
+APEX_ARTIFACT_DIGEST=${APEX_ARTIFACT_DIGEST}
+APEX_DEPLOYED_AT=${APEX_DEPLOYED_AT}
+EOF
+systemctl restart apexintel-api"
+ssh -i ~/.ssh/hetzner-db-mac root@77.42.65.89 \
+  'curl -sf http://127.0.0.1:8080/api/version | jq'
+# Expected: git_sha and artifact_digest match the values echoed by the
+# recorder above, and configured is true.
 ```
 
 ### Updating Static Assets Only
@@ -808,7 +860,6 @@ curl -s https://starzerp.fi/data/healthy       # freshness, sources, index, brow
 curl -s https://starzerp.fi/intelligence/healthy  # LLM, embeddings, alert engine
 curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher
 # Expected: {"surface":"...","status":"ok","checks":[...]}
-
 # Policy thresholds are configurable without a rebuild (defaults in parens):
 #   APEX_LLM_PROBE_TTL_SECS (60)         APEX_LLM_PROBE_TIMEOUT_SECS (5)
 #   APEX_BROWSER_PROBE_TTL_SECS (300)    APEX_BROWSER_PROBE_TIMEOUT_SECS (30)
@@ -820,6 +871,14 @@ curl -s https://starzerp.fi/delivery/healthy   # NATS, outbox publisher
 #   APEX_OUTBOX_MAX_PENDING (100)        APEX_OUTBOX_MAX_OLDEST_PENDING_SECS (300)
 #   APEX_CRITICAL_JOBS (crawl_cycle,triage_processing)
 #   APEX_CRITICAL_JOB_MAX_AGE_SECS (7200)
+# and search index; APEX_PROFILE=full additionally requires LLM, NATS and the
+# browser renderer, and refuses to start without a `--features llm` build.
+# Running deployment provenance (git SHA, CI pipeline, artifact digest, deploy time)
+curl -s https://starzerp.fi/api/version | jq
+# Expected: {"service":"apex-api","git_sha":"<sha>","ci_pipeline_id":"<n>",
+#            "artifact_digest":"sha256:<hex>","deployed_at":"<rfc3339>","configured":true}
+# `deployment` inside /api/health/capabilities reports the same values and
+# degrades when APEX_GIT_SHA is missing.
 ```
 
 Worker containers run `apex-worker healthcheck` as their Docker healthcheck:
@@ -953,7 +1012,7 @@ echo "Memory: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
 
 ## Appendix B – Architecture Change Log
 
-### March 2026 — Single-Binary Migration
+### March 2026 — Server-rendered UI Migration (multi-service)
 
 The Next.js frontend was fully replaced by Askama (Jinja2-like) templates + HTMX,
 compiled into the Rust `apex-api` binary:
@@ -961,13 +1020,14 @@ compiled into the Rust `apex-api` binary:
 - **Removed**: Node.js, Next.js, `apexintel-frontend` systemd service, `/opt/apexintel/frontend/`
 - **Added**: 45 HTML templates in `crates/api/templates/`, 11 static assets in `crates/api/static/`
 - **Added**: Cookie-based session auth in the API binary (login/logout endpoints)
-- **Changed**: Nginx now routes all traffic to single upstream (port 8080)
+- **Changed**: Nginx now routes all traffic to one upstream (port 8080)
 - **Changed**: Static assets served directly by nginx from `/opt/apexintel/static/`
-- **Result**: ~764 MB freed on server, single 16 MB binary serves everything
+- **Result**: ~764 MB freed on server; the API binary serves the UI, but production
+  still runs three services: `apexintel-api`, `apexintel-worker`, `apexintel-llm`
 
 ## Appendix C – Deployment Status
 
-- [x] Deployment guide updated for single-binary architecture
+- [x] Deployment guide updated for the server-rendered UI (multi-service: api/worker/llm)
 - [x] Hetzner firewall opened (ports 22, 80, 443)
 - [x] Server setup (packages, users, directories)
 - [x] PostgreSQL + Redis configured
@@ -1018,7 +1078,7 @@ divergent lineage blocks startup.
 |---------|---------|---------|
 | `WORKER_MAX_CONCURRENT_JOBS` | 4 | Scheduler-wide concurrency permit count |
 | `LLM_INSIGHT_MAX_COMPANIES` | 10 | Companies per insight-generation run (CPU LLM budget) |
-| `LLM_TIMEOUT_SECS` | 600 (prod) | Per-call LLM timeout; 180 default is too small for 30B CPU inference of 4k-token prompts |
+| `LLM_TIMEOUT_SECS` | 180 (code default); production sets 600 | Per-call LLM timeout; the 180 default is too small for 30B CPU inference of 4k-token prompts, so production `.env` sets 600 |
 | `LOOKALIKE_MAX_CHECKS_PER_DOMAIN` | 15 | DNS verification budget per domain in the lookalike scan |
 | `POI_LLM_ENRICH_PER_RUN` | 40 | Bounded POI enrichment per nightly run |
 | `API_TRUST_PROXY` | unset | Set `1` only behind a proxy that overwrites `X-Forwarded-For` |

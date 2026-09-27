@@ -282,7 +282,7 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
 
     let pool = store.pool.clone();
     let rows = sqlx::query(
-        "SELECT id::text AS id, title, severity, warning_type, COALESCE(entity_ids[1]::text, NULL) AS entity_id, created_at, acknowledged \
+        "SELECT id::text AS id, title, severity, warning_type, COALESCE(entity_ids, ARRAY[]::uuid[]) AS entity_ids, is_system_broadcast, created_at, acknowledged \
          FROM warnings WHERE acknowledged = false ORDER BY created_at ASC LIMIT 500",
     )
     .fetch_all(&pool)
@@ -297,7 +297,8 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
                     let title: Option<String> = r.try_get("title").ok();
                     let severity: Option<String> = r.try_get("severity").ok();
                     let warning_type: Option<String> = r.try_get("warning_type").ok();
-                    let entity_id: Option<String> = r.try_get("entity_id").ok();
+                    let entity_ids: Option<Vec<uuid::Uuid>> = r.try_get("entity_ids").ok();
+                    let is_system_broadcast: Option<bool> = r.try_get("is_system_broadcast").ok();
                     let created_at: Option<chrono::DateTime<Utc>> = r.try_get("created_at").ok();
                     let acknowledged: Option<bool> = r.try_get("acknowledged").ok();
                     Some(SlaWarningRecord {
@@ -305,7 +306,12 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
                         title: title?,
                         severity: severity?,
                         warning_type: warning_type?,
-                        entity_id,
+                        entity_ids: entity_ids
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|entity_id| entity_id.to_string())
+                            .collect(),
+                        is_system_broadcast: is_system_broadcast.unwrap_or(false),
                         created_at: created_at?,
                         acknowledged: acknowledged?,
                     })
@@ -333,7 +339,9 @@ pub(super) async fn run_sla_enforcement(kind: &JobKind, store: &Arc<PgStore>) ->
             "warning_id": record.id,
             "severity": record.severity,
             "kind": "approaching",
-            "seconds_remaining": record.sla_seconds_remaining(&apex_core::sla::SeveritySlaConfig::default())
+            // Use the enforcer's resolved windows, not the code defaults, so
+            // the recorded metadata matches the window actually enforced.
+            "seconds_remaining": record.sla_seconds_remaining(enforcer.windows())
         });
         match store
             .try_record_sla_reminder(&record.id, "approaching", &delivery_key, &detail)

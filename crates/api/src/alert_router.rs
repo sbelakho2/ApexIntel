@@ -61,19 +61,67 @@ impl fmt::Display for AlertEventType {
 
 /// An alert event that travels through the pipeline: worker → NATS → API → SSE.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "AlertEventWire")]
 pub struct AlertEvent {
     pub id: Uuid,
     pub event_type: AlertEventType,
     pub severity: apex_core::alert_config::AlertSeverity,
     pub title: String,
     pub description: String,
-    pub entity_id: Option<Uuid>,
+    /// Complete entity set the alert references. Subscriber resolution is the
+    /// union across every entry; a multi-entity warning must not collapse to
+    /// its first entity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<Uuid>,
     pub entity_name: Option<String>,
     /// Who this alert is addressed to. `Users(vec![])` addresses nobody and
     /// only a deliberate `Broadcast` reaches every connected user.
     pub audience: AlertAudience,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
+}
+
+/// Wire form that still accepts the pre-`entity_ids` singular field, so alert
+/// messages produced by a not-yet-updated worker still resolve their entity
+/// subscribers instead of reaching nobody.
+#[derive(Deserialize)]
+struct AlertEventWire {
+    id: Uuid,
+    event_type: AlertEventType,
+    severity: apex_core::alert_config::AlertSeverity,
+    title: String,
+    description: String,
+    #[serde(default)]
+    entity_ids: Vec<Uuid>,
+    #[serde(default)]
+    entity_id: Option<Uuid>,
+    entity_name: Option<String>,
+    audience: AlertAudience,
+    metadata: serde_json::Value,
+    created_at: DateTime<Utc>,
+}
+
+impl From<AlertEventWire> for AlertEvent {
+    fn from(wire: AlertEventWire) -> Self {
+        let mut entity_ids = wire.entity_ids;
+        if entity_ids.is_empty() {
+            if let Some(entity_id) = wire.entity_id {
+                entity_ids.push(entity_id);
+            }
+        }
+        Self {
+            id: wire.id,
+            event_type: wire.event_type,
+            severity: wire.severity,
+            title: wire.title,
+            description: wire.description,
+            entity_ids,
+            entity_name: wire.entity_name,
+            audience: wire.audience,
+            metadata: wire.metadata,
+            created_at: wire.created_at,
+        }
+    }
 }
 
 impl AlertEvent {
@@ -204,26 +252,31 @@ impl AlertRouter {
 
     /// Find the real subscribers for an entity-targeted alert.
     ///
-    /// Returns principal IDs whose `user_alert_subscriptions` row matches the
-    /// alert's entity, category and severity. With no entity, or no matching
-    /// rows, returns an empty list (nobody).
+    /// Returns the union of principal IDs whose `user_alert_subscriptions` row
+    /// matches any of the alert's entities, category and severity. One batch
+    /// query resolves every entity. With no entities, or no matching rows,
+    /// returns an empty list (nobody).
     pub async fn find_subscribed_users(&self, alert: &AlertEvent) -> anyhow::Result<Vec<Uuid>> {
-        let Some(entity_id) = alert.entity_id else {
+        if alert.entity_ids.is_empty() {
             return Ok(Vec::new());
-        };
+        }
 
         self.db
-            .find_subscribed_users(entity_id, alert.alert_category(), alert.severity)
+            .find_subscribed_users_for_entities(
+                &alert.entity_ids,
+                alert.alert_category(),
+                alert.severity,
+            )
             .await
     }
 
     /// Check whether a specific user should receive this alert.
     ///
     /// Consults the user's notification preferences from `user_preferences`
-    /// first (when the principal has an active connection), then the entity's
-    /// [`EntityAlertConfig`](apex_core::alert_config::EntityAlertConfig), then
-    /// the global defaults. Database errors fail open so a transient failure
-    /// never silently suppresses an alert.
+    /// first (when the principal has an active connection), then the configs of
+    /// every entity the alert references, then the global defaults. Database
+    /// errors fail open so a transient failure never silently suppresses an
+    /// alert.
     pub async fn should_notify_user(&self, principal_id: Uuid, alert: &AlertEvent) -> bool {
         if let Some(user_id) = self.principals.user_id_for(principal_id) {
             match self
@@ -258,7 +311,16 @@ impl AlertRouter {
     async fn entity_or_global_allows(&self, alert: &AlertEvent) -> bool {
         use apex_core::alert_config::AlertChannel;
 
-        if let Some(entity_id) = alert.entity_id {
+        if alert.entity_ids.is_empty() {
+            // No entity — check global defaults.
+            return self.check_global_defaults(alert).await;
+        }
+
+        // The alert may reference several entities. A subscriber of any of
+        // them must not be gated by another entity's config: every referenced
+        // entity has to allow the alert, and entities without a config fall
+        // back to the global defaults.
+        for entity_id in &alert.entity_ids {
             let entity_id_str = entity_id.to_string();
             match self.db.get_entity_alert_config(&entity_id_str).await {
                 Ok(Some(cfg)) => {
@@ -267,11 +329,15 @@ impl AlertRouter {
                         return false;
                     }
                     // Check if the alert is suppressed
-                    return !cfg.is_alert_suppressed(alert.alert_category(), alert.severity);
+                    if cfg.is_alert_suppressed(alert.alert_category(), alert.severity) {
+                        return false;
+                    }
                 }
                 Ok(None) => {
                     // No per-entity config — check global defaults
-                    return self.check_global_defaults(alert).await;
+                    if !self.check_global_defaults(alert).await {
+                        return false;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -279,13 +345,14 @@ impl AlertRouter {
                         error = %e,
                         "Failed to fetch entity alert config, falling back to defaults"
                     );
-                    return self.check_global_defaults(alert).await;
+                    if !self.check_global_defaults(alert).await {
+                        return false;
+                    }
                 }
             }
         }
 
-        // No entity — check global defaults
-        self.check_global_defaults(alert).await
+        true
     }
 
     /// Check the global alert defaults.
@@ -370,7 +437,7 @@ mod tests {
             severity,
             title: "Test".to_string(),
             description: "Test".to_string(),
-            entity_id: None,
+            entity_ids: Vec::new(),
             entity_name: None,
             audience: AlertAudience::Users(vec![]),
             metadata: serde_json::json!({}),
@@ -408,7 +475,7 @@ mod tests {
             severity: AlertSeverity::Critical,
             title: "Competitor move".to_string(),
             description: "A competitor changed strategy".to_string(),
-            entity_id: Some(Uuid::new_v4()),
+            entity_ids: vec![Uuid::new_v4(), Uuid::new_v4()],
             entity_name: Some("Rival Corp".to_string()),
             audience: AlertAudience::Users(vec![Uuid::new_v4()]),
             metadata: serde_json::json!({"change_type": "pivot"}),
@@ -441,6 +508,31 @@ mod tests {
 
         let back: AlertEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back.audience, AlertAudience::Broadcast);
+    }
+
+    #[test]
+    fn legacy_singular_entity_id_still_resolves_the_entity() {
+        let entity_id = Uuid::new_v4();
+        // Frozen pre-rename shape produced by a not-yet-updated worker.
+        let legacy = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "event_type": "new_warning",
+            "severity": "high",
+            "title": "Legacy",
+            "description": "published before the entity_ids rename",
+            "entity_id": entity_id,
+            "entity_name": "Acme",
+            "audience": {"kind": "users", "user_ids": []},
+            "metadata": {"warning_id": Uuid::new_v4()},
+            "created_at": "2026-01-01T00:00:00Z"
+        });
+
+        let event: AlertEvent = serde_json::from_value(legacy).expect("legacy payload parses");
+        assert_eq!(
+            event.entity_ids,
+            vec![entity_id],
+            "the legacy id must not be dropped, or the alert would reach nobody"
+        );
     }
 
     #[test]

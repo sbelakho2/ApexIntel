@@ -50,6 +50,7 @@ pub(crate) fn build_app_router(state: AppState, cors: CorsLayer) -> Router {
         .route("/api/openapi.json", get(openapi_json))
         .route("/api/docs", get(api_docs))
         .route("/api/features", get(api_features))
+        .route("/api/version", get(api_version))
         .route(
             "/login",
             get(apex_api::web::auth::login_page).post(apex_api::web::auth::login_submit),

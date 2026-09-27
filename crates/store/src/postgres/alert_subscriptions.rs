@@ -205,11 +205,28 @@ impl PgStore {
         category: &str,
         min_severity: AlertSeverity,
     ) -> Result<Vec<Uuid>> {
+        self.find_subscribed_users_for_entities(&[entity_id], category, min_severity)
+            .await
+    }
+
+    /// Batch form of [`PgStore::find_subscribed_users`]: resolves the union of
+    /// subscribers across every referenced entity in **one** query, so a
+    /// multi-entity alert costs one round-trip instead of one per entity.
+    pub async fn find_subscribed_users_for_entities(
+        &self,
+        entity_ids: &[Uuid],
+        category: &str,
+        min_severity: AlertSeverity,
+    ) -> Result<Vec<Uuid>> {
+        if entity_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"
             SELECT DISTINCT user_id
             FROM user_alert_subscriptions
-            WHERE entity_id = $1
+            WHERE entity_id = ANY($1)
               AND enabled = TRUE
               AND (category IS NULL OR lower(category) = lower($2))
               AND CASE lower(min_severity)
@@ -223,7 +240,7 @@ impl PgStore {
             ORDER BY user_id
             "#,
         )
-        .bind(entity_id)
+        .bind(entity_ids)
         .bind(category)
         .bind(severity_rank(min_severity))
         .fetch_all(&self.pool)

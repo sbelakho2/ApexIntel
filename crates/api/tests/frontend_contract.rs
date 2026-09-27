@@ -72,7 +72,7 @@ async fn served_openapi_covers_the_verified_endpoint_catalogue() {
     let paths = spec["paths"].as_object().expect("paths object");
 
     let catalogue = apex_api::routes::all_endpoints();
-    assert_eq!(catalogue.len(), 102, "verified endpoint count");
+    assert_eq!(catalogue.len(), 103, "verified endpoint count");
     for endpoint in &catalogue {
         assert!(
             paths.contains_key(endpoint.path),

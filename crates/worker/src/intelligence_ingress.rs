@@ -227,7 +227,7 @@ pub(crate) fn build_alert_event(
         severity: AlertSeverity::from_str(&warning.severity),
         title: warning.title.clone(),
         description: warning.description.clone().unwrap_or_default(),
-        entity_id: warning.entity_ids.first().copied(),
+        entity_ids: warning.entity_ids.clone(),
         entity_name: None,
         audience: warning.audience(),
         metadata: serde_json::json!({
@@ -500,6 +500,7 @@ impl WarningWriter for WarningService {
                     non_empty(warning.entity_ids.clone()),
                     non_empty(warning.source_urls.clone()),
                     warning.confidence,
+                    warning.is_system_broadcast(),
                     "warning",
                     "new_warning",
                     |outcome| {
@@ -522,6 +523,7 @@ impl WarningWriter for WarningService {
                     non_empty(warning.entity_ids.clone()),
                     non_empty(warning.source_urls.clone()),
                     warning.confidence,
+                    warning.is_system_broadcast(),
                 )
                 .await?;
             (outcome, None)
